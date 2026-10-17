@@ -177,7 +177,12 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(reviewers.len(), 10);
+    assert_eq!(reviewers.len(), 11);
+    assert!(reviewers.contains(&"note_lesson".to_owned()));
+    assert!(
+        !names.contains(&"note_lesson".to_owned()),
+        "only the lead and the reviewer keep the team's lessons"
+    );
     assert!(reviewers.contains(&"review".to_owned()));
     assert!(names.contains(&"check_back".to_owned()));
     assert!(
@@ -595,4 +600,81 @@ fn a_turn_asks_to_check_back_on_its_own_task_and_is_told_when() {
         .cloned()
         .unwrap();
     assert_eq!(tool["inputSchema"]["required"], json!(["minutes", "why"]));
+}
+
+#[test]
+fn the_lead_notes_a_lesson_in_the_goals_notes_and_the_owner_is_told() {
+    // 17 October 2026, at noon UTC.
+    let clock = Hands(AtomicI64::new(1_792_238_400_000));
+    let (hq, s, dev_turn) = started(&clock);
+    let ada = hq.store().members().unwrap()[0].id;
+    hq.set_goal_note(s.goal, "Owntone is being retired.")
+        .unwrap();
+    hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal: s.goal,
+            parent: None,
+            title: "Check the home lab".to_owned(),
+            description: String::new(),
+            assignee: Some(ada),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap();
+    let lead = next_turn(&hq, ada);
+    let (run, me) = turn(&hq, &lead.token);
+    let lesson = "An RSS sync that finds releases and grabs none is normal.";
+    let said = call(&hq, &run, &me, "note_lesson", &json!({ "lesson": lesson })).unwrap();
+    assert!(said.contains(lesson), "{said}");
+    assert_eq!(
+        hq.goal_note(s.goal).unwrap(),
+        format!("Owntone is being retired.\n- {lesson} (Ada, 17 Oct)")
+    );
+    let desk = hq.store().desk().unwrap();
+    let told = desk.last().unwrap();
+    assert_eq!(told.kind, "notice");
+    assert_eq!(told.text, format!("Ada noted: {lesson}"));
+    assert_eq!(told.member, Some(ada));
+    assert_eq!(hq.store().count_events("lesson.noted").unwrap().0, 1);
+
+    // At most 300 characters, and something said.
+    assert!(
+        call(
+            &hq,
+            &run,
+            &me,
+            "note_lesson",
+            &json!({ "lesson": "x".repeat(301) })
+        )
+        .unwrap_err()
+        .contains("300")
+    );
+    assert!(call(&hq, &run, &me, "note_lesson", &json!({ "lesson": "  " })).is_err());
+    // The notes stay within their limit: a lesson that would overflow them is refused.
+    hq.set_goal_note(s.goal, &"n".repeat(1_950)).unwrap();
+    let full = call(&hq, &run, &me, "note_lesson", &json!({ "lesson": lesson })).unwrap_err();
+    assert_eq!(full, "the notes are full; ask the owner to tidy them");
+    assert_eq!(
+        hq.goal_note(s.goal).unwrap(),
+        "n".repeat(1_950),
+        "unchanged"
+    );
+
+    // A developer keeps none.
+    let (run, me) = turn(&hq, &dev_turn.token);
+    let refused = call(&hq, &run, &me, "note_lesson", &json!({ "lesson": lesson })).unwrap_err();
+    assert!(
+        refused.contains("only the lead and the reviewer"),
+        "{refused}"
+    );
+    let schema = tools(Role::Lead)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "note_lesson")
+        .cloned()
+        .unwrap();
+    assert_eq!(schema["inputSchema"]["required"], json!(["lesson"]));
 }

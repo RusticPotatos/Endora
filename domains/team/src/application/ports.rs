@@ -186,6 +186,11 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_paused(&self, member: MemberId, paused: bool) -> Stored<()>;
+    /// Sets what a member thinks with.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
 
     /// Adds a goal.
     ///

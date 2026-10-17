@@ -210,6 +210,33 @@ pub(super) async fn hq_goal_note(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqBrain {
+    brain: String,
+}
+
+/// The owner sets what a member thinks with (ADR 0109): the house's model, or a Claude its
+/// role may use. HQ decides what the role may use; the node records what was set.
+pub(super) async fn hq_set_brain(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqBrain>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/brain"),
+        Some(json!({ "brain": req.brain })),
+    )
+    .await?;
+    // HQ answers with one of its own brains' names, never what was asked.
+    let brain = answer.0["brain"].as_str().unwrap_or("").to_owned();
+    record(
+        &state,
+        &format!("you set member {id} to think with {brain}"),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqWhy {
     #[serde(default)]
     why: String,
@@ -335,6 +362,72 @@ mod tests {
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_owner_sets_a_members_brain_through_the_node_and_it_is_recorded() {
+        let (url, seen) = fake(Arc::new(|_, body| {
+            if body.contains("opus") {
+                return (
+                    400,
+                    "application/json",
+                    json!({ "error": "a lead thinks with local, claude-sonnet-5-5, claude-haiku-5-5 only" })
+                        .to_string(),
+                );
+            }
+            (
+                200,
+                "application/json",
+                json!({ "member": 1, "brain": "claude-sonnet-5-5" }).to_string(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let set = |brain: &str| {
+            hq_set_brain(
+                State(state.clone()),
+                Path(1),
+                Json(HqBrain {
+                    brain: brain.to_owned(),
+                }),
+            )
+        };
+        let answer = set("claude-sonnet-5-5").await.unwrap();
+        assert_eq!(answer.0["brain"], "claude-sonnet-5-5");
+        let refused = set("claude-opus-5-5").await.unwrap_err();
+        assert_eq!(
+            refused.0,
+            StatusCode::BAD_REQUEST,
+            "HQ's refusal, passed on"
+        );
+        let sent: Vec<(String, serde_json::Value)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), serde_json::from_str(b).unwrap()))
+            .collect();
+        assert_eq!(
+            sent[0],
+            (
+                "/v1/members/1/brain".to_owned(),
+                json!({ "brain": "claude-sonnet-5-5" })
+            )
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a == "HQ: you set member 1 to think with claude-sonnet-5-5"),
+            "{audit:?}"
+        );
+        assert_eq!(
+            audit.len(),
+            1,
+            "a refusal changes nothing, and is not recorded as done"
+        );
     }
 
     #[tokio::test]

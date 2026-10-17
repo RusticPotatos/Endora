@@ -877,3 +877,225 @@ fn without_a_token_there_is_no_turn() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("ENDORA_RUN_TOKEN"));
     assert!(to_hq.lock().unwrap().is_empty());
 }
+
+/// A model's answer in Anthropic's Messages form: `text`, then each call a `tool_use` block.
+fn claude(text: &str, list: &[(&str, &str, Value)]) -> Value {
+    let mut content = Vec::new();
+    if !text.is_empty() {
+        content.push(json!({ "type": "text", "text": text }));
+    }
+    for (id, name, input) in list {
+        content.push(json!({ "type": "tool_use", "id": id, "name": name, "input": input }));
+    }
+    let stop = if list.is_empty() {
+        "end_turn"
+    } else {
+        "tool_use"
+    };
+    json!({ "type": "message", "role": "assistant", "model": "claude-sonnet-5-5",
+            "content": content, "stop_reason": stop,
+            "usage": { "input_tokens": 1000, "output_tokens": 100 } })
+}
+
+/// The worker's environment for a member thinking with Claude, as the runner gives it.
+fn on_claude(hq: &str, relay: &str, node: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
+        ("ENDORA_HQ_MCP", format!("{hq}/v1/team/mcp")),
+        ("ENDORA_MODEL_URL", format!("{relay}/team-relay/v1")),
+        ("ENDORA_MODEL", "claude-sonnet-5-5".to_owned()),
+        ("ENDORA_CONTRACTS", format!("{node}/team-relay/contracts")),
+    ]
+}
+
+#[test]
+fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, to_node) = node(contracts_that_say_what_they_are(), None);
+    let (relay_url, to_relay) = model(vec![
+        (
+            200,
+            claude(
+                "Looking first.",
+                &[
+                    ("toolu_1", "homelab_status", json!({})),
+                    (
+                        "toolu_2",
+                        "set_status",
+                        json!({ "task": 7, "status": "done", "reason": "fine" }),
+                    ),
+                ],
+            ),
+        ),
+        (200, claude("", &[("toolu_3", "homelab_status", json!({}))])),
+        (200, claude("Everything is running.", &[])),
+    ]);
+    let out = worker(&on_claude(&hq_url, &relay_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let to_relay = to_relay.lock().unwrap().clone();
+    assert_eq!(to_relay.len(), 3);
+    let first = &to_relay[0];
+    assert_eq!(first.path, "/team-relay/v1/messages");
+    assert_eq!(
+        first.header("authorization"),
+        Some(format!("Bearer {TOKEN}").as_str())
+    );
+    assert_eq!(first.header("anthropic-version"), Some("2023-06-01"));
+    let body = &first.body;
+    let mut fields: Vec<&String> = body.as_object().unwrap().keys().collect();
+    fields.sort();
+    assert_eq!(
+        fields,
+        ["max_tokens", "messages", "model", "system", "tools"],
+        "only what the relay meters"
+    );
+    assert_eq!(body["model"], "claude-sonnet-5-5");
+    assert_eq!(body["max_tokens"], 4096);
+    assert!(
+        body["system"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are one member of a small team")
+    );
+    assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert!(
+        body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("your task was claimed for you")
+    );
+    assert_eq!(
+        body["tools"][1],
+        json!({ "name": "claim", "description": "Take a task as yours.",
+                "input_schema": tools()[1]["inputSchema"] }),
+        "an MCP tool, as an Anthropic tool"
+    );
+    assert!(
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t.get("kind").is_none() && t.get("type").is_none()),
+        "the worker's own tools, nothing the relay would refuse"
+    );
+
+    // The model's turn goes back as it said it, and every tool_use gets its tool_result in
+    // one user message, a refusal marked as an error.
+    let second = &to_relay[1].body["messages"];
+    assert_eq!(second[1]["role"], "assistant");
+    assert_eq!(
+        second[1]["content"],
+        claude(
+            "Looking first.",
+            &[
+                ("toolu_1", "homelab_status", json!({})),
+                (
+                    "toolu_2",
+                    "set_status",
+                    json!({ "task": 7, "status": "done", "reason": "fine" })
+                ),
+            ]
+        )["content"]
+    );
+    assert_eq!(
+        second[2],
+        json!({ "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1",
+              "content": "{\"stale\":false,\"services\":[]}" },
+            { "type": "tool_result", "tool_use_id": "toolu_2", "is_error": true,
+              "content": "Refused: `status` must be todo, doing, in_review or blocked" },
+        ] })
+    );
+    // The repeat guard is the same loop's: asked again after another call, it is sent, and
+    // saying nothing new, the model is told it already has it.
+    assert_eq!(
+        to_relay[2].body["messages"][4]["content"][0]["content"],
+        "You already have this result; use it, or do something else"
+    );
+    assert_eq!(
+        to_node
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.path == "/team-relay/contracts/homelab_status")
+            .count(),
+        2
+    );
+
+    // The same last word and the same line saying what the turn did.
+    let last = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|s| s.method() == "tools/call post")
+        .map(|s| s.body["params"]["arguments"]["text"].clone());
+    assert_eq!(
+        last,
+        Some(json!(
+            "Everything is running.\n\nThis turn did: read the home lab's state; tried to set \
+             task 7 to done, refused; read the home lab's state."
+        ))
+    );
+    for sent in &to_relay {
+        assert!(!sent.body.to_string().contains(TOKEN), "never in a body");
+    }
+}
+
+#[test]
+fn a_cloud_turn_ends_on_402_from_the_relay_and_on_a_question_to_the_owner() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(json!([]), None);
+    let (relay_url, to_relay) = model(vec![(
+        402,
+        json!({ "type": "error", "error": { "type": "billing_error",
+                "message": "this turn's budget is spent" } }),
+    )]);
+    let out = worker(&on_claude(&hq_url, &relay_url, &node_url));
+    assert_eq!(out.status.code(), Some(3), "{}", said(&out));
+    assert_eq!(to_relay.lock().unwrap().len(), 1);
+    assert_eq!(
+        methods(&to_hq).last().map(String::as_str),
+        Some("tools/call claim")
+    );
+
+    let (hq_url, to_hq) = hq(None);
+    let (relay_url, to_relay) = model(vec![
+        (
+            200,
+            claude(
+                "",
+                &[(
+                    "toolu_1",
+                    "ask_owner",
+                    json!({ "text": "Shall I restart sonarr?" }),
+                )],
+            ),
+        ),
+        (200, claude("Done.", &[])),
+    ]);
+    let out = worker(&on_claude(&hq_url, &relay_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(to_relay.lock().unwrap().len(), 1, "not asked again");
+    assert_eq!(
+        methods(&to_hq).last().map(String::as_str),
+        Some("tools/call ask_owner")
+    );
+}
+
+#[test]
+fn a_cloud_turn_runs_out_of_rounds_as_a_local_one_does() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(json!([]), None);
+    let (relay_url, to_relay) = model(vec![(
+        200,
+        claude("", &[("toolu_1", "claim", json!({ "task": 7 }))]),
+    )]);
+    let mut env = on_claude(&hq_url, &relay_url, &node_url);
+    env.push(("ENDORA_MOST_ROUNDS", "2".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(to_relay.lock().unwrap().len(), 2);
+    assert!(!methods(&to_hq).contains(&"tools/call post".to_owned()));
+}

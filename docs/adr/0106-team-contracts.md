@@ -18,6 +18,11 @@ too. The Confidential check point this record asks for is in place: HQ says when
 thinks on a cloud model, and the node then neither offers nor runs a Confidential tool for that
 turn (`container_logs` stays as it was until HQ says it).
 
+Amended 2026-10-17 by [0109](0109-a-brain-per-member.md): the decision owed below is made. HQ
+now says when a member thinks with Claude, and `container_logs` is listed and run for a cloud
+turn only when it is the lead's, by the owner's decision; a cloud developer, reviewer or
+researcher is refused it as Confidential.
+
 ## Context
 
 The owner gave the team the goal "Keep the home lab healthy", and the team could not see the

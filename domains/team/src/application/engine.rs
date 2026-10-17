@@ -11,6 +11,7 @@ use super::ports::{
     Clock, DeskItem, NewRoutine, NewTask, Run, RunContext, StoreError, TeamStore, Wake,
     WorkerAdapter,
 };
+use crate::domain::lessons;
 use crate::domain::money::{self, Micros};
 use crate::domain::review;
 use crate::domain::routines::{self, FireStep, MINUTE_MS};
@@ -18,8 +19,8 @@ use crate::domain::runs::{self, LONGEST_TURN_MS};
 use crate::domain::wakes::{self, LiveTurn};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
-    CheckBackStatus, EventKind, Firing, GoalId, GoalStatus, Liveness, Member, MemberId, Millis,
-    Priority, Receipt, Refusal, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId,
+    Brain, CheckBackStatus, EventKind, Firing, GoalId, GoalStatus, Liveness, Member, MemberId,
+    Millis, Priority, Receipt, Refusal, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId,
     TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 
@@ -271,6 +272,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn pause(&self, member: MemberId, paused: bool) -> Done<()> {
         let _held = self.held();
         Ok(self.store.set_paused(member, paused)?)
+    }
+
+    /// The owner sets what a member thinks with (ADR 0109), by its name: `local`, or a Claude
+    /// model the member's role may use. The next turn starts with it. The node asks HQ on
+    /// every call, so a turn already running is held to it at once: switched to the cloud, it
+    /// is given only what a cloud turn may see; switched home, the Anthropic relay refuses it.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
+    /// one its role may not think with; a store failure.
+    pub fn set_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        let brain = Brain::for_role(found.role, brain).map_err(EngineError::Refused)?;
+        self.store.set_brain(member, brain)?;
+        self.emit(
+            EventKind::BrainSet,
+            json!({ "member": member.0, "name": found.name, "brain": brain.name() }),
+        )?;
+        Ok(brain)
     }
 
     /// Sets a goal. The owner's is active at once; one Endora proposes waits on the desk.
@@ -2420,6 +2441,54 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(due)
     }
 
+    /// A turn of the lead's or the reviewer's notes a lesson the team will need again: one
+    /// line at the end of its task's goal's notes for the team, which every briefing under the
+    /// goal carries, as `- <lesson> (<member>, <day> <month>)`. Each is an event in the feed
+    /// and a notice on the owner's desk, so the owner sees, and can edit, what the team
+    /// learned. Returns the line.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`] for a turn that has ended; [`Refusal::NotALessonKeeper`] for a
+    /// member that is neither; [`EngineError::Unknown`] for a turn with no task, or no lesson;
+    /// [`Refusal::TooLong`] for a lesson past [`lessons::LESSON_MOST`]; [`Refusal::NotesFull`]
+    /// when the notes have no room for it.
+    pub fn note_lesson(&self, run: RunId, lesson: &str) -> Done<String> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        let member = self.member(run.member)?;
+        if !lessons::keeps_lessons(member.role) {
+            return Err(EngineError::Refused(Refusal::NotALessonKeeper));
+        }
+        let task = run.task.ok_or(EngineError::Unknown("task for this turn"))?;
+        let goal = self.task(task)?.goal;
+        if lesson.trim().is_empty() {
+            return Err(EngineError::Unknown("lesson"));
+        }
+        let now = self.clock.now();
+        let line = lessons::line(lesson, &member.name, now, self.settings.offset_minutes)
+            .map_err(EngineError::Refused)?;
+        let notes = lessons::appended(&self.store.goal_note(goal)?, &line, GOAL_NOTE_MOST)
+            .map_err(EngineError::Refused)?;
+        self.store.set_goal_note(goal, &notes)?;
+        let said = line
+            .trim_start_matches("- ")
+            .rsplit_once(" (")
+            .map_or(line.as_str(), |(l, _)| l);
+        self.emit(
+            EventKind::LessonNoted,
+            json!({ "goal": goal.0, "task": task.0, "member": member.id.0, "lesson": said }),
+        )?;
+        let text = format!("{} noted: {said}", member.name);
+        let desk = self
+            .store
+            .add_desk("notice", Some(task), None, Some(member.id), &text, now)?;
+        self.emit(
+            EventKind::DeskAdded,
+            json!({ "item": desk.0, "kind": "notice", "task": task.0 }),
+        )?;
+        Ok(line)
+    }
+
     // ---- what the office shows ------------------------------------------------------------
 
     /// Everything on screen now (spec section 12), and the id of the last event in it: the
@@ -2450,6 +2519,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             members.push(json!({
                 "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
                 "paused": m.paused, "slots": m.slots,
+                // What it thinks with, and what the owner may choose for its role (ADR 0109).
+                "brain": m.brain.name(),
+                "brains": Brain::choices(m.role).into_iter()
+                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
+                    .collect::<Vec<_>>(),
                 "per_day": money::member_a_day(pool, m.share_percent),
                 "committed": committed, "spent": spent, "held": (committed - spent).max(0),
                 "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)

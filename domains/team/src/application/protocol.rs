@@ -88,6 +88,16 @@ pub fn tools(role: Role) -> Value {
             ));
         }
     }
+    if crate::domain::lessons::keeps_lessons(role) {
+        if let Some(list) = all.as_array_mut() {
+            list.push(tool(
+                "note_lesson",
+                "Keep a lesson for the whole team: one line, at most 300 characters, added to your task's goal's notes, which every member reads every turn. Use it when the owner corrects you, or you learn something about this house the team will need again. The owner sees and can edit it.",
+                json!({ "lesson": { "type": "string", "maxLength": 300 } }),
+                &["lesson"],
+            ));
+        }
+    }
     all
 }
 
@@ -264,6 +274,13 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let waits = crate::domain::routines::check_back_minutes(minutes);
             Ok(format!(
                 "You will be woken on this task in {waits} minutes, if it is still open: {why}"
+            ))
+        }
+        "note_lesson" => {
+            let lesson = text_arg(args, "lesson")?;
+            let line = engine.note_lesson(run.id, lesson).map_err(|e| said(&e))?;
+            Ok(format!(
+                "Noted in the goal's notes for the team, which every member reads: {line}"
             ))
         }
         // The node's model relay charges every call a turn makes, as it makes it; a worker that

@@ -56,6 +56,19 @@ pub struct Contract {
 }
 
 impl Contract {
+    /// Whether a turn of a member in `role` may be given what this returns: a Confidential
+    /// contract (a log) by the bridge's rule, to a turn on the house's model or to the lead's on
+    /// a cloud model, as the owner decided (ADR 0109).
+    #[must_use]
+    pub fn may_be_seen_by(&self, role: &str, on_a_cloud_model: bool) -> bool {
+        let tier = if self.tier == "confidential" {
+            endora_kernel::Tier::Confidential
+        } else {
+            endora_kernel::Tier::Internal
+        };
+        crate::bridge::may_see(tier, self.name, role, on_a_cloud_model)
+    }
+
     /// As an MCP tool: name, description and input schema.
     #[must_use]
     pub fn as_tool(&self) -> Value {
@@ -322,6 +335,20 @@ mod tests {
         let kinds: Vec<Kind> = all().iter().map(|c| c.kind).collect();
         assert_eq!(kinds, [Kind::Read, Kind::Read, Kind::AutomaticAct]);
         assert_eq!(all()[1].tier, "confidential", "logs are");
+    }
+
+    #[test]
+    fn a_log_goes_to_a_cloud_turn_only_when_it_is_the_leads() {
+        let all = all();
+        let (status, logs, restart) = (&all[0], &all[1], &all[2]);
+        for role in ["lead", "developer", "reviewer", "researcher"] {
+            assert!(logs.may_be_seen_by(role, false), "{role} at home");
+            assert!(status.may_be_seen_by(role, true) && restart.may_be_seen_by(role, true));
+        }
+        assert!(logs.may_be_seen_by("lead", true));
+        for role in ["developer", "reviewer", "researcher"] {
+            assert!(!logs.may_be_seen_by(role, true), "a cloud {role}");
+        }
     }
 
     #[test]

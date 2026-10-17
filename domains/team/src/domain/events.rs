@@ -63,6 +63,10 @@ pub enum EventKind {
     CheckBackFired,
     /// A check-back's task finished first, so it woke nobody.
     CheckBackDropped,
+    /// A member noted a lesson in a goal's notes for the team.
+    LessonNoted,
+    /// The owner set what a member thinks with.
+    BrainSet,
 }
 
 impl EventKind {
@@ -100,6 +104,8 @@ impl EventKind {
             Self::CheckBackSet => "checkback.set",
             Self::CheckBackFired => "checkback.fired",
             Self::CheckBackDropped => "checkback.dropped",
+            Self::LessonNoted => "lesson.noted",
+            Self::BrainSet => "member.brain",
         }
     }
 }

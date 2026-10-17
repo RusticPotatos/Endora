@@ -114,6 +114,11 @@ that established it.
   unless it is off, Restricted, administration or the owner's own; Confidential only to local
   turns; acts only for the roles that act; an act that is on runs within limits and is told,
   an act that asks waits on the owner's desk, and the owner's yes runs exactly what was shown.
+- **Each member has a brain the owner sets; a cloud turn reads only what the owner allowed**
+  ([0109](0109-a-brain-per-member.md)). Local by default, or a Claude the role may use, paid
+  from the team's pool. HQ tells the node which turns are cloud; the lead's may read scrubbed
+  logs and the download queues, no other Confidential result reaches a cloud turn, and a turn
+  on the house's model never reaches Claude.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -242,6 +247,7 @@ of an existing record and take the next number.
 | [0106](0106-team-contracts.md) | Team contracts: what Endora offers HQ's workers | — |
 | [0107](0107-routines-alarms-and-check-backs.md) | Routines, alarms and check-backs: how the team keeps working | — |
 | [0108](0108-the-bridge.md) | The bridge: Endora's capabilities as the team's tools | — |
+| [0109](0109-a-brain-per-member.md) | A brain per member, and what a cloud turn may read | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

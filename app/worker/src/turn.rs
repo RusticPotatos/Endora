@@ -35,6 +35,22 @@ const ASK_AT_MOST: usize = 1200;
 /// The most calls the line saying what a turn did names; the rest are counted.
 const NAMES_AT_MOST: usize = 12;
 
+/// The most a cloud model may say in one round. The relay lowers it to what the turn can
+/// still pay for; a round's answer is a few sentences and tool calls, far less than this.
+const MOST_A_REPLY: u32 = 4096;
+
+/// The version of Anthropic's Messages API the worker speaks.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Which API the model relay speaks to the worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Api {
+    /// OpenAI's chat completions: the local relay, to the house's own model.
+    OpenAi,
+    /// Anthropic's Messages: the Anthropic relay, to Claude (ADR 0109).
+    Anthropic,
+}
+
 /// What a turn is taken with.
 pub struct Setup {
     /// The turn's own token: the only credential the worker has.
@@ -47,6 +63,8 @@ pub struct Setup {
     pub contracts: String,
     /// The model the worker names.
     pub model: String,
+    /// Which API the relay speaks.
+    pub api: Api,
     /// The most rounds of the model a turn may take.
     pub most_rounds: u32,
 }
@@ -113,7 +131,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         calls: Vec::new(),
     };
     offered.extend(contracts);
-    let tools = functions(&offered);
+    let lessons = offered.iter().any(|t| t["name"] == "note_lesson");
     let (briefing, refused) = hq.call("my_turn", &json!({}))?;
     if refused {
         return Err(Stopped::Failed(format!("HQ refused my_turn: {briefing}")));
@@ -137,37 +155,34 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         );
     }
     let model = Model::new(setup);
-    let mut messages = vec![
-        json!({ "role": "system", "content": instructions(task.is_some(), !on_the_node.is_empty()) }),
-        json!({ "role": "user", "content": briefing }),
-    ];
+    let told = instructions(task.is_some(), !on_the_node.is_empty(), lessons);
+    let mut talk = Talk::new(setup.api, told, briefing, &offered);
+    // One loop whichever API the relay speaks: the rounds limit, the repeat guard, the line
+    // saying what the turn did, and the ends of a turn are the same for every brain.
     for _ in 0..setup.most_rounds {
-        let said = model.ask(&messages, &tools)?;
-        let calls = said["tool_calls"].as_array().cloned().unwrap_or_default();
-        if calls.is_empty() {
-            let answer = said["content"].as_str().unwrap_or("").trim();
-            last_word(&mut hq, task, answer, &did)?;
+        let said = model.ask(&talk)?;
+        if said.calls.is_empty() {
+            last_word(&mut hq, task, said.text.trim(), &did)?;
             return Ok(Taken::Answered);
         }
-        messages
-            .push(json!({ "role": "assistant", "content": said["content"], "tool_calls": calls }));
-        for call in &calls {
-            let (content, asked) =
-                run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?;
-            if asked {
+        talk.said(&said);
+        let mut replies = Vec::new();
+        for call in &said.calls {
+            let reply = run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?;
+            if reply.asked {
                 return Ok(Taken::AskedTheOwner);
             }
-            messages
-                .push(json!({ "role": "tool", "tool_call_id": call["id"], "content": content }));
+            replies.push((call.id.clone(), reply));
         }
+        talk.answered(replies);
     }
     Ok(Taken::OutOfRounds)
 }
 
 /// How to take a good turn: the worker's own instructions, written for Endora. `posted` says
 /// whether its last word goes in the task's thread for it; `contracts`, whether the node
-/// offers it any.
-fn instructions(posted: bool, contracts: bool) -> String {
+/// offers it any; `lessons`, whether it keeps the team's lessons (`note_lesson`).
+fn instructions(posted: bool, contracts: bool, lessons: bool) -> String {
     let mut told = String::from(
         "You are one member of a small team at Endora HQ, taking one turn of work. The first \
          message is what my_turn says: who you are, your task, why it exists, and what is new \
@@ -199,7 +214,17 @@ fn instructions(posted: bool, contracts: bool) -> String {
              - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
              never try to work around a refusal.\n\
              - A question about the home lab goes to the team's reviewer first, who checks every \
-             claim and container name against these tools: say only what you saw.",
+             claim and container name against these tools: say only what you saw.\n\
+             - Report something as a problem only when a tool shows it causing harm: an item \
+             stuck in a queue, a container down or unhealthy, a failure that repeats. Errors or \
+             odd lines in a log are evidence to explain, not problems in themselves. Normal \
+             operation (e.g. an RSS sync that finds releases and grabs none) is not a problem.",
+        );
+    }
+    if lessons {
+        told.push_str(
+            "\n\nWhen the owner corrects you, or you learn something about this house that the \
+             team will need again, note it with note_lesson so nobody asks twice.",
         );
     }
     told.push_str(
@@ -229,22 +254,145 @@ fn task_of(briefing: &str) -> Option<i64> {
     (parts.count() == 2).then_some(task)
 }
 
+/// A tool's input schema as MCP lists it, or an empty object's for one that has none.
+fn schema_of(tool: &Value) -> Value {
+    match &tool["inputSchema"] {
+        Value::Null => json!({ "type": "object", "properties": {} }),
+        schema => schema.clone(),
+    }
+}
+
 /// The team's tools, as MCP lists them, offered to the model as OpenAI functions.
 fn functions(tools: &[Value]) -> Vec<Value> {
     tools
         .iter()
         .map(|tool| {
-            let parameters = match &tool["inputSchema"] {
-                Value::Null => json!({ "type": "object", "properties": {} }),
-                schema => schema.clone(),
-            };
             json!({ "type": "function", "function": {
                 "name": tool["name"],
                 "description": tool["description"].as_str().unwrap_or(""),
-                "parameters": parameters,
+                "parameters": schema_of(tool),
             } })
         })
         .collect()
+}
+
+/// The team's tools, as MCP lists them, offered to Claude as Anthropic's tools: a name, a
+/// description and an input schema, and nothing else (no `type`, which would make one a tool
+/// run on Anthropic's side, and the relay refuse the call).
+fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "name": tool["name"],
+                "description": tool["description"].as_str().unwrap_or(""),
+                "input_schema": schema_of(tool),
+            })
+        })
+        .collect()
+}
+
+/// One tool call the model asked for, whichever API it came by.
+struct Call {
+    /// Its id, as the model gave it, for the answer to name.
+    id: Value,
+    /// The tool.
+    name: String,
+    /// Its arguments, as the model gave them: JSON text (OpenAI's) or an object (Anthropic's).
+    arguments: Value,
+}
+
+/// What the model said in a round.
+struct Said {
+    /// Its words.
+    text: String,
+    /// The tools it called, in order.
+    calls: Vec<Call>,
+    /// Its message, as the conversation keeps it.
+    message: Value,
+}
+
+/// What the worker answers one call with.
+struct Reply {
+    /// What the model reads.
+    text: String,
+    /// Whether it was refused, or could not be done.
+    refused: bool,
+    /// Whether it put something on the owner's desk, which ends the turn.
+    asked: bool,
+}
+
+/// The conversation with the model, in the API the relay speaks: the instructions, the
+/// briefing, each round's answer and what each call came to.
+struct Talk {
+    api: Api,
+    system: String,
+    messages: Vec<Value>,
+    tools: Vec<Value>,
+}
+
+impl Talk {
+    /// A conversation that starts with the instructions and the briefing, offering `offered`.
+    fn new(api: Api, system: String, briefing: String, offered: &[Value]) -> Self {
+        let briefing = json!({ "role": "user", "content": briefing });
+        match api {
+            Api::OpenAi => Self {
+                api,
+                messages: vec![json!({ "role": "system", "content": system }), briefing],
+                system: String::new(),
+                tools: functions(offered),
+            },
+            Api::Anthropic => Self {
+                api,
+                system,
+                messages: vec![briefing],
+                tools: anthropic_tools(offered),
+            },
+        }
+    }
+
+    /// The body of one round's call for `model`.
+    fn body(&self, model: &str) -> Value {
+        match self.api {
+            Api::OpenAi => {
+                json!({ "model": model, "messages": self.messages, "tools": self.tools })
+            }
+            Api::Anthropic => json!({
+                "model": model, "max_tokens": MOST_A_REPLY, "system": self.system,
+                "messages": self.messages, "tools": self.tools,
+            }),
+        }
+    }
+
+    /// The model's answer, kept as it said it.
+    fn said(&mut self, said: &Said) {
+        self.messages.push(said.message.clone());
+    }
+
+    /// What each call came to: OpenAI's one message a call; Anthropic's one user message with
+    /// a result for every call, a refusal marked as an error.
+    fn answered(&mut self, replies: Vec<(Value, Reply)>) {
+        if self.api == Api::OpenAi {
+            for (id, reply) in replies {
+                self.messages
+                    .push(json!({ "role": "tool", "tool_call_id": id, "content": reply.text }));
+            }
+            return;
+        }
+        let results: Vec<Value> = replies
+            .into_iter()
+            .map(|(id, reply)| {
+                let mut result =
+                    json!({ "type": "tool_result", "tool_use_id": id, "content": reply.text });
+                if reply.refused {
+                    result["is_error"] = json!(true);
+                }
+                result
+            })
+            .collect();
+        self.messages
+            .push(json!({ "role": "user", "content": results }));
+    }
 }
 
 /// A tool call's arguments. In OpenAI's format they are a JSON object written as text; an
@@ -292,24 +440,29 @@ fn run(
     on_the_node: &[String],
     answered: &mut Answered,
     did: &mut Ledger,
-    call: &Value,
-) -> Result<(String, bool), Stopped> {
-    let tool = call["function"]["name"].as_str().unwrap_or("");
-    let args = match arguments(&call["function"]["arguments"]) {
+    call: &Call,
+) -> Result<Reply, Stopped> {
+    let tool = call.name.as_str();
+    let reply = |text: String, refused: bool| Reply {
+        text,
+        refused,
+        asked: false,
+    };
+    let args = match arguments(&call.arguments) {
         Ok(args) => args,
         Err(why) => {
             did.unreadable(tool);
-            return Ok((format!("Refused: {why}"), false));
+            return Ok(reply(format!("Refused: {why}"), true));
         }
     };
     let key = format!("{tool} {args}");
     if let Some(said) = answered.given.remove(&key) {
         answered.said.insert(key.clone(), said.clone());
         answered.last = Some(key);
-        return Ok((said, false));
+        return Ok(reply(said, false));
     }
     if answered.last.as_deref() == Some(key.as_str()) && answered.said.contains_key(&key) {
-        return Ok((ALREADY.to_owned(), false));
+        return Ok(reply(ALREADY.to_owned(), false));
     }
     // A question to the owner carries what the turn actually did, so the reviewer and the
     // owner read the truth beside the claim.
@@ -345,9 +498,13 @@ fn run(
     answered.said.insert(key.clone(), said.clone());
     answered.last = Some(key);
     if nothing_new && !asked {
-        return Ok((ALREADY.to_owned(), false));
+        return Ok(reply(ALREADY.to_owned(), false));
     }
-    Ok((said, asked))
+    Ok(Reply {
+        text: said,
+        refused,
+        asked,
+    })
 }
 
 /// Posts the model's last word in the task's thread, with a line saying what the turn
@@ -767,39 +924,88 @@ impl<'a> Node<'a> {
     }
 }
 
-/// The node's model relay: OpenAI's chat completions, opened by the same token.
+/// The node's model relay, opened by the same token: OpenAI's chat completions to the house's
+/// model, or Anthropic's Messages to Claude.
 struct Model<'a> {
     agent: ureq::Agent,
     url: String,
     token: &'a str,
     model: &'a str,
+    api: Api,
 }
 
 impl<'a> Model<'a> {
     fn new(setup: &'a Setup) -> Self {
+        let base = setup.model_url.trim_end_matches('/');
+        let url = match setup.api {
+            Api::OpenAi => format!("{base}/chat/completions"),
+            Api::Anthropic => format!("{base}/messages"),
+        };
         Self {
             agent: agent(LONGEST_CALL),
-            url: format!("{}/chat/completions", setup.model_url.trim_end_matches('/')),
+            url,
             token: &setup.token,
             model: &setup.model,
+            api: setup.api,
         }
     }
 
-    /// One round: the conversation so far and the tools, and the model's message back.
-    fn ask(&self, messages: &[Value], tools: &[Value]) -> Result<Value, Stopped> {
-        let sent = self
+    /// One round: the conversation so far, and what the model said back.
+    fn ask(&self, talk: &Talk) -> Result<Said, Stopped> {
+        let mut request = self
             .agent
             .post(&self.url)
-            .header("authorization", &format!("Bearer {}", self.token))
-            .send_json(json!({ "model": self.model, "messages": messages, "tools": tools }));
-        let reply = read("the model relay", sent)?;
-        let message = &reply["choices"][0]["message"];
-        if !message.is_object() {
-            return Err(Stopped::Failed(
-                "the model relay's answer has no message".to_owned(),
-            ));
+            .header("authorization", &format!("Bearer {}", self.token));
+        if self.api == Api::Anthropic {
+            request = request.header("anthropic-version", ANTHROPIC_VERSION);
         }
-        Ok(message.clone())
+        let reply = read("the model relay", request.send_json(talk.body(self.model)))?;
+        let no_message = || Stopped::Failed("the model relay's answer has no message".to_owned());
+        if self.api == Api::OpenAi {
+            let message = &reply["choices"][0]["message"];
+            if !message.is_object() {
+                return Err(no_message());
+            }
+            let calls: Vec<Value> = message["tool_calls"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            return Ok(Said {
+                text: message["content"].as_str().unwrap_or("").to_owned(),
+                calls: calls
+                    .iter()
+                    .map(|c| Call {
+                        id: c["id"].clone(),
+                        name: c["function"]["name"].as_str().unwrap_or("").to_owned(),
+                        arguments: c["function"]["arguments"].clone(),
+                    })
+                    .collect(),
+                message: json!({ "role": "assistant", "content": message["content"],
+                                 "tool_calls": calls }),
+            });
+        }
+        let Some(content) = reply["content"].as_array() else {
+            return Err(no_message());
+        };
+        let text: Vec<&str> = content
+            .iter()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        let calls = content
+            .iter()
+            .filter(|b| b["type"] == "tool_use")
+            .map(|b| Call {
+                id: b["id"].clone(),
+                name: b["name"].as_str().unwrap_or("").to_owned(),
+                arguments: b["input"].clone(),
+            })
+            .collect();
+        Ok(Said {
+            text: text.join("\n"),
+            calls,
+            message: json!({ "role": "assistant", "content": content }),
+        })
     }
 }
 
@@ -899,7 +1105,7 @@ mod tests {
 
     #[test]
     fn the_instructions_read_as_paragraphs_then_one_step_or_rule_a_line() {
-        let told = instructions(true, false);
+        let told = instructions(true, false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 3, "{told}");
         assert!(!parts[0].contains('\n'), "{told}");
@@ -912,14 +1118,25 @@ mod tests {
         assert!(told.contains("You cannot run commands"));
         assert!(!told.contains('\\') && !told.contains("  "), "{told}");
         assert!(told.ends_with("one or two sentences. That reply goes in your task's thread."));
-        assert!(instructions(false, false).ends_with("one or two sentences."));
+        assert!(instructions(false, false, false).ends_with("one or two sentences."));
+        assert!(!told.contains("note_lesson"), "{told}");
         // With the node's contracts, a paragraph more: what they may do, and what is the
         // owner's, one rule a line.
-        let told = instructions(false, true);
+        let told = instructions(false, true, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 4, "{told}");
         let rules: Vec<&str> = parts[2].lines().collect();
-        assert_eq!(rules.len(), 7, "{told}");
+        assert_eq!(rules.len(), 8, "{told}");
+        assert!(
+            told.contains(
+                "- Report something as a problem only when a tool shows it causing harm: an item \
+                 stuck in a queue, a container down or unhealthy, a failure that repeats. Errors \
+                 or odd lines in a log are evidence to explain, not problems in themselves. \
+                 Normal operation (e.g. an RSS sync that finds releases and grabs none) is not a \
+                 problem."
+            ),
+            "{told}"
+        );
         assert!(told.contains("goes to the team's reviewer first"), "{told}");
         assert!(told.contains("owner's approval"), "{told}");
         assert!(rules[1..].iter().all(|r| r.starts_with("- ")));
@@ -930,6 +1147,16 @@ mod tests {
         );
         assert!(told.contains("a routine's check"), "{told}");
         assert!(!told.contains("  "), "{told}");
+        // The lead and the reviewer keep the team's lessons: a paragraph of its own.
+        let told = instructions(true, true, true);
+        let parts: Vec<&str> = told.split("\n\n").collect();
+        assert_eq!(parts.len(), 5, "{told}");
+        assert_eq!(
+            parts[3],
+            "When the owner corrects you, or you learn something about this house that the team \
+             will need again, note it with note_lesson so nobody asks twice."
+        );
+        assert!(told.ends_with("That reply goes in your task's thread."));
     }
 
     #[test]

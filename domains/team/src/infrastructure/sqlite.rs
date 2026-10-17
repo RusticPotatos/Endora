@@ -8,16 +8,16 @@ use crate::application::ports::{
     DeskItem, NewRoutine, NewTask, Post, Run, StoreError, Stored, TeamStore, Timer, Wake,
 };
 use crate::domain::{
-    CheckBack, CheckBackStatus, DeskId, Event, Goal, GoalId, GoalStatus, Member, MemberId, Micros,
-    Millis, Priority, Receipt, Refused, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId,
-    TaskStatus, WakeId, WakeReason,
+    Brain, CheckBack, CheckBackStatus, DeskId, Event, Goal, GoalId, GoalStatus, Member, MemberId,
+    Micros, Millis, Priority, Receipt, Refused, Role, Routine, RoutineId, RunId, RunStatus, Task,
+    TaskId, TaskStatus, WakeId, WakeReason,
 };
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS members (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
     share_percent INTEGER NOT NULL, slots INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
-    look INTEGER NOT NULL DEFAULT 0
+    look INTEGER NOT NULL DEFAULT 0, brain TEXT NOT NULL DEFAULT 'local'
 ) STRICT;
 CREATE TABLE IF NOT EXISTS goals (
     id INTEGER PRIMARY KEY, title TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
@@ -151,6 +151,20 @@ impl SqliteTeamStore {
             )
             .map_err(backend)?;
         }
+        // A store made before members had a brain gains the column: every one local.
+        let has_brain: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('members') WHERE name = 'brain'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(backend)?;
+        if !has_brain {
+            conn.execute_batch(
+                "ALTER TABLE members ADD COLUMN brain TEXT NOT NULL DEFAULT 'local';",
+            )
+            .map_err(backend)?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -269,7 +283,9 @@ impl TeamStore for SqliteTeamStore {
     fn members(&self) -> Stored<Vec<Member>> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, name, role, share_percent, slots, paused, look FROM members ORDER BY id")
+            .prepare(
+                "SELECT id, name, role, share_percent, slots, paused, look, brain FROM members ORDER BY id",
+            )
             .map_err(backend)?;
         let rows = stmt
             .query_map([], |r| {
@@ -282,6 +298,9 @@ impl TeamStore for SqliteTeamStore {
                     slots: u8::try_from(r.get::<_, i64>(4)?).unwrap_or(1),
                     paused: r.get::<_, i64>(5)? != 0,
                     look: u8::try_from(r.get::<_, i64>(6)?).unwrap_or(0),
+                    // A brain the store does not know thinks at home: nothing leaves on a
+                    // misreading.
+                    brain: Brain::from_name(&r.get::<_, String>(7)?).unwrap_or(Brain::Local),
                 })
             })
             .map_err(backend)?;
@@ -293,6 +312,16 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET paused = ?2 WHERE id = ?1",
                 params![member.0, paused],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_brain(&self, member: MemberId, brain: Brain) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET brain = ?2 WHERE id = ?1",
+                params![member.0, brain.name()],
             )
             .map_err(backend)?;
         Ok(())

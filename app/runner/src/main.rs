@@ -52,6 +52,7 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
             image: or("WORKER_IMAGE", "endora-node:latest"),
             network: or("TEAM_NETWORK", "endora_team"),
             model_url: or("WORKER_MODEL_URL", "http://node:8788/team-relay/local/v1"),
+            cloud_url: or("WORKER_CLOUD_URL", "http://node:8788/team-relay/v1"),
             hq_mcp: or("WORKER_HQ_MCP", "http://hq:8790/v1/team/mcp"),
             capacity,
         },
@@ -105,6 +106,10 @@ mod tests {
             "http://node:8788/team-relay/local/v1"
         );
         assert_eq!(defaults.work.hq_mcp, "http://hq:8790/v1/team/mcp");
+        assert_eq!(
+            defaults.work.cloud_url, "http://node:8788/team-relay/v1",
+            "the Anthropic relay, on the same team listener"
+        );
         assert_eq!(defaults.work.capacity, 2);
 
         let given = config(|name| match name {

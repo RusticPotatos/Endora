@@ -1,7 +1,9 @@
 //! Endora HQ's worker (ADR 0102, phase 4): takes one turn of a team member, in the fresh
 //! container the runner starts for it, then exits. It is given its turn's token and where HQ
 //! and the node's model relay are, and nothing else: no key, no mount, no other address. The
-//! node's contracts (ADR 0106) are beside its model relay, on the same listener.
+//! node's contracts (ADR 0106) are beside its model relay, on the same listener. A member who
+//! thinks with Claude (ADR 0109) is given the Anthropic relay and the model's name, and the
+//! worker speaks Anthropic's Messages API to it; otherwise OpenAI's, to the local relay.
 //!
 //! What its exit says, for the runner: 0, a turn taken (the model's last word, or its rounds
 //! used up); 3, the turn was over before it ended (HQ or the relay answered 401 or 402); 1,
@@ -9,7 +11,7 @@
 
 mod turn;
 
-use turn::{Setup, Stopped, Taken};
+use turn::{Api, Setup, Stopped, Taken};
 
 /// HQ's team protocol, on the compose network.
 const HQ_MCP: &str = "http://hq:8790/v1/team/mcp";
@@ -54,12 +56,21 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
             |(node, _)| format!("{node}/team-relay/contracts"),
         )
     });
+    let model = given("ENDORA_MODEL").unwrap_or_else(|| MODEL.to_owned());
+    // A Claude model is reached through the Anthropic relay, in Anthropic's own API; anything
+    // else through the local relay, in OpenAI's.
+    let api = if model.starts_with("claude-") {
+        Api::Anthropic
+    } else {
+        Api::OpenAi
+    };
     Ok(Setup {
         token,
         mcp: given("ENDORA_HQ_MCP").unwrap_or_else(|| HQ_MCP.to_owned()),
         model_url,
         contracts,
-        model: given("ENDORA_MODEL").unwrap_or_else(|| MODEL.to_owned()),
+        model,
+        api,
         most_rounds,
     })
 }
@@ -122,6 +133,7 @@ mod tests {
         assert_eq!(setup.model_url, "http://node:8788/team-relay/local/v1");
         assert_eq!(setup.contracts, "http://node:8788/team-relay/contracts");
         assert_eq!(setup.model, "local");
+        assert_eq!(setup.api, Api::OpenAi);
         assert_eq!(setup.most_rounds, 12);
     }
 
@@ -166,6 +178,7 @@ mod tests {
         assert_eq!(setup.mcp, "http://192.168.1.10:8790/v1/team/mcp");
         assert_eq!(setup.model_url, "http://192.168.1.10:8787/team-relay/v1");
         assert_eq!(setup.model, "claude-haiku-5-5");
+        assert_eq!(setup.api, Api::Anthropic, "Claude speaks Anthropic's API");
         assert_eq!(setup.most_rounds, 4);
     }
 

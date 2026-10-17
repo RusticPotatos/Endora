@@ -69,6 +69,8 @@ pub fn app(state: State) -> Router {
         // The owner's reply on a task, and a goal's notes for the team.
         .route("/v1/tasks/{id}/post", post(reply))
         .route("/v1/goals/{id}/note", post(goal_note))
+        // What a member thinks with (ADR 0109): the owner's, through the node.
+        .route("/v1/members/{id}/brain", post(set_brain))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
         // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
@@ -338,6 +340,22 @@ async fn goal_note(
     let hq = state.hq.clone();
     blocking(move || hq.set_goal_note(GoalId(id), &req.note)).await?;
     Ok(Json(json!({ "noted": true })))
+}
+
+#[derive(Deserialize)]
+struct BrainAsked {
+    brain: String,
+}
+
+/// The owner sets what a member thinks with: `local`, or a Claude its role may use.
+async fn set_brain(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<BrainAsked>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let brain = blocking(move || hq.set_brain(MemberId(id), &req.brain)).await?;
+    Ok(Json(json!({ "member": id, "brain": brain.name() })))
 }
 
 #[derive(Deserialize)]
@@ -833,7 +851,9 @@ mod tests {
             .iter()
             .filter_map(|t| t["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 9);
+        // The demo's first turn is its lead's, who keeps the team's lessons too.
+        assert_eq!(names.len(), 10);
+        assert!(names.contains(&"note_lesson"));
         assert!(
             !names.contains(&"report_usage"),
             "the relay charges for model use, not the worker"
@@ -906,6 +926,8 @@ mod tests {
         );
         let found = json_of(app.clone().oneshot(ask(Some(TOKEN), body)).await.unwrap()).await;
         assert_eq!(found["run"], turn.run.0);
+        assert_eq!(found["cloud"], false, "a local member's turn stays home");
+        assert_eq!(found["brain"], "local");
         let left = found["left"].as_i64().unwrap();
         assert!(left > 0, "{found}");
         let spend = |micros: i64| {
@@ -1207,6 +1229,10 @@ mod tests {
         assert_eq!(turn["member"], "John Doe");
         assert_eq!(turn["role"], "developer");
         assert_eq!(turn["task"], task.0);
+        assert_eq!(
+            turn["brain"], "local",
+            "the house's model unless the owner says"
+        );
         let token = turn["token"].as_str().unwrap();
         assert_eq!(
             st.hq.turn_of(token).unwrap().unwrap().0.id,
@@ -1240,6 +1266,104 @@ mod tests {
             st.hq.turn_of(token).unwrap().is_none(),
             "its token is spent"
         );
+    }
+
+    #[tokio::test]
+    async fn the_owner_gives_a_member_a_cloud_brain_and_the_runner_and_the_node_hear_it() {
+        let st = state(false);
+        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let app = app(st.clone());
+        let set = |token: Option<&str>, member: i64, brain: &str| {
+            call(
+                "POST",
+                &format!("/v1/members/{member}/brain"),
+                token,
+                &json!({ "brain": brain }).to_string(),
+            )
+        };
+        let stranger = app
+            .clone()
+            .oneshot(set(Some(RUNNER), lead.0, "claude-sonnet-5-5"))
+            .await
+            .unwrap();
+        assert_eq!(
+            stranger.status(),
+            StatusCode::UNAUTHORIZED,
+            "the node's alone"
+        );
+        let opus = app
+            .clone()
+            .oneshot(set(Some(TOKEN), lead.0, "claude-opus-5-5"))
+            .await
+            .unwrap();
+        assert_eq!(opus.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            json_of(opus).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("Opus")
+        );
+        let nobody = app
+            .clone()
+            .oneshot(set(Some(TOKEN), 99, "local"))
+            .await
+            .unwrap();
+        assert_eq!(nobody.status(), StatusCode::NOT_FOUND);
+        let res = app
+            .clone()
+            .oneshot(set(Some(TOKEN), lead.0, "claude-sonnet-5-5"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_of(res).await["brain"], "claude-sonnet-5-5");
+
+        let goal = st
+            .hq
+            .set_goal("Keep the lab tidy", "a test", Author::Owner)
+            .unwrap();
+        st.hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    parent: None,
+                    title: "Look round".to_owned(),
+                    description: String::new(),
+                    assignee: Some(lead),
+                    priority: Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+        st.hq.tick().unwrap();
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    &json!({ "free": 1 }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(handed["brain"], "claude-sonnet-5-5");
+        let token = handed["token"].as_str().unwrap();
+        let found = json_of(
+            app.oneshot(call(
+                "POST",
+                "/v1/team/turn",
+                Some(TOKEN),
+                &json!({ "token": token }).to_string(),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(found["cloud"], true, "the node's check point is told");
+        assert_eq!(found["brain"], "claude-sonnet-5-5");
+        assert_eq!(found["role"], "lead");
     }
 
     #[tokio::test]

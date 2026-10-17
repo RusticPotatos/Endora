@@ -138,6 +138,11 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             "member": member.name,
             "role": member.role.name(),
             "left": (run.reserved - run.spent).max(0),
+            // The check point the node's relays, contracts and bridge ask (ADR 0109): a turn
+            // on a cloud model is given no Confidential result beyond what the owner allowed,
+            // and only such a turn reaches Anthropic.
+            "cloud": member.brain.cloud(),
+            "brain": member.brain.name(),
         }))
         .into_response(),
         Ok(Ok(None)) => (

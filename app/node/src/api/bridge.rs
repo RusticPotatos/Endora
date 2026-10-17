@@ -1,7 +1,8 @@
 //! The bridge on the node (ADR 0108): every capability Endora has, and every tool of the tool
 //! servers it has installed, offered to HQ's team beside the contracts, under Endora's own
 //! policy ([`endora_capabilities::bridge`]): never what is off, Restricted, Endora's
-//! administration or the owner's own; Confidential only to a turn on a local model; acts only
+//! administration or the owner's own; Confidential only to a turn on a local model, but for
+//! the download queues to the lead's turn on Claude (ADR 0109); acts only
 //! for the roles that act; an act that is on runs at once within its limit and is told to the
 //! owner; an act that asks waits on the owner's desk, and only the owner's yes runs it, exactly
 //! as it was stored.
@@ -104,8 +105,18 @@ pub(super) fn catalog(state: &AppState) -> Vec<Bridged> {
 pub(super) fn offered_to(state: &AppState, turn: &Turn) -> Vec<Bridged> {
     catalog(state)
         .into_iter()
-        .filter(|b| bridge::may(&turn.role, b.kind) && bridge::may_see(b.tier, turn.cloud))
+        .filter(|b| {
+            bridge::may(&turn.role, b.kind)
+                && bridge::may_see(b.tier, &b.id, &turn.role, turn.cloud)
+        })
         .collect()
+}
+
+/// Why a cloud turn is refused a Confidential tool, as the model reads it.
+pub(super) fn confidential(name: &str) -> String {
+    format!(
+        "{name} gives back Confidential results, which stay with turns on the house's own model"
+    )
 }
 
 /// What a bridged call came to: what the model reads, whether it ended the turn, and what the
@@ -126,14 +137,8 @@ pub(super) fn call(
     tool: &Bridged,
     args: &serde_json::Value,
 ) -> Result<Called, Refused> {
-    if !bridge::may_see(tool.tier, turn.cloud) {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!(
-                "{} gives back Confidential results, which stay with turns on the house's own model",
-                tool.name
-            ),
-        ));
+    if !bridge::may_see(tool.tier, &tool.id, &turn.role, turn.cloud) {
+        return Err((StatusCode::FORBIDDEN, confidential(&tool.name)));
     }
     let store = BridgeStore::new(state.store.db()).map_err(|_| broken())?;
     let marked = store.marked(turn.run).map_err(|_| broken())?;
@@ -720,6 +725,46 @@ mod tests {
             StatusCode::FORBIDDEN,
             "the check point itself refuses"
         );
+    }
+
+    #[tokio::test]
+    async fn the_cloud_lead_reads_the_download_queues_and_nothing_else_confidential() {
+        // The owner's decision of 2026-10-17 (ADR 0109).
+        let (sonarr_url, _) = sonarr();
+        let (hq_url, _) = hq("lead", true);
+        let state = bridged(&hq_url, &sonarr_url);
+        let listed = tools(&state).await;
+        assert!(
+            listed.iter().any(|(n, _)| n == "sonarr_queue"),
+            "{listed:?}"
+        );
+        assert!(
+            !listed.iter().any(|(n, _)| n == "sonarr_retry_import"),
+            "a Confidential act is not among what the owner allowed: {listed:?}"
+        );
+        let (status, said) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let (status, said) = send(
+            &state,
+            "POST",
+            "/team-relay/contracts/sonarr_retry_import",
+            r#"{"why":"stuck"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"].as_str().unwrap().contains("Confidential"),
+            "{said}"
+        );
+
+        let (hq_url, _) = hq("reviewer", true);
+        let state = bridged(&hq_url, &sonarr_url);
+        assert!(
+            !tools(&state).await.iter().any(|(n, _)| n == "sonarr_queue"),
+            "a cloud reviewer reads no queue"
+        );
+        let (status, _) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

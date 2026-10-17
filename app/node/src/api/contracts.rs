@@ -63,6 +63,13 @@ fn offered(switches: Switches) -> Vec<Contract> {
         .collect()
 }
 
+/// Whether a turn may be given what a contract returns: a Confidential one (a container's
+/// log) only to a turn on the house's model, or to the lead's on Claude, as the owner decided
+/// (ADR 0109).
+fn may_see(contract: &Contract, turn: &Turn) -> bool {
+    contract.may_be_seen_by(&turn.role, turn.cloud)
+}
+
 /// The switches as the HQ screen shows them.
 pub(super) fn switches_said(state: &AppState) -> serde_json::Value {
     let switches = switches_of(state);
@@ -91,6 +98,7 @@ pub(super) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
     let switches = switches_of(&state);
     let mut tools: Vec<serde_json::Value> = offered(switches)
         .iter()
+        .filter(|c| may_see(c, &turn))
         .map(|c| {
             let mut tool = c.as_tool();
             tool["kind"] = if c.kind == contracts::Kind::Read {
@@ -167,7 +175,10 @@ pub(super) async fn call(
     if !contracts::all().iter().any(|c| c.name == name) {
         return bridged(state, turn, name, args).await;
     }
-    if !offered(switches_of(&state)).iter().any(|c| c.name == name) {
+    let Some(contract) = offered(switches_of(&state))
+        .into_iter()
+        .find(|c| c.name == name)
+    else {
         record(
             &state,
             &format!(
@@ -181,6 +192,11 @@ pub(super) async fn call(
             "",
             &format!("the owner has switched {name} off"),
         );
+    };
+    if !may_see(&contract, &turn) {
+        let why = super::bridge::confidential(&name);
+        refused_for(&why);
+        return refuse(StatusCode::FORBIDDEN, "", &why);
     }
     let state2 = state.clone();
     let name2 = name.clone();
@@ -600,7 +616,7 @@ pub(super) async fn switch(
 
 #[cfg(test)]
 mod tests {
-    use super::super::relay::tests::{hq_as, node};
+    use super::super::relay::tests::{hq_as, hq_thinking, node};
     use super::*;
     use http_body_util::BodyExt as _;
     use std::sync::Mutex;
@@ -823,6 +839,67 @@ mod tests {
             audit(&state)
                 .iter()
                 .any(|a| a.contains("Linus (run 7) read the home lab's state"))
+        );
+    }
+
+    /// The node with HQ knowing one turn of a member in `role`, thinking with Claude.
+    fn on_claude(role: &'static str) -> AppState {
+        let (hq_url, _) = hq_thinking(40_000, role, true);
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        state
+    }
+
+    async fn listed(state: &AppState) -> Vec<String> {
+        let (_, listed) =
+            answer(state, ask("GET", "/team-relay/contracts", Some("good"), "")).await;
+        listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cloud_turn_reads_logs_only_when_it_is_the_leads() {
+        // The owner's decision of 2026-10-17 (ADR 0109): the lead thinking with Claude may read
+        // a scrubbed log; no other member on a cloud model may.
+        for role in ["reviewer", "developer", "researcher"] {
+            let state = on_claude(role);
+            assert!(
+                !listed(&state).await.contains(&"container_logs".to_owned()),
+                "a cloud {role} is not offered logs"
+            );
+            let (status, said) =
+                use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{role}: {said}");
+            assert!(
+                said["error"].as_str().unwrap().contains("Confidential"),
+                "{said}"
+            );
+            assert!(
+                audit(&state)
+                    .iter()
+                    .any(|a| a.contains("Linus (run 7) was refused container_logs")),
+                "{:?}",
+                audit(&state)
+            );
+        }
+        let state = on_claude("lead");
+        let offered = listed(&state).await;
+        assert!(
+            offered.contains(&"container_logs".to_owned()),
+            "{offered:?}"
+        );
+        assert!(offered.contains(&"homelab_status".to_owned()));
+        let (status, said) =
+            use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        assert!(
+            !text.contains("hunter2") && text.contains("[redacted]"),
+            "scrubbed: {text}"
         );
     }
 

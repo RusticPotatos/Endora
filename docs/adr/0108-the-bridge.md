@@ -11,6 +11,12 @@ node, approvals on HQ's desk with one-tap Approve and Decline, the worker ending
 one, Sonarr's and Radarr's stuck-download actions, the owner's reply on any task, and a goal's
 notes for the team.
 
+Amended 2026-10-17 by [0109](0109-a-brain-per-member.md): HQ now says `"cloud": true` for a
+member whose brain is a Claude model, and by the owner's decision a lead's cloud turn may read
+`sonarr_queue` and `radarr_queue` (and the scrubbed logs); every other Confidential tool stays
+unlisted and refused for a cloud turn, and no other role's cloud turn gets any. Lessons the lead
+or the reviewer note go at the end of a goal's notes for the team.
+
 ## Context
 
 The team keeps the home lab healthy through contracts (0106), and the owner has more than forty
@@ -48,11 +54,11 @@ listener, `GET /team-relay/contracts` and `POST /team-relay/contracts/{name}`):
    memory, Endora, the team or money). Nor is anything that reaches any address with
    arguments the member chooses (`web_fetch`, `web_search`): what a turn has read could leave
    in a URL, a way out of the team's fence. A tool not set up is not offered either.
-2. **The tier.** A Confidential result is given only to a turn on a local model. The check
-   point is the turn as HQ describes it to the node: HQ says `"cloud": true` for a member that
-   thinks on a cloud model, and the node then neither offers nor runs a Confidential tool for
-   that turn. Every member is local today, so HQ does not say it yet; the member who first
-   thinks with a cloud model must be said so there.
+2. **The tier.** A Confidential result is given only to a turn on a local model, but for what
+   the owner allowed a lead thinking with Claude (0109: the download queues and the scrubbed
+   logs). The check point is the turn as HQ describes it to the node: HQ says `"cloud": true`
+   for a member whose brain is not local, and the node then neither offers nor runs any other
+   Confidential tool for that turn.
 3. **The profile by role**: lead and developer read and act; reviewer and researcher only
    read; a role not listed does nothing. A small table in code that a later owner setting can
    replace.

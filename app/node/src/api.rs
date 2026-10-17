@@ -462,6 +462,8 @@ pub fn app(state: AppState) -> Router {
         // The owner's reply on a task, and a goal's notes for the team.
         .route("/v1/hq/tasks/{id}/post", post(hq_reply))
         .route("/v1/hq/goals/{id}/note", post(hq_goal_note))
+        // What a member thinks with (ADR 0109).
+        .route("/v1/hq/members/{id}/brain", post(hq_set_brain))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
         // The owner's routines (ADR 0107).

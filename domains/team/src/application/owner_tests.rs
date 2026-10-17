@@ -155,3 +155,59 @@ fn a_goals_notes_from_the_owner_reach_every_briefing_under_it() {
     assert_eq!(hq.goal_note(goal).unwrap(), "");
     let _ = task;
 }
+
+#[test]
+fn the_owner_sets_what_a_member_thinks_with_within_its_roles_brains() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, _, _) = office(&clock);
+    let lead = MemberId(1);
+    let brain = |m: MemberId| {
+        hq.store()
+            .members()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == m)
+            .unwrap()
+            .brain
+    };
+    assert_eq!(brain(lead), crate::domain::Brain::Local, "local unless set");
+    assert_eq!(
+        hq.set_brain(lead, "claude-sonnet-5-5").unwrap(),
+        crate::domain::Brain::Sonnet
+    );
+    assert_eq!(brain(lead), crate::domain::Brain::Sonnet);
+    for refused in ["claude-opus-5-5", "gpt-5", ""] {
+        assert!(
+            matches!(
+                hq.set_brain(dev, refused),
+                Err(EngineError::Refused(Refusal::NotABrain { .. }))
+            ),
+            "{refused}"
+        );
+    }
+    assert_eq!(
+        brain(dev),
+        crate::domain::Brain::Local,
+        "a refusal changes nothing"
+    );
+    let researcher = hq.hire("Marie", Role::Researcher, 15, 1, 2).unwrap();
+    assert!(hq.set_brain(researcher, "claude-sonnet-5-5").is_err());
+    hq.set_brain(researcher, "claude-haiku-5-5").unwrap();
+    assert!(matches!(
+        hq.set_brain(MemberId(99), "local"),
+        Err(EngineError::Unknown(_))
+    ));
+    // The snapshot says each member's brain, and what the owner may choose for its role.
+    let snap = hq.snapshot().unwrap();
+    let ada = &snap["members"][0];
+    assert_eq!(ada["brain"], "claude-sonnet-5-5");
+    assert_eq!(
+        ada["brains"],
+        json!([{ "name": "local", "label": "Local" },
+               { "name": "claude-sonnet-5-5", "label": "Claude Sonnet" },
+               { "name": "claude-haiku-5-5", "label": "Claude Haiku" }])
+    );
+    let marie = &snap["members"][2];
+    assert_eq!(marie["brains"].as_array().unwrap().len(), 2);
+    assert_eq!(hq.store().count_events("member.brain").unwrap().0, 2);
+}

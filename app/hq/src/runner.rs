@@ -65,7 +65,7 @@ struct Room {
 }
 
 /// The oldest turn waiting to start, handed out now: its run, this attempt's lease, its token,
-/// its member's name and role, and its task. 204 when none waits, or the runner has no room.
+/// its member's name, role and brain, and its task. 204 when none waits, or the runner has no room.
 async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Response {
     if state.hq.runner().remote().is_none() {
         return no_runner();
@@ -91,6 +91,8 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             "token": handed.turn.token,
             "member": member.as_ref().map_or("", |m| m.name.as_str()),
             "role": member.as_ref().map_or("", |m| m.role.name()),
+            // What the member thinks with: the runner points the worker at the matching relay.
+            "brain": member.as_ref().map_or("local", |m| m.brain.name()),
             "task": handed.turn.task.map(|t| t.0),
         }))
         .into_response(),

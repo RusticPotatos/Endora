@@ -21,8 +21,11 @@ pub struct Work {
     pub image: String,
     /// The fenced network the worker is on, which reaches only HQ and the node.
     pub network: String,
-    /// The node's model relay, as the worker reaches it.
+    /// The node's relay to the house's own model, as the worker reaches it.
     pub model_url: String,
+    /// The node's Anthropic relay, on the same team listener, for a member HQ says thinks with
+    /// Claude: the fence is the same either way.
+    pub cloud_url: String,
     /// HQ's team protocol, as the worker reaches it.
     pub hq_mcp: String,
     /// How many turns run at once.
@@ -37,6 +40,8 @@ pub struct Turn {
     member: String,
     role: String,
     task: Option<u64>,
+    /// The Claude model the member thinks with, or `None` for the house's own.
+    cloud: Option<String>,
 }
 
 /// Why a turn HQ handed out was refused.
@@ -48,13 +53,41 @@ pub enum Refused {
     NoLease(u64),
     /// Its token is not 64 hex characters.
     Token(u64, u64),
+    /// Its brain is neither `local` nor a Claude model's name.
+    Brain(u64, u64),
+}
+
+/// The Claude model a turn's brain names, `None` for the house's own model, or `Err` for a
+/// brain that is neither. Only a plain model name passes (`claude-`, then lowercase letters,
+/// digits and dashes, at most 64 in all): it goes into the worker's environment, and which
+/// model a role may use is the relay's to decide.
+fn cloud_of(brain: &Value) -> Result<Option<String>, ()> {
+    let name = match brain {
+        Value::Null => return Ok(None),
+        Value::String(name) => name.as_str(),
+        _ => return Err(()),
+    };
+    if name == "local" {
+        return Ok(None);
+    }
+    let Some(rest) = name.strip_prefix("claude-") else {
+        return Err(());
+    };
+    let plain = rest
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if rest.is_empty() || !plain || name.len() > 64 {
+        return Err(());
+    }
+    Ok(Some(name.to_owned()))
 }
 
 impl Turn {
     /// Checks a turn as HQ handed it out.
     ///
     /// # Errors
-    /// [`Refused`] if its run or lease is not a number, or its token not 64 hex characters.
+    /// [`Refused`] if its run or lease is not a number, its token not 64 hex characters, or
+    /// its brain not one the runner can give the worker.
     pub fn from_hq(handed: &Value) -> Result<Self, Refused> {
         let Some(run) = handed["run"].as_u64() else {
             return Err(Refused::NoRun);
@@ -66,6 +99,9 @@ impl Turn {
         if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Refused::Token(run, lease));
         }
+        let Ok(cloud) = cloud_of(&handed["brain"]) else {
+            return Err(Refused::Brain(run, lease));
+        };
         let text = |key: &str| handed[key].as_str().unwrap_or("").to_owned();
         Ok(Self {
             run,
@@ -74,21 +110,30 @@ impl Turn {
             member: text("member"),
             role: text("role"),
             task: handed["task"].as_u64(),
+            cloud,
         })
     }
 }
 
 /// The body of `POST /containers/create` for a turn: the worker image and the fixed fence,
-/// with the turn's own run, lease and token and nothing else of HQ's.
+/// with the turn's own run, lease and token and nothing else of HQ's but its brain, which
+/// picks one of the runner's own two relays (and names the model, for Claude).
 pub fn spec(work: &Work, turn: &Turn) -> Value {
+    let mut env = vec![
+        format!("ENDORA_RUN_TOKEN={}", turn.token),
+        format!("ENDORA_HQ_MCP={}", work.hq_mcp),
+    ];
+    match &turn.cloud {
+        None => env.push(format!("ENDORA_MODEL_URL={}", work.model_url)),
+        Some(model) => {
+            env.push(format!("ENDORA_MODEL_URL={}", work.cloud_url));
+            env.push(format!("ENDORA_MODEL={model}"));
+        }
+    }
     json!({
         "Image": work.image,
         "Entrypoint": ["endora-worker"],
-        "Env": [
-            format!("ENDORA_RUN_TOKEN={}", turn.token),
-            format!("ENDORA_HQ_MCP={}", work.hq_mcp),
-            format!("ENDORA_MODEL_URL={}", work.model_url),
-        ],
+        "Env": env,
         "Labels": { RUN_LABEL: turn.run.to_string(), LEASE_LABEL: turn.lease.to_string() },
         "HostConfig": {
             "NetworkMode": work.network,
@@ -288,6 +333,10 @@ impl<D: Docker> Runner<D> {
                 }
                 Err(Refused::Token(run, lease)) => {
                     eprintln!("runner: refused run {run}: its token is not 64 hex characters");
+                    self.failed(run, lease);
+                }
+                Err(Refused::Brain(run, lease)) => {
+                    eprintln!("runner: refused run {run}: its brain is not a model's name");
                     self.failed(run, lease);
                 }
             }
@@ -600,6 +649,7 @@ mod tests {
             image: "endora-node:latest".to_owned(),
             network: "endora_team".to_owned(),
             model_url: "http://node:8788/team-relay/local/v1".to_owned(),
+            cloud_url: "http://node:8788/team-relay/v1".to_owned(),
             hq_mcp: "http://hq:8790/v1/team/mcp".to_owned(),
             capacity,
         }
@@ -863,5 +913,60 @@ mod tests {
         );
         assert_eq!(docker.containers(), ["odd"], "not a turn: left alone");
         assert_eq!(hq.asked_with(), [2], "both places are free again");
+    }
+
+    #[test]
+    fn a_cloud_brain_points_the_worker_at_the_anthropic_relay_on_the_same_listener() {
+        let mut lead = turn(21);
+        lead["brain"] = json!("claude-sonnet-5-5");
+        lead["role"] = json!("lead");
+        let mut local = turn(22);
+        local["brain"] = json!("local");
+        let hq = FakeHq::new(vec![lead, local]);
+        let docker = FakeDocker::default();
+        let mut runner = runner("brain", &hq, &docker, 2);
+        runner.step(T0);
+        let specs = docker.specs();
+        assert_eq!(
+            specs[0]["Env"],
+            json!([
+                format!("ENDORA_RUN_TOKEN={}", token(21)),
+                "ENDORA_HQ_MCP=http://hq:8790/v1/team/mcp",
+                "ENDORA_MODEL_URL=http://node:8788/team-relay/v1",
+                "ENDORA_MODEL=claude-sonnet-5-5",
+            ])
+        );
+        assert_eq!(
+            specs[1]["Env"],
+            json!([
+                format!("ENDORA_RUN_TOKEN={}", token(22)),
+                "ENDORA_HQ_MCP=http://hq:8790/v1/team/mcp",
+                "ENDORA_MODEL_URL=http://node:8788/team-relay/local/v1",
+            ])
+        );
+        assert_eq!(
+            specs[0]["HostConfig"], specs[1]["HostConfig"],
+            "the same fence either way"
+        );
+    }
+
+    #[test]
+    fn a_brain_that_is_not_a_model_name_is_refused_and_reported_failed() {
+        for odd in [
+            json!("claude-sonnet-5-5\nENDORA_CONTRACTS=http://192.168.1.10/"),
+            json!("gpt-5"),
+            json!("claude-"),
+            json!(7),
+            json!(format!("claude-{}", "a".repeat(64))),
+        ] {
+            let mut handed = turn(30);
+            handed["brain"] = odd.clone();
+            let hq = FakeHq::new(vec![handed]);
+            let docker = FakeDocker::default();
+            let mut runner = runner("odd-brain", &hq, &docker, 1);
+            runner.step(T0);
+            assert!(docker.specs().is_empty(), "{odd}: no container");
+            assert_eq!(hq.told(), [(30, false)], "{odd}");
+        }
     }
 }

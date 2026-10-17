@@ -1,6 +1,8 @@
 //! The team's domain: the work, wakes, runs, money and the event feed, as pure rules.
 
+pub mod brain;
 pub mod events;
+pub mod lessons;
 pub mod money;
 pub mod review;
 pub mod routines;
@@ -8,6 +10,7 @@ pub mod runs;
 pub mod wakes;
 pub mod work;
 
+pub use brain::Brain;
 pub use events::{Event, EventKind};
 pub use money::Micros;
 pub use routines::{CheckBack, CheckBackStatus, Firing, Routine};

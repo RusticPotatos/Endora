@@ -9,6 +9,25 @@ tagged release.
 
 ### Added
 
+- **A brain per member, and what a cloud turn may read** ([ADR 0109](docs/adr/0109-a-brain-per-member.md),
+  owner's decisions of 2026-10-17). Each member of HQ's team has a brain, local by default or a
+  Claude its role may use (Sonnet or Haiku for the lead, developer and reviewer; Haiku for the
+  researcher; Opus refused), set on the member's card on the HQ screen ("Brain: Local / Claude
+  Sonnet / Claude Haiku") through the node and recorded in the audit log. The runner gives a
+  cloud member's worker the Anthropic relay on the same team listener, and the worker speaks
+  Anthropic's Messages API through the same loop as the local one. HQ tells the node such a
+  turn is cloud; the lead's cloud turns may read scrubbed container logs and the Sonarr and
+  Radarr queues, every other Confidential tool stays unlisted and refused for a cloud turn
+  (`container_logs` is now checked too), and the Anthropic relay refuses any turn HQ does not
+  say is cloud.
+- **Lessons kept by the team**: the lead and the reviewer have `note_lesson`, which appends one
+  line ("- <lesson> (Ada, 17 Oct)", at most 300 characters) to the task's goal's notes for the
+  team, refused when the notes are full. Each is a `lesson.noted` event and a notice on the
+  owner's desk ("Ada noted: …"). The instructions say when to note one.
+- **The harm rule**: the worker's instructions say to report something as a problem only when
+  a tool shows it causing harm, and the reviewer's briefing to send back any problem no tool
+  shows causing harm.
+
 - **The reviewer before done and before the owner's desk** ([ADR 0107](docs/adr/0107-routines-alarms-and-check-backs.md),
   plan §5 and §6). Work moved to `in_review` wakes the team's reviewer (`review_requested`);
   with no reviewer it is on the desk as ready to read, with its thread; its owner takes no turn

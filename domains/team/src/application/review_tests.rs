@@ -179,6 +179,13 @@ fn a_home_lab_question_is_a_draft_for_the_reviewer_not_a_card_on_the_desk() {
         "Check every claim in the draft against your tools (homelab_status, container_logs, the \
          queues). If everything holds, call ask_owner with the draft, corrected if needed."
     ));
+    assert!(
+        review
+            .told
+            .contains("Send back any problem that no tool shows causing harm."),
+        "{}",
+        review.told
+    );
     assert!(review.told.contains("review"), "{}", review.told);
 }
 
@@ -363,6 +370,13 @@ fn work_moved_to_review_wakes_the_reviewer_and_its_owner_waits() {
         "Check every claim in the thread against your tools (homelab_status, container_logs, \
          the queues). Approve only what holds"
     ));
+    assert!(
+        review
+            .told
+            .contains("Send back any problem that no tool shows causing harm."),
+        "{}",
+        review.told
+    );
     // Its owner takes no turn on it meanwhile, except for the owner's own word.
     let receipt = hq
         .wake(t.dev, Some(t.task), WakeReason::AssignmentRecovery)

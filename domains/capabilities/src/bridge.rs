@@ -7,7 +7,7 @@
 //!    and the like); Endora's own administration (a connection's settings and their test);
 //!    and anything about the team, its money, or the owner's chat, brain, memory or mail.
 //! 2. **The data tier**: a Confidential tool's result is given only to a turn on a local
-//!    model ([`may_see`]).
+//!    model, but for the few the owner allowed a lead thinking with Claude ([`may_see`]).
 //! 3. **The member's role**: reads for every role, acts only for the roles that act
 //!    ([`PROFILES`]).
 //! 4. **The owner's stance**: an act that is on runs at once, within [`ACTS_AN_HOUR`] a tool
@@ -298,13 +298,21 @@ pub fn way(tool: &Bridged, role: &str, marked: bool) -> Result<Way, String> {
     Ok(Way::Act)
 }
 
-/// Whether a turn may be given what a tool of `tier` returns: Confidential only to a turn on
-/// a local model, Restricted never (it is not offered at all).
+/// The Confidential results a lead's turn on a cloud model may be given, by the owner's
+/// decision of 2026-10-17 (ADR 0109): a container's scrubbed log, and the download queues with
+/// why each item is stuck. Every other Confidential result stays with turns on the house's
+/// own model, and no other role's cloud turn is given any.
+pub const CLOUD_LEAD_MAY_SEE: [&str; 3] = ["container_logs", "sonarr_queue", "radarr_queue"];
+
+/// Whether a turn may be given what the tool `id` of `tier` returns, for a member in `role`:
+/// Restricted never (it is not offered at all); Confidential to a turn on a local model, and
+/// to a lead's turn on a cloud model only what [`CLOUD_LEAD_MAY_SEE`] names; the rest to all.
 #[must_use]
-pub fn may_see(tier: Tier, on_a_cloud_model: bool) -> bool {
+pub fn may_see(tier: Tier, id: &str, role: &str, on_a_cloud_model: bool) -> bool {
     match tier {
         Tier::Restricted => false,
-        Tier::Confidential => !on_a_cloud_model,
+        Tier::Confidential if !on_a_cloud_model => true,
+        Tier::Confidential => role == "lead" && CLOUD_LEAD_MAY_SEE.contains(&id),
         _ => true,
     }
 }
@@ -702,11 +710,39 @@ mod tests {
     }
 
     #[test]
-    fn confidential_is_given_only_to_a_turn_on_a_local_model() {
-        assert!(may_see(Tier::Confidential, false));
-        assert!(!may_see(Tier::Confidential, true));
-        assert!(may_see(Tier::Internal, true));
-        assert!(!may_see(Tier::Restricted, false));
+    fn confidential_is_given_to_a_local_turn_and_to_the_cloud_lead_only_as_the_owner_allowed() {
+        for role in ["lead", "developer", "reviewer", "researcher"] {
+            assert!(may_see(Tier::Confidential, "home_assistant", role, false));
+            assert!(may_see(Tier::Confidential, "container_logs", role, false));
+            assert!(may_see(Tier::Internal, "homelab_status", role, true));
+            assert!(!may_see(Tier::Restricted, "location", role, false));
+            assert!(
+                !may_see(Tier::Confidential, "home_assistant", role, true),
+                "{role}: every other Confidential result stays home"
+            );
+        }
+        // The owner's decision of 2026-10-17 (ADR 0109): the lead's cloud turns may read the
+        // scrubbed logs and the download queues, and nothing else Confidential.
+        for allowed in CLOUD_LEAD_MAY_SEE {
+            assert!(
+                may_see(Tier::Confidential, allowed, "lead", true),
+                "{allowed}"
+            );
+            for role in ["developer", "reviewer", "researcher", ""] {
+                assert!(
+                    !may_see(Tier::Confidential, allowed, role, true),
+                    "{allowed} to a cloud {role}"
+                );
+            }
+        }
+        assert_eq!(
+            CLOUD_LEAD_MAY_SEE,
+            ["container_logs", "sonarr_queue", "radarr_queue"]
+        );
+        assert!(
+            !may_see(Tier::Restricted, "container_logs", "lead", true),
+            "Restricted stays home whatever its name"
+        );
     }
 
     #[test]

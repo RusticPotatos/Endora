@@ -113,6 +113,8 @@ pub struct Member {
     pub look: u8,
     /// Whether the owner has paused it.
     pub paused: bool,
+    /// What it thinks with, as the owner set it (ADR 0109).
+    pub brain: super::brain::Brain,
 }
 
 /// Where a goal is.
@@ -325,6 +327,17 @@ pub enum Refusal {
     NotACheck,
     /// Longer than it may be, in characters.
     TooLong(usize),
+    /// Not a brain a member in this role may think with (ADR 0109).
+    NotABrain {
+        /// The member's role.
+        role: Role,
+        /// What was asked for.
+        asked: String,
+    },
+    /// Only the lead and the reviewer keep the team's lessons.
+    NotALessonKeeper,
+    /// A goal's notes have no room for one more lesson.
+    NotesFull,
 }
 
 impl fmt::Display for Refusal {
@@ -362,6 +375,22 @@ impl fmt::Display for Refusal {
                  claim it first",
             ),
             Self::TooLong(most) => write!(f, "that is longer than {most} characters"),
+            Self::NotABrain { role, asked } => {
+                let may: Vec<&str> = super::brain::Brain::choices(*role)
+                    .into_iter()
+                    .map(super::brain::Brain::name)
+                    .collect();
+                write!(
+                    f,
+                    "a {} thinks with {} only, not {asked:?}; Opus waits until the owner can approve it for a task",
+                    role.name(),
+                    may.join(", ")
+                )
+            }
+            Self::NotALessonKeeper => {
+                f.write_str("only the lead and the reviewer note the team's lessons")
+            }
+            Self::NotesFull => f.write_str("the notes are full; ask the owner to tidy them"),
             Self::AlreadyAsked => f.write_str(
                 "your last question or approval about this task is still waiting on the owner's desk; end your turn",
             ),
@@ -475,6 +504,7 @@ mod tests {
             slots: 2,
             look: 0,
             paused: false,
+            brain: crate::domain::brain::Brain::Local,
         }
     }
 

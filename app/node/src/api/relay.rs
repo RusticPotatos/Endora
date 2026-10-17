@@ -5,7 +5,8 @@
 //! reply to what is left; adds the owner's Anthropic key (which never leaves the node); and
 //! tells HQ what the call cost. A turn's calls go one at a time, each after the one before was
 //! charged. A turn past its budget is stopped by HQ, and its token then opens nothing here
-//! either.
+//! either. Only a turn HQ says is cloud (its member's brain is a Claude model, ADR 0109) is
+//! passed on: a turn on the house's model may hold Confidential results, and stays home.
 //!
 //! Outside `/v1` on purpose: the owner's sign-in is not the credential here, a turn's token
 //! is, and nothing else this node serves answers to one.
@@ -83,10 +84,9 @@ pub(super) struct Turn {
     pub(super) member: String,
     pub(super) role: String,
     pub(super) left: i64,
-    /// Whether the member thinks on a cloud model, as HQ says (`"cloud": true`). The check
-    /// point for Confidential results (ADR 0105, 0108): every member is on the house's model
-    /// today, so HQ does not say it yet, and a turn counts as local. The member who first
-    /// thinks with a cloud model must be said so here, by HQ, before that turn runs.
+    /// Whether the member thinks on a cloud model, as HQ says (`"cloud": true`, ADR 0109):
+    /// the check point for Confidential results (ADR 0105, 0108), and the only turns the
+    /// Anthropic relay passes on. A turn HQ says nothing of counts as local.
     pub(super) cloud: bool,
 }
 
@@ -246,6 +246,17 @@ fn whole(status: u16, bytes: Vec<u8>) -> Response {
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
 }
 
+/// The refusal of a call to Claude from a turn HQ says thinks on the house's model (ADR 0109):
+/// such a turn may have been given Confidential results a cloud turn may not see, so nothing
+/// of it leaves the house, whatever the worker sends.
+fn stays_home() -> Response {
+    refuse(
+        StatusCode::FORBIDDEN,
+        "permission_error",
+        "this member thinks with the house's own model: its turns do not reach Claude",
+    )
+}
+
 /// `POST /team-relay/v1/messages`: a model call of a team member's turn.
 pub(super) async fn messages(
     State(state): State<AppState>,
@@ -266,6 +277,9 @@ pub(super) async fn messages(
         Ok(turn) => turn,
         Err(refused) => return refused,
     };
+    if !turn.cloud {
+        return stays_home();
+    }
     let Ok(mut call) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return refuse(
             StatusCode::BAD_REQUEST,
@@ -472,8 +486,10 @@ pub(super) async fn count_tokens(
             "HQ is not set up on this node",
         );
     };
-    if let Err(refused) = turn_of(hq, token_of(&headers), refuse).await {
-        return refused;
+    match turn_of(hq, token_of(&headers), refuse).await {
+        Ok(turn) if !turn.cloud => return stays_home(),
+        Ok(_) => {}
+        Err(refused) => return refused,
     }
     let Ok(asked) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return refuse(
@@ -706,18 +722,30 @@ pub(super) mod tests {
         (url, seen)
     }
 
-    /// HQ, knowing one turn (token `good`, run 7, a developer's) with `left` micros to spend.
+    /// HQ, knowing one turn (token `good`, run 7, a developer's thinking with Claude) with
+    /// `left` micros to spend.
     fn hq(left: i64) -> (String, Seen) {
-        hq_as(left, "developer")
+        hq_thinking(left, "developer", true)
     }
 
-    /// HQ, knowing one turn (Linus's) of a member in `role`.
+    /// HQ, knowing one turn (Linus's) of a member in `role`, on the house's model.
     pub(in crate::api) fn hq_as(left: i64, role: &'static str) -> (String, Seen) {
+        hq_thinking(left, role, false)
+    }
+
+    /// HQ, knowing one turn (Linus's) of a member in `role`, thinking with Claude when
+    /// `cloud`, as HQ says it (ADR 0109).
+    pub(in crate::api) fn hq_thinking(
+        left: i64,
+        role: &'static str,
+        cloud: bool,
+    ) -> (String, Seen) {
         fake(Arc::new(move |path, body| match path {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Linus", "role": role, "left": left }).to_string(),
+                json!({ "run": 7, "member": "Linus", "role": role, "left": left, "cloud": cloud })
+                    .to_string(),
             ),
             "/v1/team/turn" => (
                 404,
@@ -743,7 +771,8 @@ pub(super) mod tests {
             (
                 200,
                 "application/json",
-                json!({ "run": 7, "role": "developer", "left": left.load(SeqCst) }).to_string(),
+                json!({ "run": 7, "role": "developer", "left": left.load(SeqCst), "cloud": true })
+                    .to_string(),
             )
         }))
     }
@@ -1099,13 +1128,13 @@ pub(super) mod tests {
                 json!({ "model": model, "max_tokens": 10, "messages": [] }),
             )
         };
-        let (developer, _) = hq_as(400_000, "developer");
+        let (developer, _) = hq_thinking(400_000, "developer", true);
         let res = super::super::team_relay(node(&developer, &upstream))
             .oneshot(call("claude-opus-5-5"))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
-        let (researcher, _) = hq_as(400_000, "researcher");
+        let (researcher, _) = hq_thinking(400_000, "researcher", true);
         let app = super::super::team_relay(node(&researcher, &upstream));
         let res = app
             .clone()
@@ -1152,6 +1181,77 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(broke.status(), StatusCode::PAYMENT_REQUIRED);
         assert!(to_anthropic.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_turn_on_the_houses_model_never_reaches_anthropic() {
+        // HQ says the member thinks at home: what its turn has read (a log, a queue) may be
+        // Confidential, so none of it goes to Claude, whatever the worker sends.
+        let (local, _) = hq_as(400_000, "lead");
+        let (upstream, to_anthropic) = anthropic();
+        let app = super::super::team_relay(node(&local, &upstream));
+        let call = json!({ "model": "claude-sonnet-5-5", "max_tokens": 10, "messages": [] });
+        let res = app
+            .clone()
+            .oneshot(ask("good", call.clone()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let said: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(said["error"]["type"], "permission_error");
+        let mut counting = ask("good", call);
+        *counting.uri_mut() = "/team-relay/v1/messages/count_tokens".parse().unwrap();
+        let res = app.oneshot(counting).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "counting too");
+        assert!(
+            to_anthropic.lock().unwrap().is_empty(),
+            "nothing was sent on"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_workers_own_request_passes_as_it_sends_it_capped_and_charged() {
+        // As `endora-worker` sends a round on a cloud brain: its bearer token, the version,
+        // its instructions as `system`, the team's tools in Anthropic's form, and a tool's
+        // use and result in the conversation.
+        let (hq_url, to_hq) = hq_thinking(400_000, "lead", true);
+        let (upstream, to_anthropic) = anthropic();
+        let app = super::super::team_relay(node(&hq_url, &upstream));
+        let round = json!({
+            "model": "claude-sonnet-5-5",
+            "max_tokens": 4096,
+            "system": "You are one member of a small team at Endora HQ.",
+            "tools": [{ "name": "homelab_status", "description": "Read the home lab's state.",
+                        "input_schema": { "type": "object", "properties": {} } }],
+            "messages": [
+                { "role": "user", "content": "You are Jane Doe, the team's lead." },
+                { "role": "assistant", "content": [
+                    { "type": "text", "text": "Looking." },
+                    { "type": "tool_use", "id": "toolu_1", "name": "homelab_status", "input": {} }] },
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_1", "content": "{}" }] },
+            ],
+        });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/team-relay/v1/messages")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer good")
+            .header("anthropic-version", "2023-06-01")
+            .body(Body::from(round.to_string()))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let sent = messages_sent(&to_anthropic);
+        assert_eq!(sent.len(), 1);
+        let mut expected = round.clone();
+        expected["max_tokens"] = json!(4096);
+        assert_eq!(
+            sent[0], expected,
+            "passed on whole: 40¢ left covers 4,096 out"
+        );
+        assert_eq!(charged(&to_hq), vec![3_000]);
     }
 
     /// A model on the house's network, answering OpenAI's way; its base is `{url}/v1`.

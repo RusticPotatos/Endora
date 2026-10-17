@@ -31,6 +31,11 @@ work arrives as tasks. Routines hand a member a task on a rhythm, the node's ala
 home lab join a routine's open task, a member can check back on its task, a clock with nothing
 to do starts no turn, and a task whose turns move nothing backs off.
 
+Amended 2026-10-17 by [0109](0109-a-brain-per-member.md): each member has a brain the owner
+sets on the HQ screen, local by default or a Claude its role may use; the runner hands the
+worker the matching relay, and the worker speaks Anthropic's Messages API to Claude. The lead
+and the reviewer keep the team's lessons in a goal's notes (`note_lesson`).
+
 ## Context
 
 The always-on plan wants Endora to do real technical work for its owner (changes to their

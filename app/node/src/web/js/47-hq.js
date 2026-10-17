@@ -152,6 +152,8 @@ function hqTell(e, live) {
     "routine.skipped": ["warn", `Routine ${d.title} skipped: ${d.why}`],
     "routine.posted": ["wake", `Alarm into ${key}: ${d.said}`],
     "checkback.set": ["run", `${name} will check back on ${key} in ${d.minutes} min`],
+    "lesson.noted": ["you", `${name} noted a lesson: ${d.lesson || ""}`],
+    "member.brain": ["you", `${d.name || name} now thinks with ${d.brain === "local" ? "the house's model" : d.brain}`],
     "checkback.fired": ["wake", `${name} checks back on ${key}`],
     "checkback.dropped": ["run", `Check-back on ${key} dropped: it is over`],
   }[e.kind];
@@ -520,7 +522,8 @@ function viewHQ() {
   const team = (s.members || []).map((m) => {
     const on = (m.running || []).map((r) => r.task ? hqKey(r.task) : "a look round").join(", ");
     return `<li><button class="hq-link" data-act="hq:pick:member:${m.id}">${esc(m.name)}</button>
-      <span>${esc(m.role)}${m.paused ? " · paused" : ""} · ${on ? "on " + esc(on) : "between turns"} · ${hqMoney(m, `of ${hqDollars(m.per_day)} a day`)}</span></li>`;
+      <span>${esc(m.role)}${m.paused ? " · paused" : ""} · ${on ? "on " + esc(on) : "between turns"} · ${hqMoney(m, `of ${hqDollars(m.per_day)} a day`)}</span>
+      ${hqBrains(m)}</li>`;
   }).join("");
   return `<div class="hq">
     <div class="hq-bar">
@@ -555,6 +558,16 @@ function viewHQ() {
     </div>
     <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
+}
+
+// What a member thinks with (ADR 0109): the house's own model, or a Claude its role may use,
+// as HQ lists them for it. The one it has is pressed; each other is a tap away.
+function hqBrains(m) {
+  const brains = m.brains || [];
+  if (brains.length < 2) return "";
+  const btn = (b) => `<button class="hq-btn${b.name === m.brain ? " ok" : ""}" aria-pressed="${b.name === m.brain ? "true" : "false"}"
+    data-act="hq:brain:${m.id}:${esc(b.name)}">${esc(b.label)}</button>`;
+  return `<div class="hq-row" role="group" aria-label="What ${esc(m.name)} thinks with">Brain: ${brains.map(btn).join("")}</div>`;
 }
 
 // What an approval will run, from what the node stored: the tool, its arguments one a line,
@@ -621,6 +634,7 @@ function hqSelected() {
     return `<div class="hq-sel">${esc(m.name)} · ${esc(m.role)}</div><dl class="hq-kv">
       <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc((HQ.people[m.id] || {}).doing || "starting") : "Waiting for a wake"}</dd>
       <dt>Run</dt><dd>${run ? "R" + run.run + (t ? " · " + hqKey(t.id) : "") : "none"}</dd>
+      <dt>Brain</dt><dd>${esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
       <dt>Budget</dt><dd>${hqMoney(m, `of ${hqDollars(m.per_day)} today`)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}`;
   }
   const t = hqTask(sel.id); if (!t) return "";
@@ -652,6 +666,16 @@ async function hqDispatch(verb, noun, id, arg) {
     const text = val(`hq-reply-${id}`); if (!text) return true;
     try { await api("POST", `/v1/hq/tasks/${id}/post`, { text }); flash("Sent.", "ok"); }
     catch (e) { flash("Couldn't send: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // What a member thinks with: a Claude is paid from the team's pool, and what the member reads
+  // goes to Anthropic, so the owner says yes to that first.
+  if (noun === "brain") {
+    const m = hqMember(Number(id)), b = ((m && m.brains) || []).find((x) => x.name === arg);
+    if (!m || !b || m.brain === arg) return true;
+    if (arg !== "local" && !confirm(`${m.name} will think with ${b.label}: each turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results stay home, but for what you allowed the lead). Go ahead?`)) return true;
+    try { await api("POST", `/v1/hq/members/${id}/brain`, { brain: arg }); flash(`${m.name} thinks with ${b.label}.`, "ok"); }
+    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // A goal's notes for the team; empty clears them.

@@ -170,7 +170,13 @@ reviewer, the first member with the reviewer's role:
 - **The reviewer's briefing** says which it is. For work: check every claim in the thread
   against the tools; approve only what holds; send back with exactly what does not. For a
   draft: check every claim; if everything holds, ask the owner with the draft, corrected if
-  needed; if not, send it back.
+  needed; if not, send it back. Either way: "Send back any problem that no tool shows causing
+  harm." (the harm rule, below).
+- **The harm rule**, in the worker's instructions with contracts: "Report something as a
+  problem only when a tool shows it causing harm: an item stuck in a queue, a container down
+  or unhealthy, a failure that repeats. Errors or odd lines in a log are evidence to explain,
+  not problems in themselves. Normal operation (e.g. an RSS sync that finds releases and grabs
+  none) is not a problem."
 - **Its verdict** is the `review` tool (below). The reviewer never gives one on its own work.
 - **Before any question reaches the desk**, from anyone, its container-like names (in
   backticks, or shaped like the names Docker makes up, `word_word`) are compared with the
@@ -269,6 +275,7 @@ container:
 | `check_back` | Wakes the member on its task again after 5–720 minutes, once, if it is still open: after a fix, to confirm it held |
 | `run_gate` | Runs the tests and build on a runner and returns the result |
 | `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
+| `note_lesson` | The lead's and the reviewer's: `{ "lesson" }`, at most 300 characters, appended as "- <lesson> (Ada, 17 Oct)" to the task's goal's notes for the team (which every briefing carries). A lesson that would overflow the notes' 2,000 characters is refused: "the notes are full; ask the owner to tidy them". Each is a `lesson.noted` event and a notice on the owner's desk ("Ada noted: …"), so the owner sees and can edit it |
 | `review` | The reviewer's only: its verdict on work in review, `approve` or `send_back`, with notes. `send_back` posts the notes, sets the task to `doing` and wakes its owner. `approve` closes work that needs no gate (a routine's task, or work under a goal the home lab's routine serves) as `done`; work that needs the gate stays in review until the gate passes, and the reviewer is told so |
 
 **What a turn may touch** (engine rules, whatever the way in): `claim` and `set_status`
@@ -334,8 +341,15 @@ carries a brief never goes to DeepSeek.
 
 **Models by role:** Sonnet or Haiku for the developer, the reviewer and the lead; Haiku only
 for the researcher; the local model for small jobs (summaries, naming, tidying), at no cost.
-Opus is refused until the owner can approve it for a task (later). Today every member thinks
-with the local model (section 15, phase 4 as built).
+Opus is refused until the owner can approve it for a task (later).
+
+**A brain per member** (owner's decision of 2026-10-17, [ADR 0109](../adr/0109-a-brain-per-member.md)):
+each member has a `brain`, `local` by default or a Claude model its role may use by the rule
+above (HQ refuses anything else). The owner sets it on the member's card on the HQ screen
+("Brain: Local / Claude Sonnet / Claude Haiku", only what the role allows), through the node
+(`POST /v1/hq/members/{id}/brain` → HQ's `POST /v1/members/{id}/brain`, recorded in the audit
+log). The lead may think with Claude Sonnet, metered against the pool and $0.40 a turn; the other
+members stay on the local model (qwen3:8b, thinking).
 
 **The money**, by default (a monthly allowance of API credits that does not roll over; making
 the pool and the shares settings the owner changes on screen is later: today they are the
@@ -463,7 +477,8 @@ Each phase is complete, tested and merged with the owner's OK before the next.
 ### Phase 4, as built (owner's decisions of 2026-10-16)
 
 The owner chose Endora's **own small Rust worker** for now, not the Agent SDK, and that it
-thinks with the **local model** first; Claude through the relay comes later, per member. The
+thinks with the **local model** first; Claude through the relay, per member, followed on
+2026-10-17 ([ADR 0109](../adr/0109-a-brain-per-member.md): the lead may think with Sonnet). The
 team pool stays $70 a month. The pieces and their contracts:
 
 1. **The team protocol** (built): `POST /v1/team/mcp` on HQ, JSON-RPC, opened by a turn's own
@@ -477,7 +492,9 @@ team pool stays $70 a month. The pieces and their contracts:
      (built). It passes on only what it can meter: the plain message fields, the worker's
      own tools (no server tools), inline content (nothing fetched from a URL or a file),
      and a short list of betas that cost nothing extra; anything else is refused, and other
-     betas are dropped. The model must be one the member's role may use (Sonnet or Haiku;
+     betas are dropped. Only a turn HQ says is cloud (`"cloud": true`, ADR 0109) is passed on:
+     a turn on the house's model may hold Confidential results, so its calls (and its counting)
+     are refused with 403. The model must be one the member's role may use (Sonnet or Haiku;
      Haiku only for the researcher); Opus is refused until the owner can approve it for a
      task. The prompt is counted first (free) and its cost taken off what the turn has left;
      the reply's `max_tokens` is capped by the rest, and a prompt that leaves nothing is
@@ -493,7 +510,12 @@ team pool stays $70 a month. The pieces and their contracts:
    (`http://node:8788/team-relay/local/v1`) and `ENDORA_MOST_ROUNDS` (default 12), and
    `ENDORA_CONTRACTS` (default: `/team-relay/contracts` beside the model relay), and
    `ENDORA_MODEL` (the model it names, default `local`; the local relay uses its own whatever
-   the name). It initialises MCP, lists the team's tools and the node's contracts (a node that
+   the name). A model named `claude-…` is a cloud brain (ADR 0109): the worker speaks
+   Anthropic's Messages API to `ENDORA_MODEL_URL` + `/messages` (its token as the bearer,
+   `anthropic-version`, its instructions as `system`, the tools as Anthropic's `tools`, each
+   call a `tool_use` answered by a `tool_result`, a refusal with `is_error`, `max_tokens`
+   4,096, which the relay lowers to what the turn can pay for); otherwise OpenAI's chat
+   completions. One loop serves both. It initialises MCP, lists the team's tools and the node's contracts (a node that
    offers none leaves the team's tools), calls `my_turn`, claims its turn's task before the
    model's first round (and tells the model it did), then loops: the model answers or calls tools,
    each tool call goes where its tool came from (`tools/call` on HQ, or the contract on the
@@ -510,7 +532,7 @@ team pool stays $70 a month. The pieces and their contracts:
 4. **The runner adapter** in HQ (`RemoteRunner`), used when the demo is off. It keeps, in
    memory, the turns waiting to start, the ones running, how each ended, and stops asked
    for. The runner speaks to HQ with its own token (`HQ_RUNNER_TOKEN_FILE`, made like
-   HQ's): `POST /v1/runner/next` (a turn to start: run, lease, token, member, or 204),
+   HQ's): `POST /v1/runner/next` (a turn to start: run, lease, token, member, role, brain, or 204),
    `POST /v1/runner/{run}/ended` (`{ "succeeded": bool, "lease": n }`; 409 for a lease that
    is not the run's current one, a report from an earlier attempt), `GET /v1/runner/stops` (the runs
    to stop). A turn the runner never reports is ended by the engine's longest-turn limit.
@@ -519,7 +541,11 @@ team pool stays $70 a month. The pieces and their contracts:
    image only, `endora-worker`, on the internal `team` network, read-only, no capabilities,
    no new privileges, 256 MB, one CPU, 128 processes, a small `/tmp` and a 1 MB `/data` in
    memory (the image declares `/data` a volume, which would otherwise be an unbounded disk),
-   labelled with its run and lease. It reports how each ended, removes it, kills one asked
+   labelled with its run and lease. The turn's brain picks one of the runner's own two relays:
+   `local` gives the worker `WORKER_MODEL_URL` (the local relay); a Claude model's name (only
+   `claude-` and lowercase letters, digits and dashes; anything else is refused and reported
+   failed) gives it `WORKER_CLOUD_URL` (`http://node:8788/team-relay/v1`, the Anthropic relay
+   on the same team listener) and `ENDORA_MODEL`. It reports how each ended, removes it, kills one asked
    to stop or past 30 minutes, and tries a failed kill again every round until it takes.
    HQ cannot choose the image, mounts or network.
 6. **The fence** is a Docker network marked internal, with its gateway isolated
@@ -566,10 +592,10 @@ checked with HQ as the relays are:
 - `GET /team-relay/contracts`: the contracts as MCP tools; `POST /team-relay/contracts/{name}`:
   one call, arguments as the JSON body, answered `{ "text" }` or `{ "error" }` with a status.
 - `homelab_status` (read, Internal): the observer's snapshot, compact, marked stale.
-- `container_logs` (read, Confidential; meant for local turns only, which is written but not
-  yet enforced: every turn is local today, and enforcing it is required before any member
-  thinks with Claude, as ADR 0106 records): the newest 100 lines, at most
-  16 KB, scrubbed of secrets; never Endora's own containers; a plain refusal without Portainer.
+- `container_logs` (read, Confidential): the newest 100 lines, at most 16 KB, scrubbed of
+  secrets; never Endora's own containers; a plain refusal without Portainer. Given to turns
+  on the local model, and to the lead's cloud turns by the owner's decision (ADR 0109); a
+  cloud developer, reviewer or researcher is neither offered it nor given it (403).
 - `restart_container` (automatic act): never Endora's own, never what a restart will not fix
   (restarting, out of memory, crash-looping); once a container an hour and three an hour in
   all, kept in the node's database; the state read back; a notice to the owner through
@@ -592,9 +618,11 @@ in `domains/capabilities/src/bridge.rs`, in this order:
   settings-only connection entries); the owner's own (`mail`, `own_activity`, `read_page`,
   `brief`, `image_review`, `location`, and tool-server tools named for mail, chat, brain,
   memory, Endora, the team or money); and what is not set up.
-- **Tier**: Confidential only to a turn on a local model. HQ's `/v1/team/turn` answer carries
-  `"cloud": true` for a member on a cloud model (none today); the node then neither lists nor
-  runs a Confidential tool for it.
+- **Tier**: Confidential only to a turn on a local model, but for what the owner allowed the
+  lead on Claude (ADR 0109): `container_logs`, `sonarr_queue` and `radarr_queue`. HQ's
+  `/v1/team/turn` answer carries `"cloud": true` (and the `brain`) for a member whose brain is
+  not local, asked on every call; the node then neither lists nor runs any other Confidential
+  tool for it (the download actions included).
 - **Profile by role** (a table in code, for a later owner setting): lead and developer read and
   act; reviewer and researcher read.
 - **Kind**, from Endora's knowledge: a skill reads when it declares the observation band; a
@@ -626,7 +654,10 @@ in `domains/capabilities/src/bridge.rs`, in this order:
 - **A goal's notes for the team**: at most 2,000 characters, written on the "Notes for the
   team" card (`POST /v1/hq/goals/{id}/note`, `POST /v1/goals/{id}/note`), shown in the
   snapshot's goals, and carried near the top of every briefing for a task under the goal as
-  "Notes from the owner for this goal: …".
+  "Notes from the owner for this goal: …". The lead and the reviewer add lessons to them with
+  `note_lesson` (section 6); the instructions say "When the owner corrects you, or you learn
+  something about this house that the team will need again, note it with note_lesson so nobody
+  asks twice."
 
 ## 16. Later, and not at all
 
