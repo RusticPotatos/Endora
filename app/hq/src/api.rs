@@ -551,7 +551,17 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 9);
+        let names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert_eq!(names.len(), 8);
+        assert!(
+            !names.contains(&"report_usage"),
+            "the relay charges for model use, not the worker"
+        );
         let mine = json_of(
             app.clone()
                 .oneshot(speak(rpc(

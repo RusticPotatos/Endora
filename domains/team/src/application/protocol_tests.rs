@@ -166,8 +166,11 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(names.len(), 9);
-    assert!(names.contains(&"report_usage".to_owned()));
+    assert_eq!(names.len(), 8);
+    assert!(
+        !names.contains(&"report_usage".to_owned()),
+        "the relay is the meter: a worker reports nothing"
+    );
 }
 
 #[test]
@@ -211,15 +214,11 @@ fn a_question_reaches_the_desk_and_seeing_it_wakes_the_member() {
 }
 
 #[test]
-fn spending_past_the_turns_budget_stops_it() {
+fn a_worker_reports_no_usage_because_the_relay_already_charged_it() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
     let (hq, _s, context) = started(&clock);
     let (run, me) = turn(&hq, &context.token);
-    assert_eq!(
-        call(&hq, &run, &me, "report_usage", &json!({ "micros": 1_000 })).unwrap(),
-        "Noted."
-    );
-    let spent = call(
+    let said = call(
         &hq,
         &run,
         &me,
@@ -227,9 +226,12 @@ fn spending_past_the_turns_budget_stops_it() {
         &json!({ "micros": 10_000_000 }),
     )
     .unwrap();
-    assert!(spent.contains("stopped"), "{spent}");
+    assert!(said.contains("relay"), "{said}");
+    let (still, _) = turn(&hq, &context.token);
+    assert_eq!(still.spent, 0, "nothing charged twice");
     assert!(
-        hq.turn_of(&context.token).unwrap().is_none(),
-        "a stopped turn's token opens nothing"
+        !run.told.contains("report_usage"),
+        "the briefing does not offer it: {}",
+        run.told
     );
 }

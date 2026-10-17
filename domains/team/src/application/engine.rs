@@ -653,21 +653,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- money -----------------------------------------------------------------------------
 
-    /// A turn reports what it has spent so far. Crossing what it reserved stops it now, not
+    /// A turn reports what one model call cost. Crossing what it reserved stops it now, not
     /// afterwards. Returns whether it may go on.
+    ///
+    /// One report is held to what a whole turn may spend, and below zero is none: no call
+    /// costs more than a turn reserves, and a number past that would be one the ledger could
+    /// not add up. A charge for a turn that has already ended (a call still running when it
+    /// was stopped) is still counted, settled on the day the turn was booked.
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a run that does not exist.
     pub fn report_usage(&self, run: RunId, amount: Micros) -> Done<bool> {
         let _held = self.held();
+        let amount = amount.clamp(0, money::MOST_A_TURN);
         let mut current = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
         if current.status != RunStatus::Running {
+            self.charge_late(current, amount)?;
             return Ok(false);
         }
         let now = self.clock.now();
         self.store
             .record_use(run, current.member, self.today(), amount, now)?;
-        current.spent += amount;
+        current.spent = current.spent.saturating_add(amount);
         self.store.save_run(&current)?;
         self.emit(
             EventKind::BudgetChanged,
@@ -684,6 +691,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.runner.stop(run, self.settings.grace);
         self.end(current, RunStatus::Stopped, "spent what it could")?;
         Ok(false)
+    }
+
+    /// Counts a charge that reached HQ after its turn stopped running. Its reservation is
+    /// already released, so settling again charges only this use. A turn that never started
+    /// made no call, and has nothing to count.
+    fn charge_late(&self, mut run: Run, amount: Micros) -> Done<()> {
+        if run.started_at.is_none() || amount == 0 {
+            return Ok(());
+        }
+        let now = self.clock.now();
+        self.store
+            .record_use(run.id, run.member, self.today(), amount, now)?;
+        self.store.settle(run.id, run.member, self.today(), now)?;
+        run.spent = run.spent.saturating_add(amount);
+        self.store.save_run(&run)?;
+        self.emit(
+            EventKind::BudgetChanged,
+            json!({ "member": run.member.0, "run": run.id.0, "spent": run.spent, "late": true }),
+        )
     }
 
     // ---- the kill switch -----------------------------------------------------------------
@@ -841,7 +867,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         told.push_str(
             "Your tools: my_turn, claim, post, set_status, create_task, ask_owner, run_gate, \
-             request_action, report_usage.\n",
+             request_action.\n",
         );
         Ok(told)
     }

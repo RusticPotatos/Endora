@@ -70,12 +70,6 @@ pub fn tools() -> Value {
             json!({ "action": { "type": "string" }, "detail": { "type": "string" } }),
             &["action", "detail"]
         ),
-        tool(
-            "report_usage",
-            "Report model use as it happens, in millionths of a dollar. If the turn's budget is spent, the turn is stopped.",
-            json!({ "micros": { "type": "integer" } }),
-            &["micros"]
-        ),
     ])
 }
 
@@ -201,18 +195,13 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             engine.ask_owner(run.id, text).map_err(|e| said(&e))?;
             Ok("It is on the owner's desk. End your turn now; you are woken when they have seen it.".to_owned())
         }
-        "report_usage" => {
-            let micros = args["micros"]
-                .as_i64()
-                .filter(|m| *m >= 0)
-                .ok_or_else(|| "`micros` must be a whole number, zero or more".to_owned())?;
-            let may_go_on = engine.report_usage(run.id, micros).map_err(|e| said(&e))?;
-            Ok(if may_go_on {
-                "Noted.".to_owned()
-            } else {
-                "This turn's budget is spent: it has been stopped. End now.".to_owned()
-            })
-        }
+        // The node's model relay charges every call a turn makes, as it makes it; a worker that
+        // reported its own use too would pay twice. Kept as a word, not a tool, for a worker
+        // that was told of it before.
+        "report_usage" => Ok(
+            "Nothing to report: the model relay already charges every call this turn makes."
+                .to_owned(),
+        ),
         // Not built yet (spec section 15, phase 5): said plainly, so a worker does not pretend.
         "run_gate" | "request_action" => Err(format!(
             "`{tool}` is not available yet: say in the thread what you would have done, and ask the owner"

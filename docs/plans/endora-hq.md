@@ -217,9 +217,10 @@ container:
 | `ask_owner` | Puts a question or a proposal on the owner's desk and ends the turn |
 | `run_gate` | Runs the tests and build on a runner and returns the result |
 | `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
-| `report_usage` | Reports model use as it happens, so the budget can stop the run |
 
-The worker's own instructions (how to take a good turn) are written for Endora from scratch.
+Model use is not a tool: the node's model relay charges HQ for every call a turn makes, as it
+makes it, so a worker never reports its own (it would pay twice). The worker's own
+instructions (how to take a good turn) are written for Endora from scratch.
 
 ### Runners
 
@@ -286,7 +287,9 @@ amounts are settings the owner changes):
 - Each run may spend at most **$0.40**. Unused daily budget does not carry over.
 - **The ledger** is append-only: a reservation is made before a run starts, use is reported
   while it runs, and the charge and release are written when it ends. Crossing a limit
-  during a run stops the run then, not afterwards.
+  during a run stops the run then, not afterwards. A charge that arrives after its run has
+  ended (a call still running when it was stopped) is still written and settled, on the
+  day the run was booked; no one report counts for more than a run may spend.
 - When the credits are gone, the team stops. It never moves to paid billing. Raising any
   limit is the owner's decision.
 

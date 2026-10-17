@@ -417,6 +417,89 @@ fn a_turn_reserves_before_it_starts_and_is_stopped_the_moment_it_crosses() {
 }
 
 #[test]
+fn a_report_too_large_to_add_up_is_held_to_a_turn_and_hq_keeps_going() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.tick().unwrap();
+    let run = hq.store().runs().unwrap()[0].clone();
+    let day = crate::domain::money::day_of(NOON, 0);
+    assert!(hq.report_usage(run.id, 1).unwrap());
+    assert!(
+        !hq.report_usage(run.id, i64::MAX).unwrap(),
+        "held to the most a turn may spend, which crosses it"
+    );
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store().committed(None, day).unwrap(),
+        MOST_A_TURN + 1,
+        "charged what was reported, held to a turn"
+    );
+    hq.snapshot().unwrap();
+    assert!(
+        !hq.report_usage(run.id, i64::MAX).unwrap(),
+        "a late report is held the same way"
+    );
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store().committed(None, day).unwrap(),
+        2 * MOST_A_TURN + 1
+    );
+    assert!(
+        !hq.report_usage(run.id, -5).unwrap(),
+        "nothing below zero is taken off"
+    );
+    assert_eq!(
+        hq.store().committed(None, day).unwrap(),
+        2 * MOST_A_TURN + 1
+    );
+}
+
+#[test]
+fn a_charge_that_lands_after_the_turn_ended_is_still_counted() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.tick().unwrap();
+    let run = hq.store().runs().unwrap()[0].clone();
+    let day = crate::domain::money::day_of(NOON, 0);
+    assert!(hq.report_usage(run.id, 20_000).unwrap());
+    hq.stop_all("trying it").unwrap();
+    assert_eq!(
+        hq.store().committed(None, day).unwrap(),
+        20_000,
+        "the reservation released, what it spent charged"
+    );
+    // A stream that was still running when the kill switch was pulled.
+    assert!(
+        !hq.report_usage(run.id, 150_000).unwrap(),
+        "it may not go on"
+    );
+    assert_eq!(hq.store().committed(None, day).unwrap(), 170_000);
+    assert!(!hq.report_usage(run.id, 30_000).unwrap());
+    assert_eq!(
+        hq.store().committed(None, day).unwrap(),
+        200_000,
+        "each charge counted once"
+    );
+    assert_eq!(
+        hq.store().committed(Some(t.dev), day).unwrap(),
+        200_000,
+        "and to its member"
+    );
+    let ended = hq.store().run(run.id).unwrap().unwrap();
+    assert_eq!((ended.status, ended.spent), (RunStatus::Stopped, 200_000));
+    assert!(
+        hq.turn_of(&hq.runner().started()[0].token)
+            .unwrap()
+            .is_none(),
+        "the charge opens nothing again"
+    );
+}
+
+#[test]
 fn a_member_whose_day_is_spent_is_turned_away() {
     let clock = hands();
     let hq = hq(&clock, 8);
