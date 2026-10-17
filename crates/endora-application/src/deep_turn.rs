@@ -160,6 +160,9 @@ impl<'a> PlannedByTheDeepModel<'a> {
                 Planned::Declined("the question looks like it contains a secret")
             }
             Err(DoorRefusal::TheModelFailed(_)) => Planned::Declined("it did not answer"),
+            Err(DoorRefusal::Restricted) => {
+                Planned::Declined("this conversation holds something private that stays home")
+            }
         }
     }
 

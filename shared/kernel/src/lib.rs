@@ -19,6 +19,7 @@ pub mod autonomy;
 pub mod error;
 pub mod ids;
 pub mod reversibility;
+pub mod tier;
 pub mod traits;
 
 pub use autonomy::AutonomyLevel;
@@ -27,4 +28,5 @@ pub use ids::{
     AuditId, BeliefId, IntentionId, MessageId, NotionId, OutcomeId, PreferenceId, Timestamp,
 };
 pub use reversibility::{Decision, Reversibility};
+pub use tier::Tier;
 pub use traits::{Clock, IdSource};

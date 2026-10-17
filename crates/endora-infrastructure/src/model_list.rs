@@ -100,6 +100,8 @@ enum Miss {
     Failed(ProposalError),
     /// The door refused this turn: the entry is fine, the turn may not leave.
     Refused,
+    /// The turn holds Restricted words: only a local model may answer it.
+    Private,
     /// It had begun to answer: nothing else may finish it.
     Began(ProposalError),
 }
@@ -137,6 +139,7 @@ impl ModelList {
         mut ask: impl FnMut(&Step) -> Result<ButlerReply, Miss>,
     ) -> Result<ButlerReply, ProposalError> {
         let mut last = None;
+        let mut private = false;
         for step in &self.steps {
             if self.health.cooling(&step.key) {
                 continue;
@@ -153,7 +156,17 @@ impl ModelList {
                     last = Some(e);
                 }
                 Err(Miss::Refused) => {}
+                Err(Miss::Private) => private = true,
             }
+        }
+        // Never a quiet upgrade (ADR 0105, Q3d): a private turn with no local model answering
+        // says so rather than finding its way out.
+        if private {
+            return Err(ProposalError::Unavailable(
+                "this conversation holds something private, so only a model on your network may \
+                 answer it, and none could just now"
+                    .to_owned(),
+            ));
         }
         Err(last.unwrap_or_else(|| {
             ProposalError::Unavailable("no model in the list could answer this".to_owned())
@@ -165,6 +178,7 @@ fn through_the_door(refusal: DoorRefusal) -> Miss {
     match refusal {
         DoorRefusal::TheModelFailed(why) => Miss::Failed(ProposalError::Unavailable(why)),
         DoorRefusal::AStrangerSpoke | DoorRefusal::LooksLikeASecret => Miss::Refused,
+        DoorRefusal::Restricted => Miss::Private,
     }
 }
 
@@ -501,5 +515,25 @@ mod tests {
         let list = ModelList::new(vec![door("claude", &claude)], Arc::new(Health::new(awake)));
         assert!(list.summarize("", "the whole conversation").is_err());
         assert_eq!(asked(&claude), 0);
+    }
+
+    #[test]
+    fn a_private_turn_is_answered_at_home_or_says_why_not() {
+        use endora_application::egress::RESTRICTED_MARK;
+        let private = vec![TurnMessage::User(format!(
+            "{RESTRICTED_MARK}about my results"
+        ))];
+        let (claude, local) = (stand("claude", false, false), stand("local", false, false));
+        let list = ModelList::new(
+            vec![door("claude", &claude), direct("local", true, &local)],
+            Arc::new(Health::new(awake)),
+        );
+        assert_eq!(said(&list, &private).unwrap(), "local");
+        assert_eq!(asked(&claude), 0);
+        let cloud_only =
+            ModelList::new(vec![door("claude", &claude)], Arc::new(Health::new(awake)));
+        let why = said(&cloud_only, &private).unwrap_err().to_string();
+        assert!(why.contains("private"), "{why}");
+        assert_eq!(asked(&claude), 0, "never a quiet upgrade");
     }
 }

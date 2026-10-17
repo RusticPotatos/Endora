@@ -460,6 +460,13 @@ pub(super) fn take_turn_retrying_empty(
                         .to_owned(),
                 );
             }
+            Err(crate::egress::DoorRefusal::Restricted) => {
+                notes.push(
+                    "Couldn't ask the deep model: this conversation holds something private, \
+                     and that never leaves the box"
+                        .to_owned(),
+                );
+            }
             Err(crate::egress::DoorRefusal::TheModelFailed(why)) => {
                 // The short truth for the person; the full error for the operator.
                 eprintln!("the deep model failed: {why}");
@@ -1101,12 +1108,19 @@ pub(crate) fn run_tool_turn(
             // failed, the turn was marked as having heard from outside, escalation was
             // refused, and the local model told the person there was no new mail. The rule
             // silenced the mechanism meant to notice it was lying.
-            let content =
-                if spec.as_ref().is_some_and(|s| s.third_party) && status != StepStatus::Failed {
-                    format!("{STRANGER_MARK}{content}")
-                } else {
-                    content
-                };
+            // What a Restricted skill returned (a movement history) is marked too, and may not
+            // leave the house in any form (ADR 0105); the skill's tier says so, by its name.
+            let third_party = spec.as_ref().is_some_and(|s| s.third_party);
+            let content = if third_party && status != StepStatus::Failed {
+                format!("{STRANGER_MARK}{content}")
+            } else if !third_party
+                && status != StepStatus::Failed
+                && endora_capabilities::tiers::tier_of(&id) == endora_kernel::Tier::Restricted
+            {
+                format!("{}{content}", crate::egress::RESTRICTED_MARK)
+            } else {
+                content
+            };
             // Remember what it answered, so calling it again this turn gets this back
             // rather than a scolding the model might repeat to the person.
             seen.insert(already, content.clone());
@@ -1577,7 +1591,14 @@ pub(super) fn compact_history(
         // turns, each a small, fast call rather than one giant summarisation that would
         // itself time out on a slow model.
         let end = current.covered + SUMMARY_BATCH;
-        let chunk = render_transcript(&full[current.covered..end]);
+        // A private message, or a reply to one, is left out of the running summary, which
+        // rides in later turns (ADR 0105); the summary simply does not know it.
+        let shareable: Vec<ChatMessage> = full[current.covered..end]
+            .iter()
+            .filter(|m| !m.text().starts_with(crate::egress::RESTRICTED_MARK))
+            .cloned()
+            .collect();
+        let chunk = render_transcript(&shareable);
         if let Ok(s) = butler.summarize(&current.text, &chunk) {
             let s = s.trim();
             if !s.is_empty() {
@@ -1960,10 +1981,17 @@ pub fn send_to_butler_streaming_for_request(
     } else {
         on_token(&reply_text);
     }
+    // A reply to a private message may say it again, so it is kept private too (ADR 0105).
+    let private = text.starts_with(crate::egress::RESTRICTED_MARK);
+    let stored_reply = if private {
+        format!("{}{reply_text}", crate::egress::RESTRICTED_MARK)
+    } else {
+        reply_text.clone()
+    };
     let butler_msg = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
-        &reply_text,
+        &stored_reply,
         clock.now(),
     )?;
     chat.append(&butler_msg)?;
@@ -1983,15 +2011,22 @@ pub fn send_to_butler_streaming_for_request(
     if !acted {
         let mut learning_ctx = context.clone();
         learning_ctx.tools = Vec::new();
+        // A private message is never noted into the brain, where it would ride in every later
+        // turn, disguised, to a cloud model (ADR 0105).
         let theirs: Vec<ChatMessage> = history
             .iter()
             .filter(|m| m.role() == MessageRole::User)
+            .filter(|m| !m.text().starts_with(crate::egress::RESTRICTED_MARK))
             .cloned()
             .collect();
-        let formed = butler
-            .respond(&theirs, &prefs, &learning_ctx)
-            .map(|r| r.beliefs)
-            .unwrap_or_default();
+        let formed = if theirs.is_empty() {
+            Vec::new()
+        } else {
+            butler
+                .respond(&theirs, &prefs, &learning_ctx)
+                .map(|r| r.beliefs)
+                .unwrap_or_default()
+        };
         note_what_it_learned(knowledge, formed, &today(clock), &mut activity)?;
     }
 

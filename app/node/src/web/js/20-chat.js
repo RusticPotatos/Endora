@@ -95,6 +95,15 @@ function viewAudit() {
 // ---- voice (browser Web Speech API; STT may use a cloud service) ---
 let SPEAK = localStorage.getItem("endora.speak") === "1";      // read replies aloud (default OFF)
 let DEEP_MODE = localStorage.getItem("endora.deepmode") === "1"; // route sends to the deep model (default OFF)
+// Sends marked 🔒 (ADR 0105): Restricted, answered only on the house's own network, never
+// sent out even disguised, and never noted into the brain. Sticky until turned off.
+let PRIVATE_MODE = localStorage.getItem("endora.privatemode") === "1";
+const PRIVATE_MARK = "[private] ";
+// A message as it is shown: a private one without its mark, and with a lock.
+function shownText(text) {
+  const t = String(text || "");
+  return t.startsWith(PRIVATE_MARK) ? { text: t.slice(PRIVATE_MARK.length), private: true } : { text: t, private: false };
+}
 const TTS = window.speechSynthesis;
 const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
 // iOS Safari only lets speech start after a user gesture unlocks it; speaking a
@@ -217,8 +226,10 @@ function viewChat() {
   const msgs = list.map((m, index) => {
     const mine = m.role === "user";
     const marker = topicFrom && index === firstAfter && index > 0 ? divider : "";
+    const said = shownText(m.text);
+    const lock = said.private ? `<span class="private-lock" title="Private: kept on your network">${icon("lock", 12)}</span>` : "";
     const bubble = `<div class="row msg-row${mine ? " mine" : ""}">
-      <div class="bubble ${mine ? "me" : "butler"}">${mine ? esc(m.text) : rich(m.text)}</div></div>`;
+      <div class="bubble ${mine ? "me" : "butler"}">${lock}${mine ? esc(said.text) : rich(said.text)}</div></div>`;
     // A butler reply carries its persisted action trail + sources (if any), so
     // you can expand a PAST answer to see what it did and where it came from.
     if (!mine && m.actions) {
@@ -337,7 +348,8 @@ function composerChipsHtml() {
   const chip = (act, ic, label, title) =>
     `<button class="chip" data-act="${act}" title="${esc(title)}">${icon(ic, 13)}<span>${label}</span>${icon("close", 11)}</button>`;
   return [
-    DEEP_MODEL.configured && DEEP_MODE ? chip("toggle:deep", "sparkle", "Deep", "Your messages go to the bigger model — tap to turn off") : "",
+    PRIVATE_MODE ? chip("toggle:private", "lock", "Private", "Answered on your network only, never sent out, never remembered — tap to turn off") : "",
+    DEEP_MODEL.configured && DEEP_MODE && !PRIVATE_MODE ? chip("toggle:deep", "sparkle", "Deep", "Your messages go to the bigger model — tap to turn off") : "",
     RESEARCH_MODE ? chip("toggle:research", "note", "Research", "Commissioning durable research — tap to turn off") : "",
     SPEAK ? chip("toggle:speak", "speakerOn", "Speaking", "Replies are read aloud — tap to turn off") : "",
   ].join("");
@@ -355,6 +367,7 @@ function toolsMenuHtml() {
   return [
     TTS ? item("toggle:speak", SPEAK ? "speakerOn" : "speakerOff", "Read replies aloud", SPEAK, "read replies aloud") : "",
     dictate,
+    item("toggle:private", "lock", "Private", PRIVATE_MODE, "answered on your own network only: never sent out, even disguised, and never remembered"),
     item("toggle:research", "note", "Research", RESEARCH_MODE, "commission durable, bounded research"),
     item("ctx:reset", "plus", "New topic", false, "stop sending earlier messages to the model; they stay in the chat"),
     DEEP_MODEL.configured ? item("toggle:deep", "sparkle", "Ask the bigger model", DEEP_MODE, "when on, your messages go to the bigger model") : "",

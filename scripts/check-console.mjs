@@ -1061,6 +1061,22 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
   console.log("deep spend: balance, low warning, usage and prices render, and nothing without a deep model");
 }
 
+// Private messages (ADR 0105): a 🔒 message and Endora's reply show with a lock and without the
+// mark the door reads; Private mode says so in the composer and keeps the deep model out of it.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`CHAT_MSGS = [{ id: "1", role: "user", text: "[private] about my results", at_ms: Date.now() },
+    { id: "2", role: "butler", text: "[private] They look fine.", at_ms: Date.now() }];
+    PRIVATE_MODE = true; DEEP_MODE = true; DEEP_MODEL = { configured: true }; AGENDA = null; NAV = { v: "chat" };`, context);
+  const chat = runInContext("viewChat()", context);
+  if (chat.includes("[private]")) fail("private: the mark reached the screen");
+  if ((chat.match(/class="private-lock"/g) || []).length < 2) fail("private: a private message or its reply shows no lock");
+  if (!chat.includes('data-act="toggle:private"')) fail("private: Private mode does not say so in the composer");
+  if (chat.includes('data-act="toggle:deep" title="Your messages go to the bigger model')) fail("private: the deep model is offered for a private message");
+  runInContext('PRIVATE_MODE = false; DEEP_MODE = false; DEEP_MODEL = { configured: false }; CHAT_MSGS = [];', context);
+  console.log("private: a private message shows a lock without its mark, and never goes to the deep model");
+}
+
 // Models in ordered lists (ADR 0105): each list in order with its moves, a cloud entry said to
 // see your messages disguised, providers that say whether a key is set and never show one, the
 // deep list's own switch, and Anthropic directly on offer.
