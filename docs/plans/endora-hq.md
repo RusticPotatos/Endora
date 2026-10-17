@@ -181,6 +181,13 @@ Every 30 seconds, in this order:
    available.
 5. Tasks that are `doing` with no run and no way forward get one recovery nudge; if that
    fails too, they go to the owner's desk as stuck.
+   **Stranded assigned work** too: an open task (`todo`, or `blocked` with nothing left to
+   wait on) that has an owner or an assignee, with no run queued, running or waiting to retry
+   and no wake held for it for ten minutes, gets one wake for that member
+   (`assignment_recovery`, which the back-off, a pause, the budget and the kill switch all
+   hold as they hold any nudge; a paused member's work is left alone). Still stranded ten
+   minutes after that, it goes to the owner's desk as stuck, once. It is never handed to
+   anyone else.
 6. Tasks whose waits have all finished are woken.
 
 A late tick runs once; missed ticks are not replayed.

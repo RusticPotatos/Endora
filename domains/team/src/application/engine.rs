@@ -22,6 +22,10 @@ use crate::domain::{
     TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 
+/// How long open, assigned work may sit with nothing queued, running or held for it before its
+/// member is woken once, and again before it goes on the owner's desk as stuck.
+pub const STRANDED_AFTER_MS: Millis = 10 * 60 * 1000;
+
 /// The most characters a goal's notes from the owner may run to.
 pub const GOAL_NOTE_MOST: usize = 2_000;
 
@@ -1358,6 +1362,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             report.stuck += 1;
         }
 
+        // 5b. Open work handed to a member that nothing will bring it back to: no turn queued,
+        //     running or waiting to retry, and no wake held for it, for ten minutes. One
+        //     recovery wake for its member; still so ten minutes after, the owner's desk, once.
+        //     Never handed to anyone else.
+        let (stranded_nudged, stranded_stuck) = self.recover_stranded(&tasks, &live, now)?;
+        report.nudged += stranded_nudged;
+        report.stuck += stranded_stuck;
+
         // 6. Tasks whose waits have all finished are woken, once.
         for task in &tasks {
             if task.waits_on.is_empty() || task.status.finished() {
@@ -1656,6 +1668,88 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "item": item.0, "kind": found.kind, "decision": decision }),
         )?;
         Ok(())
+    }
+
+    /// The tick's step 5b: open work with a member and nothing that will bring it back, for
+    /// [`STRANDED_AFTER_MS`]. `doing` work is step 5's. Returns how many were nudged and how
+    /// many went on the desk.
+    fn recover_stranded(
+        &self,
+        tasks: &[Task],
+        live: &[Option<TaskId>],
+        now: Millis,
+    ) -> Done<(usize, usize)> {
+        let (mut nudged, mut stuck) = (0, 0);
+        let members = self.store.members()?;
+        let runs = self.store.runs()?;
+        let wakes = self.store.wakes()?;
+        let desk = self.store.desk()?;
+        for task in tasks {
+            if !matches!(task.status, TaskStatus::Todo | TaskStatus::Blocked)
+                || live.contains(&Some(task.id))
+                || !self.waits_over(&task.waits_on)?
+                || !self.store.held_wakes(task.id)?.is_empty()
+            {
+                continue;
+            }
+            let Some(member) = task.owner.or(task.assignee) else {
+                continue;
+            };
+            if members.iter().any(|m| m.id == member && m.paused) {
+                continue;
+            }
+            let on_the_desk = desk
+                .iter()
+                .any(|d| d.kind == "stuck" && d.status == "waiting" && d.task == Some(task.id));
+            if on_the_desk {
+                continue;
+            }
+            let last = runs
+                .iter()
+                .filter(|r| r.task == Some(task.id))
+                .flat_map(|r| [Some(r.queued_at), r.started_at, r.ended_at])
+                .flatten()
+                .chain(
+                    wakes
+                        .iter()
+                        .filter(|w| w.task == Some(task.id))
+                        .map(|w| w.at),
+                )
+                .max()
+                .unwrap_or(Millis::MIN);
+            if now.saturating_sub(last) <= STRANDED_AFTER_MS {
+                continue;
+            }
+            if !task.nudged {
+                self.store.set_nudged(task.id, true)?;
+                self.wake_held_lock(member, Some(task.id), WakeReason::AssignmentRecovery)?;
+                nudged += 1;
+                continue;
+            }
+            self.store.set_task_status(task.id, TaskStatus::Blocked)?;
+            let item = self.store.add_desk(
+                "stuck",
+                Some(task.id),
+                None,
+                None,
+                &format!(
+                    "Stuck: {}. It was handed on, woken once, and nobody came back to it.",
+                    task.title
+                ),
+                now,
+            )?;
+            self.emit(
+                EventKind::TaskChanged,
+                json!({ "task": task.id.0, "goal": task.goal.0, "owner": task.owner.map(|o| o.0),
+                        "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
+            )?;
+            self.emit(
+                EventKind::DeskAdded,
+                json!({ "item": item.0, "kind": "stuck", "task": task.id.0 }),
+            )?;
+            stuck += 1;
+        }
+        Ok((nudged, stuck))
     }
 
     /// An approval that will not run: why, in the task's thread as Endora's, and the member

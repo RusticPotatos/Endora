@@ -9,6 +9,10 @@ tagged release.
 
 ### Added
 
+- **Stranded assigned work is recovered**: an open task with a member and nothing queued,
+  running or held for it for ten minutes gets one `assignment_recovery` wake for that member;
+  still stranded ten minutes later, it is on the owner's desk as stuck, once, and never handed
+  to anyone else.
 - **The bridge: Endora's capabilities as the team's tools** ([ADR 0108](docs/adr/0108-the-bridge.md)).
   The team's contracts list now carries, after the container tools, every capability and
   tool-server tool Endora's policy allows, each marked read or act by Endora's own knowledge

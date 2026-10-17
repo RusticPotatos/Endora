@@ -28,6 +28,8 @@ pub enum WakeReason {
     Alarm,
     /// The owner wrote in the task's thread: whoever has the task reads it at once.
     OwnerReplied,
+    /// Work handed to the member that nothing would ever bring it back to, nudged once.
+    AssignmentRecovery,
 }
 
 impl WakeReason {
@@ -46,6 +48,7 @@ impl WakeReason {
             Self::CheckBack => "check_back",
             Self::Alarm => "alarm",
             Self::OwnerReplied => "owner_replied",
+            Self::AssignmentRecovery => "assignment_recovery",
         }
     }
 
@@ -54,7 +57,10 @@ impl WakeReason {
     /// nothing new is ever delayed by the back-off.
     #[must_use]
     pub const fn brings_news(self) -> bool {
-        !matches!(self, Self::Recovery | Self::Retry | Self::LeadReview)
+        !matches!(
+            self,
+            Self::Recovery | Self::AssignmentRecovery | Self::Retry | Self::LeadReview
+        )
     }
 
     /// Whether the wake comes from a clock rather than from someone: a timer, a check-back or
@@ -80,6 +86,7 @@ impl WakeReason {
             Self::CheckBack,
             Self::Alarm,
             Self::OwnerReplied,
+            Self::AssignmentRecovery,
         ]
         .into_iter()
         .find(|r| r.name() == name)

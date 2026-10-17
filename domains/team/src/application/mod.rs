@@ -21,3 +21,6 @@ mod approvals_tests;
 
 #[cfg(test)]
 mod owner_tests;
+
+#[cfg(test)]
+mod stranded_tests;
