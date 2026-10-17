@@ -45,7 +45,24 @@ mkdir -p /run/dbus /run/avahi-daemon
 rm -f /run/dbus/dbus.pid /run/dbus/pid /run/avahi-daemon/pid
 chown avahi:avahi /run/avahi-daemon
 dbus-daemon --system
-avahi-daemon --daemonize --no-chroot
+# A host name of its own: something else on the host's network already answers for the host's
+# name, and avahi, colliding with it, never finished registering, so it announced nothing (the
+# receivers stayed invisible). And only on the interface the house is reached by, so nobody is
+# pointed at one of Docker's own networks.
+lan=$(ip route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+cat > /run/avahi-daemon.conf <<EOF
+[server]
+host-name=endora-sound
+use-ipv4=yes
+use-ipv6=no
+${lan:+allow-interfaces=$lan}
+[wide-area]
+enable-wide-area=no
+[publish]
+publish-hinfo=no
+publish-workstation=no
+EOF
+avahi-daemon --daemonize --no-chroot -f /run/avahi-daemon.conf
 
 airptpd -f &
 PIDS="$!"
