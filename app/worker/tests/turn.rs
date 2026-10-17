@@ -318,7 +318,11 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
     assert_eq!(first.body["messages"][0]["role"], "system");
     assert_eq!(
         first.body["messages"][1],
-        json!({ "role": "user", "content": BRIEFING })
+        json!({ "role": "user", "content": format!(
+            "{}\n\nBefore your turn began, your task was claimed for you: Task 7 is yours.",
+            BRIEFING.trim_end()
+        ) }),
+        "the briefing, with the claim the worker made before asking the model"
     );
     let then = &to_model[1].body["messages"];
     assert_eq!(then[2]["role"], "assistant");
@@ -399,16 +403,19 @@ fn a_402_from_the_relay_ends_the_turn_at_once() {
     assert_eq!(to_model.lock().unwrap().len(), 1);
     assert_eq!(
         methods(&to_hq).last().map(String::as_str),
-        Some("tools/call my_turn"),
-        "nothing more is sent to HQ"
+        Some("tools/call claim"),
+        "nothing more is sent to HQ after the claim the worker makes before asking the model"
     );
 }
 
 #[test]
 fn a_401_from_hq_mid_turn_ends_it_at_once() {
-    let (hq_url, to_hq) = hq(Some("claim"));
+    let (hq_url, to_hq) = hq(Some("post"));
     let (model_url, to_model) = model(vec![
-        (200, calls(&[("call_1", "claim", r#"{"task": 7}"#)])),
+        (
+            200,
+            calls(&[("call_1", "post", r#"{"task": 7, "text": "Looked."}"#)]),
+        ),
         (200, says("Done.")),
     ]);
     let out = worker(&usual(&hq_url, &model_url));
@@ -420,7 +427,7 @@ fn a_401_from_hq_mid_turn_ends_it_at_once() {
     );
     assert_eq!(
         methods(&to_hq).last().map(String::as_str),
-        Some("tools/call claim")
+        Some("tools/call post")
     );
 }
 

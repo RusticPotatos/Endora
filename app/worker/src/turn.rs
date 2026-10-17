@@ -99,12 +99,28 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         return Err(Stopped::Failed(format!("HQ refused my_turn: {briefing}")));
     }
     let task = task_of(&briefing);
+    // Claiming is the first step of every turn with a task, and a small model skips it: the
+    // worker takes that step itself and tells the model what HQ said. A refusal (another
+    // member has it) is news for the model, not a failure of the turn.
+    let mut briefing = briefing;
+    let mut answered = Answered::default();
+    if let Some(task) = task {
+        let claim = json!({ "task": task });
+        let (said, _) = hq.call("claim", &claim)?;
+        // A model that claims it again is answered from this, not sent to HQ twice.
+        answered
+            .given
+            .insert(format!("claim {claim}"), said.clone());
+        briefing = format!(
+            "{}\n\nBefore your turn began, your task was claimed for you: {said}",
+            briefing.trim_end()
+        );
+    }
     let model = Model::new(setup);
     let mut messages = vec![
         json!({ "role": "system", "content": instructions(task.is_some(), !on_the_node.is_empty()) }),
         json!({ "role": "user", "content": briefing }),
     ];
-    let mut answered = Answered::default();
     for _ in 0..setup.most_rounds {
         let said = model.ask(&messages, &tools)?;
         let calls = said["tool_calls"].as_array().cloned().unwrap_or_default();
@@ -134,33 +150,35 @@ fn instructions(posted: bool, contracts: bool) -> String {
     let mut told = String::from(
         "You are one member of a small team at Endora HQ, taking one turn of work. The first \
          message is what my_turn says: who you are, your task, why it exists, and what is new \
-         in its thread.\n\
+         in its thread. Read the thread: the owner may have told you something there.\n\
          \n\
-         How to take a good turn:\n\
-         - Use only the team's tools. They are your only way to act: nothing you merely say \
-         is done.\n\
-         - Claim your task before you work on it. If another member has it, leave it to them.\n\
-         - Post in the task's thread what you did and what you found, so whoever comes next \
-         can go on from there.\n\
-         - Move the task on with set_status, and say why. Never try to set it to done: only \
-         the gate does that.\n\
-         - Create a sub-task only for a member below you, and only when the work needs one.\n\
-         - Ask the owner with ask_owner only when you truly need them. Asking ends your \
-         turn: you are woken when they have answered.\n\
-         - Keep it short, and never say you did what you did not do.\n\
-         - When your part is done, stop calling tools and reply in one or two sentences.",
+         Take your turn in these steps:\n\
+         1. Look: use the tools to find out what you need. You have no other way to see or do \
+         anything. You cannot run commands, ping, open files or browse: never offer to.\n\
+         2. Post in the task's thread what you found, briefly, so whoever comes next can go on \
+         from there.\n\
+         3. End the turn with exactly one of these: move the task on with set_status and say \
+         why; create sub-tasks for members below you when the work needs them; or put a \
+         concrete plan or question to the owner with ask_owner (asking ends your turn, and you \
+         are woken when they answer).",
     );
     if contracts {
         told.push_str(
-            "\n- The home lab tools are Endora's contracts. homelab_status and \
-             container_logs only look: use them freely to see what is wrong and why. \
-             restart_container is a safe fix you may make on your own, within its limits (one \
+            "\n\nThe home lab tools are Endora's contracts:\n\
+             - homelab_status and container_logs only look: use them freely to see what is \
+             wrong and why.\n\
+             - restart_container is a safe fix you may make on your own, within its limits (one \
              restart of a container an hour, three in all), and the owner is told: look and \
              diagnose first, and say why.\n\
              - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
              never try to work around a refusal.",
         );
     }
+    told.push_str(
+        "\n\nNever set a task to done: only the gate does that. Keep it short, and never say \
+         you did what you did not do. When your part is done, stop calling tools and reply in \
+         one or two sentences.",
+    );
     if posted {
         told.push_str(" That reply goes in your task's thread.");
     }
@@ -228,6 +246,9 @@ struct Answered {
     last: Option<String>,
     /// What each call last said.
     said: std::collections::HashMap<String, String>,
+    /// What the worker already asked for the model before its first round (the claim): the
+    /// model asking the same is told what HQ said, once, without asking HQ again.
+    given: std::collections::HashMap<String, String>,
 }
 
 /// Runs one tool call the model asked for, and gives what the model reads back, and whether
@@ -249,6 +270,11 @@ fn run(
         Err(why) => return Ok((format!("Refused: {why}"), false)),
     };
     let key = format!("{tool} {args}");
+    if let Some(said) = answered.given.remove(&key) {
+        answered.said.insert(key.clone(), said.clone());
+        answered.last = Some(key);
+        return Ok((said, false));
+    }
     if answered.last.as_deref() == Some(key.as_str()) && answered.said.contains_key(&key) {
         return Ok((ALREADY.to_owned(), false));
     }
@@ -636,32 +662,31 @@ mod tests {
     }
 
     #[test]
-    fn the_instructions_read_as_a_paragraph_then_one_rule_a_line() {
+    fn the_instructions_read_as_paragraphs_then_one_step_or_rule_a_line() {
         let told = instructions(true, false);
-        let (opening, rules) = told.split_once("\n\nHow to take a good turn:\n").unwrap();
-        assert!(!opening.contains('\n'), "{opening}");
-        let rules: Vec<&str> = rules.lines().collect();
-        assert_eq!(rules.len(), 8, "{told}");
-        assert!(
-            rules
-                .iter()
-                .all(|r| r.starts_with("- ") && !r.contains("  "))
-        );
-        assert!(!told.contains('\\'));
+        let parts: Vec<&str> = told.split("\n\n").collect();
+        assert_eq!(parts.len(), 3, "{told}");
+        assert!(!parts[0].contains('\n'), "{told}");
+        let steps: Vec<&str> = parts[1].lines().collect();
+        assert_eq!(steps[0], "Take your turn in these steps:");
+        assert_eq!(steps.len(), 4, "{told}");
+        for (n, step) in steps[1..].iter().enumerate() {
+            assert!(step.starts_with(&format!("{}. ", n + 1)), "{step}");
+        }
+        assert!(told.contains("You cannot run commands"));
+        assert!(!told.contains('\\') && !told.contains("  "), "{told}");
         assert!(told.ends_with("one or two sentences. That reply goes in your task's thread."));
         assert!(instructions(false, false).ends_with("one or two sentences."));
-        // With the node's contracts, two rules more: what they may do, and what is the
-        // owner's.
+        // With the node's contracts, a paragraph more: what they may do, and what is the
+        // owner's, one rule a line.
         let told = instructions(false, true);
-        let rules: Vec<&str> = told.split_once(":\n").unwrap().1.lines().collect();
-        assert_eq!(rules.len(), 10, "{told}");
-        assert!(
-            rules
-                .iter()
-                .all(|r| r.starts_with("- ") && !r.contains("  "))
-        );
+        let parts: Vec<&str> = told.split("\n\n").collect();
+        assert_eq!(parts.len(), 4, "{told}");
+        let rules: Vec<&str> = parts[2].lines().collect();
+        assert_eq!(rules.len(), 4, "{told}");
+        assert!(rules[1..].iter().all(|r| r.starts_with("- ")));
         assert!(told.contains("restart_container"));
-        assert!(told.ends_with("never try to work around a refusal."));
+        assert!(!told.contains("  "), "{told}");
     }
 
     #[test]

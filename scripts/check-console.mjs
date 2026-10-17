@@ -622,6 +622,12 @@ if (failures.length) {
   if (!office.includes("nothing is spent")) fail("hq: the demo's spend line reads as real money");
   if (office.includes("<img src=x") || office.includes("<b>Fix</b>")) fail("hq: a task's text became markup");
   if (!office.includes("Goal: Keep the home lab healthy")) fail("hq: a task's chain of why is missing");
+  // A dropped goal's notes leave the board, finished ones too: the retired demo's hundreds of
+  // done tasks must not bury the owner's own.
+  const cards = runInContext(`HQ.snap.goals.push({ id: 2, title: "The demo's goal", status: "dropped" });
+    for (let i = 0; i < 40; i++) HQ.snap.tasks.unshift({ id: 100 + i, goal: 2, title: "demo", status: "done" });
+    hqCards().map((c) => c.t.id)`, context);
+  if (cards.length !== 1 || cards[0] !== 7) fail(`hq: a dropped goal's tasks are still on the board: ${cards}`);
   runInContext("HQ.snap.stopped = true;", context);
   if (!runInContext("viewHQ()", context).includes('data-act="hq:resume"')) fail("hq: a stopped team cannot be resumed");
   runInContext('HQ.snap = null; HQ.error = "HQ is not set up on this node yet."; HQ.selected = null;', context);

@@ -278,9 +278,13 @@ function hqFurniture() {
   return out;
 }
 
-// The sticky notes: the newest tasks that are not long finished, two rows of seventeen.
+// The sticky notes: the newest tasks that are not long finished, two rows of seventeen. A
+// dropped goal's tasks are gone from the board, finished or not: the retired demo's are
+// hundreds of done notes that would bury the owner's own work.
 function hqCards() {
-  const tasks = ((HQ.snap && HQ.snap.tasks) || []).filter((t) => t.status !== "dropped");
+  const goals = (HQ.snap && HQ.snap.goals) || [];
+  const dropped = new Set(goals.filter((g) => g.status === "dropped").map((g) => g.id));
+  const tasks = ((HQ.snap && HQ.snap.tasks) || []).filter((t) => t.status !== "dropped" && !dropped.has(t.goal));
   const shown = tasks.filter((t, i) => t.status !== "done" || i >= tasks.length - 34).slice(-34);
   return shown.map((t, i) => ({ t, x: HQ_P.board.x * HQ_T + 4 + (i % 17) * 11, y: 7 + Math.floor(i / 17) * 10, w: 8, h: 8 }));
 }
