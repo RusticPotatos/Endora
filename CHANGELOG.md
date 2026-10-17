@@ -179,6 +179,9 @@ tagged release.
 
 ### Changed
 
+- **Sonnet 5.5's cache reads are priced at $0.10 a million**, down from $0.20, after
+  Anthropic's correction: the team relay charges a turn's cached prompt at the new price. The
+  other models are unchanged.
 - **Skills say what they do, for people.** A skill whose description is written for the model
   ("Use this for any question about what YOU did", "Civic business ONLY", "fetch useful URLs
   with web_fetch") shows a line for people on the settings screen instead (`for_people`, the

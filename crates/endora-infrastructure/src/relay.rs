@@ -141,8 +141,9 @@ fn read_at_most(reader: impl std::io::Read, most: u64) -> Result<Vec<u8>, String
 /// Prompts longer than this are dearer on Haiku.
 const HAIKU_LONG_PROMPT: u64 = 100_000;
 
-/// The price of a model, from Anthropic's pricing page (October 2026), for the models the
-/// team may use; dated ids (`claude-sonnet-5-5-20261001`) price as their family. `prompt` is
+/// The price of a model, from Anthropic's pricing page (October 2026, with Sonnet 5.5's cache
+/// reads at 10¢ a million since Anthropic's correction), for the models the team may use;
+/// dated ids (`claude-sonnet-5-5-20261001`) price as their family. `prompt` is
 /// the call's input tokens, for the one model whose price depends on it.
 #[must_use]
 pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
@@ -151,7 +152,7 @@ pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
         return Some(Price {
             input: 2.0,
             cache_write: 4.0,
-            cache_read: 0.20,
+            cache_read: 0.10,
             output: 10.0,
         });
     }
@@ -494,13 +495,17 @@ mod tests {
         };
         assert_eq!(
             cost(sonnet, cached),
-            24_000,
-            "100k read at 20¢ (a tenth of input), 1k written at $4"
+            14_000,
+            "100k read at 10¢ (a twentieth of input), 1k written at $4"
+        );
+        assert!(
+            (sonnet.cache_read - 0.10).abs() < 1e-9,
+            "Sonnet 5.5 reads the cache at 10¢ since Anthropic's correction"
         );
         let opus = price_of("claude-opus-5-5", 0).unwrap();
         assert!(
             (opus.cache_read - 0.20).abs() < 1e-9,
-            "Opus 5.5 reads at 20¢ too"
+            "Opus 5.5 still reads at 20¢"
         );
         assert!(
             price_of("claude-fable-5-1", 0).is_none(),

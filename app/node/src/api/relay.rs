@@ -959,8 +959,8 @@ pub(super) mod tests {
         assert!(String::from_utf8_lossy(&body).contains("message_stop"));
         assert_eq!(
             charges(&to_hq, 1).await,
-            vec![3_030],
-            "1200 in at $2, 300 read from the cache at 20¢, 57 out at $10"
+            vec![3_000],
+            "1200 in at $2, 300 read from the cache at 10¢, 57 out at $10"
         );
     }
 
@@ -981,7 +981,7 @@ pub(super) mod tests {
         let _ = res.into_body().collect().await;
         assert_eq!(
             charges(&to_hq, 1).await,
-            vec![12_460],
+            vec![12_430],
             "1200 in, 300 read, and all 1,000 tokens it may have sent"
         );
     }
