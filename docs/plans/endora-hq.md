@@ -921,6 +921,24 @@ for working things out: scripts, parsing what the tools returned, trying command
   schema as it was. **The screen**: criteria with their evidence, the tester's pass, run lines'
   labels, "unsupported", "Tester", and the owner's rounds.
 
+### How the team is doing (the scorecard, as built 2026-10-17)
+
+A card on the HQ screen, "How the team is doing", for today beside the last seven days (the
+owner's day boundaries, as the screen's money is counted, by `Settings::offset_minutes`), with
+the numbers that say whether the work is good, every one computed by code
+(`application::scorecard`, pure over the store's rows, served in the snapshot as `scorecard`;
+the screen only renders): turns, and the share that showed nothing (label `talk only` or
+`empty`), per member with each member's spend; work sent back (left review for `doing`,
+whoever sent it) against the submissions; the cost of a finished task (everything ever spent on
+turns on the tasks that reached done in the window, over their count) and what dropped tasks
+spent, which is waste; alarms, the tasks they made, the median time from an alarm to its task
+closed and how many stay open; what reached the desk, split approvals, questions, stuck and
+notices, with what still waits; and the prompt cache's share of the paid turns' input (HQ keeps
+tokens, not the relay's prices, so the share is shown and not the dollars). A turn from before
+labels is **unlabelled**, counted and shown as such, never guessed. The node prunes the feed to
+its newest 20,000 events, so each window says where its record starts when that is later than
+the window; nothing older is counted. Scenarios: `features/how-the-team-is-doing.feature`.
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams;

@@ -757,6 +757,7 @@ function viewHQ() {
         <section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
+        ${hqScorecard(s)}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul></section>
         <section class="hq-card"><h2>Team</h2><ul class="hq-team">${team}</ul></section>
         ${hqProjects(s)}
@@ -852,6 +853,53 @@ function hqProjects(s) {
       <select id="hq-project-lead" aria-label="Who leads it">${leadOpts}</select>
       <label>cap $<input id="hq-project-cap" inputmode="decimal" placeholder="none" style="width:5em" aria-label="Monthly cap in dollars, or none" /> a month</label>
       <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div></details></section>`;
+}
+
+// A span of time in the owner's words: 40 s, 14 min, 2.5 h, 3 d.
+function hqSpan(ms) {
+  if (ms == null) return "";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  if (s < 86400) return `${(s / 3600).toFixed(1).replace(/\.0$/, "")} h`;
+  return `${(s / 86400).toFixed(1).replace(/\.0$/, "")} d`;
+}
+
+// How the team is doing: the numbers HQ computed from its own record for today and the last
+// seven days, by the owner's days (the engine's `scorecard`). This only renders them: every
+// share, median and cost arrives computed; nothing a model wrote is in it, but every name goes
+// through esc all the same. Light on purpose: a phone reads this first.
+function hqScorecard(s) {
+  const card = s.scorecard;
+  if (!card || !card.today || !card.week) return "";
+  const n = (v) => (v == null ? "—" : String(v));
+  const pct = (v) => (v == null ? "" : ` (${v}%)`);
+  const turns = (w) => `${n(w.turns.total)} · ${n(w.turns.nothing)} showed nothing${pct(w.turns.nothing_share)}${w.turns.unlabelled ? ` · ${w.turns.unlabelled} unlabelled` : ""}`;
+  const review = (w) => `${n(w.review.sent_back)} of ${n(w.review.submissions)} submitted${pct(w.review.sent_back_share)}`;
+  const done = (w) => (w.finished.per_done == null ? "none done" : `${hqDollars(w.finished.per_done)} each · ${w.finished.done} done`);
+  const dropped = (w) => (w.finished.dropped ? `${hqDollars(w.finished.dropped_spent)} on ${w.finished.dropped} dropped` : "none dropped");
+  const alarms = (w) => `${n(w.alarms.count)} · ${n(w.alarms.tasks)} tasks${w.alarms.closed_median_ms == null ? "" : ` · closed in ${hqSpan(w.alarms.closed_median_ms)}`}${w.alarms.open ? ` · ${w.alarms.open} open` : ""}`;
+  const desk = (w) => {
+    const d = w.desk, all = d.approvals + d.questions + d.stuck + d.notices + d.other;
+    const parts = [[d.approvals, "approvals"], [d.questions, "questions"], [d.stuck, "stuck"], [d.notices, "notices"], [d.other, "other"]]
+      .filter(([k]) => k).map(([k, name]) => `${k} ${name}`).join(", ");
+    return `${all}${parts ? ` · ${parts}` : ""}${d.waiting ? ` · ${d.waiting} waiting` : ""}`;
+  };
+  // HQ keeps the tokens, not the brains' prices, so the share is shown and not the dollars.
+  const cache = (w) => (w.cache.share == null ? "no paid input" : `${w.cache.share}% of paid input read from cache`);
+  const rows = [["Turns", turns], ["Sent back", review], ["Per done task", done], ["Waste", dropped], ["Alarms", alarms], ["Desk", desk], ["Cache", cache]]
+    .map(([k, f]) => `<tr><th>${k}</th><td>${esc(f(card.today))}</td><td>${esc(f(card.week))}</td></tr>`).join("");
+  const members = (w) => (w.turns.members || []).map((m) => `<li>${esc(hqName(m.member))}: ${m.turns} turns · ${m.nothing} showed nothing${m.unlabelled ? ` · ${m.unlabelled} unlabelled` : ""} · ${hqDollars(m.spent)}</li>`).join("")
+    || `<li class="hq-empty">No turns.</li>`;
+  const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
+  const since = [["today", card.today.since], ["the 7 days", card.week.since]].filter(([, at]) => at != null)
+    .map(([w, at]) => `the record for ${w} starts ${esc(when(at))}`).join("; ");
+  return `<section class="hq-card"><h2>How the team is doing</h2>
+    <table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${rows}</tbody></table>
+    <details><summary>Per member</summary><div class="hq-score-members">
+      <div><b>Today</b><ul class="hq-team">${members(card.today)}</ul></div>
+      <div><b>7 days</b><ul class="hq-team">${members(card.week)}</ul></div></div></details>
+    ${since ? `<p class="hq-note">${since}: older turns and events are no longer kept.</p>` : ""}</section>`;
 }
 
 // The house log (ADR 0111): the CEO's own document of the house, which it and the lead read

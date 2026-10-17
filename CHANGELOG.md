@@ -9,6 +9,15 @@ tagged release.
 
 ### Added
 
+- **How the team is doing**: a scorecard on the HQ screen, today beside the last seven days by
+  the owner's days, computed by code from HQ's own record (`application::scorecard`, served in
+  the snapshot): turns and the share that showed nothing (talk only or empty), per member with
+  each one's spend; work sent back against the submissions; the cost of a finished task and
+  what dropped tasks spent (waste); alarms, the tasks they made, the median time to close one
+  and how many stay open; what reached the desk by kind, and what still waits; and the prompt
+  cache's share of the paid turns' input. Turns from before labels are counted as unlabelled,
+  never guessed, and a window the kept record does not cover says where it starts. The
+  owner's scenarios in `domains/team/features/how-the-team-is-doing.feature`.
 - **Evidence, acceptance criteria and the tester** ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)).
   The node records every call a turn makes of Endora's tools as a **receipt** in HQ, with the
   turn's own token (`POST /v1/team/receipt`; refused for a forged or finished turn), and the model
