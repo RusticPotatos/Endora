@@ -1,12 +1,17 @@
 # Keep the build context small and reproducible.
 target/
+**/target/
 .git/
+# Claude Code's worktrees: each a whole copy of the repository with its own build output,
+# many gigabytes, and nothing an image is built from.
+.claude/
 **/*.db
 **/*.db-wal
 **/*.db-shm
 .env
 .env.*
 local.mk
+**/local.mk
 docker-compose.override.yml
 **/*.local
 **/*.local.*
