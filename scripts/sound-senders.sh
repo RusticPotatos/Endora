@@ -12,6 +12,21 @@ set -eu
 
 SENDERS=4
 SECRET=/secret/password
+# Every AirPlay speaker the hub knows, one a line, written by the hub.
+NAMES=/pipes/airplay-speakers.txt
+
+# OwnTone takes a speaker back by itself five seconds after another device takes it: from a
+# Mac playing to the HomePod natively, say, which then falls back to its own speakers. Never:
+# the hub lets a borrowed speaker go, and asks for it again only when it is free.
+speaker_sections() {
+  [ -f "$NAMES" ] || return 0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    quoted=$(printf '%s' "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    printf 'airplay "%s" {\n\treconnect = false\n}\n' "$quoted"
+  done < "$NAMES"
+}
+names_now() { cksum < "$NAMES" 2>/dev/null || echo none; }
 
 if [ ! -s "$SECRET" ]; then
   umask 077
@@ -68,13 +83,20 @@ mpd {
 	port = 0
 }
 EOF
+  speaker_sections >> "/run/owntone-$n.conf"
   owntone -f -c "/run/owntone-$n.conf" &
   PIDS="$PIDS $!"
   n=$((n + 1))
 done
 
-echo "sound: airptpd and $SENDERS senders started"
+echo "sound: airptpd and $SENDERS senders started, $(grep -c 'reconnect = false' /run/owntone-1.conf || true) speakers they will not take back by themselves"
+SEEN=$(names_now)
 while :; do
+  if [ "$(names_now)" != "$SEEN" ]; then
+    echo "sound: the hub's speakers changed; starting again to read them"
+    kill $PIDS 2>/dev/null || true
+    exit 0
+  fi
   for pid in $PIDS; do
     if ! kill -0 "$pid" 2>/dev/null; then
       echo "sound: a sender process ($pid) stopped; stopping the rest so Docker starts them again" >&2

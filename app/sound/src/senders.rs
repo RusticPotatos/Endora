@@ -423,6 +423,37 @@ impl Control {
     }
 }
 
+/// The file, in the pipes folder, that names every AirPlay speaker the hub knows. The senders
+/// read it when they start, and tell OwnTone never to reconnect to any of them by itself:
+/// a speaker another device takes is let go, and comes back only when the hub asks for it.
+/// When it changes, the senders start again to read it.
+pub const SPEAKER_NAMES: &str = "airplay-speakers.txt";
+
+/// Writes the AirPlay speakers' names for the senders, one a line, when they differ from what
+/// is there. Says whether it wrote.
+///
+/// # Errors
+/// A file that cannot be written.
+pub fn write_speaker_names(dir: &std::path::Path, names: &[String]) -> std::io::Result<bool> {
+    let mut names: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|n| !n.contains('\n'))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    let text: String = names.iter().map(|n| format!("{n}\n")).collect();
+    let path = dir.join(SPEAKER_NAMES);
+    if std::fs::read_to_string(&path).is_ok_and(|now| now == text) {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(dir)?;
+    let beside = dir.join(format!("{SPEAKER_NAMES}.saving"));
+    std::fs::write(&beside, text)?;
+    std::fs::rename(&beside, &path)?;
+    Ok(true)
+}
+
 /// Makes a sender's pipe, and its folder, if they are not there.
 ///
 /// # Errors
@@ -453,7 +484,10 @@ pub fn found(instance: &dyn Instance) -> Result<Vec<String>, String> {
     let mut names: Vec<String> = instance
         .outputs()?
         .into_iter()
-        .filter(|o| o.kind.eq_ignore_ascii_case("airplay") && !o.name.starts_with("Endora"))
+        // OwnTone says "AirPlay 2" (or "AirPlay" for the older kind): either is a speaker.
+        .filter(|o| {
+            o.kind.to_ascii_lowercase().starts_with("airplay") && !o.name.starts_with("Endora")
+        })
         .map(|o| o.name)
         .collect();
     names.sort();

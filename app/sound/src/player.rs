@@ -51,6 +51,7 @@ pub fn start(
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut engine = Engine::default();
+        let pipes = places.pipes.clone();
         let mut feeds = FeedSet::new(places);
         let mut revision = None;
         let began = Instant::now();
@@ -73,6 +74,17 @@ pub fn start(
                     changes
                 });
                 senders.apply(&changes);
+                // The senders' list of speakers never to reconnect to by themselves.
+                let names: Vec<String> = hub.read(|bay| {
+                    bay.speakers()
+                        .into_iter()
+                        .filter(|s| s.kind == endora_sound::domain::SpeakerKind::AirPlay)
+                        .map(|s| s.name.clone())
+                        .collect()
+                });
+                if let Err(e) = crate::senders::write_speaker_names(&pipes, &names) {
+                    eprintln!("sound: cannot write the senders' speaker names: {e}");
+                }
                 revision = Some(now);
             }
             let due_total = (began.elapsed().as_secs_f64() * f64::from(RATE)) as u64;

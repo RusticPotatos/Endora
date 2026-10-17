@@ -210,6 +210,49 @@ fn the_speakers_to_add_are_the_airplay_ones_but_not_the_hubs_own_receivers() {
 }
 
 #[test]
+fn an_airplay_2_speaker_is_found_too() {
+    // What OwnTone really says, as the first live test showed.
+    let s = setup();
+    for o in s.fake.outputs.lock().unwrap().iter_mut() {
+        o.kind = "AirPlay 2".to_owned();
+    }
+    assert_eq!(
+        found(&s.fake).unwrap(),
+        vec!["Kitchen".to_owned(), "Office".to_owned()]
+    );
+}
+
+#[test]
+fn the_speakers_names_are_written_for_the_senders_only_when_they_change() {
+    let dir = std::env::temp_dir().join(format!("endora-sound-names-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let names = vec![
+        "Office HomePod".to_owned(),
+        "Kitchen".to_owned(),
+        "Kitchen".to_owned(),
+    ];
+    assert!(
+        write_speaker_names(&dir, &names).unwrap(),
+        "the first time it writes"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join(SPEAKER_NAMES)).unwrap(),
+        "Kitchen\nOffice HomePod\n"
+    );
+    assert!(
+        !write_speaker_names(&dir, &names).unwrap(),
+        "unchanged, so the senders are not restarted"
+    );
+    // A name that would break the senders' list is left out.
+    assert!(write_speaker_names(&dir, &["Kitchen".to_owned(), "Bad\nName".to_owned()]).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(dir.join(SPEAKER_NAMES)).unwrap(),
+        "Kitchen\n"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn own_tones_outputs_are_read_with_their_string_ids() {
     let body: Value = serde_json::from_str(
         r#"{"outputs":[{"id":"123456789","name":"Kitchen","type":"AirPlay","selected":true,"volume":33},
