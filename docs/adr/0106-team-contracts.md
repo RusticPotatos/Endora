@@ -23,6 +23,10 @@ now says when a member thinks with Claude, and `container_logs` is listed and ru
 turn only when it is the lead's, by the owner's decision; a cloud developer, reviewer or
 researcher is refused it as Confidential.
 
+Amended 2026-10-17 by [0110](0110-the-teams-rings.md): the contracts are the team's only way to
+the house from the Pi's sandbox too, reached through the team gateway; no key and no direct
+route to a home service enters a sandbox.
+
 ## Context
 
 The owner gave the team the goal "Keep the home lab healthy", and the team could not see the

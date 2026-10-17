@@ -36,6 +36,11 @@ sets on the HQ screen, local by default or a Claude its role may use; the runner
 worker the matching relay, and the worker speaks Anthropic's Messages API to Claude. The lead
 and the reviewer keep the team's lessons in a goal's notes (`note_lesson`).
 
+Amended 2026-10-17 by [0110](0110-the-teams-rings.md): the Pi is a runner. It reaches HQ, still
+unpublished, through the node's team gateway on 8788 (now published on the house's network,
+every route needing a token), and starts each turn as an offline workbench that reaches the
+gateway and nothing else.
+
 ## Context
 
 The always-on plan wants Endora to do real technical work for its owner (changes to their

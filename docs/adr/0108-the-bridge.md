@@ -17,6 +17,10 @@ member whose brain is a Claude model, and by the owner's decision a lead's cloud
 unlisted and refused for a cloud turn, and no other role's cloud turn gets any. Lessons the lead
 or the reviewer note go at the end of a goal's notes for the team.
 
+Amended 2026-10-17 by [0110](0110-the-teams-rings.md): the bridge is how a turn on the Pi reaches
+Sonarr, Radarr, Portainer and Home Assistant, through the team gateway, under the same policy;
+the sandbox reaches no home service any other way.
+
 ## Context
 
 The team keeps the home lab healthy through contracts (0106), and the owner has more than forty

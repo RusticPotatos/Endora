@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Fifty-nine records stand, every one accepted, and forty-nine earlier ones are archived into them
+Sixty records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -119,6 +119,11 @@ that established it.
   from the team's pool. HQ tells the node which turns are cloud; the lead's may read scrubbed
   logs and the download queues, no other Confidential result reaches a cloud turn, and a turn
   on the house's model never reaches Claude.
+- **The team works in rings; Endora is the only way out** ([0110](0110-the-teams-rings.md)).
+  A turn's sandbox on the Pi has a shell and git, no keys and no internet, and reaches only
+  the node's team gateway, which passes it to HQ with its own token. No keys in the sandbox;
+  scanners catch accidents, narrow exits and keeping data away catch intent. The egress proxy
+  (an allowlist the owner grows from the desk) is designed and deferred.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -248,6 +253,7 @@ of an existing record and take the next number.
 | [0107](0107-routines-alarms-and-check-backs.md) | Routines, alarms and check-backs: how the team keeps working | — |
 | [0108](0108-the-bridge.md) | The bridge: Endora's capabilities as the team's tools | — |
 | [0109](0109-a-brain-per-member.md) | A brain per member, and what a cloud turn may read | — |
+| [0110](0110-the-teams-rings.md) | The team's rings: a sandbox on the Pi, the team gateway, the egress proxy, and undo | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

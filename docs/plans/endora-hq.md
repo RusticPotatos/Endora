@@ -7,9 +7,10 @@ team core in `domains/team`, the HQ service in `app/hq` and the office screen; r
 (Endora's own worker, the model relays, the runner on the NAS and its fence); the team's
 contracts on the home lab ([ADR 0106](../adr/0106-team-contracts.md)); routines, alarms
 and check-backs ([ADR 0107](../adr/0107-routines-alarms-and-check-backs.md)); and the bridge,
-approvals, the owner's replies and a goal's notes ([ADR 0108](../adr/0108-the-bridge.md)). Phase 3's
-pairing, Ansible role and Pi are deferred: the NAS runner went first. Phases 5 to 7 are not
-yet.
+approvals, the owner's replies and a goal's notes ([ADR 0108](../adr/0108-the-bridge.md)); and
+the team's rings ([ADR 0110](../adr/0110-the-teams-rings.md)): the Pi as a runner of offline
+workbenches, reaching HQ through the node's team gateway. Phase 3's pairing is deferred, and so
+is the egress proxy. Phases 5 to 7 are not yet.
 
 This document is the specification to build from. It describes behaviour, rules and words,
 not code: implementation starts from here and nowhere else.
@@ -70,7 +71,7 @@ Owner ── Endora console (one sign-in) ──┐
   │ event feed; its own SQLite database and settings                            │
   └──────────────▲─────────────────────────────────────────────────────────────┘
                  │ team protocol (MCP), per-run token
-  ┌──────────────┴──── Runners: the Pi (VLAN), Docker on the NAS (fenced) ─────┐
+  ┌──────────────┴──── Runners: the Pi (fenced), Docker on the NAS (fenced) ───┐
   │ one fresh container per run: the worker, its workspace, nothing else        │
   └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -86,8 +87,9 @@ Owner ── Endora console (one sign-in) ──┐
 
 The six invariants of the always-on plan, as they apply here:
 
-1. **Isolation.** Every run is a fresh container on a fenced runner (the VLAN on the Pi,
-   `docker_egress` on the NAS) that can reach HQ and the model provider only.
+1. **Isolation.** Every run is a fresh container on a fenced runner (`docker_egress` on the
+   Pi and the NAS) that can reach HQ and the model relays only; on the Pi, both through the
+   node's team gateway (ADR 0110).
 2. **Mediated authority.** Members never act on the owner's systems. They ask HQ, HQ asks the
    gateway, and the gateway decides.
 3. **No bypass credentials.** A run holds a token for its own task and run only, which ends
@@ -291,9 +293,10 @@ instructions (how to take a good turn) are written for Endora from scratch.
 
 ### Runners
 
-**Deferred** (phase 3): pairing, the `team_runner` role and the Pi are not built. The NAS
-runner went first, configured by hand and started as its own compose profile (section 15,
-phase 4 as built). What follows is the design for later.
+**Deferred** (phase 3): pairing and the `team_runner` role are not built. The NAS runner went
+first, configured by hand and started as its own compose profile (section 15, phase 4 as
+built); the Pi followed, configured by its own role (section 15, the rings). What follows is
+the design for later.
 
 A runner is a small program on a host. It joins by pairing:
 
@@ -305,8 +308,8 @@ A runner is a small program on a host. It joins by pairing:
 3. The owner approves it on their desk.
 4. Endora tests it: it can reach HQ and the model provider, and it cannot reach the LAN.
 
-The network fence is never the runner's own: the VLAN rules on the Pi, `docker_egress` on the
-NAS. Test environments start as containers; virtual machines come later.
+The network fence is never the runner's own: `docker_egress` on the Pi (ADR 0110: the
+`endora_sandbox` network reaches the NAS's team gateway and nothing else) and on the NAS. Test environments start as containers; virtual machines come later.
 
 ## 7. The gateway and real actions
 
@@ -659,6 +662,25 @@ in `domains/capabilities/src/bridge.rs`, in this order:
   `note_lesson` (section 6); the instructions say "When the owner corrects you, or you learn
   something about this house that the team will need again, note it with note_lesson so nobody
   asks twice."
+
+### The rings (owner's decisions of 2026-10-17, [ADR 0110](../adr/0110-the-teams-rings.md))
+
+- **Three rings**: the sandbox (the Pi, a fresh container a turn), the lab (the Pi, long-lived
+  test containers, later), production (the NAS, only through the contracts and the bridge,
+  with evidence and undo, later). Agents never hold keys; Endora is the gatekeeper.
+- **The team gateway**: the node's team listener, published on 8788 (every route needs a
+  token), passes `/team-gateway/mcp` to HQ's `/v1/team/mcp` and `/team-gateway/runner/...` to
+  HQ's `/v1/runner/...`, the method, body and caller's `Authorization` untouched, to HQ's URL
+  and nowhere else (4 MB in, 8 MB out, ten seconds, no redirects followed). HQ stays
+  unpublished.
+- **The Pi's runner**: `HQ_URL=http://<nas>:8788/team-gateway`. Through the gateway its
+  defaults are the `endora-workbench` image on `endora_sandbox`, with the team protocol and the
+  model relays at the gateway's listener; each turn is a workbench (`ENDORA_WORKBENCH=1`,
+  `/work` in memory owned by uid 10001, a gigabyte, two CPUs, 256 processes). `WORKBENCH=0`
+  or `1`, and every `WORKER_*` and `TEAM_NETWORK`, override.
+- **Ring 1 is offline**: no DNS, no internet, no house network but the gateway. The egress
+  proxy (an allowlist grown by the owner's Approve on desk cards, then optionally inspection
+  with a team CA), canaries and credential injection are designed and deferred (ADR 0110).
 
 ## 16. Later, and not at all
 

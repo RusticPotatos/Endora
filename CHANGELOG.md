@@ -9,6 +9,18 @@ tagged release.
 
 ### Added
 
+- **The team's rings, ring 1: a sandbox on the Pi** ([ADR 0110](docs/adr/0110-the-teams-rings.md),
+  owner's decisions of 2026-10-17). The node's team listener (8788) is published on the house's
+  network, every route on it needing a token, and serves the **team gateway**:
+  `/team-gateway/mcp` and `/team-gateway/runner/...` pass a worker's or a runner's request on to
+  HQ's `/v1/team/mcp` and `/v1/runner/...` with its method, body and own `Authorization`
+  untouched, to HQ's URL and nowhere else, capped in size and time. HQ stays unpublished. A
+  runner whose `HQ_URL` is the gateway asks for turns there and starts each as an offline
+  **workbench** on the Pi's `endora_sandbox` network (`ENDORA_WORKBENCH=1`, a `/work` in memory,
+  more room), reaching HQ and the model relays only through the gateway. The NAS's runner is
+  unchanged. The ADR records the four layers against leaks (no keys in the sandbox, one exit
+  for writes, exact-match blocking with variants, canaries), why machine-learning detection of
+  personal data is skipped, and the egress proxy as designed and deferred.
 - **A brain per member, and what a cloud turn may read** ([ADR 0109](docs/adr/0109-a-brain-per-member.md),
   owner's decisions of 2026-10-17). Each member of HQ's team has a brain, local by default or a
   Claude its role may use (Sonnet or Haiku for the lead, developer and reviewer; Haiku for the
