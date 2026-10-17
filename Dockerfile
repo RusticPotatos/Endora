@@ -143,9 +143,9 @@ ENTRYPOINT ["endora-sound-hub"]
 # endora-workbench:latest:
 #   docker buildx build --platform linux/arm64 --target workbench -t endora-workbench:latest --load .
 # It is not the node's image: the node keeps the last stage. Run with a read-only root, /work as
-# a tmpfs, the team CA mounted at /etc/endora/team-ca.pem, and HTTPS_PROXY naming Endora's
-# egress proxy, which is its only way out. The entrypoint builds the trust bundle in /work and
-# runs what it is given, the worker unless told otherwise.
+# a tmpfs owned by the workbench user, and HTTPS_PROXY (and https_proxy, which curl and git read
+# for plain HTTP) naming Endora's egress proxy, its only way out. The proxy does not decrypt TLS,
+# so the system's own certificates are all the sandbox trusts.
 FROM debian:bookworm-slim AS workbench
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -153,13 +153,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --home-dir /work --no-create-home --shell /bin/bash workbench
 COPY --from=builder /endora-worker /usr/local/bin/endora-worker
-COPY --chmod=755 scripts/workbench-entry.sh /usr/local/bin/workbench-entry
 ENV HOME=/work
 ENV ENDORA_WORKBENCH=1
 WORKDIR /work
 USER workbench
-ENTRYPOINT ["/usr/local/bin/workbench-entry"]
-CMD ["endora-worker"]
+ENTRYPOINT ["endora-worker"]
 
 # --- runtime stage ---------------------------------------------------------
 FROM debian:bookworm-slim

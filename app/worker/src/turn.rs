@@ -264,11 +264,11 @@ fn instructions(posted: bool, contracts: bool, lessons: bool, shell: bool) -> St
     if shell {
         told.push_str(
             "\n\nYou have a real shell in a disposable sandbox: run commands, git, curl and \
-             python there with the shell tool, and say why. The internet is readable through \
-             Endora's proxy; sending data anywhere but known services is blocked. Keys are never \
-             in the sandbox: the proxy adds them for known services, so never look for one. \
-             Anything you leave in /work is gone when the turn ends: write durable findings in \
-             the task's thread",
+             python there with the shell tool, and say why. The internet is reachable through \
+             Endora's proxy, to an allowlist of sites; a site that is blocked goes to the owner \
+             as a request to allow it. The house's services are not reachable from the shell: \
+             use them through the team's tools. Anything you leave in /work is gone when the \
+             turn ends: write durable findings in the task's thread",
         );
         told.push_str(if lessons {
             ", or with note_lesson."
@@ -568,8 +568,8 @@ fn shell_tool() -> Value {
         "name": SHELL,
         "description": "Run a command with bash in your sandbox, in /work, and read what it \
             printed (stdout and stderr together, its start and end when long) and its exit \
-            code. The internet is readable through Endora's proxy; nothing you leave here \
-            outlives the turn.",
+            code. The internet is reachable through Endora's proxy, to an allowlist of sites; \
+            the house's services are not. Nothing you leave here outlives the turn.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -706,7 +706,7 @@ impl Ledger {
     }
 
     /// Notes a command run in the workbench's shell, said as `said`: never a read, since a
-    /// command may send what it likes to the services the proxy lets it.
+    /// command may send what it likes to the sites the proxy lets it.
     fn ran(&mut self, said: String) {
         let outcome = if said.starts_with("ran ") {
             Outcome::Done
@@ -1325,11 +1325,11 @@ mod tests {
         assert_eq!(
             parts[3],
             "You have a real shell in a disposable sandbox: run commands, git, curl and python \
-             there with the shell tool, and say why. The internet is readable through Endora's \
-             proxy; sending data anywhere but known services is blocked. Keys are never in the \
-             sandbox: the proxy adds them for known services, so never look for one. Anything \
-             you leave in /work is gone when the turn ends: write durable findings in the task's \
-             thread, or with note_lesson."
+             there with the shell tool, and say why. The internet is reachable through Endora's \
+             proxy, to an allowlist of sites; a site that is blocked goes to the owner as a \
+             request to allow it. The house's services are not reachable from the shell: use \
+             them through the team's tools. Anything you leave in /work is gone when the turn \
+             ends: write durable findings in the task's thread, or with note_lesson."
         );
         assert!(!told.contains("  ") && !told.contains('\\'), "{told}");
         let told = instructions(true, false, false, true);

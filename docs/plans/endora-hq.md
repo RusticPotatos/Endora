@@ -671,11 +671,10 @@ workbench is for reading the internet, cloning, trying and checking.
   dnsutils, ping, procps and less, and `endora-worker`. It runs as the unprivileged
   `workbench` user (uid 10001) with a read-only root; `/work` is its home and workspace, a
   tmpfs the runner mounts owned by that user (`uid=10001,gid=10001`).
-- **Trust**: `scripts/workbench-entry.sh` builds a bundle of the system's certificates and the
-  team CA (mounted read-only at `/etc/endora/team-ca.pem`) in `/work`, points `SSL_CERT_FILE`,
-  `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and `REQUESTS_CA_BUNDLE` at it, sets both spellings of
-  the proxy variables, and runs the worker. The runner must keep that entrypoint (give the
-  worker as the command), or the sandbox trusts no intercepted site.
+- **Trust and the way out**: the proxy does not decrypt TLS, so the sandbox trusts only the
+  system's own certificates; no extra CA is mounted. Its entrypoint is `endora-worker`. The
+  runner gives `HTTPS_PROXY` and `https_proxy` (curl and git read the lower-case one for plain
+  HTTP), naming Endora's egress proxy, which tunnels only to the team's allowlist.
 - **The `shell` tool**: offered only when `ENDORA_WORKBENCH=1` (the image sets it).
   `{ "command", "why", "seconds"? }` runs `bash -lc` in `/work`, for 60 s unless told, at most
   300, with its whole process group killed when out of time; stdout and stderr together, kept
@@ -686,8 +685,9 @@ workbench is for reading the internet, cloning, trying and checking.
   A call without `why` is refused. Each call is in the turn's line, the command on one line and
   cut to 60 characters: "ran `git clone …` (exit 128)", never as a read.
 - **The instructions** gain a paragraph: a real shell in a disposable sandbox; the internet
-  readable through Endora's proxy; sending anywhere but known services blocked; keys never in
-  the sandbox, added by the proxy for known services; `/work` gone when the turn ends, so
+  reachable through Endora's proxy, to an allowlist of sites; a blocked site goes to the owner
+  as a request to allow it; the house's services are not reachable from the shell and are used
+  through the team's tools (the bridge and the contracts); `/work` gone when the turn ends, so
   durable findings go in the task's thread (or with `note_lesson`, for a member who has it).
 
 ## 16. Later, and not at all

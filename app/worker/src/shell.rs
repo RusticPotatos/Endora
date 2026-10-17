@@ -1,8 +1,8 @@
 //! The workbench's shell (ring 1): a real `bash` in the disposable sandbox the worker runs in,
 //! offered only there. It is not a contract and goes to neither HQ nor the node: the command
-//! runs right here, because the sandbox itself is the boundary. Its network is Endora's egress
-//! proxy, which reads anything, sends only to known services and adds their keys itself, so
-//! nothing the shell can reach holds a key.
+//! runs right here, because the sandbox itself is the boundary. Its only way out is Endora's
+//! egress proxy, to the internet and only to the team's allowlist of sites; the house's own
+//! services are not reachable from it, and are used through the bridge and the contracts.
 //!
 //! A command runs as `bash -lc` in the workbench's directory, with stdout and stderr together,
 //! for at most [`LONGEST`]; what it printed is kept to [`OUTPUT_AT_MOST`] bytes, its head and
