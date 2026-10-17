@@ -33,7 +33,9 @@ pub const REVIEW_WORK: &str = "Check every claim in the thread against your tool
 pub const REVIEW_DRAFT: &str = "Check every claim in the draft against your tools \
     (homelab_status, container_logs, the queues). If everything holds, call ask_owner with the \
     draft, corrected if needed. If not, send it back to its owner with exactly what does not \
-    hold (review, verdict send_back). Send back any problem that no tool shows causing harm.";
+    hold (review, verdict send_back). Send back any problem that no tool shows causing harm. \
+    Send back, never forward, a draft that asks the owner for something the team's own tools \
+    could find (what is stuck, why, what a log says): the team finds it, the owner decides.";
 
 /// Whether work needs the gate (tests, lint and build on a runner) before a review can close
 /// it: everything but a routine's task and work under a goal the home lab's routine serves,

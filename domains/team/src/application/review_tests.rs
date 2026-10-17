@@ -179,6 +179,15 @@ fn a_home_lab_question_is_a_draft_for_the_reviewer_not_a_card_on_the_desk() {
         "Check every claim in the draft against your tools (homelab_status, container_logs, the \
          queues). If everything holds, call ask_owner with the draft, corrected if needed."
     ));
+    // Live, a reviewer forwarded a draft that only asked the owner for what the queues could
+    // tell: such a draft goes back, never on.
+    assert!(
+        review
+            .told
+            .contains("Send back, never forward, a draft that asks the owner for something"),
+        "{}",
+        review.told
+    );
     assert!(
         review
             .told
