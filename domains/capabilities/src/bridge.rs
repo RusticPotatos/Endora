@@ -5,7 +5,9 @@
 //!
 //! 1. **Never offered**: a tool the owner switched off; a Restricted one (where they are,
 //!    and the like); Endora's own administration (a connection's settings and their test);
-//!    and anything about the team, its money, or the owner's chat, brain, memory or mail.
+//!    anything about the team, its money, or the owner's chat, brain, memory or mail; and a
+//!    switch of the owner's own devices (an act of the tool server paired with Home
+//!    Assistant), which the team's remit never was.
 //! 2. **The data tier**: a Confidential tool's result is given only to a turn on a local
 //!    model, but for the few the owner allowed a lead thinking with Claude ([`may_see`]).
 //! 3. **The member's role**: reads for every role, acts only for the roles that act
@@ -139,6 +141,23 @@ pub struct Candidate {
     pub administration: bool,
     /// Whether what it returns is a stranger's words (ADR 0064).
     pub third_party: bool,
+    /// Whether it switches the owner's own devices ([`switches_the_owners_devices`]).
+    pub owners_devices: bool,
+}
+
+/// Whether a tool server's tool `id` (`server.tool`) of `kind` switches the owner's own
+/// devices: an act of the server Endora pairs with Home Assistant, `paired` by the owner's
+/// setting (see [`crate::paired_server`]). Live, on 2026-10-17, the developer asked to run
+/// `HassTurnOff` on a container's name "to restart" it: the team works on the home lab's
+/// containers, and turning the owner's lights, switches and appliances on or off was never
+/// part of that. Only the tool the owner named the server's reader is a read (ADR 0054), and
+/// it stays under the tier's rules; every other tool of that server is kept from the team.
+#[must_use]
+pub fn switches_the_owners_devices(id: &str, kind: Kind, paired: &str) -> bool {
+    kind == Kind::Act
+        && id
+            .split_once('.')
+            .is_some_and(|(server, _)| server == paired)
 }
 
 /// One tool the team is offered.
@@ -195,6 +214,9 @@ pub fn kept_off(c: &Candidate) -> Option<&'static str> {
     let lower = c.id.to_ascii_lowercase();
     if c.from_a_server && NEVER_WORDS.iter().any(|w| lower.contains(w)) {
         return Some("the owner's, never the team's");
+    }
+    if c.owners_devices {
+        return Some("the owner's devices, never the team's");
     }
     if !c.ready {
         return Some("not set up");
@@ -583,6 +605,7 @@ mod tests {
             ready: true,
             administration: false,
             third_party: false,
+            owners_devices: false,
         }
     }
 
@@ -644,9 +667,60 @@ mod tests {
             None
         );
         assert_eq!(
-            kept(&candidate("home.HassTurnOn", Kind::Act, Stance::Ask)),
+            kept(&candidate("wiki.add_page", Kind::Act, Stance::Ask)),
             None
         );
+    }
+
+    #[test]
+    fn the_owners_devices_are_never_the_teams_to_switch() {
+        // Live, 2026-10-17: the developer asked to run Home Assistant's HassTurnOff on a
+        // container's name "to restart" it. Switching the owner's devices was never the team's.
+        for tool in [
+            "home-assistant.HassTurnOff",
+            "home-assistant.HassTurnOn",
+            "home-assistant.intent.HassTurnOff",
+        ] {
+            assert!(
+                switches_the_owners_devices(tool, Kind::Act, "home-assistant"),
+                "{tool}"
+            );
+            let mut c = candidate(tool, Kind::Act, Stance::Auto);
+            c.owners_devices = true;
+            assert_eq!(kept_off(&c), Some("the owner's devices, never the team's"));
+            assert!(bridge(&c).is_err());
+        }
+        // The server is the one the owner paired with Home Assistant, by its name.
+        assert!(switches_the_owners_devices(
+            "house.HassTurnOff",
+            Kind::Act,
+            "house"
+        ));
+        assert!(!switches_the_owners_devices(
+            "home-assistant.HassTurnOff",
+            Kind::Act,
+            "house"
+        ));
+        assert!(!switches_the_owners_devices(
+            "home-assistant-extra.HassTurnOff",
+            Kind::Act,
+            "home-assistant"
+        ));
+        // A read, the one the owner named the server's reader, stays under the tier's rules.
+        assert!(!switches_the_owners_devices(
+            "home-assistant.GetLiveContext",
+            Kind::Read,
+            "home-assistant"
+        ));
+        let reader = candidate("home-assistant.GetLiveContext", Kind::Read, Stance::Auto);
+        assert_eq!(kept_off(&reader), None);
+        assert_eq!(bridge(&reader).unwrap().tier, Tier::Confidential);
+        // Built-in skills are no server's tools.
+        assert!(!switches_the_owners_devices(
+            "home_assistant",
+            Kind::Act,
+            "home-assistant"
+        ));
     }
 
     #[test]
@@ -655,11 +729,11 @@ mod tests {
         assert_eq!(read.as_tool()["kind"], "read");
         assert_eq!(read.input, json!({ "type": "object", "properties": {} }));
         assert!(!read.takes_arguments);
-        let mut act = candidate("home.HassTurnOn", Kind::Act, Stance::Ask);
+        let mut act = candidate("wiki.add_page", Kind::Act, Stance::Ask);
         act.input_schema = Some(json!({ "type": "object",
             "properties": { "name": { "type": "string" } }, "required": ["name"] }));
         let act = bridge(&act).unwrap();
-        assert_eq!(act.name, "home__HassTurnOn");
+        assert_eq!(act.name, "wiki__add_page");
         assert_eq!(act.tier, Tier::Confidential);
         assert_eq!(act.input["required"], json!(["name", "why"]));
         assert!(act.takes_arguments);
