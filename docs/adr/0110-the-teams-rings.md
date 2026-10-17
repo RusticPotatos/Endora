@@ -60,6 +60,13 @@ public ports, and of the house's network only the NAS's team gateway (port 8788)
 firewall denies everything incoming but SSH from the house's network. The NAS's address is
 configuration (`ENDORA_NAS_ADDR`, never in git).
 
+Found on the first live run (2026-10-17): Docker's own resolver answers a container on a
+user-defined network and forwards its lookups through the host, past the network's egress
+rules, so a lookup could carry data out. Each sandbox turn's DNS server is therefore an
+address that never answers (`192.0.2.1`, TEST-NET-1): no name resolves, and the workbench
+reaches the gateway by address. Tested on the Pi: lookups blocked, gateway reached, the NAS's
+other ports, the internet and the Pi itself refused.
+
 ### The team gateway
 
 The node's team listener (port 8788) is published on the house's network. It is safe to publish

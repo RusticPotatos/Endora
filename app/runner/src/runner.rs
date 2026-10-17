@@ -150,7 +150,7 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
         env.push("ENDORA_WORKBENCH=1".to_owned());
         tmpfs["/work"] = json!(WORK_FOLDER);
     }
-    json!({
+    let mut spec = json!({
         "Image": work.image,
         "Entrypoint": ["endora-worker"],
         "Env": env,
@@ -165,8 +165,19 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
             "SecurityOpt": ["no-new-privileges:true"],
             "Tmpfs": tmpfs,
         },
-    })
+    });
+    if work.workbench {
+        // Docker's own resolver forwards a sandbox's lookups through the host, past the
+        // network's egress rules, so a lookup could carry data out ("<secret>.example.com").
+        // Pointed at an address that never answers (TEST-NET-1), no name resolves; the
+        // workbench reaches the gateway by address, and needs none.
+        spec["HostConfig"]["Dns"] = json!([NO_RESOLVER]);
+    }
+    spec
 }
+
+/// An address that never answers (RFC 5737's TEST-NET-1): a sandbox's DNS server.
+const NO_RESOLVER: &str = "192.0.2.1";
 
 /// A turn's container the runner is watching.
 struct Running {
@@ -772,6 +783,10 @@ mod tests {
                         "/data": "size=1m",
                         "/work": "size=256m,uid=10001,gid=10001,mode=0700",
                     },
+                    // Docker's own resolver forwards a sandbox's lookups through the host, past
+                    // the network's egress rules: a lookup can carry data out. Pointed at an
+                    // address that never answers, no name resolves.
+                    "Dns": ["192.0.2.1"],
                 },
             })]
         );

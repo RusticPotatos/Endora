@@ -8,7 +8,9 @@
 
 - name: What Docker's repository and the Docker modules need
   ansible.builtin.apt:
-    name: [ca-certificates, python3-requests]
+    # python3-docker: the Docker modules (community.docker.docker_network) talk to Docker
+    # through it; without it the sandbox network's task fails.
+    name: [ca-certificates, python3-requests, python3-docker]
     state: present
     update_cache: true
     cache_valid_time: 3600
