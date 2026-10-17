@@ -79,6 +79,10 @@ a local one would.
 - A reply that has begun to stream is never finished by another model.
 - An answer from an everyday cloud entry is the everyday answer, not an escalation: only the
   deep list, asked because the everyday answer failed a check, is disclosed as one.
+- Every reply says which model wrote it and whether it runs on the house's network, so the
+  note on a turn the deep model planned names where the skills' results were read: "read by
+  qwen2.5:7b on your network", or "read by claude-sonnet-5-5, disguised" when a cloud model is
+  first in Everyday.
 - A provider's key belongs to its endpoint: a provider moved to another endpoint without a new
   key loses the old one. "Forget everything" forgets the old settings too, so nothing moves
   over again. When the lists cannot be read, the environment's model answers, never the old

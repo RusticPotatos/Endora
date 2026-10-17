@@ -56,10 +56,11 @@ pub use endora_understanding::{
     ResearchReport, ResearchRepository, ResearchStatus,
 };
 pub use ports::{
-    Butler, ButlerContext, ButlerReply, Calendar, CapabilityTool, Clock, ConversationSummary,
-    ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository, FormedBelief, IdSource,
-    MemorySnapshot, MemoryStore, ModelUsage, NeedKind, ProposalError, RepositoryError,
-    ResearchDelivery, ToolCall, TurnMessage, UntrustedReader, UsageLog, UsageTotals,
+    AnsweredBy, Butler, ButlerContext, ButlerReply, Calendar, CapabilityTool, Clock,
+    ConversationSummary, ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository,
+    FormedBelief, IdSource, MemorySnapshot, MemoryStore, ModelUsage, NeedKind, ProposalError,
+    RepositoryError, ResearchDelivery, ToolCall, TurnMessage, UntrustedReader, UsageLog,
+    UsageTotals,
 };
 pub use research::{ResearchRun, conduct_research};
 pub use usecases::{

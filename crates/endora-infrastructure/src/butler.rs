@@ -168,7 +168,18 @@ impl LlmButler {
         match result {
             Err(e) if self.reports_failures => Err(e),
             Err(_) => Ok(degraded_reply()),
-            ok => ok,
+            Ok(reply) => Ok(self.signed(reply)),
+        }
+    }
+
+    /// The reply, saying which model wrote it and whether it runs on the house's network.
+    fn signed(&self, reply: ButlerReply) -> ButlerReply {
+        ButlerReply {
+            answered_by: Some(endora_application::AnsweredBy {
+                model: self.model.clone(),
+                on_the_network: is_private_endpoint(&self.base_url),
+            }),
+            ..reply
         }
     }
 
@@ -534,7 +545,7 @@ impl Butler for LlmButler {
                 on_token(&reply.text);
                 Ok(reply)
             }
-            ok => ok,
+            Ok(reply) => Ok(self.signed(reply)),
         }
     }
 
@@ -552,6 +563,7 @@ impl Butler for LlmButler {
         // Falls back to the one-shot round if streaming fails for any reason, so a
         // stream that dies mid-flight still produces an answer.
         self.stream_turn(conversation, preferences, context, on_token)
+            .map(|reply| self.signed(reply))
             .or_else(|_| self.take_turn(conversation, preferences, context))
     }
 
@@ -2449,6 +2461,46 @@ mod tests {
             }
         });
         format!("http://127.0.0.1:{port}/v1")
+    }
+
+    #[test]
+    fn a_reply_says_which_model_wrote_it_and_where_it_runs() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut buf = [0u8; 65536];
+                let _ = conn.read(&mut buf);
+                let body = r#"{"choices":[{"message":{"role":"assistant","content":"Hello."},"finish_reason":"stop"}]}"#;
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let butler = LlmButler::with_config(
+            format!("http://127.0.0.1:{port}/v1"),
+            "qwen2.5:7b".to_owned(),
+            String::new(),
+            Sampling::default(),
+        )
+        .reporting_failures();
+        let reply = butler
+            .take_turn(
+                &[endora_application::TurnMessage::User("hi".to_owned())],
+                &[],
+                &ButlerContext::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            reply.answered_by,
+            Some(endora_application::AnsweredBy {
+                model: "qwen2.5:7b".to_owned(),
+                on_the_network: true,
+            })
+        );
     }
 
     #[test]
