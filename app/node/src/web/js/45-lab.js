@@ -225,6 +225,11 @@ function viewHouse() {
 // an hour and asks again when it runs out. The refresh token never leaves Endora.
 let MUSIC_TOKEN = { access: "", until: 0 };
 
+// Spotify can be played with: connected, also while a new approval waits over that sign-in.
+function spotifyUsable() {
+  return !!(SPOTIFY && (SPOTIFY.state === "connected" || SPOTIFY.connected));
+}
+
 async function spotifyToken(fresh) {
   if (!fresh && MUSIC_TOKEN.access && Date.now() < MUSIC_TOKEN.until) return MUSIC_TOKEN.access;
   const lent = await api("POST", "/v1/connections/spotify/token", {});
@@ -245,7 +250,11 @@ async function spotify(method, path, body, retried) {
     // Spotify says why; a missing permission is an older sign-in, not a missing Premium.
     let said = "";
     try { said = String(((await res.json()) || {}).error.message || ""); } catch (_) {}
-    if (/scope/i.test(said)) throw new Error("Endora's Spotify sign-in doesn't allow that yet: in Settings → Connections, disconnect Spotify and connect it again");
+    if (/scope/i.test(said)) {
+      // An older sign-in: Music offers to approve Endora again, in one tap.
+      MUSIC.approveAgain = true;
+      throw new Error("Endora's Spotify sign-in doesn't allow that yet: tap Connect again at the top of Music");
+    }
     if (/premium/i.test(said) || !said) throw new Error("Spotify needs Premium for that");
     throw new Error("Spotify said no: " + said);
   }
@@ -286,7 +295,7 @@ async function loadMusic() {
     await soundTicket();
   }
   try { SPOTIFY = await api("GET", "/v1/connections/spotify"); } catch (_) { SPOTIFY = null; }
-  if (!SPOTIFY || SPOTIFY.state !== "connected") return;
+  if (!spotifyUsable()) return;
   try {
     const [now, devices] = await Promise.all([spotify("GET", "/me/player"), spotify("GET", "/me/player/devices")]);
     MUSIC.now = now;
@@ -382,11 +391,18 @@ function viewMusic() {
   const head = `${labCrumbs({ label: "Music" })}<h2>Music</h2>
     <div class="row" style="justify-content:flex-end;margin:-4px 0 8px;"><button class="ghost" data-act="go:speakers">Speakers: what plays where</button></div>`;
   if (!SPOTIFY) return `${head}<div class="note">Asking Endora…</div>`;
-  if (SPOTIFY.state !== "connected") {
+  if (!spotifyUsable()) {
     return `${head}<div class="card"><div class="title">Spotify is not connected</div>
       <div class="sub">Connect it once and every device plays with it: this one, the handheld and chat.</div>
       <div class="row" style="justify-content:flex-end;margin-top:8px;"><button class="primary" data-act="go:spotify">Connect Spotify</button></div></div>`;
   }
+  // An older sign-in that Spotify refused something to, or a new approval started and not
+  // finished: one tap goes to Spotify and comes back. The old sign-in keeps working meanwhile.
+  const again = MUSIC.approveAgain || SPOTIFY.state === "waiting"
+    ? `<div class="card"><div class="title">Approve Endora on Spotify again</div>
+        <div class="sub">Endora now asks Spotify for a little more, such as saving songs to your Liked Songs. Approving takes you to Spotify and back; until then, the rest keeps working.</div>
+        <div class="row" style="justify-content:flex-end;margin-top:8px;"><button class="primary" data-act="spotify:begin:endora">Connect again</button></div></div>`
+    : "";
   const n = MUSIC.now;
   const item = n && n.item;
   const art = item && item.album && (item.album.images || []).slice(-2)[0];
@@ -442,7 +458,7 @@ function viewMusic() {
       <button class="ghost" data-act="music:play:${key}">Play</button></div>`;
   const found = MUSIC.found.map((x, i) => row(x, "f" + i)).join("");
   const lists = MUSIC.lists.map((x, i) => row(x, "l" + i)).join("");
-  return `${head}
+  return `${head}${again}
     ${MUSIC.error ? `<div class="note">${esc(MUSIC.error)}</div>` : ""}
     ${nowCard}
     <h3>Play on</h3>

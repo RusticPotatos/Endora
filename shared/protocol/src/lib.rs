@@ -129,6 +129,9 @@ pub struct ConnectionStatus {
     /// When connected: whose account.
     #[serde(default)]
     pub account: Option<String>,
+    /// A sign-in that works, also while `waiting` for a new approval over it.
+    #[serde(default)]
+    pub connected: bool,
 }
 
 /// An access token lent by the node (`POST /v1/connections/spotify/token`). The node keeps the
@@ -307,6 +310,7 @@ pub mod samples {
             redirect: Some("http://127.0.0.1:8888/callback".to_owned()),
             started_ms: Some(1_792_065_600_000),
             account: None,
+            connected: false,
         }
     }
 

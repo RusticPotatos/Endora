@@ -585,7 +585,8 @@ function viewSpotify() {
     return `${trail}<h2>Spotify</h2>
       <div class="card"><div class="title">${esc(s.detail)} <span class="pill concluded">Connected</span></div>
         <div class="sub">The web console, the handheld and chat all use this one sign-in; it stays on Endora.</div>
-        <div class="row" style="justify-content:flex-end;margin-top:8px;"><button class="ghost danger" data-act="spotify:disconnect">Disconnect</button></div>
+        <div class="sub">Connect again when Endora says its sign-in doesn't allow something: you approve on Spotify and come back, and this sign-in keeps working until then.</div>
+        <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px;"><button class="ghost danger" data-act="spotify:disconnect">Disconnect</button><button class="primary" data-act="spotify:begin:endora">Connect again</button></div>
       </div>${setup}`;
   }
   if (s.state === "waiting") {
@@ -593,7 +594,7 @@ function viewSpotify() {
     const pasted = (s.redirect || "").startsWith("http://127.0.0.1");
     return `${trail}<h2>Spotify</h2>
       <div class="card"><div class="title">${esc(s.detail)} <span class="pill">Waiting</span></div>
-        <div class="sub">Started ${esc(started)}, on this or another of your devices. Open the address, approve Endora, and ${pasted ? "paste the address Spotify sends you to (it will not load; that is expected) below" : "you will come back here by yourself"}.</div>
+        <div class="sub">Started ${esc(started)}, on this or another of your devices. Open the address, approve Endora, and ${pasted ? "paste the address Spotify sends you to (it will not load; that is expected) below" : "you will come back here by yourself"}.${s.connected ? " Until then, the sign-in Endora has keeps working." : ""}</div>
         <div class="row" style="gap:8px;margin-top:8px;"><a class="ghost" href="${esc(s.sign_in_url || "#")}" rel="noreferrer">Open Spotify to approve</a>
           <button class="ghost" data-act="spotify:check">Check again</button></div>
         <div class="form" style="margin-top:8px;">
