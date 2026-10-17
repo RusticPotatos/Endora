@@ -104,6 +104,21 @@ pub(super) struct ChatRequest {
     message: String,
     #[serde(default)]
     request_id: Option<String>,
+    /// Sent with 🔒 (ADR 0105): Restricted, so this turn, and any while it is in view, is
+    /// answered on the house's own network and never leaves it, disguised or not.
+    #[serde(default)]
+    private: bool,
+}
+
+impl ChatRequest {
+    /// The message as it is kept: a private one carries the mark the one door refuses.
+    fn text(&self) -> String {
+        let mark = endora_application::egress::RESTRICTED_MARK;
+        if self.private && !self.message.starts_with(mark) {
+            return format!("{mark}{}", self.message);
+        }
+        self.message.clone()
+    }
 }
 
 /// Sends a message to the butler; returns its reply and what it did this turn.
@@ -154,7 +169,7 @@ pub(super) async fn send_chat(
             ids.as_ref(),
             clock.as_ref(),
             &context,
-            &req.message,
+            &req.text(),
             req.request_id.as_deref(),
             &mut |_| {},
             &mut |_| {},
@@ -267,7 +282,7 @@ pub(super) async fn stream_chat(
     let capabilities = state.capabilities.clone();
     let summary = state.summary.clone();
     let mcp = mcp_snapshot(&state);
-    let message = req.message;
+    let message = req.text();
     let request_id = req.request_id;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();

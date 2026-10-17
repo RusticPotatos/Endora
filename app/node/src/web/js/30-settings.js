@@ -1,78 +1,3 @@
-// Show the single-model fields or the router+synth fields as the mixture toggle
-// flips, without a re-render (so typed-but-unsaved values survive).
-function toggleMixture(on) {
-  const set = (id, show, mode) => { const el = document.getElementById(id); if (el) el.style.display = show ? (mode || "block") : "none"; };
-  set("m-single", !on, "flex");      // single model name (top of card)
-  set("m-single-adv", !on);          // single model's sampling (in Advanced)
-  set("m-mixslots", on);             // router + synth (in Advanced)
-}
-
-// Fill the Models form from a preset (leaves the API-key field untouched).
-function applyModelPreset(name) {
-  const p = MODEL_PRESETS[name];
-  if (!p) return;
-  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = (v === undefined || v === null) ? "" : v; };
-  set("m-base", p.base_url);
-  for (const slot of ["single", "router", "synth"]) {
-    const s = p[slot] || {};
-    set(`m-${slot}-model`, s.model);
-    set(`m-${slot}-temperature`, s.temperature);
-    set(`m-${slot}-top_p`, s.top_p);
-    set(`m-${slot}-top_k`, s.top_k);
-    set(`m-${slot}-repeat_penalty`, s.repeat_penalty);
-  }
-}
-
-// Fill the Deep-model form from a provider preset (leaves the key untouched).
-function applyDeepPreset(name) {
-  const p = MODEL_PRESETS[name];
-  if (!p) return;
-  const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
-  set("deep-url", p.base_url);
-  set("deep-model", (p.single && p.single.model) || "");
-}
-
-// One model's name field (stacked, full-width). Backed by the shared "m-models"
-// datalist, so a Discover populates a picker for every everyday slot at once.
-function modelName(prefix, slot, ph) {
-  return `<div class="field"><label>Model</label>
-    <input id="m-${prefix}-model" list="m-models" placeholder="${ph}" value="${esc((slot && slot.model) || "")}" /></div>`;
-}
-
-// Ask the endpoint for its model list and fill the matching datalist. Uses the
-// key typed in the form, or the stored key for the role when that's blank.
-async function discoverModels(role) {
-  const isDeep = role === "deep";
-  const base = ((document.getElementById(isDeep ? "deep-url" : "m-base") || {}).value || "").trim();
-  const key = ((document.getElementById(isDeep ? "deep-key" : "m-key") || {}).value || "").trim();
-  if (!base) { flash("Enter the endpoint first.", "err"); return; }
-  const body = { base_url: base, role };
-  if (key) body.api_key = key;
-  const picker = document.getElementById(isDeep ? "deep-model-picker" : "m-model-picker");
-  if (picker) picker.innerHTML = `<div class="sub">Listing models…</div>`;
-  try {
-    const r = await api("POST", "/v1/models/discover", body);
-    const models = r.models || [];
-    // Keep the datalist (autocomplete on the model fields) …
-    const list = document.getElementById(isDeep ? "deep-models" : "m-models");
-    if (list) list.innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join("");
-    // … and render a visible, tappable picker (the datalist alone is invisible on
-    // mobile, so a discovered list was easy to miss).
-    if (picker) {
-      picker.innerHTML = models.length
-        ? `<div class="sub" style="margin:6px 0 4px;">Tap a model to use it:</div>`
-          + `<div class="model-picker">` + models.map((m) =>
-              `<button type="button" class="pill pick" data-model="${esc(m)}" onclick="pickModel('${role}', this.dataset.model)">${esc(m)}</button>`
-            ).join("") + `</div>`
-        : `<div class="sub">No models returned.</div>`;
-    }
-    flash(models.length ? `Found ${models.length} models — tap one below to pick it.` : "No models returned.", models.length ? "ok" : "err");
-  } catch (e) {
-    if (picker) picker.innerHTML = "";
-    flash("Couldn't list models: " + e.message, "err");
-  }
-}
-
 // Catalog results, kept so a "Use" click can prefill the form from the entry.
 let MCP_CATALOG = [];
 
@@ -233,66 +158,6 @@ function mcpTransportChange(v) {
 
 // Set the model field(s) from a tapped discovery result. For the everyday card that
 // is the synthesizer when a mixture is on, else the single model — mirroring what
-// Test connection checks; for deep it's the one deep model.
-function pickModel(role, name) {
-  if (!name) return;
-  let id;
-  if (role === "deep") {
-    id = "deep-model";
-  } else {
-    const mixOn = !!(document.getElementById("m-mix") || {}).checked;
-    id = mixOn ? "m-synth-model" : "m-single-model";
-  }
-  const el = document.getElementById(id);
-  if (el) el.value = name;
-  // Highlight the chosen chip.
-  const picker = document.getElementById(role === "deep" ? "deep-model-picker" : "m-model-picker");
-  if (picker) picker.querySelectorAll(".pill.pick").forEach((b) => {
-    b.classList.toggle("active", b.dataset.model === name);
-  });
-  flash("Model set to " + name, "ok");
-}
-
-// Test that an endpoint + API key actually work: sends a minimal completion with
-// the chosen model (a real auth check, not just a /models listing) and reports the
-// result. Uses the key typed in the card, or the stored key when that's blank.
-async function testConnection(role) {
-  const isDeep = role === "deep";
-  const base = ((document.getElementById(isDeep ? "deep-url" : "m-base") || {}).value || "").trim();
-  const key = ((document.getElementById(isDeep ? "deep-key" : "m-key") || {}).value || "").trim();
-  let model;
-  if (isDeep) {
-    model = ((document.getElementById("deep-model") || {}).value || "").trim();
-  } else {
-    // Everyday: test the synthesizer in a mixture, else the single model.
-    const mixOn = !!(document.getElementById("m-mix") || {}).checked;
-    const id = mixOn ? "m-synth-model" : "m-single-model";
-    model = ((document.getElementById(id) || {}).value || "").trim();
-  }
-  if (!base) { flash("Enter the endpoint first.", "err"); return; }
-  const body = { base_url: base, role, model };
-  if (key) body.api_key = key;
-  flash("Testing the connection…", "ok");
-  try {
-    const r = await api("POST", "/v1/models/test", body);
-    flash(r.detail || (r.ok ? "Connected." : "Test failed."), r.ok ? "ok" : "err");
-  } catch (e) { flash("Test failed: " + e.message, "err"); }
-}
-
-// One model's optional sampling knobs (blank = provider default).
-function samplingRow(prefix, slot) {
-  const nv = (x) => (x === undefined || x === null) ? "" : x;
-  const num = (key, label, ph) => `<label>${label}
-    <input id="m-${prefix}-${key}" type="number" step="0.05" min="0" placeholder="${ph}" value="${nv((slot || {})[key])}" /></label>`;
-  return `<div class="sampling-row">
-    ${num("temperature", "temp", "0.5")}${num("top_p", "top_p", "auto")}${num("top_k", "top_k", "off")}${num("repeat_penalty", "repeat", "off")}
-  </div>`;
-}
-
-// The model configuration — two consistent cards (Everyday + Deep). The everyday
-// brain answers day-to-day (local by default); the deep model is a bigger brain
-// you escalate to per question. Mixture + sampling live under "Advanced" so the
-// common case stays clean (ADR 0055; runtime-swappable, no restart).
 // The preset key whose endpoint matches a saved base URL (so a configured card
 // shows e.g. "DeepSeek" instead of "Choose a provider…"). "" if none matches.
 function presetFor(url) {
@@ -308,81 +173,105 @@ function presetOptions(selected) {
     .map(([k, v]) => `<option value="${k}"${k === selected ? " selected" : ""}>${esc(v.label)}</option>`).join("");
 }
 
-function modelsSection() {
-  const mc = MODEL_CONFIG || {};
-  const dm = DEEP_MODEL || {};
-  const mix = !!mc.mixture;
-  // When the everyday model isn't overridden, name the deployment-default brain that
-  // is actually running, so the card shows what's active instead of just "default".
-  const activeDefault = mc.default_mixture
-    ? `${esc(mc.default_router || "")} + ${esc(mc.default_synth || "")}`
-    : esc(mc.default_model || "");
-  return `
-    <h3>Change the models</h3>
-    <div class="note">A local <b>everyday</b> model, and an optional <b>deep</b> one for hard questions. Any OpenAI-compatible endpoint.</div>
-
-    <div class="card model-card">
-      <div class="model-role">Everyday${mc.configured ? "" : ` · <span class="sub" style="font-weight:400;">using deployment default${activeDefault ? `: <b>${activeDefault}</b>` : ""}</span>`}</div>
-      <div class="field"><label>Provider preset</label>
-        <select id="m-preset" onchange="applyModelPreset(this.value)"><option value="">Choose a provider…</option>${presetOptions(presetFor(mc.base_url))}</select></div>
-      <div class="field"><label>Endpoint</label>
-        <input id="m-base" placeholder="${esc(mc.default_base_url || "http://host.docker.internal:11434/v1")}" value="${esc(mc.base_url || "")}" /></div>
-      <div class="field"><label>API key <span style="opacity:.7;">· cloud only</span></label>
-        <input id="m-key" type="password" autocomplete="off" placeholder="${mc.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
-      <div class="field"><label>Preferred endpoint <span style="opacity:.7;">· optional, your own network — used while it answers, falls back above when offline</span></label>
-        <input id="m-preferred-url" placeholder="e.g. http://192.168.1.10:11434/v1" value="${esc(mc.preferred_url || "")}" /></div>
-      <div class="field"><label>Preferred model</label>
-        <input id="m-preferred-model" placeholder="e.g. qwen2.5:14b" value="${esc(mc.preferred_model || "")}" /></div>
-      <div class="row" style="gap:8px;"><button class="ghost" data-act="discover:everyday" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button><button class="ghost" data-act="testconn:everyday" style="font-size:13px;">${icon("check", 14)} Test connection</button></div>
-      <div id="m-model-picker"></div>
-      <datalist id="m-models"></datalist>
-      <div id="m-single" style="display:${mix ? "none" : "flex"};flex-direction:column;gap:12px;">
-        ${modelName("single", mc.single, mc.default_model || "e.g. qwen2.5:7b")}
+// Models in ordered lists (ADR 0105): providers entered once, then for each job a list the
+// first working, cleared entry of answers. Sorted with ↑ ↓; an entry can be switched off
+// without losing it. A key goes in once and never comes back: the screen only knows it is set.
+function modelListRows(job) {
+  const rows = ((MODEL_LISTS && MODEL_LISTS[job]) || []).map((e, i, all) => `
+    <li class="mlist-row${e.enabled ? "" : " off"}">
+      <span class="mlist-n">${i + 1}</span>
+      <div class="grow">
+        <div class="title" style="font-weight:500;">${esc(e.model)}</div>
+        <div class="sub">${esc(e.provider_name)} · ${e.local ? "on your network" : "cloud, sees your messages disguised"}${e.enabled ? "" : " · switched off"}</div>
       </div>
-      <details class="adv" ${mix ? "open" : ""}>
-        <summary>Advanced — mixture &amp; sampling</summary>
-        <label class="mix-toggle" title="A cold, tool-tuned router picks the skill; a warmer synthesizer writes the reply. Beats a single model at less VRAM.">
-          <input id="m-mix" type="checkbox" ${mix ? "checked" : ""} onchange="toggleMixture(this.checked)" />
-          <span>Split into a <b>router</b> + <b>synthesizer</b> <span style="opacity:.6;">(advanced)</span></span>
-        </label>
-        <div id="m-single-adv" style="display:${mix ? "none" : "block"};">
-          <div class="sub" style="margin:2px 0 4px;">Sampling (blank = provider default)</div>
-          ${samplingRow("single", mc.single)}
-        </div>
-        <div id="m-mixslots" style="display:${mix ? "block" : "none"};">
-          <div class="sub" style="margin:8px 0 2px;">Router — cold, picks the skill</div>
-          ${modelName("router", mc.router, "e.g. hermes3:8b")}
-          ${samplingRow("router", mc.router)}
-          <div class="sub" style="margin:10px 0 2px;">Synthesizer — warm, writes the reply</div>
-          ${modelName("synth", mc.synth, "e.g. qwen2.5:7b")}
-          ${samplingRow("synth", mc.synth)}
+      <div class="mlist-acts">
+        <button class="ghost small" data-act="mlist:up:${e.id}" aria-label="Move up" ${i === 0 ? "disabled" : ""}>↑</button>
+        <button class="ghost small" data-act="mlist:down:${e.id}" aria-label="Move down" ${i === all.length - 1 ? "disabled" : ""}>↓</button>
+        <button class="ghost small" data-act="mlist:${e.enabled ? "off" : "on"}:${e.id}">${e.enabled ? "Off" : "On"}</button>
+        <button class="ghost small" data-act="mlist:test:${e.id}">Test</button>
+        <button class="ghost small danger" data-act="mlist:remove:${e.id}" aria-label="Remove">×</button>
+      </div>
+    </li>`).join("");
+  return rows ? `<ol class="mlist">${rows}</ol>` : `<div class="sub" style="margin:6px 0;">Nothing in this list yet.</div>`;
+}
+
+function modelListAdd(job) {
+  const providers = (MODEL_LISTS && MODEL_LISTS.providers) || [];
+  if (!providers.length) return `<div class="sub">Add a provider below first.</div>`;
+  return `
+    <div class="mlist-add">
+      <select id="ml-${job}-provider" aria-label="Provider">${providers.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select>
+      <input id="ml-${job}-model" list="ml-${job}-models" placeholder="model, e.g. ${job === "deep" ? "claude-sonnet-5-5" : "qwen2.5:7b"}" aria-label="Model" />
+      <datalist id="ml-${job}-models"></datalist>
+      <button class="ghost small" data-act="mlist:discover:${job}">Discover</button>
+      <button class="primary small" data-act="mlist:add:${job}">Add</button>
+    </div>`;
+}
+
+function providersCard() {
+  const providers = (MODEL_LISTS && MODEL_LISTS.providers) || [];
+  const rows = providers.map((p) => `
+    <li class="mlist-row">
+      <div class="grow">
+        <div class="title" style="font-weight:500;">${esc(p.name)}</div>
+        <div class="sub">${esc(p.url)} · ${p.local ? "on your network" : "cloud"} · ${p.key_set ? "key set" : "no key"}</div>
+      </div>
+      <div class="mlist-acts">
+        <button class="ghost small" data-act="mlist:provideredit:${p.id}">Edit</button>
+        <button class="ghost small danger" data-act="mlist:providerremove:${p.id}" aria-label="Remove">×</button>
+      </div>
+    </li>`).join("");
+  return `
+    <div class="card model-card">
+      <div class="model-role">Providers</div>
+      <div class="sub" style="margin:-4px 0 6px;">Where models run, each with its key, entered once and used by both lists.</div>
+      ${rows ? `<ol class="mlist plain">${rows}</ol>` : `<div class="sub">None yet.</div>`}
+      <details class="adv" id="provider-form" ${PROVIDER_EDITING ? "open" : ""}>
+        <summary>${PROVIDER_EDITING ? "Change the provider" : "Add a provider"}</summary>
+        <div class="field"><label>Preset</label>
+          <select id="pv-preset" onchange="applyProviderPreset(this.value)"><option value="">Choose a provider…</option>${presetOptions("")}</select></div>
+        <div class="field"><label>Name</label><input id="pv-name" placeholder="e.g. Anthropic" /></div>
+        <div class="field"><label>Endpoint</label><input id="pv-url" placeholder="https://api.provider.com/v1" /></div>
+        <div class="field"><label>API key <span style="opacity:.7;">· cloud only; stored securely, never shown</span></label>
+          <input id="pv-key" type="password" autocomplete="off" placeholder="${PROVIDER_EDITING ? "•••••• (unchanged)" : ""}" /></div>
+        <div class="row" style="justify-content:flex-end;gap:8px;">
+          ${PROVIDER_EDITING ? `<button class="ghost" data-act="mlist:providercancel">Cancel</button>` : ""}
+          <button class="primary" data-act="mlist:providersave">${PROVIDER_EDITING ? "Save" : "Add provider"}</button>
         </div>
       </details>
-      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="modelsave">Save everyday</button></div>
+    </div>`;
+}
+
+// Fill the provider form from a preset (the key is left as typed).
+function applyProviderPreset(name) {
+  const p = MODEL_PRESETS[name];
+  if (!p) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  set("pv-name", p.label.replace(/ \(.*\)$/, ""));
+  set("pv-url", p.base_url);
+}
+
+function modelsSection() {
+  if (!MODEL_LISTS) return `<h3>Models</h3><div class="empty">Loading…</div>`;
+  const serving = MODEL_LISTS.serving;
+  return `
+    <h3>Models</h3>
+    <div class="note">Endora asks the first model in a list that works and is cleared for what it is asked. A cloud model sees your messages only with names, places and appointments disguised, and never anything that came from outside (a web page, an email); those stay on your network.</div>
+
+    <div class="card model-card">
+      <div class="model-role">Everyday${serving && serving.model ? ` · <span class="sub" style="font-weight:400;">answering now: <b>${esc(serving.model)}</b></span>` : ""}</div>
+      <div class="sub" style="margin:-4px 0 6px;">The conversation. If none answers, the model Endora was installed with does.</div>
+      ${modelListRows("everyday")}
+      ${modelListAdd("everyday")}
     </div>
 
-    <details class="adv" style="margin-top:14px;">
-      <summary>Also use a stronger model for hard questions</summary>
     <div class="card model-card">
-      <div class="model-role">Deep${dm.configured ? ` · <span class="sub" style="font-weight:400;">using <b>${esc(dm.model || "")}</b></span>` : ` <span class="sub" style="font-weight:400;">· a bigger brain for hard questions</span>`}</div>
-      <div class="sub" style="margin:-4px 0 2px;">Optional, opt-in per question. It leaves your device, so it passes the same egress guard.</div>
-      <div class="field"><label>Provider preset</label>
-        <select id="d-preset" onchange="applyDeepPreset(this.value)"><option value="">Choose a provider…</option>${presetOptions(presetFor(dm.url))}</select></div>
-      <div class="field"><label>Endpoint</label>
-        <input id="deep-url" placeholder="https://api.provider.com/v1" value="${esc(dm.url || "")}" /></div>
-      <div class="field"><label>API key</label>
-        <input id="deep-key" type="password" autocomplete="off" placeholder="${dm.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
-      <div class="row" style="gap:8px;"><button class="ghost" data-act="discover:deep" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button><button class="ghost" data-act="testconn:deep" style="font-size:13px;">${icon("check", 14)} Test connection</button></div>
-      <div id="deep-model-picker"></div>
-      <datalist id="deep-models"></datalist>
-      <div class="field"><label>Model</label>
-        <input id="deep-model" list="deep-models" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(dm.model || "")}" /></div>
-      <label class="mix-toggle">
-        <input id="deep-escalate" type="checkbox" ${dm.escalate ? "checked" : ""} />
-        <span>Let Endora <b>use this on its own</b> — to fall back when the local model can't answer, and to word your daily brief.</span>
-      </label>
-      <div class="sub" style="margin:-6px 0 2px;">Off by default. In chat the local model is always tried first, three times, and when this steps in the reply says so. Your name, place names and appointment titles are swapped for placeholders before anything leaves and put back here — but <b>the shape of your day still goes out</b>: that you have something at 6:30, that the house is empty. Nothing else travels: no beliefs, no device names.</div>
-      <div class="field"><label>Balance and use</label>
+      <div class="model-role">Deep</div>
+      <div class="sub" style="margin:-4px 0 6px;">A stronger model for hard questions: when you ask for it, and on its own if you let it.</div>
+      ${modelListRows("deep")}
+      ${modelListAdd("deep")}
+      ${onOffRow(!!MODEL_LISTS.escalate, "mlist:escalate", "Let Endora use these on its own", "To step in when the everyday model can't answer, and to word your daily brief. Your name, place names and appointment titles are swapped for placeholders before anything leaves, but the shape of your day still goes out.")}
+      <div class="field" style="margin-top:10px;"><label>Balance and use</label>
         <div id="deep-spend" class="ctx-spend">${deepSpendHtml() || '<span class="sub">Nothing used yet.</span>'}</div>
         <div class="row" style="justify-content:flex-end;"><button class="ghost" data-act="deepspend:refresh" style="font-size:13px;">Refresh</button></div></div>
       <details class="adv"><summary>Prices, to show dollars</summary>
@@ -394,10 +283,9 @@ function modelsSection() {
         </div>
         <div class="row" style="justify-content:flex-end;margin-top:6px;"><button class="ghost" data-act="deepprices:save" style="font-size:13px;">Save prices</button></div>
       </details>
-      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep</button></div>
     </div>
-    </details>
-    </details>`;
+
+    ${providersCard()}`;
 }
 
 // When Endora reaches out on its own: the daily brief. Local hours shown, saved as UTC. (The

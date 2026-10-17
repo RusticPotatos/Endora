@@ -2098,6 +2098,61 @@ fn what_a_turn_learns_is_noted_from_their_words_alone() {
     assert!(activity.contains(&"Noted in hobbies/watches: You collect dive watches".to_owned()));
 }
 
+/// A private message (ADR 0105): its reply is kept private too, and nothing in it is noted
+/// into the brain, where it would ride in later turns.
+#[test]
+fn a_private_message_is_answered_and_its_reply_kept_private_and_nothing_is_noted() {
+    use crate::egress::RESTRICTED_MARK;
+    struct LearnsAnything;
+    impl Butler for LearnsAnything {
+        fn respond(
+            &self,
+            _history: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply {
+                text: "Noted, privately.".to_owned(),
+                beliefs: vec![crate::FormedBelief {
+                    statement: "You are seeing a specialist".to_owned(),
+                    kind: crate::BeliefKind::Pattern,
+                    confidence: crate::Confidence::Medium,
+                    evidence: "they said so".to_owned(),
+                    page: "health".to_owned(),
+                }],
+                ..ButlerReply::default()
+            })
+        }
+    }
+    let store = FakeStore::default();
+    let (reply, activity) = super::send_to_butler(
+        &store,
+        &store,
+        &FakeOutcomes::default(),
+        &NoCapabilities,
+        &LearnsAnything,
+        &FakeAudit::default(),
+        &SeqIds::default(),
+        &FixedClock(1_000),
+        &ButlerContext::default(),
+        &format!("{RESTRICTED_MARK}I am seeing a specialist on Friday"),
+    )
+    .unwrap();
+    assert!(
+        reply.text().starts_with(RESTRICTED_MARK),
+        "{}",
+        reply.text()
+    );
+    assert!(
+        store.pages.borrow().get("health").is_none(),
+        "a private message was noted"
+    );
+    assert!(
+        !activity.iter().any(|a| a.starts_with("Noted in")),
+        "{activity:?}"
+    );
+}
+
 #[test]
 fn a_cleared_skill_runs_and_the_butler_answers_with_its_result() {
     use super::send_to_butler;

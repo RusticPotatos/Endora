@@ -20,8 +20,10 @@ pub mod infrastructure;
 pub mod mcp_http;
 pub mod mcp_registry;
 pub mod mcp_stdio;
+pub mod model_lists;
 pub mod store;
 pub mod target_search;
+pub mod tiers;
 
 pub use application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,

@@ -461,6 +461,9 @@ mod one_fact_source_reaches_everything;
 mod what_a_stranger_said;
 
 #[cfg(test)]
+mod what_stays_home;
+
+#[cfg(test)]
 mod where_they_are_is_a_fact;
 
 #[cfg(test)]

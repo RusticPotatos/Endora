@@ -122,6 +122,25 @@ CREATE TABLE IF NOT EXISTS deep_model (
     api_key  TEXT NOT NULL,
     escalate INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+CREATE TABLE IF NOT EXISTS model_providers (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name    TEXT NOT NULL,
+    url     TEXT NOT NULL,
+    api_key TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS model_entries (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    job      TEXT NOT NULL,
+    provider INTEGER NOT NULL,
+    model    TEXT NOT NULL,
+    enabled  INTEGER NOT NULL DEFAULT 1,
+    position INTEGER NOT NULL,
+    sampling TEXT NOT NULL DEFAULT '{}'
+) STRICT;
+CREATE TABLE IF NOT EXISTS model_lists_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS butler_model_config (
     id            INTEGER PRIMARY KEY CHECK (id = 0),
     base_url      TEXT NOT NULL,
@@ -940,6 +959,9 @@ impl MemoryStore for SqliteStore {
             "autonomy_envelope",
             "brief_schedule",
             "deep_model",
+            "model_entries",
+            "model_providers",
+            "model_lists_meta",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
