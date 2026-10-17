@@ -21,6 +21,18 @@ Amended 2026-10-17 by [0110](0110-the-teams-rings.md): the bridge is how a turn 
 Sonarr, Radarr, Portainer and Home Assistant, through the team gateway, under the same policy;
 the sandbox reaches no home service any other way.
 
+Amended 2026-10-17, after a live alarm: the developer asked to run Home Assistant's
+`HassTurnOff` on a container's name "to restart" it. **The owner's devices are never the
+team's to switch**: every act of the tool server paired with Home Assistant (the owner's
+`mcp_server` setting on the Home Assistant connection, `home-assistant` unless named) is kept
+off the bridge, never listed and refused if called. The team's remit is the home lab's
+containers; turning the owner's lights, switches and appliances on or off never was part of it,
+and a container restart has its own contract. This is the simple rule, for every task rather
+than only those under the home lab's goal: a narrower one would offer the switches again to any
+other work. The tool the owner named that server's reader stays a read, Confidential, for local
+turns only. Every other tool of that server counts as an act, as any tool server's does, and is
+kept off with the switches.
+
 ## Context
 
 The team keeps the home lab healthy through contracts (0106), and the owner has more than forty
@@ -57,7 +69,9 @@ listener, `GET /team-relay/contracts` and `POST /team-relay/contracts/{name}`):
    `image_review`, `location`, and a tool server's tool whose name touches mail, chat, brain,
    memory, Endora, the team or money). Nor is anything that reaches any address with
    arguments the member chooses (`web_fetch`, `web_search`): what a turn has read could leave
-   in a URL, a way out of the team's fence. A tool not set up is not offered either.
+   in a URL, a way out of the team's fence. Nor is an act of the tool server paired with Home
+   Assistant: the owner's devices are not the team's to switch (amended above). A tool not set
+   up is not offered either.
 2. **The tier.** A Confidential result is given only to a turn on a local model, but for what
    the owner allowed a lead thinking with Claude (0109: the download queues and the scrubbed
    logs). The check point is the turn as HQ describes it to the node: HQ says `"cloud": true`

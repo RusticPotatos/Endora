@@ -1116,3 +1116,136 @@ fn a_retired_goal_drops_its_open_work_and_no_turn_of_it_starts() {
         "its proposal no longer waits"
     );
 }
+
+/// The lead hands the developer work on `parent`, as `create_task` does from its turn there.
+fn hand_on(
+    hq: &Hq<'_>,
+    by: MemberId,
+    parent: TaskId,
+    to: MemberId,
+    title: &str,
+    said: &str,
+) -> Result<TaskId, EngineError> {
+    let goal = hq.store().task(parent).unwrap().unwrap().goal;
+    hq.add_task(
+        Author::Member(by),
+        NewTask {
+            goal,
+            parent: Some(parent),
+            title: title.to_owned(),
+            description: said.to_owned(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+}
+
+#[test]
+fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    hq.set_lab_names(
+        ["deluge", "nzbget", "prowlarr", "sonarr", "owntone"]
+            .map(str::to_owned)
+            .to_vec(),
+    );
+    // The shape of 2026-10-17: the alarm's task, the lead's; the lead hands the work to the
+    // developer as #664, then, woken on #664 by the developer's question, hands it on again.
+    let check = task_for(&hq, t.goal, Some(t.lead), "Check the home lab");
+    let first = hand_on(
+        &hq,
+        t.lead,
+        check,
+        t.dev,
+        "Diagnose and fix exited deluge, nzbget, prowlarr",
+        "All three became exited at 13:42. Leave owntone alone.",
+    )
+    .unwrap();
+    let again = hand_on(
+        &hq,
+        t.lead,
+        first,
+        t.dev,
+        "Confirm state and diagnose/restart Deluge, nzbget, prowlarr",
+        "Work on the first task only. Leave owntone alone.",
+    );
+    let Err(EngineError::Refused(refused)) = again else {
+        panic!("a second task for the same containers: {again:?}");
+    };
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "#{} already covers this (deluge, nzbget, prowlarr): add to it with post in #{}, \
+             rather than a second task",
+            first.0, first.0
+        )
+    );
+    // Beside it under the alarm's task, and naming one of them: the same.
+    assert!(matches!(
+        hand_on(&hq, t.lead, check, t.dev, "Restart prowlarr", "It exited."),
+        Err(EngineError::Refused(Refusal::Covered { .. }))
+    ));
+    // Another container is another problem.
+    hand_on(
+        &hq,
+        t.lead,
+        check,
+        t.dev,
+        "Look at sonarr",
+        "Its queue is stuck.",
+    )
+    .unwrap();
+    // The alarm's task says what alarmed; the developer splitting its own part of it is
+    // splitting the work, not doubling it.
+    let alarm = hq
+        .add_task(
+            Author::Endora,
+            NewTask {
+                goal: t.goal,
+                parent: None,
+                title: "Check the home lab again".to_owned(),
+                description: "Why now: Endora raised an alarm: nzbget became exited at 13:42."
+                    .to_owned(),
+                assignee: Some(t.lead),
+                priority: Priority::High,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    hq.drop_task(first).unwrap();
+    let part = hand_on(&hq, t.lead, alarm, t.dev, "Restart nzbget", "It exited.").unwrap();
+    hq.add_task(
+        Author::Member(t.dev),
+        NewTask {
+            goal: t.goal,
+            parent: Some(part),
+            title: "Read nzbget's log first".to_owned(),
+            description: String::new(),
+            assignee: None,
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap();
+    // Splitting one's own task is delegation, not a second task; and once the first is
+    // over, the containers are free again.
+    let mine = task_for(&hq, t.goal, Some(t.dev), "Fix owntone");
+    hq.add_task(
+        Author::Member(t.dev),
+        NewTask {
+            goal: t.goal,
+            parent: Some(mine),
+            title: "Read owntone's log".to_owned(),
+            description: String::new(),
+            assignee: None,
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap();
+    hand_on(&hq, t.lead, check, t.dev, "Restart prowlarr", "It exited.").unwrap();
+    // The owner may hand out what they like.
+    task_for(&hq, t.goal, Some(t.dev), "Restart prowlarr again");
+}

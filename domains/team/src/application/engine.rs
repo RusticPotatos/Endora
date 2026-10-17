@@ -633,6 +633,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(to) = task.assignee {
             self.member(to)?;
         }
+        if let Author::Member(from) = by {
+            self.not_covered(from, &task)?;
+        }
         let depth = match (parent_depth, by) {
             (Some(depth), _) => depth.saturating_add(1),
             (None, Author::Member(_)) => 1,
@@ -652,6 +655,53 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(id)
+    }
+
+    /// Refuses a member's new task when an open task under the same goal is already about the
+    /// same home-lab containers ([`review::about`], against the names the node last said): one
+    /// task a problem. Live, the lead handed the developer the same three exited containers
+    /// twice, and each task drew its own turns. The member's own task above the new one, and
+    /// everything above that, is the work being split, not a second task: so a member on its
+    /// own sub-task of the alarm's task may split it further, while a sub-task made on
+    /// another member's task about the same containers is the duplicate it looks like.
+    /// Nothing is judged before the node has said what the home lab has.
+    fn not_covered(&self, from: MemberId, task: &NewTask) -> Done<()> {
+        let Some(lab) = self.lab_names() else {
+            return Ok(());
+        };
+        let about = review::about(&task.title, &task.description, &lab);
+        if about.is_empty() {
+            return Ok(());
+        }
+        let mut own = Vec::new();
+        let mut mine = false;
+        let mut up = task.parent;
+        while let Some(id) = up {
+            let above = self.task(id)?;
+            mine = mine || above.owner == Some(from) || above.assignee == Some(from);
+            if mine {
+                own.push(id);
+            }
+            up = above.parent;
+        }
+        for open in self.store.tasks()? {
+            if open.goal != task.goal || open.status.finished() || own.contains(&open.id) {
+                continue;
+            }
+            let theirs = review::about(&open.title, &open.description, &lab);
+            let names: Vec<String> = about
+                .iter()
+                .filter(|n| theirs.contains(n))
+                .cloned()
+                .collect();
+            if !names.is_empty() {
+                return Err(EngineError::Refused(Refusal::Covered {
+                    task: open.id,
+                    names,
+                }));
+            }
+        }
+        Ok(())
     }
 
     /// Whether every task in `waits` is done. A dropped one is not: the work waited for never
@@ -1884,22 +1934,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 told.push_str(&format!("{asked}\n"));
             }
         }
+        // HQ's own tools, never as all a member has: live, a lead on Claude offered the home
+        // lab's read took this line for its whole kit and said it could not read the lab.
+        let beside = "Endora's own tools on the home lab (homelab_status and the like) come \
+                      beside them: what your tool list offers, you have.\n";
         if member.role == Role::Ceo {
             told.push_str(
-                "Your tools: my_turn, claim, post, set_status, create_task, ask_owner (a \
-                 decision for the board), check_back, note_house, rewrite_house, read_doc.\n",
+                "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner (a \
+                 decision for the board), check_back, note_house, rewrite_house, read_doc. ",
             );
+            told.push_str(beside);
             return Ok(told);
         }
         told.push_str(
-            "Your tools: my_turn, claim, post, set_status, create_task, ask_owner, check_back, \
-             run_gate, request_action",
+            "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
+             check_back, run_gate, request_action",
         );
         told.push_str(if member.role == Role::Reviewer {
-            ", review.\n"
+            ", review. "
         } else {
-            ".\n"
+            ". "
         });
+        told.push_str(beside);
         Ok(told)
     }
 
@@ -3274,6 +3330,47 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let id = routine.id;
         let fired = self.fire_held_lock(routine, &Firing::Alarm(said))?;
         Ok(Some((id, fired)))
+    }
+
+    /// Endora's word that something in the home lab that alarmed is back up, in its words:
+    /// said in the open task of the first routine that is on and takes the home lab's alarms,
+    /// as Endora's post, waking whoever has it as an alarm does. An alarm is a moment; this
+    /// tells the member that the moment passed, so it looks at the state now rather than
+    /// diagnosing what already recovered. `None`, and nothing done, when no routine takes the
+    /// alarms or its task is not open: a recovery hands out no work.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn recovered(&self, said: &str) -> Done<Option<TaskId>> {
+        let _held = self.held();
+        let said = one_line(said, 300);
+        if said.is_empty() {
+            return Err(EngineError::Unknown("recovery text"));
+        }
+        let Some(routine) = self
+            .store
+            .routines()?
+            .into_iter()
+            .find(|r| r.enabled && r.on_lab_trouble)
+        else {
+            return Ok(None);
+        };
+        let open = match routine.last_task {
+            Some(task) => Some(self.task(task)?).filter(|t| !t.status.finished()),
+            None => None,
+        };
+        let Some(task) = open else {
+            return Ok(None);
+        };
+        self.post_held_lock(Author::Endora, task.id, &format!("Recovered: {said}"))?;
+        let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+        self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
+        self.emit(
+            EventKind::RoutinePosted,
+            json!({ "routine": routine.id.0, "title": routine.title, "task": task.id.0,
+                    "said": said, "recovered": true }),
+        )?;
+        Ok(Some(task.id))
     }
 
     /// Fires a routine, through the engine's rules: never past the kill switch, to a paused

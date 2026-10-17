@@ -9,6 +9,12 @@ store, engine and API, the node's routes and the HQ screen's Routines card; alar
 node's home-lab observer; the `check_back` tool; wakes on a clock that find nothing to do;
 the back-off for empty turns; and the home lab's routine made once on first start.
 
+Amended 2026-10-17, after a live alarm: a VPN container's restart stopped deluge, nzbget and
+prowlarr for a minute, and the team spent an hour diagnosing what had already passed, in two
+duplicate tasks. Now **coming back is news too**, the worker's rules say **an alarm is a
+moment**, and a member's sub-task is refused when an open task is already about the same
+containers (**one task a problem**). See the decision's sections of those names.
+
 ## Context
 
 The owner set the team the goal "Keep the home lab healthy". After one good turn the team went
@@ -60,6 +66,32 @@ lab's alarms.
 - Never Endora's own containers: `endora-*` and the same set the contracts refuse.
 - Nothing when HQ is not set up on the node, and HQ refuses alarms while its demo is on.
 - Each alarm told is in Endora's audit log.
+
+**Coming back is news too.** An alarm is a moment, not the state now. When a container or
+service that alarmed within the last day is well again and settled (running and its health
+check not still starting; a service that answers), the node tells HQ once for that alarm,
+`POST /v1/alarms/recovered` with `{ "text": "deluge is back up at 13:43" }`, signed. HQ posts
+"Recovered: deluge is back up at 13:43" as Endora's in the open task of the routine that takes
+the alarms, and wakes whoever has it as an alarm does (`alarm`: a new reason would have added a
+name to the screen, the store and the back-off, and the post already says what is new). With no
+such task open it does nothing: a recovery hands out no work. Down again within the hour raises
+no alarm, so its coming back is no news either. The worker's home-lab rules tell every member:
+an alarm is a moment; check `homelab_status` before acting, since what alarmed may be back up;
+if everything has recovered, say so and close the task (a routine's check as done, other work
+moved on with `set_status`).
+
+**One task a problem.** Every alarm already goes into the routine's one open task. A member's
+new task (`create_task`) is refused when an open task under the same goal is already about the
+same home-lab containers: those its title names, or its description's when the title names
+none (a description also names what to leave alone), matched case aside as whole words against
+the names the node last said. The refusal names the task and what to do: "#664 already covers
+this (deluge, nzbget, prowlarr): add to it with post in #664, rather than a second task". The
+member's own task above the new one, and everything above that, is the work being split and
+never counts; so a sub-task made on another member's task about the same containers, the live
+case, is refused. Refusing was chosen over merging the new task into the old: it changes
+nothing behind the model's back, and the model is told exactly where its words go. The owner
+and Endora may hand out what they like, and nothing is judged before the node has said what
+the home lab has.
 
 **Check-backs.** A team-protocol tool, `check_back { minutes, why }`: one later wake for the
 turn's member, on the turn's task, after the minutes given, held to 5–720. It fires only while

@@ -55,6 +55,7 @@ pub(super) fn candidates(state: &AppState) -> Vec<Candidate> {
                 ready: info.configured && endora_capabilities::settings_ready(&info, own),
                 administration: endora_capabilities::infrastructure::terminal::settings_only(&info),
                 third_party: info.third_party,
+                owners_devices: false,
             }
         })
         .collect();
@@ -68,9 +69,15 @@ pub(super) fn candidates(state: &AppState) -> Vec<Candidate> {
         .filter(|s| !s.reader_tool.trim().is_empty())
         .map(|s| format!("{}.{}", s.name, s.reader_tool.trim()))
         .collect();
+    // The server paired with Home Assistant, whose acts switch the owner's own devices: never
+    // the team's (ADR 0108).
+    let devices =
+        endora_capabilities::paired_server(settings.get("home_assistant").unwrap_or(&empty));
     for spec in mcp_snapshot(state).available() {
+        let kind = Kind::of_server_tool(readers.contains(&spec.id));
         all.push(Candidate {
-            kind: Kind::of_server_tool(readers.contains(&spec.id)),
+            owners_devices: bridge::switches_the_owners_devices(&spec.id, kind, &devices),
+            kind,
             stance: stances.get(&spec.id).copied().unwrap_or(Stance::Ask),
             input_schema: spec
                 .input_schema

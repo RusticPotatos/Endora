@@ -139,9 +139,11 @@ pub fn named(text: &str) -> Vec<String> {
 /// home lab has as a whole word.
 #[must_use]
 pub fn names_containers(text: &str, lab: &[String]) -> bool {
-    if !named(text).is_empty() {
-        return true;
-    }
+    !named(text).is_empty() || !lab_names_in(text, lab).is_empty()
+}
+
+/// The home lab's containers a text names as whole words, case aside, in the lab's order.
+fn lab_names_in(text: &str, lab: &[String]) -> Vec<String> {
     let words: Vec<String> = text
         .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
         .map(|w| {
@@ -150,7 +152,22 @@ pub fn names_containers(text: &str, lab: &[String]) -> bool {
         })
         .collect();
     lab.iter()
-        .any(|name| words.iter().any(|w| *w == name.to_ascii_lowercase()))
+        .filter(|name| words.iter().any(|w| *w == name.to_ascii_lowercase()))
+        .cloned()
+        .collect()
+}
+
+/// The home lab's containers a task is about: those its title names, or, when its title names
+/// none, those its description names. A title says what the work is; a description also names
+/// what to leave alone. What one task is about, no second open task under its goal takes on
+/// (see the engine's `create_task`).
+#[must_use]
+pub fn about(title: &str, description: &str, lab: &[String]) -> Vec<String> {
+    let named = lab_names_in(title, lab);
+    if !named.is_empty() {
+        return named;
+    }
+    lab_names_in(description, lab)
 }
 
 /// The container-like names a text gives that the home lab does not have, in order.
@@ -234,6 +251,29 @@ mod tests {
             "Shall I re-sonarr it?",
             &["sonar".to_owned()]
         ));
+    }
+
+    #[test]
+    fn a_task_is_about_the_containers_its_title_names_or_else_its_description() {
+        let lab: Vec<String> = ["deluge", "nzbget", "prowlarr", "owntone", "owntone-spotify"]
+            .map(str::to_owned)
+            .to_vec();
+        assert_eq!(
+            about(
+                "Diagnose and fix exited Deluge, nzbget, prowlarr",
+                "Leave owntone and owntone-spotify alone.",
+                &lab
+            ),
+            ["deluge", "nzbget", "prowlarr"],
+            "the title says what it is about; the description may name what to leave"
+        );
+        assert_eq!(
+            about("Check the stopped ones", "Look at owntone-spotify.", &lab),
+            ["owntone-spotify"],
+            "a whole name, never a part of a longer one"
+        );
+        assert!(about("Check the home lab", "Look at it all.", &lab).is_empty());
+        assert!(about("Fix deluge", "", &[]).is_empty(), "no lab, no names");
     }
 
     #[test]

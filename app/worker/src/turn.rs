@@ -184,12 +184,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         );
     }
     let model = Model::new(setup);
-    let told = instructions(
-        task.is_some(),
-        !on_the_node.is_empty(),
-        lessons,
-        shell.is_some(),
-    );
+    let told = instructions(task.is_some(), &on_the_node, lessons, shell.is_some());
     let mut talk = Talk::new(setup.api, told, briefing, &offered);
     talk.effort.clone_from(&setup.effort);
     // One loop whichever API the relay speaks: the rounds limit, the repeat guard, the line
@@ -217,11 +212,17 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     Ok(Taken::OutOfRounds)
 }
 
+/// The node's container tools, in the order the instructions name them.
+const LAB_TOOLS: [&str; 3] = ["homelab_status", "container_logs", "restart_container"];
+
 /// How to take a good turn: the worker's own instructions, written for Endora. `posted` says
-/// whether its last word goes in the task's thread for it; `contracts`, whether the node
-/// offers it any; `lessons`, whether it keeps the team's lessons (`note_lesson`); `shell`,
-/// whether it is in the workbench, with a shell.
-fn instructions(posted: bool, contracts: bool, lessons: bool, shell: bool) -> String {
+/// whether its last word goes in the task's thread for it; `on_the_node`, the tools the node
+/// offers it (the home lab's container tools among them are named as the turn's own: live, a
+/// lead on Claude offered `homelab_status` said three times that its tools could not read the
+/// home lab, reading HQ's briefing, which lists only HQ's tools, as all it had); `lessons`,
+/// whether it keeps the team's lessons (`note_lesson`); `shell`, whether it is in the
+/// workbench, with a shell.
+fn instructions(posted: bool, on_the_node: &[String], lessons: bool, shell: bool) -> String {
     let mut told = String::from(
         "You are one member of a small team at Endora HQ, taking one turn of work. The first \
          message is what my_turn says: who you are, your task, why it exists, and what is new \
@@ -245,11 +246,29 @@ fn instructions(posted: bool, contracts: bool, lessons: bool, shell: bool) -> St
          concrete plan or question with ask_owner, which goes to whoever your briefing says \
          is above you (asking ends your turn, and you are woken when they answer).",
     );
-    if contracts {
+    let lab: Vec<&str> = LAB_TOOLS
+        .into_iter()
+        .filter(|t| on_the_node.iter().any(|n| n == t))
+        .collect();
+    if !on_the_node.is_empty() {
+        if lab.is_empty() {
+            told.push_str("\n\nThe home lab tools are Endora's contracts:\n");
+        } else {
+            told.push_str(&format!(
+                "\n\nThe home lab tools are Endora's contracts, and this turn they are yours: \
+                 {}. Whatever your role, look with them yourself before you hand anything on, \
+                 and never say you cannot read the home lab.\n",
+                lab.join(", ")
+            ));
+        }
         told.push_str(
-            "\n\nThe home lab tools are Endora's contracts:\n\
+            "\
              - homelab_status and container_logs only look: use them freely to see what is \
              wrong and why.\n\
+             - An alarm is a moment, not the state now: check homelab_status before you act, \
+             since what alarmed may be back up (Endora says so in the thread). If everything \
+             has recovered, say so and close the task: a routine's check as done, other work \
+             moved on with set_status.\n\
              - restart_container is a safe fix you may make on your own, within its limits (one \
              restart of a container an hour, three in all), and the owner is told: look and \
              diagnose first, and say why.\n\
@@ -1280,9 +1299,52 @@ mod tests {
         );
     }
 
+    /// The node's container tools and one bridged read, as the node lists them.
+    fn lab() -> Vec<String> {
+        [
+            "homelab_status",
+            "container_logs",
+            "restart_container",
+            "nas_status",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    }
+
+    #[test]
+    fn the_home_labs_tools_are_named_as_the_turns_own() {
+        let told = instructions(true, &lab(), false, false);
+        assert!(
+            told.contains(
+                "The home lab tools are Endora's contracts, and this turn they are yours: \
+                 homelab_status, container_logs, restart_container. Whatever your role, look \
+                 with them yourself before you hand anything on, and never say you cannot read \
+                 the home lab.\n- homelab_status"
+            ),
+            "{told}"
+        );
+        // Only what is offered is named: a cloud turn not given the logs is not told it has them.
+        let told = instructions(
+            true,
+            &["homelab_status".to_owned(), "restart_container".to_owned()],
+            false,
+            false,
+        );
+        assert!(
+            told.contains("they are yours: homelab_status, restart_container."),
+            "{told}"
+        );
+        let told = instructions(true, &["weather".to_owned()], false, false);
+        assert!(
+            told.contains("The home lab tools are Endora's contracts:\n- homelab_status"),
+            "{told}"
+        );
+        assert!(!told.contains("they are yours"), "{told}");
+    }
+
     #[test]
     fn the_instructions_read_as_paragraphs_then_one_step_or_rule_a_line() {
-        let told = instructions(true, false, false, false);
+        let told = instructions(true, &[], false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 3, "{told}");
         assert!(!parts[0].contains('\n'), "{told}");
@@ -1295,17 +1357,26 @@ mod tests {
         assert!(told.contains("You cannot run commands"));
         assert!(!told.contains('\\') && !told.contains("  "), "{told}");
         assert!(told.ends_with("one or two sentences. That reply goes in your task's thread."));
-        assert!(instructions(false, false, false, false).ends_with("one or two sentences."));
+        assert!(instructions(false, &[], false, false).ends_with("one or two sentences."));
         assert!(!told.contains("note_lesson"), "{told}");
         // With the node's contracts, a paragraph more: what they may do, and what is the
         // owner's, one rule a line.
-        let told = instructions(false, true, false, false);
+        let told = instructions(false, &lab(), false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 5, "{told}");
         // And how the lab is built (ADR 0112), the house log's text, as a paragraph.
         assert_eq!(parts[3], endora_kernel::lab::lab_built_paragraph());
         let rules: Vec<&str> = parts[2].lines().collect();
-        assert_eq!(rules.len(), 8, "{told}");
+        assert_eq!(rules.len(), 9, "{told}");
+        assert!(
+            told.contains(
+                "- An alarm is a moment, not the state now: check homelab_status before you \
+                 act, since what alarmed may be back up (Endora says so in the thread). If \
+                 everything has recovered, say so and close the task: a routine's check as \
+                 done, other work moved on with set_status."
+            ),
+            "{told}"
+        );
         assert!(
             told.contains(
                 "- Report something as a problem only when a tool shows it causing harm: an item \
@@ -1327,7 +1398,7 @@ mod tests {
         assert!(told.contains("a routine's check"), "{told}");
         assert!(!told.contains("  "), "{told}");
         // The lead and the reviewer keep the team's lessons: a paragraph of its own.
-        let told = instructions(true, true, true, false);
+        let told = instructions(true, &lab(), true, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 6, "{told}");
         assert_eq!(
@@ -1340,7 +1411,7 @@ mod tests {
 
     #[test]
     fn in_the_workbench_the_instructions_give_the_shell_a_paragraph() {
-        let told = instructions(true, true, true, true);
+        let told = instructions(true, &lab(), true, true);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 7, "{told}");
         assert!(!told.contains("You cannot run commands"), "{told}");
@@ -1359,7 +1430,7 @@ mod tests {
              durable findings in the task's thread, or with note_lesson."
         );
         assert!(!told.contains("  ") && !told.contains('\\'), "{told}");
-        let told = instructions(true, false, false, true);
+        let told = instructions(true, &[], false, true);
         assert!(
             told.contains("durable findings in the task's thread.\n\n"),
             "no note_lesson for a member without it: {told}"
