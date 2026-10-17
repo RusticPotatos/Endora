@@ -48,8 +48,21 @@ a local one would.
 
 - Endora walks the list in order. An entry that fails (unreachable, an error, out of credit) is
   skipped for that request and for the next five minutes, so a sleeping machine costs one
-  timeout, not one per message.
+  timeout, not one per message. An entry's client reports a failure as one, rather than
+  apologising, so the walk can ask the next; the environment's model, last in Everyday, still
+  apologises when nothing answers, so the conversation never breaks. An entry is cooled by its
+  endpoint, model and key, so a second key for the same model is still tried. A machine on the
+  house's network that refuses the keyless probe for want of a key is awake.
 - A reply that has begun to stream is never finished by another model.
+- An answer from an everyday cloud entry is the everyday answer, not an escalation: only the
+  deep list, asked because the everyday answer failed a check, is disclosed as one.
+- A provider's key belongs to its endpoint: a provider moved to another endpoint without a new
+  key loses the old one. "Forget everything" forgets the old settings too, so nothing moves
+  over again. When the lists cannot be read, the environment's model answers, never the old
+  settings.
+- "On the house's network" is decided from the URL's host, after any user-info: loopback,
+  link-local, RFC 1918 and IPv6 unique-local addresses, `.local`, `.lan` and single-label names.
+  Every other entry is a cloud entry, reached only through the door.
 
 **Data has a tier; a model has a clearance; code compares them.**
 

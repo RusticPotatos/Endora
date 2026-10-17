@@ -1452,8 +1452,11 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
                 "UPDATE model_providers SET name = ?2, url = ?3, api_key = ?4 WHERE id = ?1",
                 params![id, name, url, key],
             ),
+            // A key belongs to the endpoint it was given for: moved to another, it is dropped
+            // rather than sent there.
             None => conn.execute(
-                "UPDATE model_providers SET name = ?2, url = ?3 WHERE id = ?1",
+                "UPDATE model_providers SET name = ?2, url = ?3, api_key = CASE \
+                 WHEN rtrim(url, '/') = rtrim(?3, '/') THEN api_key ELSE '' END WHERE id = ?1",
                 params![id, name, url],
             ),
         }

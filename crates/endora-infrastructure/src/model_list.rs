@@ -104,6 +104,8 @@ enum Miss {
     Private,
     /// It had begun to answer: nothing else may finish it.
     Began(ProposalError),
+    /// It apologised, and the apology has already reached the person: it stands.
+    Shown(Box<ButlerReply>),
 }
 
 /// A list, walked in order.
@@ -140,6 +142,10 @@ impl ModelList {
     ) -> Result<ButlerReply, ProposalError> {
         let mut last = None;
         let mut private = false;
+        // An entry that apologises instead of answering (a client that degrades rather than
+        // failing, as the environment's model does) has not answered: the next is asked, and
+        // the apology is kept for when nothing else answers, so the conversation never breaks.
+        let mut apology = None;
         for step in &self.steps {
             if self.health.cooling(&step.key) {
                 continue;
@@ -149,7 +155,9 @@ impl ModelList {
                 continue;
             }
             match ask(step) {
+                Ok(reply) if reply.degraded => apology = apology.or(Some(reply)),
                 Ok(reply) => return Ok(reply),
+                Err(Miss::Shown(reply)) => return Ok(*reply),
                 Err(Miss::Began(e)) => return Err(e),
                 Err(Miss::Failed(e)) => {
                     self.health.cool(&step.key);
@@ -158,6 +166,9 @@ impl ModelList {
                 Err(Miss::Refused) => {}
                 Err(Miss::Private) => private = true,
             }
+        }
+        if let Some(reply) = apology {
+            return Ok(reply);
         }
         // Never a quiet upgrade (ADR 0105, Q3d): a private turn with no local model answering
         // says so rather than finding its way out.
@@ -179,6 +190,33 @@ fn through_the_door(refusal: DoorRefusal) -> Miss {
         DoorRefusal::TheModelFailed(why) => Miss::Failed(ProposalError::Unavailable(why)),
         DoorRefusal::AStrangerSpoke | DoorRefusal::LooksLikeASecret => Miss::Refused,
         DoorRefusal::Restricted => Miss::Private,
+    }
+}
+
+/// An entry asked through the door. Its answer is the list's answer, not an escalation: no
+/// local model failed and the deep list was not asked, so nothing may say so.
+fn through(
+    door: &Deeper,
+    conversation: &[TurnMessage],
+    preferences: &[Preference],
+    context: &ButlerContext,
+) -> Result<ButlerReply, Miss> {
+    door.continue_turn(conversation, preferences, context)
+        .map(|reply| ButlerReply {
+            escalated: false,
+            ..reply
+        })
+        .map_err(through_the_door)
+}
+
+/// What an entry's streamed reply means to the walk: an apology the person has already seen
+/// stands, and a failure after the first words may not be finished by another model.
+fn settled(reply: Result<ButlerReply, ProposalError>, began: bool) -> Result<ButlerReply, Miss> {
+    match reply {
+        Ok(reply) if reply.degraded && began => Err(Miss::Shown(Box::new(reply))),
+        Ok(reply) => Ok(reply),
+        Err(e) if began => Err(Miss::Began(e)),
+        Err(e) => Err(Miss::Failed(e)),
     }
 }
 
@@ -207,9 +245,7 @@ impl Butler for ModelList {
             Way::Direct(b) => b
                 .respond(history, preferences, context)
                 .map_err(Miss::Failed),
-            Way::ThroughTheDoor(door) => door
-                .continue_turn(&as_turn(history), preferences, context)
-                .map_err(through_the_door),
+            Way::ThroughTheDoor(door) => through(door, &as_turn(history), preferences, context),
         })
     }
 
@@ -223,24 +259,17 @@ impl Butler for ModelList {
         self.walk(|step| match &step.way {
             Way::Direct(b) => {
                 let mut began = false;
-                b.respond_streaming(history, preferences, context, &mut |t| {
+                let reply = b.respond_streaming(history, preferences, context, &mut |t| {
                     began = true;
                     on_token(t);
-                })
-                .map_err(|e| {
-                    if began {
-                        Miss::Began(e)
-                    } else {
-                        Miss::Failed(e)
-                    }
-                })
+                });
+                settled(reply, began)
             }
-            // The door does not stream: the reply arrives whole, already restored.
+            // The door does not stream: the reply arrives whole, already restored. An apology
+            // is not shown, as the next entry may yet answer.
             Way::ThroughTheDoor(door) => {
-                let reply = door
-                    .continue_turn(&as_turn(history), preferences, context)
-                    .map_err(through_the_door)?;
-                if !reply.text.is_empty() {
+                let reply = through(door, &as_turn(history), preferences, context)?;
+                if !reply.degraded && !reply.text.is_empty() {
                     on_token(&reply.text);
                 }
                 Ok(reply)
@@ -258,9 +287,7 @@ impl Butler for ModelList {
             Way::Direct(b) => b
                 .take_turn(conversation, preferences, context)
                 .map_err(Miss::Failed),
-            Way::ThroughTheDoor(door) => door
-                .continue_turn(conversation, preferences, context)
-                .map_err(through_the_door),
+            Way::ThroughTheDoor(door) => through(door, conversation, preferences, context),
         })
     }
 
@@ -274,23 +301,15 @@ impl Butler for ModelList {
         self.walk(|step| match &step.way {
             Way::Direct(b) => {
                 let mut began = false;
-                b.take_turn_streaming(conversation, preferences, context, &mut |t| {
+                let reply = b.take_turn_streaming(conversation, preferences, context, &mut |t| {
                     began = true;
                     on_token(t);
-                })
-                .map_err(|e| {
-                    if began {
-                        Miss::Began(e)
-                    } else {
-                        Miss::Failed(e)
-                    }
-                })
+                });
+                settled(reply, began)
             }
             Way::ThroughTheDoor(door) => {
-                let reply = door
-                    .continue_turn(conversation, preferences, context)
-                    .map_err(through_the_door)?;
-                if reply.tool_calls.is_empty() && !reply.text.is_empty() {
+                let reply = through(door, conversation, preferences, context)?;
+                if !reply.degraded && reply.tool_calls.is_empty() && !reply.text.is_empty() {
                     on_token(&reply.text);
                 }
                 Ok(reply)
@@ -507,6 +526,127 @@ mod tests {
         let err = said(&list, &hello());
         assert!(err.is_err());
         assert_eq!(asked(&local), 0);
+    }
+
+    /// A model client that apologises rather than failing, as the environment's model does.
+    struct Apologises;
+
+    impl Butler for Apologises {
+        fn respond(
+            &self,
+            _history: &[ChatMessage],
+            _preferences: &[Preference],
+            _context: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply {
+                text: "Sorry".to_owned(),
+                degraded: true,
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    fn apologises(name: &str) -> Step {
+        Step {
+            key: name.to_owned(),
+            url: format!("https://{name}/v1"),
+            model: name.to_owned(),
+            local: false,
+            way: Way::Direct(Arc::new(Apologises)),
+        }
+    }
+
+    #[test]
+    fn an_apology_is_not_an_answer_and_the_next_entry_is_asked() {
+        let local = stand("local", false, false);
+        let list = ModelList::new(
+            vec![apologises("cloud"), direct("local", true, &local)],
+            Arc::new(Health::new(awake)),
+        );
+        let reply = list
+            .take_turn(&hello(), &[], &ButlerContext::default())
+            .unwrap();
+        assert_eq!(reply.text, "local");
+        // Through the door it streams nothing until it has answered, so the next may speak.
+        let through_the_door = ModelList::new(
+            vec![
+                Step {
+                    way: Way::ThroughTheDoor(Deeper::new(Arc::new(Apologises))),
+                    ..apologises("claude")
+                },
+                direct("local", true, &local),
+            ],
+            Arc::new(Health::new(awake)),
+        );
+        assert_eq!(said(&through_the_door, &hello()).unwrap(), "local");
+    }
+
+    #[test]
+    fn when_nothing_answers_the_apology_stands() {
+        let broken = stand("cloud", true, false);
+        let list = ModelList::new(
+            vec![direct("cloud", false, &broken), apologises("environment")],
+            Arc::new(Health::new(awake)),
+        );
+        let reply = list
+            .take_turn(&hello(), &[], &ButlerContext::default())
+            .expect("the conversation never breaks");
+        assert!(reply.degraded);
+        assert_eq!(reply.text, "Sorry");
+        // Shown already, as it streamed: nothing else is added to it.
+        assert_eq!(said(&list, &hello()).unwrap(), "Sorry");
+    }
+
+    #[test]
+    fn a_model_that_cannot_be_reached_passes_the_turn_on_and_cools_off() {
+        // The real client, not a stand-in: nothing listens on port 9.
+        let unreachable = crate::butler::LlmButler::with_config(
+            "http://127.0.0.1:9/v1".to_owned(),
+            "cloud".to_owned(),
+            String::new(),
+            endora_application::Sampling::default(),
+        )
+        .reporting_failures();
+        let local = stand("local", false, false);
+        let list = ModelList::new(
+            vec![
+                Step {
+                    key: "cloud".to_owned(),
+                    url: "http://127.0.0.1:9/v1".to_owned(),
+                    model: "cloud".to_owned(),
+                    local: false,
+                    way: Way::Direct(Arc::new(unreachable)),
+                },
+                direct("local", true, &local),
+            ],
+            Arc::new(Health::new(awake)),
+        );
+        assert_eq!(said(&list, &hello()).unwrap(), "local");
+        assert_eq!(
+            list.first_ready(),
+            Some(("http://local/v1".to_owned(), "local".to_owned())),
+            "the failed entry is skipped for a while"
+        );
+        let mut heard = String::new();
+        list.respond_streaming(&[], &[], &ButlerContext::default(), &mut |t| {
+            heard.push_str(t);
+        })
+        .unwrap();
+        assert_eq!(heard, "local");
+    }
+
+    #[test]
+    fn an_everyday_answer_through_the_door_is_not_an_escalation() {
+        let claude = stand("claude", false, false);
+        let list = ModelList::new(vec![door("claude", &claude)], Arc::new(Health::new(awake)));
+        let reply = list
+            .take_turn(&hello(), &[], &ButlerContext::default())
+            .unwrap();
+        assert_eq!(reply.text, "claude");
+        assert!(
+            !reply.escalated,
+            "no local model failed and the deep list was not asked"
+        );
     }
 
     #[test]

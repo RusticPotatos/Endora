@@ -959,6 +959,9 @@ impl MemoryStore for SqliteStore {
             "autonomy_envelope",
             "brief_schedule",
             "deep_model",
+            // The old everyday settings too, key and all: kept, the next start would move
+            // them into the lists again.
+            "butler_model_config",
             "model_entries",
             "model_providers",
             "model_lists_meta",
@@ -1589,6 +1592,24 @@ mod tests {
         };
         repo.set(&opted_in).unwrap();
         assert_eq!(repo.get().unwrap(), Some(opted_in));
+    }
+
+    #[test]
+    fn forgetting_everything_forgets_the_old_model_settings_and_their_key() {
+        // Otherwise the next start moves them over again, and a provider the owner removed
+        // comes back first in Everyday with its key.
+        use endora_application::{ButlerModelConfig, ButlerModelConfigRepository, MemoryStore};
+        let store = store();
+        let cfg_store = cfg_store(&store);
+        let repo: &dyn ButlerModelConfigRepository = &cfg_store;
+        repo.set(&ButlerModelConfig {
+            base_url: "https://api.example.com/v1".to_owned(),
+            api_key: "secret".to_owned(),
+            ..ButlerModelConfig::default()
+        })
+        .unwrap();
+        (&store as &dyn MemoryStore).purge().unwrap();
+        assert!(repo.get().unwrap().is_none());
     }
 
     #[test]
