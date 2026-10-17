@@ -348,6 +348,8 @@ impl LlmButler {
         }
         let reader = std::io::BufReader::new(response.into_body().into_reader());
         let mut text = String::new();
+        // How much of the turn's words the person has been shown.
+        let mut shown = 0;
         // Tool calls arrive in fragments, each carrying an index; arguments are
         // concatenated per index and only make sense once the stream ends.
         let mut calls: std::collections::BTreeMap<u64, (String, String, String)> =
@@ -367,7 +369,7 @@ impl LlmButler {
             if let Some(piece) = delta["content"].as_str() {
                 if !piece.is_empty() {
                     text.push_str(piece);
-                    on_token(piece);
+                    shown = show_turn_text(&text, shown, on_token);
                 }
             }
             let Some(fragments) = delta["tool_calls"].as_array() else {
@@ -495,6 +497,24 @@ impl LlmButler {
             ..parsed
         })
     }
+}
+
+/// Shows the person what is new of a turn's words, given everything streamed so far and how
+/// much was shown; returns how much has been shown now. Plain text streams as it comes. A
+/// model that answers on the tool-calling path in the JSON envelope (`{"reply":"…"}`) has
+/// only its reply's words shown, never the JSON around them.
+fn show_turn_text(text: &str, shown: usize, on_token: &mut dyn FnMut(&str)) -> usize {
+    let words = without_thinking(text);
+    let visible = if words.trim_start().starts_with('{') {
+        extract_reply_preview(&words)
+    } else {
+        words
+    };
+    if visible.len() <= shown || !visible.is_char_boundary(shown) {
+        return shown;
+    }
+    on_token(&visible[shown..]);
+    visible.len()
 }
 
 /// Reads the current value of the `"reply"` string out of a partial JSON
@@ -2581,6 +2601,85 @@ mod tests {
             }
         });
         (format!("http://127.0.0.1:{port}/v1"), got_it)
+    }
+
+    /// Scenario (found live, 2026-10-17): on the tool-calling path a local model answered in
+    /// the old JSON envelope (`{"reply":"…","use":{…}}`) rather than plain text, and the
+    /// person watched raw JSON stream into the chat bubble.
+    ///
+    /// Given a model that streams its turn as the JSON envelope,
+    /// when the reply streams to the person,
+    /// then only the reply's words are shown, never the JSON around them.
+    #[test]
+    fn a_turn_streamed_as_the_json_envelope_shows_only_the_reply() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let Ok((mut conn, _)) = listener.accept() else {
+                return;
+            };
+            // The whole request before answering (see the test below).
+            let mut got = Vec::new();
+            let mut buf = [0u8; 65536];
+            loop {
+                let Ok(n) = conn.read(&mut buf) else { break };
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&got);
+                let Some(end) = text.find("\r\n\r\n") else {
+                    continue;
+                };
+                let length = text[..end]
+                    .lines()
+                    .filter_map(|l| l.split_once(':'))
+                    .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+                    .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if got.len() >= end + 4 + length {
+                    break;
+                }
+            }
+            let pieces = [
+                r#"{"reply":"I'll look"#,
+                r#" that up.","use":{"skill":"#,
+                r#""web_search","input":{}}}"#,
+            ];
+            let mut body = String::new();
+            for piece in pieces {
+                let chunk = json!({ "choices": [{ "delta": { "content": piece } }] });
+                body.push_str(&format!("data: {chunk}\n\n"));
+            }
+            body.push_str("data: [DONE]\n\n");
+            let _ = write!(
+                conn,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        let butler = LlmButler::with_config(
+            format!("http://127.0.0.1:{port}/v1"),
+            "qwen3:8b".to_owned(),
+            String::new(),
+            Sampling::default(),
+        );
+        let mut shown = String::new();
+        let reply = butler
+            .take_turn_streaming(
+                &[endora_application::TurnMessage::User("drives?".to_owned())],
+                &[],
+                &ButlerContext::default(),
+                &mut |t| shown.push_str(t),
+            )
+            .unwrap();
+        assert_eq!(
+            shown, "I'll look that up.",
+            "only the reply's words: {shown}"
+        );
+        assert!(!shown.contains('{'), "{shown}");
+        assert_eq!(reply.text, "I'll look that up.");
     }
 
     #[test]
