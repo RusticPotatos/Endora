@@ -224,6 +224,13 @@ impl SqliteTeamStore {
         for (table, column) in PROJECT_COLUMNS {
             add_column(&conn, table, column)?;
         }
+        // A project's month is read on every wake and turn about its work, each row with its
+        // turn's reservation: by run and by project, not by reading the whole ledger each time.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS ledger_by_run ON ledger(run);
+             CREATE INDEX IF NOT EXISTS ledger_by_project ON ledger(project);",
+        )
+        .map_err(backend)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -1678,6 +1685,15 @@ CREATE TABLE IF NOT EXISTS check_backs (
         let conn = hq.store().conn().unwrap();
         assert!(conn.execute("UPDATE ledger SET amount = 0", []).is_err());
         assert!(conn.execute("DELETE FROM ledger", []).is_err());
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_index_list('ledger')
+                 WHERE name IN ('ledger_by_run', 'ledger_by_project')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 2, "a project's month reads the ledger by index");
     }
 
     #[test]
