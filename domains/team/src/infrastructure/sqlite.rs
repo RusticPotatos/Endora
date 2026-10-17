@@ -5,11 +5,12 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::application::ports::{
-    DeskItem, NewTask, Post, Run, StoreError, Stored, TeamStore, Timer, Wake,
+    DeskItem, NewRoutine, NewTask, Post, Run, StoreError, Stored, TeamStore, Timer, Wake,
 };
 use crate::domain::{
-    DeskId, Event, Goal, GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt,
-    Refused, Role, RunId, RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
+    CheckBack, CheckBackStatus, DeskId, Event, Goal, GoalId, GoalStatus, Member, MemberId, Micros,
+    Millis, Priority, Receipt, Refused, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId,
+    TaskStatus, WakeId, WakeReason,
 };
 
 const SCHEMA: &str = "
@@ -81,6 +82,21 @@ CREATE TABLE IF NOT EXISTS timers (
     reason TEXT NOT NULL, due_at INTEGER NOT NULL, every_ms INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+-- Work that comes round again (ADR 0107): a task handed to its member on a rhythm, or when an
+-- alarm says something is wrong.
+CREATE TABLE IF NOT EXISTS routines (
+    id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
+    goal INTEGER NOT NULL REFERENCES goals(id), assignee INTEGER NOT NULL REFERENCES members(id),
+    every_ms INTEGER NOT NULL, next_due_at INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+    on_lab_trouble INTEGER NOT NULL DEFAULT 0, last_fired_at INTEGER,
+    last_task INTEGER REFERENCES tasks(id)
+) STRICT;
+-- A member's word that it will come back to a task: one wake, later (ADR 0107).
+CREATE TABLE IF NOT EXISTS check_backs (
+    id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
+    task INTEGER NOT NULL REFERENCES tasks(id), why TEXT NOT NULL, due_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', set_at INTEGER NOT NULL, done_at INTEGER
+) STRICT;
 ";
 
 /// HQ's store, over one SQLite connection.
@@ -934,6 +950,123 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE timers SET due_at = ?2 WHERE id = ?1",
                 params![id, due_at],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn add_routine(&self, routine: &NewRoutine, next_due_at: Millis) -> Stored<RoutineId> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO routines (title, description, goal, assignee, every_ms, next_due_at,
+                on_lab_trouble) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                routine.title,
+                routine.description,
+                routine.goal.0,
+                routine.assignee.0,
+                routine.every_ms,
+                next_due_at,
+                routine.on_lab_trouble
+            ],
+        )
+        .map_err(backend)?;
+        Ok(RoutineId(conn.last_insert_rowid()))
+    }
+
+    fn routines(&self) -> Stored<Vec<Routine>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, title, description, goal, assignee, every_ms, next_due_at, enabled,
+                    on_lab_trouble, last_fired_at, last_task FROM routines ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Routine {
+                    id: RoutineId(r.get(0)?),
+                    title: r.get(1)?,
+                    description: r.get(2)?,
+                    goal: GoalId(r.get(3)?),
+                    assignee: MemberId(r.get(4)?),
+                    every_ms: r.get(5)?,
+                    next_due_at: r.get(6)?,
+                    enabled: r.get::<_, i64>(7)? != 0,
+                    on_lab_trouble: r.get::<_, i64>(8)? != 0,
+                    last_fired_at: r.get(9)?,
+                    last_task: r.get::<_, Option<i64>>(10)?.map(TaskId),
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn save_routine(&self, routine: &Routine) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE routines SET enabled = ?2, next_due_at = ?3, last_fired_at = ?4,
+                    last_task = ?5 WHERE id = ?1",
+                params![
+                    routine.id.0,
+                    routine.enabled,
+                    routine.next_due_at,
+                    routine.last_fired_at,
+                    routine.last_task.map(|t| t.0)
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn add_check_back(
+        &self,
+        member: MemberId,
+        task: TaskId,
+        why: &str,
+        due_at: Millis,
+        at: Millis,
+    ) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO check_backs (member, task, why, due_at, set_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![member.0, task.0, why, due_at, at],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn check_backs(&self) -> Stored<Vec<CheckBack>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, member, task, why, due_at, status, set_at, done_at FROM check_backs
+                 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                let status: String = r.get(5)?;
+                Ok(CheckBack {
+                    id: r.get(0)?,
+                    member: MemberId(r.get(1)?),
+                    task: TaskId(r.get(2)?),
+                    why: r.get(3)?,
+                    due_at: r.get(4)?,
+                    status: CheckBackStatus::from_name(&status).unwrap_or(CheckBackStatus::Dropped),
+                    set_at: r.get(6)?,
+                    done_at: r.get(7)?,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn set_check_back(&self, id: i64, status: CheckBackStatus, at: Millis) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE check_backs SET status = ?2, done_at = ?3 WHERE id = ?1",
+                params![id, status.name(), at],
             )
             .map_err(backend)?;
         Ok(())

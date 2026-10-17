@@ -153,3 +153,115 @@ pub(super) async fn hq_resume(State(state): State<AppState>) -> Answer {
     record(&state, "you let the team work again");
     Ok(answer)
 }
+
+/// The owner makes a routine (ADR 0107): work that comes round again, as a task for one
+/// member.
+pub(super) async fn hq_add_routine(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Answer {
+    let title = req["title"].as_str().unwrap_or_default().trim().to_owned();
+    let answer = ask(&state, "/v1/routines".to_owned(), Some(req)).await?;
+    record(&state, &format!("you made a routine: {title}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqSwitch {
+    enabled: bool,
+}
+
+/// The owner switches a routine on or off.
+pub(super) async fn hq_switch_routine(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqSwitch>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/routines/{id}"),
+        Some(json!({ "enabled": req.enabled })),
+    )
+    .await?;
+    let now = if req.enabled { "on" } else { "off" };
+    record(&state, &format!("you switched routine {id} {now}"));
+    Ok(answer)
+}
+
+/// The owner runs a routine now.
+pub(super) async fn hq_fire_routine(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    let answer = ask(&state, format!("/v1/routines/{id}/fire"), Some(json!({}))).await?;
+    record(&state, &format!("you ran routine {id} now"));
+    Ok(answer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::relay::tests::{fake, node};
+    use super::*;
+
+    #[tokio::test]
+    async fn the_owners_routines_pass_through_signed_and_are_recorded() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            let body = if path.ends_with("/fire") {
+                json!({ "fired": "created", "task": 4 })
+            } else {
+                json!({ "routine": 2 })
+            };
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let made = json!({ "title": "Check the home lab", "goal": 1, "assignee": 1,
+                           "every_ms": 21_600_000 });
+        let answer = hq_add_routine(State(state.clone()), Json(made.clone()))
+            .await
+            .unwrap();
+        assert_eq!(answer.0["routine"], 2);
+        let switched = hq_switch_routine(
+            State(state.clone()),
+            Path(2),
+            Json(HqSwitch { enabled: false }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(switched.0["routine"], 2);
+        let fired = hq_fire_routine(State(state.clone()), Path(2))
+            .await
+            .unwrap();
+        assert_eq!(fired.0["fired"], "created");
+        let sent: Vec<(String, String)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), b.clone()))
+            .collect();
+        assert_eq!(sent[0].0, "/v1/routines");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&sent[0].1).unwrap(),
+            made
+        );
+        assert_eq!(sent[1].0, "/v1/routines/2");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&sent[1].1).unwrap(),
+            json!({ "enabled": false })
+        );
+        assert_eq!(sent[2].0, "/v1/routines/2/fire");
+        let signed = seen.lock().unwrap()[0]
+            .1
+            .iter()
+            .any(|(k, v)| k == "authorization" && v == &format!("Bearer {}", "n".repeat(32)));
+        assert!(signed, "signed with HQ's token");
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        for line in [
+            "HQ: you made a routine: Check the home lab",
+            "HQ: you switched routine 2 off",
+            "HQ: you ran routine 2 now",
+        ] {
+            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+        }
+    }
+}

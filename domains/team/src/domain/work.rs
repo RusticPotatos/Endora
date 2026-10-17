@@ -43,6 +43,10 @@ id!(
     /// An item on the owner's desk.
     DeskId
 );
+id!(
+    /// Work that comes round again (ADR 0107).
+    RoutineId
+);
 
 /// What a member does on the team. The rank decides who may hand work to whom: by default a
 /// member hands work only to members below it.
@@ -315,6 +319,10 @@ pub enum Refusal {
     OutOfReach,
     /// The turn has ended.
     TurnOver,
+    /// A routine's rhythm is too fast or too slow.
+    Rhythm,
+    /// A routine's check is closed only by its member, once it is being worked.
+    NotACheck,
 }
 
 impl fmt::Display for Refusal {
@@ -344,6 +352,13 @@ impl fmt::Display for Refusal {
                  own task's thread instead",
             ),
             Self::TurnOver => f.write_str("this turn has ended: stop now"),
+            Self::Rhythm => {
+                f.write_str("a routine comes round between every 15 minutes and every 30 days")
+            }
+            Self::NotACheck => f.write_str(
+                "only a routine's check is closed by its member, once it is being worked: \
+                 claim it first",
+            ),
             Self::AlreadyAsked => f.write_str(
                 "your last question about this task is still waiting on the owner's desk; end your turn",
             ),
@@ -374,6 +389,24 @@ pub fn may_set_status(from: TaskStatus, to: TaskStatus) -> Result<(), Refusal> {
     );
     if !allowed {
         return Err(Refusal::NotAStep { from, to });
+    }
+    Ok(())
+}
+
+/// Whether a member may close a routine's check (`done`) from where it is. A check changes
+/// no code, so there is nothing for the gate to test: its member closes it once it has
+/// looked, saying what it found. Any fix it made went through a contract and is on the owner's
+/// desk as a notice (ADR 0107).
+///
+/// # Errors
+/// [`Refusal::Finished`] for a check that is over; [`Refusal::NotACheck`] for one not yet
+/// taken.
+pub fn may_close_check(from: TaskStatus) -> Result<(), Refusal> {
+    if from.finished() {
+        return Err(Refusal::Finished);
+    }
+    if from == TaskStatus::Todo {
+        return Err(Refusal::NotACheck);
     }
     Ok(())
 }
@@ -478,6 +511,16 @@ mod tests {
             may_set_status(TaskStatus::Done, TaskStatus::Doing),
             Err(Refusal::Finished)
         );
+    }
+
+    #[test]
+    fn a_routines_check_is_closed_by_its_member_once_taken_and_only_once() {
+        for from in [TaskStatus::Doing, TaskStatus::Blocked, TaskStatus::InReview] {
+            assert!(may_close_check(from).is_ok(), "{from:?}");
+        }
+        assert_eq!(may_close_check(TaskStatus::Todo), Err(Refusal::NotACheck));
+        assert_eq!(may_close_check(TaskStatus::Done), Err(Refusal::Finished));
+        assert_eq!(may_close_check(TaskStatus::Dropped), Err(Refusal::Finished));
     }
 
     #[test]

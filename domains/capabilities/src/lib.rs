@@ -18,6 +18,7 @@ pub mod contracts;
 pub mod domain;
 pub mod home_assistant;
 pub mod infrastructure;
+pub mod lab_alarms;
 pub mod mcp_http;
 pub mod mcp_registry;
 pub mod mcp_stdio;

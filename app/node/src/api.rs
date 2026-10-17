@@ -461,6 +461,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/desk/{id}", post(hq_decide))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
+        // The owner's routines (ADR 0107).
+        .route("/v1/hq/routines", post(hq_add_routine))
+        .route("/v1/hq/routines/{id}", post(hq_switch_routine))
+        .route("/v1/hq/routines/{id}/fire", post(hq_fire_routine))
         // The owner's switches for the team's contracts (ADR 0106).
         .route(
             "/v1/hq/contracts",

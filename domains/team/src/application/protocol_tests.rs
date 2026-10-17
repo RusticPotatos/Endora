@@ -166,7 +166,8 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(names.len(), 8);
+    assert_eq!(names.len(), 9);
+    assert!(names.contains(&"check_back".to_owned()));
     assert!(
         !names.contains(&"report_usage".to_owned()),
         "the relay is the meter: a worker reports nothing"
@@ -549,4 +550,37 @@ fn a_worker_reports_no_usage_because_the_relay_already_charged_it() {
         "the briefing does not offer it: {}",
         run.told
     );
+}
+
+#[test]
+fn a_turn_asks_to_check_back_on_its_own_task_and_is_told_when() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
+    let said = use_tool(
+        "check_back",
+        json!({ "minutes": 2, "why": "see whether the restart held" }),
+    )
+    .unwrap();
+    assert!(said.contains("in 5 minutes"), "{said}");
+    let backs = hq.store().check_backs().unwrap();
+    assert_eq!((backs[0].member, backs[0].task), (s.dev, s.task));
+    assert_eq!(backs[0].why, "see whether the restart held");
+    assert!(
+        use_tool("check_back", json!({ "why": "soon" })).is_err(),
+        "minutes"
+    );
+    assert!(
+        use_tool("check_back", json!({ "minutes": 10 })).is_err(),
+        "why"
+    );
+    let tool = tools()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "check_back")
+        .cloned()
+        .unwrap();
+    assert_eq!(tool["inputSchema"]["required"], json!(["minutes", "why"]));
 }

@@ -170,12 +170,15 @@ fn instructions(posted: bool, contracts: bool) -> String {
              - restart_container is a safe fix you may make on your own, within its limits (one \
              restart of a container an hour, three in all), and the owner is told: look and \
              diagnose first, and say why.\n\
+             - After a fix, check back to confirm it held: call check_back with the minutes to \
+             wait and what you will look at.\n\
              - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
              never try to work around a refusal.",
         );
     }
     told.push_str(
-        "\n\nNever set a task to done: only the gate does that. Keep it short, and never say \
+        "\n\nNever set a task to done: only the gate does that, except a routine's check, which \
+         you close as done once you have looked, saying what you found. Keep it short, and never say \
          you did what you did not do. When your part is done, stop calling tools and reply in \
          one or two sentences.",
     );
@@ -683,9 +686,14 @@ mod tests {
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 4, "{told}");
         let rules: Vec<&str> = parts[2].lines().collect();
-        assert_eq!(rules.len(), 4, "{told}");
+        assert_eq!(rules.len(), 5, "{told}");
         assert!(rules[1..].iter().all(|r| r.starts_with("- ")));
         assert!(told.contains("restart_container"));
+        assert!(
+            told.contains("After a fix, check back to confirm it held"),
+            "{told}"
+        );
+        assert!(told.contains("a routine's check"), "{told}");
         assert!(!told.contains("  "), "{told}");
     }
 

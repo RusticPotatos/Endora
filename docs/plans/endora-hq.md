@@ -131,12 +131,22 @@ as ready to merge. A member saying it is done changes nothing.
 Everything a member does starts with a **wake**: one entry point, with a reason. Reasons
 include: assigned a task, mentioned in a thread, a waited-on task finished, all sub-tasks
 finished, a proposal decided, a timer for the lead to look over the team's work, a retry,
-and a recovery nudge.
+a recovery nudge, a check-back the member asked for, and an alarm passed into a routine's
+open task ([ADR 0107](../adr/0107-routines-alarms-and-check-backs.md)).
+
+Goals are passive and work always arrives as a task: a member never goes looking for work. A
+wake on a clock (a timer, a check-back, an alarm) that names no task, for a member with no open
+task, is refused as **nothing to do** and starts no turn. After two turns in a row on a task
+that moved nothing forward, a wake for it that brings nothing new (a recovery nudge, a retry)
+**backs off**: 2 minutes, doubling, at most 30. Anything new (an owner's word, someone else's
+post naming the member, a blocker or sub-tasks finished, a check-back, an alarm) wakes at once
+and brings a waiting turn forward.
 
 Every wake leaves a receipt, whatever happens to it: **queued**, **folded** into a turn the
 member is already taking on the same task, **held** because another member is working that
 task (and released, oldest first, when that turn ends), **refused** (and why: the kill
-switch, a paused member, an exhausted budget, a duplicate), **started**, or **finished**.
+switch, a paused member, an exhausted budget, a duplicate, nothing to do), **started**, or
+**finished**.
 
 ### Runs
 
@@ -156,7 +166,9 @@ the tools it has. It then works, posts to the thread, updates the task, and ends
 
 Every 30 seconds, in this order:
 
-1. Timers that are due raise their wakes.
+1. Timers that are due raise their wakes; **routines** that are due fire (a task for their
+   member, or skipped while their last task is open); **check-backs** that are due wake their
+   member on their task, if it is still open.
 2. Runs whose container is gone become `failed`, with one retry.
 3. Retries whose time has come are queued again (at most two, a minute apart).
 4. Queued runs start where a member has a free slot, budget can be reserved, and a runner is
@@ -212,9 +224,10 @@ container:
 | `my_turn` | What this turn is for: the task, its why, what is new, the brief if released |
 | `claim` | Takes the task; refused if another member has it |
 | `post` | Writes to the task's thread, at most 4,000 characters a post |
-| `set_status` | Moves the task on, with a reason; `done` is refused (only the gate sets it) |
+| `set_status` | Moves the task on, with a reason; `done` is refused (only the gate sets it), except a routine's check, which its member closes once taken |
 | `create_task` | Creates a sub-task for another member, with what it waits on |
 | `ask_owner` | Puts a question or a proposal on the owner's desk and ends the turn: HQ ends the run there and refuses any further call from it, and the worker exits 0. One waits at a time per member and task. The owner can answer on the card, into the task's thread, and seeing it wakes the member who asked |
+| `check_back` | Wakes the member on its task again after 5–720 minutes, once, if it is still open: after a fix, to confirm it held |
 | `run_gate` | Runs the tests and build on a runner and returns the result |
 | `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
 
@@ -464,6 +477,32 @@ team pool stays $70 a month. The pieces and their contracts:
    nothing else (no internet, no LAN, no NAS host). The
    runner, which holds Docker's socket, is its own compose profile, off until the owner
    turns it on.
+
+### Routines, alarms and check-backs (owner's decision of 2026-10-17, [ADR 0107](../adr/0107-routines-alarms-and-check-backs.md))
+
+Built, so the team keeps working on "Keep the home lab healthy" without anyone looking for
+work:
+
+- **Routines** in HQ's store (`routines`): title, description, goal, assignee, `every_ms`
+  (15 minutes to 30 days) and next due, on/off, and whether it takes the home lab's alarms.
+  Firing makes a `todo` task for the assignee with why it fired; one open task a routine (a
+  firing on the clock is skipped while it is open); late ticks fire once. A routine's check is
+  closed as `done` by its member once taken. Kill switch, a paused member, a spent budget or a
+  goal that is not active skip a firing. HQ: `POST /v1/routines`, `POST /v1/routines/{id}`
+  (`{ "enabled" }`), `POST /v1/routines/{id}/fire`; listed in the snapshot. The node passes
+  them through as `/v1/hq/routines…`, recorded in its audit log; the HQ screen has a Routines
+  card (rhythm, last run, on/off, run now, and an add form: title, every N hours, who).
+- **Alarms**: the node's observer tells HQ (`POST /v1/alarms`, `{ "text" }`, signed) when a
+  container or service goes from well to unhealthy, restarting, exited, dead or unavailable:
+  only a change, never what was wrong at the node's start, never Endora's own, at most one a
+  container an hour. HQ fires the first routine that is on and takes alarms: a new task, or a
+  post in its open task that wakes its member. The demo takes none.
+- **Check-backs**: the team tool `check_back { minutes, why }` (5–720) wakes the turn's member
+  on its task later, if it is still open; a newer one from the member replaces its older, at
+  most three a task; the next briefing says why it came back.
+- **First start with the demo off**: with no routine yet, an active goal titled "Keep the home
+  lab healthy" and a lead, HQ makes "Check the home lab", every 6 hours, for the lead, taking
+  alarms, once, recorded in the feed.
 
 ### Contracts (owner's decision of 2026-10-17, [ADR 0106](../adr/0106-team-contracts.md))
 

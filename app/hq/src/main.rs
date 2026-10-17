@@ -23,6 +23,51 @@ const SHORTEST_TOKEN: usize = 32;
 /// How many events the feed keeps.
 const KEEP_EVENTS: i64 = 20_000;
 
+/// The owner's goal for the home lab, as they set it.
+pub(crate) const LAB_GOAL: &str = "Keep the home lab healthy";
+
+/// What the home lab's routine asks of its member each time.
+const LAB_CHECK: &str = "Look at the home lab with homelab_status, read logs of anything \
+    unhealthy, fix what a restart can fix, check back after a fix, and put anything else to the \
+    owner as a plan.";
+
+/// The owner's routine for the home lab (ADR 0107), made once: with no routine at all yet,
+/// an active goal called "Keep the home lab healthy" and a lead, the lead checks the home lab
+/// every 6 hours, and takes its alarms. It is the owner's to switch off or run, like any other;
+/// nothing about it is in the schema. Returns the routine, if it made one.
+pub(crate) fn seed_routine(
+    hq: &Hq,
+) -> Result<Option<endora_team::domain::RoutineId>, endora_team::application::EngineError> {
+    use endora_team::application::ports::{NewRoutine, TeamStore as _};
+    use endora_team::domain::{GoalStatus, Role};
+    let store = hq.store();
+    if !store.routines()?.is_empty() {
+        return Ok(None);
+    }
+    let Some(goal) = store
+        .goals()?
+        .into_iter()
+        .find(|g| g.status == GoalStatus::Active && g.title.trim().eq_ignore_ascii_case(LAB_GOAL))
+    else {
+        return Ok(None);
+    };
+    let Some(lead) = store.members()?.into_iter().find(|m| m.role == Role::Lead) else {
+        return Ok(None);
+    };
+    let made = hq.add_routine(
+        endora_team::application::Author::Endora,
+        NewRoutine {
+            title: "Check the home lab".to_owned(),
+            description: LAB_CHECK.to_owned(),
+            goal: goal.id,
+            assignee: lead.id,
+            every_ms: 6 * 60 * 60 * 1000,
+            on_lab_trouble: true,
+        },
+    )?;
+    Ok(Some(made))
+}
+
 /// The token the node signs with: `HQ_TOKEN` if set, else the one in `HQ_TOKEN_FILE`, made
 /// there (random, readable by its owner only) the first time. The node reads the same file
 /// through a volume only the two of them mount, so nobody has to keep a secret by hand.
@@ -151,6 +196,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(0) => {}
             Ok(n) => println!("hq: the demo is off: put away its {n} goals and their open work"),
             Err(e) => eprintln!("hq: could not put the demo's work away: {e}"),
+        }
+        match seed_routine(&hq) {
+            Ok(None) => {}
+            Ok(Some(id)) => {
+                println!("hq: made the home lab's routine ({id}): the lead checks it every 6 hours")
+            }
+            Err(e) => eprintln!("hq: could not make the home lab's routine: {e}"),
         }
     }
 

@@ -3,11 +3,11 @@
 use core::fmt;
 use std::time::Duration;
 
+use crate::domain::{CheckBack, CheckBackStatus, Goal, Liveness, Routine, RoutineId};
 use crate::domain::{
     Event, GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, Role, RunId,
     RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
-use crate::domain::{Goal, Liveness};
 
 /// A store that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +41,23 @@ pub struct NewTask {
     pub priority: Priority,
     /// The tasks it waits on.
     pub waits_on: Vec<TaskId>,
+}
+
+/// A routine to create (ADR 0107).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRoutine {
+    /// The title each of its tasks gets.
+    pub title: String,
+    /// What each of its tasks asks for.
+    pub description: String,
+    /// The goal its tasks serve.
+    pub goal: GoalId,
+    /// The member its tasks are handed to.
+    pub assignee: MemberId,
+    /// How often it fires.
+    pub every_ms: Millis,
+    /// Whether it takes the home lab's alarms.
+    pub on_lab_trouble: bool,
 }
 
 /// One post in a task's thread.
@@ -453,6 +470,46 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_timer_due(&self, id: i64, due_at: Millis) -> Stored<()>;
+
+    /// Adds a routine, on, first due at `next_due_at`.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_routine(&self, routine: &NewRoutine, next_due_at: Millis) -> Stored<RoutineId>;
+    /// Every routine, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn routines(&self) -> Stored<Vec<Routine>>;
+    /// Saves a routine's changes: on or off, when it is next due, when it last fired, and
+    /// its last task.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn save_routine(&self, routine: &Routine) -> Stored<()>;
+
+    /// Adds a pending check-back.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_check_back(
+        &self,
+        member: MemberId,
+        task: TaskId,
+        why: &str,
+        due_at: Millis,
+        at: Millis,
+    ) -> Stored<i64>;
+    /// Every check-back, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn check_backs(&self) -> Stored<Vec<CheckBack>>;
+    /// Records what became of a check-back, and when.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_check_back(&self, id: i64, status: CheckBackStatus, at: Millis) -> Stored<()>;
 }
 
 /// What a member's turn is started with: the run, the member, the task and what it is told.

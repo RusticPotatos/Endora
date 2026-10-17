@@ -142,6 +142,14 @@ function hqTell(e, live) {
     "budget.crossed": ["bad", `${name} crossed its limit; R${d.run} stopped`],
     "stopped": ["bad", "You pulled the kill switch: every run stopped, nothing new starts"],
     "resumed": ["you", "You resumed the engine"],
+    // Routines and check-backs (ADR 0107): how the team keeps working.
+    "routine.changed": ["you", `Routine ${d.title}: ${d.enabled ? "on" : "off"}`],
+    "routine.fired": ["wake", `Routine ${d.title} handed out ${key}`],
+    "routine.skipped": ["warn", `Routine ${d.title} skipped: ${d.why}`],
+    "routine.posted": ["wake", `Alarm into ${key}: ${d.said}`],
+    "checkback.set": ["run", `${name} will check back on ${key} in ${d.minutes} min`],
+    "checkback.fired": ["wake", `${name} checks back on ${key}`],
+    "checkback.dropped": ["run", `Check-back on ${key} dropped: it is over`],
   }[e.kind];
   if (said) {
     const at = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -532,6 +540,7 @@ function viewHQ() {
         <section class="hq-card"><h2>Team</h2><ul class="hq-team">${team}</ul></section>
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
+        ${hqRoutines(s)}
         ${hqContracts(s.contracts)}
       </aside>
     </div>
@@ -549,6 +558,25 @@ function hqContracts(c) {
     <p class="hq-note">Look at the home lab and its logs (secrets replaced), and restart a container: one an hour each, three in all.
       You are told of every restart. Anything else asks you.</p>
     <div class="hq-row">${btn("all", c.all, "Contracts")}${c.all ? btn("restart_container", c.restart_container, "Restarts") : ""}</div></details>`;
+}
+
+// Routines (ADR 0107): work that comes round again, each a task for one member. Each shows
+// its rhythm, when it last ran, and whether it takes the home lab's alarms; each switches the
+// other way and runs now. A small form adds one under the team's first active goal.
+function hqRoutines(s) {
+  const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
+  const rows = (s.routines || []).map((r) => `<li><b>${esc(r.title)}</b>
+      <span>${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.last_fired_at ? "last ran " + esc(when(r.last_fired_at)) : "not run yet"}${r.last_task_open ? ` · ${hqKey(r.last_task)} open` : ""}${r.on_lab_trouble ? " · takes home-lab alarms" : ""}</span>
+      <div class="hq-row"><button class="hq-btn ${r.enabled ? "ok" : "no"}" aria-pressed="${r.enabled ? "true" : "false"}" data-act="hq:routine:${r.id}:${r.enabled ? "off" : "on"}">${r.enabled ? "On" : "Off"}</button>
+        <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div></li>`).join("");
+  const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
+  return `<section class="hq-card"><h2>Routines</h2>
+    <ul class="hq-team">${rows || `<li class="hq-empty">None yet: the team works only on what it is handed.</li>`}</ul>
+    <details><summary>Add a routine</summary><div class="hq-row" style="margin-top:8px;">
+      <input id="hq-routine-title" placeholder="e.g. Check the home lab" aria-label="What it does" />
+      <label>every <input id="hq-routine-hours" type="number" min="1" max="720" value="6" style="width:4em" aria-label="Every how many hours" /> hours</label>
+      <select id="hq-routine-who" aria-label="Who does it">${who}</select>
+      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div></details></section>`;
 }
 
 // What was tapped, in detail: a member's turn and budget, or a task and its chain of why.
@@ -607,6 +635,28 @@ async function hqDispatch(verb, noun, id, arg) {
   if (noun === "contracts") {
     try { await api("POST", "/v1/hq/contracts", { [id]: arg === "on" }); flash(arg === "on" ? "Switched on." : "Switched off.", "ok"); }
     catch (e) { flash("Couldn't switch it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // Routines: add one, switch one, or run one now.
+  if (noun === "routine") {
+    const s = HQ.snap || {};
+    if (arg === "add") {
+      const title = val("hq-routine-title"), hours = Number(val("hq-routine-hours")) || 0;
+      const box = document.getElementById("hq-routine-who"), assignee = box ? Number(box.value) : 0;
+      const goal = (s.goals || []).find((g) => g.status === "active");
+      if (!title || hours < 1) { flash("Say what it does, and every how many hours.", "warn"); return true; }
+      if (!goal) { flash("Set the team a goal first.", "warn"); return true; }
+      try { await api("POST", "/v1/hq/routines", { title, goal: goal.id, assignee, every_ms: Math.round(hours * 3600000) }); flash("Routine added.", "ok"); }
+      catch (e) { flash("Couldn't add it: " + e.message, "err"); }
+    } else if (arg === "fire") {
+      try {
+        const done = await api("POST", `/v1/hq/routines/${id}/fire`, {});
+        flash(done.fired === "skipped" ? "Not run: " + done.why : "Handed to the team.", done.fired === "skipped" ? "warn" : "ok");
+      } catch (e) { flash("Couldn't run it: " + e.message, "err"); }
+    } else {
+      try { await api("POST", `/v1/hq/routines/${id}`, { enabled: arg === "on" }); flash(arg === "on" ? "Switched on." : "Switched off.", "ok"); }
+      catch (e) { flash("Couldn't switch it: " + e.message, "err"); }
+    }
     await loadHQ(); render(); return true;
   }
   // Hand the team a piece of work, under the first goal it is working towards, to its lead.

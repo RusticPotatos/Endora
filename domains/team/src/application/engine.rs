@@ -8,15 +8,18 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::ports::{
-    Clock, DeskItem, NewTask, Run, RunContext, StoreError, TeamStore, Wake, WorkerAdapter,
+    Clock, DeskItem, NewRoutine, NewTask, Run, RunContext, StoreError, TeamStore, Wake,
+    WorkerAdapter,
 };
 use crate::domain::money::{self, Micros};
+use crate::domain::routines::{self, FireStep, MINUTE_MS};
 use crate::domain::runs::{self, LONGEST_TURN_MS};
 use crate::domain::wakes::{self, LiveTurn};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
-    EventKind, GoalId, GoalStatus, Liveness, Member, MemberId, Millis, Receipt, Refusal, Role,
-    RunId, RunStatus, Task, TaskId, TaskStatus, WakeDecision, WakeReason, WakeSituation,
+    CheckBackStatus, EventKind, Firing, GoalId, GoalStatus, Liveness, Member, MemberId, Millis,
+    Priority, Receipt, Refusal, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId,
+    TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 
 /// How the engine is set up.
@@ -88,6 +91,10 @@ pub type Done<T> = Result<T, EngineError>;
 pub struct TickReport {
     /// Wakes raised by timers.
     pub timers: usize,
+    /// Routines whose time came, fired or skipped.
+    pub routines: usize,
+    /// Check-backs that woke their member.
+    pub check_backs: usize,
     /// Turns that ended.
     pub ended: usize,
     /// Turns set to try again.
@@ -102,6 +109,28 @@ pub struct TickReport {
     pub stuck: usize,
     /// Tasks woken because what they waited on finished.
     pub woken: usize,
+}
+
+/// What a routine's firing did (ADR 0107).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fired {
+    /// It handed its member this new task.
+    Created(TaskId),
+    /// It passed an alarm into its open task.
+    Posted(TaskId),
+    /// It did nothing, and why.
+    Skipped(String),
+}
+
+/// One line, at most `most` characters: what a member or an alarm says, as it is stored.
+fn one_line(text: &str, most: usize) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(most)
+        .collect()
 }
 
 /// The engine.
@@ -250,6 +279,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Unknown`] for a goal, task or member that does not exist.
     pub fn add_task(&self, by: Author, task: NewTask) -> Done<TaskId> {
         let _held = self.held();
+        self.add_task_held_lock(by, task)
+    }
+
+    fn add_task_held_lock(&self, by: Author, task: NewTask) -> Done<TaskId> {
         self.store
             .goal(task.goal)?
             .ok_or(EngineError::Unknown("goal"))?;
@@ -331,7 +364,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
-    fn situation(&self, member: &Member, task: Option<TaskId>) -> Done<WakeSituation> {
+    /// Whether a member has a task of its own that is not over: handed to it, or taken.
+    fn has_open_task(&self, member: MemberId) -> Done<bool> {
+        Ok(self.store.tasks()?.iter().any(|t| {
+            !t.status.finished() && (t.assignee == Some(member) || t.owner == Some(member))
+        }))
+    }
+
+    fn situation(
+        &self,
+        member: &Member,
+        task: Option<TaskId>,
+        reason: WakeReason,
+    ) -> Done<WakeSituation> {
+        let nothing_to_do =
+            task.is_none() && reason.on_a_clock() && !self.has_open_task(member.id)?;
         let already_held = match task {
             Some(task) => self
                 .store
@@ -346,6 +393,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             can_afford_a_turn: self.affordable(member)?.is_some(),
             live: self.live_turns(member.id, task)?,
             already_held,
+            nothing_to_do,
         })
     }
 
@@ -356,9 +404,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         reason: WakeReason,
     ) -> Done<Receipt> {
         let who = self.member(member)?;
-        let decision = wakes::decide(member, &self.situation(&who, task)?);
+        // News is never kept waiting: a turn on its task held back by the back-off, or waiting
+        // to try again, is brought forward to take it.
+        if let (Some(task), true) = (task, reason.brings_news()) {
+            self.bring_forward(task)?;
+        }
+        let decision = wakes::decide(member, &self.situation(&who, task, reason)?);
         let now = self.clock.now();
-        let about = json!({
+        let mut about = json!({
             "member": member.0, "task": task.map(|t| t.0), "reason": reason.name(),
         });
         match decision {
@@ -366,8 +419,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 let wake = self
                     .store
                     .add_wake(member, task, reason, Receipt::Queued, None, now)?;
-                let run = self.store.add_run(member, task, wake, now)?;
+                let (run, delayed) = self.queue_turn(member, task, wake, reason)?;
                 self.store.set_wake(wake, Receipt::Queued, Some(run))?;
+                if let Some(until) = delayed {
+                    about["delayed_until"] = json!(until);
+                }
                 self.emit(EventKind::WakeQueued, about)?;
                 Ok(Receipt::Queued)
             }
@@ -386,12 +442,70 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             WakeDecision::Refuse(why) => {
                 self.store
                     .add_wake(member, task, reason, Receipt::Refused(why), None, now)?;
-                let mut about = about;
                 about["why"] = json!(why.name());
                 self.emit(EventKind::WakeRefused, about)?;
                 Ok(Receipt::Refused(why))
             }
         }
+    }
+
+    /// How many turns in a row on a task, newest first, moved nothing forward.
+    fn empty_turns(&self, task: TaskId) -> Done<usize> {
+        let mut ended: Vec<Run> = self
+            .store
+            .runs()?
+            .into_iter()
+            .filter(|r| r.task == Some(task) && !r.status.live() && r.started_at.is_some())
+            .collect();
+        ended.sort_by_key(|r| core::cmp::Reverse(r.id));
+        Ok(ended.iter().take_while(|r| !r.moved_forward).count())
+    }
+
+    /// How long a wake that brings nothing new to `task` waits now (ADR 0107).
+    fn back_off(&self, task: Option<TaskId>, reason: WakeReason) -> Done<Millis> {
+        let Some(task) = task else {
+            return Ok(0);
+        };
+        if reason.brings_news() {
+            return Ok(0);
+        }
+        Ok(routines::back_off(self.empty_turns(task)?))
+    }
+
+    /// Queues a turn for a wake: at once, or, for a stale wake on a task whose turns keep
+    /// moving nothing, waiting out its back-off. Returns the turn, and until when it waits.
+    fn queue_turn(
+        &self,
+        member: MemberId,
+        task: Option<TaskId>,
+        wake: crate::domain::WakeId,
+        reason: WakeReason,
+    ) -> Done<(RunId, Option<Millis>)> {
+        let now = self.clock.now();
+        let id = self.store.add_run(member, task, wake, now)?;
+        let wait = self.back_off(task, reason)?;
+        if wait == 0 {
+            return Ok((id, None));
+        }
+        let mut run = self.store.run(id)?.ok_or(EngineError::Unknown("run"))?;
+        run.status = RunStatus::RetryWaiting;
+        run.retry_at = Some(now + wait);
+        run.end_reason = "backing off: its last turns moved nothing".to_owned();
+        self.store.save_run(&run)?;
+        Ok((id, Some(now + wait)))
+    }
+
+    /// Brings a task's waiting turn forward, to start on the next tick.
+    fn bring_forward(&self, task: TaskId) -> Done<()> {
+        for mut run in self.store.runs()? {
+            if run.task != Some(task) || run.status != RunStatus::RetryWaiting {
+                continue;
+            }
+            run.status = RunStatus::Queued;
+            run.retry_at = None;
+            self.store.save_run(&run)?;
+        }
+        Ok(())
     }
 
     /// Releases the oldest wake held for a task, now that its turn has ended.
@@ -400,12 +514,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         };
         let who = self.member(oldest.member)?;
-        let decision = wakes::decide(oldest.member, &self.situation(&who, Some(task))?);
+        let decision = wakes::decide(
+            oldest.member,
+            &self.situation(&who, Some(task), oldest.reason)?,
+        );
         match decision {
             WakeDecision::Queue => {
-                let run =
-                    self.store
-                        .add_run(oldest.member, Some(task), oldest.id, self.clock.now())?;
+                let (run, _) =
+                    self.queue_turn(oldest.member, Some(task), oldest.id, oldest.reason)?;
                 self.store.set_wake(oldest.id, Receipt::Queued, Some(run))?;
                 self.emit(
                     EventKind::WakeQueued,
@@ -641,7 +757,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if current.owner != Some(member) {
             return Err(EngineError::Refused(Refusal::NotYours));
         }
-        work::may_set_status(current.status, to).map_err(EngineError::Refused)?;
+        // A routine's check changes no code: its member closes it (ADR 0107).
+        let check = to == TaskStatus::Done && self.routine_of(task)?.is_some();
+        if check {
+            work::may_close_check(current.status).map_err(EngineError::Refused)?;
+        } else {
+            work::may_set_status(current.status, to).map_err(EngineError::Refused)?;
+        }
         self.store.set_task_status(task, to)?;
         self.mark_progress(member, task)?;
         let said = if to == TaskStatus::Todo {
@@ -672,6 +794,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "task": task.0, "goal": current.goal.0, "owner": current.owner.map(|o| o.0),
                     "status": to.name(), "priority": current.priority.name() }),
         )?;
+        if check {
+            self.after_finishing(&current)?;
+        }
         Ok(())
     }
 
@@ -918,6 +1043,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.end(run, RunStatus::Failed, why)?;
             return Ok(false);
         };
+        // A retry is a stale continuation: it backs off like one.
+        let due = due.max(now + self.back_off(run.task, WakeReason::Retry)?);
         if run.started_at.is_some() {
             self.store.settle(run.id, run.member, self.today(), now)?;
         }
@@ -977,6 +1104,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter_map(|r| r.started_at)
             .max()
             .unwrap_or(Millis::MIN);
+        for came_back in self.store.check_backs()?.iter().filter(|c| {
+            c.member == member.id
+                && c.task == task.id
+                && c.status == CheckBackStatus::Fired
+                && c.done_at.is_some_and(|at| at > since)
+        }) {
+            told.push_str(&format!(
+                "You said you would check back: {}\n",
+                came_back.why
+            ));
+        }
         let new: Vec<String> = self
             .store
             .thread(task.id)?
@@ -993,16 +1131,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         told.push_str(
-            "Your tools: my_turn, claim, post, set_status, create_task, ask_owner, run_gate, \
-             request_action.\n",
+            "Your tools: my_turn, claim, post, set_status, create_task, ask_owner, check_back, \
+             run_gate, request_action.\n",
         );
         Ok(told)
     }
 
     // ---- the tick ----------------------------------------------------------------------------
 
-    /// The engine's regular pass (every 30 seconds), in the spec's order: timers, ended and
-    /// vanished turns, retries, starts, stuck work, finished waits. A late tick runs once.
+    /// The engine's regular pass (every 30 seconds), in the spec's order: timers, routines and
+    /// check-backs, ended and vanished turns, retries, starts, stuck work, finished waits. A
+    /// late tick runs once.
     ///
     /// # Errors
     /// [`EngineError::Store`] if the store fails.
@@ -1021,6 +1160,33 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.store.set_timer_due(timer.id, now + timer.every_ms)?;
                 report.timers += 1;
             }
+        }
+        // Routines whose time came fire once, however late, and count on from now.
+        for mut routine in self.store.routines()? {
+            if !routine.enabled || routine.next_due_at > now {
+                continue;
+            }
+            routine.next_due_at = routines::next_due(now, routine.every_ms);
+            self.fire_held_lock(routine, &Firing::Schedule)?;
+            report.routines += 1;
+        }
+        // Check-backs whose time came wake their member, while the task is still open.
+        for back in self.store.check_backs()? {
+            if back.status != CheckBackStatus::Pending || back.due_at > now {
+                continue;
+            }
+            let about = json!({ "task": back.task.0, "member": back.member.0, "why": back.why });
+            if self.task(back.task)?.status.finished() {
+                self.store
+                    .set_check_back(back.id, CheckBackStatus::Dropped, now)?;
+                self.emit(EventKind::CheckBackDropped, about)?;
+                continue;
+            }
+            self.store
+                .set_check_back(back.id, CheckBackStatus::Fired, now)?;
+            self.emit(EventKind::CheckBackFired, about)?;
+            self.wake_held_lock(back.member, Some(back.task), WakeReason::CheckBack)?;
+            report.check_backs += 1;
         }
 
         // 2. Running turns: ended, failed, vanished, or too long.
@@ -1480,6 +1646,245 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(open.len())
     }
 
+    // ---- routines, alarms and check-backs (ADR 0107) -------------------------------------
+
+    /// The routine whose last task this is, if any: the one task a routine has open.
+    fn routine_of(&self, task: TaskId) -> Done<Option<Routine>> {
+        Ok(self
+            .store
+            .routines()?
+            .into_iter()
+            .find(|r| r.last_task == Some(task)))
+    }
+
+    fn routine(&self, id: RoutineId) -> Done<Routine> {
+        self.store
+            .routines()?
+            .into_iter()
+            .find(|r| r.id == id)
+            .ok_or(EngineError::Unknown("routine"))
+    }
+
+    /// Makes a routine: work that comes round again, handed to `assignee` as a task under
+    /// `goal`. It first fires one period from now; the owner can run it at once.
+    ///
+    /// # Errors
+    /// [`Refusal::Rhythm`] for a rhythm faster than every 15 minutes or slower than every 30
+    /// days; [`EngineError::Unknown`] for a goal or member that does not exist, or no title.
+    pub fn add_routine(&self, by: Author, routine: NewRoutine) -> Done<RoutineId> {
+        let _held = self.held();
+        routines::may_keep(routine.every_ms).map_err(EngineError::Refused)?;
+        let title = one_line(&routine.title, 120);
+        if title.is_empty() {
+            return Err(EngineError::Unknown("routine title"));
+        }
+        self.store
+            .goal(routine.goal)?
+            .ok_or(EngineError::Unknown("goal"))?;
+        self.member(routine.assignee)?;
+        let routine = NewRoutine { title, ..routine };
+        let next = routines::next_due(self.clock.now(), routine.every_ms);
+        let id = self.store.add_routine(&routine, next)?;
+        self.emit(
+            EventKind::RoutineChanged,
+            json!({ "routine": id.0, "title": routine.title, "enabled": true,
+                    "rhythm": routines::rhythm(routine.every_ms),
+                    "by": self.author_name(by)? }),
+        )?;
+        Ok(id)
+    }
+
+    /// Switches a routine on or off. Switched on, it counts from now: what it missed while
+    /// off is skipped.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a routine that does not exist.
+    pub fn switch_routine(&self, id: RoutineId, on: bool) -> Done<()> {
+        let _held = self.held();
+        let mut routine = self.routine(id)?;
+        if on && !routine.enabled {
+            routine.next_due_at = routines::next_due(self.clock.now(), routine.every_ms);
+        }
+        routine.enabled = on;
+        self.store.save_routine(&routine)?;
+        self.emit(
+            EventKind::RoutineChanged,
+            json!({ "routine": id.0, "title": routine.title, "enabled": on }),
+        )
+    }
+
+    /// The owner runs a routine now, whatever its rhythm. Its next time is unchanged.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a routine that does not exist; a store failure.
+    pub fn fire_routine(&self, id: RoutineId) -> Done<Fired> {
+        let _held = self.held();
+        let routine = self.routine(id)?;
+        self.fire_held_lock(routine, &Firing::Now)
+    }
+
+    /// An alarm from Endora about the home lab, in its words: fired into the first routine
+    /// that is on and takes the home lab's alarms. `None` when no routine takes them.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn alarm(&self, said: &str) -> Done<Option<(RoutineId, Fired)>> {
+        let _held = self.held();
+        let said = one_line(said, 300);
+        if said.is_empty() {
+            return Err(EngineError::Unknown("alarm text"));
+        }
+        let Some(routine) = self
+            .store
+            .routines()?
+            .into_iter()
+            .find(|r| r.enabled && r.on_lab_trouble)
+        else {
+            return Ok(None);
+        };
+        let id = routine.id;
+        let fired = self.fire_held_lock(routine, &Firing::Alarm(said))?;
+        Ok(Some((id, fired)))
+    }
+
+    /// Fires a routine, through the engine's rules: never past the kill switch, to a paused
+    /// member, beyond the budget or for a goal that is not active. A routine has one open task:
+    /// on the clock it is skipped while that is open, and an alarm is passed into it instead.
+    /// Every firing, skip or post is in the feed. The routine is saved as it is left.
+    fn fire_held_lock(&self, mut routine: Routine, firing: &Firing) -> Done<Fired> {
+        let now = self.clock.now();
+        let why = firing.why(routine.every_ms);
+        let skipped = self.why_not_fire(&routine)?;
+        let open = match routine.last_task {
+            Some(task) => Some(self.task(task)?).filter(|t| !t.status.finished()),
+            None => None,
+        };
+        let step = routines::step(firing, open.is_some());
+        let skipped = skipped.or_else(|| match (&open, step) {
+            (Some(task), FireStep::Skip) => {
+                Some(format!("its last task, #{}, is still open", task.id))
+            }
+            _ => None,
+        });
+        if let Some(reason) = skipped {
+            self.store.save_routine(&routine)?;
+            self.emit(
+                EventKind::RoutineSkipped,
+                json!({ "routine": routine.id.0, "title": routine.title, "firing": firing.name(),
+                        "why": reason }),
+            )?;
+            return Ok(Fired::Skipped(reason));
+        }
+        if let (Some(task), Firing::Alarm(said)) = (open, firing) {
+            let text = format!("Alarm: {said}");
+            self.post_held_lock(Author::Endora, task.id, &text)?;
+            let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+            self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
+            routine.last_fired_at = Some(now);
+            self.store.save_routine(&routine)?;
+            self.emit(
+                EventKind::RoutinePosted,
+                json!({ "routine": routine.id.0, "title": routine.title, "task": task.id.0,
+                        "said": said }),
+            )?;
+            return Ok(Fired::Posted(task.id));
+        }
+        let priority = match firing {
+            Firing::Alarm(_) => Priority::High,
+            _ => Priority::Normal,
+        };
+        let description = if routine.description.trim().is_empty() {
+            why.clone()
+        } else {
+            format!("{}\n\nWhy now: {why}", routine.description.trim())
+        };
+        let task = self.add_task_held_lock(
+            Author::Endora,
+            NewTask {
+                goal: routine.goal,
+                parent: None,
+                title: routine.title.clone(),
+                description,
+                assignee: Some(routine.assignee),
+                priority,
+                waits_on: Vec::new(),
+            },
+        )?;
+        routine.last_task = Some(task);
+        routine.last_fired_at = Some(now);
+        self.store.save_routine(&routine)?;
+        self.emit(
+            EventKind::RoutineFired,
+            json!({ "routine": routine.id.0, "title": routine.title, "task": task.0,
+                    "firing": firing.name(), "why": why }),
+        )?;
+        Ok(Fired::Created(task))
+    }
+
+    /// Why a routine may not fire now, if it may not: the engine's rules, said in words.
+    fn why_not_fire(&self, routine: &Routine) -> Done<Option<String>> {
+        if self.store.stopped()? {
+            return Ok(Some("the kill switch is on".to_owned()));
+        }
+        let active = self
+            .store
+            .goal(routine.goal)?
+            .is_some_and(|g| g.status == GoalStatus::Active);
+        if !active {
+            return Ok(Some("its goal is not active".to_owned()));
+        }
+        let member = self.member(routine.assignee)?;
+        if member.paused {
+            return Ok(Some(format!("{} is paused", member.name)));
+        }
+        if self.affordable(&member)?.is_none() {
+            return Ok(Some(format!("{}'s budget for today is spent", member.name)));
+        }
+        Ok(None)
+    }
+
+    /// A turn asks to come back to its task after `minutes` (held to 5–720), saying why: one
+    /// wake for its member, then, through the normal wake path, if the task is still open. A
+    /// newer one from the same member replaces its older one, and a task holds at most three.
+    /// Returns when it is due.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`] for a turn that has ended; [`EngineError::Unknown`] for a turn
+    /// with no task or no reason; [`Refusal::Finished`] for a task that is over.
+    pub fn check_back(&self, run: RunId, minutes: i64, why: &str) -> Done<Millis> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        let task = run.task.ok_or(EngineError::Unknown("task for this turn"))?;
+        if self.task(task)?.status.finished() {
+            return Err(EngineError::Refused(Refusal::Finished));
+        }
+        let why = one_line(why, 300);
+        if why.is_empty() {
+            return Err(EngineError::Unknown("reason to check back"));
+        }
+        let now = self.clock.now();
+        let pending: Vec<_> = self
+            .store
+            .check_backs()?
+            .into_iter()
+            .filter(|c| c.task == task && c.status == CheckBackStatus::Pending)
+            .collect();
+        for replaced in routines::replaced_by_new(&pending, run.member) {
+            self.store
+                .set_check_back(replaced, CheckBackStatus::Replaced, now)?;
+        }
+        let minutes = routines::check_back_minutes(minutes);
+        let due = now + minutes * MINUTE_MS;
+        self.store
+            .add_check_back(run.member, task, &why, due, now)?;
+        self.emit(
+            EventKind::CheckBackSet,
+            json!({ "task": task.0, "member": run.member.0, "minutes": minutes, "due_at": due,
+                    "why": why }),
+        )?;
+        Ok(due)
+    }
+
     // ---- what the office shows ------------------------------------------------------------
 
     /// Everything on screen now (spec section 12), and the id of the last event in it: the
@@ -1526,6 +1931,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             chain
         };
+        let routine_list = self.store.routines()?;
         let mut task_rows = Vec::new();
         for t in &tasks {
             task_rows.push(json!({
@@ -1535,6 +1941,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "priority": t.priority.name(), "depth": t.depth,
                 "waits_on": t.waits_on.iter().map(|w| w.0).collect::<Vec<_>>(),
                 "gate": self.store.gate(t.id)?, "why": why(t),
+                "routine": routine_list.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
                 "thread": self.store.thread(t.id)?.iter()
                     .map(|p| json!({ "author": p.author, "text": p.text, "at": p.at }))
                     .collect::<Vec<_>>(),
@@ -1573,6 +1980,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "id": r.id.0, "member": r.member.0, "task": r.task.map(|t| t.0),
                 "status": r.status.name(), "started_at": r.started_at, "reserved": r.reserved,
                 "spent": r.spent,
+            })).collect::<Vec<_>>(),
+            "routines": routine_list.iter().map(|r| json!({
+                "id": r.id.0, "title": r.title, "description": r.description, "goal": r.goal.0,
+                "assignee": r.assignee.0, "every_ms": r.every_ms,
+                "rhythm": routines::rhythm(r.every_ms), "next_due_at": r.next_due_at,
+                "enabled": r.enabled, "on_lab_trouble": r.on_lab_trouble,
+                "last_fired_at": r.last_fired_at, "last_task": r.last_task.map(|t| t.0),
+                "last_task_open": r.last_task
+                    .and_then(|id| tasks.iter().find(|t| t.id == id))
+                    .is_some_and(|t| !t.status.finished()),
             })).collect::<Vec<_>>(),
             "desk": self.store.desk()?.iter().filter(|d| d.status == "waiting").map(|d| json!({
                 "id": d.id.0, "kind": d.kind, "task": d.task.map(|t| t.0), "goal": d.goal.map(|g| g.0),

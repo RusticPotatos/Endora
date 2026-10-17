@@ -588,13 +588,20 @@ if (failures.length) {
              { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" },
              { id: 15, kind: "question", task: 7, text: "Linus asks: steel or titanium?" },
              { id: 16, kind: "notice", task: 7, text: "Linus restarted sonarr: it was unhealthy. It is now running." }],
-      contracts: { all: true, restart_container: false } };`, context);
+      contracts: { all: true, restart_container: false },
+      routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
+                   on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false },
+                 { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
+                   on_lab_trouble: false, last_fired_at: 1, last_task: 7, last_task_open: true }] };`, context);
   // The activity log reads like the office's own: who, which task, why, and what it cost.
   runInContext(`hqTell({ id: 41, at: 0, kind: "run.started", data: { run: 9, member: 2, task: 7, reason: "review_requested", reserved: 60000 } }, false);
     hqTell({ id: 42, at: 0, kind: "run.ended", data: { run: 9, member: 2, task: 7, result: "succeeded", spent: 120000 } }, false);
-    hqTell({ id: 43, at: 0, kind: "wake.queued", data: { member: 1, task: 7, reason: "mentioned" } }, false);`, context);
+    hqTell({ id: 43, at: 0, kind: "wake.queued", data: { member: 1, task: 7, reason: "mentioned" } }, false);
+    hqTell({ id: 44, at: 0, kind: "routine.skipped", data: { routine: 3, title: "Check the home lab", why: "its last task, #7, is still open" } }, false);
+    hqTell({ id: 45, at: 0, kind: "checkback.set", data: { member: 1, task: 7, minutes: 30, why: "see it held" } }, false);`, context);
   const office = runInContext("viewHQ()", context);
-  for (const line of ["R9 Bo starts on EL-7 (review requested), 6¢ reserved", "R9 Bo finished · 12¢", "Woke Ada: mentioned (EL-7)"]) {
+  for (const line of ["R9 Bo starts on EL-7 (review requested), 6¢ reserved", "R9 Bo finished · 12¢", "Woke Ada: mentioned (EL-7)",
+    "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min"]) {
     if (!office.includes(line)) fail(`hq: the activity log does not say "${line}"`);
   }
   if (!office.includes('class="k-done"') || !office.includes('class="k-wake"')) fail("hq: the activity log is not coloured by kind");
@@ -610,7 +617,9 @@ if (failures.length) {
     "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:decide:14:not_now",
     "hq:decide:15:seen", "hq:decide:15:dismiss", "hq:decide:16:seen", "hq:decide:16:dismiss", "hq:stop",
     // The owner's switches for the team's contracts (ADR 0106): each offers the other way.
-    "hq:contracts:all:off", "hq:contracts:restart_container:on"]) {
+    "hq:contracts:all:off", "hq:contracts:restart_container:on",
+    // Routines (ADR 0107): each switches the other way and runs now; the owner can add one.
+    "hq:routine:3:off", "hq:routine:3:fire", "hq:routine:4:on", "hq:routine:4:fire", "hq:routine:new:add"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
@@ -624,6 +633,10 @@ if (failures.length) {
   if (!office.includes("nothing is spent")) fail("hq: the demo's spend line reads as real money");
   if (office.includes("<img src=x") || office.includes("<b>Fix</b>")) fail("hq: a task's text became markup");
   if (!office.includes("Goal: Keep the home lab healthy")) fail("hq: a task's chain of why is missing");
+  for (const said of ["every 6 hours", "not run yet", "takes home-lab alarms", 'id="hq-routine-title"', 'id="hq-routine-hours"', 'id="hq-routine-who"']) {
+    if (!office.includes(said)) fail(`hq: the routines card does not show ${said}`);
+  }
+  if (office.includes("<b>Tidy</b>")) fail("hq: a routine's title became markup");
   // A dropped goal's notes leave the board, finished ones too: the retired demo's hundreds of
   // done tasks must not bury the owner's own.
   const cards = runInContext(`HQ.snap.goals.push({ id: 2, title: "The demo's goal", status: "dropped" });

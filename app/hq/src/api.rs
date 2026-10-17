@@ -16,9 +16,9 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::json;
 
-use endora_team::application::engine::{Author, EngineError};
-use endora_team::application::ports::{Clock, NewTask};
-use endora_team::domain::{DeskId, GoalId, MemberId, Priority, Refusal};
+use endora_team::application::engine::{Author, EngineError, Fired};
+use endora_team::application::ports::{Clock, NewRoutine, NewTask};
+use endora_team::domain::{DeskId, GoalId, MemberId, Priority, Refusal, RoutineId};
 use endora_team::infrastructure::demo;
 
 use crate::Hq;
@@ -68,6 +68,11 @@ pub fn app(state: State) -> Router {
         .route("/v1/desk/{id}", post(decide))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
+        // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
+        .route("/v1/routines", post(add_routine))
+        .route("/v1/routines/{id}", post(switch_routine))
+        .route("/v1/routines/{id}/fire", post(fire_routine))
+        .route("/v1/alarms", post(alarm))
         // The node's model relay: whose a turn's token is, and what each call cost.
         .route("/v1/team/turn", post(crate::team::turn))
         .route("/v1/team/usage", post(crate::team::usage))
@@ -293,6 +298,106 @@ async fn resume(Extract(state): Extract<State>) -> Result<Json<serde_json::Value
     let hq = state.hq.clone();
     blocking(move || hq.resume()).await?;
     Ok(Json(json!({ "stopped": false })))
+}
+
+#[derive(Deserialize)]
+struct RoutineRequest {
+    title: String,
+    #[serde(default)]
+    description: String,
+    goal: i64,
+    assignee: i64,
+    every_ms: i64,
+    #[serde(default)]
+    on_lab_trouble: bool,
+}
+
+/// The owner makes a routine: work that comes round again, as a task for one member.
+async fn add_routine(
+    Extract(state): Extract<State>,
+    Json(req): Json<RoutineRequest>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let id = blocking(move || {
+        hq.add_routine(
+            Author::Owner,
+            NewRoutine {
+                title: req.title,
+                description: req.description.trim().to_owned(),
+                goal: GoalId(req.goal),
+                assignee: MemberId(req.assignee),
+                every_ms: req.every_ms,
+                on_lab_trouble: req.on_lab_trouble,
+            },
+        )
+    })
+    .await?;
+    Ok(Json(json!({ "routine": id.0 })))
+}
+
+#[derive(Deserialize)]
+struct Switch {
+    enabled: bool,
+}
+
+/// The owner switches a routine on or off.
+async fn switch_routine(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<Switch>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.switch_routine(RoutineId(id), req.enabled)).await?;
+    Ok(Json(json!({ "routine": id, "enabled": req.enabled })))
+}
+
+/// What a firing did, as the node reads it.
+fn fired(fired: &Fired) -> serde_json::Value {
+    match fired {
+        Fired::Created(task) => json!({ "fired": "created", "task": task.0 }),
+        Fired::Posted(task) => json!({ "fired": "posted", "task": task.0 }),
+        Fired::Skipped(why) => json!({ "fired": "skipped", "why": why }),
+    }
+}
+
+/// The owner runs a routine now.
+async fn fire_routine(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let done = blocking(move || hq.fire_routine(RoutineId(id))).await?;
+    Ok(Json(fired(&done)))
+}
+
+#[derive(Deserialize)]
+struct AlarmRequest {
+    text: String,
+}
+
+/// Endora's node raises an alarm about the home lab: the routine that takes them fires. The
+/// demo's scripted team takes none: nothing in it is real.
+async fn alarm(
+    Extract(state): Extract<State>,
+    Json(req): Json<AlarmRequest>,
+) -> Result<Json<serde_json::Value>, Response> {
+    if state.demo {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "the demo is on: it takes no alarms" })),
+        )
+            .into_response());
+    }
+    let hq = state.hq.clone();
+    let done = blocking(move || hq.alarm(&req.text))
+        .await
+        .map_err(IntoResponse::into_response)?;
+    let Some((routine, done)) = done else {
+        return Ok(Json(json!({ "fired": "nobody" })));
+    };
+    let mut said = fired(&done);
+    said["routine"] = json!(routine.0);
+    Ok(Json(said))
 }
 
 #[cfg(test)]
@@ -640,7 +745,7 @@ mod tests {
             .iter()
             .filter_map(|t| t["name"].as_str())
             .collect();
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 9);
         assert!(
             !names.contains(&"report_usage"),
             "the relay charges for model use, not the worker"
@@ -952,6 +1057,177 @@ mod tests {
         assert_eq!(heard["runs"], json!([run.0]));
         let after = json_of(app.oneshot(stops()).await.unwrap()).await;
         assert_eq!(after["runs"], json!([]), "told once");
+    }
+
+    #[tokio::test]
+    async fn the_owner_makes_switches_and_runs_a_routine_through_the_node() {
+        let st = state(false);
+        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let goal = st
+            .hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        let app = app(st.clone());
+        let send = |method: &str, uri: &str, token: Option<&str>, body: serde_json::Value| {
+            call(method, uri, token, &body.to_string())
+        };
+        let made = json!({ "title": "Check the home lab", "description": "Look.", "goal": goal.0,
+                           "assignee": lead.0, "every_ms": 6 * 3_600_000 });
+        let res = app
+            .clone()
+            .oneshot(send("POST", "/v1/routines", None, made.clone()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "only the node");
+        let res = app
+            .clone()
+            .oneshot(send("POST", "/v1/routines", Some(TOKEN), made))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let id = json_of(res).await["routine"].as_i64().unwrap();
+        let too_fast =
+            json!({ "title": "Spin", "goal": goal.0, "assignee": lead.0, "every_ms": 1000 });
+        let res = app
+            .clone()
+            .oneshot(send("POST", "/v1/routines", Some(TOKEN), too_fast))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        let off = app
+            .clone()
+            .oneshot(send(
+                "POST",
+                &format!("/v1/routines/{id}"),
+                Some(TOKEN),
+                json!({ "enabled": false }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(off.status(), StatusCode::OK);
+        let fired = json_of(
+            app.clone()
+                .oneshot(send(
+                    "POST",
+                    &format!("/v1/routines/{id}/fire"),
+                    Some(TOKEN),
+                    json!({}),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(fired["fired"], "created", "{fired}");
+        assert!(fired["task"].is_i64());
+        let again = json_of(
+            app.clone()
+                .oneshot(send(
+                    "POST",
+                    &format!("/v1/routines/{id}/fire"),
+                    Some(TOKEN),
+                    json!({}),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(again["fired"], "skipped");
+        assert!(again["why"].as_str().unwrap().contains("still open"));
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(snap["routines"][0]["enabled"], false);
+        assert_eq!(snap["routines"][0]["rhythm"], "every 6 hours");
+        let missing = app
+            .oneshot(send("POST", "/v1/routines/99/fire", Some(TOKEN), json!({})))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_alarm_from_the_node_reaches_the_routine_that_takes_it_and_never_the_demo() {
+        let alarm = |token: Option<&str>| {
+            call(
+                "POST",
+                "/v1/alarms",
+                token,
+                &json!({ "text": "sonarr became unhealthy at 14:02" }).to_string(),
+            )
+        };
+        let demo = app(state(true));
+        let res = demo.oneshot(alarm(Some(TOKEN))).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::CONFLICT,
+            "the demo takes no alarms"
+        );
+
+        let st = state(false);
+        let app = app(st.clone());
+        let res = app.clone().oneshot(alarm(None)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let none = json_of(app.clone().oneshot(alarm(Some(TOKEN))).await.unwrap()).await;
+        assert_eq!(none["fired"], "nobody", "{none}");
+        st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        st.hq.set_goal(crate::LAB_GOAL, "", Author::Owner).unwrap();
+        crate::seed_routine(&st.hq).unwrap();
+        let took = json_of(app.oneshot(alarm(Some(TOKEN))).await.unwrap()).await;
+        assert_eq!(took["fired"], "created", "{took}");
+        let task = st
+            .hq
+            .store()
+            .task(TaskId(took["task"].as_i64().unwrap()))
+            .unwrap()
+            .unwrap();
+        assert!(
+            task.description
+                .contains("sonarr became unhealthy at 14:02")
+        );
+    }
+
+    #[test]
+    fn with_the_demo_off_the_home_labs_routine_is_made_once_when_its_goal_is_there() {
+        let st = state(false);
+        assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "no goal yet");
+        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        st.hq
+            .set_goal("Ship the tracker", "", Author::Owner)
+            .unwrap();
+        assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "not that goal");
+        let goal = st
+            .hq
+            .set_goal("keep the home lab healthy ", "", Author::Owner)
+            .unwrap();
+        let made = crate::seed_routine(&st.hq).unwrap().unwrap();
+        let routines = st.hq.store().routines().unwrap();
+        assert_eq!(routines.len(), 1);
+        let r = &routines[0];
+        assert_eq!(r.id, made);
+        assert_eq!(r.title, "Check the home lab");
+        assert_eq!((r.goal, r.assignee), (goal, lead));
+        assert_eq!(r.every_ms, 6 * 3_600_000);
+        assert!(r.on_lab_trouble && r.enabled);
+        assert!(
+            r.description
+                .starts_with("Look at the home lab with homelab_status")
+        );
+        let changed = st
+            .hq
+            .events_after(0)
+            .unwrap()
+            .into_iter()
+            .rfind(|e| e.kind == "routine.changed")
+            .unwrap();
+        assert_eq!(changed.data["by"], "endora", "recorded, as Endora's");
+        st.hq.switch_routine(made, false).unwrap();
+        assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "once");
+        assert_eq!(st.hq.store().routines().unwrap().len(), 1);
     }
 
     #[tokio::test]

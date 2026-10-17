@@ -58,7 +58,45 @@ pub(super) async fn dashboard(
     Json(snapshot)
 }
 
+/// The owner's time of day, as an alarm says it: 14:02.
+fn hh_mm(now_ms: i64, offset_minutes: i64) -> String {
+    let minutes = (now_ms.div_euclid(60_000) + offset_minutes).rem_euclid(24 * 60);
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+/// Tells HQ of new trouble in the home lab (ADR 0107), signed with HQ's token: one call a
+/// container or service that went from well to trouble, which HQ's routine for the home lab
+/// takes. Nothing when HQ is not set up (and HQ itself refuses while its demo is on). Each
+/// alarm is in Endora's audit log. Returns how many HQ was told of.
+pub(super) fn raise_alarms(
+    state: &AppState,
+    watch: &mut endora_capabilities::lab_alarms::LabWatch,
+    snapshot: &serde_json::Value,
+    now: i64,
+    offset_minutes: i64,
+) -> usize {
+    let Some(hq) = state.hq.as_ref() else {
+        return 0;
+    };
+    let mut told = 0;
+    for alarm in watch.observe(snapshot, now) {
+        let said = alarm.said(&hh_mm(now, offset_minutes));
+        match hq.post("/v1/alarms", &json!({ "text": said })) {
+            Ok(_) => {
+                told += 1;
+                super::hq::record(state, &format!("Endora raised an alarm: {said}"));
+            }
+            Err(e) => eprintln!("homelab: HQ was not told that {said}: {e}"),
+        }
+    }
+    told
+}
+
 pub(crate) fn spawn(state: AppState) {
+    // What Endora has seen of the home lab, for its alarms: in memory, begun again on restart.
+    let watch = Arc::new(std::sync::Mutex::new(
+        endora_capabilities::lab_alarms::LabWatch::new(),
+    ));
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -75,8 +113,103 @@ pub(crate) fn spawn(state: AppState) {
                 *state
                     .homelab
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
+                if state.hq.is_some() {
+                    let (state, watch) = (state.clone(), watch.clone());
+                    let offset = state.clock.utc_offset_minutes();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let mut watch = watch
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        raise_alarms(&state, &mut watch, &snapshot, now, offset);
+                    })
+                    .await;
+                }
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::relay::tests::{fake, node};
+    use super::*;
+
+    fn lab(sonarr: &str) -> serde_json::Value {
+        json!({ "services": [{ "name": "docker", "state": "healthy", "items": [
+            { "name": "sonarr", "state": "running", "health": sonarr },
+            { "name": "endora-hq", "state": "running", "health": sonarr },
+        ] }] })
+    }
+
+    #[test]
+    fn the_time_of_day_is_the_owners() {
+        let noon = 1_792_152_000_000; // 2026-10-16 12:00 UTC
+        assert_eq!(hh_mm(noon, 0), "12:00");
+        assert_eq!(hh_mm(noon + 2 * 60_000, 120), "14:02");
+        assert_eq!(hh_mm(noon, -13 * 60), "23:00");
+    }
+
+    #[test]
+    fn new_trouble_is_told_to_hq_signed_once_and_recorded() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            (
+                200,
+                "application/json",
+                r#"{"fired":"created","task":3}"#.to_owned(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let mut watch = endora_capabilities::lab_alarms::LabWatch::new();
+        let noon = 1_792_152_000_000; // 2026-10-16 12:00 UTC
+        assert_eq!(
+            raise_alarms(&state, &mut watch, &lab("healthy"), noon, 0),
+            0
+        );
+        let then = noon + 2 * 60_000;
+        assert_eq!(
+            raise_alarms(&state, &mut watch, &lab("unhealthy"), then, 120),
+            1
+        );
+        assert_eq!(
+            raise_alarms(&state, &mut watch, &lab("unhealthy"), then + 30_000, 120),
+            0
+        );
+        let sent = seen.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "endora-hq is Endora's own");
+        assert_eq!(sent[0].0, "/v1/alarms");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&sent[0].2).unwrap(),
+            json!({ "text": "sonarr became unhealthy at 14:02" })
+        );
+        assert!(
+            sent[0]
+                .1
+                .iter()
+                .any(|(k, v)| k == "authorization" && v.starts_with("Bearer "))
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 5)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a == "HQ: Endora raised an alarm: sonarr became unhealthy at 14:02"),
+            "{audit:?}"
+        );
+    }
+
+    #[test]
+    fn without_hq_nothing_is_raised() {
+        let mut state = node("http://127.0.0.1:9", "http://127.0.0.1:9");
+        state.hq = None;
+        let mut watch = endora_capabilities::lab_alarms::LabWatch::new();
+        raise_alarms(&state, &mut watch, &lab("healthy"), 0, 0);
+        assert_eq!(
+            raise_alarms(&state, &mut watch, &lab("unhealthy"), 60_000, 0),
+            0
+        );
+    }
 }

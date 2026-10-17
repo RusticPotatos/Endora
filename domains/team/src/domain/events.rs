@@ -49,6 +49,20 @@ pub enum EventKind {
     Stopped,
     /// The owner resumed the team.
     Resumed,
+    /// A routine was made, switched on or off (ADR 0107).
+    RoutineChanged,
+    /// A routine handed out a task.
+    RoutineFired,
+    /// A routine's firing was skipped, and why.
+    RoutineSkipped,
+    /// An alarm was passed into a routine's open task.
+    RoutinePosted,
+    /// A member asked to come back to its task.
+    CheckBackSet,
+    /// A check-back woke its member.
+    CheckBackFired,
+    /// A check-back's task finished first, so it woke nobody.
+    CheckBackDropped,
 }
 
 impl EventKind {
@@ -79,6 +93,13 @@ impl EventKind {
             Self::Tick => "tick",
             Self::Stopped => "stopped",
             Self::Resumed => "resumed",
+            Self::RoutineChanged => "routine.changed",
+            Self::RoutineFired => "routine.fired",
+            Self::RoutineSkipped => "routine.skipped",
+            Self::RoutinePosted => "routine.posted",
+            Self::CheckBackSet => "checkback.set",
+            Self::CheckBackFired => "checkback.fired",
+            Self::CheckBackDropped => "checkback.dropped",
         }
     }
 }

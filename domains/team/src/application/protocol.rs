@@ -42,8 +42,8 @@ pub fn tools() -> Value {
         ),
         tool(
             "set_status",
-            "Move your task on (todo, doing, in_review, blocked), with a reason. Done is set only by the gate, never by a member.",
-            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked"] }, "reason": { "type": "string" } }),
+            "Move your task on (todo, doing, in_review, blocked), with a reason. Done is set only by the gate, except a routine's check: close that as done, with what you found, once you have looked.",
+            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" } }),
             &["task", "status", "reason"]
         ),
         tool(
@@ -57,6 +57,12 @@ pub fn tools() -> Value {
             "Put a question or a proposal on the owner's desk, about your task. Asking ends your turn: you are woken when they have seen it.",
             json!({ "text": { "type": "string" } }),
             &["text"]
+        ),
+        tool(
+            "check_back",
+            "Come back to your task later, once: after a fix, to confirm it held. You are woken on this task after the minutes you give (5 to 720), if it is still open.",
+            json!({ "minutes": { "type": "integer", "minimum": 5, "maximum": 720 }, "why": { "type": "string", "description": "what you will look at when you come back" } }),
+            &["minutes", "why"]
         ),
         tool(
             "run_gate",
@@ -147,7 +153,10 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let to = args["status"]
                 .as_str()
                 .and_then(TaskStatus::from_name)
-                .ok_or_else(|| "`status` must be todo, doing, in_review or blocked".to_owned())?;
+                .ok_or_else(|| {
+                    "`status` must be todo, doing, in_review, blocked, or done for a routine's check"
+                        .to_owned()
+                })?;
             let reason = text_arg(args, "reason")?;
             engine
                 .set_status_in(run.id, task, to, reason)
@@ -205,6 +214,19 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let text = text_arg(args, "text")?;
             engine.ask_owner(run.id, text).map_err(|e| said(&e))?;
             Ok("It is on the owner's desk, and this turn has ended: stop now. You are woken when they have seen it.".to_owned())
+        }
+        "check_back" => {
+            let minutes = args["minutes"]
+                .as_i64()
+                .ok_or_else(|| "how long? Give `minutes`, 5 to 720".to_owned())?;
+            let why = text_arg(args, "why")?;
+            engine
+                .check_back(run.id, minutes, why)
+                .map_err(|e| said(&e))?;
+            let waits = crate::domain::routines::check_back_minutes(minutes);
+            Ok(format!(
+                "You will be woken on this task in {waits} minutes, if it is still open: {why}"
+            ))
         }
         // The node's model relay charges every call a turn makes, as it makes it; a worker that
         // reported its own use too would pay twice. Kept as a word, not a tool, for a worker

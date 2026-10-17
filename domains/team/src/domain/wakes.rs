@@ -21,6 +21,11 @@ pub enum WakeReason {
     Retry,
     /// Work that stopped moving, nudged once.
     Recovery,
+    /// The member said it would come back to its task, and the time came (ADR 0107).
+    CheckBack,
+    /// Endora raised an alarm about the home lab, passed into the open task of the routine
+    /// that takes it (ADR 0107).
+    Alarm,
 }
 
 impl WakeReason {
@@ -36,7 +41,25 @@ impl WakeReason {
             Self::LeadReview => "lead_review",
             Self::Retry => "retry",
             Self::Recovery => "recovery",
+            Self::CheckBack => "check_back",
+            Self::Alarm => "alarm",
         }
+    }
+
+    /// Whether the wake brings something new to its task: anything but a stale continuation
+    /// (a recovery nudge, a retry) or the lead's look round on a timer. Only a wake that brings
+    /// nothing new is ever delayed by the back-off.
+    #[must_use]
+    pub const fn brings_news(self) -> bool {
+        !matches!(self, Self::Recovery | Self::Retry | Self::LeadReview)
+    }
+
+    /// Whether the wake comes from a clock rather than from someone: a timer, a check-back or
+    /// an alarm. One of these that names no task, for a member with no open task, finds
+    /// nothing to do.
+    #[must_use]
+    pub const fn on_a_clock(self) -> bool {
+        matches!(self, Self::LeadReview | Self::CheckBack | Self::Alarm)
     }
 
     /// The reason with this [`name`](Self::name), if there is one.
@@ -51,6 +74,8 @@ impl WakeReason {
             Self::LeadReview,
             Self::Retry,
             Self::Recovery,
+            Self::CheckBack,
+            Self::Alarm,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -68,6 +93,9 @@ pub enum Refused {
     OutOfBudget,
     /// The member already has a wake held for this task.
     Duplicate,
+    /// A wake on a clock, about no task, for a member with no open task: no turn is started
+    /// to look for work (ADR 0107).
+    NothingToDo,
 }
 
 impl Refused {
@@ -79,6 +107,7 @@ impl Refused {
             Self::Paused => "paused",
             Self::OutOfBudget => "out_of_budget",
             Self::Duplicate => "duplicate",
+            Self::NothingToDo => "nothing_to_do",
         }
     }
 
@@ -90,6 +119,7 @@ impl Refused {
             Self::Paused,
             Self::OutOfBudget,
             Self::Duplicate,
+            Self::NothingToDo,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -151,6 +181,8 @@ pub struct WakeSituation {
     pub live: Vec<LiveTurn>,
     /// Whether this member already has a wake held for this task.
     pub already_held: bool,
+    /// Whether the wake is on a clock, about no task, for a member with no open task.
+    pub nothing_to_do: bool,
 }
 
 /// What to do with a wake.
@@ -176,6 +208,9 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     }
     if situation.paused {
         return WakeDecision::Refuse(Refused::Paused);
+    }
+    if situation.nothing_to_do {
+        return WakeDecision::Refuse(Refused::NothingToDo);
     }
     if let Some(own) = situation.live.iter().find(|turn| turn.member == member) {
         return WakeDecision::Fold(own.run);
@@ -203,6 +238,7 @@ mod tests {
             can_afford_a_turn: true,
             live: Vec::new(),
             already_held: false,
+            nothing_to_do: false,
         }
     }
 
@@ -280,6 +316,51 @@ mod tests {
     }
 
     #[test]
+    fn a_wake_on_a_clock_with_nothing_to_do_starts_no_turn() {
+        let idle = WakeSituation {
+            nothing_to_do: true,
+            ..quiet()
+        };
+        assert_eq!(
+            decide(ME, &idle),
+            WakeDecision::Refuse(Refused::NothingToDo)
+        );
+        let stopped = WakeSituation {
+            stopped: true,
+            ..idle
+        };
+        assert_eq!(
+            decide(ME, &stopped),
+            WakeDecision::Refuse(Refused::KillSwitch),
+            "the kill switch is said first"
+        );
+    }
+
+    #[test]
+    fn only_stale_continuations_bring_nothing_new() {
+        for stale in [
+            WakeReason::Recovery,
+            WakeReason::Retry,
+            WakeReason::LeadReview,
+        ] {
+            assert!(!stale.brings_news(), "{stale:?}");
+        }
+        for news in [
+            WakeReason::Assigned,
+            WakeReason::Mentioned,
+            WakeReason::WaitFinished,
+            WakeReason::SubtasksFinished,
+            WakeReason::ProposalDecided,
+            WakeReason::CheckBack,
+            WakeReason::Alarm,
+        ] {
+            assert!(news.brings_news(), "{news:?}");
+        }
+        assert!(WakeReason::LeadReview.on_a_clock() && WakeReason::CheckBack.on_a_clock());
+        assert!(!WakeReason::Assigned.on_a_clock());
+    }
+
+    #[test]
     fn names_round_trip() {
         for r in [
             WakeReason::Assigned,
@@ -290,6 +371,8 @@ mod tests {
             WakeReason::LeadReview,
             WakeReason::Retry,
             WakeReason::Recovery,
+            WakeReason::CheckBack,
+            WakeReason::Alarm,
         ] {
             assert_eq!(WakeReason::from_name(r.name()), Some(r));
         }
@@ -298,6 +381,7 @@ mod tests {
             Refused::Paused,
             Refused::OutOfBudget,
             Refused::Duplicate,
+            Refused::NothingToDo,
         ] {
             assert_eq!(Refused::from_name(r.name()), Some(r));
         }
