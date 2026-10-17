@@ -563,6 +563,9 @@ pub struct RunContext {
     pub told: String,
     /// The run's own token for the team protocol, which ends with the run.
     pub token: String,
+    /// How hard the member's Claude tries this turn; `None` for the house's model, or for a
+    /// role left to its model's own.
+    pub effort: Option<crate::domain::Effort>,
 }
 
 /// Why a turn could not be started.

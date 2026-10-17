@@ -65,7 +65,8 @@ struct Room {
 }
 
 /// The oldest turn waiting to start, handed out now: its run, this attempt's lease, its token,
-/// its member's name, role and brain, and its task. 204 when none waits, or the runner has no room.
+/// its member's name, role and brain, its task, and how hard its Claude tries (`null` for the
+/// house's model, or the model's own). 204 when none waits, or the runner has no room.
 async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Response {
     if state.hq.runner().remote().is_none() {
         return no_runner();
@@ -94,6 +95,7 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             // What the member thinks with: the runner points the worker at the matching relay.
             "brain": member.as_ref().map_or("local", |m| m.brain.name()),
             "task": handed.turn.task.map(|t| t.0),
+            "effort": handed.turn.effort.map(endora_team::domain::Effort::name),
         }))
         .into_response(),
         Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),

@@ -12,6 +12,7 @@ use super::ports::{
     WorkerAdapter,
 };
 use crate::domain::chain::{self, Decision};
+use crate::domain::effort::{self, Effort};
 use crate::domain::lessons;
 use crate::domain::money::{self, Micros};
 use crate::domain::review;
@@ -1518,6 +1519,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- runs --------------------------------------------------------------------------------
 
     /// Why a turn was started: the reason of the wake that queued it.
+    /// How hard the member's Claude tries this turn, by its role and what the turn is for
+    /// (see [`effort::effort_for`]): for the CEO, whether it weighs a decision.
+    fn effort_of(&self, member: &Member, run: &Run) -> Done<Option<Effort>> {
+        if member.role != Role::Ceo {
+            return Ok(effort::effort_for(member.brain, member.role, false));
+        }
+        let drafted = match run.task {
+            Some(task) => self.ceos_draft(&self.task(task)?)?.is_some(),
+            None => false,
+        };
+        let reason = WakeReason::from_name(self.reason_for(run)?);
+        let weighty = reason.map_or(drafted, |r| effort::weighs_a_decision(r, drafted));
+        Ok(effort::effort_for(member.brain, member.role, weighty))
+    }
+
     fn reason_for(&self, run: &Run) -> Done<&'static str> {
         Ok(self
             .store
@@ -2193,6 +2209,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 task: run.task,
                 told: run.told.clone(),
                 token: self.store.issue_token(run.id)?,
+                effort: self.effort_of(&member, &run)?,
             };
             if let Err(why) = self.runner.start(&context) {
                 self.fail(run, &format!("could not start: {}", why.0))?;

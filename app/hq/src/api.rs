@@ -1267,6 +1267,7 @@ mod tests {
             turn["brain"], "local",
             "the house's model unless the owner says"
         );
+        assert_eq!(turn["effort"], json!(null), "the house's model takes none");
         let token = turn["token"].as_str().unwrap();
         assert_eq!(
             st.hq.turn_of(token).unwrap().unwrap().0.id,
@@ -1383,6 +1384,7 @@ mod tests {
         )
         .await;
         assert_eq!(handed["brain"], "claude-sonnet-5-5");
+        assert_eq!(handed["effort"], "medium", "the lead's");
         let token = handed["token"].as_str().unwrap();
         let found = json_of(
             app.oneshot(call(

@@ -48,6 +48,8 @@ pub struct Turn {
     task: Option<u64>,
     /// The Claude model the member thinks with, or `None` for the house's own.
     cloud: Option<String>,
+    /// How hard Claude tries this turn, as HQ decided, or `None` for the model's own.
+    effort: Option<String>,
 }
 
 /// Why a turn HQ handed out was refused.
@@ -61,6 +63,21 @@ pub enum Refused {
     Token(u64, u64),
     /// Its brain is neither `local` nor a Claude model's name.
     Brain(u64, u64),
+    /// Its effort is not one of Anthropic's five.
+    Effort(u64, u64),
+}
+
+/// The efforts a turn may name: Anthropic's own, each of which goes into the worker's
+/// environment as it is.
+const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// The effort a turn names, `None` for none, or `Err` for anything but one of [`EFFORTS`].
+fn effort_of(effort: &Value) -> Result<Option<String>, ()> {
+    match effort {
+        Value::Null => Ok(None),
+        Value::String(e) if EFFORTS.contains(&e.as_str()) => Ok(Some(e.clone())),
+        _ => Err(()),
+    }
 }
 
 /// The Claude model a turn's brain names, `None` for the house's own model, or `Err` for a
@@ -108,6 +125,9 @@ impl Turn {
         let Ok(cloud) = cloud_of(&handed["brain"]) else {
             return Err(Refused::Brain(run, lease));
         };
+        let Ok(effort) = effort_of(&handed["effort"]) else {
+            return Err(Refused::Effort(run, lease));
+        };
         let text = |key: &str| handed[key].as_str().unwrap_or("").to_owned();
         Ok(Self {
             run,
@@ -117,13 +137,15 @@ impl Turn {
             role: text("role"),
             task: handed["task"].as_u64(),
             cloud,
+            effort,
         })
     }
 }
 
 /// The body of `POST /containers/create` for a turn: the worker image and the fixed fence,
 /// with the turn's own run, lease and token and nothing else of HQ's but its brain, which
-/// picks one of the runner's own two relays (and names the model, for Claude).
+/// picks one of the runner's own two relays (and names the model and its effort, for
+/// Claude).
 pub fn spec(work: &Work, turn: &Turn) -> Value {
     let mut env = vec![
         format!("ENDORA_RUN_TOKEN={}", turn.token),
@@ -134,6 +156,9 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
         Some(model) => {
             env.push(format!("ENDORA_MODEL_URL={}", work.cloud_url));
             env.push(format!("ENDORA_MODEL={model}"));
+            if let Some(effort) = &turn.effort {
+                env.push(format!("ENDORA_EFFORT={effort}"));
+            }
         }
     }
     // 256 MB, one CPU, 128 processes; a workbench a gigabyte (its `/work` is memory too),
@@ -365,6 +390,10 @@ impl<D: Docker> Runner<D> {
                 }
                 Err(Refused::Brain(run, lease)) => {
                     eprintln!("runner: refused run {run}: its brain is not a model's name");
+                    self.failed(run, lease);
+                }
+                Err(Refused::Effort(run, lease)) => {
+                    eprintln!("runner: refused run {run}: its effort is not one of the five");
                     self.failed(run, lease);
                 }
             }
@@ -1007,8 +1036,10 @@ mod tests {
         let mut lead = turn(21);
         lead["brain"] = json!("claude-sonnet-5-5");
         lead["role"] = json!("lead");
+        lead["effort"] = json!("medium");
         let mut local = turn(22);
         local["brain"] = json!("local");
+        local["effort"] = json!("high");
         let hq = FakeHq::new(vec![lead, local]);
         let docker = FakeDocker::default();
         let mut runner = runner("brain", &hq, &docker, 2);
@@ -1021,6 +1052,7 @@ mod tests {
                 "ENDORA_HQ_MCP=http://hq:8790/v1/team/mcp",
                 "ENDORA_MODEL_URL=http://node:8788/team-relay/v1",
                 "ENDORA_MODEL=claude-sonnet-5-5",
+                "ENDORA_EFFORT=medium",
             ])
         );
         assert_eq!(
@@ -1035,6 +1067,26 @@ mod tests {
             specs[0]["HostConfig"], specs[1]["HostConfig"],
             "the same fence either way"
         );
+    }
+
+    #[test]
+    fn an_effort_that_is_not_one_of_the_five_is_refused_and_reported_failed() {
+        for odd in [
+            json!("medium\nENDORA_CONTRACTS=http://192.168.1.10/"),
+            json!("extreme"),
+            json!("High"),
+            json!(3),
+        ] {
+            let mut handed = turn(31);
+            handed["brain"] = json!("claude-opus-5-5");
+            handed["effort"] = odd.clone();
+            let hq = FakeHq::new(vec![handed]);
+            let docker = FakeDocker::default();
+            let mut runner = runner("odd-effort", &hq, &docker, 1);
+            runner.step(T0);
+            assert!(docker.specs().is_empty(), "{odd}: no container");
+            assert_eq!(hq.told(), [(31, false)], "{odd}");
+        }
     }
 
     #[test]

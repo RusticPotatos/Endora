@@ -754,3 +754,43 @@ fn the_ceos_briefing_holds_the_house_the_team_the_work_the_trouble_and_the_board
     }
     assert!(!ceo.told.contains("run_gate"), "{}", ceo.told);
 }
+
+#[test]
+fn the_ceo_weighs_a_question_at_high_effort_its_review_at_medium_and_the_lead_at_medium() {
+    use crate::domain::Effort;
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false);
+    let task = task_for(&hq, t.goal, t.lead, "Plan the week");
+    let lead = turn(&hq, t.lead);
+    assert_eq!(lead.effort, Some(Effort::Medium), "the lead, on Sonnet");
+    use_tool(&hq, &lead, "ask_owner", &json!({ "text": "Which first?" })).unwrap();
+    let asked = turn(&hq, t.ceo);
+    assert_eq!(asked.task, Some(task));
+    assert_eq!(asked.effort, Some(Effort::High), "answering a question");
+
+    let dev_task = task_for(&hq, t.goal, t.dev, "Fix the feed");
+    let dev = turn(&hq, t.dev);
+    assert_eq!(dev.task, Some(dev_task));
+    assert_eq!(dev.effort, None, "the house's model is told no effort");
+
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false);
+    let routine = hq
+        .add_routine(
+            Author::Endora,
+            NewRoutine {
+                title: "Daily review".to_owned(),
+                description: "Review the house.".to_owned(),
+                goal: t.goal,
+                assignee: t.ceo,
+                every_ms: 24 * HOUR_MS,
+                on_lab_trouble: false,
+            },
+        )
+        .unwrap();
+    hq.fire_routine(routine).unwrap();
+    let review = turn(&hq, t.ceo);
+    assert_eq!(review.effort, Some(Effort::Medium), "its daily review");
+}

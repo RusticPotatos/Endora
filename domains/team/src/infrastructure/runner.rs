@@ -73,6 +73,7 @@ mod tests {
             task: None,
             told: String::new(),
             token: "t".to_owned(),
+            effort: None,
         }
     }
 
