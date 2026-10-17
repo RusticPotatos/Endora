@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::ports::{Clock, NewTask, Run, RunContext, StoreError, TeamStore, Wake, WorkerAdapter};
+use super::ports::{
+    Clock, DeskItem, NewTask, Run, RunContext, StoreError, TeamStore, Wake, WorkerAdapter,
+};
 use crate::domain::money::{self, Micros};
 use crate::domain::runs::{self, LONGEST_TURN_MS};
 use crate::domain::wakes::{self, LiveTurn};
@@ -219,6 +221,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "goal",
                 None,
                 Some(goal),
+                None,
                 &format!("A goal: {title}"),
                 self.clock.now(),
             )?;
@@ -604,6 +607,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 kind,
                 Some(task),
                 None,
+                None,
                 &format!("{says}: {}", current.title),
                 self.clock.now(),
             )?;
@@ -977,6 +981,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "stuck",
                 Some(task.id),
                 None,
+                None,
                 &format!(
                     "Stuck: {}. It was nudged once and did not move.",
                     task.title
@@ -1105,20 +1110,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A member asks the owner something about its task: a question on the desk. Seeing it
-    /// wakes the member again.
+    /// wakes that member again. One question a member about a task waits at a time, so a turn
+    /// cannot fill the owner's desk.
     ///
     /// # Errors
-    /// [`EngineError::Unknown`] for a turn with no task; a store failure.
+    /// [`EngineError::Unknown`] for a turn with no task; [`EngineError::Refused`] with
+    /// [`Refusal::AlreadyAsked`] while its last question waits; a store failure.
     pub fn ask_owner(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
         let _held = self.held();
         let run = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
         let task = run.task.ok_or(EngineError::Unknown("task for this turn"))?;
         let member = self.member(run.member)?;
+        let waiting = self.store.desk()?.into_iter().any(|d| {
+            d.kind == "question"
+                && d.status == "waiting"
+                && d.member == Some(member.id)
+                && d.task == Some(task)
+        });
+        if waiting {
+            return Err(EngineError::Refused(Refusal::AlreadyAsked));
+        }
         let text: String = text.trim().chars().take(600).collect();
         let desk = self.store.add_desk(
             "question",
             Some(task),
             None,
+            Some(member.id),
             &format!("{} asks: {text}", member.name),
             self.clock.now(),
         )?;
@@ -1141,6 +1158,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// take; [`EngineError::Refused`] with [`Refusal::Finished`] if it is already decided.
     pub fn decide(&self, item: crate::domain::DeskId, decision: &str) -> Done<()> {
         let _held = self.held();
+        let found = self.waiting_on_desk(item)?;
+        self.decide_held_lock(&found, decision)
+    }
+
+    /// The owner answers a member's question: the answer goes in the task's thread, as the
+    /// owner's, and then the question is seen, which wakes the member who asked to read it.
+    ///
+    /// # Errors
+    /// As [`Self::decide`]; [`EngineError::Unknown`] for an item that is not a question or an
+    /// answer with no words.
+    pub fn answer(&self, item: crate::domain::DeskId, text: &str) -> Done<()> {
+        let _held = self.held();
+        let found = self.waiting_on_desk(item)?;
+        let text = text.trim();
+        if found.kind != "question" || text.is_empty() {
+            return Err(EngineError::Unknown("answer for this item"));
+        }
+        let task = found.task.ok_or(EngineError::Unknown("task"))?;
+        self.post_held_lock(Author::Owner, task, text)?;
+        self.decide_held_lock(&found, "seen")
+    }
+
+    /// A desk item still waiting for the owner.
+    fn waiting_on_desk(&self, item: crate::domain::DeskId) -> Done<DeskItem> {
         let found = self
             .store
             .desk()?
@@ -1150,6 +1191,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if found.status != "waiting" {
             return Err(EngineError::Refused(Refusal::Finished));
         }
+        Ok(found)
+    }
+
+    fn decide_held_lock(&self, found: &DeskItem, decision: &str) -> Done<()> {
+        let item = found.id;
         match (found.kind.as_str(), decision) {
             ("goal", "approve" | "decline") => {
                 let goal = found
@@ -1184,9 +1230,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.after_finishing(&task)?;
             }
             ("question", "seen") => {
-                // The member who asked carries on, reading the thread for any answer.
+                // The member who asked carries on, reading the thread for any answer. A
+                // question from before the desk knew who asked goes to whoever has the task.
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
-                if let Some(member) = task.owner.or(task.assignee) {
+                if let Some(member) = found.member.or(task.owner).or(task.assignee) {
                     self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
                 }
             }

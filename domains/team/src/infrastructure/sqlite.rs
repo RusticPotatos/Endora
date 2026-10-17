@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS events (
 ) STRICT;
 CREATE TABLE IF NOT EXISTS desk (
     id INTEGER PRIMARY KEY, kind TEXT NOT NULL, task INTEGER REFERENCES tasks(id),
-    goal INTEGER REFERENCES goals(id), text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', at_ms INTEGER NOT NULL
+    goal INTEGER REFERENCES goals(id), text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', at_ms INTEGER NOT NULL,
+    member INTEGER REFERENCES members(id)
 ) STRICT;
 CREATE TABLE IF NOT EXISTS timers (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
@@ -116,6 +117,20 @@ impl SqliteTeamStore {
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(backend)?;
         conn.execute_batch(SCHEMA).map_err(backend)?;
+        // A store made before the desk knew who an item is from gains the column, empty.
+        let has_member: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('desk') WHERE name = 'member'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(backend)?;
+        if !has_member {
+            conn.execute_batch(
+                "ALTER TABLE desk ADD COLUMN member INTEGER REFERENCES members(id);",
+            )
+            .map_err(backend)?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -807,13 +822,14 @@ impl TeamStore for SqliteTeamStore {
         kind: &str,
         task: Option<TaskId>,
         goal: Option<GoalId>,
+        from: Option<MemberId>,
         text: &str,
         at: Millis,
     ) -> Stored<DeskId> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO desk (kind, task, goal, text, at_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![kind, task.map(|t| t.0), goal.map(|g| g.0), text, at],
+            "INSERT INTO desk (kind, task, goal, member, text, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![kind, task.map(|t| t.0), goal.map(|g| g.0), from.map(|m| m.0), text, at],
         )
         .map_err(backend)?;
         Ok(DeskId(conn.last_insert_rowid()))
@@ -832,7 +848,9 @@ impl TeamStore for SqliteTeamStore {
     fn desk(&self) -> Stored<Vec<DeskItem>> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, kind, task, goal, text, status, at_ms FROM desk ORDER BY id")
+            .prepare(
+                "SELECT id, kind, task, goal, text, status, at_ms, member FROM desk ORDER BY id",
+            )
             .map_err(backend)?;
         let rows = stmt
             .query_map([], |r| {
@@ -844,6 +862,7 @@ impl TeamStore for SqliteTeamStore {
                     text: r.get(4)?,
                     status: r.get(5)?,
                     at: r.get(6)?,
+                    member: r.get::<_, Option<i64>>(7)?.map(MemberId),
                 })
             })
             .map_err(backend)?;
@@ -956,6 +975,30 @@ mod tests {
             None,
             "claiming your own again is fine"
         );
+    }
+
+    #[test]
+    fn a_desk_made_before_it_knew_who_asked_gains_the_column_and_keeps_its_items() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE desk (
+                id INTEGER PRIMARY KEY, kind TEXT NOT NULL, task INTEGER, goal INTEGER,
+                text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', at_ms INTEGER NOT NULL
+            ) STRICT;
+            INSERT INTO desk (kind, text, at_ms) VALUES ('question', 'Linus asks: why?', 5);",
+        )
+        .unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        let a = store.add_member("Ada", Role::Lead, 25, 2, 0).unwrap();
+        store
+            .add_desk("question", None, None, Some(a), "Ada asks: when?", 6)
+            .unwrap();
+        let desk = store.desk().unwrap();
+        assert_eq!(
+            desk.iter().map(|d| d.member).collect::<Vec<_>>(),
+            [None, Some(a)]
+        );
+        assert_eq!(desk[0].text, "Linus asks: why?");
     }
 
     #[test]

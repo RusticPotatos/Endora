@@ -482,13 +482,15 @@ function viewHQ() {
     const choices = { goal: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]], stuck: [["retry", "Try again", "ok"], ["drop", "Drop it", "no"]],
       ready_to_merge: [["merged", "Mark merged", "ok"], ["not_now", "Not now", "no"]],
       ready_to_read: [["read", "Mark read", "ok"], ["not_now", "Not now", "no"]],
-      // A member's question (the team protocol's ask_owner): seeing it wakes them again.
-      question: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
+      // A member's question (the team protocol's ask_owner): seeing it wakes the member who
+      // asked, to read the task's thread, where the answer typed on the card is written first.
+      question: [["seen", "Answer & wake", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
     return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(d.text)}</p>
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${demoNote}</p>
+      ${d.kind === "question" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
   }).join("");
   const log = HQ.log.slice(0, 60).map((l) => `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${esc(l.text)}</span></li>`).join("");
@@ -558,7 +560,9 @@ async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
   if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; render(); return true; }
   if (noun === "decide") {
-    try { await api("POST", `/v1/hq/desk/${id}`, { decision: arg }); flash("Decided.", "ok"); }
+    // A question's answer, if the owner wrote one, goes in the task's thread before the member wakes.
+    const box = document.getElementById(`hq-answer-${id}`), answer = arg === "seen" && box ? box.value.trim() : "";
+    try { await api("POST", `/v1/hq/desk/${id}`, { decision: arg, answer }); flash(answer ? "Answered." : "Decided.", "ok"); }
     catch (e) { flash("Couldn't decide: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }

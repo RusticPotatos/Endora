@@ -213,6 +213,130 @@ fn a_question_reaches_the_desk_and_seeing_it_wakes_the_member() {
     );
 }
 
+/// The question on the desk, the last one asked.
+fn question(hq: &Hq<'_>) -> crate::application::ports::DeskItem {
+    hq.store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .rfind(|d| d.kind == "question")
+        .unwrap()
+}
+
+#[test]
+fn seeing_a_question_wakes_the_member_who_asked_not_the_tasks_owner() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    call(&hq, &run, &me, "claim", &json!({ "task": s.task.0 })).unwrap();
+    call(
+        &hq,
+        &run,
+        &me,
+        "post",
+        &json!({ "task": s.task.0, "text": "@Grace can you look at the list?" }),
+    )
+    .unwrap();
+    // Her wake waits for his turn on the task to end.
+    hq.runner().finish(context.run, true);
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    let grace = hq
+        .runner()
+        .started()
+        .into_iter()
+        .find(|c| c.member != s.dev)
+        .expect("Grace's turn on the task");
+    let (her_run, her) = turn(&hq, &grace.token);
+    assert_eq!(her_run.task, Some(s.task));
+    call(
+        &hq,
+        &her_run,
+        &her,
+        "ask_owner",
+        &json!({ "text": "Is the list for watches only?" }),
+    )
+    .unwrap();
+    let asked = question(&hq);
+    assert_eq!(asked.member, Some(her.id), "the desk knows who asked");
+    hq.runner().finish(grace.run, true);
+    hq.tick().unwrap();
+    hq.decide(asked.id, "seen").unwrap();
+    let woke = hq.store().wakes().unwrap().into_iter().next_back().unwrap();
+    assert_eq!(
+        (woke.member, woke.task),
+        (her.id, Some(s.task)),
+        "Grace asked, so Grace is woken, not Linus whose task it is"
+    );
+}
+
+#[test]
+fn the_owner_answers_a_question_in_its_thread_and_then_the_member_is_woken() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    call(
+        &hq,
+        &run,
+        &me,
+        "ask_owner",
+        &json!({ "text": "Steel or titanium first?" }),
+    )
+    .unwrap();
+    let asked = question(&hq);
+    hq.runner().finish(context.run, true);
+    hq.tick().unwrap();
+    hq.answer(asked.id, "  Steel first.  ").unwrap();
+    let said = hq.store().thread(s.task).unwrap().pop().unwrap();
+    assert_eq!(
+        (said.author.as_str(), said.text.as_str()),
+        ("owner", "Steel first.")
+    );
+    assert_eq!(question(&hq).status, "seen");
+    let woke = hq.store().wakes().unwrap().into_iter().next_back().unwrap();
+    assert_eq!(woke.member, s.dev);
+    assert!(
+        hq.answer(asked.id, "Again.").is_err(),
+        "a question is answered once"
+    );
+    assert!(
+        hq.answer(asked.id, "   ").is_err(),
+        "an empty answer is not one"
+    );
+}
+
+#[test]
+fn a_member_asks_one_question_at_a_time_and_writes_within_reason() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    let ask = |text: &str| call(&hq, &run, &me, "ask_owner", &json!({ "text": text }));
+    ask("Steel or titanium first?").unwrap();
+    let again = ask("And the straps?").unwrap_err();
+    assert!(again.contains("waiting"), "{again}");
+    let waiting = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == "question" && d.status == "waiting")
+        .count();
+    assert_eq!(waiting, 1, "one question at a time on the owner's desk");
+    hq.decide(question(&hq).id, "dismiss").unwrap();
+    ask("And the straps?").unwrap();
+
+    let long = "x".repeat(5_000);
+    let refused = call(
+        &hq,
+        &run,
+        &me,
+        "post",
+        &json!({ "task": s.task.0, "text": long }),
+    )
+    .unwrap_err();
+    assert!(refused.contains("4000"), "{refused}");
+}
+
 #[test]
 fn a_worker_reports_no_usage_because_the_relay_already_charged_it() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));

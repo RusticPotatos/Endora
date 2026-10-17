@@ -258,6 +258,9 @@ async fn add_task(
 #[derive(Deserialize)]
 struct Decision {
     decision: String,
+    /// For a question seen: the owner's answer, written in its task's thread first.
+    #[serde(default)]
+    answer: String,
 }
 
 async fn decide(
@@ -266,7 +269,13 @@ async fn decide(
     Json(req): Json<Decision>,
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
-    blocking(move || hq.decide(DeskId(id), &req.decision)).await?;
+    blocking(move || {
+        if req.decision == "seen" && !req.answer.trim().is_empty() {
+            return hq.answer(DeskId(id), &req.answer);
+        }
+        hq.decide(DeskId(id), &req.decision)
+    })
+    .await?;
     Ok(Json(json!({ "decided": true })))
 }
 
@@ -497,6 +506,31 @@ mod tests {
         )
         .await;
         assert_eq!(snap["stopped"], true);
+    }
+
+    #[tokio::test]
+    async fn the_owner_answers_a_question_from_the_desk_into_its_thread() {
+        let st = state(false);
+        let (run, task) = a_turn_starts(&st);
+        let asked = st.hq.ask_owner(run, "Which cables first?").unwrap();
+        let app = app(st.clone());
+        let decide = |body: &str| call("POST", &format!("/v1/desk/{}", asked.0), Some(TOKEN), body);
+        let res = app
+            .clone()
+            .oneshot(decide(
+                r#"{"decision":"seen","answer":"The network ones."}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let thread = st.hq.store().thread(task).unwrap();
+        let said = thread.last().unwrap();
+        assert_eq!(
+            (said.author.as_str(), said.text.as_str()),
+            ("owner", "The network ones.")
+        );
+        let again = app.oneshot(decide(r#"{"decision":"seen"}"#)).await.unwrap();
+        assert_eq!(again.status(), StatusCode::CONFLICT, "decided once");
     }
 
     #[tokio::test]

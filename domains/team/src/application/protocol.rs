@@ -73,6 +73,9 @@ pub fn tools() -> Value {
     ])
 }
 
+/// The most a member writes in one post: a thread is read by every turn after it.
+const LONGEST_POST: usize = 4000;
+
 fn said(e: &EngineError) -> String {
     e.to_string()
 }
@@ -126,6 +129,11 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         "post" => {
             let task = task_arg(args)?;
             let text = text_arg(args, "text")?;
+            if text.chars().count() > LONGEST_POST {
+                return Err(format!(
+                    "a post is at most {LONGEST_POST} characters: say it shorter, or in parts"
+                ));
+            }
             engine
                 .post(Author::Member(member.id), task, text)
                 .map_err(|e| said(&e))?;

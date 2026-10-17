@@ -119,6 +119,8 @@ pub struct DeskItem {
     pub task: Option<TaskId>,
     /// The goal it is about, if any.
     pub goal: Option<GoalId>,
+    /// The member it is from, if any: who asked, for a question.
+    pub member: Option<MemberId>,
     /// What the owner is shown.
     pub text: String,
     /// `waiting`, or how the owner decided.
@@ -395,7 +397,7 @@ pub trait TeamStore {
     /// [`StoreError`] if the store fails.
     fn events_after(&self, id: i64) -> Stored<Vec<Event>>;
 
-    /// Puts something on the owner's desk, about a task or a goal.
+    /// Puts something on the owner's desk, about a task or a goal, from a member or not.
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.
@@ -404,6 +406,7 @@ pub trait TeamStore {
         kind: &str,
         task: Option<TaskId>,
         goal: Option<GoalId>,
+        from: Option<MemberId>,
         text: &str,
         at: Millis,
     ) -> Stored<crate::domain::DeskId>;

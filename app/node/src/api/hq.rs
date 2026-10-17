@@ -101,6 +101,9 @@ pub(super) async fn hq_task(
 #[derive(Deserialize)]
 pub(super) struct HqDecision {
     decision: String,
+    /// For a member's question: the owner's answer, which HQ writes in the task's thread.
+    #[serde(default)]
+    answer: String,
 }
 
 /// The owner decides an item on their desk.
@@ -112,7 +115,7 @@ pub(super) async fn hq_decide(
     let answer = ask(
         &state,
         format!("/v1/desk/{id}"),
-        Some(json!({ "decision": req.decision })),
+        Some(json!({ "decision": req.decision, "answer": req.answer })),
     )
     .await?;
     record(

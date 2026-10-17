@@ -211,10 +211,10 @@ container:
 | --- | --- |
 | `my_turn` | What this turn is for: the task, its why, what is new, the brief if released |
 | `claim` | Takes the task; refused if another member has it |
-| `post` | Writes to the task's thread |
+| `post` | Writes to the task's thread, at most 4,000 characters a post |
 | `set_status` | Moves the task on, with a reason; `done` is refused (only the gate sets it) |
 | `create_task` | Creates a sub-task for another member, with what it waits on |
-| `ask_owner` | Puts a question or a proposal on the owner's desk and ends the turn |
+| `ask_owner` | Puts a question or a proposal on the owner's desk and ends the turn; one waits at a time per member and task. The owner can answer on the card, into the task's thread, and seeing it wakes the member who asked |
 | `run_gate` | Runs the tests and build on a runner and returns the result |
 | `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
 

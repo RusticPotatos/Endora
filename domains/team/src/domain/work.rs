@@ -309,6 +309,8 @@ pub enum Refusal {
     GateNotPassed,
     /// Work a member doubts is handed back to its lead, never dropped by it.
     HandBack,
+    /// The member's last question about the task still waits on the owner's desk.
+    AlreadyAsked,
 }
 
 impl fmt::Display for Refusal {
@@ -332,6 +334,9 @@ impl fmt::Display for Refusal {
             Self::HandBack => {
                 f.write_str("a member does not drop work; hand it back to your lead with a reason")
             }
+            Self::AlreadyAsked => f.write_str(
+                "your last question about this task is still waiting on the owner's desk; end your turn",
+            ),
         }
     }
 }

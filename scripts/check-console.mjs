@@ -608,6 +608,9 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  // A member's question can be answered on its card: the answer goes in the task's thread.
+  if (!office.includes('id="hq-answer-15"')) fail("hq: a question cannot be answered from its card");
+  if (office.includes('id="hq-answer-12"')) fail("hq: stuck work was offered an answer box");
   if (!office.includes("Demo: Ready to merge: y") || !office.includes("no pull request behind this")) {
     fail("hq: a demo card does not say it is a demo");
   }
