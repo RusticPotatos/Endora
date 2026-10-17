@@ -184,6 +184,13 @@ pub struct Bridged {
 }
 
 impl Bridged {
+    /// Whether what it returns is Confidential: its receipt's excerpt is never shown to a
+    /// member on a cloud model (ADR 0114).
+    #[must_use]
+    pub fn confidential(&self) -> bool {
+        self.tier == Tier::Confidential
+    }
+
     /// As an MCP tool: name, description, input schema, and its kind.
     #[must_use]
     pub fn as_tool(&self) -> Value {
