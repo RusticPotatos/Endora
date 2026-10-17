@@ -78,6 +78,12 @@ pub fn app(state: State) -> Router {
         .route("/v1/team/usage", post(crate::team::usage))
         // The node's contracts: a safe fix a member made, told to the owner (ADR 0106).
         .route("/v1/team/notice", post(crate::team::notice))
+        // The bridge (ADR 0108): an action waiting for the owner's yes, and what came of it.
+        .route("/v1/team/approval", post(crate::team::approval))
+        .route(
+            "/v1/team/approval/{id}/outcome",
+            post(crate::team::approval_outcome),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             signed_by_the_node,
@@ -891,6 +897,62 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(seen.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_node_asks_an_approval_and_tells_what_came_of_it_once_approved() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let app = app(st.clone());
+        let body = json!({ "run": turn.run.0, "text": "Ada asks to run sonarr_retry_import. Why: stuck." })
+            .to_string();
+        let res = app
+            .clone()
+            .oneshot(call("POST", "/v1/team/approval", Some(&turn.token), &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "only the node asks");
+        let asked = json_of(
+            app.clone()
+                .oneshot(call("POST", "/v1/team/approval", Some(TOKEN), &body))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let item = asked["item"].as_i64().unwrap();
+        // Asked again for the same turn: it has ended, and the refusal says so.
+        let again = app
+            .clone()
+            .oneshot(call("POST", "/v1/team/approval", Some(TOKEN), &body))
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::BAD_REQUEST);
+        let outcome = |text: &str| {
+            call(
+                "POST",
+                &format!("/v1/team/approval/{item}/outcome"),
+                Some(TOKEN),
+                &json!({ "text": text }).to_string(),
+            )
+        };
+        let early = app.clone().oneshot(outcome("Done.")).await.unwrap();
+        assert_eq!(early.status(), StatusCode::NOT_FOUND, "not approved yet");
+        let approved = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                &format!("/v1/desk/{item}"),
+                Some(TOKEN),
+                r#"{"decision":"approve"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(approved.status(), StatusCode::OK);
+        let told = app.clone().oneshot(outcome("Done.")).await.unwrap();
+        assert_eq!(told.status(), StatusCode::OK);
+        let twice = app.oneshot(outcome("Done.")).await.unwrap();
+        assert_eq!(twice.status(), StatusCode::CONFLICT);
     }
 
     /// The runner's three routes, each with a body it might send.

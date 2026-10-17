@@ -214,3 +214,72 @@ pub(crate) async fn notice(
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ApprovalAsked {
+    run: i64,
+    text: String,
+}
+
+/// For the node's bridge (ADR 0108): an action a member proposed that waits for the owner's
+/// yes, as an approval on the desk, saying exactly what would run. It ends the member's turn
+/// as a question does. Signed by the node; nothing else may ask.
+pub(crate) async fn approval(
+    Extract(state): Extract<State>,
+    Json(req): Json<ApprovalAsked>,
+) -> Response {
+    if req.text.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "an approval says what would run" })),
+        )
+            .into_response();
+    }
+    let hq = state.hq.clone();
+    let asked = tokio::task::spawn_blocking(move || {
+        hq.ask_approval(endora_team::domain::RunId(req.run), &req.text)
+    })
+    .await;
+    match asked {
+        Ok(Ok(item)) => Json(json!({ "item": item.0 })).into_response(),
+        Ok(Err(e)) => refused(&e),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct OutcomeTold {
+    text: String,
+}
+
+/// For the node's bridge (ADR 0108): what came of an approved action the node ran, written in
+/// the task's thread, which wakes the member who asked. Told once.
+pub(crate) async fn approval_outcome(
+    Extract(state): Extract<State>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(req): Json<OutcomeTold>,
+) -> Response {
+    let hq = state.hq.clone();
+    let told = tokio::task::spawn_blocking(move || {
+        hq.approval_outcome(endora_team::domain::DeskId(id), &req.text)
+    })
+    .await;
+    match told {
+        Ok(Ok(())) => Json(json!({ "told": true })).into_response(),
+        Ok(Err(e)) => refused(&e),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// The engine's refusal, with its words, as the node reads it.
+fn refused(e: &endora_team::application::EngineError) -> Response {
+    use endora_team::application::EngineError;
+    use endora_team::domain::Refusal;
+    let status = match e {
+        EngineError::Unknown(_) => StatusCode::NOT_FOUND,
+        EngineError::Refused(Refusal::Finished) => StatusCode::CONFLICT,
+        EngineError::Refused(_) => StatusCode::BAD_REQUEST,
+        EngineError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, Json(json!({ "error": e.to_string() }))).into_response()
+}

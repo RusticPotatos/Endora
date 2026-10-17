@@ -15,3 +15,6 @@ mod protocol_tests;
 
 #[cfg(test)]
 mod routines_tests;
+
+#[cfg(test)]
+mod approvals_tests;

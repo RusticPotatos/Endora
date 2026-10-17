@@ -22,6 +22,9 @@ use crate::domain::{
     TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 
+/// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
+pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
+
 /// How the engine is set up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
@@ -1188,6 +1191,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.wake_held_lock(back.member, Some(back.task), WakeReason::CheckBack)?;
             report.check_backs += 1;
         }
+        // Approvals nobody decided within a day go unrun, and the thread says so (ADR 0108).
+        for item in self.store.desk()? {
+            if item.kind != "approval"
+                || item.status != "waiting"
+                || now - item.at <= APPROVALS_LAST_MS
+            {
+                continue;
+            }
+            self.store.set_desk_status(item.id, "expired")?;
+            self.emit(
+                EventKind::DeskDecided,
+                json!({ "item": item.id.0, "kind": item.kind, "decision": "expired" }),
+            )?;
+            self.settle_unrun(&item, "Nobody decided this within a day, so it was not run")?;
+        }
 
         // 2. Running turns: ended, failed, vanished, or too long.
         for run in self.store.runs()? {
@@ -1419,11 +1437,38 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// last question waits; a store failure.
     pub fn ask_owner(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
         let _held = self.held();
+        let text: String = text.trim().chars().take(600).collect();
+        self.ask_held_lock(run, "question", &|name| format!("{name} asks: {text}"))
+    }
+
+    /// The node asks the owner's approval for an action a member proposed through Endora's
+    /// bridge (ADR 0108): an `approval` on the desk, saying exactly what would run, and the end
+    /// of the member's turn, as [`Self::ask_owner`] ends it. It counts as the member's question
+    /// about the task: one of either waits at a time. Nothing runs here; the node runs what it
+    /// stored once the owner approves, and tells HQ what came of it
+    /// ([`Self::approval_outcome`]).
+    ///
+    /// # Errors
+    /// As [`Self::ask_owner`].
+    pub fn ask_approval(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
+        let _held = self.held();
+        let text: String = text.trim().chars().take(1200).collect();
+        self.ask_held_lock(run, "approval", &|_| text.clone())
+    }
+
+    /// A question or an approval on the desk from `run`'s member about its task, worded by
+    /// `say` from the member's name, and the end of the turn.
+    fn ask_held_lock(
+        &self,
+        run: RunId,
+        kind: &str,
+        say: &dyn Fn(&str) -> String,
+    ) -> Done<crate::domain::DeskId> {
         let run = self.running(run)?;
         let task = run.task.ok_or(EngineError::Unknown("task for this turn"))?;
         let member = self.member(run.member)?;
         let waiting = self.store.desk()?.into_iter().any(|d| {
-            d.kind == "question"
+            matches!(d.kind.as_str(), "question" | "approval")
                 && d.status == "waiting"
                 && d.member == Some(member.id)
                 && d.task == Some(task)
@@ -1431,18 +1476,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if waiting {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
-        let text: String = text.trim().chars().take(600).collect();
         let desk = self.store.add_desk(
-            "question",
+            kind,
             Some(task),
             None,
             Some(member.id),
-            &format!("{} asks: {text}", member.name),
+            &say(&member.name),
             self.clock.now(),
         )?;
         self.emit(
             EventKind::DeskAdded,
-            json!({ "item": desk.0, "kind": "question", "task": task.0 }),
+            json!({ "item": desk.0, "kind": kind, "task": task.0 }),
         )?;
         // The worker ends its turn on reading that it has; its container is let go too, so a
         // worker that does not cannot linger.
@@ -1543,6 +1587,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
                 }
             }
+            // Approved: the node runs exactly what it stored, then tells what came of it, and
+            // only that wakes the member (ADR 0108).
+            ("approval", "approve") => {}
+            ("approval", "decline") => {
+                self.settle_unrun(found, "The owner declined this, and it was not run")?;
+            }
             ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
             | ("question", "dismiss")
@@ -1554,6 +1604,49 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::DeskDecided,
             json!({ "item": item.0, "kind": found.kind, "decision": decision }),
         )?;
+        Ok(())
+    }
+
+    /// An approval that will not run: why, in the task's thread as Endora's, and the member
+    /// who asked woken to read it.
+    fn settle_unrun(&self, found: &DeskItem, why: &str) -> Done<()> {
+        let Some(task) = found.task else {
+            return Ok(());
+        };
+        self.post_held_lock(Author::Endora, task, &format!("{why}: {}", found.text))?;
+        if let Some(member) = found.member {
+            self.wake_held_lock(member, Some(task), WakeReason::ProposalDecided)?;
+        }
+        Ok(())
+    }
+
+    /// What came of an approved action, as the node that ran it says (ADR 0108): written in
+    /// the task's thread as Endora's, and the member who asked woken to read it. Told once.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for an item that is not an approval, or one not approved;
+    /// [`EngineError::Refused`] with [`Refusal::Finished`] once told.
+    pub fn approval_outcome(&self, item: crate::domain::DeskId, text: &str) -> Done<()> {
+        let _held = self.held();
+        let found = self
+            .store
+            .desk()?
+            .into_iter()
+            .find(|d| d.id == item && d.kind == "approval")
+            .ok_or(EngineError::Unknown("approval"))?;
+        match found.status.as_str() {
+            "approve" => {}
+            "ran" => return Err(EngineError::Refused(Refusal::Finished)),
+            _ => return Err(EngineError::Unknown("approved approval")),
+        }
+        self.store.set_desk_status(item, "ran")?;
+        let text: String = text.trim().chars().take(4000).collect();
+        if let Some(task) = found.task {
+            self.post_held_lock(Author::Endora, task, &text)?;
+            if let Some(member) = found.member {
+                self.wake_held_lock(member, Some(task), WakeReason::ProposalDecided)?;
+            }
+        }
         Ok(())
     }
 
@@ -1635,6 +1728,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "goal" => "decline",
                 "stuck" => "drop",
                 "ready_to_merge" | "ready_to_read" => "not_now",
+                "approval" => "decline",
                 _ => "dismiss",
             };
             self.store.set_desk_status(item.id, decision)?;

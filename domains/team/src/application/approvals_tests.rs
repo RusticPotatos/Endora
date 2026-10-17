@@ -1,0 +1,224 @@
+//! Approvals (ADR 0108): an action a member may take only with the owner's yes waits on the
+//! owner's desk, ends the member's turn as a question does, and is decided once. The node runs
+//! what was approved and tells HQ what came of it; HQ writes it in the task's thread and wakes
+//! the member. Declined or left for a day, it is never run, and the thread says so.
+
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use serde_json::json;
+
+use super::engine::{Author, Engine, EngineError, Settings};
+use super::ports::{Clock, NewTask, RunContext, TeamStore};
+use super::protocol::call;
+use crate::domain::{DeskId, MemberId, Priority, Refusal, Role, RunStatus, TaskId, WakeReason};
+use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
+
+struct Hands(AtomicI64);
+impl Clock for &Hands {
+    fn now(&self) -> i64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+type Hq<'a> = Engine<SqliteTeamStore, SimulatedRunner, &'a Hands>;
+
+const NOON: i64 = 1_792_166_400_000;
+const DAY: i64 = 24 * 60 * 60 * 1000;
+const ASKED: &str = "Linus asks to run sonarr_remove_and_search: item: 102. Why: it is stuck.";
+
+/// HQ with Linus on a task, his turn started and the task claimed.
+fn started(clock: &Hands) -> (Hq<'_>, MemberId, TaskId, RunContext) {
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(4),
+        clock,
+        Settings::default(),
+    );
+    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    let goal = hq
+        .set_goal(
+            "Keep the home lab healthy",
+            "you asked for it",
+            Author::Owner,
+        )
+        .unwrap();
+    let task = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                parent: None,
+                title: "Clear the stuck downloads".to_owned(),
+                description: String::new(),
+                assignee: Some(dev),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    hq.tick().unwrap();
+    let context = hq.runner().started()[0].clone();
+    let (run, me) = hq.turn_of(&context.token).unwrap().unwrap();
+    call(&hq, &run, &me, "claim", &json!({ "task": task.0 })).unwrap();
+    (hq, dev, task, context)
+}
+
+/// An approval asked in `context`'s turn, its turn finished as the worker finishes it.
+fn asked(hq: &Hq<'_>, context: &RunContext) -> DeskId {
+    let item = hq
+        .ask_approval(hq.turn_of(&context.token).unwrap().unwrap().0.id, ASKED)
+        .unwrap();
+    hq.runner().finish(context.run, true);
+    hq.tick().unwrap();
+    item
+}
+
+fn item(hq: &Hq<'_>, id: DeskId) -> super::ports::DeskItem {
+    hq.store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.id == id)
+        .unwrap()
+}
+
+fn wakes_for(hq: &Hq<'_>, member: MemberId) -> Vec<WakeReason> {
+    hq.store()
+        .wakes()
+        .unwrap()
+        .into_iter()
+        .filter(|w| w.member == member)
+        .map(|w| w.reason)
+        .collect()
+}
+
+#[test]
+fn an_approval_waits_on_the_desk_ends_the_turn_and_counts_as_a_question() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task, context) = started(&clock);
+    let run = hq.turn_of(&context.token).unwrap().unwrap().0;
+    let id = hq.ask_approval(run.id, ASKED).unwrap();
+    let waiting = item(&hq, id);
+    assert_eq!(
+        (waiting.kind.as_str(), waiting.member, waiting.task),
+        ("approval", Some(dev), Some(task))
+    );
+    assert_eq!(waiting.text, ASKED);
+    let ended = hq.store().run(run.id).unwrap().unwrap();
+    assert_eq!(
+        (ended.status, ended.end_reason.as_str()),
+        (RunStatus::Succeeded, "asked the owner")
+    );
+    assert!(hq.turn_of(&context.token).unwrap().is_none());
+    assert_eq!(hq.runner().stopped(), [run.id], "its container is let go");
+    assert_eq!(
+        hq.ask_approval(run.id, ASKED),
+        Err(EngineError::Refused(Refusal::TurnOver))
+    );
+
+    // Woken on the task again while it waits: neither a question nor another approval.
+    hq.post(Author::Owner, task, "@Linus one moment.").unwrap();
+    hq.tick().unwrap();
+    let again = hq
+        .runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.member == dev)
+        .unwrap();
+    let (run, me) = hq.turn_of(&again.token).unwrap().unwrap();
+    let refused = call(&hq, &run, &me, "ask_owner", &json!({ "text": "Well?" })).unwrap_err();
+    assert!(refused.contains("waiting"), "{refused}");
+    assert_eq!(
+        hq.ask_approval(run.id, ASKED),
+        Err(EngineError::Refused(Refusal::AlreadyAsked))
+    );
+}
+
+#[test]
+fn approved_it_waits_for_what_came_of_it_which_goes_in_the_thread_and_wakes_the_member() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task, context) = started(&clock);
+    let id = asked(&hq, &context);
+    assert!(
+        hq.approval_outcome(id, "Removed it.").is_err(),
+        "nothing came of what was not approved"
+    );
+    let before = wakes_for(&hq, dev).len();
+    hq.decide(id, "approve").unwrap();
+    assert_eq!(item(&hq, id).status, "approve");
+    assert_eq!(
+        wakes_for(&hq, dev).len(),
+        before,
+        "the member waits for the result, not the yes"
+    );
+    hq.approval_outcome(id, "Approved, and done: Sonarr removed item 102.")
+        .unwrap();
+    let said = hq.store().thread(task).unwrap().pop().unwrap();
+    assert_eq!(
+        (said.author.as_str(), said.text.as_str()),
+        ("endora", "Approved, and done: Sonarr removed item 102.")
+    );
+    assert_eq!(
+        wakes_for(&hq, dev).last(),
+        Some(&WakeReason::ProposalDecided)
+    );
+    assert_eq!(item(&hq, id).status, "ran");
+    assert!(hq.approval_outcome(id, "Again.").is_err(), "told once");
+    assert!(hq.decide(id, "decline").is_err(), "decided once");
+}
+
+#[test]
+fn declined_it_is_never_run_and_the_thread_says_so() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task, context) = started(&clock);
+    let id = asked(&hq, &context);
+    assert!(
+        hq.decide(id, "seen").is_err(),
+        "an approval is approved or declined"
+    );
+    hq.decide(id, "decline").unwrap();
+    let said = hq.store().thread(task).unwrap().pop().unwrap();
+    assert_eq!(said.author, "endora");
+    assert!(
+        said.text
+            .starts_with("The owner declined this, and it was not run: Linus asks"),
+        "{}",
+        said.text
+    );
+    assert_eq!(
+        wakes_for(&hq, dev).last(),
+        Some(&WakeReason::ProposalDecided)
+    );
+    assert!(hq.approval_outcome(id, "Removed it.").is_err());
+}
+
+#[test]
+fn an_approval_left_for_a_day_expires_unrun_with_a_note_in_the_thread() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task, context) = started(&clock);
+    let id = asked(&hq, &context);
+    clock.0.store(NOON + DAY - 60_000, Ordering::SeqCst);
+    hq.tick().unwrap();
+    assert_eq!(item(&hq, id).status, "waiting", "not yet a day");
+    clock.0.store(NOON + DAY + 1, Ordering::SeqCst);
+    hq.tick().unwrap();
+    assert_eq!(item(&hq, id).status, "expired");
+    let said = hq.store().thread(task).unwrap().pop().unwrap();
+    assert_eq!(said.author, "endora");
+    assert!(
+        said.text
+            .starts_with("Nobody decided this within a day, so it was not run: Linus asks"),
+        "{}",
+        said.text
+    );
+    assert_eq!(
+        wakes_for(&hq, dev).last(),
+        Some(&WakeReason::ProposalDecided)
+    );
+    assert_eq!(
+        hq.decide(id, "approve"),
+        Err(EngineError::Refused(Refusal::Finished)),
+        "too late to approve"
+    );
+}
