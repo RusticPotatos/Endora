@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ansible_nas;
 pub mod application;
 pub mod bridge;
 pub mod contracts;
@@ -20,6 +21,7 @@ pub mod domain;
 pub mod home_assistant;
 pub mod infrastructure;
 pub mod lab_alarms;
+pub mod lab_map;
 pub mod mcp_http;
 pub mod mcp_registry;
 pub mod mcp_stdio;

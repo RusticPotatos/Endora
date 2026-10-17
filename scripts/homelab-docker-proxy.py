@@ -4,9 +4,35 @@ import argparse
 import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import re
 import socket
 
 ALLOWED = {'/version', '/containers/json?all=true'}
+# One container's inspection, by a name Docker could have given it, for the home lab's map
+# (ADR 0112): only its id, name, image, state, restart policy, network mode and three compose
+# labels are passed on. Never its environment, mounts, binds or any other label.
+INSPECT = re.compile(r'/containers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/json')
+COMPOSE_LABELS = ('com.docker.compose.service', 'com.docker.compose.project', 'com.docker.compose.depends_on')
+
+def inspected(value):
+    """The map's few fields of an inspection; nothing else of it leaves."""
+    if not isinstance(value, dict):
+        raise ValueError()
+    text = lambda v: v if isinstance(v, str) else ''
+    part = lambda v: v if isinstance(v, dict) else {}
+    config, state, host = part(value.get('Config')), part(value.get('State')), part(value.get('HostConfig'))
+    labels, policy = part(config.get('Labels')), part(host.get('RestartPolicy'))
+    count = policy.get('MaximumRetryCount')
+    return {
+        'Id': text(value.get('Id')),
+        'Name': text(value.get('Name')),
+        'Config': {'Image': text(config.get('Image')),
+                   'Labels': {key: text(labels.get(key)) for key in COMPOSE_LABELS if key in labels}},
+        'State': {'Status': text(state.get('Status'))},
+        'HostConfig': {'NetworkMode': text(host.get('NetworkMode')),
+                       'RestartPolicy': {'Name': text(policy.get('Name')),
+                                         'MaximumRetryCount': count if isinstance(count, int) else 0}},
+    }
 
 class UnixConnection(http.client.HTTPConnection):
     def __init__(self, path):
@@ -21,7 +47,7 @@ class UnixConnection(http.client.HTTPConnection):
 def handler(socket_path):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path not in ALLOWED:
+            if self.path not in ALLOWED and not INSPECT.fullmatch(self.path):
                 self.send_error(403, 'Route not permitted')
                 return
             connection = UnixConnection(socket_path)
@@ -32,7 +58,9 @@ def handler(socket_path):
                 if response.status != 200 or len(raw) > 1024 * 1024:
                     raise ValueError()
                 value = json.loads(raw)
-                if self.path.startswith('/containers/'):
+                if INSPECT.fullmatch(self.path):
+                    value = inspected(value)
+                elif self.path.startswith('/containers/'):
                     value = [{key: item.get(key) for key in ('Names', 'State', 'Status')} for item in value[:100]]
                 else:
                     value = {key: value.get(key) for key in ('ApiVersion', 'Version')}
