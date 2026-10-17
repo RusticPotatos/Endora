@@ -53,6 +53,19 @@ async function soundTicket() {
   } catch (_) { SOUND.ticket = null; }
 }
 
+// Starts this device's listening, if `speaker` is this device and it is not listening yet.
+// Called straight from a tap (Safari starts sound only so), with a ticket fetched before it.
+// Whether it started.
+function soundStartHere(speaker) {
+  const mine = soundMine();
+  if (!mine || mine.id !== speaker || SOUND.listening || !SOUND.ticket) return false;
+  const a = soundAudio();
+  a.src = SOUND.ticket.url; SOUND.ticket = null;
+  SOUND.listening = true;
+  a.play().catch(() => { SOUND.listening = false; });
+  return true;
+}
+
 async function loadSound() {
   SOUND.error = "";
   try { SOUND.state = await api("GET", "/v1/sound"); }

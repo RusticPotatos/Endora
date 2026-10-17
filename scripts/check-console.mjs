@@ -731,6 +731,13 @@ if (failures.length) {
   if (music.includes('data-act="music:device:d-endora"')) fail("music: the Endora receiver is offered as a speaker of its own");
   if (!music.includes('data-act="music:device:d-mac"')) fail("music: Spotify's own devices went missing");
   if (!/pill pick active" data-act="music:endora:4"/.test(music)) fail("music: the speaker Spotify plays on is not shown as playing");
+  if (!/data-act="music:endora:4">iPhone · not listening/.test(music)) fail("music: a phone that is not listening does not say so");
+  // On that phone itself, it is this device, and a tap starts it listening.
+  runInContext(`var keepGet2 = localStorage.getItem;
+    localStorage.getItem = (k) => (k === "endora.soundSpeaker" ? "4" : keepGet2(k));`, context);
+  const onPhone = runInContext("viewMusic()", context);
+  if (!/data-act="music:endora:4">iPhone · this device/.test(onPhone)) fail("music: this device is not shown as this device");
+  runInContext("localStorage.getItem = keepGet2;", context);
   runInContext("Object.assign(MUSIC, JSON.parse(keepMusic)); SPOTIFY = keepSpotify; SOUND.state = keepSound;", context);
   console.log("music: Spotify's devices and the hub's speakers are one list, and the receiver is not a choice");
 }
