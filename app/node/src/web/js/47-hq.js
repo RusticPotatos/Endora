@@ -481,7 +481,9 @@ function viewHQ() {
   const desk = (s.desk || []).map((d) => {
     const choices = { goal: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]], stuck: [["retry", "Try again", "ok"], ["drop", "Drop it", "no"]],
       ready_to_merge: [["merged", "Mark merged", "ok"], ["not_now", "Not now", "no"]],
-      ready_to_read: [["read", "Mark read", "ok"], ["not_now", "Not now", "no"]] }[d.kind] || [];
+      ready_to_read: [["read", "Mark read", "ok"], ["not_now", "Not now", "no"]],
+      // A member's question (the team protocol's ask_owner): seeing it wakes them again.
+      question: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";

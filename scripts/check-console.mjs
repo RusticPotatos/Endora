@@ -585,7 +585,8 @@ if (failures.length) {
       runs: [{ id: 3, member: 2, task: 7, status: "running" }],
       desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
              { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" },
-             { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" }] };`, context);
+             { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" },
+             { id: 15, kind: "question", task: 7, text: "Linus asks: steel or titanium?" }] };`, context);
   // The activity log reads like the office's own: who, which task, why, and what it cost.
   runInContext(`hqTell({ id: 41, at: 0, kind: "run.started", data: { run: 9, member: 2, task: 7, reason: "review_requested", reserved: 60000 } }, false);
     hqTell({ id: 42, at: 0, kind: "run.ended", data: { run: 9, member: 2, task: 7, result: "succeeded", spent: 120000 } }, false);
@@ -602,7 +603,8 @@ if (failures.length) {
   if (!office.includes("Demo · scripted team")) fail("hq: demo mode is not labelled");
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
   for (const act of ["hq:decide:11:approve", "hq:decide:11:decline", "hq:decide:12:retry", "hq:decide:12:drop",
-    "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:decide:14:not_now", "hq:stop"]) {
+    "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:decide:14:not_now",
+    "hq:decide:15:seen", "hq:decide:15:dismiss", "hq:stop"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
