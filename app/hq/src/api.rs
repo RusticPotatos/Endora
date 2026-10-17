@@ -534,6 +534,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_answers_batches_and_never_answers_a_notification() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let app = app(st.clone());
+        let speak = |body: serde_json::Value| {
+            call("POST", "/v1/team/mcp", Some(&turn.token), &body.to_string())
+        };
+        let batch = json_of(
+            app.clone()
+                .oneshot(speak(json!([
+                    { "jsonrpc": "2.0", "id": 7, "method": "tools/list" },
+                    { "jsonrpc": "2.0", "method": "notifications/initialized" },
+                    { "jsonrpc": "2.0", "id": "b", "method": "ping" },
+                ])))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let replies = batch.as_array().expect("a batch is answered with a batch");
+        assert_eq!(replies.len(), 2, "the notification has no answer: {batch}");
+        assert_eq!(replies[0]["id"], 7);
+        assert!(replies[0]["result"]["tools"].is_array());
+        assert_eq!(replies[1]["id"], "b");
+        for quiet in [
+            json!({ "jsonrpc": "2.0", "method": "ping" }),
+            json!({ "jsonrpc": "2.0", "id": 3, "result": {} }),
+            json!([{ "jsonrpc": "2.0", "method": "notifications/cancelled" }]),
+        ] {
+            let res = app.clone().oneshot(speak(quiet.clone())).await.unwrap();
+            assert_eq!(res.status(), StatusCode::ACCEPTED, "{quiet}");
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert!(body.is_empty(), "{quiet}");
+        }
+        let asked = json_of(
+            app.clone()
+                .oneshot(speak(
+                    json!({ "jsonrpc": "2.0", "id": 4, "method": "notifications/odd" }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (asked["id"].clone(), asked["error"]["code"].clone()),
+            (json!(4), json!(-32601)),
+            "a request is answered, whatever its method"
+        );
+        let empty = json_of(app.oneshot(speak(json!([]))).await.unwrap()).await;
+        assert_eq!(empty["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
     async fn a_worker_speaks_mcp_with_its_turns_token_and_nothing_else_opens_the_door() {
         let st = state(true);
         st.hq.tick().unwrap();

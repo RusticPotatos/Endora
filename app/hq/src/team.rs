@@ -1,6 +1,7 @@
 //! The team protocol over MCP (spec section 6): the one door a worker has into HQ. A worker
 //! presents its turn's token, never the node's; the token opens only its own turn, while it
-//! runs. JSON-RPC over HTTP: `initialize`, `tools/list`, `tools/call`, and `ping`.
+//! runs. JSON-RPC over HTTP: `initialize`, `tools/list`, `tools/call`, and `ping`, one at a
+//! time or in a batch; notifications and the worker's own responses take no answer.
 
 use axum::Json;
 use axum::extract::State as Extract;
@@ -15,26 +16,67 @@ use crate::api::State;
 /// The protocol versions this server speaks, newest first.
 const VERSIONS: [&str; 2] = ["2025-06-18", "2025-03-26"];
 
-/// What a message comes to.
-enum Outcome {
-    /// A result for the request.
-    Result(Value),
-    /// A notification: nothing to answer.
-    Nothing,
-    /// A method this server does not have.
-    NoSuchMethod,
+fn reply(id: &Value, result: Value) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
 
-fn reply(id: &Value, result: Value) -> Response {
-    Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response()
+fn error(id: &Value, code: i64, message: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-fn error(id: &Value, code: i64, message: &str) -> Response {
-    Json(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }))
-        .into_response()
+/// The answer to one JSON-RPC message, or `None` when it takes none: a notification (no
+/// `id`), or the worker's own response to something (no `method`).
+fn answer(
+    hq: &crate::Hq,
+    run: &endora_team::application::ports::Run,
+    member: &endora_team::domain::Member,
+    msg: &Value,
+) -> Option<Value> {
+    // A notification has no id, and no answer.
+    let id = msg.get("id")?;
+    let Some(method) = msg.get("method") else {
+        if msg.get("result").is_some() || msg.get("error").is_some() {
+            return None;
+        }
+        return Some(error(id, -32600, "not a JSON-RPC request"));
+    };
+    let params = msg.get("params").cloned().unwrap_or(Value::Null);
+    let result = match method.as_str().unwrap_or("") {
+        "initialize" => {
+            let asked = params["protocolVersion"].as_str().unwrap_or("");
+            let version = VERSIONS
+                .iter()
+                .find(|v| **v == asked)
+                .unwrap_or(&VERSIONS[0]);
+            json!({
+                "protocolVersion": version,
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "endora-hq", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": "Call my_turn first. You are one member of a team: use only these tools, and end your turn when your part is done.",
+            })
+        }
+        "ping" => json!({}),
+        "tools/list" => json!({ "tools": protocol::tools() }),
+        "tools/call" => {
+            let name = params["name"].as_str().unwrap_or("");
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let (text, failed) = match protocol::call(hq, run, member, name, &args) {
+                Ok(text) => (text, false),
+                Err(text) => (text, true),
+            };
+            json!({ "content": [{ "type": "text", "text": text }], "isError": failed })
+        }
+        _ => return Some(error(id, -32601, "no such method")),
+    };
+    Some(reply(id, result))
 }
 
-/// One JSON-RPC message from a worker.
+/// One JSON-RPC message from a worker, or a batch of them (protocol version 2025-03-26
+/// allows one): answered with one answer, or a batch of answers, or 202 and nothing when
+/// nothing in it takes an answer.
 pub async fn mcp(
     Extract(state): Extract<State>,
     headers: HeaderMap,
@@ -47,52 +89,36 @@ pub async fn mcp(
         .unwrap_or("")
         .to_owned();
     let hq = state.hq.clone();
-    let id = msg.get("id").cloned().unwrap_or(Value::Null);
-    let method = msg["method"].as_str().unwrap_or("").to_owned();
-    let params = msg.get("params").cloned().unwrap_or(Value::Null);
-    let answer = tokio::task::spawn_blocking(move || {
+    let answered = tokio::task::spawn_blocking(move || {
         // A token that opens no running turn opens nothing at all.
         let Ok(Some((run, member))) = hq.turn_of(&token) else {
             return Err(StatusCode::UNAUTHORIZED);
         };
-        Ok(Outcome::Result(match method.as_str() {
-            "initialize" => {
-                let asked = params["protocolVersion"].as_str().unwrap_or("");
-                let version = VERSIONS.iter().find(|v| **v == asked).unwrap_or(&VERSIONS[0]);
-                json!({
-                    "protocolVersion": version,
-                    "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "endora-hq", "version": env!("CARGO_PKG_VERSION") },
-                    "instructions": "Call my_turn first. You are one member of a team: use only these tools, and end your turn when your part is done.",
-                })
-            }
-            "ping" => json!({}),
-            "tools/list" => json!({ "tools": protocol::tools() }),
-            "tools/call" => {
-                let name = params["name"].as_str().unwrap_or("");
-                let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-                let (text, failed) = match protocol::call(hq.as_ref(), &run, &member, name, &args) {
-                    Ok(text) => (text, false),
-                    Err(text) => (text, true),
-                };
-                json!({ "content": [{ "type": "text", "text": text }], "isError": failed })
-            }
-            // A notification has no answer.
-            m if m.starts_with("notifications/") => return Ok(Outcome::Nothing),
-            _ => return Ok(Outcome::NoSuchMethod),
-        }))
+        let Value::Array(batch) = msg else {
+            return Ok(answer(hq.as_ref(), &run, &member, &msg));
+        };
+        if batch.is_empty() {
+            return Ok(Some(error(&Value::Null, -32600, "an empty batch")));
+        }
+        let answers: Vec<Value> = batch
+            .iter()
+            .filter_map(|m| answer(hq.as_ref(), &run, &member, m))
+            .collect();
+        if answers.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Value::Array(answers)))
     })
     .await;
-    match answer {
+    match answered {
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         Ok(Err(status)) => (
             status,
             Json(json!({ "error": "no running turn has that token" })),
         )
             .into_response(),
-        Ok(Ok(Outcome::Nothing)) => StatusCode::ACCEPTED.into_response(),
-        Ok(Ok(Outcome::NoSuchMethod)) => error(&id, -32601, "no such method"),
-        Ok(Ok(Outcome::Result(result))) => reply(&id, result),
+        Ok(Ok(None)) => StatusCode::ACCEPTED.into_response(),
+        Ok(Ok(Some(answer))) => Json(answer).into_response(),
     }
 }
 
