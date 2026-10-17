@@ -427,6 +427,61 @@ fn a_turn_reserves_before_it_starts_and_is_stopped_the_moment_it_crosses() {
 }
 
 #[test]
+fn a_turns_record_says_how_much_of_its_input_was_read_from_the_cache() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    all_paid(&hq);
+    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.tick().unwrap();
+    let run = hq.store().runs().unwrap()[0].clone();
+    // Two rounds: the first writes the prompt to the cache, the second reads it back.
+    hq.note_tokens(run.id, 100, 0, 9_000).unwrap();
+    hq.note_tokens(run.id, 100, 9_000, 800).unwrap();
+    let kept = hq.store().run(run.id).unwrap().unwrap();
+    assert_eq!(
+        (
+            kept.input_tokens,
+            kept.cache_read_tokens,
+            kept.cache_write_tokens
+        ),
+        (200, 9_000, 9_800)
+    );
+    // A copy of the run saved again keeps them: only the relay's reports add to them.
+    hq.store().save_run(&run).unwrap();
+    assert_eq!(
+        hq.store().run(run.id).unwrap().unwrap().cache_read_tokens,
+        9_000
+    );
+    hq.runner().finish(run.id, true);
+    hq.tick().unwrap();
+    let ended = hq
+        .store()
+        .events_after(0)
+        .unwrap()
+        .into_iter()
+        .rfind(|e| e.kind == "run.ended")
+        .unwrap();
+    assert_eq!(ended.data["cached"], 47, "9,000 of 19,000 tokens in");
+
+    // A turn that never reached Claude says nothing of a cache.
+    task_for(&hq, t.goal, Some(t.lead), "Plan it");
+    hq.tick().unwrap();
+    let other = hq.store().runs().unwrap()[1].clone();
+    hq.runner().finish(other.id, true);
+    hq.tick().unwrap();
+    let ended = hq
+        .store()
+        .events_after(0)
+        .unwrap()
+        .into_iter()
+        .rfind(|e| e.kind == "run.ended")
+        .unwrap();
+    assert_eq!(ended.data["run"], other.id.0);
+    assert_eq!(ended.data["cached"], serde_json::Value::Null);
+}
+
+#[test]
 fn the_snapshot_tells_money_spent_from_money_held() {
     let clock = hands();
     let hq = hq(&clock, 4);

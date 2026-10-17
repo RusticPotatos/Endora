@@ -87,9 +87,26 @@ pub fn retry_after_failure(attempts: u8, now: Millis) -> Option<Millis> {
     (attempts <= MOST_RETRIES).then_some(now + RETRY_AFTER_MS)
 }
 
+/// How much of a turn's input Claude read from the prompt cache, in whole percent: `read` of
+/// all it sent (`fresh`, `read` and `written` to the cache together). `None` for a turn that
+/// sent nothing, such as one on the house's model.
+#[must_use]
+pub fn cached_share(fresh: i64, read: i64, written: i64) -> Option<i64> {
+    let all = fresh.max(0) + read.max(0) + written.max(0);
+    (all > 0).then(|| read.max(0) * 100 / all)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_share_read_from_the_cache_is_of_all_the_input() {
+        assert_eq!(cached_share(200, 9_000, 9_800), Some(47));
+        assert_eq!(cached_share(0, 10, 0), Some(100));
+        assert_eq!(cached_share(10, 0, 0), Some(0));
+        assert_eq!(cached_share(0, 0, 0), None);
+    }
 
     #[test]
     fn a_failed_turn_is_tried_again_twice_a_minute_apart_and_then_not() {

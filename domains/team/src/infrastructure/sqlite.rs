@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at INTEGER, retry_at INTEGER, ended_at INTEGER,
     reserved INTEGER NOT NULL DEFAULT 0, spent INTEGER NOT NULL DEFAULT 0,
     told TEXT NOT NULL DEFAULT '', end_reason TEXT NOT NULL DEFAULT '',
-    moved_forward INTEGER NOT NULL DEFAULT 0
+    moved_forward INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 -- A turn's token for the team protocol: its worker's only credential, valid while it runs.
 CREATE TABLE IF NOT EXISTS run_tokens (
@@ -165,6 +166,22 @@ impl SqliteTeamStore {
             )
             .map_err(backend)?;
         }
+        // A store made before runs counted their input tokens gains the columns, at none.
+        for column in ["input_tokens", "cache_read_tokens", "cache_write_tokens"] {
+            let has: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM pragma_table_info('runs') WHERE name = ?1",
+                    [column],
+                    |r| r.get(0),
+                )
+                .map_err(backend)?;
+            if !has {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE runs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0;"
+                ))
+                .map_err(backend)?;
+            }
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -256,11 +273,15 @@ fn run_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         told: row.get(12)?,
         end_reason: row.get(13)?,
         moved_forward: row.get::<_, i64>(14)? != 0,
+        input_tokens: row.get(15)?,
+        cache_read_tokens: row.get(16)?,
+        cache_write_tokens: row.get(17)?,
     })
 }
 
 const RUN_COLUMNS: &str = "id, member, task, wake, status, attempts, queued_at, started_at, \
-    retry_at, ended_at, reserved, spent, told, end_reason, moved_forward";
+    retry_at, ended_at, reserved, spent, told, end_reason, moved_forward, input_tokens, \
+    cache_read_tokens, cache_write_tokens";
 
 impl TeamStore for SqliteTeamStore {
     fn add_member(
@@ -740,6 +761,19 @@ impl TeamStore for SqliteTeamStore {
             )
             .optional()
             .map_err(backend)
+    }
+
+    fn add_tokens(&self, run: RunId, fresh: i64, read: i64, written: i64) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE runs SET input_tokens = input_tokens + ?2,
+                    cache_read_tokens = cache_read_tokens + ?3,
+                    cache_write_tokens = cache_write_tokens + ?4
+                 WHERE id = ?1",
+                params![run.0, fresh.max(0), read.max(0), written.max(0)],
+            )
+            .map_err(backend)?;
+        Ok(())
     }
 
     fn save_run(&self, run: &Run) -> Stored<()> {

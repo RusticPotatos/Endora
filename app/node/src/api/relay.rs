@@ -252,7 +252,9 @@ fn charge(
         return;
     };
     let micros = cost(price, used);
-    if let Err(e) = hq.post("/v1/team/usage", &json!({ "run": run, "micros": micros })) {
+    let reported = json!({ "run": run, "micros": micros, "input": used.input,
+                           "cache_read": used.cache_read, "cache_write": used.cache_write });
+    if let Err(e) = hq.post("/v1/team/usage", &reported) {
         eprintln!("relay: could not charge run {run} {micros} micros: {e}");
     }
     endora_application::UsageLog::record(
@@ -1383,6 +1385,18 @@ pub(super) mod tests {
             charged(&to_hq),
             vec![2_000 * 8 + 18_000 / 5 + 100 * 20],
             "2k written at $8, 18k read at 20¢ and 100 out at $20 a million"
+        );
+        let told = to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .rfind(|(p, _, _)| p == "/v1/team/usage")
+            .map(|(_, _, b)| serde_json::from_str::<serde_json::Value>(b).unwrap())
+            .unwrap();
+        assert_eq!(
+            (&told["input"], &told["cache_read"], &told["cache_write"]),
+            (&json!(0), &json!(18_000), &json!(2_000)),
+            "HQ hears the tokens too, for the turn's record"
         );
 
         let mut odd = json!({ "model": "claude-opus-5-5", "max_tokens": 10, "messages": [] });

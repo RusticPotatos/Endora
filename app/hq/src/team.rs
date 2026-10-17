@@ -158,6 +158,14 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
 pub(crate) struct UsageReported {
     run: i64,
     micros: i64,
+    /// The call's input tokens, as Anthropic reported them: fresh, read from the prompt cache
+    /// and written to it. A relay that says none is taken at none.
+    #[serde(default)]
+    input: i64,
+    #[serde(default)]
+    cache_read: i64,
+    #[serde(default)]
+    cache_write: i64,
 }
 
 /// For the node's model relay: what one model call of a turn cost. Crossing the turn's
@@ -168,7 +176,10 @@ pub(crate) async fn usage(
 ) -> Response {
     let hq = state.hq.clone();
     let reported = tokio::task::spawn_blocking(move || {
-        hq.report_usage(endora_team::domain::RunId(req.run), req.micros.max(0))
+        let run = endora_team::domain::RunId(req.run);
+        // The tokens first: a charge that stops the turn ends its record too.
+        hq.note_tokens(run, req.input, req.cache_read, req.cache_write)?;
+        hq.report_usage(run, req.micros.max(0))
     })
     .await;
     match reported {

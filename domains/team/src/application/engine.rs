@@ -1449,6 +1449,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- money -----------------------------------------------------------------------------
 
+    /// What one model call of a turn sent, in input tokens, as the relay reported them: fresh,
+    /// read from the prompt cache and written to it. The turn's record keeps the sums, and
+    /// its end says how much of its input the cache gave (see [`runs::cached_share`]).
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a run that does not exist; a store failure.
+    pub fn note_tokens(&self, run: RunId, fresh: i64, read: i64, written: i64) -> Done<()> {
+        let _held = self.held();
+        self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
+        self.store.add_tokens(run, fresh, read, written)?;
+        Ok(())
+    }
+
     /// A turn reports what one model call cost. Crossing what it reserved stops it now, not
     /// afterwards. Returns whether it may go on.
     ///
@@ -1581,11 +1594,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store.save_run(&run)?;
         self.store
             .set_wake(run.wake, Receipt::Finished, Some(run.id))?;
+        // The tokens as the relay reported them, which only it adds to.
+        let cached = self.store.run(run.id)?.and_then(|r| {
+            runs::cached_share(r.input_tokens, r.cache_read_tokens, r.cache_write_tokens)
+        });
         self.emit(
             EventKind::RunEnded,
             json!({ "run": run.id.0, "member": run.member.0, "task": run.task.map(|t| t.0),
                     "result": status.name(), "why": why, "moved_forward": run.moved_forward,
-                    "spent": run.spent }),
+                    "spent": run.spent, "cached": cached }),
         )?;
         if let Some(task) = run.task {
             if run.moved_forward {

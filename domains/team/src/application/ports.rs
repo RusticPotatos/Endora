@@ -123,6 +123,12 @@ pub struct Run {
     pub end_reason: String,
     /// Whether it moved the work forward: posted, or changed its task.
     pub moved_forward: bool,
+    /// The fresh input tokens its model calls sent, as the relay reported them.
+    pub input_tokens: i64,
+    /// The input tokens they read from the prompt cache.
+    pub cache_read_tokens: i64,
+    /// The input tokens they wrote to the prompt cache.
+    pub cache_write_tokens: i64,
 }
 
 /// One item on the owner's desk.
@@ -357,6 +363,13 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn save_run(&self, run: &Run) -> Stored<()>;
+
+    /// Adds a model call's input tokens to a turn's (fresh, read from the cache, written to
+    /// it). Only this adds to them; [`Self::save_run`] leaves them as they are.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_tokens(&self, run: RunId, fresh: i64, read: i64, written: i64) -> Stored<()>;
 
     /// Issues a fresh token for a turn, replacing any it had: what its worker presents to the
     /// team protocol, good for this run only (spec section 3, invariant 3).
