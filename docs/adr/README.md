@@ -269,6 +269,7 @@ of an existing record and take the next number.
 | [0111](0111-the-ceo-and-the-chain-of-command.md) | The CEO and the chain of command | — |
 | [0112](0112-the-team-knows-how-the-lab-is-built.md) | The team knows how the lab is built | — |
 | [0113](0113-projects-budgets-and-reports-to.md) | Projects, budgets and reports_to | — |
+| [0114](0114-evidence-acceptance-criteria-and-the-tester.md) | Evidence, acceptance criteria and the tester | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

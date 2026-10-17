@@ -9,6 +9,25 @@ tagged release.
 
 ### Added
 
+- **Evidence, acceptance criteria and the tester** ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)).
+  The node records every call a turn makes of Endora's tools as a **receipt** in HQ, with the
+  turn's own token (`POST /v1/team/receipt`; refused for a forged or finished turn), and the model
+  reads its id ("receipt r41") to cite. Tasks carry **acceptance criteria** (required for work a
+  member hands another; the home lab's checks get two live ones), and **one evidence rule**
+  decides every claim from HQ's record: per criterion, references that exist and belong to this
+  work, a live one a reading from the same turn. Work goes member → **tester** (the reviewer,
+  shown as "Tester", re-checking on her own readings) → lead (`accept`) → done, nobody checking
+  its own, with the fallbacks said on the task; three send-backs and the next round is the
+  owner's. The CEO's `decide_project`, its decisions for the board and the lead's question up to
+  it are refused without evidence; a post citing nothing in a turn with no reading is marked
+  unsupported. Each turn ends with a **label** (advanced, blocked, checked, talk only, empty)
+  that the back-off reads; two nudges, then a task that shows nothing goes up the chain once; the
+  same reading again shows nothing; a check-back on a task blocked on a wait is replaced by the
+  wait; and the chain of command may close, accept, send back or hand on (`hand_to`) a
+  subordinate's task. The HQ screen shows criteria with their evidence, the tester's pass, run
+  labels and unsupported posts. The live store gains its columns and tables by guarded
+  `ALTER TABLE`.
+
 - **Projects, budgets and reports_to** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md)).
   A project serves one goal and has a lead (a lead or the CEO) and, if the owner gives it one, a
   monthly cap; a task may be in a project of its goal, its sub-tasks stay in it, and a routine's
@@ -303,6 +322,13 @@ tagged release.
   says so once a day if it failed. [Rebuilding from nothing](docs/recovery.md) is the runbook.
 
 ### Changed
+
+- **The CEO's effort follows the kind of turn** ([ADR 0109](docs/adr/0109-a-brain-per-member.md#cost-notes),
+  [0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)): `low` for ordinary turns
+  (a question up the chain, a post, a recovery), `medium` for its daily review and planning,
+  `high` when a project proposal waits for it or it carries something to the board. The lead
+  stays `medium`, the researcher `low`. Posts alone no longer count as progress for the
+  empty-turn back-off.
 
 - **Sonnet 5.5's cache reads are priced at $0.10 a million**, down from $0.20, after
   Anthropic's correction: the team relay charges a turn's cached prompt at the new price. The

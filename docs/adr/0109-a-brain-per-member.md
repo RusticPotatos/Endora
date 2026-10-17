@@ -22,7 +22,9 @@ never turned away for money. The CEO on Claude is a cloud member that is not the
 given nothing Confidential, and reads its members' findings in their threads.
 
 Cost notes added 2026-10-17 (see [Cost notes](#cost-notes)): prompt caching, effort by role and
-purpose, and lean briefings for the CEO.
+purpose, and lean briefings for the CEO. Amended 2026-10-17 by
+[0114](0114-evidence-acceptance-criteria-and-the-tester.md): the CEO's effort follows the kind of
+turn, `low`, `medium` or `high`.
 
 ## Context
 
@@ -98,8 +100,11 @@ changing what the model is told (the plan's section 9, "Spending less a turn"):
   `5m` or `1h`, at the top of a call or on its blocks.
 - **Effort.** Opus 5.5 cannot turn thinking off, and Sonnet 5.5 cannot either the way older
   models did; effort (`output_config.effort`) is the dial. HQ sets it per turn: the CEO
-  `medium`, `high` when the turn weighs a decision; the lead `medium` (Sonnet's own default is
-  `high`); the researcher `low`. The relay passes only the five efforts, and no other part of
+  `low` on an ordinary turn (a question up the chain, a post, a recovery, a routine wake that is
+  not a review), `medium` on its daily review and its planning, `high` when a project proposal
+  waits for its decision or it carries something to the board (the owner's decision of
+  2026-10-17, [0114](0114-evidence-acceptance-criteria-and-the-tester.md)); the lead `medium`
+  (Sonnet's own default is `high`); the researcher `low`. The relay passes only the five efforts, and no other part of
   `output_config`. The worker never forces a tool (`tool_choice` is left out, which is `auto`).
 - **Lean briefings.** Only the CEO's first turn and daily review carry the whole house; other
   turns carry what changed since the last.

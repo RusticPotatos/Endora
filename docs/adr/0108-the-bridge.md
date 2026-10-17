@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
+Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
+[0114](0114-evidence-acceptance-criteria-and-the-tester.md) (2026-10-17): every call through the
+contracts and the bridge, done or refused, is told to HQ as a receipt with the turn's own token,
+and its id follows the result for the model to cite. Amends
 [0106](0106-team-contracts.md): the team's contracts are now the generic container tools plus
 the bridge, and the first ask-first acts exist. Builds on [0062](0062-one-permission-surface.md)
 (the stance), [0105](0105-models-in-ordered-lists-by-data-tier.md) (tiers) and
