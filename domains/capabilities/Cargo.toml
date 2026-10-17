@@ -27,3 +27,12 @@ workspace = true
 # The handheld's wire types, to prove the console's responses fit them (ADR 0099).
 endora-protocol = { path = "../../shared/protocol" }
 serde = { version = "1", features = ["derive"] }
+# The owner's scenarios for the bridge (docs/testing.md): `features/*.feature`, run by
+# `tests/scenarios.rs`. The same release as domains/team, for the same reasons.
+cucumber = "0.21"
+futures = "0.3"
+
+# cucumber's own harness, not libtest's; `cargo test` runs it with the rest.
+[[test]]
+name = "scenarios"
+harness = false

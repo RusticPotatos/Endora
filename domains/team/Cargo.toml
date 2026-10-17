@@ -15,5 +15,19 @@ endora-kernel = { path = "../../shared/kernel" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde_json = "1"
 
+[dev-dependencies]
+# The owner's scenarios (docs/testing.md): `features/*.feature` in plain words, run by
+# `tests/scenarios.rs` against the real engine. Tests only, never shipped. 0.21 is the last
+# release that builds on the workspace's MSRV (0.22 and 0.23 want Rust 1.88), and n-1 besides.
+cucumber = "0.21"
+# The executor the scenario harness runs cucumber's futures on; cucumber already depends on it.
+futures = "0.3"
+
+# The scenario harness is cucumber's own, not libtest's: it reads the `.feature` files and
+# prints each step. `cargo test` runs it with the rest.
+[[test]]
+name = "scenarios"
+harness = false
+
 [lints]
 workspace = true
