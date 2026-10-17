@@ -99,6 +99,13 @@ pub fn start(
             done += due;
             let frames = usize::try_from(due).unwrap_or(0);
             let played = engine.tick(frames, &mut feeds);
+            // Sources no group plays are still read in time, so their writers keep time.
+            let heard: Vec<_> = engine
+                .running()
+                .iter()
+                .flat_map(|r| r.mix.iter().map(|m| m.source))
+                .collect();
+            feeds.discard_unheard(&heard, frames * CHANNELS);
             let mut fed: Vec<SpeakerId> = Vec::new();
             for p in &played {
                 if let Some(sender) = p.sender {

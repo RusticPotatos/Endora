@@ -95,6 +95,12 @@ impl Buffer {
         out
     }
 
+    /// Whether it holds as much as it keeps: its reader should wait.
+    #[must_use]
+    pub fn full(&self) -> bool {
+        self.samples.len() >= self.most
+    }
+
     /// How many samples it holds.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -116,10 +122,20 @@ fn lock(b: &Shared) -> std::sync::MutexGuard<'_, Buffer> {
 
 /// Reads PCM bytes from `from` into `into` until it ends or `stop` is set. An odd byte at the
 /// end of one read is kept for the next.
+///
+/// **It does not read while the buffer is full.** What writes the pipe is paced by that: a
+/// writer that decodes faster than it plays (librespot does, and relies on its output to
+/// hold it back) waits, and so plays in real time. Reading as fast as it could and dropping
+/// the oldest let librespot race through whole songs in moments: the owner heard a second of
+/// each, one after another.
 fn pump(mut from: impl std::io::Read, into: &Shared, stop: &AtomicBool) {
     let mut bytes = [0u8; 8192];
     let mut carry: Option<u8> = None;
     while !stop.load(Ordering::Relaxed) {
+        if lock(into).full() {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        }
         let n = match from.read(&mut bytes) {
             Ok(0) | Err(_) => return,
             Ok(n) => n,
@@ -418,6 +434,17 @@ impl FeedSet {
                 SourceKind::Voice => Running::Voice,
             };
             self.open.insert(*id, (buffer, running));
+        }
+    }
+
+    /// Takes and lets go of `samples` from every open source the running groups do not play,
+    /// so what writes them keeps time even when nothing is wired to them: neither racing
+    /// ahead nor waiting for a reader.
+    pub fn discard_unheard(&mut self, heard: &[SourceId], samples: usize) {
+        for (id, (buffer, _)) in &self.open {
+            if !heard.contains(id) {
+                let _ = lock(buffer).take(samples);
+            }
         }
     }
 

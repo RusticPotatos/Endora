@@ -294,3 +294,75 @@ fn a_devices_name_is_made_safe_for_its_pipe() {
     assert_eq!(safe("../etc/passwd"), "___etc_passwd");
     assert_eq!(safe("ipad 2"), "ipad_2");
 }
+
+/// A reader with as much as anyone asks for, counting what is read.
+struct Endless(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl std::io::Read for Endless {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        buf.fill(1);
+        self.0
+            .fetch_add(buf.len(), std::sync::atomic::Ordering::Relaxed);
+        Ok(buf.len())
+    }
+}
+
+#[test]
+fn a_writer_faster_than_real_time_is_held_back_not_skipped_through() {
+    // librespot decodes as fast as its output takes it. The pump must stop taking once the
+    // buffer is full, so the writer waits, instead of dropping the oldest and reading on.
+    let read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let into: Shared = Arc::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (r, i, st) = (read.clone(), into.clone(), stop.clone());
+    let pumping = std::thread::spawn(move || pump(Endless(r), &i, &st));
+    std::thread::sleep(Duration::from_millis(300));
+    let bytes = read.load(std::sync::atomic::Ordering::Relaxed);
+    // Two bytes a sample; at most a buffer's worth and one read more.
+    assert!(
+        bytes <= MOST * 2 + 8192,
+        "read {bytes} bytes: it raced ahead of its buffer"
+    );
+    assert!(lock(&into).full());
+    // Taking some lets it read some more, and no more than that.
+    let _ = lock(&into).take(PRIME);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(lock(&into).full());
+    stop.store(true, Ordering::Relaxed);
+    pumping.join().unwrap();
+}
+
+#[test]
+fn an_unwired_source_is_drained_in_time_and_a_wired_one_is_left_alone() {
+    let mut bay = Patchbay::default();
+    let spotify = bay
+        .add_source("Spotify", SourceKind::Spotify, None)
+        .unwrap();
+    let radio = bay.add_source("Radio", SourceKind::Voice, None).unwrap();
+    let dir = std::env::temp_dir().join(format!(
+        "endora-sound-drain-{}-{:?}",
+        std::process::id(),
+        Instant::now()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut feeds = FeedSet::new(Places {
+        ffmpeg: PathBuf::from("ffmpeg"),
+        pipes: dir.clone(),
+    });
+    feeds.keep(&bay, &[radio]);
+    feeds.say(radio, &[3; 100]);
+    let spotify_buffer = feeds.open.get(&spotify).unwrap().0.clone();
+    lock(&spotify_buffer).push(&vec![1; PRIME]);
+    feeds.discard_unheard(&[radio], 40);
+    assert_eq!(
+        lock(&spotify_buffer).len(),
+        PRIME - 40,
+        "the unwired source was not drained"
+    );
+    assert_eq!(
+        feeds.take(radio, 100).len(),
+        100,
+        "a heard source was drained too"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

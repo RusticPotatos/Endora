@@ -245,8 +245,11 @@ async function spotify(method, path, body, retried) {
   if (res.status === 404) throw new Error("No device is playing. Pick one under Play on");
   if (res.status === 429) throw new Error("Spotify is busy; try again in a moment");
   if (!res.ok) throw new Error("Spotify could not do that");
+  // A player command can answer 200 with a body that is not JSON; it still worked, so that
+  // is nothing to read rather than an error shown as a JSON parser's complaint.
   const text = await res.text();
-  return text ? JSON.parse(text) : null;
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (_) { return null; }
 }
 
 // Search results, playlists and liked songs in the one shape the screen lists.
