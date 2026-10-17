@@ -24,7 +24,8 @@ pub const CEO_MOST_A_TURN: Micros = DOLLAR;
 /// Less than this left for today, and a member cannot start a turn.
 pub const LEAST_A_TURN: Micros = 10_000;
 
-const DAY_MS: Millis = 86_400_000;
+/// One day, in milliseconds.
+pub const DAY_MS: Millis = 86_400_000;
 
 /// The pool for one day.
 #[must_use]
@@ -55,6 +56,12 @@ pub const fn most_a_turn(role: Role) -> Micros {
 #[must_use]
 pub const fn day_of(at: Millis, offset_minutes: i64) -> i64 {
     (at + offset_minutes * 60_000).div_euclid(DAY_MS)
+}
+
+/// The moment a day (as [`day_of`] counts them) begins, by the owner's clock.
+#[must_use]
+pub const fn day_start(day: i64, offset_minutes: i64) -> Millis {
+    day * DAY_MS - offset_minutes * 60_000
 }
 
 /// What one turn can have reserved, before it starts: the per-turn cap (`most`, the role's),
@@ -138,5 +145,17 @@ mod tests {
         // 03:00 UTC on 2026-10-17 is still the 16th five hours west.
         let at = 1_792_206_000_000;
         assert_eq!(day_of(at, 0) - day_of(at, -300), 1);
+    }
+
+    #[test]
+    fn a_day_starts_where_the_owners_clock_says_and_holds_its_moments() {
+        let at = 1_792_206_000_000;
+        for offset in [0, -300, 120] {
+            let day = day_of(at, offset);
+            let start = day_start(day, offset);
+            assert!(start <= at && at < start + DAY_MS, "offset {offset}");
+            assert_eq!(day_of(start, offset), day);
+            assert_eq!(day_of(start - 1, offset), day - 1);
+        }
     }
 }

@@ -3,6 +3,7 @@
 pub mod engine;
 pub mod ports;
 pub mod protocol;
+pub mod scorecard;
 
 pub use engine::{Asked, Author, Engine, EngineError, Fired, Proposal, Settings, TickReport};
 pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
@@ -36,3 +37,6 @@ mod projects_tests;
 
 #[cfg(test)]
 mod evidence_tests;
+
+#[cfg(test)]
+mod scorecard_tests;

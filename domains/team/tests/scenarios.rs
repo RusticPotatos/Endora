@@ -220,7 +220,8 @@ fn hire(w: &mut Office, name: String, role: String) {
     let (role, share) = match role.as_str() {
         "lead" => (Role::Lead, 25),
         "developer" => (Role::Developer, 40),
-        "reviewer" => (Role::Reviewer, 20),
+        // The reviewer's role is what the owner reads as the tester (ADR 0114).
+        "reviewer" | "tester" => (Role::Reviewer, 20),
         "researcher" => (Role::Researcher, 15),
         other => panic!("the team has no role called {other}"),
     };
@@ -681,6 +682,87 @@ fn turns_spend(w: &mut Office, name: String, title: String, first: f64, second: 
         w.hq.runner().finish(context.run, true);
         w.hq.tick().expect("the tick runs");
     }
+}
+
+// --- How the team is doing ------------------------------------------------------------------
+
+impl Office {
+    /// Today's scorecard, as the HQ screen's "How the team is doing" card reads it.
+    fn scorecard_today(&self) -> serde_json::Value {
+        self.hq.snapshot().expect("the snapshot is built")["scorecard"]["today"].clone()
+    }
+}
+
+#[when(regex = r"^(\w+)'s turn ends$")]
+fn turn_ends(w: &mut Office, name: String) {
+    let context = w
+        .turns
+        .get(&name)
+        .unwrap_or_else(|| panic!("{name}'s turn has not started"))
+        .clone();
+    w.hq.runner().finish(context.run, true);
+    w.hq.tick().expect("the tick runs");
+}
+
+/// The member takes its task and hands it in, citing the task as what counts (the owner's
+/// work gave no criteria), and its turn ends.
+#[when(expr = "{word} submits {string} for review")]
+fn submits(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.use_tool(&name, "claim", &json!({ "task": task.0 }))
+        .expect("the member takes its task");
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "ready for a look",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .expect("the work goes to review");
+    // Its turn is over; the tester's wake was held while it ran on the task.
+    turn_ends(w, name);
+}
+
+#[when(expr = "{word} sends back {string} because {string}")]
+fn sends_back(w: &mut Office, name: String, title: String, notes: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "review",
+        &json!({ "task": task.0, "verdict": "send_back", "notes": notes }),
+    )
+    .expect("the tester sends it back");
+}
+
+#[when(expr = "the owner drops the task {string}")]
+fn owner_drops(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    w.hq.drop_task(task).expect("the owner drops it");
+}
+
+#[then(regex = r"^the scorecard counts (\d+) turns? today, (\d+) of them showing nothing$")]
+fn scorecard_turns(w: &mut Office, turns: usize, nothing: usize) {
+    let card = w.scorecard_today();
+    assert_eq!(card["turns"]["total"], json!(turns), "{card}");
+    assert_eq!(card["turns"]["nothing"], json!(nothing), "{card}");
+    assert_eq!(card["turns"]["unlabelled"], json!(0), "{card}");
+}
+
+#[then(regex = r"^the scorecard counts (\d+) submissions? today, (\d+) of them sent back$")]
+fn scorecard_review(w: &mut Office, submissions: usize, sent_back: usize) {
+    let card = w.scorecard_today();
+    assert_eq!(card["review"]["submissions"], json!(submissions), "{card}");
+    assert_eq!(card["review"]["sent_back"], json!(sent_back), "{card}");
+}
+
+#[then(regex = r"^the scorecard puts \$(\d+(?:\.\d+)?) of today's spend on dropped tasks$")]
+fn scorecard_waste(w: &mut Office, dollars: f64) {
+    let card = w.scorecard_today();
+    assert_eq!(card["finished"]["dropped"], json!(1), "{card}");
+    assert_eq!(
+        card["finished"]["dropped_spent"],
+        json!(micros(dollars)),
+        "{card}"
+    );
 }
 
 // --- The house log --------------------------------------------------------------------------
