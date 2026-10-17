@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     owner INTEGER REFERENCES members(id), assignee INTEGER REFERENCES members(id),
     status TEXT NOT NULL, priority TEXT NOT NULL, depth INTEGER NOT NULL,
     nudged INTEGER NOT NULL DEFAULT 0, woken_after_waits INTEGER NOT NULL DEFAULT 0,
-    gate INTEGER, project INTEGER REFERENCES projects(id)
+    gate INTEGER, project INTEGER REFERENCES projects(id), criteria TEXT NOT NULL DEFAULT ''
 ) STRICT;
 CREATE TABLE IF NOT EXISTS task_waits (
     task INTEGER NOT NULL REFERENCES tasks(id), waits_on INTEGER NOT NULL REFERENCES tasks(id),
@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS task_waits (
 ) STRICT;
 CREATE TABLE IF NOT EXISTS posts (
     id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id), author TEXT NOT NULL,
-    text TEXT NOT NULL, at_ms INTEGER NOT NULL
+    text TEXT NOT NULL, at_ms INTEGER NOT NULL, evidence TEXT NOT NULL DEFAULT '',
+    unsupported INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS wakes (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
@@ -54,7 +55,8 @@ CREATE TABLE IF NOT EXISTS runs (
     reserved INTEGER NOT NULL DEFAULT 0, spent INTEGER NOT NULL DEFAULT 0,
     told TEXT NOT NULL DEFAULT '', end_reason TEXT NOT NULL DEFAULT '',
     moved_forward INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    posted INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0, label TEXT
 ) STRICT;
 -- A turn's token for the team protocol: its worker's only credential, valid while it runs.
 CREATE TABLE IF NOT EXISTS run_tokens (
@@ -113,7 +115,37 @@ CREATE TABLE IF NOT EXISTS projects (
     proposer INTEGER REFERENCES members(id), proposed_in INTEGER REFERENCES tasks(id),
     evidence TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 ) STRICT;
+-- What a turn called of Endora's tools, as the node recorded it (ADR 0114): written by the
+-- node with the turn's token, never by the model. Never changed.
+CREATE TABLE IF NOT EXISTS call_receipts (
+    id INTEGER PRIMARY KEY, run INTEGER NOT NULL REFERENCES runs(id),
+    member INTEGER NOT NULL REFERENCES members(id), task INTEGER REFERENCES tasks(id),
+    tool TEXT NOT NULL, args TEXT NOT NULL, excerpt TEXT NOT NULL, ok INTEGER NOT NULL,
+    act INTEGER NOT NULL, confidential INTEGER NOT NULL, at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS call_receipts_by_run ON call_receipts(run);
+CREATE TRIGGER IF NOT EXISTS call_receipts_are_kept_update
+    BEFORE UPDATE ON call_receipts BEGIN SELECT RAISE(ABORT, 'a receipt is never changed'); END;
+-- Evidence cited for a task's criteria, at each stage of its checking (ADR 0114).
+CREATE TABLE IF NOT EXISTS cited (
+    id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
+    run INTEGER NOT NULL REFERENCES runs(id), member INTEGER NOT NULL REFERENCES members(id),
+    stage TEXT NOT NULL, criterion INTEGER NOT NULL, refs TEXT NOT NULL, at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS cited_by_task ON cited(task);
 ";
+
+/// The columns a store made before evidence (ADR 0114) gains: no criteria, no post cited
+/// anything or was unsupported, and no turn posted, was blocked or has a label. The new tables
+/// come with the schema, which makes what it lacks.
+const EVIDENCE_COLUMNS: [(&str, &str); 6] = [
+    ("tasks", "criteria TEXT NOT NULL DEFAULT ''"),
+    ("posts", "evidence TEXT NOT NULL DEFAULT ''"),
+    ("posts", "unsupported INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "posted INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "blocked INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "label TEXT"),
+];
 
 /// The columns a store made before projects (ADR 0113) gains, each empty: no member reports to
 /// anyone yet, no task or routine is in a project, no desk item is about one, and no ledger row
@@ -221,7 +253,7 @@ impl SqliteTeamStore {
                 .map_err(backend)?;
             }
         }
-        for (table, column) in PROJECT_COLUMNS {
+        for (table, column) in PROJECT_COLUMNS.into_iter().chain(EVIDENCE_COLUMNS) {
             add_column(&conn, table, column)?;
         }
         // A project's month is read on every wake and turn about its work, each row with its
@@ -266,11 +298,12 @@ fn task_from(conn: &Connection, row: &rusqlite::Row<'_>) -> rusqlite::Result<Tas
         depth: u8::try_from(row.get::<_, i64>(9)?).unwrap_or(u8::MAX),
         waits_on,
         nudged: row.get::<_, i64>(10)? != 0,
+        criteria: crate::domain::Criterion::read(&row.get::<_, String>(12)?),
     })
 }
 
 const TASK_COLUMNS: &str = "id, goal, parent, title, description, owner, assignee, status, \
-    priority, depth, nudged, project";
+    priority, depth, nudged, project, criteria";
 
 const PROJECT_SELECT: &str = "SELECT id, goal, title, reason, lead, status, pause, cap, \
     asked_cap, created_by, proposer, proposed_in, evidence, created_at, updated_at FROM projects";
@@ -362,12 +395,37 @@ fn run_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         input_tokens: row.get(15)?,
         cache_read_tokens: row.get(16)?,
         cache_write_tokens: row.get(17)?,
+        posted: row.get::<_, i64>(18)? != 0,
+        blocked: row.get::<_, i64>(19)? != 0,
+        label: row
+            .get::<_, Option<String>>(20)?
+            .as_deref()
+            .and_then(crate::domain::Label::from_name),
     })
 }
 
 const RUN_COLUMNS: &str = "id, member, task, wake, status, attempts, queued_at, started_at, \
     retry_at, ended_at, reserved, spent, told, end_reason, moved_forward, input_tokens, \
-    cache_read_tokens, cache_write_tokens";
+    cache_read_tokens, cache_write_tokens, posted, blocked, label";
+
+const RECEIPT_SELECT: &str = "SELECT id, run, member, task, tool, args, excerpt, ok, act, \
+    confidential, at_ms FROM call_receipts";
+
+fn call_receipt_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<crate::domain::CallReceipt> {
+    Ok(crate::domain::CallReceipt {
+        id: r.get(0)?,
+        run: RunId(r.get(1)?),
+        member: MemberId(r.get(2)?),
+        task: r.get::<_, Option<i64>>(3)?.map(TaskId),
+        tool: r.get(4)?,
+        args: r.get(5)?,
+        excerpt: r.get(6)?,
+        ok: r.get::<_, i64>(7)? != 0,
+        act: r.get::<_, i64>(8)? != 0,
+        confidential: r.get::<_, i64>(9)? != 0,
+        at: r.get(10)?,
+    })
+}
 
 impl TeamStore for SqliteTeamStore {
     fn add_member(
@@ -705,20 +763,145 @@ impl TeamStore for SqliteTeamStore {
         Ok(gate.flatten().map(|g| g != 0))
     }
 
-    fn post(&self, task: TaskId, author: &str, text: &str, at: Millis) -> Stored<()> {
+    fn post_marked(
+        &self,
+        task: TaskId,
+        author: &str,
+        text: &str,
+        at: Millis,
+        evidence: &[crate::domain::Ref],
+        unsupported: bool,
+    ) -> Stored<()> {
         self.conn()?
             .execute(
-                "INSERT INTO posts (task, author, text, at_ms) VALUES (?1, ?2, ?3, ?4)",
-                params![task.0, author, text, at],
+                "INSERT INTO posts (task, author, text, at_ms, evidence, unsupported)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    task.0,
+                    author,
+                    text,
+                    at,
+                    crate::domain::Ref::kept(evidence),
+                    unsupported
+                ],
             )
             .map_err(backend)?;
         Ok(())
     }
 
+    fn set_criteria(&self, task: TaskId, criteria: &[crate::domain::Criterion]) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE tasks SET criteria = ?2 WHERE id = ?1",
+                params![task.0, crate::domain::Criterion::kept(criteria)],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_assignee(&self, task: TaskId, member: Option<MemberId>) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE tasks SET assignee = ?2 WHERE id = ?1",
+                params![task.0, member.map(|m| m.0)],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn add_call_receipt(&self, r: &crate::domain::CallReceipt) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO call_receipts (run, member, task, tool, args, excerpt, ok, act,
+                confidential, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                r.run.0,
+                r.member.0,
+                r.task.map(|t| t.0),
+                r.tool,
+                r.args,
+                r.excerpt,
+                r.ok,
+                r.act,
+                r.confidential,
+                r.at
+            ],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn call_receipt(&self, id: i64) -> Stored<Option<crate::domain::CallReceipt>> {
+        self.conn()?
+            .query_row(
+                &format!("{RECEIPT_SELECT} WHERE id = ?1"),
+                [id],
+                call_receipt_from,
+            )
+            .optional()
+            .map_err(backend)
+    }
+
+    fn call_receipts_of(&self, run: RunId) -> Stored<Vec<crate::domain::CallReceipt>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("{RECEIPT_SELECT} WHERE run = ?1 ORDER BY id"))
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([run.0], call_receipt_from)
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn add_cited(&self, c: &crate::application::ports::Cited) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "INSERT INTO cited (task, run, member, stage, criterion, refs, at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    c.task.0,
+                    c.run.0,
+                    c.member.0,
+                    c.stage,
+                    i64::try_from(c.criterion).unwrap_or(0),
+                    crate::domain::Ref::kept(&c.refs),
+                    c.at
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn cited(&self, task: TaskId) -> Stored<Vec<crate::application::ports::Cited>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT task, run, member, stage, criterion, refs, at_ms FROM cited
+                 WHERE task = ?1 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([task.0], |r| {
+                Ok(crate::application::ports::Cited {
+                    task: TaskId(r.get(0)?),
+                    run: RunId(r.get(1)?),
+                    member: MemberId(r.get(2)?),
+                    stage: r.get(3)?,
+                    criterion: usize::try_from(r.get::<_, i64>(4)?).unwrap_or(0),
+                    refs: crate::domain::Ref::read(&r.get::<_, String>(5)?),
+                    at: r.get(6)?,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
     fn thread(&self, task: TaskId) -> Stored<Vec<Post>> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT author, text, at_ms FROM posts WHERE task = ?1 ORDER BY id")
+            .prepare(
+                "SELECT author, text, at_ms, unsupported FROM posts WHERE task = ?1 ORDER BY id",
+            )
             .map_err(backend)?;
         let rows = stmt
             .query_map([task.0], |r| {
@@ -726,6 +909,7 @@ impl TeamStore for SqliteTeamStore {
                     author: r.get(0)?,
                     text: r.get(1)?,
                     at: r.get(2)?,
+                    unsupported: r.get::<_, i64>(3)? != 0,
                 })
             })
             .map_err(backend)?;
@@ -889,7 +1073,7 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE runs SET status = ?2, attempts = ?3, started_at = ?4, retry_at = ?5,
                     ended_at = ?6, reserved = ?7, spent = ?8, told = ?9, end_reason = ?10,
-                    moved_forward = ?11
+                    moved_forward = ?11, posted = ?12, blocked = ?13, label = ?14
                  WHERE id = ?1",
                 params![
                     run.id.0,
@@ -902,7 +1086,10 @@ impl TeamStore for SqliteTeamStore {
                     run.spent,
                     run.told,
                     run.end_reason,
-                    run.moved_forward
+                    run.moved_forward,
+                    run.posted,
+                    run.blocked,
+                    run.label.map(crate::domain::Label::name)
                 ],
             )
             .map_err(backend)?;
@@ -1139,6 +1326,25 @@ impl TeamStore for SqliteTeamStore {
                 "DELETE FROM events WHERE id <= (SELECT COALESCE(MAX(id), 0) FROM events) - ?1",
                 [keep],
             )
+            .map_err(backend)
+    }
+
+    fn event(&self, id: i64) -> Stored<Option<Event>> {
+        self.conn()?
+            .query_row(
+                "SELECT id, at_ms, kind, data FROM events WHERE id = ?1",
+                [id],
+                |r| {
+                    let data: String = r.get(3)?;
+                    Ok(Event {
+                        id: r.get(0)?,
+                        at: r.get(1)?,
+                        kind: r.get(2)?,
+                        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+                    })
+                },
+            )
+            .optional()
             .map_err(backend)
     }
 
@@ -1694,6 +1900,176 @@ CREATE TABLE IF NOT EXISTS check_backs (
             )
             .unwrap();
         assert_eq!(indexed, 2, "a project's month reads the ledger by index");
+    }
+
+    /// The schema as it was before evidence (ADR 0114): the live store was made with it.
+    const SCHEMA_BEFORE_EVIDENCE: &str = "
+CREATE TABLE IF NOT EXISTS members (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
+    share_percent INTEGER NOT NULL, slots INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
+    look INTEGER NOT NULL DEFAULT 0, brain TEXT NOT NULL DEFAULT 'local',
+    reports_to INTEGER REFERENCES members(id)
+) STRICT;
+CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY, title TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
+    parent INTEGER REFERENCES goals(id)
+) STRICT;
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY, goal INTEGER NOT NULL REFERENCES goals(id),
+    parent INTEGER REFERENCES tasks(id), title TEXT NOT NULL, description TEXT NOT NULL,
+    owner INTEGER REFERENCES members(id), assignee INTEGER REFERENCES members(id),
+    status TEXT NOT NULL, priority TEXT NOT NULL, depth INTEGER NOT NULL,
+    nudged INTEGER NOT NULL DEFAULT 0, woken_after_waits INTEGER NOT NULL DEFAULT 0,
+    gate INTEGER, project INTEGER REFERENCES projects(id)
+) STRICT;
+CREATE TABLE IF NOT EXISTS task_waits (
+    task INTEGER NOT NULL REFERENCES tasks(id), waits_on INTEGER NOT NULL REFERENCES tasks(id),
+    PRIMARY KEY (task, waits_on)
+) STRICT;
+CREATE TABLE IF NOT EXISTS posts (
+    id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id), author TEXT NOT NULL,
+    text TEXT NOT NULL, at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS wakes (
+    id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
+    task INTEGER REFERENCES tasks(id), reason TEXT NOT NULL, receipt TEXT NOT NULL,
+    refused TEXT, run INTEGER, at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
+    task INTEGER REFERENCES tasks(id), wake INTEGER NOT NULL REFERENCES wakes(id),
+    status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, queued_at INTEGER NOT NULL,
+    started_at INTEGER, retry_at INTEGER, ended_at INTEGER,
+    reserved INTEGER NOT NULL DEFAULT 0, spent INTEGER NOT NULL DEFAULT 0,
+    told TEXT NOT NULL DEFAULT '', end_reason TEXT NOT NULL DEFAULT '',
+    moved_forward INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0
+) STRICT;
+-- A turn's token for the team protocol: its worker's only credential, valid while it runs.
+CREATE TABLE IF NOT EXISTS run_tokens (
+    run INTEGER PRIMARY KEY REFERENCES runs(id), token TEXT NOT NULL UNIQUE
+) STRICT;
+-- Append-only: a reservation before a turn starts, use while it runs, the charge and the
+-- release when it ends. Rows are never changed or removed.
+CREATE TABLE IF NOT EXISTS ledger (
+    id INTEGER PRIMARY KEY, run INTEGER NOT NULL REFERENCES runs(id),
+    member INTEGER NOT NULL REFERENCES members(id), day INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('reserve', 'use', 'charge', 'release')),
+    amount INTEGER NOT NULL, at_ms INTEGER NOT NULL, project INTEGER REFERENCES projects(id)
+) STRICT;
+CREATE TRIGGER IF NOT EXISTS ledger_is_append_only_update
+    BEFORE UPDATE ON ledger BEGIN SELECT RAISE(ABORT, 'the ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS ledger_is_append_only_delete
+    BEFORE DELETE ON ledger BEGIN SELECT RAISE(ABORT, 'the ledger is append-only'); END;
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY, at_ms INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS desk (
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, task INTEGER REFERENCES tasks(id),
+    goal INTEGER REFERENCES goals(id), text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', at_ms INTEGER NOT NULL,
+    member INTEGER REFERENCES members(id), project INTEGER REFERENCES projects(id)
+) STRICT;
+CREATE TABLE IF NOT EXISTS timers (
+    id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
+    reason TEXT NOT NULL, due_at INTEGER NOT NULL, every_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+-- Work that comes round again (ADR 0107): a task handed to its member on a rhythm, or when an
+-- alarm says something is wrong.
+CREATE TABLE IF NOT EXISTS routines (
+    id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
+    goal INTEGER NOT NULL REFERENCES goals(id), assignee INTEGER NOT NULL REFERENCES members(id),
+    every_ms INTEGER NOT NULL, next_due_at INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+    on_lab_trouble INTEGER NOT NULL DEFAULT 0, last_fired_at INTEGER,
+    last_task INTEGER REFERENCES tasks(id), project INTEGER REFERENCES projects(id)
+) STRICT;
+-- What the owner wants every member working towards a goal to know (ADR 0108).
+CREATE TABLE IF NOT EXISTS goal_notes (
+    goal INTEGER PRIMARY KEY REFERENCES goals(id), note TEXT NOT NULL
+) STRICT;
+-- A member's word that it will come back to a task: one wake, later (ADR 0107).
+CREATE TABLE IF NOT EXISTS check_backs (
+    id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
+    task INTEGER NOT NULL REFERENCES tasks(id), why TEXT NOT NULL, due_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', set_at INTEGER NOT NULL, done_at INTEGER
+) STRICT;
+-- A piece of one goal, with its own lead and, if the owner gives it one, a monthly cap
+-- (ADR 0113).
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY, goal INTEGER NOT NULL REFERENCES goals(id), title TEXT NOT NULL,
+    reason TEXT NOT NULL, lead INTEGER NOT NULL REFERENCES members(id), status TEXT NOT NULL,
+    pause TEXT, cap INTEGER, asked_cap INTEGER, created_by TEXT NOT NULL,
+    proposer INTEGER REFERENCES members(id), proposed_in INTEGER REFERENCES tasks(id),
+    evidence TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+) STRICT;
+";
+
+    #[test]
+    fn a_store_made_before_evidence_gains_its_columns_and_tables_and_keeps_its_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA_BEFORE_EVIDENCE).unwrap();
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
+                (1, 'Ada', 'lead', 25, 2);
+             INSERT INTO goals (id, title, reason, status) VALUES (1, 'Keep it up', '', 'active');
+             INSERT INTO tasks (id, goal, title, description, status, priority, depth) VALUES
+                (1, 1, 'Check the home lab', '', 'doing', 'high', 0);
+             INSERT INTO posts (task, author, text, at_ms) VALUES (1, 'Ada', 'All up.', 5);
+             INSERT INTO wakes (id, member, task, reason, receipt, at_ms) VALUES
+                (1, 1, 1, 'assigned', 'started', 0);
+             INSERT INTO runs (id, member, task, wake, status, queued_at, started_at, ended_at,
+                moved_forward) VALUES (1, 1, 1, 1, 'succeeded', 0, 0, 1, 1);",
+        )
+        .unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        // Old rows read as they were: no criteria, a post that is not marked, a turn with no
+        // label (the back-off reads it by whether it moved its task forward).
+        let task = store.task(TaskId(1)).unwrap().unwrap();
+        assert!(task.criteria.is_empty());
+        let post = store.thread(TaskId(1)).unwrap().pop().unwrap();
+        assert_eq!((post.text.as_str(), post.unsupported), ("All up.", false));
+        let run = store.run(RunId(1)).unwrap().unwrap();
+        assert_eq!(
+            (run.moved_forward, run.posted, run.blocked, run.label),
+            (true, false, false, None)
+        );
+        // And new ones are kept.
+        store
+            .set_criteria(TaskId(1), &crate::domain::Criterion::lab())
+            .unwrap();
+        assert_eq!(
+            store.task(TaskId(1)).unwrap().unwrap().criteria,
+            crate::domain::Criterion::lab()
+        );
+        let id = store
+            .add_call_receipt(&crate::domain::CallReceipt {
+                id: 0,
+                run: RunId(1),
+                member: MemberId(1),
+                task: Some(TaskId(1)),
+                tool: "homelab_status".to_owned(),
+                args: String::new(),
+                excerpt: "all up".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+                at: 7,
+            })
+            .unwrap();
+        assert_eq!(store.call_receipts_of(RunId(1)).unwrap()[0].id, id);
+        let mut run = store.run(RunId(1)).unwrap().unwrap();
+        run.label = Some(crate::domain::Label::Checked);
+        store.save_run(&run).unwrap();
+        assert_eq!(
+            store.run(RunId(1)).unwrap().unwrap().label,
+            Some(crate::domain::Label::Checked)
+        );
+        let conn = store.conn().unwrap();
+        assert!(
+            conn.execute("UPDATE call_receipts SET ok = 0", []).is_err(),
+            "a receipt is never changed"
+        );
     }
 
     #[test]

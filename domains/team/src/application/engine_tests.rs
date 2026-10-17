@@ -396,11 +396,26 @@ fn a_turn_that_moves_the_task_earns_it_a_fresh_nudge() {
     hq.tick().unwrap(); // and starts on the next
     let run = hq.store().runs().unwrap()[0].id;
     assert_eq!(status_of(&hq, run.0), RunStatus::Running);
+    // A reading the node recorded for the turn: it checked, which is doing something; a post
+    // alone is only talk (ADR 0114).
+    let token = hq.runner().started()[0].token.clone();
+    hq.record_receipt(
+        &token,
+        &super::engine::Called {
+            tool: "homelab_status".to_owned(),
+            args: String::new(),
+            excerpt: "all running".to_owned(),
+            ok: true,
+            act: false,
+            confidential: false,
+        },
+    )
+    .unwrap();
     hq.post_as(t.dev, task, "Compared three; SQLite fits.")
         .unwrap();
     hq.runner().finish(run, true);
     let report = hq.tick().unwrap();
-    // It is still doing with no turn, but it moved: a fresh nudge, not the desk.
+    // It is still doing with no turn, but it checked: a fresh nudge, not the desk.
     assert_eq!((report.nudged, report.stuck), (1, 0));
     assert!(hq.store().desk().unwrap().is_empty(), "not stuck: it moved");
 }

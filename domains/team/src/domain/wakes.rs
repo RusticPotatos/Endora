@@ -39,6 +39,9 @@ pub enum WakeReason {
     QuestionAsked,
     /// The one this member asked up the chain answered in the task's thread.
     QuestionAnswered,
+    /// Work the tester passed (or that nobody else tests) waits for its lead to accept it
+    /// against its criteria, or send it back (ADR 0114).
+    AcceptanceAsked,
 }
 
 impl WakeReason {
@@ -62,6 +65,7 @@ impl WakeReason {
             Self::SentBack => "sent_back",
             Self::QuestionAsked => "question_asked",
             Self::QuestionAnswered => "question_answered",
+            Self::AcceptanceAsked => "acceptance_asked",
         }
     }
 
@@ -130,6 +134,7 @@ impl WakeReason {
             Self::SentBack,
             Self::QuestionAsked,
             Self::QuestionAnswered,
+            Self::AcceptanceAsked,
         ]
         .into_iter()
         .find(|r| r.name() == name)

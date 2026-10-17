@@ -757,9 +757,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         accept: bool,
         why: &str,
         cap: Option<Micros>,
+        cited: &[crate::domain::Ref],
     ) -> Done<ProjectStatus> {
         let _held = self.held();
         let (turn, ceo) = self.the_ceos_turn(run)?;
+        // The CEO decides on evidence from HQ's record, as a proposal is made on it (ADR 0114).
+        self.judge_decision(cited, turn.id)?;
+        let why = if cited.is_empty() {
+            why.to_owned()
+        } else {
+            format!("{} (evidence: {})", why.trim(), self.evidence_said(cited)?)
+        };
+        let why = why.as_str();
         let mut project = self.project(id)?;
         if project.status != ProjectStatus::Proposed {
             return Err(EngineError::Unknown("proposed project with that number"));

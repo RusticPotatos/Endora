@@ -178,8 +178,9 @@ fn a_home_lab_question_is_a_draft_for_the_reviewer_not_a_card_on_the_desk() {
         review.told
     );
     assert!(review.told.contains(
-        "Check every claim in the draft against your tools (homelab_status, container_logs, the \
-         queues). If everything holds, call ask_owner with the draft, corrected if needed."
+        "Check every claim in the draft against your tools and the receipts it cites (below, as \
+         the node recorded them) (homelab_status, container_logs, the queues). If everything \
+         holds, call ask_owner with the draft, corrected if needed."
     ));
     // Live, a reviewer forwarded a draft that only asked the owner for what the queues could
     // tell: such a draft goes back, never on.
@@ -352,9 +353,38 @@ fn to_review(hq: &Hq<'_>, t: &Team, context: &RunContext) {
         hq,
         context,
         "set_status",
-        &json!({ "task": t.task.0, "status": "in_review", "reason": "ready for a look" }),
+        &json!({ "task": t.task.0, "status": "in_review", "reason": "ready for a look",
+                 "evidence": [format!("task {}", t.task.0)] }),
     )
     .unwrap();
+}
+
+/// A reading the node recorded for a turn: its receipt's id.
+fn reading(hq: &Hq<'_>, context: &RunContext, tool: &str) -> i64 {
+    hq.record_receipt(
+        &context.token,
+        &super::engine::Called {
+            tool: tool.to_owned(),
+            args: String::new(),
+            excerpt: "sonarr running, healthy".to_owned(),
+            ok: true,
+            act: false,
+            confidential: false,
+        },
+    )
+    .unwrap()
+}
+
+/// The lead's turn, once woken.
+fn leads_turn(hq: &Hq<'_>, lead: MemberId, after: &RunContext) -> RunContext {
+    hq.runner().finish(after.run, true);
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    hq.runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.member == lead)
+        .expect("the lead's turn")
 }
 
 #[test]
@@ -378,9 +408,18 @@ fn work_moved_to_review_wakes_the_reviewer_and_its_owner_waits() {
         review.told
     );
     assert!(review.told.contains(
-        "Check every claim in the thread against your tools (homelab_status, container_logs, \
-         the queues). Approve only what holds"
+        "You are the tester: re-check it yourself. Take your own readings (homelab_status, \
+         container_logs, the queues)"
     ));
+    assert!(review.told.contains("You are Grace, the team's tester."));
+    assert!(
+        review.told.contains(&format!(
+            "It was submitted on this evidence:\nThe work:\n  - task {}",
+            t.task.0
+        )),
+        "{}",
+        review.told
+    );
     assert!(
         review
             .told
@@ -414,40 +453,132 @@ fn work_moved_to_review_wakes_the_reviewer_and_its_owner_waits() {
 }
 
 #[test]
-fn the_reviewer_approves_the_home_labs_work_and_it_is_done() {
+fn the_tester_passes_on_her_own_readings_and_then_the_lead_accepts_it_as_done() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
     let (hq, t, context) = team(&clock, true, true);
     to_review(&hq, &t, &context);
     let review = reviewers_turn(&hq, &t, &context);
-    let said = use_tool(
-        &hq,
-        &review,
-        "review",
-        &json!({ "task": t.task.0, "verdict": "approve", "notes": "The queue is clear." }),
-    )
-    .unwrap();
+    let pass = |evidence: serde_json::Value| {
+        use_tool(
+            &hq,
+            &review,
+            "review",
+            &json!({ "task": t.task.0, "verdict": "approve", "notes": "The queue is clear.",
+                     "evidence": evidence }),
+        )
+    };
+    // Re-checked herself, or not passed: another member's word is no reading of hers.
+    assert_eq!(
+        pass(json!([format!("task {}", t.task.0)])).unwrap_err(),
+        crate::domain::Refusal::NoOwnReading.to_string()
+    );
+    let mine = reading(&hq, &review, "homelab_status");
+    let said = pass(json!([[format!("r{mine}")]])).unwrap();
     assert!(said.contains("approved"), "{said}");
+    let task = hq.store().task(t.task).unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::InReview, "the lead accepts it");
+    let ada = hq.store().members().unwrap()[0].id;
+    assert_eq!(
+        last_wake(&hq),
+        (ada, Some(t.task), WakeReason::AcceptanceAsked)
+    );
+    assert_eq!(
+        hq.store().thread(t.task).unwrap().pop().unwrap().text,
+        format!("Tested and passed: The queue is clear.\nEvidence: r{mine} (homelab_status)")
+    );
+
+    let lead = leads_turn(&hq, ada, &review);
+    assert!(
+        lead.told.contains(&format!(
+            "The tester passed it on this evidence:\nThe work:\n  - r{mine} homelab_status (ok): \
+             sonarr running, healthy"
+        )),
+        "{}",
+        lead.told
+    );
+    let accept = |evidence: serde_json::Value| {
+        use_tool(
+            &hq,
+            &lead,
+            "accept",
+            &json!({ "task": t.task.0, "verdict": "accept", "notes": "Holds.",
+                     "evidence": evidence }),
+        )
+    };
+    assert!(accept(json!([])).unwrap_err().contains("needs evidence"));
+    let said = accept(json!([format!("r{mine}")])).unwrap();
+    assert!(said.contains("done"), "{said}");
     assert_eq!(
         hq.store().task(t.task).unwrap().unwrap().status,
         TaskStatus::Done
     );
-    assert_eq!(
-        hq.store().thread(t.task).unwrap().pop().unwrap().text,
-        "Approved: The queue is clear."
-    );
 }
 
 #[test]
-fn work_that_needs_the_gate_stays_in_review_and_the_reviewer_is_told_why() {
+fn the_lead_accepts_only_once_the_tester_has_passed_it_and_never_its_own() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, t, context) = team(&clock, true, true);
+    to_review(&hq, &t, &context);
+    let ada = hq.store().members().unwrap()[0].id;
+    // Ada takes a turn of her own on the routine's work and tries to accept Linus's early.
+    let review = reviewers_turn(&hq, &t, &context);
+    hq.runner().finish(review.run, true);
+    hq.tick().unwrap();
+    hq.wake(ada, Some(t.task), WakeReason::Mentioned).unwrap();
+    hq.tick().unwrap();
+    let lead = hq
+        .runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.member == ada)
+        .expect("the lead's turn");
+    let early = use_tool(
+        &hq,
+        &lead,
+        "accept",
+        &json!({ "task": t.task.0, "verdict": "accept", "notes": "Fine.",
+                 "evidence": [format!("task {}", t.task.0)] }),
+    )
+    .unwrap_err();
+    assert_eq!(early, crate::domain::Refusal::NotTested.to_string());
+    // Her send-back needs no pass: it is a verdict, and counts a round.
+    use_tool(
+        &hq,
+        &lead,
+        "accept",
+        &json!({ "task": t.task.0, "verdict": "send_back", "notes": "Say which queue." }),
+    )
+    .unwrap();
+    assert_eq!(
+        hq.store().task(t.task).unwrap().unwrap().status,
+        TaskStatus::Doing
+    );
+    assert_eq!(last_wake(&hq), (t.dev, Some(t.task), WakeReason::SentBack));
+}
+
+#[test]
+fn work_that_needs_the_gate_stays_in_review_and_the_lead_is_told_why() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
     let (hq, t, context) = team(&clock, true, false);
     to_review(&hq, &t, &context);
     let review = reviewers_turn(&hq, &t, &context);
-    let refused = use_tool(
+    let mine = reading(&hq, &review, "homelab_status");
+    use_tool(
         &hq,
         &review,
         "review",
-        &json!({ "task": t.task.0, "verdict": "approve", "notes": "Looks fine." }),
+        &json!({ "task": t.task.0, "verdict": "approve", "notes": "Looks fine.",
+                 "evidence": [format!("r{mine}")] }),
+    )
+    .unwrap();
+    let ada = hq.store().members().unwrap()[0].id;
+    let lead = leads_turn(&hq, ada, &review);
+    let refused = use_tool(
+        &hq,
+        &lead,
+        "accept",
+        &json!({ "task": t.task.0, "verdict": "accept", "notes": "Fine.",
+                 "evidence": [format!("r{mine}")] }),
     )
     .unwrap_err();
     assert!(refused.contains("needs the gate"), "{refused}");
@@ -501,14 +632,19 @@ fn only_the_reviewer_gives_a_verdict_and_never_on_its_own_work() {
         &hq,
         &hers,
         "set_status",
-        &json!({ "task": own.0, "status": "in_review", "reason": "done reading" }),
+        &json!({ "task": own.0, "status": "in_review", "reason": "done reading",
+                 "evidence": [format!("task {}", own.0)] }),
     )
     .unwrap();
-    let desk = hq.store().desk().unwrap();
+    // Nobody else tests it: its lead accepts it alone, and the thread says so.
+    let ada = hq.store().members().unwrap()[0].id;
+    assert_eq!(
+        last_wake(&hq),
+        (ada, Some(own), WakeReason::AcceptanceAsked)
+    );
     assert!(
-        desk.iter()
-            .any(|d| d.kind == "ready_to_read" && d.task == Some(own)),
-        "{desk:?}"
+        hq.store().thread(own).unwrap().iter().any(|p| p.text
+            == "No tester but the one who did this work: Ada, its lead, accepts it alone."),
     );
     let refused = use_tool(
         &hq,
@@ -521,9 +657,11 @@ fn only_the_reviewer_gives_a_verdict_and_never_on_its_own_work() {
 }
 
 #[test]
-fn with_no_reviewer_work_in_review_is_on_the_desk_to_read_with_its_thread() {
+fn with_no_tester_the_lead_accepts_alone_and_with_neither_it_is_on_the_desk_to_read() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
     let (hq, t, context) = team(&clock, false, true);
+    let ada = hq.store().members().unwrap()[0].id;
+    hq.pause(ada, true).unwrap();
     to_review(&hq, &t, &context);
     let item = hq
         .store()

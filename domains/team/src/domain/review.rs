@@ -29,13 +29,15 @@ const TOOL_NAMES: &[&str] = &[
 ];
 
 /// What the reviewer is told when work is put before it.
-pub const REVIEW_WORK: &str = "Check every claim in the thread against your tools \
-    (homelab_status, container_logs, the queues). Approve only what holds (review, verdict \
-    approve); send it back with exactly what does not hold (review, verdict send_back). Send \
-    back any problem that no tool shows causing harm.";
+pub const REVIEW_WORK: &str = "You are the tester: re-check it yourself. Take your own \
+    readings (homelab_status, container_logs, the queues) to confirm each piece of its evidence \
+    is real and still true. Pass only what holds (review, verdict approve), citing your \
+    receipts per criterion: its lead then accepts it. Send it back with exactly what does not \
+    hold (review, verdict send_back). Send back any problem that no tool shows causing harm.";
 
 /// What the reviewer is told when a draft for the owner is put before it.
-pub const REVIEW_DRAFT: &str = "Check every claim in the draft against your tools \
+pub const REVIEW_DRAFT: &str = "Check every claim in the draft against your tools and the \
+    receipts it cites (below, as the node recorded them) \
     (homelab_status, container_logs, the queues). If everything holds, call ask_owner with the \
     draft, corrected if needed. If not, send it back to its owner with exactly what does not \
     hold (review, verdict send_back). Send back any problem that no tool shows causing harm. \

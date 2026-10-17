@@ -33,3 +33,6 @@ mod ceo_tests;
 
 #[cfg(test)]
 mod projects_tests;
+
+#[cfg(test)]
+mod evidence_tests;

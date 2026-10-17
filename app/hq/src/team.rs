@@ -194,6 +194,52 @@ pub(crate) async fn usage(
 }
 
 #[derive(serde::Deserialize)]
+pub(crate) struct ReceiptTold {
+    /// The turn's own token, as its worker presented it to the node.
+    token: String,
+    tool: String,
+    #[serde(default)]
+    args: String,
+    #[serde(default)]
+    excerpt: String,
+    ok: bool,
+    #[serde(default)]
+    act: bool,
+    #[serde(default)]
+    confidential: bool,
+}
+
+/// For the node's contracts and bridge (ADR 0114): one call a turn made of Endora's tools,
+/// recorded as a receipt the turn can cite. Signed by the node, and naming the turn by its own
+/// token: HQ records it only while that turn runs, so neither a model nor a turn that has ended
+/// can make one.
+pub(crate) async fn receipt(
+    Extract(state): Extract<State>,
+    Json(req): Json<ReceiptTold>,
+) -> Response {
+    let hq = state.hq.clone();
+    let recorded = tokio::task::spawn_blocking(move || {
+        hq.record_receipt(
+            &req.token,
+            &endora_team::application::engine::Called {
+                tool: req.tool,
+                args: req.args,
+                excerpt: req.excerpt,
+                ok: req.ok,
+                act: req.act,
+                confidential: req.confidential,
+            },
+        )
+    })
+    .await;
+    match recorded {
+        Ok(Ok(id)) => Json(json!({ "receipt": id })).into_response(),
+        Ok(Err(e)) => refused(&e),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub(crate) struct NoticeTold {
     /// The turn it is from, if any.
     #[serde(default)]

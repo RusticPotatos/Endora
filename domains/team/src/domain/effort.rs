@@ -1,9 +1,10 @@
 //! How hard a member's Claude tries in a turn (ADR 0109's cost notes): the effort HQ names
 //! with each cloud turn, by the member's role and what the turn is for. Effort is the one
 //! dial on thinking these models leave (Opus 5.5 cannot turn thinking off), and what a
-//! turn's thinking costs follows it. The CEO thinks at `medium`, and at `high` when the
-//! turn weighs a decision for the board or answers a question up the chain; the lead at
-//! `medium`; the researcher, whose look-ups are short, at `low`. The developer and the
+//! turn's thinking costs follows it. The CEO thinks at `low` on an ordinary turn, `medium` on
+//! its daily review and its planning, and `high` when it decides a project or carries
+//! something to the owner's desk (the owner's decision of 2026-10-17); the lead at `medium`;
+//! the researcher, whose look-ups are short, at `low`. The developer and the
 //! reviewer are left to their model's own, as they always were: nothing is named.
 
 use super::brain::Brain;
@@ -33,30 +34,54 @@ impl Effort {
     }
 }
 
-/// Whether a CEO's turn woken for `reason` weighs a decision: it answers a question up the
-/// chain, or it is about a decision for the board (the board's word on one, or the
-/// reviewer's sending one back). `drafted` says the turn's task holds the CEO's decision
-/// draft, waiting for its review.
-#[must_use]
-pub const fn weighs_a_decision(reason: WakeReason, drafted: bool) -> bool {
-    drafted
-        || matches!(
-            reason,
-            WakeReason::QuestionAsked | WakeReason::ProposalDecided | WakeReason::SentBack
-        )
+/// What a CEO's turn is for, as its effort follows it (the owner's decision of 2026-10-17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Weight {
+    /// An ordinary turn: a question up the chain, a post, a recovery, a routine wake that is
+    /// not a review.
+    Ordinary,
+    /// Its daily review or its weekly planning.
+    Review,
+    /// It decides a project (a proposal waits for it), or carries something to the owner's
+    /// desk (its decision for the board sent back, or the board's word on one).
+    Weighty,
 }
 
-/// The effort for a turn of a member in `role` thinking with `brain`; `weighty` says the
-/// turn weighs a decision (see [`weighs_a_decision`]). `None` for a member on the house's
-/// model, whose relay takes no effort, and for a role left to its model's own.
+/// What a CEO's turn woken for `reason` is for: `review` says its task is its daily review
+/// or its planning, `proposals` that a project proposal waits for its decision, `drafted`
+/// that its task holds its decision for the board.
 #[must_use]
-pub const fn effort_for(brain: Brain, role: Role, weighty: bool) -> Option<Effort> {
+pub const fn ceo_weight(
+    reason: WakeReason,
+    review: bool,
+    proposals: bool,
+    drafted: bool,
+) -> Weight {
+    if proposals || drafted || matches!(reason, WakeReason::ProposalDecided | WakeReason::SentBack)
+    {
+        return Weight::Weighty;
+    }
+    if review {
+        return Weight::Review;
+    }
+    Weight::Ordinary
+}
+
+/// The effort for a turn of a member in `role` thinking with `brain`; `weight` says what a
+/// CEO's turn is for (see [`ceo_weight`]). `None` for a member on the house's model, whose
+/// relay takes no effort, and for a role left to its model's own.
+#[must_use]
+pub const fn effort_for(brain: Brain, role: Role, weight: Weight) -> Option<Effort> {
     if !brain.cloud() {
         return None;
     }
     match role {
-        Role::Ceo if weighty => Some(Effort::High),
-        Role::Ceo | Role::Lead => Some(Effort::Medium),
+        Role::Ceo => Some(match weight {
+            Weight::Ordinary => Effort::Low,
+            Weight::Review => Effort::Medium,
+            Weight::Weighty => Effort::High,
+        }),
+        Role::Lead => Some(Effort::Medium),
         Role::Researcher => Some(Effort::Low),
         Role::Developer | Role::Reviewer => None,
     }
@@ -67,50 +92,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_ceo_weighs_decisions_at_high_and_the_rest_of_its_work_at_medium() {
-        assert_eq!(
-            effort_for(Brain::Opus, Role::Ceo, false),
-            Some(Effort::Medium)
-        );
-        assert_eq!(effort_for(Brain::Opus, Role::Ceo, true), Some(Effort::High));
-        assert_eq!(
-            effort_for(Brain::Sonnet, Role::Ceo, true),
-            Some(Effort::High)
-        );
+    fn the_ceo_thinks_low_on_ordinary_turns_medium_on_its_reviews_and_high_on_decisions() {
+        let ordinary = |r| ceo_weight(r, false, false, false);
         for reason in [
             WakeReason::QuestionAsked,
-            WakeReason::ProposalDecided,
-            WakeReason::SentBack,
-        ] {
-            assert!(weighs_a_decision(reason, false), "{reason:?}");
-        }
-        for reason in [
             WakeReason::Assigned,
             WakeReason::QuestionAnswered,
             WakeReason::CheckBack,
+            WakeReason::Recovery,
             WakeReason::Retry,
         ] {
-            assert!(!weighs_a_decision(reason, false), "{reason:?}");
-            assert!(weighs_a_decision(reason, true), "a draft: {reason:?}");
+            assert_eq!(ordinary(reason), Weight::Ordinary, "{reason:?}");
+            assert_eq!(ceo_weight(reason, true, false, false), Weight::Review);
+            assert_eq!(
+                ceo_weight(reason, false, true, false),
+                Weight::Weighty,
+                "a proposal"
+            );
+            assert_eq!(
+                ceo_weight(reason, true, false, true),
+                Weight::Weighty,
+                "a draft"
+            );
         }
+        for reason in [WakeReason::ProposalDecided, WakeReason::SentBack] {
+            assert_eq!(ordinary(reason), Weight::Weighty, "{reason:?}");
+        }
+        assert_eq!(
+            [Weight::Ordinary, Weight::Review, Weight::Weighty].map(|w| effort_for(
+                Brain::Opus,
+                Role::Ceo,
+                w
+            )),
+            [Some(Effort::Low), Some(Effort::Medium), Some(Effort::High)]
+        );
     }
 
     #[test]
     fn the_lead_thinks_at_medium_the_researcher_at_low_and_a_local_brain_is_told_nothing() {
-        for weighty in [false, true] {
+        for weight in [Weight::Ordinary, Weight::Review, Weight::Weighty] {
             assert_eq!(
-                effort_for(Brain::Sonnet, Role::Lead, weighty),
+                effort_for(Brain::Sonnet, Role::Lead, weight),
                 Some(Effort::Medium)
             );
             assert_eq!(
-                effort_for(Brain::Haiku, Role::Researcher, weighty),
+                effort_for(Brain::Haiku, Role::Researcher, weight),
                 Some(Effort::Low)
             );
             for role in [Role::Developer, Role::Reviewer] {
-                assert_eq!(effort_for(Brain::Sonnet, role, weighty), None, "{role:?}");
+                assert_eq!(effort_for(Brain::Sonnet, role, weight), None, "{role:?}");
             }
             for role in [Role::Ceo, Role::Lead, Role::Researcher] {
-                assert_eq!(effort_for(Brain::Local, role, weighty), None, "{role:?}");
+                assert_eq!(effort_for(Brain::Local, role, weight), None, "{role:?}");
             }
         }
         assert_eq!(
