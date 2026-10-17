@@ -108,6 +108,27 @@ struct Ended {
     succeeded: bool,
     /// The lease the turn was handed out with.
     lease: u64,
+    /// The worker's exit code, from a runner that says it: 3 when HQ or the relay had
+    /// already ended the turn (its budget, the kill switch, a stale token).
+    #[serde(default)]
+    code: Option<i64>,
+    /// Why, in the runner's words: the exit code's meaning and the worker's last words on
+    /// stderr. An older runner says neither, and the engine says "the turn failed".
+    #[serde(default)]
+    why: Option<String>,
+}
+
+/// The worker's exit code for a turn HQ or the relay had ended before the worker did.
+const OVER: i64 = 3;
+
+/// The reason kept on the run, from what the runner said: a turn that was over before it
+/// ended says so, rather than that it failed.
+fn reason(code: Option<i64>, why: Option<&str>) -> Option<String> {
+    let why = why.map(str::trim).filter(|w| !w.is_empty())?;
+    if code == Some(OVER) {
+        return Some(format!("the turn was over: {why}"));
+    }
+    Some(format!("the turn failed: {why}"))
 }
 
 /// How a turn the runner was handed ended. The engine's next tick ends the run. A report from
@@ -121,7 +142,8 @@ async fn ended(
     let Some(remote) = state.hq.runner().remote() else {
         return no_runner();
     };
-    if !remote.ended(RunId(run), req.lease, req.succeeded) {
+    let why = reason(req.code, req.why.as_deref());
+    if !remote.report(RunId(run), req.lease, req.succeeded, why.as_deref()) {
         return (
             StatusCode::CONFLICT,
             Json(json!({ "error": "not a turn this runner holds, under that lease" })),

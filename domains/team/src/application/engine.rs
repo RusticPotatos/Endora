@@ -2346,7 +2346,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     report.ended += 1;
                 }
                 Liveness::Finished { succeeded: false } => {
-                    if self.fail(run, "the turn failed")? {
+                    // The runner's words when it gave them: the worker's exit code's meaning
+                    // and its last words, which would otherwise be lost with its container.
+                    let why = self
+                        .runner
+                        .why_ended(run.id)
+                        .unwrap_or_else(|| "the turn failed".to_owned());
+                    if self.fail(run, &why)? {
                         report.retrying += 1;
                     } else {
                         report.ended += 1;

@@ -51,6 +51,10 @@ impl WorkerAdapter for Runner {
         self.adapter().status(run)
     }
 
+    fn why_ended(&self, run: RunId) -> Option<String> {
+        self.adapter().why_ended(run)
+    }
+
     fn stop(&self, run: RunId, grace: Duration) {
         self.adapter().stop(run, grace);
     }

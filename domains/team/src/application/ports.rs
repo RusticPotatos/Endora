@@ -676,6 +676,10 @@ pub trait WorkerAdapter {
     fn start(&self, run: &RunContext) -> Result<(), StartError>;
     /// Whether the turn is still alive, ended, or gone.
     fn status(&self, run: RunId) -> Liveness;
+    /// Why a turn that finished badly did, in the runner's words, when it said.
+    fn why_ended(&self, _run: RunId) -> Option<String> {
+        None
+    }
     /// Asks the turn to stop, then ends it after the grace period.
     fn stop(&self, run: RunId, grace: Duration);
     /// How many turns it can run at once.
