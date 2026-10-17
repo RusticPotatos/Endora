@@ -81,6 +81,8 @@ services:
       # API needs the password the senders made, which only this hub is given.
       SOUND_SENDERS: "http://host.docker.internal:3701,http://host.docker.internal:3702,http://host.docker.internal:3703,http://host.docker.internal:3704"
       SOUND_SENDER_PASSWORD_FILE: /sender-secret/password
+      # Spotify plays into the hub through its own receiver, below.
+      SOUND_SPOTIFY: "on"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -96,6 +98,33 @@ services:
     security_opt: [no-new-privileges:true]
     # Decoding stations and encoding streams is ffmpeg's work; a hard cap on a tight NAS.
     mem_limit: 256m
+  # Spotify into endora-sound (ADR 0104): a Spotify Connect receiver called "Endora" (librespot,
+  # the image the ansible-nas Spotify receiver already uses, pinned to the build on the NAS)
+  # writing into the hub's Spotify pipe. On the host's network so the Spotify app finds it;
+  # pick "Endora" in the app's devices once, and it keeps its own login after that. Beside the
+  # old ansible-nas receiver, which it does not clash with.
+  spotify:
+    profiles: [sound]
+    image: giof71/librespot@sha256:0c7cd19a49547cd0e34ac7c6d9aadd4b2703c5cb13acd1dbfd4982c311d478fb
+    container_name: endora-spotify
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [sound]
+    environment:
+      DEVICE_NAME: Endora
+      BACKEND: pipe
+      DEVICE: /pipes/spotify.pcm
+      FORMAT: S16
+      BITRATE: "320"
+      INITIAL_VOLUME: "100"
+      ENABLE_SYSTEM_CACHE: "Y"
+      DISABLE_AUDIO_CACHE: "Y"
+    volumes:
+      - endora-sound-pipes:/pipes
+      # Its Spotify login, kept once given.
+      - endora-spotify-login:/data/system-cache
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
   # endora-sound's AirPlay senders (ADR 0104): one shared airptpd clock and four stock OwnTone
   # instances, on the host's network because AirPlay speakers are found and reached over
   # mDNS. Its own profile, senders, kept out of COMPOSE_PROFILES until the ansible-nas
@@ -263,6 +292,8 @@ volumes:
   endora-senders-data:
   # Holds one file: the password the senders make for their API, which only the hub reads.
   endora-sound-secret:
+  # The Spotify receiver's own login.
+  endora-spotify-login:
   # Empty on purpose: what /mail is when no mail copy is configured.
   endora-no-mail:
   endora-models:

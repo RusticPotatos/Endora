@@ -715,6 +715,26 @@ if (failures.length) {
   console.log("speakers: every source offers its speakers but never its own device, wires carry their levels, and text stays text");
 }
 
+// Music (ADR 0104): Spotify plays on the hub's speakers through its Endora receiver, listed
+// beside Spotify's own devices; the receiver itself is not a choice.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`var keepMusic = JSON.stringify(MUSIC), keepSpotify = SPOTIFY, keepSound = SOUND.state;
+    SPOTIFY = { state: "connected" };
+    MUSIC.devices = [{ id: "d-mac", name: "Mac", is_active: false }, { id: "d-endora", name: "Endora", is_active: true }];
+    MUSIC.now = null;
+    SOUND.state = { sources: [{ id: 1, name: "Spotify", kind: "spotify" }],
+      speakers: [{ id: 3, name: "Office HomePod", kind: "airplay", borrowed: false }, { id: 4, name: "iPhone", kind: "stream", borrowed: false }],
+      wires: [{ source: 1, speaker: 4, level: 80 }], groups: [] };`, context);
+  const music = runInContext("viewMusic()", context);
+  if (!music.includes('data-act="music:endora:3"') || !music.includes('data-act="music:endora:4"')) fail("music: the hub's speakers are not offered");
+  if (music.includes('data-act="music:device:d-endora"')) fail("music: the Endora receiver is offered as a speaker of its own");
+  if (!music.includes('data-act="music:device:d-mac"')) fail("music: Spotify's own devices went missing");
+  if (!/pill pick active" data-act="music:endora:4"/.test(music)) fail("music: the speaker Spotify plays on is not shown as playing");
+  runInContext("Object.assign(MUSIC, JSON.parse(keepMusic)); SPOTIFY = keepSpotify; SOUND.state = keepSound;", context);
+  console.log("music: Spotify's devices and the hub's speakers are one list, and the receiver is not a choice");
+}
+
 // Devices that stopped answering are never asked about: the owner turned it off for good
 // (2026-10-16), so nothing may bring the card or its actions back.
 if (/Still yours\?|data-act="trouble:|standing-trouble/.test(source)) {

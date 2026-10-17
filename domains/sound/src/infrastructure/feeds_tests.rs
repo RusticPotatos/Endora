@@ -223,14 +223,9 @@ fn a_named_pipe_is_read_as_it_is_written_and_let_go_when_closed() {
         ffmpeg: PathBuf::from("ffmpeg"),
         pipes: dir.clone(),
     });
-    let path = feeds.pipe_of(phone);
-    assert!(
-        Command::new("mkfifo")
-            .arg(&path)
-            .status()
-            .unwrap()
-            .success()
-    );
+    let path = feeds.pipe_of(bay.source(phone).unwrap());
+    // Named for its device, so its receiver knows where to write; the hub makes it.
+    assert_eq!(path.file_name().unwrap(), "airplay-iphone.pcm");
     feeds.keep(&bay, &[phone]);
     let writer_path = path.clone();
     let writer = std::thread::spawn(move || {
@@ -256,4 +251,46 @@ fn a_named_pipe_is_read_as_it_is_written_and_let_go_when_closed() {
     feeds.keep(&bay, &[]);
     assert!(started.elapsed() < Duration::from_secs(2));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn spotify_is_read_even_unwired_so_its_writer_never_waits() {
+    let dir = std::env::temp_dir().join(format!(
+        "endora-sound-spotify-{}-{:?}",
+        std::process::id(),
+        Instant::now()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut bay = Patchbay::default();
+    let spotify = bay
+        .add_source("Spotify", SourceKind::Spotify, None)
+        .unwrap();
+    // librespot started first, and left an ordinary file where its pipe should be.
+    std::fs::write(dir.join("spotify.pcm"), b"not a pipe").unwrap();
+    let mut feeds = FeedSet::new(Places {
+        ffmpeg: PathBuf::from("ffmpeg"),
+        pipes: dir.clone(),
+    });
+    let path = feeds.pipe_of(bay.source(spotify).unwrap());
+    assert_eq!(path.file_name().unwrap(), "spotify.pcm");
+    feeds.keep(&bay, &[]); // wired to nothing
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let opened = std::fs::OpenOptions::new().write(true).open(&path);
+        let _ = done.send(opened.and_then(|mut w| w.write_all(&[1, 0, 2, 0])).is_ok());
+    });
+    assert_eq!(
+        finished.recv_timeout(Duration::from_secs(5)),
+        Ok(true),
+        "the writer waited: nobody read the pipe"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_devices_name_is_made_safe_for_its_pipe() {
+    assert_eq!(safe("iphone"), "iphone");
+    assert_eq!(safe("../etc/passwd"), "___etc_passwd");
+    assert_eq!(safe("ipad 2"), "ipad_2");
 }

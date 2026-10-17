@@ -472,21 +472,7 @@ pub fn write_speaker_names(dir: &std::path::Path, names: &[String]) -> std::io::
 /// # Errors
 /// A folder or pipe that cannot be made.
 pub fn make_pipe(path: &std::path::Path) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    if path.exists() {
-        return Ok(());
-    }
-    let made = std::process::Command::new("mkfifo")
-        .arg("-m")
-        .arg("0666")
-        .arg(path)
-        .status()?;
-    if !made.success() {
-        return Err(std::io::Error::other("mkfifo failed"));
-    }
-    Ok(())
+    endora_sound::infrastructure::feeds::make_pipe(path)
 }
 
 /// The AirPlay speakers an instance can see, for the owner to add: not the hub's own receivers.

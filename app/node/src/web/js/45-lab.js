@@ -259,8 +259,13 @@ function musicItems(list, kind) {
   }).filter((x) => /^spotify:[a-z]+:[A-Za-z0-9]+$/.test(x.uri || ""));
 }
 
+// Spotify's receiver in the sound hub (ADR 0104): its speakers are Spotify's speakers too.
+const ENDORA_SPOTIFY = "Endora";
+
 async function loadMusic() {
   MUSIC.error = "";
+  // The hub's speakers, to play Spotify on; nothing when there is no hub.
+  try { SOUND.state = await api("GET", "/v1/sound"); } catch (_) { SOUND.state = null; }
   try { SPOTIFY = await api("GET", "/v1/connections/spotify"); } catch (_) { SPOTIFY = null; }
   if (!SPOTIFY || SPOTIFY.state !== "connected") return;
   try {
@@ -309,8 +314,16 @@ function viewMusic() {
         ${volume === null || volume === undefined ? "" : `<button class="ghost" data-act="music:volume:-10">−</button><span class="sub">${esc(volume)}%</span><button class="ghost" data-act="music:volume:10">+</button>`}
       </div></div>`
     : `<div class="card"><div class="sub">Nothing is playing.</div></div>`;
-  const devices = MUSIC.devices.map((d) => `
-    <button class="pill pick${d.is_active ? " active" : ""}" data-act="music:device:${esc(d.id)}">${esc(d.name)}</button>`).join("");
+  // Spotify's own devices, and every speaker in the sound hub through its "Endora" receiver;
+  // not the receiver itself, whose speakers are listed instead.
+  const viaEndora = MUSIC.devices.find((d) => d.name === ENDORA_SPOTIFY);
+  const spotifySource = SOUND.state && (SOUND.state.sources || []).find((x) => x.kind === "spotify");
+  const hubSpeakers = spotifySource ? (SOUND.state.speakers || []) : [];
+  const playsOn = (sp) => (SOUND.state.wires || []).some((w) => w.source === spotifySource.id && w.speaker === sp.id);
+  const devices = MUSIC.devices.filter((d) => d.name !== ENDORA_SPOTIFY).map((d) => `
+    <button class="pill pick${d.is_active ? " active" : ""}" data-act="music:device:${esc(d.id)}">${esc(d.name)}</button>`).join("")
+    + hubSpeakers.map((sp) => `
+    <button class="pill pick${viaEndora && viaEndora.is_active && playsOn(sp) ? " active" : ""}" data-act="music:endora:${sp.id}">${esc(sp.name)}${sp.borrowed ? " · in use" : ""}</button>`).join("");
   const row = (x, key) => `<div class="row" style="gap:8px;padding:6px 0;">
       <div class="grow"><div>${esc(x.name)}</div><div class="sub">${esc(x.kind)}${x.who ? ` · ${esc(x.who)}` : ""}</div></div>
       <button class="ghost" data-act="music:play:${key}">Play</button></div>`;
@@ -387,6 +400,19 @@ async function musicDispatch(noun, id) {
     } else if (noun === "device") {
       try { localStorage.setItem("endora.musicDevice", id); } catch (_) {}
       await spotify("PUT", "/me/player", { device_ids: [id], play: true });
+    } else if (noun === "endora") {
+      // A speaker in the hub: Spotify wired to it (and only it), then played on Endora.
+      const via = MUSIC.devices.find((d) => d.name === ENDORA_SPOTIFY);
+      if (!via) throw new Error(`${ENDORA_SPOTIFY} is not signed in to Spotify yet: open the Spotify app once and pick ${ENDORA_SPOTIFY} from its devices`);
+      const source = ((SOUND.state || {}).sources || []).find((x) => x.kind === "spotify");
+      if (!source) throw new Error("The sound hub has no Spotify source");
+      const speaker = Number(id);
+      for (const w of (SOUND.state.wires || []).filter((x) => x.source === source.id && x.speaker !== speaker)) {
+        await api("DELETE", `/v1/sound/wires/${w.source}/${w.speaker}`);
+      }
+      await api("PUT", "/v1/sound/wires", { source: source.id, speaker, level: 80 });
+      try { localStorage.setItem("endora.musicDevice", via.id); } catch (_) {}
+      await spotify("PUT", "/me/player", { device_ids: [via.id], play: true });
     } else if (noun === "search") {
       const field = document.getElementById("music-q");
       MUSIC.query = field ? field.value.trim() : "";

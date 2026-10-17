@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use crate::application::engine::Feeds;
 use crate::domain::mix::{CHANNELS, RATE};
-use crate::domain::{Patchbay, SourceId, SourceKind};
+use crate::domain::{Patchbay, Source, SourceId, SourceKind};
 
 /// The most a buffer holds, in samples: two seconds. A source that runs ahead (a station
 /// bursting at the start) loses its oldest sound rather than falling ever further behind.
@@ -255,8 +255,52 @@ struct Pipe {
     path: PathBuf,
 }
 
+/// A name a device gives, as a file name: letters, digits and dashes, the rest as `_`.
+fn safe(device: &str) -> String {
+    device
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Makes sure `path` is a named pipe: makes it if it is missing, and replaces an ordinary file
+/// a writer made there by starting first (librespot does, given a path with nothing at it).
+///
+/// # Errors
+/// A pipe that cannot be made.
+pub fn make_pipe(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::FileTypeExt as _;
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_fifo() {
+            return Ok(());
+        }
+        std::fs::remove_file(path)?;
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let made = Command::new("mkfifo")
+        .arg("-m")
+        .arg("0666")
+        .arg(path)
+        .status()?;
+    if !made.success() {
+        return Err(std::io::Error::other("mkfifo failed"));
+    }
+    Ok(())
+}
+
 impl Pipe {
     fn start(path: &Path, into: Shared) -> Self {
+        if let Err(e) = make_pipe(path) {
+            eprintln!("sound: cannot make the pipe {}: {e}", path.display());
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let (stopping, at) = (stop.clone(), path.to_owned());
         std::thread::spawn(move || {
@@ -318,17 +362,41 @@ impl FeedSet {
     }
 
     /// The named pipe a source is read from.
+    ///
+    /// Named for what writes it, so its writer knows where to without asking the hub:
+    /// `spotify.pcm` for Spotify, `airplay-<device>.pcm` for a device's AirPlay receiver.
     #[must_use]
-    pub fn pipe_of(&self, source: SourceId) -> PathBuf {
-        self.places.pipes.join(format!("{source}.pcm"))
+    pub fn pipe_of(&self, source: &Source) -> PathBuf {
+        let name = match source.kind {
+            SourceKind::Spotify => "spotify.pcm".to_owned(),
+            SourceKind::AirPlay => format!(
+                "airplay-{}.pcm",
+                source
+                    .device
+                    .as_deref()
+                    .map_or_else(|| source.id.to_string(), safe)
+            ),
+            _ => format!("{}.pcm", source.id),
+        };
+        self.places.pipes.join(name)
     }
 
     /// Opens the sources in `wanted` that are not open, and closes those open that are not
-    /// in it. A source whose kind changed is opened again.
+    /// in it. A source something else writes into (Spotify, a device's AirPlay receiver) is
+    /// read whether it is wired or not: a writer with no reader waits, and Spotify would show
+    /// a song playing that never plays.
     pub fn keep(&mut self, bay: &Patchbay, wanted: &[SourceId]) {
+        let mut wanted: Vec<SourceId> = wanted.to_vec();
+        for s in bay.sources() {
+            if matches!(s.kind, SourceKind::Spotify | SourceKind::AirPlay)
+                && !wanted.contains(&s.id)
+            {
+                wanted.push(s.id);
+            }
+        }
         self.open
             .retain(|id, _| wanted.contains(id) && bay.source(*id).is_some());
-        for id in wanted {
+        for id in &wanted {
             if self.open.contains_key(id) {
                 continue;
             }
@@ -345,7 +413,7 @@ impl FeedSet {
                     Running::Station(Station::start(&self.places.ffmpeg, address, buffer.clone()))
                 }
                 SourceKind::AirPlay | SourceKind::Spotify => {
-                    Running::Pipe(Pipe::start(&self.pipe_of(*id), buffer.clone()))
+                    Running::Pipe(Pipe::start(&self.pipe_of(source), buffer.clone()))
                 }
                 SourceKind::Voice => Running::Voice,
             };

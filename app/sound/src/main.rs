@@ -61,6 +61,21 @@ fn the_token(env: Option<String>, file: Option<String>) -> Result<String, String
     Ok(token)
 }
 
+/// Makes the Spotify source if there is none. Whether it made one.
+fn spotify_source(hub: &Hub<FileStore>) -> Result<bool, endora_sound::application::hub::HubError> {
+    hub.change(|bay| {
+        if bay
+            .sources()
+            .iter()
+            .any(|s| s.kind == endora_sound::domain::SourceKind::Spotify)
+        {
+            return Ok(false);
+        }
+        bay.add_source("Spotify", endora_sound::domain::SourceKind::Spotify, None)
+            .map(|_| true)
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = match the_token(
@@ -87,6 +102,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ffmpeg = std::env::var("SOUND_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_owned());
     let pipes = std::env::var("SOUND_PIPES").unwrap_or_else(|_| "pipes".to_owned());
     let hub = Arc::new(hub);
+    // Spotify, when its receiver runs beside the hub (SOUND_SPOTIFY=on): one source for it,
+    // made here the first time, read from the pipe the receiver writes.
+    if std::env::var("SOUND_SPOTIFY").is_ok_and(|v| v.trim() == "on") {
+        match spotify_source(&hub) {
+            Ok(true) => println!("sound: Spotify is a source now"),
+            Ok(false) => {}
+            Err(e) => eprintln!("sound: cannot make the Spotify source: {e}"),
+        }
+    }
     let listeners = Arc::new(listen::Listeners::new(ffmpeg.clone().into()));
     // The AirPlay senders, when there are any: SOUND_SENDERS lists their OwnTone APIs, in
     // order; each plays the pipe `sender-<n>/group.pcm` in the pipes folder, which the hub
@@ -189,6 +213,21 @@ mod tests {
         assert_eq!(the_token(Some(given.clone()), Some(file)).unwrap(), given);
         assert!(the_token(Some("short".to_owned()), None).is_err());
         assert!(the_token(None, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spotify_is_made_a_source_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "endora-sound-spotify-source-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = super::Hub::open(super::FileStore::new(dir.join("sound.json"))).unwrap();
+        assert_eq!(super::spotify_source(&hub), Ok(true));
+        assert_eq!(super::spotify_source(&hub), Ok(false), "made twice");
+        assert_eq!(hub.read(|bay| bay.sources().len()), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
