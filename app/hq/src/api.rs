@@ -78,6 +78,8 @@ pub fn app(state: State) -> Router {
         ));
     Router::new()
         .route("/health", get(health))
+        // A worker's door: its turn's token, not the node's (spec section 6).
+        .route("/v1/team/mcp", post(crate::team::mcp))
         .merge(signed)
         .with_state(state)
 }
@@ -438,5 +440,106 @@ mod tests {
         )
         .await;
         assert_eq!(snap["stopped"], true);
+    }
+
+    #[tokio::test]
+    async fn a_worker_speaks_mcp_with_its_turns_token_and_nothing_else_opens_the_door() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = st.hq.runner().started()[0].clone();
+        let app = app(st.clone());
+        let rpc = |id: i64, method: &str, params: serde_json::Value| {
+            json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string()
+        };
+        // The node's token is not a worker's, and neither is a guess.
+        for token in [Some(TOKEN), Some("not-a-turn"), None] {
+            let res = app
+                .clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/team/mcp",
+                    token,
+                    &rpc(1, "tools/list", json!({})),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{token:?}");
+        }
+        let speak = |body: String| call("POST", "/v1/team/mcp", Some(&turn.token), &body);
+        let hello = json_of(
+            app.clone()
+                .oneshot(speak(rpc(
+                    1,
+                    "initialize",
+                    json!({ "protocolVersion": "2025-06-18" }),
+                )))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(hello["result"]["protocolVersion"], "2025-06-18");
+        assert_eq!(hello["result"]["serverInfo"]["name"], "endora-hq");
+        let noted = app
+            .clone()
+            .oneshot(speak(
+                json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(noted.status(), StatusCode::ACCEPTED);
+        let listed = json_of(
+            app.clone()
+                .oneshot(speak(rpc(2, "tools/list", json!({}))))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 9);
+        let mine = json_of(
+            app.clone()
+                .oneshot(speak(rpc(
+                    3,
+                    "tools/call",
+                    json!({ "name": "my_turn", "arguments": {} }),
+                )))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(mine["result"]["isError"], false);
+        assert!(
+            !mine["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
+        let refused = json_of(
+            app.clone()
+                .oneshot(speak(rpc(
+                    4,
+                    "tools/call",
+                    json!({ "name": "run_gate", "arguments": { "task": 1 } }),
+                )))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(refused["result"]["isError"], true);
+        let unknown = json_of(
+            app.clone()
+                .oneshot(speak(rpc(5, "resources/list", json!({}))))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], -32601);
+        // The turn ends: its token opens nothing any more.
+        st.hq.runner().finish(turn.run, true);
+        st.hq.tick().unwrap();
+        let after = app
+            .oneshot(speak(rpc(6, "tools/list", json!({}))))
+            .await
+            .unwrap();
+        assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
     }
 }

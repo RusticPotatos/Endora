@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 mod api;
+mod team;
 
 use endora_team::application::engine::{Engine, Settings};
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore, demo};
