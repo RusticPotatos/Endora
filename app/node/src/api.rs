@@ -464,6 +464,9 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/goals/{id}/note", post(hq_goal_note))
         // What a member thinks with (ADR 0109).
         .route("/v1/hq/members/{id}/brain", post(hq_set_brain))
+        // The owner renames a member, and keeps the CEO's house log with it (ADR 0111).
+        .route("/v1/hq/members/{id}/name", post(hq_rename))
+        .route("/v1/hq/house", post(hq_house_log))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
         // The owner's routines (ADR 0107).

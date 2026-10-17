@@ -423,21 +423,31 @@ pub fn betas_passed(header: Option<&str>) -> Option<String> {
     Some(kept.join(","))
 }
 
-/// Whether a member in `role` may call `model`, by the plan's models by role: Sonnet for the
-/// developer, the reviewer and the lead, Haiku for the researcher (and for anyone, being
-/// cheaper). Opus only when the owner approves it for a task, which HQ cannot ask yet, so
-/// never for now. A role the relay does not know may call nothing.
+/// The most one turn of a member in `role` may spend, in micros (ADR 0111): a dollar for the
+/// CEO, forty cents for everyone else. The relay holds each call to it, whatever HQ says is
+/// left, as HQ holds each turn's reservation.
+#[must_use]
+pub fn most_a_turn(role: &str) -> i64 {
+    if role == "ceo" {
+        return 1_000_000;
+    }
+    400_000
+}
+
+/// Whether a member in `role` may call `model`, by the plan's models by role: Opus or Sonnet
+/// for the CEO; Sonnet for the developer, the reviewer and the lead, Haiku for the researcher
+/// (and for them all, being cheaper). Opus is the CEO's alone (the owner's decision of
+/// 2026-10-17, ADR 0111). A role the relay does not know may call nothing.
 ///
 /// # Errors
 /// Why not, said to the worker.
 pub fn may_use(role: &str, model: &str) -> Result<(), String> {
     let is = |family: &str| model == family || model.starts_with(&format!("{family}-"));
-    if is("claude-opus-5-5") {
-        return Err(
-            "Opus needs the owner's approval for the task, and HQ cannot ask for it yet".to_owned(),
-        );
+    if is("claude-opus-5-5") && role != "ceo" {
+        return Err("Opus is the CEO's alone, by the owner's decision".to_owned());
     }
     let allowed = match role {
+        "ceo" => is("claude-opus-5-5") || is("claude-sonnet-5-5"),
         "developer" | "reviewer" | "lead" => is("claude-sonnet-5-5") || is("claude-haiku-5-5"),
         "researcher" => is("claude-haiku-5-5"),
         _ => false,
@@ -670,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn a_role_uses_the_models_the_plan_gives_it_and_opus_waits_for_the_owner() {
+    fn a_role_uses_the_models_the_plan_gives_it_and_opus_is_the_ceos_alone() {
         for role in ["developer", "reviewer", "lead"] {
             assert!(may_use(role, "claude-sonnet-5-5").is_ok(), "{role}");
             assert!(
@@ -682,8 +692,15 @@ mod tests {
         assert!(may_use("researcher", "claude-sonnet-5-5").is_err());
         for role in ["developer", "lead", "researcher", "reviewer"] {
             let why = may_use(role, "claude-opus-5-5").unwrap_err();
-            assert!(why.contains("owner"), "{why}");
+            assert!(why.contains("CEO's alone"), "{why}");
+            assert_eq!(most_a_turn(role), 400_000, "{role}");
         }
+        assert!(may_use("ceo", "claude-opus-5-5").is_ok());
+        assert!(may_use("ceo", "claude-opus-5-5-20261001").is_ok());
+        assert!(may_use("ceo", "claude-sonnet-5-5").is_ok());
+        assert!(may_use("ceo", "claude-haiku-5-5").is_err(), "not the CEO's");
+        assert!(may_use("ceo", "deepseek-chat").is_err());
+        assert_eq!(most_a_turn("ceo"), 1_000_000);
         assert!(
             may_use("", "claude-sonnet-5-5").is_err(),
             "no role, no model"

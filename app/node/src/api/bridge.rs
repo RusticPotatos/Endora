@@ -776,6 +776,24 @@ mod tests {
         );
         let (status, _) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // The CEO thinks on Claude and is not the lead (ADR 0111): no queue, no log, nothing
+        // Confidential; it reads its members' findings in their threads.
+        let (hq_url, _) = hq("ceo", true);
+        let state = bridged(&hq_url, &sonarr_url);
+        let listed = tools(&state).await;
+        assert!(
+            !listed
+                .iter()
+                .any(|(n, _)| n == "sonarr_queue" || n == "sonarr_retry_import"),
+            "a cloud CEO is offered nothing Confidential: {listed:?}"
+        );
+        let (status, said) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"].as_str().unwrap().contains("Confidential"),
+            "{said}"
+        );
     }
 
     #[tokio::test]

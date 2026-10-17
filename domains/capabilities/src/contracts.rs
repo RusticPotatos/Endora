@@ -69,6 +69,17 @@ impl Contract {
         crate::bridge::may_see(tier, self.name, role, on_a_cloud_model)
     }
 
+    /// Whether a turn of a member in `role` is offered this contract: what it may see, and an
+    /// act only for a member who works on the house. The CEO decides and hands work on; it
+    /// takes no step on the house itself (ADR 0111).
+    #[must_use]
+    pub fn offered_to(&self, role: &str, on_a_cloud_model: bool) -> bool {
+        if self.kind == Kind::AutomaticAct && role == "ceo" {
+            return false;
+        }
+        self.may_be_seen_by(role, on_a_cloud_model)
+    }
+
     /// As an MCP tool: name, description and input schema.
     #[must_use]
     pub fn as_tool(&self) -> Value {
@@ -346,9 +357,13 @@ mod tests {
             assert!(status.may_be_seen_by(role, true) && restart.may_be_seen_by(role, true));
         }
         assert!(logs.may_be_seen_by("lead", true));
-        for role in ["developer", "reviewer", "researcher"] {
+        for role in ["ceo", "developer", "reviewer", "researcher"] {
             assert!(!logs.may_be_seen_by(role, true), "a cloud {role}");
         }
+        // The CEO reads the home lab's state, and never a log or a restart (ADR 0111).
+        assert!(status.offered_to("ceo", true));
+        assert!(!logs.offered_to("ceo", true) && !restart.offered_to("ceo", true));
+        assert!(restart.offered_to("lead", true));
     }
 
     #[test]

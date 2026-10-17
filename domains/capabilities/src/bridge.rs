@@ -74,9 +74,10 @@ impl Kind {
 }
 
 /// What each role may do with a bridged tool. A small table that a later owner setting could
-/// replace: the lead and developers read and act; reviewers and researchers only read. A role
-/// not listed may do nothing.
-pub const PROFILES: [(&str, &[Kind]); 4] = [
+/// replace: the lead and developers read and act; the CEO (ADR 0111), reviewers and
+/// researchers only read. A role not listed may do nothing.
+pub const PROFILES: [(&str, &[Kind]); 5] = [
+    ("ceo", &[Kind::Read]),
     ("lead", &[Kind::Read, Kind::Act]),
     ("developer", &[Kind::Read, Kind::Act]),
     ("reviewer", &[Kind::Read]),
@@ -307,6 +308,8 @@ pub const CLOUD_LEAD_MAY_SEE: [&str; 3] = ["container_logs", "sonarr_queue", "ra
 /// Whether a turn may be given what the tool `id` of `tier` returns, for a member in `role`:
 /// Restricted never (it is not offered at all); Confidential to a turn on a local model, and
 /// to a lead's turn on a cloud model only what [`CLOUD_LEAD_MAY_SEE`] names; the rest to all.
+/// The CEO on a cloud model is a cloud member like any but the lead: it is given nothing
+/// Confidential, and reads its members' findings in their threads (ADR 0111).
 #[must_use]
 pub fn may_see(tier: Tier, id: &str, role: &str, on_a_cloud_model: bool) -> bool {
     match tier {
@@ -674,9 +677,10 @@ mod tests {
         let on = tool(Kind::Act, Stance::Auto, false);
         let on_with_args = tool(Kind::Act, Stance::Auto, true);
         let ask = tool(Kind::Act, Stance::Ask, false);
-        for role in ["lead", "developer", "reviewer", "researcher"] {
+        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
             assert_eq!(way(&read, role, false), Ok(Way::Read), "{role}");
         }
+        assert!(way(&on, "ceo", false).is_err(), "the CEO only reads");
         assert_eq!(way(&on, "developer", false), Ok(Way::Act));
         assert_eq!(way(&on, "lead", false), Ok(Way::Act));
         assert!(way(&on, "reviewer", false).is_err());
@@ -728,7 +732,7 @@ mod tests {
                 may_see(Tier::Confidential, allowed, "lead", true),
                 "{allowed}"
             );
-            for role in ["developer", "reviewer", "researcher", ""] {
+            for role in ["ceo", "developer", "reviewer", "researcher", ""] {
                 assert!(
                     !may_see(Tier::Confidential, allowed, role, true),
                     "{allowed} to a cloud {role}"
