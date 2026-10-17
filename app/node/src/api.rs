@@ -112,6 +112,9 @@ pub struct AppState {
     /// What Endora has made of the mail (ADR 0097): an index of every message and a digest of
     /// those it has read. Always present; empty until there is mail.
     pub mail_store: Arc<endora_mail::MailStore>,
+    /// Where HQ's model relay sends a call: Anthropic, always, outside tests (ADR 0102). A
+    /// field rather than a setting, so nothing can point the owner's key anywhere else.
+    pub relay_upstream: Arc<String>,
     /// The agenda loop's items, restarts and taught rules (ADR 0103).
     pub agenda: Arc<endora_agenda::infrastructure::SqliteAgendaStore>,
     /// Why the last nightly copy failed, until one succeeds: what the agenda tells.
@@ -287,6 +290,7 @@ impl AppState {
             time_zone: endora_infrastructure::TimeZone::fixed(0),
             hq: None,
             mail_store,
+            relay_upstream: Arc::new(endora_infrastructure::relay::ANTHROPIC.to_owned()),
             agenda,
             nightly_failure: Arc::new(std::sync::Mutex::new(None)),
             mail_copy: None,
@@ -606,6 +610,14 @@ pub fn app(state: AppState) -> Router {
         .layer(from_fn_with_state(state.changes.clone(), notify_on_change))
         // Outermost, so nothing behind it runs for a request that has no business being here.
         .layer(from_fn_with_state(state.clone(), require_the_token))
+        // HQ's model relay (ADR 0102, phase 4), after the layers on purpose: a turn's own
+        // token is its credential, not the owner's sign-in, and a model call is not a change
+        // for the console to refresh on.
+        .route("/team-relay/v1/messages", post(relay::messages))
+        .route(
+            "/team-relay/v1/messages/count_tokens",
+            post(relay::count_tokens),
+        )
         .with_state(state)
 }
 mod auth;
@@ -799,6 +811,8 @@ use chat::*;
 mod brain;
 use brain::*;
 mod hq;
+// HQ's model relay: a team member's only way to a model (ADR 0102, phase 4).
+mod relay;
 // The providers and ordered model lists on the AI screen (ADR 0105).
 mod model_lists;
 // The agenda loop (ADR 0103): signals become items, and the owner's answers to them.

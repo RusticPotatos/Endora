@@ -19,6 +19,75 @@ pub struct Price {
     pub output: f64,
 }
 
+/// Where the relay sends a call.
+pub const ANTHROPIC: &str = "https://api.anthropic.com";
+
+/// How long one model call may take.
+const LONGEST_CALL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// The two calls the relay passes on: a message, and counting a message's tokens. Nothing
+/// else of Anthropic's API is reachable through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Call {
+    /// `POST /v1/messages`.
+    Messages,
+    /// `POST /v1/messages/count_tokens`.
+    CountTokens,
+}
+
+impl Call {
+    const fn path(self) -> &'static str {
+        match self {
+            Self::Messages => "/v1/messages",
+            Self::CountTokens => "/v1/messages/count_tokens",
+        }
+    }
+}
+
+/// Anthropic's answer: its status, and its body as it arrives.
+pub struct Reply {
+    /// The HTTP status.
+    pub status: u16,
+    /// The body, read as it streams in.
+    pub body: Box<dyn std::io::Read + Send>,
+}
+
+/// Sends one call to Anthropic (`base`, which is [`ANTHROPIC`] outside tests) with the owner's
+/// key. `version` and `beta` are the worker's own `anthropic-version` and `anthropic-beta`,
+/// passed on; the key is the only thing added.
+///
+/// # Errors
+/// Anthropic could not be reached.
+pub fn send(
+    base: &str,
+    call: Call,
+    key: &str,
+    version: Option<&str>,
+    beta: Option<&str>,
+    body: &[u8],
+) -> Result<Reply, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(LONGEST_CALL))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build()
+        .into();
+    let mut request = agent
+        .post(format!("{base}{}", call.path()))
+        .header("x-api-key", key)
+        .header("content-type", "application/json")
+        .header("anthropic-version", version.unwrap_or("2023-06-01"));
+    if let Some(beta) = beta {
+        request = request.header("anthropic-beta", beta);
+    }
+    let response = request.send(body).map_err(|e| e.to_string())?;
+    let status = response.status().as_u16();
+    Ok(Reply {
+        status,
+        body: Box::new(response.into_body().into_reader()),
+    })
+}
+
 /// Prompts longer than this are dearer on Haiku.
 const HAIKU_LONG_PROMPT: u64 = 100_000;
 

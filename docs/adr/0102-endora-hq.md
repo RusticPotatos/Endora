@@ -8,7 +8,13 @@ the specification is [Endora HQ: the design](../plans/endora-hq.md). Phases 1 an
 the team core in `domains/team`, and the HQ service (`app/hq`) with the office in the console,
 on the simulated runner. Phase 4 has begun: the team protocol is served over MCP at
 `/v1/team/mcp`, opened only by a turn's own token, which HQ issues when the turn starts and
-which opens nothing once it ends. The rest is not yet.
+which opens nothing once it ends. A turn reaches a model only through the node's **model
+relay** (`/team-relay/v1/messages`): it presents its token as its key, the relay asks HQ what
+the turn may still spend, caps the reply to that, adds the owner's Anthropic key (which never
+leaves the node), and charges HQ what the call cost, priced from Anthropic's table; a model
+not priced there is not relayed, and a turn past its budget is stopped. The owner chose to
+share their default Anthropic project, whose cap is the outer limit, with Endora enforcing the
+team's pool itself. The rest (runners and the worker itself) is not yet.
 
 ## Context
 
