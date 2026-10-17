@@ -32,6 +32,11 @@ impl std::fmt::Display for HqError {
     }
 }
 
+/// The path of the node's team gateway (ADR 0110), which passes `/runner/...` on to HQ's
+/// `/v1/runner/...`: how a runner on another host, such as the Pi, reaches HQ, which is not
+/// published.
+const GATEWAY: &str = "/team-gateway";
+
 /// HQ, at a plain `http://` address on the house's own network.
 pub struct Hq {
     /// Where to connect: `host:port`.
@@ -83,6 +88,25 @@ impl Hq {
     /// Where HQ is, for the log.
     pub fn url(&self) -> String {
         format!("http://{}{}", self.address, self.prefix)
+    }
+
+    /// Whether HQ is reached through the node's team gateway, as from the Pi.
+    pub fn through_the_gateway(&self) -> bool {
+        self.prefix == GATEWAY
+    }
+
+    /// Where HQ's address is, without its path: through the gateway, the node's team listener.
+    pub fn origin(&self) -> String {
+        format!("http://{}", self.address)
+    }
+
+    /// A runner route (`/next`, `/stops`, ...) as HQ's address takes it: HQ's own
+    /// `/v1/runner/...`, or the gateway's `/runner/...`, which it passes on to that.
+    fn route(&self, route: &str) -> String {
+        if self.through_the_gateway() {
+            return format!("/runner{route}");
+        }
+        format!("/v1/runner{route}")
     }
 
     /// The runner's token, as HQ keeps it, read each time so one HQ made after the runner
@@ -142,7 +166,7 @@ impl Hq {
     /// # Errors
     /// [`HqError`] if HQ was not heard.
     pub fn next(&self, free: usize) -> Result<Option<Value>, HqError> {
-        let answer = self.call("POST", "/v1/runner/next", Some(&json!({ "free": free })))?;
+        let answer = self.call("POST", &self.route("/next"), Some(&json!({ "free": free })))?;
         match answer.status {
             204 => Ok(None),
             200 => Ok(Some(answer.json())),
@@ -156,7 +180,7 @@ impl Hq {
     /// # Errors
     /// [`HqError`] if HQ was not heard, or did not take it.
     pub fn ended(&self, run: u64, lease: u64, succeeded: bool) -> Result<(), HqError> {
-        let route = format!("/v1/runner/{run}/ended");
+        let route = self.route(&format!("/{run}/ended"));
         let body = json!({ "succeeded": succeeded, "lease": lease });
         let answer = self.call("POST", &route, Some(&body))?;
         if !(200..300).contains(&answer.status) {
@@ -170,7 +194,7 @@ impl Hq {
     /// # Errors
     /// [`HqError`] if HQ was not heard.
     pub fn stops(&self) -> Result<Vec<u64>, HqError> {
-        let answer = self.call("GET", "/v1/runner/stops", None)?;
+        let answer = self.call("GET", &self.route("/stops"), None)?;
         if answer.status != 200 {
             return Err(HqError::Answered(answer.status));
         }
@@ -208,6 +232,51 @@ mod tests {
         ] {
             assert!(Hq::new(refused, "/t").is_err(), "{refused:?}");
         }
+    }
+
+    #[test]
+    fn through_the_team_gateway_the_runners_routes_are_the_gateways() {
+        assert!(
+            !Hq::new("http://hq:8790", "/t")
+                .unwrap()
+                .through_the_gateway()
+        );
+        let hq = Hq::new("http://192.168.1.10:8788/team-gateway/", "/t").unwrap();
+        assert!(hq.through_the_gateway());
+        assert_eq!(hq.origin(), "http://192.168.1.10:8788");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/team-gateway", listener.local_addr().unwrap());
+        let file = std::env::temp_dir().join(format!("endora-runner-gw-{}", std::process::id()));
+        std::fs::write(&file, "a-runner-token-of-at-least-thirty-two-characters").unwrap();
+        let asked = std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8];
+            while !head.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let body = r#"{"runs":[3]}"#;
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            String::from_utf8(head).unwrap()
+        });
+        let hq = Hq::new(&url, &file).unwrap();
+        assert_eq!(hq.stops(), Ok(vec![3]));
+        assert!(
+            asked
+                .join()
+                .unwrap()
+                .starts_with("GET /team-gateway/runner/stops HTTP/1.1"),
+            "the gateway passes /runner/ on to HQ's /v1/runner/"
+        );
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

@@ -30,7 +30,13 @@ pub struct Work {
     pub hq_mcp: String,
     /// How many turns run at once.
     pub capacity: usize,
+    /// Whether each turn is a workbench (ADR 0110, ring 1 on the Pi): the worker gets a
+    /// writable `/work` of its own for a shell and git, offline, and more room to use it.
+    pub workbench: bool,
 }
+
+/// A workbench's `/work`: in memory, gone with the container, owned by the image's user.
+const WORK_FOLDER: &str = "size=256m,uid=10001,gid=10001,mode=0700";
 
 /// A turn HQ handed out, once checked. Not `Debug`: it holds the turn's token.
 pub struct Turn {
@@ -130,6 +136,20 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
             env.push(format!("ENDORA_MODEL={model}"));
         }
     }
+    // 256 MB, one CPU, 128 processes; a workbench a gigabyte (its `/work` is memory too),
+    // two CPUs and 256 processes, for a shell, git and a build.
+    let (memory, cpus, pids) = if work.workbench {
+        (1024 * 1024 * 1024, 2_000_000_000_i64, 256)
+    } else {
+        (256 * 1024 * 1024, 1_000_000_000_i64, 128)
+    };
+    // The image declares a `/data` volume, which would otherwise be an unbounded writable
+    // disk: a megabyte in memory instead, gone with the container.
+    let mut tmpfs = json!({ "/tmp": "size=64m", "/data": "size=1m" });
+    if work.workbench {
+        env.push("ENDORA_WORKBENCH=1".to_owned());
+        tmpfs["/work"] = json!(WORK_FOLDER);
+    }
     json!({
         "Image": work.image,
         "Entrypoint": ["endora-worker"],
@@ -137,16 +157,13 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
         "Labels": { RUN_LABEL: turn.run.to_string(), LEASE_LABEL: turn.lease.to_string() },
         "HostConfig": {
             "NetworkMode": work.network,
-            // 256 MB, one CPU, 128 processes.
-            "Memory": 256 * 1024 * 1024,
-            "NanoCpus": 1_000_000_000,
-            "PidsLimit": 128,
+            "Memory": memory,
+            "NanoCpus": cpus,
+            "PidsLimit": pids,
             "ReadonlyRootfs": true,
             "CapDrop": ["ALL"],
             "SecurityOpt": ["no-new-privileges:true"],
-            // The image declares a `/data` volume, which would otherwise be an unbounded
-            // writable disk: a megabyte in memory instead, gone with the container.
-            "Tmpfs": { "/tmp": "size=64m", "/data": "size=1m" },
+            "Tmpfs": tmpfs,
         },
     })
 }
@@ -652,6 +669,7 @@ mod tests {
             cloud_url: "http://node:8788/team-relay/v1".to_owned(),
             hq_mcp: "http://hq:8790/v1/team/mcp".to_owned(),
             capacity,
+            workbench: false,
         }
     }
 
@@ -703,6 +721,60 @@ mod tests {
             "asked again with the place left, and HQ had nothing more"
         );
         assert!(hq.told().is_empty(), "nothing has ended");
+    }
+
+    #[test]
+    fn a_workbench_turn_has_its_own_offline_work_folder_and_reaches_only_the_gateway() {
+        let mut handed = turn(12);
+        handed["env"] = json!(["HTTPS_PROXY=http://192.168.1.10:3128"]);
+        let hq = FakeHq::new(vec![handed]);
+        let docker = FakeDocker::default();
+        let gateway = "http://192.168.1.10:8788";
+        let pi = Work {
+            image: "endora-workbench:latest".to_owned(),
+            network: "endora_sandbox".to_owned(),
+            model_url: format!("{gateway}/team-relay/local/v1"),
+            cloud_url: format!("{gateway}/team-relay/v1"),
+            hq_mcp: format!("{gateway}/team-gateway/mcp"),
+            capacity: 1,
+            workbench: true,
+        };
+        let mut runner = Runner::new(
+            docker.clone(),
+            Hq::new(&hq.url, token_file("workbench")).unwrap(),
+            pi,
+        );
+        runner.step(T0);
+        assert_eq!(
+            docker.specs(),
+            [json!({
+                "Image": "endora-workbench:latest",
+                "Entrypoint": ["endora-worker"],
+                "Env": [
+                    format!("ENDORA_RUN_TOKEN={}", token(12)),
+                    "ENDORA_HQ_MCP=http://192.168.1.10:8788/team-gateway/mcp",
+                    "ENDORA_MODEL_URL=http://192.168.1.10:8788/team-relay/local/v1",
+                    "ENDORA_WORKBENCH=1",
+                ],
+                "Labels": { "endora.run": "12", "endora.lease": "1012" },
+                "HostConfig": {
+                    "NetworkMode": "endora_sandbox",
+                    // A gigabyte, two CPUs, 256 processes: room for a shell, git and a build,
+                    // the work folder's memory included.
+                    "Memory": 1_073_741_824,
+                    "NanoCpus": 2_000_000_000,
+                    "PidsLimit": 256,
+                    "ReadonlyRootfs": true,
+                    "CapDrop": ["ALL"],
+                    "SecurityOpt": ["no-new-privileges:true"],
+                    "Tmpfs": {
+                        "/tmp": "size=64m",
+                        "/data": "size=1m",
+                        "/work": "size=256m,uid=10001,gid=10001,mode=0700",
+                    },
+                },
+            })]
+        );
     }
 
     #[test]

@@ -3,7 +3,9 @@
 //! through Docker's API, fenced on the team's internal network, then reports how it ended and
 //! removes it. It holds Docker's socket, which is as much as holding the host, so it trusts
 //! HQ with nothing but a run and its token: the image, the mounts, the network and the limits
-//! are its own.
+//! are its own. On the Pi (ADR 0110) it reaches HQ through the node's team gateway, and each
+//! turn is a workbench on the `endora_sandbox` network, which reaches the gateway and nothing
+//! else.
 
 mod docker;
 mod hq;
@@ -27,7 +29,10 @@ struct Config {
 }
 
 /// The runner's setup from its environment (`get` reads one variable), with the defaults of
-/// the compose file's `workers` profile.
+/// the compose file's `workers` profile. A runner whose `HQ_URL` is the node's team gateway
+/// (`http://<nas>:8788/team-gateway`, ADR 0110) is the Pi's: its defaults are the workbench
+/// image on the `endora_sandbox` network, with workbench turns reaching HQ and the model
+/// relays only through that gateway. Anything set by name wins.
 fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
     // Empty is unset, as compose passes an unset `${VAR-}`.
     let or = |name: &str, default: &str| {
@@ -42,19 +47,46 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
             "RUNNER_CAPACITY is not a number of turns: {capacity:?}"
         ));
     };
+    let hq = Hq::new(
+        &or("HQ_URL", "http://hq:8790"),
+        or("HQ_RUNNER_TOKEN_FILE", "/runner-token/token"),
+    )?;
+    let pi = hq.through_the_gateway();
+    // The gateway's listener, which also serves the model relays.
+    let listener = hq.origin();
+    let (image, network, model_url, cloud_url, hq_mcp) = if pi {
+        (
+            "endora-workbench:latest".to_owned(),
+            "endora_sandbox".to_owned(),
+            format!("{listener}/team-relay/local/v1"),
+            format!("{listener}/team-relay/v1"),
+            format!("{listener}/team-gateway/mcp"),
+        )
+    } else {
+        (
+            "endora-node:latest".to_owned(),
+            "endora_team".to_owned(),
+            "http://node:8788/team-relay/local/v1".to_owned(),
+            "http://node:8788/team-relay/v1".to_owned(),
+            "http://hq:8790/v1/team/mcp".to_owned(),
+        )
+    };
+    let workbench = match or("WORKBENCH", if pi { "1" } else { "0" }).as_str() {
+        "1" => true,
+        "0" => false,
+        other => return Err(format!("WORKBENCH is 1 or 0, not {other:?}")),
+    };
     Ok(Config {
-        hq: Hq::new(
-            &or("HQ_URL", "http://hq:8790"),
-            or("HQ_RUNNER_TOKEN_FILE", "/runner-token/token"),
-        )?,
+        hq,
         socket: or("DOCKER_SOCKET", "/var/run/docker.sock"),
         work: Work {
-            image: or("WORKER_IMAGE", "endora-node:latest"),
-            network: or("TEAM_NETWORK", "endora_team"),
-            model_url: or("WORKER_MODEL_URL", "http://node:8788/team-relay/local/v1"),
-            cloud_url: or("WORKER_CLOUD_URL", "http://node:8788/team-relay/v1"),
-            hq_mcp: or("WORKER_HQ_MCP", "http://hq:8790/v1/team/mcp"),
+            image: or("WORKER_IMAGE", &image),
+            network: or("TEAM_NETWORK", &network),
+            model_url: or("WORKER_MODEL_URL", &model_url),
+            cloud_url: or("WORKER_CLOUD_URL", &cloud_url),
+            hq_mcp: or("WORKER_HQ_MCP", &hq_mcp),
             capacity,
+            workbench,
         },
     })
 }
@@ -130,5 +162,42 @@ mod tests {
             assert!(refused.is_err(), "{capacity}");
         }
         assert!(config(|name| (name == "HQ_URL").then(|| "https://hq:8790".to_owned())).is_err());
+        assert!(!defaults.work.workbench, "the NAS's runner: no workbench");
+    }
+
+    #[test]
+    fn a_runner_through_the_team_gateway_starts_workbench_turns_reaching_only_the_gateway() {
+        let pi = config(|name| {
+            (name == "HQ_URL").then(|| "http://192.168.1.10:8788/team-gateway".to_owned())
+        })
+        .unwrap();
+        assert_eq!(pi.hq.url(), "http://192.168.1.10:8788/team-gateway");
+        assert!(pi.work.workbench);
+        assert_eq!(pi.work.image, "endora-workbench:latest");
+        assert_eq!(pi.work.network, "endora_sandbox");
+        assert_eq!(pi.work.hq_mcp, "http://192.168.1.10:8788/team-gateway/mcp");
+        assert_eq!(
+            pi.work.model_url,
+            "http://192.168.1.10:8788/team-relay/local/v1"
+        );
+        assert_eq!(pi.work.cloud_url, "http://192.168.1.10:8788/team-relay/v1");
+
+        let told = config(|name| match name {
+            "HQ_URL" => Some("http://192.168.1.10:8788/team-gateway".to_owned()),
+            "WORKER_IMAGE" => Some("endora-workbench:test".to_owned()),
+            "TEAM_NETWORK" => Some("endora_other".to_owned()),
+            "WORKBENCH" => Some("0".to_owned()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(
+            told.work.image, "endora-workbench:test",
+            "what it is told wins"
+        );
+        assert_eq!(told.work.network, "endora_other");
+        assert!(!told.work.workbench);
+        let nas = config(|name| (name == "WORKBENCH").then(|| "1".to_owned())).unwrap();
+        assert!(nas.work.workbench, "turned on by name");
+        assert!(config(|name| (name == "WORKBENCH").then(|| "yes".to_owned())).is_err());
     }
 }
