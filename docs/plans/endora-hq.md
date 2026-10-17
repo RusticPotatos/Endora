@@ -2,8 +2,13 @@
 
 Agreed with the owner in a design interview on 2026-10-16 (questions Q1–Q34), recorded in
 [ADR 0102](../adr/0102-endora-hq.md). Prepared with AI assistance (Claude). This is step 7 of
-[the always-on butler plan](always-on-butler.md). Phases 1 and 2 (section 15) are built: the team
-core in `domains/team`, the HQ service in `app/hq`, and the office screen; the rest is not yet.
+[the always-on butler plan](always-on-butler.md). Phases 1, 2 and 4 (section 15) are built: the
+team core in `domains/team`, the HQ service in `app/hq` and the office screen; real workers
+(Endora's own worker, the model relays, the runner on the NAS and its fence); the team's
+contracts on the home lab ([ADR 0106](../adr/0106-team-contracts.md)); and routines, alarms
+and check-backs ([ADR 0107](../adr/0107-routines-alarms-and-check-backs.md)). Phase 3's
+pairing, Ansible role and Pi are deferred: the NAS runner went first. Phases 5 to 7 are not
+yet.
 
 This document is the specification to build from. It describes behaviour, rules and words,
 not code: implementation starts from here and nowhere else.
@@ -244,6 +249,10 @@ instructions (how to take a good turn) are written for Endora from scratch.
 
 ### Runners
 
+**Deferred** (phase 3): pairing, the `team_runner` role and the Pi are not built. The NAS
+runner went first, configured by hand and started as its own compose profile (section 15,
+phase 4 as built). What follows is the design for later.
+
 A runner is a small program on a host. It joins by pairing:
 
 1. In HQ, the owner adds a runner and gets a pairing code that lasts ten minutes, with the
@@ -288,12 +297,14 @@ The team works better knowing the owner, and must never see their private life.
 ChatGPT once the day's credits are spent, then DeepSeek on its capped balance. Work that
 carries a brief never goes to DeepSeek.
 
-**Models by role:** Sonnet for the developer, the reviewer and the lead; Haiku for the
-researcher; the local model for small jobs (summaries, naming, tidying), at no cost; Opus only
-when the owner approves it for a task.
+**Models by role:** Sonnet or Haiku for the developer, the reviewer and the lead; Haiku only
+for the researcher; the local model for small jobs (summaries, naming, tidying), at no cost.
+Opus is refused until the owner can approve it for a task (later). Today every member thinks
+with the local model (section 15, phase 4 as built).
 
-**The money**, by default (a monthly allowance of API credits that does not roll over; the
-amounts are settings the owner changes):
+**The money**, by default (a monthly allowance of API credits that does not roll over; making
+the pool and the shares settings the owner changes on screen is later: today they are the
+defaults below):
 
 | Share | Per month | Per day |
 | --- | --- | --- |
@@ -405,7 +416,8 @@ Each phase is complete, tested and merged with the owner's OK before the next.
 2. **HQ and the office**: the HQ service, its container, and the office screen in the
    console, running on the simulated runner.
 3. **Runners**: the runner program, pairing, the `team_runner` Ansible role and the network
-   fences, on the NAS and the Pi. Needs step 5 (the Pi on its VLAN).
+   fences, on the NAS and the Pi. Needs step 5 (the Pi on its VLAN). **Deferred**: the NAS
+   runner and its fence went first, in phase 4; pairing, the role and the Pi come later.
 4. **Real workers**: the Claude worker, the team protocol over MCP, and budgets that stop a
    run mid-way. Needs step 4 (the API key).
 5. **Real actions**: the gateway's pull requests to Forgejo and GitHub, and the gate.
@@ -443,9 +455,11 @@ team pool stays $70 a month. The pieces and their contracts:
 3. **The worker**, `endora-worker` (crate `app/worker`, in the same image). It reads
    `ENDORA_RUN_TOKEN`, `ENDORA_HQ_MCP` (`http://hq:8790/v1/team/mcp`), `ENDORA_MODEL_URL`
    (`http://node:8788/team-relay/local/v1`) and `ENDORA_MOST_ROUNDS` (default 12), and
-   `ENDORA_CONTRACTS` (default: `/team-relay/contracts` beside the model relay). It
-   initialises MCP, lists the team's tools and the node's contracts (a node that offers none
-   leaves the team's tools), calls `my_turn`, then loops: the model answers or calls tools,
+   `ENDORA_CONTRACTS` (default: `/team-relay/contracts` beside the model relay), and
+   `ENDORA_MODEL` (the model it names, default `local`; the local relay uses its own whatever
+   the name). It initialises MCP, lists the team's tools and the node's contracts (a node that
+   offers none leaves the team's tools), calls `my_turn`, claims its turn's task before the
+   model's first round (and tells the model it did), then loops: the model answers or calls tools,
    each tool call goes where its tool came from (`tools/call` on HQ, or the contract on the
    node, whose refusal is a tool error), until the model stops calling tools or the rounds
    run out. The same call (tool and arguments) asked again straight after is answered from
@@ -453,7 +467,8 @@ team pool stays $70 a month. The pieces and their contracts:
    same way. A last answer with no tool call is posted to its task's thread. An
    answer of 401 or 402 from HQ or the relay means the turn is over: it exits at once. A
    question put on the owner's desk (`ask_owner`) ends the turn too: it stops there. Exit
-   0 is a turn taken; anything else failed. Its instructions are written for Endora, and
+   0 is a turn taken; exit 3 means HQ or the relay said the turn was over; anything else
+   failed. Its instructions are written for Endora, and
    with contracts offered say what they may do on the home lab and that anything else is
    the owner's.
 4. **The runner adapter** in HQ (`RemoteRunner`), used when the demo is off. It keeps, in
@@ -515,7 +530,9 @@ checked with HQ as the relays are:
 - `GET /team-relay/contracts`: the contracts as MCP tools; `POST /team-relay/contracts/{name}`:
   one call, arguments as the JSON body, answered `{ "text" }` or `{ "error" }` with a status.
 - `homelab_status` (read, Internal): the observer's snapshot, compact, marked stale.
-- `container_logs` (read, Confidential, local turns only): the newest 100 lines, at most
+- `container_logs` (read, Confidential; meant for local turns only, which is written but not
+  yet enforced: every turn is local today, and enforcing it is required before any member
+  thinks with Claude, as ADR 0106 records): the newest 100 lines, at most
   16 KB, scrubbed of secrets; never Endora's own containers; a plain refusal without Portainer.
 - `restart_container` (automatic act): never Endora's own, never what a restart will not fix
   (restarting, out of memory, crash-looping); once a container an hour and three an hour in
@@ -526,7 +543,8 @@ checked with HQ as the relays are:
   (`/v1/hq/contracts`).
 - HQ started with the demo off puts the demo's goals and their open tasks away (dropped, their
   queued turns ended, a notice on the desk), so none of it becomes a real turn. The owner sets
-  a real goal and hands the lead its first task from the HQ screen.
+  a real goal and hands the lead its first task from the HQ screen. The board hides a dropped
+  goal's tasks, finished or not, so the retired demo's notes do not bury the owner's own.
 
 ## 16. Later, and not at all
 

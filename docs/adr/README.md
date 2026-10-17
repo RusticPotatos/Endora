@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Forty-nine records stand, every one accepted, and forty-nine earlier ones are archived into them
+Fifty-eight records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -220,6 +220,8 @@ of an existing record and take the next number.
 | [0089](0089-a-model-sorts-the-message-not-a-word-list.md) | The local model sorts the message, not a word list | — |
 | [0090](0090-skills-are-sent-once.md) | Skills are sent once | — |
 | [0091](0091-what-the-deep-model-costs.md) | What the deep model costs | — |
+| [0092](0092-the-home-lab-is-a-server-owned-read-view.md) | The home lab is a server-owned read view | — |
+| [0093](0093-the-handheld-is-an-explicit-home-console.md) | The handheld is an explicit home console | — |
 | [0094](0094-work-it-finds-for-itself.md) | Work it finds for itself | — |
 | [0095](0095-more-sources-for-work-it-finds.md) | More sources for the work it finds | — |
 | [0096](0096-patterns-it-notices.md) | Patterns it notices | — |
@@ -235,5 +237,5 @@ of an existing record and take the next number.
 | [0106](0106-team-contracts.md) | Team contracts: what Endora offers HQ's workers | — |
 | [0107](0107-routines-alarms-and-check-backs.md) | Routines, alarms and check-backs: how the team keeps working | — |
 
-The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
+The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

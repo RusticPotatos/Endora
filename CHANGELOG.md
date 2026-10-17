@@ -9,6 +9,36 @@ tagged release.
 
 ### Added
 
+- **Routines, alarms and check-backs: how the team keeps working**
+  ([ADR 0107](docs/adr/0107-routines-alarms-and-check-backs.md)). Goals stay passive and work
+  arrives as tasks. A routine hands one member a task on a rhythm (one open at a time; a late
+  tick fires once; every firing, skip and post in HQ's feed; never past the kill switch, a
+  pause, the budget or a goal that is not active), and its member closes the check once taken.
+  The node's home-lab observer raises an alarm when a container or service goes from well to
+  trouble (new trouble only, never Endora's own, one an hour), which HQ's alarm routine turns
+  into a task or a post in its open one. A member can `check_back` on its task in 5 to 720
+  minutes. A clock with nothing to do starts no turn, and a task whose turns move nothing backs
+  off its stale wakes from 2 to 30 minutes. HQ's screen has a Routines card (rhythm, last run,
+  on/off, run now, add one), and HQ makes "Check the home lab", every 6 hours for the lead,
+  once on first start with the demo off.
+
+- **The team's contracts on the home lab** ([ADR 0106](docs/adr/0106-team-contracts.md)). A
+  turn sees the home lab (`homelab_status`), reads a container's log scrubbed of secrets
+  (`container_logs`) and restarts a container within limits (`restart_container`: one an hour
+  each, three in all, never Endora's own, never what a restart will not fix), all decided by
+  the node and in its audit log; a restart lands on the owner's desk as a notice. The owner
+  switches the restart, or every contract, off on the HQ screen. With the demo off, HQ puts the
+  demo's goals and open work away on start.
+
+- **Endora HQ's real workers** ([ADR 0102](docs/adr/0102-endora-hq.md), phase 4). The team
+  protocol over MCP, opened by a turn's own token; the node's model relays (Anthropic with the
+  owner's key, capped and charged before and during each call; the local model at no cost);
+  `endora-worker`, Endora's own Rust worker, which claims its task before the model's first
+  round and answers a repeated call from what the turn already has; `endora-runner`, which
+  starts each turn as a fresh, read-only, capped container on a fenced internal network that
+  reaches only HQ and the node's team listener; and leases, so a report from an earlier attempt
+  of a turn ends nothing.
+
 - **Endora HQ, the service and the office** ([ADR 0102](docs/adr/0102-endora-hq.md), phase 2).
   `endora-hq` runs the team in its own container (Compose profile `hq`, from the node's image),
   with its own database, ticking every 30 seconds, and answers only the node, which signs every
@@ -159,6 +189,14 @@ tagged release.
   starts; a table nothing reads is data nothing can export or delete.
 
 ### Fixed
+
+- HQ's board hides a dropped goal's tasks, so the retired demo's notes do not bury the owner's;
+  a live update keeps the page's scroll and the activity log's; and the screen shows money
+  spent apart from money held for turns, in dollars.
+- The team's relays and contracts are served only on the team listener, never on the node's
+  main port, and a contract refused for an unknown name or bad arguments is in the audit log.
+- Deploys recompile only what changed and no longer send gigabytes of worktrees and build
+  output to every build.
 
 - **Endora no longer asks about devices that stopped answering** (the "Still yours?" card).
   The owner did not want it. It is removed with what was under it: the card and its routes,

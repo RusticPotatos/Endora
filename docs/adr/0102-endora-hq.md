@@ -14,7 +14,10 @@ the turn may still spend, caps the reply to that, adds the owner's Anthropic key
 leaves the node), and charges HQ what the call cost, priced from Anthropic's table; a model
 not priced there is not relayed, and a turn past its budget is stopped. The owner chose to
 share their default Anthropic project, whose cap is the outer limit, with Endora enforcing the
-team's pool itself. The rest (runners and the worker itself) is not yet.
+team's pool itself. The runner and the worker are built too: Endora's own Rust worker
+(`app/worker`) takes each turn in a fresh container the runner (`app/runner`) starts on the NAS
+through Docker's socket, on a fenced internal network that reaches only HQ and the node's team
+listener; HQ hands each turn out once, under a lease. Runner pairing for the Pi is deferred.
 
 Amended 2026-10-17 by [0106](0106-team-contracts.md): a turn reaches the home lab only through
 **contracts** the node serves on its team listener beside the relays (`/team-relay/contracts`),
@@ -22,6 +25,11 @@ opened by the same token: reads are free, a safe fix (a container restart) runs 
 within limits and lands on the owner's desk as a notice, and nothing else is offered. HQ started
 with the demo off puts the demo's goals and their open tasks away (dropped, with a notice), so
 none of it becomes a real turn.
+
+Amended 2026-10-17 by [0107](0107-routines-alarms-and-check-backs.md): goals are passive and
+work arrives as tasks. Routines hand a member a task on a rhythm, the node's alarms about the
+home lab join a routine's open task, a member can check back on its task, a clock with nothing
+to do starts no turn, and a task whose turns move nothing backs off.
 
 ## Context
 
@@ -44,9 +52,10 @@ Endora gets a **team**: a separate feature, Endora HQ, in its own container.
   Docker on the NAS) run each turn in a fresh container that can reach only HQ and the
   model provider.
 - **One protocol for every worker.** A worker is any agent runtime that speaks the team
-  protocol, an MCP server HQ provides inside the container. The first is the Claude Agent SDK
-  on the owner's Max API credits; then the local model, Codex on Sign in with ChatGPT, and
-  DeepSeek.
+  protocol, an MCP server HQ provides inside the container. The first is Endora's own small
+  Rust worker, thinking with the local model (amended 2026-10-16, the owner's decision; it
+  replaced the Claude Agent SDK first planned here); Claude, through the node's relay, comes
+  later, per member; then Codex on Sign in with ChatGPT, and DeepSeek.
 - **Real actions go through Endora.** A member asks; HQ passes it to Endora's gateway, which
   allows, refuses or asks the owner. Code goes to pull requests (Forgejo for public
   repositories, GitHub for private ones, opened by the gateway); only the owner merges.
