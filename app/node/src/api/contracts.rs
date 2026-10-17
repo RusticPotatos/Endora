@@ -81,15 +81,39 @@ async fn the_turn(state: &AppState, headers: &HeaderMap) -> Result<Turn, Respons
     turn_of(hq, token_of(headers), refuse).await
 }
 
-/// `GET /team-relay/contracts`: the contracts a turn may call, as MCP lists tools.
+/// `GET /team-relay/contracts`: the contracts a turn may call, then the bridged tools its
+/// role and its model may use (ADR 0108), as MCP lists tools, each with its kind.
 pub(super) async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(refused) = the_turn(&state, &headers).await {
-        return refused;
-    }
-    let tools: Vec<serde_json::Value> = offered(switches_of(&state))
+    let turn = match the_turn(&state, &headers).await {
+        Ok(turn) => turn,
+        Err(refused) => return refused,
+    };
+    let switches = switches_of(&state);
+    let mut tools: Vec<serde_json::Value> = offered(switches)
         .iter()
-        .map(Contract::as_tool)
+        .map(|c| {
+            let mut tool = c.as_tool();
+            tool["kind"] = if c.kind == contracts::Kind::Read {
+                "read"
+            } else {
+                "act"
+            }
+            .into();
+            tool
+        })
         .collect();
+    if switches.all {
+        let looked = state.clone();
+        let bridged =
+            tokio::task::spawn_blocking(move || super::bridge::offered_to(&looked, &turn))
+                .await
+                .unwrap_or_default();
+        tools.extend(
+            bridged
+                .iter()
+                .map(endora_capabilities::bridge::Bridged::as_tool),
+        );
+    }
     Json(json!({ "tools": tools })).into_response()
 }
 
@@ -141,12 +165,7 @@ pub(super) async fn call(
         );
     }
     if !contracts::all().iter().any(|c| c.name == name) {
-        refused_for("there is no such contract");
-        return refuse(
-            StatusCode::NOT_FOUND,
-            "",
-            &format!("no contract is called {name}"),
-        );
+        return bridged(state, turn, name, args).await;
     }
     if !offered(switches_of(&state)).iter().any(|c| c.name == name) {
         record(
@@ -188,6 +207,62 @@ pub(super) async fn call(
                 &format!("{member} (run {run}) was refused {name}: {why}"),
             );
             refuse(status, "", &why)
+        }
+        Err(_) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed"),
+    }
+}
+
+/// A call of a bridged tool (ADR 0108): offered to this turn now, or refused as no contract.
+async fn bridged(state: AppState, turn: Turn, name: String, args: serde_json::Value) -> Response {
+    let member = who(&turn);
+    let run = turn.run;
+    let worked = state.clone();
+    let called_name = name.clone();
+    let done = tokio::task::spawn_blocking(move || {
+        let switched_on = switches_of(&worked).all;
+        // Found among every bridged tool, so that one this turn may not use is refused with
+        // the reason (its role, its model), not as unknown.
+        let tool = super::bridge::catalog(&worked)
+            .into_iter()
+            .find(|b| b.name == called_name)
+            .filter(|_| switched_on);
+        let Some(tool) = tool else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("no contract is called {called_name}"),
+            ));
+        };
+        super::bridge::call(&worked, &turn, &tool, &args)
+    })
+    .await;
+    match done {
+        Ok(Ok(called)) => {
+            record(&state, &format!("{member} (run {run}) {}", called.said));
+            let mut answer = json!({ "text": called.text });
+            if called.asked_owner {
+                answer["asked_owner"] = true.into();
+            }
+            Json(answer).into_response()
+        }
+        Ok(Err((status, why))) => {
+            let why = if status == StatusCode::NOT_FOUND {
+                "there is no such contract".to_owned()
+            } else {
+                why
+            };
+            record(
+                &state,
+                &format!(
+                    "{member} (run {run}) was refused {}: {why}",
+                    one_line(&name)
+                ),
+            );
+            let said = if status == StatusCode::NOT_FOUND {
+                format!("no contract is called {name}")
+            } else {
+                why
+            };
+            refuse(status, "", &said)
         }
         Err(_) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed"),
     }
@@ -461,7 +536,7 @@ fn restart_container(
 
 /// Puts a notice on the owner's desk in HQ. One that cannot be put there is said in the log:
 /// the audit log has the restart either way.
-fn tell_owner(state: &AppState, run: i64, text: &str) {
+pub(super) fn tell_owner(state: &AppState, run: i64, text: &str) {
     let Some(hq) = state.hq.as_ref() else {
         return;
     };
@@ -682,10 +757,12 @@ mod tests {
             .filter_map(|t| t["name"].as_str())
             .collect();
         assert_eq!(
-            names,
-            ["homelab_status", "container_logs", "restart_container"]
+            names[..3],
+            ["homelab_status", "container_logs", "restart_container"],
+            "the contracts first, then what the bridge offers (ADR 0108)"
         );
         assert!(listed["tools"][2]["inputSchema"]["required"].is_array());
+        assert_eq!(listed["tools"][2]["kind"], "act");
         let (status, _) = use_contract(&state, "shell", json!({})).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "nothing but the contracts");
         let (status, _) = answer(
@@ -851,6 +928,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|t| t["name"].as_str().unwrap().to_owned())
+                .filter(|n| contracts::all().iter().any(|c| c.name == n))
                 .collect()
         };
         let _ = switch(
@@ -897,7 +975,10 @@ mod tests {
             ask("GET", "/team-relay/contracts", Some("good"), ""),
         )
         .await;
-        assert!(names(&listed).is_empty());
+        assert!(
+            listed["tools"].as_array().unwrap().is_empty(),
+            "every contract off is the bridge off too: {listed}"
+        );
         let (status, _) = use_contract(&state, "homelab_status", json!({})).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(

@@ -502,12 +502,16 @@ function viewHQ() {
       // asked, to read the task's thread, where the answer typed on the card is written first.
       question: [["seen", "Answer & wake", "ok"], ["dismiss", "Dismiss", "no"]],
       // Something a member did through Endora's contracts, such as a restart: only to know of.
-      notice: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
+      notice: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]],
+      // An action a member proposed through Endora's bridge (ADR 0108): approving runs exactly
+      // what the card shows, once; declining runs nothing.
+      approval: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
     return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(d.text)}</p>
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${demoNote}</p>
+      ${d.kind === "approval" ? hqApproval(d.approval) : ""}
       ${d.kind === "question" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
   }).join("");
@@ -552,6 +556,15 @@ function viewHQ() {
   </div>`;
 }
 
+// What an approval will run, from what the node stored: the tool, its arguments one a line,
+// and the member's reason. Every word is the member's or a tool's, so all of it is escaped.
+function hqApproval(a) {
+  if (!a) return "";
+  const args = (a.args || []).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+  return `<dl class="hq-kv"><dt>Runs</dt><dd>${esc(a.tool)}</dd>${args}</dl>
+    <p class="hq-who">${esc(a.member || "A member")} says why: ${esc(a.why)}</p>`;
+}
+
 // What the team may do on the home lab: Endora's contracts (ADR 0106), and the owner's two
 // switches. Each button offers the other way.
 function hqContracts(c) {
@@ -560,7 +573,8 @@ function hqContracts(c) {
     data-act="hq:contracts:${key}:${on ? "off" : "on"}">${label}: ${on ? "on" : "off"}</button>`;
   return `<details class="hq-card"><summary>What the team may do on the home lab</summary>
     <p class="hq-note">Look at the home lab and its logs (secrets replaced), and restart a container: one an hour each, three in all.
-      You are told of every restart. Anything else asks you.</p>
+      You are told of every restart. Endora's other skills are the team's too, as each skill's own setting says:
+      on runs (three an hour, and you are told), ask puts it on your desk for approval, off is never offered.</p>
     <div class="hq-row">${btn("all", c.all, "Contracts")}${c.all ? btn("restart_container", c.restart_container, "Restarts") : ""}</div></details>`;
 }
 

@@ -465,31 +465,15 @@ pub(super) async fn invoke_capability(
             entity: "capability",
         }));
     };
-    // Data-loss tripwire + query minimization (ADR 0051), on the explicit-invoke
-    // path too: refuse a request carrying a secret, and redact personal identifiers
-    // before it leaves.
-    let mut input = input;
-    if cap.info().reaches_external {
-        if let Some(kind) = endora_infrastructure::scan_outbound_secret(&input.to_string()) {
-            return Err(ApiError(AppError::BadRequest {
-                message: format!("refusing to send this out — it looks like it contains {kind}"),
-            }));
-        }
-        endora_infrastructure::redact_pii_in_value(&mut input);
-    }
     let config = state.config.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let settings = settings_map(config.as_ref())
-            .remove(&id)
-            .unwrap_or_default();
-        cap.invoke(&input, &settings)
-    })
-    .await
-    .map_err(|_| {
-        ApiError(AppError::Repository(RepositoryError::Backend(
-            "worker task failed".to_owned(),
-        )))
-    })?;
+    let result =
+        tokio::task::spawn_blocking(move || invoke_now(config.as_ref(), cap.as_ref(), input))
+            .await
+            .map_err(|_| {
+                ApiError(AppError::Repository(RepositoryError::Backend(
+                    "worker task failed".to_owned(),
+                )))
+            })?;
     match result {
         Ok(value) => Ok(Json(json!({ "ok": true, "result": value }))),
         Err(CapabilityError::BadInput(m)) => Err(ApiError(AppError::BadRequest { message: m })),
@@ -498,6 +482,35 @@ pub(super) async fn invoke_capability(
             Ok(Json(json!({ "ok": false, "unavailable": m })))
         }
     }
+}
+
+/// Runs a built-in capability as an explicit invoke runs it, for the owner's invoke and the
+/// team's bridge (ADR 0108) alike: the data-loss tripwire and query minimization (ADR 0051)
+/// for one that reaches outside (a request carrying a secret is refused, and personal
+/// identifiers are redacted before it leaves), then the skill with its settings, which are
+/// its connection's for a skill that rides one.
+///
+/// # Errors
+/// [`CapabilityError`] if the input is refused or bad, or the skill cannot run.
+pub(super) fn invoke_now(
+    config: &endora_capabilities::ConfigStore,
+    cap: &dyn Capability,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, CapabilityError> {
+    let info = cap.info();
+    let mut input = input;
+    if info.reaches_external {
+        if let Some(kind) = endora_infrastructure::scan_outbound_secret(&input.to_string()) {
+            return Err(CapabilityError::BadInput(format!(
+                "refusing to send this out — it looks like it contains {kind}"
+            )));
+        }
+        endora_infrastructure::redact_pii_in_value(&mut input);
+    }
+    let settings = settings_map(config)
+        .remove(info.borrows_from.unwrap_or(info.id))
+        .unwrap_or_default();
+    cap.invoke(&input, &settings)
 }
 
 /// Proves an MCP server works with the credential it has, right now.

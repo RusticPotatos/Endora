@@ -459,6 +459,57 @@ fn asking_the_owner_ends_the_turn_there_and_exits_0() {
 }
 
 #[test]
+fn an_action_put_on_the_owners_desk_for_approval_ends_the_turn_as_a_question_does() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, to_node) = fake(Box::new(|sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (
+            200,
+            json!({ "tools": [{ "name": "sonarr_remove_and_search", "kind": "act",
+                "description": "Remove a stuck download and search again.",
+                "inputSchema": { "type": "object", "properties": {
+                    "item": { "type": "integer" }, "why": { "type": "string" } },
+                    "required": ["item", "why"] } }] })
+            .to_string(),
+        ),
+        _ => (
+            200,
+            json!({ "text": "On the owner's desk for approval; you are woken when they decide.",
+                    "asked_owner": true })
+            .to_string(),
+        ),
+    }));
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[
+                (
+                    "call_1",
+                    "sonarr_remove_and_search",
+                    r#"{"item": 102, "why": "it is stuck"}"#,
+                ),
+                ("call_2", "claim", r#"{"task": 7}"#),
+            ]),
+        ),
+        (200, says("Done.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    assert_eq!(
+        to_model.lock().unwrap().len(),
+        1,
+        "the model is not asked again"
+    );
+    assert_eq!(
+        to_node.lock().unwrap().last().map(|s| s.path.clone()),
+        Some("/team-relay/contracts/sonarr_remove_and_search".to_owned())
+    );
+    assert!(
+        !methods(&to_hq).contains(&"tools/call post".to_owned()),
+        "nothing after it, not even a last word"
+    );
+}
+
+#[test]
 fn the_rounds_run_out() {
     let (hq_url, to_hq) = hq(None);
     let (model_url, to_model) = model(vec![(200, calls(&[("call_1", "claim", r#"{"task": 7}"#)]))]);

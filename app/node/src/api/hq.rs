@@ -57,6 +57,27 @@ pub(super) fn record(state: &AppState, what: &str) {
 pub(super) async fn hq_snapshot(State(state): State<AppState>) -> Answer {
     let mut answer = ask(&state, "/v1/snapshot".to_owned(), None).await?;
     answer.0["contracts"] = super::contracts::switches_said(&state);
+    // Each approval's card shows what will run, from what the node stored (ADR 0108).
+    let looked = state.clone();
+    let mut desk = answer.0["desk"].take();
+    let desk = tokio::task::spawn_blocking(move || {
+        for item in desk.as_array_mut().into_iter().flatten() {
+            if item["kind"] != "approval" {
+                continue;
+            }
+            if let Some(approval) = item["id"]
+                .as_i64()
+                .and_then(|id| super::bridge::approval_at(&looked, id))
+                .filter(|a| item["text"] == super::bridge::desk_text(a).as_str())
+            {
+                item["approval"] = super::bridge::shown(&approval);
+            }
+        }
+        desk
+    })
+    .await
+    .unwrap_or_default();
+    answer.0["desk"] = desk;
     Ok(answer)
 }
 
@@ -103,18 +124,35 @@ pub(super) async fn hq_task(
 
 #[derive(Deserialize)]
 pub(super) struct HqDecision {
-    decision: String,
+    pub(super) decision: String,
     /// For a member's question: the owner's answer, which HQ writes in the task's thread.
     #[serde(default)]
-    answer: String,
+    pub(super) answer: String,
 }
 
-/// The owner decides an item on their desk.
+/// The owner decides an item on their desk. An approval of the team's (ADR 0108) is decided
+/// here, on the node, which runs exactly what it stored when the owner says yes.
 pub(super) async fn hq_decide(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(req): Json<HqDecision>,
 ) -> Answer {
+    client(&state)?;
+    let looked = state.clone();
+    let approval = tokio::task::spawn_blocking(move || super::bridge::approval_at(&looked, id))
+        .await
+        .unwrap_or(None);
+    if let Some(approval) = approval {
+        let decided = state.clone();
+        let decision = req.decision.clone();
+        return tokio::task::spawn_blocking(move || {
+            super::bridge::decide(&decided, &approval, &decision)
+        })
+        .await
+        .map_err(|_| failed(HqError::Unreachable("a worker thread failed".to_owned())))?
+        .map(Json)
+        .map_err(|(status, why)| (status, Json(json!({ "error": why }))));
+    }
     let answer = ask(
         &state,
         format!("/v1/desk/{id}"),

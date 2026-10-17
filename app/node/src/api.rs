@@ -886,6 +886,8 @@ mod hq;
 mod relay;
 // The team's contracts: what Endora offers HQ's workers on the home lab (ADR 0106).
 mod contracts;
+// The bridge: Endora's capabilities as the team's tools (ADR 0108).
+mod bridge;
 // The providers and ordered model lists on the AI screen (ADR 0105).
 mod model_lists;
 // The agenda loop (ADR 0103): signals become items, and the owner's answers to them.

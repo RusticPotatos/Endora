@@ -81,8 +81,13 @@ fn anthropic_key(config: &endora_capabilities::ConfigStore) -> Option<String> {
 pub(super) struct Turn {
     pub(super) run: i64,
     pub(super) member: String,
-    role: String,
-    left: i64,
+    pub(super) role: String,
+    pub(super) left: i64,
+    /// Whether the member thinks on a cloud model, as HQ says (`"cloud": true`). The check
+    /// point for Confidential results (ADR 0105, 0108): every member is on the house's model
+    /// today, so HQ does not say it yet, and a turn counts as local. The member who first
+    /// thinks with a cloud model must be said so here, by HQ, before that turn runs.
+    pub(super) cloud: bool,
 }
 
 /// A turn's calls to Anthropic, one at a time, by token. HQ knows only what has been
@@ -140,6 +145,7 @@ pub(super) async fn turn_of(
             member: v["member"].as_str().unwrap_or("").to_owned(),
             role: v["role"].as_str().unwrap_or("").to_owned(),
             left: v["left"].as_i64().unwrap_or(0),
+            cloud: v["cloud"].as_bool().unwrap_or(false),
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
             StatusCode::UNAUTHORIZED,

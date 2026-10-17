@@ -172,6 +172,9 @@ fn instructions(posted: bool, contracts: bool) -> String {
              diagnose first, and say why.\n\
              - After a fix, check back to confirm it held: call check_back with the minutes to \
              wait and what you will look at.\n\
+             - Endora's other tools say whether they read or act; an action that needs the \
+             owner's approval goes on their desk and ends your turn, and you are woken when they \
+             decide.\n\
              - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
              never try to work around a refusal.",
         );
@@ -281,17 +284,20 @@ fn run(
     if answered.last.as_deref() == Some(key.as_str()) && answered.said.contains_key(&key) {
         return Ok((ALREADY.to_owned(), false));
     }
-    let (said, refused) = if on_the_node.iter().any(|c| c == tool) {
+    let (said, refused, approval) = if on_the_node.iter().any(|c| c == tool) {
         node.call(tool, &args)?
     } else {
-        hq.call(tool, &args)?
+        let (said, refused) = hq.call(tool, &args)?;
+        (said, refused, false)
     };
     let said = if refused {
         format!("Refused: {said}")
     } else {
         said
     };
-    let asked = !refused && tool == "ask_owner";
+    // A question to the owner ends the turn, and so does an action the node put on the
+    // owner's desk for approval (ADR 0108): the member is woken when the owner decides.
+    let asked = !refused && (tool == "ask_owner" || approval);
     let nothing_new = answered.said.get(&key) == Some(&said);
     answered.said.insert(key.clone(), said.clone());
     answered.last = Some(key);
@@ -502,9 +508,10 @@ impl<'a> Node<'a> {
         }
     }
 
-    /// Calls a contract: what it said, and whether that was a refusal. Anything but a 401 or
-    /// a 402 is the tool's own answer, for the model to read.
-    fn call(&self, name: &str, arguments: &Value) -> Result<(String, bool), Stopped> {
+    /// Calls a contract: what it said, whether that was a refusal, and whether the node put
+    /// it on the owner's desk for approval, which ends the turn. Anything but a 401 or a 402
+    /// is the tool's own answer, for the model to read.
+    fn call(&self, name: &str, arguments: &Value) -> Result<(String, bool, bool), Stopped> {
         let sent = self
             .agent
             .post(&format!("{}/{name}", self.url))
@@ -512,7 +519,7 @@ impl<'a> Node<'a> {
             .send_json(arguments);
         let mut response = match sent {
             Ok(response) => response,
-            Err(e) => return Ok((format!("the node could not be reached: {e}"), true)),
+            Err(e) => return Ok((format!("the node could not be reached: {e}"), true, false)),
         };
         let status = response.status().as_u16();
         if matches!(status, 401 | 402) {
@@ -525,12 +532,16 @@ impl<'a> Node<'a> {
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or(Value::Null);
         if (200..300).contains(&status) {
-            return Ok((body["text"].as_str().unwrap_or("").to_owned(), false));
+            return Ok((
+                body["text"].as_str().unwrap_or("").to_owned(),
+                false,
+                body["asked_owner"] == true,
+            ));
         }
         let said = body["error"]
             .as_str()
             .map_or_else(|| format!("the node answered {status}"), str::to_owned);
-        Ok((said, true))
+        Ok((said, true, false))
     }
 }
 
@@ -686,7 +697,8 @@ mod tests {
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 4, "{told}");
         let rules: Vec<&str> = parts[2].lines().collect();
-        assert_eq!(rules.len(), 5, "{told}");
+        assert_eq!(rules.len(), 6, "{told}");
+        assert!(told.contains("owner's approval"), "{told}");
         assert!(rules[1..].iter().all(|r| r.starts_with("- ")));
         assert!(told.contains("restart_container"));
         assert!(

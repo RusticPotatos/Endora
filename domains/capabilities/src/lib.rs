@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod application;
+pub mod bridge;
 pub mod contracts;
 pub mod domain;
 pub mod home_assistant;
