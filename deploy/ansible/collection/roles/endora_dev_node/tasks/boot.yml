@@ -3,11 +3,23 @@
 # container's memory limit ("Your kernel does not support memory limit capabilities"): a
 # sandbox's gigabyte cap would be ignored and one runaway turn could fill the Pi. Turning it
 # on is two words on the kernel's command line, which is one line; it takes effect at the next
-# boot, and the old line is kept beside it (backup) for rollback.
+# boot. The old line is kept in /etc/endora for rollback, not beside it: /boot/firmware is FAT,
+# which refuses the ':' in Ansible's own backup names.
 - name: The kernel's command line
   ansible.builtin.stat:
     path: "{{ endora_dev_node_cmdline }}"
   register: endora_dev_node_cmdline_file
+
+- name: Keep the command line from before the first run, for rollback
+  ansible.builtin.copy:
+    src: "{{ endora_dev_node_cmdline }}"
+    dest: /etc/endora/cmdline.txt.before
+    remote_src: true
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+  when: endora_dev_node_cmdline_file.stat.exists
 
 - name: Memory limits for containers from the next boot
   ansible.builtin.replace:
@@ -15,7 +27,6 @@
     # The one line, unless it already has the memory controller on.
     regexp: '^(?!.*\bcgroup_memory=1\b)(.*\S)[ \t]*$'
     replace: '\1 cgroup_enable=memory cgroup_memory=1'
-    backup: true
   register: endora_dev_node_cmdline_memory
   when: endora_dev_node_cmdline_file.stat.exists
 
