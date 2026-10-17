@@ -1,0 +1,30 @@
+---
+# The order is the safe one: nothing changes until every setting checks out, the firewall lets
+# SSH in before it denies anything, and the sandbox's egress rules are in place before its
+# network exists.
+- name: Endora dev node
+  when: endora_dev_node_enabled | bool
+  block:
+    - name: Check the settings
+      ansible.builtin.import_tasks: validate.yml
+
+    - name: Endora's folder
+      ansible.builtin.file:
+        path: /etc/endora
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: The host firewall
+      ansible.builtin.import_tasks: firewall.yml
+      when: endora_dev_node_firewall | bool
+
+    - name: Docker CE
+      ansible.builtin.import_tasks: docker.yml
+
+    - name: Fewer writes to the SD card
+      ansible.builtin.import_tasks: sdcard.yml
+
+    - name: The sandbox network
+      ansible.builtin.import_tasks: sandbox.yml

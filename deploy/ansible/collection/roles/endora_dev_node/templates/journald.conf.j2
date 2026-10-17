@@ -1,0 +1,6 @@
+# Managed by Ansible (endora_dev_node role); edits here are overwritten. Keeps the journal off
+# the SD card (volatile) or capped on it (persistent).
+[Journal]
+Storage={{ endora_dev_node_journald_storage }}
+RuntimeMaxUse={{ endora_dev_node_journald_max_use }}
+SystemMaxUse={{ endora_dev_node_journald_max_use }}

@@ -1,0 +1,69 @@
+---
+# Endora's dev node (Endora ADR 0110): a Raspberry Pi that runs the team's runner and each turn's
+# sandbox container, the first of the team's rings. Docker CE, a host firewall, low writes to
+# the SD card, and the `endora_sandbox` network, whose only way out is the NAS's team gateway.
+# The images are built on another machine and copied here by Endora's `make deploy-pi`, which
+# also starts the runner; this role prepares the host. See README.md.
+endora_dev_node_enabled: false
+
+# The NAS that runs endora-node: its team gateway (8788) is the only place a sandbox may reach.
+# An IPv4 address, from your inventory and never from this repository; no default, and the role
+# stops when it is missing, e.g. 192.168.1.10.
+# endora_nas_addr:
+
+# Your LAN, as an IPv4 CIDR (e.g. 192.168.1.0/24): the only place SSH is let in from. No
+# default, and the role stops when it is missing rather than shut you out.
+endora_dev_node_lan_cidr: ""
+# More places SSH may come from, e.g. ["fe80::/10"] when the Pi is reached by its .local name
+# over IPv6 link-local. The role checks that the connection it runs over is in one of these
+# or the LAN before it turns the firewall on.
+endora_dev_node_ssh_extra_cidrs: []
+endora_dev_node_ssh_port: 22
+
+# The account that runs `make deploy-pi` over SSH: joins the docker group (which is as good as
+# root on this host) and owns the runner's token folder.
+endora_dev_node_user: endora
+
+# Docker CE from Docker's own apt repository, signed with its published key.
+endora_dev_node_docker_repo: https://download.docker.com/linux/debian
+endora_dev_node_docker_key_url: "{{ endora_dev_node_docker_repo }}/gpg"
+endora_dev_node_docker_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_architecture] | default(ansible_architecture) }}"
+# Raspberry Pi OS (64-bit) reports itself as Debian: bookworm or trixie.
+endora_dev_node_docker_suite: "{{ ansible_distribution_release }}"
+endora_dev_node_docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+# Container logs, kept small: the local driver, compressed, a few small files per container.
+endora_dev_node_docker_log_max_size: 5m
+endora_dev_node_docker_log_max_file: 2
+
+# The SD card wears with every write. The journal lives in memory (volatile) and is capped;
+# "persistent" keeps it on disk at the same cap.
+endora_dev_node_journald_storage: volatile
+endora_dev_node_journald_max_use: 64M
+# /tmp in memory when it is not already (Debian trixie does this itself). Takes effect at the
+# next boot; the role does not remount /tmp under running programs.
+endora_dev_node_tmp_tmpfs: true
+endora_dev_node_tmp_size: 512M
+
+# The host firewall (ufw): incoming denied except SSH from the LAN; the ruleset from before the
+# first run is kept here for rollback (see README.md).
+endora_dev_node_firewall: true
+endora_dev_node_firewall_before: /etc/endora/firewall.before
+
+# Where `make pi-runner-token` puts the runner's token, mounted read-only into the runner.
+endora_dev_node_runner_token_dir: /etc/endora/runner-token
+
+# The network each turn's sandbox runs on (Endora's RINGS contract): no DNS, no internet, and on
+# the LAN only the NAS's team gateway. The egress proxy is tabled (ADR 0110): no port 3128.
+endora_dev_node_sandbox_network: endora_sandbox
+endora_dev_node_sandbox_policy:
+  name: sandbox
+  bridge: br-sandbox
+  subnet: 172.31.250.0/24
+  allow_dns: false
+  allow_public_tcp_ports: []
+  allow_lan:
+    - {dest: "{{ endora_nas_addr | default('') }}", port: 8788}
+  allow_host_tcp_ports: []

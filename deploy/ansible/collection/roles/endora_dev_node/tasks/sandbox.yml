@@ -1,0 +1,30 @@
+---
+# Where each turn's sandbox runs. The egress rules go in first, so the network never exists
+# without them; they match by subnet and bridge name and need nothing from Docker to be there.
+- name: The runner's token folder (filled by Endora's `make pi-runner-token`)
+  ansible.builtin.file:
+    path: "{{ endora_dev_node_runner_token_dir }}"
+    state: directory
+    owner: "{{ endora_dev_node_user }}"
+    group: "{{ endora_dev_node_user }}"
+    mode: "0700"
+
+- name: The sandbox network and its rules
+  when: not ansible_check_mode or endora_dev_node_docker_before.stat.exists
+  block:
+    - name: Sandbox egress policy
+      ansible.builtin.import_role:
+        name: endora.homelab.docker_egress
+      vars:
+        docker_egress_policy: "{{ endora_dev_node_sandbox_policy }}"
+
+    - name: Sandbox network
+      community.docker.docker_network:
+        name: "{{ endora_dev_node_sandbox_network }}"
+        driver: bridge
+        driver_options:
+          com.docker.network.bridge.name: "{{ endora_dev_node_sandbox_policy.bridge }}"
+          # Sandboxes do not reach each other either (the egress rules drop it as well).
+          com.docker.network.bridge.enable_icc: "false"
+        ipam_config:
+          - subnet: "{{ endora_dev_node_sandbox_policy.subnet }}"

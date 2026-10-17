@@ -1,0 +1,99 @@
+---
+# ufw, because Docker and the docker_egress role work beside it: ufw keeps to its own chains
+# (Docker bypasses it for container traffic, which docker_egress then locks down), and
+# docker-egress.service already starts after ufw.service. Never lock out SSH: the connection
+# this run comes over must be one the new rules let in, the SSH rule goes in before the
+# default deny, and established connections stay up (ufw's own before-rules).
+- name: Where this run's SSH connection comes from
+  ansible.builtin.command: printenv SSH_CLIENT
+  become: false
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: endora_dev_node_ssh_client
+
+- name: Would this connection still be let in
+  ansible.builtin.command:
+    argv: >-
+      {{ ['python3', '-c', endora_dev_node_inside, endora_dev_node_ssh_client.stdout.split()[0],
+          endora_dev_node_lan_cidr] + endora_dev_node_ssh_extra_cidrs }}
+  vars:
+    endora_dev_node_inside: |
+      import ipaddress, sys
+      address = ipaddress.ip_address(sys.argv[1].split("%")[0])
+      address = getattr(address, "ipv4_mapped", None) or address
+      allowed = [ipaddress.ip_network(net, strict=False) for net in sys.argv[2:]]
+      sys.exit(0 if any(address in net for net in allowed) else 1)
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: endora_dev_node_ssh_kept
+  when: endora_dev_node_ssh_client.stdout | trim | length > 0
+
+- name: Refuse to lock this connection out
+  ansible.builtin.assert:
+    that:
+      - endora_dev_node_ssh_kept is skipped or endora_dev_node_ssh_kept.rc == 0
+    fail_msg: >-
+      This run reaches the host over SSH from {{ endora_dev_node_ssh_client.stdout.split()[0]
+      | default('?') }}, which is not in endora_dev_node_lan_cidr ({{ endora_dev_node_lan_cidr }})
+      or endora_dev_node_ssh_extra_cidrs ({{ endora_dev_node_ssh_extra_cidrs | join(', ') }}).
+      Turning the firewall on would shut that out. Connect from the LAN (by IPv4 address in
+      ansible_host), or add where you connect from to endora_dev_node_ssh_extra_cidrs.
+
+- name: ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Keep the ruleset from before the first run, for rollback
+  ansible.builtin.shell: >-
+    umask 077 &&
+    iptables-save > {{ endora_dev_node_firewall_before | quote }}.new &&
+    mv {{ endora_dev_node_firewall_before | quote }}.new {{ endora_dev_node_firewall_before | quote }}
+  args:
+    creates: "{{ endora_dev_node_firewall_before }}"
+
+- name: The firewall as it is now
+  ansible.builtin.command: ufw status verbose
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: endora_dev_node_ufw_status
+
+# First: until this rule is in, nothing below runs.
+- name: Let SSH in from the LAN, before anything is denied
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - from
+      - "{{ item }}"
+      - to
+      - any
+      - port
+      - "{{ endora_dev_node_ssh_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - "endora: ssh from the LAN"
+  loop: "{{ [endora_dev_node_lan_cidr] + endora_dev_node_ssh_extra_cidrs }}"
+  register: endora_dev_node_ufw_ssh
+  changed_when: "'Skipping' not in endora_dev_node_ufw_ssh.stdout"
+
+- name: Deny everything else coming in
+  ansible.builtin.command: ufw default deny incoming
+  when: "'deny (incoming)' not in endora_dev_node_ufw_status.stdout"
+  changed_when: true
+
+- name: Let everything out
+  ansible.builtin.command: ufw default allow outgoing
+  when: "'allow (outgoing)' not in endora_dev_node_ufw_status.stdout"
+  changed_when: true
+
+- name: Turn the firewall on
+  ansible.builtin.command: ufw --force enable
+  when: "'Status: active' not in endora_dev_node_ufw_status.stdout"
+  changed_when: true

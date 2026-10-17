@@ -1,0 +1,18 @@
+# Endora's dev node, for pi.yml. Copy this to inventory.pi.local beside it (git-ignored, as is
+# every *.local file) and put your real values there, never here:
+#
+#   cp inventory.pi.example inventory.pi.local
+#
+# ansible_host: the Pi's IPv4 address is safest. Its .local name can resolve to an IPv6
+# link-local address, which the firewall does not let in unless endora_dev_node_ssh_extra_cidrs
+# says so; the role checks the connection it runs over and stops before shutting it out.
+
+[endora_dev]
+endora-dev ansible_host=endora-dev.local ansible_user=endora
+
+[endora_dev:vars]
+endora_dev_node_enabled=true
+# The NAS that runs endora-node: the sandbox reaches its team gateway (8788) and nothing else.
+endora_nas_addr=192.168.1.10
+# Your LAN: the only place SSH is let in from.
+endora_dev_node_lan_cidr=192.168.1.0/24

@@ -14,8 +14,11 @@ cd "$here"
 python3 -I roles/mail_mirror/tests/test_mail_mirror.py
 python3 -I roles/docker_egress/tests/test_docker_egress.py
 python3 -I roles/endora_terminal_agent/tests/test_terminal_jobs.py
-for playbook in roles/mail_mirror/tests/syntax.yml roles/endora/tests/syntax.yml; do
+python3 -I roles/endora_dev_node/tests/test_endora_dev_node.py
+for playbook in roles/mail_mirror/tests/syntax.yml roles/endora/tests/syntax.yml \
+    roles/endora_dev_node/tests/syntax.yml ../pi.yml; do
   ansible-playbook --syntax-check "$playbook"
 done
 ansible-playbook roles/endora/tests/render.yml
+ansible-playbook roles/endora_dev_node/tests/render.yml
 echo "endora.homelab: every check passed"

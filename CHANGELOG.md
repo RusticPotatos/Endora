@@ -9,6 +9,13 @@ tagged release.
 
 ### Added
 
+- **The dev node, the Pi that runs the team's sandboxes** (ADR 0110): the `endora_dev_node`
+  Ansible role (Docker CE from Docker's repository with capped logs and live-restore, a ufw
+  firewall that lets only SSH in from the LAN and checks it cannot lock you out, the journal and
+  `/tmp` in memory, and the `endora_sandbox` network locked by `docker_egress` to the NAS's
+  team gateway alone), run by `deploy/ansible/pi.yml`; `make deploy-pi` builds the arm64 node
+  and workbench images on the Mac, copies it over SSH and starts the runner, and `make pi-runner-token`
+  copies the runner's token from HQ once.
 - **A brain per member, and what a cloud turn may read** ([ADR 0109](docs/adr/0109-a-brain-per-member.md),
   owner's decisions of 2026-10-17). Each member of HQ's team has a brain, local by default or a
   Claude its role may use (Sonnet or Haiku for the lead, developer and reviewer; Haiku for the

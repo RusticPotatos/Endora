@@ -1,0 +1,47 @@
+---
+# The SD card wears with every write: the journal in memory (or capped), and /tmp in memory.
+- name: Journal settings folder
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: The journal in memory, capped
+  ansible.builtin.template:
+    src: journald.conf.j2
+    dest: /etc/systemd/journald.conf.d/endora.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: endora_dev_node_journald
+
+- name: The journal picks up its settings
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+  when: endora_dev_node_journald is changed
+
+- name: What /tmp is on
+  ansible.builtin.command: findmnt -n -o FSTYPE --target /tmp
+  check_mode: false
+  changed_when: false
+  register: endora_dev_node_tmp_fs
+
+# Not remounted now: that would hide the files of programs running in /tmp.
+- name: /tmp in memory from the next boot
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\S+\s+/tmp\s'
+    line: "tmpfs /tmp tmpfs rw,nosuid,nodev,size={{ endora_dev_node_tmp_size }},mode=1777 0 0"
+    backup: true
+  register: endora_dev_node_tmp_fstab
+  when:
+    - endora_dev_node_tmp_tmpfs | bool
+    - endora_dev_node_tmp_fs.stdout | trim != 'tmpfs'
+
+- name: A reboot puts /tmp in memory
+  ansible.builtin.debug:
+    msg: /etc/fstab now mounts /tmp as tmpfs; it takes effect at the next reboot (sudo reboot).
+  when: endora_dev_node_tmp_fstab is changed

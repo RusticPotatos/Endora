@@ -1,0 +1,110 @@
+---
+# Docker CE from Docker's own repository. In check mode before the first real run there is no
+# repository to ask yet, so the steps that need Docker installed are skipped and say so.
+- name: Look for Docker
+  ansible.builtin.stat:
+    path: /usr/bin/docker
+  register: endora_dev_node_docker_before
+
+- name: What Docker's repository and the Docker modules need
+  ansible.builtin.apt:
+    name: [ca-certificates, python3-requests]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Keyring folder
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Docker's signing key
+  ansible.builtin.get_url:
+    url: "{{ endora_dev_node_docker_key_url }}"
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Docker's repository, trusted with that key only
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ endora_dev_node_docker_arch }} signed-by=/etc/apt/keyrings/docker.asc]
+      {{ endora_dev_node_docker_repo }} {{ endora_dev_node_docker_suite }} stable
+    filename: docker
+    state: present
+
+- name: Docker's settings folder
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Written before the package, so a first install starts with it. No `hosts`: the API stays on
+# the local socket only.
+- name: Docker's settings
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  register: endora_dev_node_daemon_json
+
+- name: Docker is not installed yet
+  ansible.builtin.debug:
+    msg: >-
+      Check mode, and Docker is not installed yet: installing it, the docker group and the
+      sandbox network are shown on the first real run.
+  when:
+    - ansible_check_mode
+    - not endora_dev_node_docker_before.stat.exists
+
+- name: Docker CE
+  when: not ansible_check_mode or endora_dev_node_docker_before.stat.exists
+  block:
+    - name: Docker's packages
+      ansible.builtin.apt:
+        name: "{{ endora_dev_node_docker_packages }}"
+        state: present
+        update_cache: true
+
+    - name: Docker starts at boot
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    # live-restore keeps running containers up through this restart once it is on.
+    - name: Docker picks up changed settings
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+      when:
+        - endora_dev_node_daemon_json is changed
+        - endora_dev_node_docker_before.stat.exists
+
+    - name: "{{ endora_dev_node_user }} may use Docker (as good as root on this host)"
+      ansible.builtin.user:
+        name: "{{ endora_dev_node_user }}"
+        groups: docker
+        append: true
+
+    - name: What is listening
+      ansible.builtin.command: ss -Hltn
+      check_mode: false
+      changed_when: false
+      register: endora_dev_node_listening
+
+    - name: No Docker API on the network
+      ansible.builtin.assert:
+        that:
+          - endora_dev_node_listening.stdout_lines | select('search', ':237[56]\s') | list | length == 0
+        fail_msg: >-
+          Something listens on 2375 or 2376, Docker's TCP API: anyone who reaches it owns this
+          host. Remove the -H tcp://… setting from Docker's service or daemon.json.

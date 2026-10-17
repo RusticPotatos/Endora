@@ -10,6 +10,7 @@ deploys change in one commit and are checked together.
 | [`mail_mirror`](roles/mail_mirror/README.md) | A read-only copy of your mail as a Maildir, for Endora to read |
 | [`docker_egress`](roles/docker_egress/README.md) | Locked-down Docker networks: what a network may reach, enforced by the host's firewall |
 | [`endora_terminal_agent`](roles/endora_terminal_agent/) | The host job agent: allowlisted Ansible jobs for the handheld and Endora, nothing else |
+| [`endora_dev_node`](roles/endora_dev_node/README.md) | The Raspberry Pi that runs the team's runner and sandboxes: Docker CE, a host firewall, SD card care, and the locked `endora_sandbox` network (ADR 0110); run by `deploy/ansible/pi.yml` |
 
 ## Using it from ansible-nas
 

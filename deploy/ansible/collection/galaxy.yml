@@ -2,13 +2,14 @@
 # pins this collection in its requirements.yml and lists the roles it wants in its playbook.
 namespace: endora
 name: homelab
-version: 0.12.0
+version: 0.13.0
 readme: README.md
 authors:
   - Endora contributors
 description: >-
   Endora on a home server: the node, a read-only mail copy for it, locked-down container
-  networks, and the host job agent the handheld and Endora run allowlisted jobs through.
+  networks, the host job agent the handheld and Endora run allowlisted jobs through, and the
+  Raspberry Pi dev node that runs the team's sandboxes.
 license:
   - Apache-2.0
 repository: https://github.com/RusticPotatos/Endora
