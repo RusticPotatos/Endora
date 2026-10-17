@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tower::ServiceExt; // for `oneshot`
 
 /// A known token, so the helpers below can sign like the console does.
-const TEST_TOKEN: &str = "a-token-for-tests";
+pub(super) const TEST_TOKEN: &str = "a-token-for-tests";
 
 #[tokio::test]
 async fn dashboard_token_is_narrow_and_overview_does_not_disclose_items() {
@@ -248,7 +248,7 @@ async fn the_brain_is_read_edited_and_forgotten_but_what_they_said_stays() {
     );
 }
 
-fn test_state() -> AppState {
+pub(super) fn test_state() -> AppState {
     let mut state = AppState::new(
         Arc::new(SqliteStore::open_in_memory().unwrap()),
         Arc::new(RandomIdSource),
@@ -262,12 +262,12 @@ fn test_state() -> AppState {
     state
 }
 
-async fn json_body(res: axum::response::Response) -> serde_json::Value {
+pub(super) async fn json_body(res: axum::response::Response) -> serde_json::Value {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
 }
 
-fn post(uri: &str, body: &str) -> Request<Body> {
+pub(super) fn post(uri: &str, body: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(uri)
@@ -277,7 +277,7 @@ fn post(uri: &str, body: &str) -> Request<Body> {
         .unwrap()
 }
 
-fn get(uri: &str) -> Request<Body> {
+pub(super) fn get(uri: &str) -> Request<Body> {
     Request::builder()
         .uri(uri)
         .header("authorization", format!("Bearer {TEST_TOKEN}"))
@@ -295,7 +295,7 @@ fn del(uri: &str) -> Request<Body> {
 }
 
 /// Exactly the same request, unsigned — for proving a route is actually shut.
-fn unsigned(uri: &str) -> Request<Body> {
+pub(super) fn unsigned(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 

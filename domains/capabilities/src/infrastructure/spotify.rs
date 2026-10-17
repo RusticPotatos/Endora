@@ -235,6 +235,8 @@ impl<'a> Connection<'a> {
         json!({
             "state": state,
             "detail": detail,
+            // A sign-in that works, also while a new approval waits over it.
+            "connected": connected,
             "client_id_set": !get("client_id").is_empty(),
             "sign_in_url": waiting.then(|| get("pending_url")),
             "redirect": waiting.then(|| get("pending_redirect")),

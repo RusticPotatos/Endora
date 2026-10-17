@@ -127,7 +127,8 @@ const rules = [
   },
   {
     what: "a live-looking secret",
-    find: /\b[0-9a-f]{32,}\b/g,
+    // Not a digest written as one (`image@sha256:…`): that pins a public build, and is public.
+    find: /(?<!sha256:)\b[0-9a-f]{32,}\b/g,
     wrong: (_hit, file) => !HEX_IS_EXPECTED.has(file),
     say: "secrets belong in local.mk",
   },

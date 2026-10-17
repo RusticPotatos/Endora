@@ -38,7 +38,7 @@ pub(super) async fn console_css() -> impl axum::response::IntoResponse {
 /// as the single file did (they are concatenated, not loaded as modules), so each is a slice of
 /// the old `app.js`, cut at a top-level boundary. `scripts/check-console.mjs` joins the same
 /// files in the same order.
-const CONSOLE_SCRIPT_PARTS: [&str; 12] = [
+const CONSOLE_SCRIPT_PARTS: [&str; 13] = [
     include_str!("../web/js/00-state.js"),
     include_str!("../web/js/10-core.js"),
     include_str!("../web/js/20-chat.js"),
@@ -47,6 +47,7 @@ const CONSOLE_SCRIPT_PARTS: [&str; 12] = [
     include_str!("../web/js/45-lab.js"),
     include_str!("../web/js/47-hq.js"),
     include_str!("../web/js/48-agenda.js"),
+    include_str!("../web/js/49-sound.js"),
     include_str!("../web/js/50-views.js"),
     include_str!("../web/js/60-chat-actions.js"),
     include_str!("../web/js/70-dispatch.js"),

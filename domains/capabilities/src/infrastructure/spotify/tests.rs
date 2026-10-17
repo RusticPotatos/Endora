@@ -242,3 +242,65 @@ fn a_sign_in_a_device_already_has_is_taken_over_once_proved() {
     assert_eq!(gone["state"], "not_set_up");
     assert!(spotify.lend(NOW).is_err());
 }
+
+#[test]
+fn approving_again_over_a_working_sign_in_keeps_it_until_the_new_one_lands() {
+    let store = settings();
+    let fake = Fake::answering(vec![
+        tokens("access-1", Some("refresh-1")),
+        tokens("access-2", Some("refresh-2")),
+    ]);
+    let spotify = Connection::new(&store, &fake);
+    spotify
+        .begin("exampleclientid", PASTE_REDIRECT, VERIFIER, STATE, NOW)
+        .unwrap();
+    spotify
+        .finish(&format!("code=c&state={STATE}"), NOW)
+        .unwrap();
+    assert_eq!(spotify.status(NOW)["connected"], true);
+    // Approving again (Endora asks for more than the old sign-in allows): waiting, and the
+    // old sign-in still lends tokens meanwhile.
+    let again = spotify
+        .begin(
+            "",
+            PASTE_REDIRECT,
+            VERIFIER,
+            "a-second-state-0123456789",
+            NOW + MINUTE,
+        )
+        .unwrap();
+    assert_eq!(again["state"], "waiting");
+    assert_eq!(again["connected"], true, "the old sign-in still works");
+    assert_eq!(spotify.lend(NOW + MINUTE).unwrap().0, "access-1");
+    // Left unfinished, it is simply connected again.
+    assert_eq!(
+        spotify.status(NOW + MINUTE + PENDING_FOR_MS)["state"],
+        "connected"
+    );
+    // Finished, the new tokens replace the old ones.
+    spotify
+        .begin(
+            "",
+            PASTE_REDIRECT,
+            VERIFIER,
+            "a-third-state-0123456789",
+            NOW + 20 * MINUTE,
+        )
+        .unwrap();
+    spotify
+        .finish("code=c2&state=a-third-state-0123456789", NOW + 21 * MINUTE)
+        .unwrap();
+    assert_eq!(spotify.lend(NOW + 21 * MINUTE).unwrap().0, "access-2");
+}
+
+#[test]
+fn not_signed_in_is_not_connected_even_while_waiting() {
+    let store = settings();
+    let fake = Fake::answering(vec![]);
+    let spotify = Connection::new(&store, &fake);
+    assert_eq!(spotify.status(NOW)["connected"], false);
+    let waiting = spotify
+        .begin("exampleclientid", PASTE_REDIRECT, VERIFIER, STATE, NOW)
+        .unwrap();
+    assert_eq!(waiting["connected"], false);
+}

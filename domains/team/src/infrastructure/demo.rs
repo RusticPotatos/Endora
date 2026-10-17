@@ -41,6 +41,10 @@ pub fn seed<S: TeamStore, W: WorkerAdapter, C: Clock>(hq: &Engine<S, W, C>) -> D
     Ok(goal)
 }
 
+/// How many items may wait on the owner's desk before the demo team is handed no more work:
+/// a desk the owner has stopped clearing is a team with nothing to do, not a pile that grows.
+pub const MOST_ON_THE_DESK: usize = 20;
+
 fn next_piece_of_work<S: TeamStore, W: WorkerAdapter, C: Clock>(
     hq: &Engine<S, W, C>,
     goal: GoalId,
@@ -99,7 +103,14 @@ pub fn act<S: TeamStore, W: WorkerAdapter, C: Clock>(
         taken += 1;
     }
     let tasks = hq.store().tasks()?;
-    if !tasks.is_empty() && tasks.iter().all(|t| t.status.finished()) {
+    let waiting = hq
+        .store()
+        .desk()?
+        .iter()
+        .filter(|d| d.status == "waiting")
+        .count();
+    if waiting < MOST_ON_THE_DESK && !tasks.is_empty() && tasks.iter().all(|t| t.status.finished())
+    {
         let finished = tasks.iter().filter(|t| t.parent.is_none()).count();
         next_piece_of_work(hq, goal, finished)?;
     }
@@ -269,5 +280,59 @@ mod tests {
             desk.iter().all(|d| d.kind != "stuck"),
             "the demo never gets stuck: {desk:?}"
         );
+    }
+
+    #[test]
+    fn the_team_has_no_new_work_once_twenty_wait_on_the_desk_and_resumes_when_some_are_cleared() {
+        let clock = Ticking(AtomicI64::new(1_792_166_400_000));
+        let hq = Engine::new(
+            SqliteTeamStore::in_memory().unwrap(),
+            SimulatedRunner::new(4),
+            &clock,
+            Settings::default(),
+        );
+        let goal = seed(&hq).unwrap();
+        let waiting = || {
+            hq.store()
+                .desk()
+                .unwrap()
+                .into_iter()
+                .filter(|d| d.status == "waiting")
+                .collect::<Vec<_>>()
+        };
+        for _ in 0..600 {
+            hq.tick().unwrap();
+            act(&hq, hq.runner(), goal).unwrap();
+        }
+        let full = waiting();
+        assert_eq!(
+            full.len(),
+            MOST_ON_THE_DESK,
+            "the desk filled to twenty and stopped"
+        );
+        let pieces = || {
+            hq.store()
+                .tasks()
+                .unwrap()
+                .iter()
+                .filter(|t| t.parent.is_none())
+                .count()
+        };
+        let before = pieces();
+        for _ in 0..50 {
+            hq.tick().unwrap();
+            act(&hq, hq.runner(), goal).unwrap();
+        }
+        assert_eq!(pieces(), before, "no new work while the desk is full");
+        // The owner clears some: the team gets work again.
+        for item in full.iter().filter(|d| d.kind == "ready_to_merge").take(3) {
+            hq.decide(item.id, "merged").unwrap();
+        }
+        for _ in 0..50 {
+            hq.tick().unwrap();
+            act(&hq, hq.runner(), goal).unwrap();
+        }
+        assert!(pieces() > before, "work resumed once the desk had room");
+        assert!(waiting().len() <= MOST_ON_THE_DESK);
     }
 }

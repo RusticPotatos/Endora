@@ -96,6 +96,95 @@ services:
     security_opt: [no-new-privileges:true]
     # It only asks and tells; each worker has its own cap, set by the runner.
     mem_limit: 64m
+  # endora-sound (ADR 0104), when its `sound` profile runs: append `sound` to COMPOSE_PROFILES
+  # and set ENDORA_SOUND_URL=http://sound:8791 in local.mk. Its own image (ffmpeg is in it,
+  # not in the node's), no published port: the node is its remote, through the token the two
+  # share. Radio stations need the internet; nothing else does.
+  sound:
+    profiles: [sound]
+    build:
+      context: .
+      target: sound
+    image: endora-sound:latest
+    container_name: endora-sound
+    restart: unless-stopped
+    environment:
+      # The AirPlay senders, on the host's network, reached through the host; each instance's
+      # API needs the password the senders made, which only this hub is given.
+      SOUND_SENDERS: "http://host.docker.internal:3701,http://host.docker.internal:3702,http://host.docker.internal:3703,http://host.docker.internal:3704"
+      SOUND_SENDER_PASSWORD_FILE: /sender-secret/password
+      # Spotify plays into the hub through its own receiver, below.
+      SOUND_SPOTIFY: "on"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${ENDORA_SOUND_DIR:-endora-sound-data}:/data
+      - endora-sound-token:/token
+      # The pipes the hub writes and the senders play, one per sender.
+      - endora-sound-pipes:/pipes
+      - endora-sound-secret:/sender-secret:ro
+    tmpfs:
+      - /tmp
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Decoding stations and encoding streams is ffmpeg's work; a hard cap on a tight NAS.
+    mem_limit: 256m
+  # Spotify into endora-sound (ADR 0104): a Spotify Connect receiver called "Endora" (librespot,
+  # the image the ansible-nas Spotify receiver already uses, pinned to the build on the NAS)
+  # writing into the hub's Spotify pipe. On the host's network so the Spotify app finds it;
+  # pick "Endora" in the app's devices once, and it keeps its own login after that. Beside the
+  # old ansible-nas receiver, which it does not clash with.
+  spotify:
+    profiles: [sound]
+    image: giof71/librespot@sha256:0c7cd19a49547cd0e34ac7c6d9aadd4b2703c5cb13acd1dbfd4982c311d478fb
+    container_name: endora-spotify
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [sound]
+    environment:
+      DEVICE_NAME: Endora
+      BACKEND: pipe
+      DEVICE: /pipes/spotify.pcm
+      FORMAT: S16
+      BITRATE: "320"
+      INITIAL_VOLUME: "100"
+      ENABLE_SYSTEM_CACHE: "Y"
+      DISABLE_AUDIO_CACHE: "Y"
+    volumes:
+      - endora-sound-pipes:/pipes
+      # Its Spotify login, kept once given.
+      - endora-spotify-login:/data/system-cache
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+  # endora-sound's AirPlay senders (ADR 0104): one shared airptpd clock and four stock OwnTone
+  # instances, on the host's network because AirPlay speakers are found and reached over
+  # mDNS. Its own profile, senders, kept out of COMPOSE_PROFILES until the ansible-nas
+  # owntone role is retired: the two cannot run on one host (both take the AirPlay clock's
+  # ports and the speakers), so a routine deploy must never start it beside the old one.
+  senders:
+    profiles: [senders]
+    build:
+      context: .
+      target: senders
+    image: endora-senders:latest
+    container_name: endora-senders
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - endora-sound-pipes:/pipes
+      - endora-senders-data:/data
+      - endora-sound-secret:/secret
+    tmpfs:
+      - /run
+      - /tmp
+    read_only: true
+    # Only what it needs: the clock's ports below 1024, OwnTone and avahi dropping to their
+    # own users, and its folders made theirs.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, KILL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
   node:
     build:
       context: .
@@ -131,6 +220,7 @@ services:
       # The token Endora HQ makes for itself, which the node signs with (ADR 0102).
       # Read-only here; only HQ writes it.
       - endora-hq-token:/hq-token:ro
+      - endora-sound-token:/sound-token:ro
     networks:
       default: {}
       # Also on the team's fenced network (ADR 0102), where a worker reaches the model relay
@@ -153,6 +243,9 @@ services:
       # ENDORA_HQ_URL=http://hq:8790 in local.mk. Empty: no HQ.
       ENDORA_HQ_URL: "${ENDORA_HQ_URL-}"
       ENDORA_HQ_TOKEN_FILE: /hq-token/token
+      # endora-sound (ADR 0104), when its `sound` profile runs. Empty: no sound hub.
+      ENDORA_SOUND_URL: "${ENDORA_SOUND_URL-}"
+      ENDORA_SOUND_TOKEN_FILE: /sound-token/token
       # A capable instruction model — strong at following directions and emitting
       # clean JSON, which the butler relies on (skill selection, no fabrication,
       # relaying results). Used for the drafting endpoint and as the single-model
@@ -245,6 +338,18 @@ volumes:
   endora-hq-token:
   # Holds one file: the token HQ makes for the runner, which signs with it.
   endora-hq-runner-token:
+  # What the sound hub keeps: its patchbay (sources, speakers, wires, setups).
+  endora-sound-data:
+  # Holds one file: the token the sound hub makes for itself and the node signs with.
+  endora-sound-token:
+  # The pipes between the sound hub and its senders.
+  endora-sound-pipes:
+  # The senders' own state: each OwnTone instance's database and cache.
+  endora-senders-data:
+  # Holds one file: the password the senders make for their API, which only the hub reads.
+  endora-sound-secret:
+  # The Spotify receiver's own login.
+  endora-spotify-login:
   # Empty on purpose: what /mail is when no mail copy is configured.
   endora-no-mail:
   endora-models:

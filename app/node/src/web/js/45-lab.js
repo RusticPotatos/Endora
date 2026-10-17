@@ -225,6 +225,11 @@ function viewHouse() {
 // an hour and asks again when it runs out. The refresh token never leaves Endora.
 let MUSIC_TOKEN = { access: "", until: 0 };
 
+// Spotify can be played with: connected, also while a new approval waits over that sign-in.
+function spotifyUsable() {
+  return !!(SPOTIFY && (SPOTIFY.state === "connected" || SPOTIFY.connected));
+}
+
 async function spotifyToken(fresh) {
   if (!fresh && MUSIC_TOKEN.access && Date.now() < MUSIC_TOKEN.until) return MUSIC_TOKEN.access;
   const lent = await api("POST", "/v1/connections/spotify/token", {});
@@ -241,12 +246,31 @@ async function spotify(method, path, body, retried) {
   });
   if (res.status === 401 && !retried) return spotify(method, path, body, true);
   if (res.status === 202 || res.status === 204) return null;
-  if (res.status === 403) throw new Error("Spotify needs Premium for that");
+  if (res.status === 403) {
+    // Spotify says why; a missing permission is an older sign-in, not a missing Premium.
+    let said = "";
+    try { said = String(((await res.json()) || {}).error.message || ""); } catch (_) {}
+    if (/scope/i.test(said)) {
+      // An older sign-in: Music offers to approve Endora again, in one tap.
+      MUSIC.approveAgain = true;
+      throw new Error("Endora's Spotify sign-in doesn't allow that yet: tap Connect again at the top of Music");
+    }
+    if (/premium/i.test(said) || !said) throw new Error("Spotify needs Premium for that");
+    throw new Error("Spotify said no: " + said);
+  }
   if (res.status === 404) throw new Error("No device is playing. Pick one under Play on");
   if (res.status === 429) throw new Error("Spotify is busy; try again in a moment");
-  if (!res.ok) throw new Error("Spotify could not do that");
+  if (!res.ok) {
+    // What Spotify said, and to which call, so a refusal can be told apart from a fault.
+    let said = "";
+    try { said = String(((await res.json()) || {}).error.message || ""); } catch (_) {}
+    throw new Error(`Spotify could not do that (${res.status}${said ? ": " + said : ""}, ${path.split("?")[0]})`);
+  }
+  // A player command can answer 200 with a body that is not JSON; it still worked, so that
+  // is nothing to read rather than an error shown as a JSON parser's complaint.
   const text = await res.text();
-  return text ? JSON.parse(text) : null;
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (_) { return null; }
 }
 
 // Search results, playlists and liked songs in the one shape the screen lists.
@@ -259,16 +283,98 @@ function musicItems(list, kind) {
   }).filter((x) => /^spotify:[a-z]+:[A-Za-z0-9]+$/.test(x.uri || ""));
 }
 
+// Spotify's receiver in the sound hub (ADR 0104): its speakers are Spotify's speakers too.
+const ENDORA_SPOTIFY = "Endora";
+
 async function loadMusic() {
   MUSIC.error = "";
+  // The hub's speakers, to play Spotify on; nothing when there is no hub. With a ticket
+  // ready, so tapping this device starts it listening straight from the tap.
+  try { SOUND.state = await api("GET", "/v1/sound"); } catch (_) { SOUND.state = null; }
+  if (SOUND.state && soundMine() && !SOUND.listening && (!SOUND.ticket || Date.now() - SOUND.ticket.at > 45000)) {
+    await soundTicket();
+  }
   try { SPOTIFY = await api("GET", "/v1/connections/spotify"); } catch (_) { SPOTIFY = null; }
-  if (!SPOTIFY || SPOTIFY.state !== "connected") return;
+  if (!spotifyUsable()) return;
   try {
     const [now, devices] = await Promise.all([spotify("GET", "/me/player"), spotify("GET", "/me/player/devices")]);
     MUSIC.now = now;
+    // Whether the song playing is in Liked Songs, for its heart.
+    const track = now && now.item && now.item.type === "track" ? now.item.id : null;
+    MUSIC.liked = null;
+    if (track) {
+      // Not known (an older sign-in, or Spotify said no): the heart shows empty, and a tap says why.
+      try { MUSIC.liked = !!((await spotify("GET", `/me/tracks/contains?ids=${encodeURIComponent(track)}`)) || [])[0]; }
+      catch (e) { MUSIC.liked = false; MUSIC.likeError = e.message; }
+    }
     MUSIC.devices = ((devices && devices.devices) || []).filter((d) => d.id);
     if (!MUSIC.lists.length) MUSIC.lists = musicItems(((await spotify("GET", "/me/playlists?limit=30")) || {}).items, "playlist");
   } catch (e) { MUSIC.error = e.message; }
+}
+
+// ---- Discover: new songs from the artists you play (the handheld's Discover radio) ----------
+// Spotify no longer offers a recommendations feed, so, as on the handheld: your top artists
+// (less those you said no to), six of them at random; their albums and singles you have not
+// saved, three an artist; two songs each from eight of those, none played you before.
+
+function musicRemembered(key) {
+  try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch (_) { return []; }
+}
+function musicRemember(key, list, most) {
+  try { localStorage.setItem(key, JSON.stringify(list.slice(-most))); } catch (_) {}
+}
+function musicShuffle(list) {
+  const out = list.slice();
+  for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
+  return out;
+}
+const spotifyId = (uri) => String(uri || "").split(":").pop();
+
+// A list from Spotify, asking for `limit`; told the limit is too many (it lowered some to 10),
+// it asks again for 10.
+async function spotifyList(path, limit) {
+  const join = path.includes("?") ? "&" : "?";
+  try { return await spotify("GET", `${path}${join}limit=${limit}`); }
+  catch (e) {
+    if (limit > 10 && /invalid limit/i.test(e.message)) return spotify("GET", `${path}${join}limit=10`);
+    throw e;
+  }
+}
+
+async function musicDiscover() {
+  const avoid = musicRemembered("endora.musicAvoid");
+  const played = musicRemembered("endora.musicPlayed");
+  const top = (((await spotifyList("/me/top/artists?time_range=medium_term", 30)) || {}).items || [])
+    .filter((a) => a.uri && !avoid.includes(a.uri));
+  if (!top.length) throw new Error("Play some music first: Discover starts from the artists you play");
+  const saved = new Set((((await spotifyList("/me/albums", 50)) || {}).items || []).map((x) => x.album && x.album.uri));
+  let albums = [];
+  let firstError = "";
+  for (const artist of musicShuffle(top).slice(0, 6)) {
+    try {
+      const got = (((await spotifyList(`/artists/${encodeURIComponent(spotifyId(artist.uri))}/albums?include_groups=album,single`, 10)) || {}).items || []);
+      albums.push(...got.filter((a) => a.uri && !saved.has(a.uri)).slice(0, 3));
+    } catch (e) { firstError = firstError || e.message; /* one artist's failing leaves the rest */ }
+  }
+  albums = musicShuffle([...new Map(albums.map((a) => [a.uri, a])).values()]).slice(0, 8);
+  const seen = new Set(played);
+  const batch = [];
+  for (const album of albums) {
+    try {
+      const tracks = musicShuffle((((await spotifyList(`/albums/${encodeURIComponent(spotifyId(album.uri))}/tracks`, 50)) || {}).items || [])
+        .filter((t) => t.uri && !seen.has(t.uri)));
+      for (const t of tracks.slice(0, 2)) { seen.add(t.uri); batch.push(t.uri); }
+    } catch (e) { firstError = firstError || e.message; }
+  }
+  // Nothing found and Spotify said no somewhere: say what it said, not a guess.
+  if (!batch.length && firstError) throw new Error("Discover: " + firstError);
+  if (!batch.length) throw new Error("No new songs found; play some more music first");
+  const order = musicShuffle(batch).slice(0, 20);
+  const device = musicDevice();
+  if (!device) throw new Error("No device is open. Pick one under Play on");
+  await spotify("PUT", `/me/player/play?device_id=${encodeURIComponent(device)}`, { uris: order });
+  musicRemember("endora.musicPlayed", [...played, ...order], 500);
+  MUSIC.discovering = true;
 }
 
 // Where playback goes: the device playing now, else the one last picked here, else the first.
@@ -282,18 +388,37 @@ function musicDevice() {
 }
 
 function viewMusic() {
-  const head = `${labCrumbs({ label: "Music" })}<h2>Music</h2>`;
+  const head = `${labCrumbs({ label: "Music" })}<h2>Music</h2>
+    <div class="row" style="justify-content:flex-end;margin:-4px 0 8px;"><button class="ghost" data-act="go:speakers">Speakers: what plays where</button></div>`;
   if (!SPOTIFY) return `${head}<div class="note">Asking Endora…</div>`;
-  if (SPOTIFY.state !== "connected") {
+  if (!spotifyUsable()) {
     return `${head}<div class="card"><div class="title">Spotify is not connected</div>
       <div class="sub">Connect it once and every device plays with it: this one, the handheld and chat.</div>
       <div class="row" style="justify-content:flex-end;margin-top:8px;"><button class="primary" data-act="go:spotify">Connect Spotify</button></div></div>`;
   }
+  // An older sign-in that Spotify refused something to, or a new approval started and not
+  // finished: one tap goes to Spotify and comes back. The old sign-in keeps working meanwhile.
+  const again = MUSIC.approveAgain || SPOTIFY.state === "waiting"
+    ? `<div class="card"><div class="title">Approve Endora on Spotify again</div>
+        <div class="sub">Endora now asks Spotify for a little more, such as saving songs to your Liked Songs. Approving takes you to Spotify and back; until then, the rest keeps working.</div>
+        <div class="row" style="justify-content:flex-end;margin-top:8px;"><button class="primary" data-act="spotify:begin:endora">Connect again</button></div></div>`
+    : "";
   const n = MUSIC.now;
   const item = n && n.item;
   const art = item && item.album && (item.album.images || []).slice(-2)[0];
   const artUrl = art && /^https:\/\//.test(art.url) ? art.url : "";
   const playing = !!(n && n.is_playing);
+  // Playing through Endora: what matters is how loud each speaker it plays on is, so those
+  // speakers' volumes are here, not the Endora receiver's own.
+  const onEndora = !!(n && n.device && n.device.name === ENDORA_SPOTIFY);
+  const spotifyHere = SOUND.state && (SOUND.state.sources || []).find((x) => x.kind === "spotify");
+  const playingOn = onEndora && spotifyHere
+    ? (SOUND.state.speakers || []).filter((sp) => (SOUND.state.wires || []).some((w) => w.source === spotifyHere.id && w.speaker === sp.id))
+    : [];
+  const volumes = playingOn.map((sp) => `<div class="row" style="gap:8px;align-items:center;margin-top:6px;">
+      <span class="sub" style="min-width:84px;">${esc(sp.name)}</span>
+      <input type="range" class="level" min="0" max="100" step="5" value="${Number(sp.volume) || 0}" data-change="sound:volume:${sp.id}" aria-label="${esc(sp.name)} volume" style="--v:${(Number(sp.volume) || 0) / 100};" />
+      <span class="sub level-n">${Number(sp.volume) || 0}</span></div>`).join("");
   const volume = n && n.device ? n.device.volume_percent : null;
   const nowCard = item
     ? `<div class="card"><div class="row" style="gap:12px;align-items:center;">
@@ -305,17 +430,35 @@ function viewMusic() {
         <button class="ghost" data-act="music:prev" aria-label="Previous">⏮</button>
         <button class="primary" data-act="music:toggle">${playing ? "Pause" : "Play"}</button>
         <button class="ghost" data-act="music:next" aria-label="Next">⏭</button>
-        ${volume === null || volume === undefined ? "" : `<button class="ghost" data-act="music:volume:-10">−</button><span class="sub">${esc(volume)}%</span><button class="ghost" data-act="music:volume:10">+</button>`}
-      </div></div>`
+        <button class="ghost" data-act="music:nope" aria-label="Not this: skip it, and leave this artist out of Discover">👎</button>
+        ${!(item && item.type === "track") ? "" : `<button class="ghost" data-act="music:like" aria-pressed="${MUSIC.liked ? "true" : "false"}" aria-label="${MUSIC.liked ? "In Liked Songs: tap to take it out" : "Add to Liked Songs"}">${MUSIC.liked ? "♥" : "♡"}</button>`}
+        ${onEndora ? "" : volume === null || volume === undefined ? "" : `<button class="ghost" data-act="music:volume:-10">−</button><span class="sub">${esc(volume)}%</span><button class="ghost" data-act="music:volume:10">+</button>`}
+      </div>${volumes}</div>`
     : `<div class="card"><div class="sub">Nothing is playing.</div></div>`;
-  const devices = MUSIC.devices.map((d) => `
-    <button class="pill pick${d.is_active ? " active" : ""}" data-act="music:device:${esc(d.id)}">${esc(d.name)}</button>`).join("");
+  // Spotify's own devices, and every speaker in the sound hub through its "Endora" receiver;
+  // not the receiver itself, whose speakers are listed instead.
+  const viaEndora = MUSIC.devices.find((d) => d.name === ENDORA_SPOTIFY);
+  const spotifySource = SOUND.state && (SOUND.state.sources || []).find((x) => x.kind === "spotify");
+  const hubSpeakers = spotifySource ? (SOUND.state.speakers || []) : [];
+  const playsOn = (sp) => (SOUND.state.wires || []).some((w) => w.source === spotifySource.id && w.speaker === sp.id);
+  const devices = MUSIC.devices.filter((d) => d.name !== ENDORA_SPOTIFY).map((d) => `
+    <button class="pill pick${d.is_active ? " active" : ""}" data-act="music:device:${esc(d.id)}">${esc(d.name)}</button>`).join("")
+    + hubSpeakers.map((sp) => {
+      // A phone or computer plays only while it listens: this one starts when tapped; another
+      // says it is not listening, so a silent tap explains itself.
+      const mine = soundMine();
+      const here = mine && mine.id === sp.id;
+      const deaf = sp.kind === "stream" && !here && !((SOUND.state.listening || []).includes(sp.id));
+      const note = sp.borrowed ? " · in use" : here ? " · this device" : deaf ? " · not listening" : "";
+      return `
+    <button class="pill pick${viaEndora && viaEndora.is_active && playsOn(sp) ? " active" : ""}" data-act="music:endora:${sp.id}">${esc(sp.name)}${note}</button>`;
+    }).join("");
   const row = (x, key) => `<div class="row" style="gap:8px;padding:6px 0;">
       <div class="grow"><div>${esc(x.name)}</div><div class="sub">${esc(x.kind)}${x.who ? ` · ${esc(x.who)}` : ""}</div></div>
       <button class="ghost" data-act="music:play:${key}">Play</button></div>`;
   const found = MUSIC.found.map((x, i) => row(x, "f" + i)).join("");
   const lists = MUSIC.lists.map((x, i) => row(x, "l" + i)).join("");
-  return `${head}
+  return `${head}${again}
     ${MUSIC.error ? `<div class="note">${esc(MUSIC.error)}</div>` : ""}
     ${nowCard}
     <h3>Play on</h3>
@@ -323,6 +466,7 @@ function viewMusic() {
     <div class="form" style="margin:10px 0;">
       <input id="music-q" type="search" placeholder="a song, an album, an artist" autocomplete="off" value="${esc(MUSIC.query)}" />
       <button class="primary" data-act="music:search">Search</button>
+      <button class="ghost" data-act="music:discover" title="New songs from the artists you play">✨ ${MUSIC.discovering ? "Discover more" : "Discover"}</button>
     </div>
     ${found ? `<div class="card">${found}</div>` : ""}
     <details class="card" style="margin-top:12px;"><summary class="title">Your playlists</summary>${listOr(lists, "No playlists.")}</details>`;
@@ -377,6 +521,21 @@ async function musicDispatch(noun, id) {
       const playing = MUSIC.now && MUSIC.now.is_playing;
       const device = musicDevice();
       await spotify("PUT", playing ? "/me/player/pause" : `/me/player/play${device ? `?device_id=${encodeURIComponent(device)}` : ""}`);
+    } else if (noun === "discover") {
+      flash("Finding new songs from the artists you play…", "ok");
+      await musicDiscover();
+    } else if (noun === "nope") {
+      // Not this one: skipped, and its artist left out of Discover from now on (on this device).
+      const artists = ((MUSIC.now && MUSIC.now.item && MUSIC.now.item.artists) || []).map((a) => a.uri).filter(Boolean);
+      if (artists.length) musicRemember("endora.musicAvoid", [...new Set([...musicRemembered("endora.musicAvoid"), ...artists])], 200);
+      await spotify("POST", "/me/player/next");
+      flash(artists.length ? "Skipped, and Discover will leave that artist out." : "Skipped.", "ok");
+    } else if (noun === "like") {
+      // Spotify's own like: in Liked Songs, or out again. (It has no thumbs-down to give.)
+      const track = MUSIC.now && MUSIC.now.item && MUSIC.now.item.id;
+      if (!track) return;
+      await spotify(MUSIC.liked ? "DELETE" : "PUT", `/me/tracks?ids=${encodeURIComponent(track)}`);
+      flash(MUSIC.liked ? "Taken out of Liked Songs." : "Added to Liked Songs.", "ok");
     } else if (noun === "next" || noun === "prev") {
       await spotify("POST", noun === "next" ? "/me/player/next" : "/me/player/previous");
     } else if (noun === "volume") {
@@ -386,6 +545,21 @@ async function musicDispatch(noun, id) {
     } else if (noun === "device") {
       try { localStorage.setItem("endora.musicDevice", id); } catch (_) {}
       await spotify("PUT", "/me/player", { device_ids: [id], play: true });
+    } else if (noun === "endora") {
+      // This device, tapped: it starts listening first, straight from the tap.
+      soundStartHere(Number(id));
+      // A speaker in the hub: Spotify wired to it (and only it), then played on Endora.
+      const via = MUSIC.devices.find((d) => d.name === ENDORA_SPOTIFY);
+      if (!via) throw new Error(`${ENDORA_SPOTIFY} is not signed in to Spotify yet: open the Spotify app once and pick ${ENDORA_SPOTIFY} from its devices`);
+      const source = ((SOUND.state || {}).sources || []).find((x) => x.kind === "spotify");
+      if (!source) throw new Error("The sound hub has no Spotify source");
+      const speaker = Number(id);
+      for (const w of (SOUND.state.wires || []).filter((x) => x.source === source.id && x.speaker !== speaker)) {
+        await api("DELETE", `/v1/sound/wires/${w.source}/${w.speaker}`);
+      }
+      await api("PUT", "/v1/sound/wires", { source: source.id, speaker, level: 80 });
+      try { localStorage.setItem("endora.musicDevice", via.id); } catch (_) {}
+      await spotify("PUT", "/me/player", { device_ids: [via.id], play: true });
     } else if (noun === "search") {
       const field = document.getElementById("music-q");
       MUSIC.query = field ? field.value.trim() : "";

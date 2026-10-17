@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Forty-six records stand, every one accepted, and forty-nine earlier ones are archived into them
+Forty-seven records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -222,6 +222,7 @@ of an existing record and take the next number.
 | [0101](0101-the-brain.md) | The brain | — |
 | [0102](0102-endora-hq.md) | Endora HQ | — |
 | [0103](0103-the-agenda-loop.md) | The agenda loop | — |
+| [0104](0104-endora-sound.md) | Endora sound | — |
 | [0105](0105-models-in-ordered-lists-by-data-tier.md) | Models in ordered lists, cleared by data tier | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,

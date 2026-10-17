@@ -27,6 +27,7 @@ function render() {
     : v === "media" ? viewMedia()
     : v === "house" ? viewHouse()
     : v === "music" ? viewMusic()
+    : v === "speakers" ? viewSound()
     // Older links: what it remembers is now part of About you.
     : v === "prefs" ? viewUnderstanding()
     : v === "settings" ? viewSettings()
@@ -78,6 +79,7 @@ async function dispatch(act) {
     if (await hqDispatch(verb, noun, id, arg)) return;
     // The agenda's pinned cards and what Endora watches (ADR 0103).
     if (await agendaDispatch(verb, noun, id, arg)) return;
+    if (await soundDispatch(verb, noun, id, arg)) return;
     // Spotify: one sign-in, held by the node, started or finished from any device.
     if (verb === "spotify") {
       try {
@@ -896,9 +898,10 @@ document.body.addEventListener("input", (ev) => {
 });
 
 // A `<select data-change="verb:noun:id">` applies the chosen value on change,
-// dispatching `verb:noun:id:<value>` (used for the lifecycle Status dropdown).
+// dispatching `verb:noun:id:<value>` (used for the lifecycle Status dropdown). A range
+// slider does the same once it is let go, not on every step of the drag.
 document.body.addEventListener("change", (ev) => {
-  const sel = ev.target.closest("select[data-change]");
+  const sel = ev.target.closest("select[data-change], input[type=range][data-change]");
   if (sel) dispatch(sel.getAttribute("data-change") + ":" + sel.value);
 });
 
@@ -918,6 +921,7 @@ function setupHeader(health) {
       item("go:chat", "chat", "Home") +
       item("go:mail", "inbox", "Mail") +
       item("go:music", "music", "Music") +
+      item("go:speakers", "speakerOn", "Speakers") +
       item("go:house", "house", "Smart home") +
       item("go:media", "film", "Media") +
       item("go:lab", "server", "Home lab") +

@@ -63,11 +63,75 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       unset "CARGO_TARGET_${env_triple}_LINKER" "CC_$(echo "$triple" | tr '-' '_')" "AR_$(echo "$triple" | tr '-' '_')"; \
     fi; \
     find . \( -name '*.rs' -o -name '*.toml' -o -name '*.lock' \) -exec touch {} + \
-    && cargo build --release -p endora-node -p endora-hq -p endora-worker -p endora-runner --target "$triple" \
+    && cargo build --release -p endora-node -p endora-hq -p endora-worker -p endora-runner -p endora-sound-hub --target "$triple" \
     && cp "target/$triple/release/endora-node" /endora-node \
     && cp "target/$triple/release/endora-hq" /endora-hq \
     && cp "target/$triple/release/endora-worker" /endora-worker \
-    && cp "target/$triple/release/endora-runner" /endora-runner
+    && cp "target/$triple/release/endora-runner" /endora-runner \
+    && cp "target/$triple/release/endora-sound-hub" /endora-sound-hub
+
+# endora-sound's AirPlay senders (ADR 0104): stock OwnTone, built from its release, plus the
+# airptpd clock it ships the source of but no image builds, which four instances must share.
+# Built with `--target senders`; nothing of OwnTone's (GPL) is linked into anything of ours,
+# it runs beside the hub and is driven over its JSON API.
+FROM alpine:3.23 AS owntone-build
+ARG OWNTONE_VERSION=29.3
+RUN apk add -U -q --no-cache --no-progress \
+      alsa-lib-dev autoconf automake avahi-dev bison confuse-dev curl-dev ffmpeg-dev flex \
+      g++ gawk gcc gettext-dev git gnutls-dev gperf json-c-dev libevent-dev libgcrypt-dev \
+      libplist-dev libsodium-dev libtool libunistring-dev libwebsockets-dev libxml2-dev make \
+      protobuf-c-dev sqlite-dev
+WORKDIR /tmp/source
+RUN git clone --depth 1 -b "$OWNTONE_VERSION" https://github.com/owntone/owntone-server.git . \
+    && cp -r src/libairptp /tmp/airptp \
+    && autoreconf -fi -I /usr/share/gettext/m4 \
+    && ./configure --disable-install_systemd --disable-install_user --enable-silent-rules \
+         --prefix=/usr --sysconfdir=/etc/owntone --localstatedir=/var \
+    && make DESTDIR=/tmp/build install \
+    && cd /tmp/airptp \
+    && autoreconf -fi && ./configure --enable-daemon --prefix=/usr && make \
+    && install -D daemon/airptpd /tmp/build/usr/sbin/airptpd \
+    && rm -rf /tmp/build/var /tmp/build/etc
+# The hub's AirPlay receivers ("Endora · iPhone" and so on): shairport-sync, built for classic
+# AirPlay, which needs no PTP clock of its own and so shares the host with airptpd (an AirPlay 2
+# build's nqptp would want the same ports; the owner chose classic, 2026-10-17). Its own layer,
+# so OwnTone's build above stays cached.
+ARG SHAIRPORT_VERSION=5.6
+RUN apk add -U -q --no-cache --no-progress popt-dev libconfig-dev openssl-dev \
+    && git clone --depth 1 -b "$SHAIRPORT_VERSION" https://github.com/mikebrady/shairport-sync.git /tmp/shairport \
+    && cd /tmp/shairport \
+    && autoreconf -fi \
+    && ./configure --with-pipe --with-avahi --with-ssl=openssl --prefix=/usr --sysconfdir=/etc \
+    && make \
+    && install -D shairport-sync /tmp/build/usr/bin/shairport-sync
+
+FROM alpine:3.23 AS senders
+RUN apk add -U -q --no-cache --no-progress \
+      alsa-lib avahi confuse curl dbus ffmpeg gnutls json-c libevent libgcrypt libplist \
+      libsodium libunistring libuuid libwebsockets libxml2 protobuf-c sqlite sqlite-libs \
+      popt libconfig openssl su-exec \
+    && rm -f /etc/avahi/services/* \
+    && adduser -S -H -D owntone
+COPY --from=owntone-build /tmp/build/ /
+COPY --chmod=755 scripts/sound-senders.sh /usr/local/bin/sound-senders
+VOLUME /data
+ENTRYPOINT ["/usr/local/bin/sound-senders"]
+
+# endora-sound (ADR 0104): the sound hub, in an image of its own, because it needs ffmpeg and
+# the node does not. Built with `--target sound`. It sits before the node's stage on purpose:
+# a plain build still makes the node, the last stage.
+FROM debian:bookworm-slim AS sound
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /endora-sound-hub /usr/local/bin/endora-sound-hub
+ENV SOUND_ADDR=0.0.0.0:8791
+ENV SOUND_STATE=/data/sound.json
+ENV SOUND_PIPES=/pipes
+ENV SOUND_TOKEN_FILE=/token/token
+VOLUME /data
+EXPOSE 8791
+ENTRYPOINT ["endora-sound-hub"]
 
 # --- runtime stage ---------------------------------------------------------
 FROM debian:bookworm-slim

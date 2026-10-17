@@ -212,6 +212,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => state,
     };
+    // endora-sound (ADR 0104), when this node has one: the same two ways to sign as HQ.
+    let state = match (
+        std::env::var("ENDORA_SOUND_URL")
+            .ok()
+            .filter(|u| !u.trim().is_empty()),
+        std::env::var("ENDORA_SOUND_TOKEN")
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty()),
+        std::env::var("ENDORA_SOUND_TOKEN_FILE")
+            .ok()
+            .filter(|f| !f.trim().is_empty()),
+    ) {
+        (Some(url), Some(token), _) if token.len() >= 32 => {
+            println!("sound: the hub at {url}");
+            state.with_sound(endora_infrastructure::SoundClient::new(&url, &token))
+        }
+        (Some(url), None, Some(file)) => {
+            println!("sound: the hub at {url}, signing with the token the hub keeps");
+            state.with_sound(endora_infrastructure::SoundClient::with_token_file(
+                &url,
+                std::path::Path::new(&file),
+            ))
+        }
+        (Some(_), _, _) => {
+            eprintln!(
+                "sound: no usable token for the hub (ENDORA_SOUND_TOKEN of 32+ characters, or \
+                 ENDORA_SOUND_TOKEN_FILE); sound is off"
+            );
+            state
+        }
+        _ => state,
+    };
 
     println!("{}", endora_application::platform_identity());
     println!("drafting model: {model} via {model_url}  (optional; 503 if unavailable)");

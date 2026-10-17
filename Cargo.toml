@@ -12,6 +12,7 @@ members = [
     "domains/mail",
     "domains/team",
     "domains/agenda",
+    "domains/sound",
     "crates/endora-application",
     "crates/endora-infrastructure",
     "app/node",
@@ -19,6 +20,7 @@ members = [
     "app/hq",
     "app/worker",
     "app/runner",
+    "app/sound",
     "clients/terminal",
 ]
 

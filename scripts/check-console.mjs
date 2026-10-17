@@ -671,6 +671,97 @@ if (failures.length) {
   console.log("agenda: the Now line opens Activity, only what needs you is pinned, and Settings can undo and re-level");
 }
 
+// Speakers (ADR 0104): every source offers its speakers to tap, never the device's own; a wire
+// has its slider; a speaker says when another device has it; setups play; text stays text.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`SOUND.error = ""; SOUND.ticket = null; SOUND.listening = false; SOUND.found = ["Kitchen", "Living room"];
+    SOUND.state = { senders: 4, listening: [4],
+      sources: [{ id: 1, name: "<b>Classical</b>", kind: "radio", device: null, address: "https://radio.example.com/c" },
+                { id: 2, name: "Endora Mixer (iPhone)", kind: "airplay", device: "iphone" }],
+      speakers: [{ id: 3, name: "Kitchen", kind: "airplay", device: null, volume: 40, borrowed: false },
+                 { id: 4, name: "iPhone", kind: "stream", device: "iphone", volume: 100, borrowed: false },
+                 { id: 5, name: "Office", kind: "airplay", device: null, volume: 70, borrowed: true }],
+      wires: [{ source: 1, speaker: 3, level: 60 }, { source: 1, speaker: 4, level: 10 }, { source: 2, speaker: 5, level: 90 }],
+      groups: [{ speakers: [3], mix: [{ source: 1, level: 60 }], needs_sender: true },
+               { speakers: [4], mix: [{ source: 1, level: 10 }], needs_sender: false }],
+      setups: [{ name: "Kitchen mornings", wires: [{ source: 1, speaker: 3, level: 60 }] }] };`, context);
+  const screen = runInContext("viewSound()", context);
+  for (const act of ['data-act="sound:wire:1-3"', 'data-act="sound:wire:1-5"', 'data-act="sound:wire:2-3"',
+    'data-change="sound:level:1-3"', 'data-change="sound:all:1"', 'data-change="sound:volume:3"',
+    'data-act="sound:play:0"', 'data-act="sound:forget:0"', 'data-act="sound:mine"',
+    'data-act="sound:free:5"', 'data-act="sound:addfound:1"']) {
+    if (!screen.includes(act)) fail(`speakers: the screen does not offer ${act}`);
+  }
+  if (screen.includes('data-act="sound:wire:2-4"')) fail("speakers: the phone was offered its own stream");
+  if (!screen.includes("pick “Endora Mixer (iPhone)” in its AirPlay menu")) fail("speakers: a receiver does not say how to use it");
+  if (!screen.includes('data-act="sound:addreceiver"')) fail("speakers: a receiver cannot be added");
+  if (screen.includes('data-act="sound:addfound:0"')) fail("speakers: a speaker already added was offered again");
+  if (screen.includes('data-act="sound:free:3"')) fail("speakers: a speaker nobody borrowed offered to be taken back");
+  // A borrowed speaker says so where it is tapped, and the way back is above the sources.
+  if (!/Office · 90 · in use/.test(screen)) fail("speakers: a borrowed speaker's wire does not say it is in use");
+  if (screen.indexOf('data-act="sound:free:5"') > screen.indexOf('data-act="sound:wire:1-3"')) fail("speakers: taking a speaker back is below the sources");
+  if (!screen.includes("in use by another device")) fail("speakers: a borrowed speaker does not say so");
+  if (screen.includes("<b>Classical</b>")) fail("speakers: a source's name became markup");
+  if (!/aria-pressed="true">Kitchen · 60/.test(screen)) fail("speakers: a wire does not show its level");
+  if ((screen.match(/id="sound-radio-name"/g) || []).length !== 1) fail("speakers: the station form shows twice, or not at all");
+  // With nothing to play, adding a station is in front, not folded away; and a device that
+  // listens to nothing wired says so.
+  runInContext(`SOUND.listening = true; var keepGet = localStorage.getItem;
+    localStorage.getItem = (k) => (k === "endora.soundSpeaker" ? "4" : keepGet(k));
+    SOUND.state = Object.assign({}, SOUND.state, { sources: [], wires: [], groups: [] });`, context);
+  const empty = runInContext("viewSound()", context);
+  if (!empty.includes("Add something to play") || (empty.match(/id="sound-radio-name"/g) || []).length !== 1) {
+    fail("speakers: with no sources, adding a station is not in front");
+  }
+  if (!empty.includes("nothing is wired to this iPhone yet")) fail("speakers: a device listening to nothing does not say why it is silent");
+  runInContext("SOUND.listening = false; localStorage.getItem = keepGet;", context);
+  runInContext('SOUND.state = null; SOUND.error = "The sound hub is not set up on this node yet.";', context);
+  if (!runInContext("viewSound()", context).includes("not set up")) fail("speakers: a node without the hub does not say so");
+  runInContext('SOUND.error = "";', context);
+  console.log("speakers: every source offers its speakers but never its own device, wires carry their levels, and text stays text");
+}
+
+// Music (ADR 0104): Spotify plays on the hub's speakers through its Endora receiver, listed
+// beside Spotify's own devices; the receiver itself is not a choice.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`var keepMusic = JSON.stringify(MUSIC), keepSpotify = SPOTIFY, keepSound = SOUND.state;
+    SPOTIFY = { state: "connected" };
+    MUSIC.devices = [{ id: "d-mac", name: "Mac", is_active: false }, { id: "d-endora", name: "Endora", is_active: true }];
+    MUSIC.now = null;
+    SOUND.state = { sources: [{ id: 1, name: "Spotify", kind: "spotify" }],
+      speakers: [{ id: 3, name: "Office HomePod", kind: "airplay", borrowed: false }, { id: 4, name: "iPhone", kind: "stream", borrowed: false }],
+      wires: [{ source: 1, speaker: 4, level: 80 }], groups: [] };`, context);
+  const music = runInContext("viewMusic()", context);
+  if (!music.includes('data-act="music:endora:3"') || !music.includes('data-act="music:endora:4"')) fail("music: the hub's speakers are not offered");
+  if (music.includes('data-act="music:device:d-endora"')) fail("music: the Endora receiver is offered as a speaker of its own");
+  if (!music.includes('data-act="music:device:d-mac"')) fail("music: Spotify's own devices went missing");
+  runInContext(`MUSIC.now = { is_playing: true, item: { id: "t1", type: "track", name: "A song", artists: [{ name: "Someone" }], album: { images: [] } } };
+    MUSIC.liked = false;`, context);
+  if (!runInContext("viewMusic()", context).includes('data-act="music:like" aria-pressed="false"')) fail("music: a song cannot be liked");
+  if (!runInContext("viewMusic()", context).includes('data-act="music:nope"')) fail("music: a song cannot be turned down");
+  if (!runInContext("viewMusic()", context).includes('data-act="music:discover"')) fail("music: there is no Discover");
+  runInContext("MUSIC.liked = true;", context);
+  if (!runInContext("viewMusic()", context).includes('aria-pressed="true" aria-label="In Liked Songs')) fail("music: a liked song does not show it");
+  // Through Endora: each speaker's volume, not the receiver's.
+  runInContext(`MUSIC.now = { is_playing: true, device: { name: "Endora", volume_percent: 100 }, item: { id: "t1", type: "track", name: "A song", artists: [], album: { images: [] } } };
+    SOUND.state = Object.assign({}, SOUND.state, { speakers: [{ id: 3, name: "Office HomePod", kind: "airplay", volume: 40 }, { id: 4, name: "iPhone", kind: "stream", volume: 100 }] });`, context);
+  const viaEndora = runInContext("viewMusic()", context);
+  if (!viaEndora.includes('data-change="sound:volume:4"') || viaEndora.includes("music:volume:10")) fail("music: through Endora, the volume is not the speakers'");
+  runInContext("MUSIC.now = null; MUSIC.liked = null;", context);
+  if (!/pill pick active" data-act="music:endora:4"/.test(music)) fail("music: the speaker Spotify plays on is not shown as playing");
+  if (!/data-act="music:endora:4">iPhone · not listening/.test(music)) fail("music: a phone that is not listening does not say so");
+  // On that phone itself, it is this device, and a tap starts it listening.
+  runInContext(`var keepGet2 = localStorage.getItem;
+    localStorage.getItem = (k) => (k === "endora.soundSpeaker" ? "4" : keepGet2(k));`, context);
+  const onPhone = runInContext("viewMusic()", context);
+  if (!/data-act="music:endora:4">iPhone · this device/.test(onPhone)) fail("music: this device is not shown as this device");
+  runInContext("localStorage.getItem = keepGet2;", context);
+  runInContext("Object.assign(MUSIC, JSON.parse(keepMusic)); SPOTIFY = keepSpotify; SOUND.state = keepSound;", context);
+  console.log("music: Spotify's devices and the hub's speakers are one list, and the receiver is not a choice");
+}
+
 // Devices that stopped answering are never asked about: the owner turned it off for good
 // (2026-10-16), so nothing may bring the card or its actions back.
 if (/Still yours\?|data-act="trouble:|standing-trouble/.test(source)) {

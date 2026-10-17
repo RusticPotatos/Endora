@@ -450,3 +450,28 @@
   .mlist-add { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
   .mlist-add select, .mlist-add input { flex: 1 1 9em; min-width: 0; }
   .private-lock { display: inline-flex; vertical-align: -1px; margin-right: 5px; opacity: .7; }
+
+  /* A level (endora-sound): the console's own slider. The fill ends at the knob's centre, which
+     travels from half a knob in from one end to half a knob in from the other, so 0 and 100 sit
+     at the very ends; --v is the value from 0 to 1. */
+  input[type=range].level {
+    -webkit-appearance: none; appearance: none; flex: 1; min-width: 90px; height: 28px;
+    margin: 0; background: transparent; --knob: 22px;
+  }
+  input[type=range].level::-webkit-slider-runnable-track {
+    height: 6px; border-radius: 3px;
+    background: linear-gradient(to right, var(--accent) calc(var(--knob) / 2 + (100% - var(--knob)) * var(--v, 0)),
+      var(--line) calc(var(--knob) / 2 + (100% - var(--knob)) * var(--v, 0)));
+  }
+  input[type=range].level::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: var(--knob); height: var(--knob); margin-top: -8px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); border: 0;
+  }
+  input[type=range].level::-moz-range-track { height: 6px; border-radius: 3px; background: var(--line); }
+  input[type=range].level::-moz-range-progress { height: 6px; border-radius: 3px; background: var(--accent); }
+  input[type=range].level::-moz-range-thumb {
+    width: var(--knob); height: var(--knob); border-radius: 50%; background: #fff; border: 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  }
+  input[type=range].level:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .level-n { min-width: 28px; text-align: right; font-variant-numeric: tabular-nums; }

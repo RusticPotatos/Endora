@@ -1,0 +1,186 @@
+//! The player: the one thread that keeps time. Every few milliseconds it brings the engine in
+//! line with the patchbay if it changed, mixes whatever is due, and hands each block to its
+//! group's sender and to anyone listening on its speakers.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use endora_sound::application::engine::{Change, Engine};
+use endora_sound::application::hub::Hub;
+use endora_sound::domain::SpeakerId;
+use endora_sound::domain::mix::{CHANNELS, RATE};
+use endora_sound::infrastructure::{FeedSet, FileStore, Places};
+
+use crate::listen::Listeners;
+
+/// How often the player wakes.
+const TICK: Duration = Duration::from_millis(20);
+
+/// The most it mixes at once, in frames. After a stall it skips ahead rather than racing to
+/// catch up.
+const MOST_AT_ONCE: u64 = RATE as u64 / 5;
+
+/// Where a group's sound goes besides the streams: the AirPlay senders.
+pub trait Senders: Send {
+    /// Does what the engine says the senders must, in order.
+    fn apply(&mut self, changes: &[Change]);
+    /// Plays a block on `sender`. A group with no sound lately says so, and its sender stops,
+    /// leaving its speakers free.
+    fn play(&mut self, sender: usize, samples: &[i16], sounding: bool);
+}
+
+/// No senders: what runs until the AirPlay senders are set up. It says what it would do.
+pub struct NoSenders;
+
+impl Senders for NoSenders {
+    fn apply(&mut self, changes: &[Change]) {
+        for change in changes {
+            println!("sound: no AirPlay senders yet; would {change:?}");
+        }
+    }
+
+    fn play(&mut self, _sender: usize, _samples: &[i16], _sounding: bool) {}
+}
+
+/// Starts the player on a thread of its own.
+pub fn start(
+    hub: Arc<Hub<FileStore>>,
+    listeners: Arc<Listeners>,
+    places: Places,
+    mut senders: Box<dyn Senders>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut engine = Engine::default();
+        let pipes = places.pipes.clone();
+        let mut feeds = FeedSet::new(places);
+        let mut revision = None;
+        let mut stream_volume: std::collections::BTreeMap<SpeakerId, endora_sound::domain::Level> =
+            std::collections::BTreeMap::new();
+        let began = Instant::now();
+        let mut done: u64 = 0;
+        let mut tidied = Instant::now();
+        loop {
+            std::thread::sleep(TICK);
+            let now = hub.read(endora_sound::domain::Patchbay::revision);
+            if revision != Some(now) {
+                let changes = hub.read(|bay| {
+                    let changes = engine.plan(bay);
+                    let mut wanted: Vec<_> = engine
+                        .running()
+                        .iter()
+                        .flat_map(|r| r.mix.iter().map(|m| m.source))
+                        .collect();
+                    wanted.sort_unstable();
+                    wanted.dedup();
+                    feeds.keep(bay, &wanted);
+                    changes
+                });
+                senders.apply(&changes);
+                // The senders' list of speakers never to reconnect to by themselves.
+                let names: Vec<String> = hub.read(|bay| {
+                    bay.speakers()
+                        .into_iter()
+                        .filter(|s| s.kind == endora_sound::domain::SpeakerKind::AirPlay)
+                        .map(|s| s.name.clone())
+                        .collect()
+                });
+                if let Err(e) = crate::senders::write_speaker_names(&pipes, &names) {
+                    eprintln!("sound: cannot write the senders' speaker names: {e}");
+                }
+                // And the AirPlay receivers to run: every AirPlay source, by its pipe and name.
+                let receivers: Vec<(String, String)> = hub.read(|bay| {
+                    bay.sources()
+                        .into_iter()
+                        .filter(|s| s.kind == endora_sound::domain::SourceKind::AirPlay)
+                        .map(|s| {
+                            (
+                                endora_sound::infrastructure::feeds::pipe_name(s),
+                                s.name.clone(),
+                            )
+                        })
+                        .collect()
+                });
+                if let Err(e) = crate::senders::write_receivers(&pipes, &receivers) {
+                    eprintln!("sound: cannot write the AirPlay receivers' list: {e}");
+                }
+                // A stream speaker's volume is the hub's to apply (a phone's browser ignores a
+                // page's volume); an AirPlay speaker's is the senders' to set on the speaker.
+                stream_volume = hub.read(|bay| {
+                    bay.speakers()
+                        .into_iter()
+                        .filter(|s| s.kind == endora_sound::domain::SpeakerKind::Stream)
+                        .map(|s| (s.id, s.volume))
+                        .collect()
+                });
+                revision = Some(now);
+            }
+            let due_total = (began.elapsed().as_secs_f64() * f64::from(RATE)) as u64;
+            let mut due = due_total.saturating_sub(done);
+            if due > MOST_AT_ONCE {
+                done += due - MOST_AT_ONCE;
+                due = MOST_AT_ONCE;
+            }
+            if due == 0 {
+                continue;
+            }
+            done += due;
+            let frames = usize::try_from(due).unwrap_or(0);
+            let played = engine.tick(frames, &mut feeds);
+            // Sources no group plays are still read in time, so their writers keep time.
+            let heard: Vec<_> = engine
+                .running()
+                .iter()
+                .flat_map(|r| r.mix.iter().map(|m| m.source))
+                .collect();
+            feeds.discard_unheard(&heard, frames * CHANNELS);
+            let mut fed: Vec<SpeakerId> = Vec::new();
+            for p in &played {
+                if let Some(sender) = p.sender {
+                    senders.play(sender, &p.samples, p.sounding);
+                }
+                for speaker in &p.speakers {
+                    match stream_volume.get(speaker) {
+                        Some(v) if *v != endora_sound::domain::Level::FULL => {
+                            listeners.feed(*speaker, &at_volume(&p.samples, *v));
+                        }
+                        _ => listeners.feed(*speaker, &p.samples),
+                    }
+                    fed.push(*speaker);
+                }
+            }
+            // A phone listening on a speaker with nothing wired still hears something: quiet,
+            // so its stream stays open for when something is.
+            let quiet = vec![0i16; frames * CHANNELS];
+            for speaker in listeners.listening() {
+                if !fed.contains(&speaker) {
+                    listeners.feed(speaker, &quiet);
+                }
+            }
+            if tidied.elapsed() > Duration::from_secs(1) {
+                listeners.tidy();
+                tidied = Instant::now();
+            }
+        }
+    })
+}
+
+/// A block at a speaker's volume: as a wire's level is, linear, so 50 is half.
+fn at_volume(samples: &[i16], volume: endora_sound::domain::Level) -> Vec<i16> {
+    let gain = endora_sound::domain::mix::gain(volume);
+    samples
+        .iter()
+        .map(|s| (f32::from(*s) * gain).round() as i16)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use endora_sound::domain::Level;
+
+    #[test]
+    fn a_stream_speakers_volume_scales_what_it_hears() {
+        let half = super::at_volume(&[10_000, -10_000, 1], Level::new(50).unwrap());
+        assert_eq!(half, vec![5_000, -5_000, 1]);
+        assert_eq!(super::at_volume(&[10_000], Level::SILENT), vec![0]);
+    }
+}

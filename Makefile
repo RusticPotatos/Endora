@@ -94,6 +94,15 @@ export ENDORA_HQ_TICK_SECONDS
 export ENDORA_HQ_DEMO
 export ENDORA_HQ_TICK_SECONDS
 
+# endora-sound (ADR 0104), the sound hub: append sound to COMPOSE_PROFILES (homelab,hq,sound)
+# and set ENDORA_SOUND_URL = http://sound:8791 in local.mk. `make deploy` then builds and ships
+# its image too. It makes its own token for the node. ENDORA_SOUND_DIR keeps its patchbay in a
+# host folder instead of a named volume. Its AirPlay senders are a profile of their own,
+# senders, which cannot run beside the ansible-nas owntone container: add it only once that
+# is stopped for good (or for a test: make deploy COMPOSE_PROFILES=homelab,hq,sound,senders).
+export ENDORA_SOUND_URL
+export ENDORA_SOUND_DIR
+
 # The read-only mail copy on the NAS (ansible-nas `mail_mirror` role, ADR 0097), e.g.
 # ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read whenever the copy is there.
 export ENDORA_MAIL_DIR
@@ -192,6 +201,20 @@ else
 	echo "copying the image to the target"; \
 	docker --context $(ENDORA_BUILD_CONTEXT) save endora-node:for-target | gzip -1 | $(TARGET_DOCKER) load; \
 	$(TARGET_DOCKER) tag endora-node:for-target endora-node:latest; \
+	case ",$(COMPOSE_PROFILES)," in *,sound,*) \
+		echo "building the sound hub's image (ADR 0104)"; \
+		docker --context $(ENDORA_BUILD_CONTEXT) buildx build --platform "linux/$$arch" \
+			--target sound -t endora-sound:for-target --load .; \
+		docker --context $(ENDORA_BUILD_CONTEXT) save endora-sound:for-target | gzip -1 | $(TARGET_DOCKER) load; \
+		$(TARGET_DOCKER) tag endora-sound:for-target endora-sound:latest;; \
+	esac; \
+	case ",$(COMPOSE_PROFILES)," in *,senders,*) \
+		echo "building the AirPlay senders' image (OwnTone and airptpd)"; \
+		docker --context $(ENDORA_BUILD_CONTEXT) buildx build --platform "linux/$$arch" \
+			--target senders -t endora-senders:for-target --load .; \
+		docker --context $(ENDORA_BUILD_CONTEXT) save endora-senders:for-target | gzip -1 | $(TARGET_DOCKER) load; \
+		$(TARGET_DOCKER) tag endora-senders:for-target endora-senders:latest;; \
+	esac; \
 	ENDORA_BUILD="$$build" $(COMPOSE) up -d --no-build
 endif
 
