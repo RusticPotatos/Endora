@@ -158,9 +158,29 @@ pub(super) async fn ai_overview(
         let deep = DeepModelRepository::get(config.as_ref())
             .map_err(AppError::Repository)?
             .unwrap_or_default();
+        // The ordered lists decide (ADR 0105): each job's first entry is what answers first.
+        let first_of = |job| {
+            use endora_capabilities::model_lists::{ModelListRepository as _, targets};
+            let providers = config.providers().unwrap_or_default();
+            targets(&providers, &config.entries(job).unwrap_or_default())
+                .into_iter()
+                .next()
+        };
+        let everyday_first = first_of(endora_capabilities::model_lists::Job::Everyday);
+        let deep = match first_of(endora_capabilities::model_lists::Job::Deep) {
+            Some(t) => endora_application::DeepModel {
+                url: t.url,
+                model: t.model,
+                api_key: String::new(),
+                escalate: deep.escalate,
+            },
+            None => deep,
+        };
         let env_router = std::env::var("ENDORA_ROUTER_MODEL").unwrap_or_default();
         let env_synth = std::env::var("ENDORA_SYNTH_MODEL").unwrap_or_default();
-        let (chat_url, chat_models) = if butler.base_url.is_empty() {
+        let (chat_url, chat_models) = if let Some(t) = everyday_first {
+            (t.url, vec![t.model])
+        } else if butler.base_url.is_empty() {
             let models = if env_router.is_empty() || env_synth.is_empty() {
                 vec![deployment_model()]
             } else {
@@ -201,7 +221,11 @@ pub(super) async fn ai_overview(
                 "id": id, "name": name, "does": does, "model": model,
                 "endpoint": shown(&chat_url), "local": endora_infrastructure::is_private_endpoint(&chat_url),
                 "runtime": runtime(&chat_url, model),
-                "sees": "Your messages, what Endora remembers about you, and what its skills return.",
+                "sees": if endora_infrastructure::is_private_endpoint(&chat_url) {
+                    "Your messages, what Endora remembers about you, and what its skills return."
+                } else {
+                    "Your messages and what Endora remembers about you, with names, places and appointments disguised. Never a turn that carried what an outside source said; those stay on your own network."
+                },
                 "change": "models", "on": true,
             }));
         }

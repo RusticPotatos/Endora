@@ -392,9 +392,12 @@ pub(super) fn run_model_tune(
             // without a reason is a judgement nobody can check (ADR 0055). The scores are
             // out of the battery's own total rather than a number frozen in this string.
             let msg = match outcome {
-                AdoptionOutcome::Adopted { name, score } => {
-                    format!("adopted a better local model: {name}, scoring {score}")
-                }
+                // The order of the everyday list is the owner's (ADR 0105): a better local
+                // model is said, not slotted in.
+                AdoptionOutcome::Adopted { name, score } => format!(
+                    "found a better local model: {name}, scoring {score}. Add it to Everyday \
+                     on the AI screen to use it"
+                ),
                 AdoptionOutcome::Proposed {
                     name,
                     score,
@@ -475,33 +478,39 @@ pub(super) async fn deep_ask(
     let capabilities = state.capabilities.clone();
     let mcp = mcp_snapshot(&state);
     let question = req.question;
+    let brain = state.brain.clone();
     // Serialize against any other butler turn: this one runs skills too.
     let _turn = state.turn_lock.clone().lock_owned().await;
     let posted = blocking(move || {
-        let Some(cfg) = DeepModelRepository::get(config.as_ref()).map_err(AppError::Repository)?
-        else {
+        // The deep model is used here because the person pressed the button, whether or not
+        // they turned the automatic fallback on; so it is the deep list on request rather than
+        // `Butler::deeper`, which honours that switch (ADR 0105). A node with no lists (a
+        // test) reads the single deep model.
+        let deep = match brain.as_ref() {
+            Some(brain) => brain.deep_on_request(),
+            None => DeepModelRepository::get(config.as_ref())
+                .map_err(AppError::Repository)?
+                .filter(|cfg| !cfg.url.is_empty() && !cfg.model.is_empty())
+                .map(|cfg| {
+                    endora_application::egress::Deeper::new(Arc::new(
+                        endora_infrastructure::LlmButler::with_config(
+                            cfg.url,
+                            cfg.model,
+                            cfg.api_key,
+                            endora_application::Sampling::default(),
+                        )
+                        .with_usage_log("deep", store.clone()),
+                    ))
+                }),
+        };
+        let Some(deep) = deep else {
             return Ok::<_, AppError>(None);
         };
-        if cfg.url.is_empty() || cfg.model.is_empty() {
-            return Ok(None);
-        }
         // Through the door, or not at all (ADR 0069): refuse a secret up front, before the
         // question is stored or anything is asked of anyone.
         endora_application::egress::TheirOwnQuestion::checked(&question)
             .map_err(|message| AppError::BadRequest { message })?;
         record_event(events.as_ref(), clock.as_ref(), "Asked the deep model");
-        // The deep model is used here because the person pressed the button, whether or not
-        // they turned the automatic fallback on; so it is built from the configuration
-        // directly rather than through `Butler::deeper`, which honours that switch.
-        let deep = endora_application::egress::Deeper::new(Arc::new(
-            endora_infrastructure::LlmButler::with_config(
-                cfg.url.clone(),
-                cfg.model.clone(),
-                cfg.api_key.clone(),
-                endora_application::Sampling::default(),
-            )
-            .with_usage_log("deep", store.clone()),
-        ));
         let planned =
             endora_application::deep_turn::PlannedByTheDeepModel::new(&deep, butler.as_ref());
         let runner = build_runner(
@@ -737,8 +746,46 @@ pub(super) async fn deep_balance(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let config = state.config.clone();
     let out = blocking(move || {
-        let Some(cfg) = DeepModelRepository::get(config.as_ref()).map_err(AppError::Repository)?
-        else {
+        // The deep list's DeepSeek provider, the one with a balance to read (ADR 0105); a
+        // node with no lists reads the single deep model.
+        let host_of = |url: &str| {
+            url.split("://")
+                .nth(1)
+                .and_then(|rest| rest.split('/').next())
+                .unwrap_or("")
+                .to_ascii_lowercase()
+        };
+        let is_deepseek = |url: &str| {
+            let host = host_of(url);
+            host == "api.deepseek.com" || host.ends_with(".deepseek.com")
+        };
+        let providers =
+            endora_capabilities::model_lists::ModelListRepository::providers(config.as_ref())
+                .map_err(AppError::Repository)?;
+        let cfg = if providers.is_empty() {
+            DeepModelRepository::get(config.as_ref()).map_err(AppError::Repository)?
+        } else {
+            let deep = endora_capabilities::model_lists::ModelListRepository::entries(
+                config.as_ref(),
+                endora_capabilities::model_lists::Job::Deep,
+            )
+            .map_err(AppError::Repository)?;
+            let found = deep
+                .iter()
+                .filter_map(|e| providers.iter().find(|p| p.id == e.provider))
+                .find(|p| is_deepseek(&p.url))
+                .or_else(|| {
+                    deep.iter()
+                        .find_map(|e| providers.iter().find(|p| p.id == e.provider))
+                });
+            found.map(|p| endora_application::DeepModel {
+                url: p.url.clone(),
+                model: String::new(),
+                api_key: p.api_key.clone(),
+                escalate: false,
+            })
+        };
+        let Some(cfg) = cfg else {
             return Ok::<_, AppError>(json!({ "supported": false, "reason": "no deep model" }));
         };
         let host = cfg
