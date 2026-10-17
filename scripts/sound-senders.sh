@@ -21,8 +21,8 @@ PASSWORD=$(cat "$SECRET")
 
 # Discovery: OwnTone finds speakers through avahi, over dbus.
 mkdir -p /run/dbus /run/avahi-daemon
-chown avahi:avahi /run/avahi-daemon
 rm -f /run/dbus/dbus.pid /run/dbus/pid /run/avahi-daemon/pid
+chown avahi:avahi /run/avahi-daemon
 dbus-daemon --system
 avahi-daemon --daemonize --no-chroot
 
@@ -49,6 +49,9 @@ general {
 	trusted_networks = { "localhost" }
 	ipv6 = no
 	speaker_autoselect = no
+	# HomePods on HomePod OS 27 answer 403 to any AirPlay request whose User-Agent does not
+	# start with "AirPlay/", which OwnTone's own does not (the fix ansible-nas carries too).
+	user_agent = "AirPlay/999.0.0"
 }
 library {
 	name = "Endora sender $n"
