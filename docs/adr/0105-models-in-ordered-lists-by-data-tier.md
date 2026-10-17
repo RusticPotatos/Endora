@@ -2,10 +2,19 @@
 
 ## Status
 
-Accepted, 2026-10-16, from an owner design interview (Q1–Q6, Q3a–Q3e). Phase 1 is built:
-providers, the ordered lists and their walking, with every everyday cloud entry through the
-door. Phase 2 (the tiers: every context section labelled, the tier check in the door, the 🔒
-on the composer) and Sign in with ChatGPT as a provider are not yet. Prepared with AI
+Accepted, 2026-10-16, from an owner design interview (Q1–Q6, Q3a–Q3e). Phases 1 and 2 are
+built: providers, the ordered lists and their walking, every everyday cloud entry through the
+door; then the tiers, the 🔒 and the door's refusal of Restricted words. Sign in with ChatGPT as
+a provider is not yet.
+
+How phase 2 is built, for the record: Restricted words carry a mark (`[private] `) the door
+refuses, as a stranger's words carry theirs (0064), derived from what the turn holds rather
+than stored beside it. A 🔒 message is kept with the mark, and so is Endora's reply to it; a
+Restricted skill's result is marked as it enters the turn, by one table of skill tiers in the
+capabilities context (a skill not listed is Restricted); an owner's message shaped like an
+account number is refused by shape. Confidential context, skill results and earlier replies
+leave disguised. A private message is never noted into the brain or folded into the running
+summary, so it cannot ride out later through either. Prepared with AI
 assistance (Claude). Step 4 of [the always-on butler plan](../plans/always-on-butler.md). It
 replaces the everyday model's three mechanisms (the preferred rung of
 [0072](0072-the-base-has-rungs-too.md), the base config and its router-and-writer mixture of

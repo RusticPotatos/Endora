@@ -1591,7 +1591,14 @@ pub(super) fn compact_history(
         // turns, each a small, fast call rather than one giant summarisation that would
         // itself time out on a slow model.
         let end = current.covered + SUMMARY_BATCH;
-        let chunk = render_transcript(&full[current.covered..end]);
+        // A private message, or a reply to one, is left out of the running summary, which
+        // rides in later turns (ADR 0105); the summary simply does not know it.
+        let shareable: Vec<ChatMessage> = full[current.covered..end]
+            .iter()
+            .filter(|m| !m.text().starts_with(crate::egress::RESTRICTED_MARK))
+            .cloned()
+            .collect();
+        let chunk = render_transcript(&shareable);
         if let Ok(s) = butler.summarize(&current.text, &chunk) {
             let s = s.trim();
             if !s.is_empty() {
@@ -1974,10 +1981,17 @@ pub fn send_to_butler_streaming_for_request(
     } else {
         on_token(&reply_text);
     }
+    // A reply to a private message may say it again, so it is kept private too (ADR 0105).
+    let private = text.starts_with(crate::egress::RESTRICTED_MARK);
+    let stored_reply = if private {
+        format!("{}{reply_text}", crate::egress::RESTRICTED_MARK)
+    } else {
+        reply_text.clone()
+    };
     let butler_msg = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
-        &reply_text,
+        &stored_reply,
         clock.now(),
     )?;
     chat.append(&butler_msg)?;
@@ -1997,15 +2011,22 @@ pub fn send_to_butler_streaming_for_request(
     if !acted {
         let mut learning_ctx = context.clone();
         learning_ctx.tools = Vec::new();
+        // A private message is never noted into the brain, where it would ride in every later
+        // turn, disguised, to a cloud model (ADR 0105).
         let theirs: Vec<ChatMessage> = history
             .iter()
             .filter(|m| m.role() == MessageRole::User)
+            .filter(|m| !m.text().starts_with(crate::egress::RESTRICTED_MARK))
             .cloned()
             .collect();
-        let formed = butler
-            .respond(&theirs, &prefs, &learning_ctx)
-            .map(|r| r.beliefs)
-            .unwrap_or_default();
+        let formed = if theirs.is_empty() {
+            Vec::new()
+        } else {
+            butler
+                .respond(&theirs, &prefs, &learning_ctx)
+                .map(|r| r.beliefs)
+                .unwrap_or_default()
+        };
         note_what_it_learned(knowledge, formed, &today(clock), &mut activity)?;
     }
 

@@ -263,10 +263,11 @@ function sendChat() {
   if (thread && thread.querySelector(".empty")) thread.innerHTML = "";
   // Deep mode on: route to the bigger model instead of the everyday butler. Keep the
   // text until it lands (askDeep clears it on success).
-  if (DEEP_MODE && DEEP_MODEL && DEEP_MODEL.configured) { askDeep(msg, input); return; }
+  // A private message never goes to the deep model.
+  if (DEEP_MODE && !PRIVATE_MODE && DEEP_MODEL && DEEP_MODEL.configured) { askDeep(msg, input); return; }
   if (input) { input.value = ""; growInput(input); }
-  appendBubble(esc(msg), "me"); // show it immediately, even if it waits its turn
-  CHAT_QUEUE.push(msg);
+  appendBubble((PRIVATE_MODE ? `<span class="private-lock">${icon("lock", 12)}</span>` : "") + esc(msg), "me"); // show it immediately, even if it waits its turn
+  CHAT_QUEUE.push(PRIVATE_MODE ? { message: msg, private: true } : msg);
   drainChat();
 }
 
@@ -313,7 +314,8 @@ async function drainChat() {
   const queued = CHAT_QUEUE.shift();
   const msg = typeof queued === "string" ? queued : queued.message;
   const requestId = queued.request_id || `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  LAST_CHAT_REQUEST = { message: msg, request_id: requestId };
+  const isPrivate = typeof queued === "object" && !!queued.private;
+  LAST_CHAT_REQUEST = { message: msg, request_id: requestId, private: isPrivate };
   // Remember the in-flight turn in module state so a re-render (e.g. toggling
   // Speak) can rebuild the just-sent message and the reply growing in, instead of
   // wiping them (they aren't in the persisted DB.messages until the turn ends).
@@ -337,7 +339,7 @@ async function drainChat() {
     const res = await fetch("/v1/chat/stream", {
       method: "POST",
       headers: signed({ "content-type": "application/json" }),
-      body: JSON.stringify({ message: msg, request_id: requestId }),
+      body: JSON.stringify({ message: msg, request_id: requestId, private: isPrivate }),
       signal: CHAT_ABORT.signal,
     });
     if (!res.ok || !res.body) throw new Error("stream unavailable");

@@ -50,7 +50,8 @@ pub fn holds_restricted(conversation: &[TurnMessage]) -> bool {
             text.starts_with(RESTRICTED_MARK) || looks_like_an_account_number(text)
         }
         TurnMessage::ToolResult { content, .. } => content.starts_with(RESTRICTED_MARK),
-        TurnMessage::Assistant { .. } => false,
+        // Endora's reply to a private message is kept marked too.
+        TurnMessage::Assistant { text, .. } => text.starts_with(RESTRICTED_MARK),
     })
 }
 
@@ -655,8 +656,20 @@ mod tests {
             "the IBAN is GB82WEST12345698765432".to_owned()
         )]));
         assert!(
-            refused(vec![TurnMessage::User("call 555-123-4567 back".to_owned())]),
+            refused(vec![TurnMessage::User(
+                "call +44 20 7946 0958 back".to_owned()
+            )]),
             "a phone number stays home too"
+        );
+        assert!(
+            refused(vec![
+                TurnMessage::User("and what did you make of it?".to_owned()),
+                TurnMessage::Assistant {
+                    text: format!("{RESTRICTED_MARK}Your results look fine."),
+                    tool_calls: vec![],
+                },
+            ]),
+            "a reply to a private message stays private"
         );
     }
 

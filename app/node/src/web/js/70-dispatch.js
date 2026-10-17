@@ -160,6 +160,17 @@ async function dispatch(act) {
       flash(DEEP_MODE ? "Deep mode on — your messages go to the bigger model." : "Deep mode off.", "ok");
       return;
     }
+    // Private (ADR 0105): what you send stays on your network, so it cannot also go to the
+    // deep model.
+    if (verb === "toggle" && noun === "private") {
+      PRIVATE_MODE = !PRIVATE_MODE;
+      localStorage.setItem("endora.privatemode", PRIVATE_MODE ? "1" : "0");
+      refreshComposerModes();
+      flash(PRIVATE_MODE
+        ? "Private on: answered on your network only, never sent out, and not remembered."
+        : "Private off.", "ok");
+      return;
+    }
     if (verb === "toggle" && noun === "research") {
       RESEARCH_MODE = !RESEARCH_MODE;
       localStorage.setItem("endora.researchmode", RESEARCH_MODE ? "1" : "0");
