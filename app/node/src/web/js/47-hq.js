@@ -143,7 +143,35 @@ function hqMoney(m, perDay) { return `${hqDollars(m.spent)} spent · ${hqDollars
 // A member on the house's model costs nothing and takes no share of the pool (ADR 0111).
 function hqMemberMoney(m) { return m.brain === "local" ? "the house's model: costs nothing" : hqMoney(m, `of ${hqDollars(m.per_day)} a day`); }
 // A role as the owner reads it.
-function hqRole(role) { return role === "ceo" ? "CEO" : String(role || ""); }
+// The reviewer's role is shown as the tester (ADR 0114).
+function hqRole(role) { return role === "ceo" ? "CEO" : role === "reviewer" ? "Tester" : String(role || ""); }
+
+// A moment as the activity log says it: hours and minutes.
+function hqClock(at) { return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }); }
+
+// What done means for a task, and what was cited for each criterion at each stage (ADR 0114):
+// every receipt with its tool, its time and the start of what it gave back. All of it a model
+// or a tool wrote, so all of it text.
+function hqEvidence(t) {
+  const ev = t.evidence || {}, crit = ev.criteria || [], cited = ev.cited || [];
+  if (!crit.length && !cited.length) return "";
+  const stage = { submitted: "submitted", tested: "the tester passed it", accepted: "the lead accepted it", closed: "closed" };
+  const refs = (c) => (c.refs || []).map((r) => `<li>${esc(r.ref)}${r.tool ? ` · ${esc(r.tool)}` : ""}${r.at ? ` · ${esc(hqClock(r.at))}` : ""}${r.ok === false ? " · refused" : ""}${r.excerpt ? `: ${esc(r.excerpt)}` : ""}</li>`).join("");
+  const rows = (n) => cited.filter((c) => c.criterion === n)
+    .map((c) => `<li>${esc(stage[c.stage] || c.stage)}, ${esc(hqName(c.member))}<ul>${refs(c)}</ul></li>`).join("");
+  const items = crit.length
+    ? crit.map((c, i) => `<li><b>${esc(c.text)}</b>${c.live ? " · live: a reading the same turn" : ""}<ul>${rows(i + 1) || `<li class="hq-empty">No evidence yet.</li>`}</ul></li>`).join("")
+    : `<li><b>The work</b><ul>${rows(0)}</ul></li>`;
+  const passed = cited.some((c) => c.stage === "tested") ? "Tester's pass: given." : "Tester's pass: not yet.";
+  return `<div class="hq-evidence"><h3>What done means</h3><ul>${items}</ul><p class="hq-who">${passed}</p></div>`;
+}
+
+// The turns that ended last on a task, or of a member, with what each came to (ADR 0114).
+function hqTurns(match) {
+  const runs = ((HQ.snap && HQ.snap.recent_runs) || []).filter(match).slice(0, 5);
+  if (!runs.length) return "";
+  return `<ul class="hq-thread">${runs.map((r) => `<li>R${r.id} ${esc(hqName(r.member))}${r.task ? " · " + hqKey(r.task) : ""} · ${esc(r.label || String(r.status || "").replace(/_/g, " "))}</li>`).join("")}</ul>`;
+}
 
 // One event, in words for the activity log, and on screen if it is live.
 function hqTell(e, live) {
@@ -164,7 +192,7 @@ function hqTell(e, live) {
     "wake.refused": ["warn", `Wake for ${name} skipped: ${String(d.why || "").replace(/_/g, " ")}`],
     "run.started": ["run", `R${d.run} ${name} starts${key ? " on " + key : ""}${reason ? ` (${reason})` : ""}, ${hqDollars(d.reserved)} held`],
     "run.ended": [d.result === "succeeded" ? "done" : d.result === "retry_waiting" ? "warn" : "bad",
-      `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}${d.cached != null ? ` · cached: ${d.cached}% of input` : ""}`],
+      `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.label ? " · " + d.label : ""}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}${d.cached != null ? ` · cached: ${d.cached}% of input` : ""}`],
     "gate.result": [d.passed ? "done" : "bad", `Gate on ${key}: ${d.passed ? "passed" : "failed"}`],
     "desk.added": ["you", `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
     "desk.decided": ["you", `You decided: ${String(d.decision || "").replace(/_/g, " ")}`],
@@ -684,7 +712,9 @@ function viewHQ() {
       project_cap: [["approve", "Grant the cap", "ok"], ["decline", "No cap", "no"]],
       // A project that spent its cap: its Claude turns wait until the owner raises the cap, or
       // the month turns and the pause lifts itself.
-      project_budget: [["raise", "Raise the cap", "ok"], ["wait", "Wait for next month", "no"]] }[d.kind] || [];
+      project_budget: [["raise", "Raise the cap", "ok"], ["wait", "Wait for next month", "no"]],
+      // Work sent back three times (ADR 0114): its next round is the owner's alone.
+      rounds: [["accept", "Accept as done", "ok"], ["send_back", "Send it back", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
@@ -900,17 +930,17 @@ function hqSelected() {
       <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc((HQ.people[m.id] || {}).doing || "starting") : "Waiting for a wake"}</dd>
       <dt>Run</dt><dd>${run ? "R" + run.run + (t ? " · " + hqKey(t.id) : "") : "none"}</dd>
       <dt>Brain</dt><dd>${esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
-      <dt>Budget</dt><dd>${hqMemberMoney(m)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}`;
+      <dt>Budget</dt><dd>${hqMemberMoney(m)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}${hqTurns((r) => r.member === m.id)}`;
   }
   const t = hqTask(sel.id); if (!t) return "";
   const runner = ((HQ.snap && HQ.snap.runs) || []).find((r) => r.task === t.id && r.status === "running");
-  const thread = (t.thread || []).slice(-3).map((p) => `<li>${esc(p.author)}: ${esc(p.text)}</li>`).join("");
+  const thread = (t.thread || []).slice(-3).map((p) => `<li>${esc(p.author)}${p.unsupported ? ` <span class="hq-unsupported">unsupported</span>` : ""}: ${esc(p.text)}</li>`).join("");
   return `<div class="hq-sel">${hqKey(t.id)} · ${esc(t.title)}</div><dl class="hq-kv">
     <dt>Status</dt><dd>${esc(String(t.status).replace("_", " "))}${t.gate === true ? " · gate passed" : t.gate === false ? " · gate failed" : ""}</dd>
     <dt>Owner</dt><dd>${t.owner ? esc(hqName(t.owner)) : "nobody"}</dd>
     <dt>Lock</dt><dd>${runner ? "held by R" + runner.id : "free"}</dd>
     <dt>Blocked by</dt><dd>${(t.waits_on || []).length ? t.waits_on.map(hqKey).join(", ") : "nothing"}</dd>
-    <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}
+    <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${hqEvidence(t)}${hqTurns((r) => r.task === t.id)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}
     <textarea id="hq-reply-${t.id}" rows="2" placeholder="Reply in the thread: whoever has it reads it now" aria-label="Your reply"></textarea>
     <div class="hq-row"><button class="hq-btn ok" data-act="hq:reply:${t.id}:send">Send</button></div>`;
 }
@@ -1058,7 +1088,11 @@ async function hqDispatch(verb, noun, id, arg) {
     const s = HQ.snap || {}, goal = (s.goals || []).find((g) => g.status === "active");
     const lead = (s.members || []).find((m) => m.role === "lead");
     if (!goal) { flash("Set the team a goal first.", "warn"); return true; }
-    try { await api("POST", "/v1/hq/tasks", { goal: goal.id, title, assignee: lead ? lead.id : null }); flash("Handed to the team.", "ok"); }
+    // What done means, if the owner says (ADR 0114): separated by semicolons, "live:" before one
+    // about the lab as it is now.
+    const said = prompt("What does done mean? (optional; separate with ;, and put live: before one about the lab now)") || "";
+    const criteria = said.split(";").map((c) => c.trim()).filter(Boolean);
+    try { await api("POST", "/v1/hq/tasks", { goal: goal.id, title, assignee: lead ? lead.id : null, criteria }); flash("Handed to the team.", "ok"); }
     catch (e) { flash("Couldn't hand it over: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
