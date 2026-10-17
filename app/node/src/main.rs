@@ -276,8 +276,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The agenda loop (ADR 0103): what the readers saw becomes items, every minute.
     api::spawn_agenda(state.clone());
 
-    // HQ's model relays alone, in plain HTTP, for the team's workers (ADR 0102, phase 4).
-    // Not published to the house's network: only the fenced team network reaches it.
+    // The team listener, in plain HTTP, for the team's workers: HQ's model relays (ADR 0102,
+    // phase 4) and the team's contracts (ADR 0106), served nowhere else. Not published to the
+    // house's network: only the fenced team network reaches it.
     if let Some(team_addr) = std::env::var("ENDORA_TEAM_ADDR")
         .ok()
         .filter(|a| !a.trim().is_empty())

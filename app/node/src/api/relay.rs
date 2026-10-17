@@ -851,10 +851,40 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn the_relays_and_contracts_are_served_only_on_the_team_listener() {
+        let (hq_url, _) = hq(40_000);
+        let (upstream, to_anthropic) = anthropic();
+        let main = super::super::app(node(&hq_url, &upstream));
+        for (method, uri) in [
+            ("POST", "/team-relay/v1/messages"),
+            ("POST", "/team-relay/v1/messages/count_tokens"),
+            ("POST", "/team-relay/local/v1/chat/completions"),
+            ("GET", "/team-relay/contracts"),
+            ("POST", "/team-relay/contracts/homelab_status"),
+        ] {
+            let req = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("x-api-key", "good")
+                .header("authorization", "Bearer good")
+                .body(Body::from("{}"))
+                .unwrap();
+            let res = main.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "{uri} on the main port"
+            );
+        }
+        assert!(to_anthropic.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_turn_reaches_the_model_with_the_owners_key_capped_and_charged() {
         let (hq_url, to_hq) = hq(40_000);
         let (upstream, to_anthropic) = anthropic();
-        let app = super::super::app(node(&hq_url, &upstream));
+        let app = super::super::team_relay(node(&hq_url, &upstream));
         let res = app
             .oneshot(ask(
                 "good",
@@ -902,7 +932,7 @@ pub(super) mod tests {
     async fn a_streamed_turn_passes_through_and_is_charged_when_it_ends() {
         let (hq_url, to_hq) = hq(400_000);
         let (upstream, _) = anthropic();
-        let app = super::super::app(node(&hq_url, &upstream));
+        let app = super::super::team_relay(node(&hq_url, &upstream));
         let res = app
             .oneshot(ask("good", json!({ "model": "claude-sonnet-5-5", "max_tokens": 1000, "stream": true, "messages": [] })))
             .await
@@ -921,7 +951,7 @@ pub(super) mod tests {
     async fn a_stream_cut_before_its_output_is_counted_is_charged_its_whole_cap() {
         let (hq_url, to_hq) = hq(400_000);
         let (upstream, _) = anthropic();
-        let app = super::super::app(node(&hq_url, &upstream));
+        let app = super::super::team_relay(node(&hq_url, &upstream));
         let res = app
             .oneshot(ask(
                 "good",
@@ -943,7 +973,7 @@ pub(super) mod tests {
     async fn a_big_prompt_on_little_budget_never_reaches_the_model() {
         let (hq_url, to_hq) = hq(100_000);
         let (upstream, to_anthropic) = anthropic_counting(200_000);
-        let app = super::super::app(node(&hq_url, &upstream));
+        let app = super::super::team_relay(node(&hq_url, &upstream));
         let res = app
             .oneshot(ask(
                 "good",
@@ -966,7 +996,7 @@ pub(super) mod tests {
     async fn a_turns_calls_go_one_at_a_time_each_capped_by_what_is_left() {
         let (hq_url, _) = hq_spending(40_000);
         let (upstream, to_anthropic) = anthropic();
-        let app = super::super::app(node(&hq_url, &upstream));
+        let app = super::super::team_relay(node(&hq_url, &upstream));
         let call = || {
             ask(
                 "good",
@@ -993,7 +1023,7 @@ pub(super) mod tests {
     async fn only_what_the_relay_can_meter_is_passed_on() {
         let (hq_url, _) = hq(400_000);
         let (upstream, to_anthropic) = anthropic();
-        let app = super::super::app(node(&hq_url, &upstream));
+        let app = super::super::team_relay(node(&hq_url, &upstream));
         for refused in [
             json!({ "model": "claude-opus-5-5", "max_tokens": 10, "messages": [], "speed": "fast" }),
             json!({ "model": "claude-sonnet-5-5", "max_tokens": 10, "messages": [],
@@ -1053,13 +1083,13 @@ pub(super) mod tests {
             )
         };
         let (developer, _) = hq_as(400_000, "developer");
-        let res = super::super::app(node(&developer, &upstream))
+        let res = super::super::team_relay(node(&developer, &upstream))
             .oneshot(call("claude-opus-5-5"))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         let (researcher, _) = hq_as(400_000, "researcher");
-        let app = super::super::app(node(&researcher, &upstream));
+        let app = super::super::team_relay(node(&researcher, &upstream));
         let res = app
             .clone()
             .oneshot(call("claude-sonnet-5-5"))
@@ -1075,7 +1105,7 @@ pub(super) mod tests {
     async fn no_token_no_model_and_no_money_mean_no_call() {
         let (hq_url, _) = hq(40_000);
         let (upstream, to_anthropic) = anthropic();
-        let app = super::super::app(node(&hq_url, &upstream));
+        let app = super::super::team_relay(node(&hq_url, &upstream));
         let call = |token: &str, model: &str| {
             ask(
                 token,
@@ -1099,7 +1129,7 @@ pub(super) mod tests {
             "nothing was sent on"
         );
         let (spent_hq, _) = hq(0);
-        let broke = super::super::app(node(&spent_hq, &upstream))
+        let broke = super::super::team_relay(node(&spent_hq, &upstream))
             .oneshot(call("good", "claude-sonnet-5-5"))
             .await
             .unwrap();
@@ -1198,7 +1228,7 @@ pub(super) mod tests {
             ],
         );
         let store = state.store.clone();
-        let res = super::super::app(state)
+        let res = super::super::team_relay(state)
             .oneshot(ask_local("good", a_call("claude-sonnet-5-5")))
             .await
             .unwrap();
@@ -1256,7 +1286,7 @@ pub(super) mod tests {
                 (&local, "qwen2.5:14b", "", true),
             ],
         );
-        let res = super::super::app(state)
+        let res = super::super::team_relay(state)
             .oneshot(ask_local("good", a_call("big-model")))
             .await
             .unwrap();
@@ -1283,7 +1313,7 @@ pub(super) mod tests {
                 (&off, "qwen2.5:14b", "", false),
             ],
         );
-        let res = super::super::app(state)
+        let res = super::super::team_relay(state)
             .oneshot(ask_local("good", a_call("big-model")))
             .await
             .unwrap();
@@ -1297,7 +1327,7 @@ pub(super) mod tests {
         let (hq_url, _) = hq(40_000);
         let (installed, to_installed) = local_model();
         let (local, to_local) = local_model();
-        let app = super::super::app(local_node(
+        let app = super::super::team_relay(local_node(
             &hq_url,
             &installed,
             &[(&local, "qwen2.5:14b", "", true)],
@@ -1327,7 +1357,7 @@ pub(super) mod tests {
         let (hq_url, _) = hq(40_000);
         let (installed, to_installed) = local_model();
         let (local, to_local) = local_model();
-        let app = super::super::app(local_node(
+        let app = super::super::team_relay(local_node(
             &hq_url,
             &installed,
             &[(&local, "qwen2.5:14b", "", true)],

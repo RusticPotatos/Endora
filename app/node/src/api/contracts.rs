@@ -119,7 +119,21 @@ pub(super) async fn call(
     } else {
         serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)
     };
+    // Every call is in the audit log, these refusals too; a name the worker made up is
+    // written as one short line.
+    let refused_for = |why: &str| {
+        record(
+            &state,
+            &format!(
+                "{} (run {}) was refused {}: {why}",
+                who(&turn),
+                turn.run,
+                one_line(&name)
+            ),
+        );
+    };
     if !args.is_object() {
+        refused_for("the arguments must be one JSON object");
         return refuse(
             StatusCode::BAD_REQUEST,
             "",
@@ -127,6 +141,7 @@ pub(super) async fn call(
         );
     }
     if !contracts::all().iter().any(|c| c.name == name) {
+        refused_for("there is no such contract");
         return refuse(
             StatusCode::NOT_FOUND,
             "",
@@ -673,6 +688,25 @@ mod tests {
         assert!(listed["tools"][2]["inputSchema"]["required"].is_array());
         let (status, _) = use_contract(&state, "shell", json!({})).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "nothing but the contracts");
+        let (status, _) = answer(
+            &state,
+            ask(
+                "POST",
+                "/team-relay/contracts/homelab_status",
+                Some("good"),
+                "[1, 2]",
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Every call is in the audit log, refused ones too (ADR 0106).
+        let audit = audit(&state);
+        for line in [
+            "Linus (run 7) was refused shell: there is no such contract",
+            "Linus (run 7) was refused homelab_status: the arguments must be one JSON object",
+        ] {
+            assert!(audit.iter().any(|a| a.ends_with(line)), "{line}: {audit:?}");
+        }
     }
 
     #[tokio::test]

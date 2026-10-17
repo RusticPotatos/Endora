@@ -662,16 +662,16 @@ pub fn app(state: AppState) -> Router {
         .layer(from_fn_with_state(state.changes.clone(), notify_on_change))
         // Outermost, so nothing behind it runs for a request that has no business being here.
         .layer(from_fn_with_state(state.clone(), require_the_token))
-        // HQ's model relays (ADR 0102, phase 4) and the team's contracts (ADR 0106), after the
-        // layers on purpose: a turn's own token is its credential, not the owner's sign-in,
-        // and a model call is not a change for the console to refresh on.
-        .merge(relay_routes())
+        // HQ's model relays and the team's contracts are not here: workers reach only HQ and
+        // the team listener ([`team_relay`]), never the node's main port.
         .with_state(state)
 }
 
-/// HQ's model relays and the team's contracts, and nothing else of the node: what the
-/// plain-HTTP listener on the team's fenced network serves (`ENDORA_TEAM_ADDR`), since a worker has no way to trust the
-/// node's self-signed certificate.
+/// HQ's model relays (ADR 0102, phase 4) and the team's contracts (ADR 0106), and nothing else
+/// of the node: what the plain-HTTP listener on the team's fenced network serves
+/// (`ENDORA_TEAM_ADDR`), and the only place they are served. A worker has no way to trust the
+/// node's self-signed certificate, and a turn's own token is its credential, not the owner's
+/// sign-in.
 pub fn team_relay(state: AppState) -> Router {
     relay_routes().with_state(state)
 }
