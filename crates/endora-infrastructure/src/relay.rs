@@ -2,7 +2,8 @@
 //! usage a reply reports (whole, or streamed), and its cost in millionths of a dollar, which is
 //! what HQ's ledger counts. A dollar a million tokens is a millionth of a dollar a token, so a
 //! price here is micros a token. A model that is not priced here is not relayed: what cannot
-//! be metered cannot be capped.
+//! be metered cannot be capped. The local relay's call is here too: to the house's own model,
+//! which costs nothing, so it is never priced, only kept in the house.
 
 use serde_json::Value;
 
@@ -86,6 +87,55 @@ pub fn send(
         status,
         body: Box::new(response.into_body().into_reader()),
     })
+}
+
+/// The most of a local model's reply the relay reads: far more than any answer, so a reply
+/// past it is broken, and is refused rather than passed on cut short.
+pub const LARGEST_LOCAL_REPLY: u64 = 16 * 1024 * 1024;
+
+/// Sends one chat completion, whole, to an OpenAI-compatible endpoint on the house's network:
+/// `base` is the chosen endpoint's `.../v1`, `key` its own key (empty for a keyless one). The
+/// body and that key are all that go; the worker's token never does. Returns the status and
+/// the whole reply.
+///
+/// # Errors
+/// `base` is not on the house's network (the local relay is free because nothing leaves the
+/// house), the endpoint could not be reached, or its reply was longer than
+/// [`LARGEST_LOCAL_REPLY`].
+pub fn send_local(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
+    if !crate::is_private_endpoint(base) {
+        return Err(format!("{base} is not on the house's network"));
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(LONGEST_CALL))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build()
+        .into();
+    let mut request = agent
+        .post(format!("{}/chat/completions", base.trim_end_matches('/')))
+        .header("content-type", "application/json");
+    if !key.is_empty() {
+        request = request.header("authorization", format!("Bearer {key}"));
+    }
+    let response = request.send(body).map_err(|e| e.to_string())?;
+    let status = response.status().as_u16();
+    let reply = read_at_most(response.into_body().into_reader(), LARGEST_LOCAL_REPLY)?;
+    Ok((status, reply))
+}
+
+/// All of `reader`, unless it holds more than `most` bytes.
+fn read_at_most(reader: impl std::io::Read, most: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(reader, most.saturating_add(1)),
+        &mut bytes,
+    )
+    .map_err(|e| e.to_string())?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > most {
+        return Err(format!("the reply was longer than {most} bytes"));
+    }
+    Ok(bytes)
 }
 
 /// Prompts longer than this are dearer on Haiku.
@@ -278,6 +328,27 @@ mod tests {
         let short = price_of("claude-haiku-5-5", 50_000).unwrap();
         let long = price_of("claude-haiku-5-5", 150_000).unwrap();
         assert!(long.input > short.input, "a long prompt is dearer on Haiku");
+    }
+
+    #[test]
+    fn a_local_call_never_leaves_the_house() {
+        let refused = send_local("https://api.example.com/v1", "", b"{}");
+        assert!(
+            refused.is_err_and(|why| why.contains("house's network")),
+            "refused before anything is sent"
+        );
+    }
+
+    #[test]
+    fn a_reply_past_its_cap_is_refused_rather_than_cut_short() {
+        let whole = br#"{"ok":true}"#;
+        assert_eq!(read_at_most(&whole[..], 64).unwrap(), whole);
+        assert_eq!(
+            read_at_most(&[b' '; 64][..], 64).unwrap().len(),
+            64,
+            "the cap itself fits"
+        );
+        assert!(read_at_most(&[b' '; 65][..], 64).is_err());
     }
 
     #[test]

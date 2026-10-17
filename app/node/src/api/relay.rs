@@ -6,16 +6,22 @@
 //!
 //! Outside `/v1` on purpose: the owner's sign-in is not the credential here, a turn's token
 //! is, and nothing else this node serves answers to one.
+//!
+//! Beside it, the local relay: the same token opens the house's own model, OpenAI's way. The
+//! owner's list says which model, the call never leaves the house, and it costs nothing.
 
 use super::*;
 use axum::body::{Body, Bytes};
 use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
-    Call, StreamedUsage, Used, affordable_output, cost, price_of, send,
+    Call, StreamedUsage, Used, affordable_output, cost, price_of, send, send_local,
 };
 
 /// The most of a whole reply the relay holds at once.
 const LARGEST_REPLY: u64 = 64 * 1024 * 1024;
+
+/// The largest call the local relay takes: a long conversation is far smaller.
+const LARGEST_LOCAL_CALL: usize = 4 * 1024 * 1024;
 
 /// An error as Anthropic words one, so the worker's SDK reports it sensibly.
 fn refuse(status: StatusCode, kind: &str, message: &str) -> Response {
@@ -25,6 +31,18 @@ fn refuse(status: StatusCode, kind: &str, message: &str) -> Response {
     )
         .into_response()
 }
+
+/// An error as OpenAI words one, for the local relay, which speaks OpenAI's API.
+fn refuse_openai(status: StatusCode, kind: &str, message: &str) -> Response {
+    (
+        status,
+        Json(json!({ "error": { "message": message, "type": kind } })),
+    )
+        .into_response()
+}
+
+/// How a route words a refusal: [`refuse`] or [`refuse_openai`].
+type Wording = fn(StatusCode, &str, &str) -> Response;
 
 fn header(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
@@ -61,9 +79,12 @@ struct Turn {
     left: i64,
 }
 
+/// Asks HQ whose turn `token` is; a token that opens nothing is refused in the route's own
+/// words.
 async fn turn_of(
     hq: Arc<endora_infrastructure::HqClient>,
     token: String,
+    refuse: Wording,
 ) -> Result<Turn, Response> {
     if token.is_empty() {
         return Err(refuse(
@@ -149,7 +170,7 @@ pub(super) async fn messages(
             "HQ is not set up on this node",
         );
     };
-    let turn = match turn_of(hq.clone(), token_of(&headers)).await {
+    let turn = match turn_of(hq.clone(), token_of(&headers), refuse).await {
         Ok(turn) => turn,
         Err(refused) => return refused,
     };
@@ -314,7 +335,7 @@ pub(super) async fn count_tokens(
             "HQ is not set up on this node",
         );
     };
-    if let Err(refused) = turn_of(hq, token_of(&headers)).await {
+    if let Err(refused) = turn_of(hq, token_of(&headers), refuse).await {
         return refused;
     }
     let Some(key) = anthropic_key(state.config.as_ref()) else {
@@ -352,6 +373,113 @@ pub(super) async fn count_tokens(
             "api_error",
             "Anthropic did not answer",
         ),
+    }
+}
+
+/// Where a local call goes, and with which model and key.
+struct Local {
+    url: String,
+    model: String,
+    key: String,
+}
+
+/// The first enabled Everyday entry on the house's network, else the model the node was
+/// installed with. A list that cannot be read is an empty one: the installed model still
+/// answers.
+fn local_target(state: &AppState) -> Local {
+    use endora_capabilities::model_lists::{Job, ModelListRepository as _, targets};
+    let providers = state.config.providers().unwrap_or_default();
+    let everyday = state.config.entries(Job::Everyday).unwrap_or_default();
+    let Some(entry) = targets(&providers, &everyday)
+        .into_iter()
+        .find(|t| endora_infrastructure::is_private_endpoint(&t.url))
+    else {
+        let (url, model) = state.installed_model.as_ref().clone();
+        return Local {
+            url,
+            model,
+            key: String::new(),
+        };
+    };
+    Local {
+        url: entry.url,
+        model: entry.model,
+        key: entry.api_key,
+    }
+}
+
+/// `POST /team-relay/local/v1/chat/completions`: a model call of a team member's turn, to the
+/// house's own model, whole (never streamed). It is asked with the model the owner's list
+/// names, whatever the worker named. Local costs nothing, so HQ is charged nothing; the use is
+/// noted in Endora's own log as `team-local`.
+pub(super) async fn chat_completions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let Some(hq) = state.hq.clone() else {
+        return refuse_openai(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "api_error",
+            "HQ is not set up on this node",
+        );
+    };
+    // The token first, so a stranger cannot make the node read a body at all.
+    if let Err(refused) = turn_of(hq, token_of(&headers), refuse_openai).await {
+        return refused;
+    }
+    let Ok(body) = axum::body::to_bytes(body, LARGEST_LOCAL_CALL).await else {
+        return refuse_openai(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "invalid_request_error",
+            "the call is larger than the relay takes",
+        );
+    };
+    let Ok(serde_json::Value::Object(mut call)) = serde_json::from_slice(&body) else {
+        return refuse_openai(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "the body is not a JSON object",
+        );
+    };
+    if call.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+        return refuse_openai(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "the local relay does not stream: ask with \"stream\": false",
+        );
+    }
+    let done = tokio::task::spawn_blocking(move || {
+        let local = local_target(&state);
+        call.insert("model".to_owned(), json!(local.model));
+        let sent = serde_json::Value::Object(call).to_string().into_bytes();
+        let (status, bytes) = send_local(&local.url, &local.key, &sent)?;
+        if status < 300 {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                let used = |k: &str| v["usage"][k].as_u64().unwrap_or(0);
+                endora_application::UsageLog::record(
+                    state.store.as_ref(),
+                    "team-local",
+                    &local.model,
+                    endora_application::ModelUsage {
+                        prompt_tokens: used("prompt_tokens"),
+                        completion_tokens: used("completion_tokens"),
+                        cached_tokens: 0,
+                    },
+                );
+            }
+        }
+        Ok::<_, String>((status, bytes))
+    })
+    .await;
+    match done {
+        Ok(Ok((status, bytes))) => whole(status, bytes),
+        Ok(Err(why)) => refuse_openai(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            &format!("the local model did not answer: {why}"),
+        ),
+        Err(_) => refuse_openai(StatusCode::BAD_GATEWAY, "api_error", "the relay failed"),
     }
 }
 
@@ -608,5 +736,244 @@ mod tests {
             .unwrap();
         assert_eq!(broke.status(), StatusCode::PAYMENT_REQUIRED);
         assert!(to_anthropic.lock().unwrap().is_empty());
+    }
+
+    /// A model on the house's network, answering OpenAI's way; its base is `{url}/v1`.
+    fn local_model() -> (String, Seen) {
+        let (url, seen) = fake(Arc::new(|_path, _body| {
+            (
+                200,
+                "application/json",
+                json!({ "choices": [{ "message": { "role": "assistant", "content": "Hello." } }],
+                        "usage": { "prompt_tokens": 120, "completion_tokens": 30 } })
+                .to_string(),
+            )
+        }));
+        (format!("{url}/v1"), seen)
+    }
+
+    /// A node with HQ, whose installed model is `installed`, and an Everyday list of
+    /// `(provider url, model, key, enabled)`, in order.
+    fn local_node(
+        hq_url: &str,
+        installed: &str,
+        everyday: &[(&str, &str, &str, bool)],
+    ) -> AppState {
+        use endora_capabilities::model_lists::{Job, ModelListRepository as _};
+        let mut state = AppState::new(
+            Arc::new(SqliteStore::open_in_memory().unwrap()),
+            Arc::new(RandomIdSource),
+            Arc::new(SystemClock),
+            Arc::new(ScriptedButler),
+            Arc::new(endora_understanding::BrainFolder::temporary().unwrap()),
+        )
+        .with_hq(endora_infrastructure::HqClient::new(
+            hq_url,
+            &"n".repeat(32),
+        ));
+        state.installed_model = Arc::new((installed.to_owned(), "qwen2.5:7b".to_owned()));
+        for (i, (url, model, key, enabled)) in everyday.iter().enumerate() {
+            let provider = state
+                .config
+                .add_provider(&format!("Provider {i}"), url, key)
+                .unwrap();
+            let entry = state
+                .config
+                .add_entry(Job::Everyday, provider, model)
+                .unwrap();
+            state.config.enable_entry(entry, *enabled).unwrap();
+        }
+        state
+    }
+
+    fn ask_local(token: &str, body: serde_json::Value) -> axum::http::Request<Body> {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/team-relay/local/v1/chat/completions")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn a_call(model: &str) -> serde_json::Value {
+        json!({ "model": model, "messages": [{ "role": "user", "content": "Hi." }] })
+    }
+
+    /// The model a fake was asked for, call by call.
+    fn models_asked(seen: &Seen) -> Vec<String> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(_, _, b)| {
+                let v = serde_json::from_str::<serde_json::Value>(b).ok()?;
+                v["model"].as_str().map(str::to_owned)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_turn_asks_the_first_local_everyday_entry_with_that_entrys_model() {
+        let (hq_url, to_hq) = hq(0);
+        let (installed, to_installed) = local_model();
+        let (off, to_off) = local_model();
+        let (first, to_first) = local_model();
+        let (second, to_second) = local_model();
+        let state = local_node(
+            &hq_url,
+            &installed,
+            &[
+                (&off, "llama3.1:8b", "", false),
+                (&first, "qwen2.5:14b", "the-macs-key", true),
+                (&second, "llama3.1:8b", "", true),
+            ],
+        );
+        let store = state.store.clone();
+        let res = super::super::app(state)
+            .oneshot(ask_local("good", a_call("claude-sonnet-5-5")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert!(
+            String::from_utf8_lossy(&body).contains("Hello."),
+            "the reply passes through"
+        );
+        assert_eq!(
+            models_asked(&to_first),
+            ["qwen2.5:14b"],
+            "the owner's model, whatever the worker named"
+        );
+        let sent = to_first.lock().unwrap().clone();
+        let (path, headers, _) = &sent[0];
+        assert_eq!(path, "/v1/chat/completions");
+        let auth = headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            auth,
+            Some("Bearer the-macs-key"),
+            "the entry's key, never the turn's token"
+        );
+        for other in [&to_off, &to_second, &to_installed] {
+            assert!(other.lock().unwrap().is_empty(), "only the first is asked");
+        }
+        assert!(
+            to_hq
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(p, _, _)| p != "/v1/team/usage"),
+            "local is free: HQ is charged nothing, even with nothing left"
+        );
+        let used = store.model_usage_totals("team-local", 0).unwrap();
+        assert_eq!(
+            (used.calls, used.prompt_tokens, used.completion_tokens),
+            (1, 120, 30)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cloud_entry_is_passed_over_for_one_on_the_houses_network() {
+        let (hq_url, _) = hq(40_000);
+        let (installed, to_installed) = local_model();
+        let (local, to_local) = local_model();
+        let state = local_node(
+            &hq_url,
+            &installed,
+            &[
+                ("https://api.example.com/v1", "big-model", "sk-cloud", true),
+                (&local, "qwen2.5:14b", "", true),
+            ],
+        );
+        let res = super::super::app(state)
+            .oneshot(ask_local("good", a_call("big-model")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(models_asked(&to_local), ["qwen2.5:14b"]);
+        let sent = to_local.lock().unwrap().clone();
+        assert!(
+            sent[0].1.iter().all(|(k, _)| k != "authorization"),
+            "a keyless endpoint is sent no key"
+        );
+        assert!(to_installed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn with_nothing_local_on_the_list_the_installed_model_answers() {
+        let (hq_url, _) = hq(40_000);
+        let (installed, to_installed) = local_model();
+        let (off, to_off) = local_model();
+        let state = local_node(
+            &hq_url,
+            &installed,
+            &[
+                ("https://api.example.com/v1", "big-model", "sk-cloud", true),
+                (&off, "qwen2.5:14b", "", false),
+            ],
+        );
+        let res = super::super::app(state)
+            .oneshot(ask_local("good", a_call("big-model")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(models_asked(&to_installed), ["qwen2.5:7b"]);
+        assert!(to_off.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stranger_never_reaches_the_local_model() {
+        let (hq_url, _) = hq(40_000);
+        let (installed, to_installed) = local_model();
+        let (local, to_local) = local_model();
+        let app = super::super::app(local_node(
+            &hq_url,
+            &installed,
+            &[(&local, "qwen2.5:14b", "", true)],
+        ));
+        for token in ["guessed", ""] {
+            let res = app
+                .clone()
+                .oneshot(ask_local(token, a_call("qwen2.5:14b")))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            let said: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(
+                said["error"]["message"].is_string(),
+                "worded OpenAI's way: {said}"
+            );
+        }
+        assert!(to_local.lock().unwrap().is_empty());
+        assert!(to_installed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_streamed_or_oversized_call_is_refused() {
+        let (hq_url, _) = hq(40_000);
+        let (installed, to_installed) = local_model();
+        let (local, to_local) = local_model();
+        let app = super::super::app(local_node(
+            &hq_url,
+            &installed,
+            &[(&local, "qwen2.5:14b", "", true)],
+        ));
+        let mut streamed = a_call("qwen2.5:14b");
+        streamed["stream"] = json!(true);
+        let res = app
+            .clone()
+            .oneshot(ask_local("good", streamed))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let mut huge = a_call("qwen2.5:14b");
+        huge["messages"][0]["content"] = json!("x".repeat(LARGEST_LOCAL_CALL));
+        let res = app.oneshot(ask_local("good", huge)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(to_local.lock().unwrap().is_empty());
+        assert!(to_installed.lock().unwrap().is_empty());
     }
 }

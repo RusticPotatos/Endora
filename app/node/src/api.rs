@@ -115,6 +115,11 @@ pub struct AppState {
     /// Where HQ's model relay sends a call: Anthropic, always, outside tests (ADR 0102). A
     /// field rather than a setting, so nothing can point the owner's key anywhere else.
     pub relay_upstream: Arc<String>,
+    /// The model the node was installed with, as `(url, model)` from `ENDORA_MODEL_URL` and
+    /// `ENDORA_MODEL`: where HQ's local relay sends a turn's call when no Everyday entry is on
+    /// the house's network (ADR 0102). A field, like `relay_upstream`, so a test can point it
+    /// at a fake.
+    pub installed_model: Arc<(String, String)>,
     /// The agenda loop's items, restarts and taught rules (ADR 0103).
     pub agenda: Arc<endora_agenda::infrastructure::SqliteAgendaStore>,
     /// Why the last nightly copy failed, until one succeeds: what the agenda tells.
@@ -291,6 +296,12 @@ impl AppState {
             hq: None,
             mail_store,
             relay_upstream: Arc::new(endora_infrastructure::relay::ANTHROPIC.to_owned()),
+            // Read as `main` reads them, with its defaults.
+            installed_model: Arc::new((
+                std::env::var("ENDORA_MODEL_URL")
+                    .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned()),
+                std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_owned()),
+            )),
             agenda,
             nightly_failure: Arc::new(std::sync::Mutex::new(None)),
             mail_copy: None,
@@ -610,13 +621,17 @@ pub fn app(state: AppState) -> Router {
         .layer(from_fn_with_state(state.changes.clone(), notify_on_change))
         // Outermost, so nothing behind it runs for a request that has no business being here.
         .layer(from_fn_with_state(state.clone(), require_the_token))
-        // HQ's model relay (ADR 0102, phase 4), after the layers on purpose: a turn's own
+        // HQ's model relays (ADR 0102, phase 4), after the layers on purpose: a turn's own
         // token is its credential, not the owner's sign-in, and a model call is not a change
         // for the console to refresh on.
         .route("/team-relay/v1/messages", post(relay::messages))
         .route(
             "/team-relay/v1/messages/count_tokens",
             post(relay::count_tokens),
+        )
+        .route(
+            "/team-relay/local/v1/chat/completions",
+            post(relay::chat_completions),
         )
         .with_state(state)
 }
