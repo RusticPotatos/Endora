@@ -326,6 +326,17 @@ fn coming_back_up_is_said_in_the_alarms_open_task_and_wakes_its_owner() {
         told.contains("endora: Recovered: deluge is back up at 13:43"),
         "{told}"
     );
+    // HQ's tools are not all it has: live, a lead read that line as all it had, and said it
+    // could not read the home lab.
+    assert!(
+        told.contains(
+            "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
+             check_back, run_gate, request_action. Endora's own tools on the home lab \
+             (homelab_status and the like) come beside them: what your tool list offers, you \
+             have.\n"
+        ),
+        "{told}"
+    );
 }
 
 #[test]

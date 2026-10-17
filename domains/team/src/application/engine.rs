@@ -1908,22 +1908,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 told.push_str(&format!("{asked}\n"));
             }
         }
+        // HQ's own tools, never as all a member has: live, a lead on Claude offered the home
+        // lab's read took this line for its whole kit and said it could not read the lab.
+        let beside = "Endora's own tools on the home lab (homelab_status and the like) come \
+                      beside them: what your tool list offers, you have.\n";
         if member.role == Role::Ceo {
             told.push_str(
-                "Your tools: my_turn, claim, post, set_status, create_task, ask_owner (a \
-                 decision for the board), check_back, note_house, rewrite_house, read_doc.\n",
+                "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner (a \
+                 decision for the board), check_back, note_house, rewrite_house, read_doc. ",
             );
+            told.push_str(beside);
             return Ok(told);
         }
         told.push_str(
-            "Your tools: my_turn, claim, post, set_status, create_task, ask_owner, check_back, \
-             run_gate, request_action",
+            "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
+             check_back, run_gate, request_action",
         );
         told.push_str(if member.role == Role::Reviewer {
-            ", review.\n"
+            ", review. "
         } else {
-            ".\n"
+            ". "
         });
+        told.push_str(beside);
         Ok(told)
     }
 

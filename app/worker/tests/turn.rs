@@ -1327,3 +1327,80 @@ fn a_cloud_turn_runs_out_of_rounds_as_a_local_one_does() {
     assert_eq!(to_relay.lock().unwrap().len(), 2);
     assert!(!methods(&to_hq).contains(&"tools/call post".to_owned()));
 }
+
+/// The node's team listener as a cloud turn reaches it: the Anthropic relay and the contracts
+/// on one address. The contracts list `offered`, `homelab_status` answers, and the relay's nth
+/// call is answered with `replies[n]`, the last one again after.
+fn team_listener(offered: Value, replies: Vec<Value>) -> (String, Seen) {
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    fake(Box::new(move |sent, _| {
+        match sent.path.as_str() {
+        "/team-relay/contracts" => (200, json!({ "tools": offered }).to_string()),
+        "/team-relay/contracts/homelab_status" => (
+            200,
+            json!({ "text": "{\"stale\":false,\"services\":[{\"name\":\"docker\",\"items\":[{\"name\":\"deluge\",\"state\":\"running\"}]}]}" })
+                .to_string(),
+        ),
+        "/team-relay/v1/messages" => {
+            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (200, replies[n.min(replies.len() - 1)].to_string())
+        }
+        _ => (404, json!({ "error": "no such route" }).to_string()),
+    }
+    }))
+}
+
+#[test]
+fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_starts_it() {
+    // Live, 2026-10-17: the lead on Claude Sonnet said three times that its tools could not
+    // read the home lab. Started as the runner starts a cloud turn (the Anthropic relay's URL
+    // and the model, and no contracts' address: the worker finds them beside the relay), the
+    // node's homelab_status reaches the model's tools, and its instructions name it as its own.
+    let (hq_url, _) = hq(None);
+    let (listener, to_node) = team_listener(
+        contracts_that_say_what_they_are(),
+        vec![
+            claude(
+                "Looking first.",
+                &[("toolu_1", "homelab_status", json!({}))],
+            ),
+            claude("deluge is running again.", &[]),
+        ],
+    );
+    let out = worker(&[
+        ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
+        ("ENDORA_HQ_MCP", format!("{hq_url}/v1/team/mcp")),
+        ("ENDORA_MODEL_URL", format!("{listener}/team-relay/v1")),
+        ("ENDORA_MODEL", "claude-sonnet-5-5".to_owned()),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let to_node = to_node.lock().unwrap().clone();
+    let paths: Vec<&str> = to_node.iter().map(|s| s.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/team-relay/contracts",
+            "/team-relay/v1/messages",
+            "/team-relay/contracts/homelab_status",
+            "/team-relay/v1/messages",
+        ]
+    );
+    let first = &to_node[1].body;
+    let tools: Vec<&str> = first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(tools.contains(&"homelab_status"), "{tools:?}");
+    let system = first["system"].as_str().unwrap();
+    assert!(
+        system.contains(
+            "The home lab tools are Endora's contracts, and this turn they are yours: \
+             homelab_status, container_logs, restart_container. Whatever your role, look with \
+             them yourself before you hand anything on, and never say you cannot read the home \
+             lab."
+        ),
+        "{system}"
+    );
+}
