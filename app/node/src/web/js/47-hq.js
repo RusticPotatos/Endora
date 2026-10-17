@@ -15,27 +15,48 @@ const HQ = {
   selected: null,      // { type: "member" | "task", id }
   people: {},          // member id → where they are and what they are doing on screen
   envelopes: [],       // wakes in flight
+  lastWord: {},        // task id → the member who last wrote in its thread
   t: 0,                // seconds of animation
   polling: null,
   looping: false,
 };
 
-const HQ_T = 16, HQ_COLS = 28, HQ_ROWS = 16, HQ_W = HQ_COLS * HQ_T, HQ_H = HQ_ROWS * HQ_T;
+const HQ_T = 16, HQ_COLS = 32, HQ_ROWS = 20, HQ_W = HQ_COLS * HQ_T, HQ_H = HQ_ROWS * HQ_T;
 const HQ_C = {
   wall: "#efece6", wallTop: "#e2ddd3", trim: "#c9c1b3", glass: "rgba(150,205,235,.22)", glassEdge: "#9cc7de",
   board: "#fbfbf8", boardEdge: "#b9c2c9", rack: "#232833", neon: "#ff4fa3", lamp: "#ffb347", red: "#ef5a5f",
   green: "#45c486", blue: "#7fb2ff", violet: "#b98cf0", sticky: "#fff2a8", text: "#1f1d29", shadow: "rgba(60,40,20,.18)",
 };
 const HQ_STATUS_COL = { todo: HQ_C.sticky, doing: HQ_C.lamp, in_review: HQ_C.blue, done: HQ_C.green, blocked: HQ_C.red, dropped: "#cfcac0" };
+// The office, in tiles. Along the wall: the board room (the owner's), the task board, the
+// CEO's office and the server closet; the open floor's desks; then ping-pong, the meeting
+// room, the lounge and the lobby.
 const HQ_P = {
   board: { x: 8, y: 0, w: 12, h: 2 }, owner: { x: 2, y: 3 }, lever: { x: 6.1, y: 2.3 },
-  engine: { x: 22, y: 2, w: 6, h: 3.6 }, rack: { x: 25, y: 2.2 }, jar: { x: 22.7, y: 2.6 },
-  door: { x: 25, y: 13 }, pong: { x: 2.5, y: 13.2 }, tap: { x: 13.5, y: 12.6 },
-  upperLane: 6, lowerLane: 11, aisles: [7.5, 13.5, 19.5],
+  boardRoom: { x: 0, y: 2, w: 7, h: 5 }, boardDoor: { x: 5.7, y: 7.3 },
+  engine: { x: 27, y: 2, w: 5, h: 5 }, rack: { x: 30.2, y: 2.4 }, jar: { x: 27.8, y: 2.8 },
+  door: { x: 29.5, y: 17 }, pong: { x: 2.5, y: 15.6 }, tap: { x: 16.8, y: 15 },
+  upperLane: 7.8, lowerLane: 12.9, split: 11.8, aisles: [7.5, 13.5, 19.5, 25.5],
 };
-// Four desks and four places to rest; members take them in the order they joined.
-const HQ_DESKS = [{ x: 3, y: 8 }, { x: 9, y: 8 }, { x: 15, y: 8 }, { x: 21, y: 8 }];
-const HQ_RESTS = [{ x: 1.2, y: 13 }, { x: 7, y: 13 }, { x: 9.2, y: 14 }, { x: 11.2, y: 14 }];
+// The two rooms people walk into, each with its open door: `out` is the step outside it,
+// `in` the step inside; a member goes through the gap between them.
+const HQ_ROOMS = {
+  ceo: { x: 20, y: 2, w: 7, h: 5, out: { x: 20.4, y: 7.6 }, in: { x: 20.4, y: 6.2 } },
+  meeting: { x: 9, y: 14, w: 7, h: 6, out: { x: 9.5, y: 13.0 }, in: { x: 9.5, y: 15.0 } },
+};
+// Where people sit in the meeting room: the CEO at the head, behind the table; the others on
+// the chairs before it, their backs to us.
+const HQ_MEETING = {
+  table: { x: 11.5, y: 15.8 },
+  head: { x: 12, y: 15.5, room: "meeting", dir: "down" },
+  chairs: [{ x: 11.6, y: 17.4, room: "meeting", dir: "up" }, { x: 12.6, y: 17.4, room: "meeting", dir: "up" }],
+};
+// A desk for everyone: the CEO's in its office, four on the open floor for the rest, taken in
+// the order they joined; and a place each to rest. The CEO rests on its office's sofa.
+const HQ_CEO_DESK = { x: 21.4, y: 3.6, room: "ceo" };
+const HQ_CEO_REST = { x: 24.5, y: 5.9, room: "ceo" };
+const HQ_DESKS = [{ x: 3, y: 9.6 }, { x: 9, y: 9.6 }, { x: 15, y: 9.6 }, { x: 21, y: 9.6 }];
+const HQ_RESTS = [{ x: 1.2, y: 15.4 }, { x: 7, y: 15.4 }, { x: 18.2, y: 17.6 }, { x: 20.2, y: 17.6 }];
 const HQ_ART = {
   floors: { plank: "floors/floor_5.png", grid: "floors/floor_3.png", plain: "floors/floor_1.png", check: "floors/floor_7.png" },
   f: ["DESK_FRONT", "PC_FRONT_OFF", "PC_FRONT_ON_1", "PC_FRONT_ON_2", "PC_FRONT_ON_3", "CUSHIONED_CHAIR_BACK",
@@ -179,45 +200,145 @@ function hqTell(e, live) {
   if (e.kind === "thread.posted") {
     const author = ((HQ.snap && HQ.snap.members) || []).find((m) => m.name === d.author);
     if (author && HQ.people[author.id]) hqSay(HQ.people[author.id], d.preview);
+    if (author) HQ.lastWord[d.task] = author.id;
   }
   if (e.kind === "task.claimed" && p) hqSay(p, "checkout " + key);
   if (e.kind === "run.ended" && p) hqSay(p, d.result === "succeeded" ? "done" : result);
   if (e.kind === "stopped" || e.kind === "resumed") HQ.doorFlash = 1.5;
+  const ceo = hqCeo(), boss = ceo && HQ.people[ceo.id];
+  // A member's question woke the CEO: the one who asked, if between turns, goes to the CEO's
+  // open door and waits there until the CEO's turn on it is over.
+  if (e.kind === "wake.queued" && d.reason === "question_asked" && ceo && d.member === ceo.id) {
+    const task = hqTask(d.task), who = HQ.lastWord[d.task] || (task && task.owner);
+    const asker = who !== ceo.id && HQ.people[who];
+    if (asker && !asker.working) {
+      asker.errand = { kind: "ask", task: d.task, hold: 40, spot: { ...HQ_ROOMS.ceo.out, dir: "up" } };
+      hqSay(asker, "a question for " + ceo.name); hqGo(asker);
+    }
+  }
+  if (e.kind === "run.ended" && ceo && d.member === ceo.id) {
+    for (const q of Object.values(HQ.people)) if (q.errand && q.errand.kind === "ask" && q.errand.task === d.task) { q.errand = null; hqGo(q); }
+  }
+  // The CEO's decision for the board: it takes it to the board room's door, and back.
+  if (e.kind === "desk.added" && d.kind === "decision" && boss) {
+    boss.errand = { kind: "board", hold: 2.5, say: "for the board", spot: { ...HQ_P.boardDoor, dir: "up" } };
+    hqGo(boss);
+  }
 }
+
+function hqCeo() { return ((HQ.snap && HQ.snap.members) || []).find((m) => m.role === "ceo"); }
 
 // A bubble holds a few words: a status change keeps only what was said about it.
 function hqShort(text) { return String(text || "").replace(/^[a-z_]+ → [a-z_]+: /, "").toLowerCase().slice(0, 26); }
 function hqSay(p, text) { p.bubble = hqShort(text); p.bubbleT = 3.2; }
 
-// Where each member is, kept across redraws: at their desk while a turn runs, resting otherwise.
+// Each member's desk and place to rest, by id: the CEO's office for the CEO, and the open
+// floor's desks for the others in the order they joined (`rank`), so five members have five
+// desks. Past four others they share again, as the floor holds four.
+function hqSeats(members) {
+  const out = {};
+  let rank = 0, boss = false;
+  for (const m of members || []) {
+    if (m.role === "ceo" && !boss) {
+      boss = true;
+      out[m.id] = { desk: HQ_CEO_DESK, deskNo: HQ_DESKS.length, rest: HQ_CEO_REST, rank: -1 };
+      continue;
+    }
+    const n = rank % HQ_DESKS.length;
+    out[m.id] = { desk: HQ_DESKS[n], deskNo: n, rest: HQ_RESTS[rank % HQ_RESTS.length], rank };
+    rank++;
+  }
+  return out;
+}
+
+// The CEO's daily review: its turn on the task of a routine of its own. The CEO takes the
+// head of the meeting table for it.
+function hqReview(members) {
+  const ceo = (members || []).find((m) => m.role === "ceo");
+  const run = ceo && (ceo.running || [])[0], task = run && run.task ? hqTask(run.task) : null;
+  if (!task || !task.routine) return false;
+  const routine = ((HQ.snap && HQ.snap.routines) || []).find((r) => r.id === task.routine);
+  return !!routine && routine.assignee === ceo.id;
+}
+
+// Where each member is, kept across redraws: on an errand, in the review, at their desk while
+// a turn runs, resting otherwise.
 function hqPlacePeople() {
-  const members = (HQ.snap && HQ.snap.members) || [];
-  members.forEach((m, i) => {
-    const desk = HQ_DESKS[i % HQ_DESKS.length], rest = HQ_RESTS[i % HQ_RESTS.length];
+  const members = (HQ.snap && HQ.snap.members) || [], seats = hqSeats(members), review = hqReview(members);
+  for (const m of members) {
+    const seat = seats[m.id];
     let p = HQ.people[m.id];
     if (!p) {
-      p = HQ.people[m.id] = { id: m.id, x: rest.x * HQ_T, y: rest.y * HQ_T, path: [], frame: 0, face: 1, bubble: "", bubbleT: 0, working: false };
+      p = HQ.people[m.id] = { id: m.id, x: seat.rest.x * HQ_T, y: seat.rest.y * HQ_T, path: [], frame: 0, bubble: "", bubbleT: 0,
+        working: false, errand: null, spotKey: seat.rest.x + "," + seat.rest.y, at: seat.rest };
     }
-    p.look = m.look || 0; p.name = m.name; p.role = m.role; p.paused = m.paused; p.desk = desk; p.slot = i;
+    p.look = m.look || 0; p.name = m.name; p.role = m.role; p.paused = m.paused; p.seat = seat; p.rank = seat.rank;
     const run = (m.running || [])[0];
     const task = run && run.task ? hqTask(run.task) : null;
     // What a working member is doing, said above their head: their latest word on the task.
     const last = task && (task.thread || []).filter((t) => t.author === m.name).pop();
     p.doing = task ? (last ? last.text : "on " + hqKey(task.id)) : "";
-    const working = !!run;
-    if (working !== p.working) {
-      p.working = working;
-      hqWalk(p, working ? { x: desk.x + 1.6, y: desk.y - 0.5 } : rest);
-    }
-  });
+    p.working = !!run;
+    // The review: the CEO at the head of the table, the lead on a chair if between turns.
+    p.meeting = !review ? null : m.role === "ceo" ? HQ_MEETING.head : m.role === "lead" && !p.working ? HQ_MEETING.chairs[0] : null;
+    // One who went to ask the CEO and has since been woken goes back to work.
+    if (p.working && p.errand && p.errand.kind === "ask") p.errand = null;
+    hqGo(p);
+  }
 }
 
-function hqWalk(p, tile) {
-  const T = HQ_T, tx = tile.x * T, ty = tile.y * T, upper = (y) => y <= 8 * T;
-  const lane = (u) => (u ? HQ_P.upperLane : HQ_P.lowerLane) * T, su = upper(p.y), tu = upper(ty);
-  if (su === tu) { p.path = [{ x: p.x, y: lane(su) }, { x: tx, y: lane(su) }, { x: tx, y: ty }]; return; }
-  const ax = HQ_P.aisles.map((a) => a * T).sort((a, b) => Math.abs(a - p.x) - Math.abs(b - p.x))[0];
-  p.path = [{ x: p.x, y: lane(su) }, { x: ax, y: lane(su) }, { x: ax, y: lane(tu) }, { x: tx, y: lane(tu) }, { x: tx, y: ty }];
+// Where a member should be now, as a spot: its tile, the room it is in, and which way they face.
+function hqSpot(p) {
+  if (p.errand) return p.errand.spot;
+  if (p.meeting) return p.meeting;
+  const s = p.seat;
+  if (p.working) return { x: s.desk.x + 1.6, y: s.desk.y - 0.5, room: s.desk.room, dir: "down", desk: true };
+  return s.rest;
+}
+
+// Sets a member walking to where they should be, if that is not where they are going already.
+function hqGo(p) {
+  if (!p.seat) return;
+  const spot = hqSpot(p), key = spot.x + "," + spot.y;
+  if (key === p.spotKey) return;
+  p.spotKey = key; p.at = spot;
+  hqWalk(p, spot);
+}
+
+// The room a tile is in, of the two people walk into.
+function hqRoomAt(x, y) {
+  return Object.values(HQ_ROOMS).find((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) || null;
+}
+
+// The way from where a member is to a spot: out of the room they are in through its open door,
+// along the lanes and aisles of the open floor, and in through the door of the spot's room.
+// Nobody walks through glass.
+function hqWalk(p, spot) {
+  const T = HQ_T, P = HQ_P, path = [], at = { x: p.x / T, y: p.y / T };
+  const go = (x, y) => path.push({ x: x * T, y: y * T });
+  const from = hqRoomAt(at.x, at.y), to = spot.room ? HQ_ROOMS[spot.room] : null;
+  if (from && from === to) { go(from.in.x, at.y); go(from.in.x, spot.y); go(spot.x, spot.y); p.path = path; return; }
+  if (from) { go(from.in.x, at.y); go(from.in.x, from.in.y); go(from.out.x, from.out.y); at.x = from.out.x; at.y = from.out.y; }
+  const end = to ? to.out : spot, lane = (y) => (y <= P.split ? P.upperLane : P.lowerLane);
+  const la = lane(at.y), lb = lane(end.y);
+  go(at.x, la);
+  if (la !== lb) {
+    const ax = P.aisles.slice().sort((a, b) => Math.abs(a - at.x) - Math.abs(b - at.x))[0];
+    go(ax, la); go(ax, lb);
+  }
+  go(end.x, lb); go(end.x, end.y);
+  if (to) { go(to.in.x, to.in.y); go(to.in.x, spot.y); go(spot.x, spot.y); }
+  p.path = path;
+}
+
+// An errand's end: once there, a member says what they came to say, waits, and goes back.
+function hqErrand(p, dt) {
+  const e = p.errand;
+  if (!e || p.path.length || p.spotKey !== e.spot.x + "," + e.spot.y) return;
+  if (!e.arrived) { e.arrived = true; if (e.say) hqSay(p, e.say); }
+  e.hold -= dt;
+  if (e.hold > 0) return;
+  p.errand = null; hqGo(p);
 }
 
 // ---- drawing ---------------------------------------------------------------------------
@@ -243,10 +364,12 @@ function hqPaintRoom() {
   };
   g.fillStyle = "#d6b07a"; g.fillRect(0, 0, W, H);
   floor("plank", "#e2b57a", 0, 2, HQ_COLS, HQ_ROWS);
-  floor("grid", "#d9e1ea", 0, 2, 7, 6);
-  floor("plain", "#c3c8d0", 22, 2, HQ_COLS, 6);
-  floor("grid", "#8fa6c7", 0, 12, 13, HQ_ROWS);
-  floor("check", "#efe9de", 20, 12, HQ_COLS, HQ_ROWS);
+  floor("grid", "#d9e1ea", 0, 2, 7, 7);
+  floor("plain", "#d9b9a0", 20, 2, 27, 7);
+  floor("plain", "#c3c8d0", 27, 2, HQ_COLS, 7);
+  floor("grid", "#8fa6c7", 0, 14, 9, HQ_ROWS);
+  floor("grid", "#d9e1ea", 9, 14, 16, HQ_ROWS);
+  floor("check", "#efe9de", 23, 14, HQ_COLS, HQ_ROWS);
   // The wall.
   g.fillStyle = C.wall; g.fillRect(0, 0, W, 2 * T); g.fillStyle = C.wallTop; g.fillRect(0, 0, W, 5); g.fillStyle = C.trim; g.fillRect(0, 2 * T - 3, W, 3);
   // A window onto the bay, with the bridge.
@@ -258,45 +381,76 @@ function hqPaintRoom() {
   g.fillStyle = C.boardEdge; g.fillRect(P.board.x * T - 2, 3, P.board.w * T + 4, 26); g.fillStyle = C.board; g.fillRect(P.board.x * T, 5, P.board.w * T, 22);
   g.fillStyle = "#2a64c9"; g.fillRect((P.board.x + P.board.w) * T - 22, 23, 14, 2); g.fillStyle = "#d33"; g.fillRect((P.board.x + P.board.w) * T - 22, 20, 8, 1);
   if (HQ_IMG.HANGING_PLANT) g.drawImage(HQ_IMG.HANGING_PLANT, 7 * T - 2, 1);
-  if (HQ_IMG.LARGE_PAINTING) g.drawImage(HQ_IMG.LARGE_PAINTING, 20.4 * T, 0);
-  // Glass rooms: the board room and the server closet.
-  g.fillStyle = C.glass; g.fillRect(0, 2 * T, 7 * T, 3.6 * T); g.fillStyle = C.glassEdge; g.fillRect(7 * T - 2, 2 * T, 2, 3.6 * T); g.fillRect(0, 5.6 * T - 2, 7 * T - 22, 2);
-  g.fillStyle = "rgba(60,70,90,.08)"; g.fillRect(P.engine.x * T, P.engine.y * T, P.engine.w * T, P.engine.h * T);
-  g.fillStyle = C.glassEdge; g.fillRect(P.engine.x * T, P.engine.y * T, 2, P.engine.h * T); g.fillRect(P.engine.x * T + 22, (P.engine.y + P.engine.h) * T - 2, P.engine.w * T - 22, 2);
-  // The lounge: ping-pong, cold brew, the snack wall.
+  // The CEO's painting, on the wall of its office.
+  if (HQ_IMG.LARGE_PAINTING) g.drawImage(HQ_IMG.LARGE_PAINTING, 22.2 * T, 0);
+  // Glass rooms: the board room, the CEO's office and the server closet along the wall, the
+  // meeting room by the lounge. Each has a gap in its glass for a door; the two people walk
+  // into have the door itself swung open.
+  const glass = (r, tint) => { g.fillStyle = tint || C.glass; g.fillRect(r.x * T, r.y * T, r.w * T, r.h * T); };
+  const edge = (x, y, w, h) => { g.fillStyle = C.glassEdge; g.fillRect(x, y, w, h); };
+  const swung = (x, y, dir) => {
+    const y0 = dir < 0 ? y - 18 : y;
+    g.fillStyle = "rgba(150,205,235,.5)"; g.fillRect(x, y0, 3, 18); g.fillStyle = C.glassEdge; g.fillRect(x + 2, y0, 1, 18);
+    g.fillStyle = C.trim; g.fillRect(x, y0 + (dir < 0 ? 3 : 13), 2, 2);
+  };
+  const B = P.boardRoom, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = P.engine;
+  glass(B); edge((B.x + B.w) * T - 2, B.y * T, 2, B.h * T); edge(0, (B.y + B.h) * T - 2, (B.x + B.w) * T - 22, 2);
+  glass(O); edge(O.x * T, O.y * T, 2, O.h * T);
+  edge(O.x * T, (O.y + O.h) * T - 2, 0.3 * T, 2); edge((O.x + 1.7) * T, (O.y + O.h) * T - 2, (O.w - 1.7) * T, 2);
+  swung((O.x + 1.7) * T - 3, (O.y + O.h) * T - 2, -1);
+  glass(E, "rgba(60,70,90,.08)"); edge(E.x * T, E.y * T, 2, E.h * T); edge(E.x * T + 22, (E.y + E.h) * T - 2, E.w * T - 22, 2);
+  glass(M); edge(M.x * T, M.y * T, 2, M.h * T); edge((M.x + M.w) * T - 2, M.y * T, 2, M.h * T);
+  edge(M.x * T, M.y * T, 0.3 * T, 2); edge((M.x + 1.7) * T, M.y * T, (M.w - 1.7) * T, 2);
+  swung((M.x + 1.7) * T - 3, M.y * T + 2, 1);
+  // Ping-pong.
   const px = P.pong.x * T, py = P.pong.y * T;
   g.fillStyle = C.shadow; g.fillRect(px + 2, py + 13, 66, 4); g.fillStyle = "#1f7a4f"; g.fillRect(px, py, 66, 13); g.fillStyle = "#ffffff"; g.fillRect(px, py + 6, 66, 1); g.fillRect(px + 32, py - 3, 2, 16);
   g.fillStyle = "#3b4048"; g.fillRect(px + 4, py + 13, 2, 4); g.fillRect(px + 60, py + 13, 2, 4);
+  // The lounge: cold brew and the snack wall.
   g.fillStyle = "#cfd6dd"; g.fillRect(P.tap.x * T, P.tap.y * T - 6, 14, 20); g.fillStyle = "#3a2a1e"; g.fillRect(P.tap.x * T + 3, P.tap.y * T - 3, 8, 7); g.fillStyle = "#222"; g.fillRect(P.tap.x * T + 6, P.tap.y * T + 5, 2, 3);
-  g.fillStyle = "#b8a68a"; g.fillRect(15 * T, 12 * T, 4 * T, 3); g.fillRect(15 * T, 12.8 * T, 4 * T, 3);
+  g.fillStyle = "#b8a68a"; g.fillRect(18 * T, 14.6 * T, 4 * T, 3); g.fillRect(18 * T, 15.4 * T, 4 * T, 3);
   const snacks = ["#ff4fa3", "#ffb347", "#45c486", "#7fb2ff", "#ef5a5f", "#fff2a8"];
-  for (let i = 0; i < 14; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(15 * T + 2 + i * 4.4, 12 * T - 5 + (i % 2) * 13, 3, 5); }
+  for (let i = 0; i < 14; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(18 * T + 2 + i * 4.4, 14.6 * T - 5 + (i % 2) * 13, 3, 5); }
   // The lobby: reception and the door.
-  g.fillStyle = "#ffffff"; g.fillRect(21 * T, 13 * T, 2.6 * T, 11); g.fillStyle = C.trim; g.fillRect(21 * T, 13 * T + 10, 2.6 * T, 2);
+  g.fillStyle = "#ffffff"; g.fillRect(25 * T, 15.2 * T, 2.6 * T, 11); g.fillStyle = C.trim; g.fillRect(25 * T, 15.2 * T + 10, 2.6 * T, 2);
   g.fillStyle = "#3d3a44"; g.fillRect(P.door.x * T, P.door.y * T, 2 * T, 3 * T); g.fillStyle = "#9fd3f0"; g.fillRect(P.door.x * T + 4, P.door.y * T + 4, 2 * T - 8, 3 * T - 4);
   // Labels.
   g.font = HQ_PIXEL; g.fillStyle = "rgba(31,29,41,.6)";
-  g.fillText("BOARD ROOM", 4, 2 * T + 9); g.fillText("SERVERS", (P.engine.x + 3.4) * T, (P.engine.y + P.engine.h) * T - 4);
-  g.fillStyle = "rgba(255,255,255,.8)"; g.fillText("PING-PONG", 4, 12 * T + 8); g.fillStyle = "rgba(31,29,41,.6)"; g.fillText("COLD BREW", 12.4 * T, 12 * T - 2);
-  g.fillText("LOBBY", 20.4 * T, 12 * T + 9); g.fillText("ENDORA", 21.1 * T, 13 * T + 8);
+  g.fillText("BOARD ROOM", 4, 2 * T + 9); g.fillText("CEO", O.x * T + 5, O.y * T + 9);
+  g.fillText("SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4); g.fillText("MEETING", M.x * T + 5, (M.y + M.h) * T - 4);
+  g.fillStyle = "rgba(255,255,255,.8)"; g.fillText("PING-PONG", 4, 14 * T + 9); g.fillStyle = "rgba(31,29,41,.6)"; g.fillText("COLD BREW", 16.3 * T, HQ_ROWS * T - 4);
+  g.fillText("LOBBY", 23.4 * T, 14 * T + 9); g.fillText("ENDORA", 25.1 * T, 15.2 * T + 8);
   return bg;
 }
 
 function hqFurniture() {
-  const T = HQ_T, out = [];
+  const T = HQ_T, out = [], c = HQ_CEO_DESK, m = HQ_MEETING.table;
   const f = (key, x, y, extra = {}) => { const i = HQ_IMG[key]; if (i) out.push({ key, x, y, base: y + i.height + (extra.lift || 0), ...extra }); };
   HQ_DESKS.forEach((d, i) => {
     f("DESK_FRONT", d.x * T, d.y * T);
     f("PC_FRONT_OFF", d.x * T + 4, d.y * T - 6, { lift: 0.5, pc: i });
     f("BIN", (d.x + 3) * T, (d.y + 1) * T);
   });
+  // The board room: the owner's table, with the decisions on it.
   f("SMALL_TABLE_FRONT", HQ_P.owner.x * T, HQ_P.owner.y * T);
   f("COFFEE", (HQ_P.owner.x + 1.3) * T, HQ_P.owner.y * T + 4, { lift: 40 });
   f("CUSHIONED_CHAIR_BACK", (HQ_P.owner.x + 0.1) * T, (HQ_P.owner.y + 1.9) * T);
   f("CUSHIONED_CHAIR_BACK", (HQ_P.owner.x + 1.1) * T, (HQ_P.owner.y + 1.9) * T);
-  f("SOFA_FRONT", 8.6 * T, 13.2 * T); f("SOFA_FRONT", 10.6 * T, 13.2 * T);
-  f("PLANT", 0.1 * T, 9.6 * T); f("PLANT_2", 26.7 * T, 6.6 * T); f("CACTUS", 21.1 * T, 6.4 * T);
-  f("LARGE_PLANT", 19.1 * T, 12.4 * T); f("BOOKSHELF", 22.2 * T, 15 * T);
+  f("PLANT_2", 0.2 * T, 4.8 * T);
+  // The CEO's office: its desk and PC, a visitor's chair before it, the bookshelf, a sofa, a plant.
+  f("DESK_FRONT", c.x * T, c.y * T);
+  f("PC_FRONT_OFF", c.x * T + 4, c.y * T - 6, { lift: 0.5, pc: HQ_DESKS.length });
+  f("CUSHIONED_CHAIR_BACK", (c.x + 1) * T, (c.y + 1.9) * T);
+  f("BOOKSHELF", 24.4 * T, 2 * T); f("SOFA_FRONT", 24 * T, 5.2 * T); f("PLANT", 26 * T, 4.6 * T);
+  // The meeting room: the table, two chairs before it, a large plant in the corner.
+  f("SMALL_TABLE_FRONT", m.x * T, m.y * T);
+  f("CUSHIONED_CHAIR_BACK", (m.x + 0.1) * T, (m.y + 1.9) * T);
+  f("CUSHIONED_CHAIR_BACK", (m.x + 1.1) * T, (m.y + 1.9) * T);
+  f("LARGE_PLANT", 14.2 * T, 14.1 * T);
+  // The floor, the lounge and the lobby.
+  f("PLANT", 0.1 * T, 10.2 * T); f("PLANT_2", 31 * T, 9.6 * T); f("CACTUS", 27.6 * T, 10 * T);
+  f("SOFA_FRONT", 17.6 * T, 16.8 * T); f("SOFA_FRONT", 19.6 * T, 16.8 * T); f("PLANT", 22.2 * T, 16.6 * T);
+  f("BOOKSHELF", 23.4 * T, 19 * T);
   return out;
 }
 
@@ -311,10 +465,11 @@ function hqCards() {
   return shown.map((t, i) => ({ t, x: HQ_P.board.x * HQ_T + 4 + (i % 17) * 11, y: 7 + Math.floor(i / 17) * 10, w: 8, h: 8 }));
 }
 
-// The first two members (the lead and the developer) play ping-pong when both are idle.
+// The first two members after the CEO (the lead and the developer) play ping-pong when both
+// are resting.
 function hqPong() {
-  const two = Object.values(HQ.people).filter((p) => p.slot === 0 || p.slot === 1);
-  return two.length === 2 && two.every((p) => !p.working && !p.path.length && !p.paused) ? two : null;
+  const two = Object.values(HQ.people).filter((p) => p.rank === 0 || p.rank === 1);
+  return two.length === 2 && two.every((p) => !p.working && !p.path.length && !p.paused && !p.errand && !p.meeting) ? two : null;
 }
 
 function hqFrame(p) {
@@ -323,11 +478,12 @@ function hqFrame(p) {
     const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : dy > 0 ? "down" : "up";
     return { dir, frame: [0, 1, 2, 1][Math.floor(p.frame) % 4] };
   }
-  const reads = p.role === "researcher" || p.role === "reviewer";
-  if (p.working) return { dir: "down", frame: reads ? 5 + (Math.floor(HQ.t * 1.5) % 2) : 3 + (Math.floor(HQ.t * 6) % 2) };
+  const at = p.at || {}, dir = at.dir || "down";
+  const reads = p.role === "researcher" || p.role === "reviewer" || !at.desk;
+  if (p.working) return { dir, frame: reads ? 5 + (Math.floor(HQ.t * 1.5) % 2) : 3 + (Math.floor(HQ.t * 6) % 2) };
   const pong = hqPong();
-  if (pong && pong.includes(p)) return { dir: p.slot === 0 ? "right" : "left", frame: 3 + (Math.floor(HQ.t * 4) % 2) };
-  return { dir: "down", frame: p.paused ? 1 : 0 };
+  if (pong && pong.includes(p)) return { dir: p.rank === 0 ? "right" : "left", frame: 3 + (Math.floor(HQ.t * 4) % 2) };
+  return { dir, frame: p.paused ? 1 : 0 };
 }
 
 // When idle, who says what.
@@ -363,7 +519,7 @@ function hqDraw() {
     ctx.fillStyle = snap.stopped ? "#5a2224" : "#4a5a6a"; ctx.fillRect(rx + 8, ry + 5 + i * 5, 6, 2);
   }
   // The wall clock: the arc to the next tick of the real engine.
-  const cx = 23 * T + 8, cy = 14, every = (snap.tick_seconds || 30) * 1000;
+  const cx = 28.6 * T, cy = 14, every = (snap.tick_seconds || 30) * 1000;
   const since = snap.last_tick_at ? Math.max(0, Date.now() - snap.last_tick_at) % every : 0;
   ctx.fillStyle = "#ffffff"; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = C.trim; ctx.stroke();
   ctx.fillStyle = snap.stopped ? C.red : C.neon; ctx.beginPath(); ctx.moveTo(cx, cy);
@@ -390,7 +546,7 @@ function hqDraw() {
     if (it.p) { hqDrawPerson(ctx, it.p); continue; }
     let key = it.f.key;
     if (it.f.pc !== undefined) {
-      const at = people.find((p) => p.working && p.slot % HQ_DESKS.length === it.f.pc && !p.path.length);
+      const at = people.find((p) => p.working && !p.path.length && p.at && p.at.desk && p.seat.deskNo === it.f.pc);
       key = at ? "PC_FRONT_ON_" + (1 + (Math.floor(HQ.t * 4) % 3)) : "PC_FRONT_OFF";
     }
     if (HQ_IMG[key]) ctx.drawImage(HQ_IMG[key], Math.round(it.f.x), Math.round(it.f.y));
@@ -418,7 +574,7 @@ function hqBubble(ctx, p) {
   const pong = hqPong(), playing = pong && pong.includes(p);
   const said = p.bubbleT > 0 ? p.bubble : "";
   const doing = p.working && !p.path.length ? hqShort(p.doing) : "";
-  const idle = !p.working && !playing && !p.path.length ? (p.paused ? "over budget" : HQ_IDLE[p.role] || "") : "";
+  const idle = !p.working && !playing && !p.path.length && !p.errand && !p.meeting ? (p.paused ? "over budget" : HQ_IDLE[p.role] || "") : "";
   const text = said || doing || idle;
   if (!text) return;
   const quiet = !said && !doing;
@@ -452,7 +608,7 @@ function hqLoop() {
     HQ.spark = Math.max(0, (HQ.spark || 0) - dt * 2); HQ.doorFlash = Math.max(0, (HQ.doorFlash || 0) - dt);
     for (const p of Object.values(HQ.people)) {
       if (p.bubbleT > 0) p.bubbleT -= dt;
-      if (!p.path.length) continue;
+      if (!p.path.length) { hqErrand(p, dt); continue; }
       const n = p.path[0], dx = n.x - p.x, dy = n.y - p.y, d = Math.hypot(dx, dy), v = 46 * dt;
       if (d <= v) { p.x = n.x; p.y = n.y; p.path.shift(); } else { p.x += (dx / d) * v; p.y += (dy / d) * v; }
       p.frame += dt * 8;
@@ -551,7 +707,7 @@ function viewHQ() {
     <div class="hq-main">
       <div class="hq-stage">
         <canvas id="hq-office" width="${HQ_W}" height="${HQ_H}"
-          aria-label="The team's office: members at their desks, the board of tasks, the server closet, the board room"></canvas>
+          aria-label="The team's office: members at their desks, the board of tasks, the CEO's office, the meeting room, the server closet, the board room"></canvas>
         <div class="hq-stats">${stats}</div>
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
         ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
