@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Fifty-eight records stand, every one accepted, and forty-nine earlier ones are archived into them
+Fifty-nine records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -109,6 +109,11 @@ that established it.
   A routine hands its member a task on a rhythm, one open at a time; an alarm from the
   home lab joins it; a member checks back on its own task. Nobody goes looking for work, a
   clock with nothing to do starts no turn, and a task whose turns move nothing backs off.
+- **Endora decides what a tool is; the team gets Endora's tools under Endora's policy**
+  ([0108](0108-the-bridge.md)). Every capability and tool-server tool is offered to the team
+  unless it is off, Restricted, administration or the owner's own; Confidential only to local
+  turns; acts only for the roles that act; an act that is on runs within limits and is told,
+  an act that asks waits on the owner's desk, and the owner's yes runs exactly what was shown.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -236,6 +241,7 @@ of an existing record and take the next number.
 | [0105](0105-models-in-ordered-lists-by-data-tier.md) | Models in ordered lists, cleared by data tier | — |
 | [0106](0106-team-contracts.md) | Team contracts: what Endora offers HQ's workers | — |
 | [0107](0107-routines-alarms-and-check-backs.md) | Routines, alarms and check-backs: how the team keeps working | — |
+| [0108](0108-the-bridge.md) | The bridge: Endora's capabilities as the team's tools | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

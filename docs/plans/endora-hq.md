@@ -5,8 +5,9 @@ Agreed with the owner in a design interview on 2026-10-16 (questions Q1–Q34), 
 [the always-on butler plan](always-on-butler.md). Phases 1, 2 and 4 (section 15) are built: the
 team core in `domains/team`, the HQ service in `app/hq` and the office screen; real workers
 (Endora's own worker, the model relays, the runner on the NAS and its fence); the team's
-contracts on the home lab ([ADR 0106](../adr/0106-team-contracts.md)); and routines, alarms
-and check-backs ([ADR 0107](../adr/0107-routines-alarms-and-check-backs.md)). Phase 3's
+contracts on the home lab ([ADR 0106](../adr/0106-team-contracts.md)); routines, alarms
+and check-backs ([ADR 0107](../adr/0107-routines-alarms-and-check-backs.md)); and the bridge,
+approvals, the owner's replies and a goal's notes ([ADR 0108](../adr/0108-the-bridge.md)). Phase 3's
 pairing, Ansible role and Pi are deferred: the NAS runner went first. Phases 5 to 7 are not
 yet.
 
@@ -332,7 +333,8 @@ badge show how many are waiting:
 - goals Endora proposes, and briefs;
 - hires, role changes and team names;
 - budget raises and Opus requests;
-- actions the gateway marks Ask first;
+- actions the gateway marks Ask first, and the bridge's approvals (ADR 0108): an action a member
+  proposed, shown as exactly what will run, with Approve and Decline;
 - stuck work;
 - finished work, ready to merge;
 - new runners.
@@ -545,6 +547,52 @@ checked with HQ as the relays are:
   queued turns ended, a notice on the desk), so none of it becomes a real turn. The owner sets
   a real goal and hands the lead its first task from the HQ screen. The board hides a dropped
   goal's tasks, finished or not, so the retired demo's notes do not bury the owner's own.
+
+### The bridge (owner's decision of 2026-10-17, [ADR 0108](../adr/0108-the-bridge.md))
+
+The three contracts above are the generic container tools. Beside them, the **bridge** offers
+every capability Endora has and every tool of its tool servers, decided by Endora's own policy
+in `domains/capabilities/src/bridge.rs`, in this order:
+
+- **Never offered**: off; Restricted (and anything unclassified); Endora's administration (the
+  settings-only connection entries); the owner's own (`mail`, `own_activity`, `read_page`,
+  `brief`, `image_review`, `location`, and tool-server tools named for mail, chat, brain,
+  memory, Endora, the team or money); and what is not set up.
+- **Tier**: Confidential only to a turn on a local model. HQ's `/v1/team/turn` answer carries
+  `"cloud": true` for a member on a cloud model (none today); the node then neither lists nor
+  runs a Confidential tool for it.
+- **Profile by role** (a table in code, for a later owner setting): lead and developer read and
+  act; reviewer and researcher read.
+- **Kind**, from Endora's knowledge: a skill reads when it declares the observation band; a
+  tool server's tool reads only when the owner named it the server's reader. Each listed tool
+  carries `"kind": "read" | "act"`, and every act requires a `why`.
+- **Stance**: a read runs through the explicit-invoke path and keeps a stranger's mark; an act
+  that is on runs at once, three an hour a tool across the team (`team_acts`), and is a notice;
+  an act that asks, any tool server's act the owner has said nothing about, and an act given
+  arguments after the turn read a stranger's words, is stored on the node (`team_approvals`)
+  and put on the desk through `POST /v1/team/approval`. The member reads "On the owner's desk
+  for approval; you are woken when they decide." with `"asked_owner": true`, and the turn ends.
+- **Approval**: HQ's desk item `approval` counts as the member's question (one waits a task).
+  The owner's Approve reaches the node, which checks HQ's desk still holds it as asked, has HQ
+  decide it, re-checks the stance and role, runs exactly the stored call and posts what came of
+  it through `POST /v1/team/approval/{id}/outcome`, which writes it in the thread as Endora's
+  and wakes the member. Decline, and a day undecided (HQ's tick), run nothing and say so in
+  the thread. The card shows the tool, the arguments one a line and the reason, as text.
+- **Sonarr and Radarr**: the queue read says why an item is stuck; `*_retry_import` (on)
+  asks the app to check its downloads again; `*_remove_and_search` (ask) removes one item from
+  the queue and its client, blocklists the release and searches again. An app is a row of
+  `ARR_APPS`.
+
+### The owner's voice (owner's decision of 2026-10-17, [ADR 0108](../adr/0108-the-bridge.md))
+
+- **A reply on any task**: the "Looking at" panel has a reply box. `POST /v1/hq/tasks/{id}/post`
+  on the node, `POST /v1/tasks/{id}/post` on HQ: the owner's words in the thread, and whoever
+  has the task woken at once (`owner_replied`), mention or not, past the back-off. Any post of
+  the owner's wakes the same way; a finished task refuses it.
+- **A goal's notes for the team**: at most 2,000 characters, written on the "Notes for the
+  team" card (`POST /v1/hq/goals/{id}/note`, `POST /v1/goals/{id}/note`), shown in the
+  snapshot's goals, and carried near the top of every briefing for a task under the goal as
+  "Notes from the owner for this goal: …".
 
 ## 16. Later, and not at all
 

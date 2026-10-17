@@ -9,6 +9,24 @@ tagged release.
 
 ### Added
 
+- **The bridge: Endora's capabilities as the team's tools** ([ADR 0108](docs/adr/0108-the-bridge.md)).
+  The team's contracts list now carries, after the container tools, every capability and
+  tool-server tool Endora's policy allows, each marked read or act by Endora's own knowledge
+  (a tool server's tool reads only when the owner named it the reader). Never offered: what is
+  off, Restricted, Endora's administration, or the owner's mail, chat, brain, brief, image and
+  whereabouts. Confidential results go only to turns on a local model; lead and developers
+  read and act, reviewers and researchers read. An act that is on runs at once, three an hour
+  a tool, and is a notice on the owner's desk; an act that asks becomes an **approval** on the
+  desk showing exactly what will run, the member's turn ends, and Approve runs the stored call
+  once (Decline, or a day's wait, runs nothing). Every call is in the audit log.
+- **Stuck downloads**: Sonarr's and Radarr's queues say why an item is stuck, and two actions
+  join them, for the butler and the team: retry the imports (on by default) and remove,
+  blocklist and search again (asks by default). Another app of the same API is a row of
+  configuration.
+- **The owner's reply on any task** wakes whoever has it at once, mention or not, past the
+  back-off; and **a goal's notes for the team** (at most 2,000 characters, edited on the HQ
+  screen) reach the top of every briefing under it.
+
 - **Routines, alarms and check-backs: how the team keeps working**
   ([ADR 0107](docs/adr/0107-routines-alarms-and-check-backs.md)). Goals stay passive and work
   arrives as tasks. A routine hands one member a task on a rhythm (one open at a time; a late

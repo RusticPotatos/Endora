@@ -9,6 +9,15 @@ slice is built: three contracts on the node's team listener (`homelab_status`,
 owner's two switches on the HQ screen, and restarts told on the owner's desk. There are no
 ask-first contracts yet; `request_action` stays as it was.
 
+Amended 2026-10-17 by [0108](0108-the-bridge.md): these three are now the **generic container
+tools**, and beside them the **bridge** offers every capability Endora has, and every tool of
+its tool servers, under Endora's own policy (tier, the owner's stance, third-party marks, a
+profile by role). The bridge's acts are the first ask-first acts: an approval on the owner's
+desk that runs exactly what it shows. The owner's "every contract" switch covers the bridge
+too. The Confidential check point this record asks for is in place: HQ says when a member
+thinks on a cloud model, and the node then neither offers nor runs a Confidential tool for that
+turn (`container_logs` stays as it was until HQ says it).
+
 ## Context
 
 The owner gave the team the goal "Keep the home lab healthy", and the team could not see the
