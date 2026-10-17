@@ -4,11 +4,11 @@
 //! container. HQ names only the run and its token; everything else about the container is
 //! the runner's own, so HQ cannot choose the image, the mounts or the network.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
-use crate::docker::{Docker, RUN_LABEL, State};
+use crate::docker::{Docker, LEASE_LABEL, RUN_LABEL, State};
 use crate::hq::{Hq, HqError};
 
 /// The longest a turn's container runs before it is killed, in seconds.
@@ -32,6 +32,7 @@ pub struct Work {
 /// A turn HQ handed out, once checked. Not `Debug`: it holds the turn's token.
 pub struct Turn {
     run: u64,
+    lease: u64,
     token: String,
     member: String,
     role: String,
@@ -43,26 +44,32 @@ pub struct Turn {
 pub enum Refused {
     /// Its run is not a number: there is nothing to report it as.
     NoRun,
+    /// It has no lease: HQ would take no report of it.
+    NoLease(u64),
     /// Its token is not 64 hex characters.
-    Token(u64),
+    Token(u64, u64),
 }
 
 impl Turn {
     /// Checks a turn as HQ handed it out.
     ///
     /// # Errors
-    /// [`Refused`] if its run is not a number or its token not 64 hex characters.
+    /// [`Refused`] if its run or lease is not a number, or its token not 64 hex characters.
     pub fn from_hq(handed: &Value) -> Result<Self, Refused> {
         let Some(run) = handed["run"].as_u64() else {
             return Err(Refused::NoRun);
         };
+        let Some(lease) = handed["lease"].as_u64() else {
+            return Err(Refused::NoLease(run));
+        };
         let token = handed["token"].as_str().unwrap_or("");
         if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(Refused::Token(run));
+            return Err(Refused::Token(run, lease));
         }
         let text = |key: &str| handed[key].as_str().unwrap_or("").to_owned();
         Ok(Self {
             run,
+            lease,
             token: token.to_owned(),
             member: text("member"),
             role: text("role"),
@@ -72,7 +79,7 @@ impl Turn {
 }
 
 /// The body of `POST /containers/create` for a turn: the worker image and the fixed fence,
-/// with the turn's own run and token and nothing else of HQ's.
+/// with the turn's own run, lease and token and nothing else of HQ's.
 pub fn spec(work: &Work, turn: &Turn) -> Value {
     json!({
         "Image": work.image,
@@ -82,7 +89,7 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
             format!("ENDORA_HQ_MCP={}", work.hq_mcp),
             format!("ENDORA_MODEL_URL={}", work.model_url),
         ],
-        "Labels": { RUN_LABEL: turn.run.to_string() },
+        "Labels": { RUN_LABEL: turn.run.to_string(), LEASE_LABEL: turn.lease.to_string() },
         "HostConfig": {
             "NetworkMode": work.network,
             // 256 MB, one CPU, 128 processes.
@@ -92,7 +99,9 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
             "ReadonlyRootfs": true,
             "CapDrop": ["ALL"],
             "SecurityOpt": ["no-new-privileges:true"],
-            "Tmpfs": { "/tmp": "size=64m" },
+            // The image declares a `/data` volume, which would otherwise be an unbounded
+            // writable disk: a megabyte in memory instead, gone with the container.
+            "Tmpfs": { "/tmp": "size=64m", "/data": "size=1m" },
         },
     })
 }
@@ -100,6 +109,7 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
 /// A turn's container the runner is watching.
 struct Running {
     run: u64,
+    lease: u64,
     container: String,
     /// When it started, in seconds since the Unix epoch.
     since: u64,
@@ -111,6 +121,9 @@ pub struct Runner<D> {
     hq: Hq,
     work: Work,
     running: Vec<Running>,
+    /// The runs HQ asked to stop whose containers are not yet killed. HQ tells each once, so
+    /// a kill that fails is tried again every round until it takes.
+    stopping: BTreeSet<u64>,
     /// The trouble last said about each thing, so one that lasts is said once, not every
     /// two seconds.
     said: BTreeMap<&'static str, String>,
@@ -124,6 +137,7 @@ impl<D: Docker> Runner<D> {
             hq,
             work,
             running: Vec::new(),
+            stopping: BTreeSet::new(),
             said: BTreeMap::new(),
         }
     }
@@ -142,9 +156,13 @@ impl<D: Docker> Runner<D> {
             let Ok(run) = container.run.parse::<u64>() else {
                 continue;
             };
+            // One with no lease is reported under none, which HQ refuses; it is removed all
+            // the same.
+            let lease = container.lease.parse::<u64>().unwrap_or(0);
             println!("runner: run {run} was left by an earlier runner; taken back");
             self.running.push(Running {
                 run,
+                lease,
                 container: container.id,
                 since: container.created,
             });
@@ -158,18 +176,36 @@ impl<D: Docker> Runner<D> {
         self.fill(now);
     }
 
-    /// Kills the turns HQ asks to stop. Each is then reported and removed as it ends.
+    /// Kills the turns HQ asks to stop, and any an earlier round could not. Each is then
+    /// reported and removed as it ends.
     fn stop_asked(&mut self) {
-        let runs = match self.hq.stops() {
-            Ok(runs) => runs,
-            Err(e) => return self.trouble("HQ", &e.to_string()),
-        };
-        self.fine("HQ");
-        for turn in self.running.iter().filter(|t| runs.contains(&t.run)) {
-            if let Err(e) = self.docker.kill(&turn.container) {
-                eprintln!("runner: could not stop run {}: {e}", turn.run);
+        match self.hq.stops() {
+            Ok(runs) => {
+                self.fine("HQ");
+                self.stopping.extend(runs);
+            }
+            // The stops already heard are still killed.
+            Err(e) => self.trouble("HQ", &e.to_string()),
+        }
+        let running = &self.running;
+        self.stopping
+            .retain(|run| running.iter().any(|t| t.run == *run));
+        let mut failed = None;
+        for turn in self
+            .running
+            .iter()
+            .filter(|t| self.stopping.contains(&t.run))
+        {
+            match self.docker.kill(&turn.container) {
+                Ok(()) => {}
+                Err(e) => failed = Some(format!("could not stop run {}: {e}", turn.run)),
             }
         }
+        let Some(failed) = failed else {
+            self.stopping.clear();
+            return;
+        };
+        self.trouble("Docker", &failed);
     }
 
     /// Reports each turn that ended, and removes it; kills one that ran too long.
@@ -207,7 +243,8 @@ impl<D: Docker> Runner<D> {
             };
             // Told before it is removed: while HQ cannot hear, the container keeps how it
             // ended. An answer of any kind is hearing.
-            if let Err(e @ HqError::Unreachable(_)) = self.hq.ended(turn.run, succeeded) {
+            if let Err(e @ HqError::Unreachable(_)) = self.hq.ended(turn.run, turn.lease, succeeded)
+            {
                 self.trouble("HQ", &e.to_string());
                 self.running.push(turn);
                 continue;
@@ -246,9 +283,12 @@ impl<D: Docker> Runner<D> {
                 Err(Refused::NoRun) => {
                     eprintln!("runner: refused a turn from HQ whose run is not a number");
                 }
-                Err(Refused::Token(run)) => {
+                Err(Refused::NoLease(run)) => {
+                    eprintln!("runner: refused run {run}: it came with no lease");
+                }
+                Err(Refused::Token(run, lease)) => {
                     eprintln!("runner: refused run {run}: its token is not 64 hex characters");
-                    self.failed(run);
+                    self.failed(run, lease);
                 }
             }
         }
@@ -260,7 +300,7 @@ impl<D: Docker> Runner<D> {
             Ok(container) => container,
             Err(e) => {
                 eprintln!("runner: could not make run {}'s container: {e}", turn.run);
-                return self.failed(turn.run);
+                return self.failed(turn.run, turn.lease);
             }
         };
         if let Err(e) = self.docker.start(&container) {
@@ -268,7 +308,7 @@ impl<D: Docker> Runner<D> {
             if let Err(e) = self.docker.remove(&container) {
                 eprintln!("runner: could not remove run {}'s container: {e}", turn.run);
             }
-            return self.failed(turn.run);
+            return self.failed(turn.run, turn.lease);
         }
         println!(
             "runner: run {} started: {:?}, {:?}, task {}",
@@ -280,6 +320,7 @@ impl<D: Docker> Runner<D> {
         );
         self.running.push(Running {
             run: turn.run,
+            lease: turn.lease,
             container,
             since: now,
         });
@@ -287,8 +328,8 @@ impl<D: Docker> Runner<D> {
 
     /// Reports a turn that never ran. If HQ cannot hear it, the engine's longest-turn limit
     /// ends it.
-    fn failed(&mut self, run: u64) {
-        match self.hq.ended(run, false) {
+    fn failed(&mut self, run: u64, lease: u64) {
+        match self.hq.ended(run, lease, false) {
             Ok(()) => {}
             Err(e @ HqError::Unreachable(_)) => self.trouble("HQ", &e.to_string()),
             Err(e) => eprintln!("runner: HQ did not take run {run}'s failure: {e}"),
@@ -330,9 +371,14 @@ mod tests {
         format!("{run:064x}")
     }
 
+    /// A turn's lease, as HQ hands it out: not its run, so the two cannot be mixed up unseen.
+    const fn lease(run: u64) -> u64 {
+        run + 1000
+    }
+
     /// A turn as HQ hands it out.
     fn turn(run: u64) -> Value {
-        json!({ "run": run, "token": token(run), "member": "John Doe", "role": "developer", "task": 4 })
+        json!({ "run": run, "lease": lease(run), "token": token(run), "member": "John Doe", "role": "developer", "task": 4 })
     }
 
     /// HQ, pretending: hands out its turns in order, asks for its stops, and keeps what it
@@ -390,9 +436,11 @@ mod tests {
                             Some(turn) => (200, turn),
                             None => (204, Value::Null),
                         },
-                        "GET /v1/runner/stops" => {
-                            (200, json!({ "runs": *to_stop.lock().unwrap() }))
-                        }
+                        // Each stop told once, as HQ tells it.
+                        "GET /v1/runner/stops" => (
+                            200,
+                            json!({ "runs": std::mem::take(&mut *to_stop.lock().unwrap()) }),
+                        ),
                         a if a.starts_with("POST /v1/runner/") && a.ends_with("/ended") => {
                             (200, json!({}))
                         }
@@ -430,7 +478,7 @@ mod tests {
                 .collect()
         }
 
-        /// What it was told of how runs ended.
+        /// What it was told of how runs ended. Each report must quote its run's lease.
         fn told(&self) -> Vec<(u64, bool)> {
             self.seen
                 .lock()
@@ -442,6 +490,7 @@ mod tests {
                         .strip_suffix("/ended")?
                         .parse()
                         .ok()?;
+                    assert_eq!(b["lease"].as_u64(), Some(lease(run)), "run {run}'s lease");
                     Some((run, b["succeeded"].as_bool()?))
                 })
                 .collect()
@@ -458,6 +507,8 @@ mod tests {
         left: Vec<Left>,
         /// Docker cannot be reached.
         down: bool,
+        /// How many kills fail before they work again.
+        kills_fail: u32,
     }
 
     /// Docker, pretending; a clone sees the same containers.
@@ -514,10 +565,14 @@ mod tests {
         }
         fn kill(&self, id: &str) -> Result<(), String> {
             let mut docker = self.0.lock().unwrap();
+            docker.calls.push(format!("kill {id}"));
+            if docker.kills_fail > 0 {
+                docker.kills_fail -= 1;
+                return Err("Docker is busy".to_owned());
+            }
             if docker.containers.get(id) == Some(&State::Running) {
                 docker.containers.insert(id.to_owned(), State::Exited(137));
             }
-            docker.calls.push(format!("kill {id}"));
             Ok(())
         }
         fn remove(&self, id: &str) -> Result<(), String> {
@@ -544,7 +599,7 @@ mod tests {
         Work {
             image: "endora-node:latest".to_owned(),
             network: "endora_team".to_owned(),
-            model_url: "http://node:8787/team-relay/local/v1".to_owned(),
+            model_url: "http://node:8788/team-relay/local/v1".to_owned(),
             hq_mcp: "http://hq:8790/v1/team/mcp".to_owned(),
             capacity,
         }
@@ -577,9 +632,9 @@ mod tests {
                 "Env": [
                     format!("ENDORA_RUN_TOKEN={}", token(12)),
                     "ENDORA_HQ_MCP=http://hq:8790/v1/team/mcp",
-                    "ENDORA_MODEL_URL=http://node:8787/team-relay/local/v1",
+                    "ENDORA_MODEL_URL=http://node:8788/team-relay/local/v1",
                 ],
-                "Labels": { "endora.run": "12" },
+                "Labels": { "endora.run": "12", "endora.lease": "1012" },
                 "HostConfig": {
                     "NetworkMode": "endora_team",
                     "Memory": 268_435_456,
@@ -588,7 +643,7 @@ mod tests {
                     "ReadonlyRootfs": true,
                     "CapDrop": ["ALL"],
                     "SecurityOpt": ["no-new-privileges:true"],
-                    "Tmpfs": { "/tmp": "size=64m" },
+                    "Tmpfs": { "/tmp": "size=64m", "/data": "size=1m" },
                 },
             })]
         );
@@ -635,6 +690,31 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_whose_kill_failed_is_tried_again_though_hq_tells_it_once() {
+        let hq = FakeHq::new(vec![turn(12)]);
+        let docker = FakeDocker::default();
+        let mut runner = runner("retry", &hq, &docker, 1);
+        runner.step(T0);
+        hq.stops.lock().unwrap().push(12);
+        docker.0.lock().unwrap().kills_fail = 1;
+        runner.step(T0 + 2);
+        assert_eq!(docker.containers(), ["c1"], "the kill failed");
+        assert!(hq.told().is_empty());
+
+        runner.step(T0 + 4);
+        let kills = docker.calls().iter().filter(|c| *c == "kill c1").count();
+        assert_eq!(kills, 2, "tried again");
+        assert_eq!(hq.told(), [(12, false)]);
+        assert!(docker.containers().is_empty());
+        runner.step(T0 + 6);
+        assert_eq!(
+            docker.calls().iter().filter(|c| *c == "kill c1").count(),
+            2,
+            "once it took, never again"
+        );
+    }
+
+    #[test]
     fn a_turn_past_thirty_minutes_is_killed_and_reported_failed() {
         let hq = FakeHq::new(vec![turn(5)]);
         let docker = FakeDocker::default();
@@ -664,16 +744,18 @@ mod tests {
         broken["token"] = json!(format!("{}\nX", &token(15)[2..]));
         let mut none = turn(16);
         none.as_object_mut().unwrap().remove("token");
-        let hq = FakeHq::new(vec![word, negative, short, not_hex, broken, none]);
+        let mut no_lease = turn(17);
+        no_lease.as_object_mut().unwrap().remove("lease");
+        let hq = FakeHq::new(vec![word, negative, short, not_hex, broken, none, no_lease]);
         let docker = FakeDocker::default();
-        let mut runner = runner("malformed", &hq, &docker, 6);
+        let mut runner = runner("malformed", &hq, &docker, 7);
         runner.step(T0);
 
         assert!(docker.calls().is_empty(), "nothing reached Docker");
         assert_eq!(
             hq.told(),
             [(13, false), (14, false), (15, false), (16, false)],
-            "each with a run is reported failed; one without has nothing to report"
+            "each with a run and lease is reported failed; one without has nothing to report"
         );
     }
 
@@ -751,16 +833,19 @@ mod tests {
                 Left {
                     id: "old".to_owned(),
                     run: "7".to_owned(),
+                    lease: lease(7).to_string(),
                     created: T0,
                 },
                 Left {
                     id: "older".to_owned(),
                     run: "6".to_owned(),
+                    lease: lease(6).to_string(),
                     created: T0 - LONGEST_TURN - 60,
                 },
                 Left {
                     id: "odd".to_owned(),
                     run: "not-a-run".to_owned(),
+                    lease: String::new(),
                     created: T0,
                 },
             ];

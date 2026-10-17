@@ -644,7 +644,11 @@ mod tests {
     /// The runner's three routes, each with a body it might send.
     const RUNNER_ROUTES: [(&str, &str, &str); 3] = [
         ("POST", "/v1/runner/next", r#"{"free":1}"#),
-        ("POST", "/v1/runner/1/ended", r#"{"succeeded":true}"#),
+        (
+            "POST",
+            "/v1/runner/1/ended",
+            r#"{"succeeded":true,"lease":1}"#,
+        ),
         ("GET", "/v1/runner/stops", ""),
     ];
 
@@ -671,7 +675,13 @@ mod tests {
                 .oneshot(call(method, uri, Some(RUNNER), body))
                 .await
                 .unwrap();
-            assert!(res.status().is_success(), "{uri}: {}", res.status());
+            // In, though run 1 was never handed out, so its end is refused as not held.
+            assert_ne!(res.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            assert!(
+                res.status().is_success() || res.status() == StatusCode::CONFLICT,
+                "{uri}: {}",
+                res.status()
+            );
         }
         // The runner's token opens nothing of the node's, nor a worker's door.
         let rpc = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }).to_string();
@@ -733,15 +743,23 @@ mod tests {
         );
         let again = app.clone().oneshot(next(1)).await.unwrap();
         assert_eq!(again.status(), StatusCode::NO_CONTENT, "handed out once");
-        let ended = app
-            .oneshot(call(
+        let lease = turn["lease"].as_u64().unwrap();
+        let end = |lease: u64| {
+            call(
                 "POST",
                 &format!("/v1/runner/{}/ended", run.0),
                 Some(RUNNER),
-                r#"{"succeeded":true}"#,
-            ))
-            .await
-            .unwrap();
+                &json!({ "succeeded": true, "lease": lease }).to_string(),
+            )
+        };
+        let stale = app.clone().oneshot(end(lease + 1)).await.unwrap();
+        assert_eq!(
+            stale.status(),
+            StatusCode::CONFLICT,
+            "another attempt's lease"
+        );
+        assert_eq!(status_of(&st, run), RunStatus::Running);
+        let ended = app.oneshot(end(lease)).await.unwrap();
         assert_eq!(ended.status(), StatusCode::NO_CONTENT);
         assert_eq!(status_of(&st, run), RunStatus::Running, "until the tick");
         assert_eq!(st.hq.tick().unwrap().ended, 1);

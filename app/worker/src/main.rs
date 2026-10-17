@@ -13,7 +13,7 @@ use turn::{Setup, Stopped, Taken};
 /// HQ's team protocol, on the compose network.
 const HQ_MCP: &str = "http://hq:8790/v1/team/mcp";
 /// The node's relay to the local model, on the compose network.
-const MODEL_URL: &str = "http://node:8787/team-relay/local/v1";
+const MODEL_URL: &str = "http://node:8788/team-relay/local/v1";
 /// The model the worker names. The local relay uses its own, whatever the name.
 const MODEL: &str = "local";
 /// The most rounds of the model in a turn, unless told otherwise.
@@ -102,7 +102,7 @@ mod tests {
         let setup = setup(env(&[("ENDORA_RUN_TOKEN", "a-turns-token")])).unwrap();
         assert_eq!(setup.token, "a-turns-token");
         assert_eq!(setup.mcp, "http://hq:8790/v1/team/mcp");
-        assert_eq!(setup.model_url, "http://node:8787/team-relay/local/v1");
+        assert_eq!(setup.model_url, "http://node:8788/team-relay/local/v1");
         assert_eq!(setup.model, "local");
         assert_eq!(setup.most_rounds, 12);
     }

@@ -624,6 +624,19 @@ pub fn app(state: AppState) -> Router {
         // HQ's model relays (ADR 0102, phase 4), after the layers on purpose: a turn's own
         // token is its credential, not the owner's sign-in, and a model call is not a change
         // for the console to refresh on.
+        .merge(relay_routes())
+        .with_state(state)
+}
+
+/// HQ's model relays, and nothing else of the node: what the plain-HTTP listener on the
+/// team's fenced network serves (`ENDORA_TEAM_ADDR`), since a worker has no way to trust the
+/// node's self-signed certificate.
+pub fn team_relay(state: AppState) -> Router {
+    relay_routes().with_state(state)
+}
+
+fn relay_routes() -> Router<AppState> {
+    Router::new()
         .route("/team-relay/v1/messages", post(relay::messages))
         .route(
             "/team-relay/v1/messages/count_tokens",
@@ -633,7 +646,6 @@ pub fn app(state: AppState) -> Router {
             "/team-relay/local/v1/chat/completions",
             post(relay::chat_completions),
         )
-        .with_state(state)
 }
 mod auth;
 mod homelab;

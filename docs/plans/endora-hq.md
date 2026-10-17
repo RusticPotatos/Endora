@@ -397,7 +397,10 @@ team pool stays $70 a month. The pieces and their contracts:
 
 1. **The team protocol** (built): `POST /v1/team/mcp` on HQ, JSON-RPC, opened by a turn's own
    token (`Authorization: Bearer <token>`).
-2. **The model relays** in the node, outside `/v1`, opened by the same token:
+2. **The model relays** in the node, outside `/v1`, opened by the same token. The workers
+   reach them on a plain-HTTP listener of their own (`ENDORA_TEAM_ADDR`, `0.0.0.0:8788` in
+   compose, not published), which serves the relays and nothing else: the node's main port
+   is HTTPS with a self-signed certificate a worker cannot trust.
    - `POST /team-relay/v1/messages`: Anthropic, with the owner's key, capped and charged
      (built).
    - `POST /team-relay/local/v1/chat/completions`: the local model, OpenAI-compatible, not
@@ -407,7 +410,7 @@ team pool stays $70 a month. The pieces and their contracts:
      at no cost.
 3. **The worker**, `endora-worker` (crate `app/worker`, in the same image). It reads
    `ENDORA_RUN_TOKEN`, `ENDORA_HQ_MCP` (`http://hq:8790/v1/team/mcp`), `ENDORA_MODEL_URL`
-   (`http://node:8787/team-relay/local/v1`) and `ENDORA_MOST_ROUNDS` (default 12). It
+   (`http://node:8788/team-relay/local/v1`) and `ENDORA_MOST_ROUNDS` (default 12). It
    initialises MCP, lists the tools, calls `my_turn`, then loops: the model answers or calls
    tools, each tool call goes to `tools/call`, until the model stops calling tools or the
    rounds run out. A last answer with no tool call is posted to its task's thread. An
@@ -416,17 +419,22 @@ team pool stays $70 a month. The pieces and their contracts:
 4. **The runner adapter** in HQ (`RemoteRunner`), used when the demo is off. It keeps, in
    memory, the turns waiting to start, the ones running, how each ended, and stops asked
    for. The runner speaks to HQ with its own token (`HQ_RUNNER_TOKEN_FILE`, made like
-   HQ's): `POST /v1/runner/next` (a turn to start: run, token, member, or 204),
-   `POST /v1/runner/{run}/ended` (`{ "succeeded": bool }`), `GET /v1/runner/stops` (the runs
+   HQ's): `POST /v1/runner/next` (a turn to start: run, lease, token, member, or 204),
+   `POST /v1/runner/{run}/ended` (`{ "succeeded": bool, "lease": n }`; 409 for a lease that
+   is not the run's current one, a report from an earlier attempt), `GET /v1/runner/stops` (the runs
    to stop). A turn the runner never reports is ended by the engine's longest-turn limit.
 5. **The runner**, `endora-runner` (crate `app/runner`): asks HQ for work every two seconds
    and starts each turn as a fresh container through Docker's API on its socket: the worker
    image only, `endora-worker`, on the internal `team` network, read-only, no capabilities,
-   no new privileges, 256 MB, one CPU, 128 processes, a small `/tmp`, labelled with its run.
-   It reports how each ended, removes it, kills one asked to stop or past 30 minutes.
+   no new privileges, 256 MB, one CPU, 128 processes, a small `/tmp` and a 1 MB `/data` in
+   memory (the image declares `/data` a volume, which would otherwise be an unbounded disk),
+   labelled with its run and lease. It reports how each ended, removes it, kills one asked
+   to stop or past 30 minutes, and tries a failed kill again every round until it takes.
    HQ cannot choose the image, mounts or network.
-6. **The fence** is a Docker network marked internal: worker containers can reach only the
-   node and HQ, which join it too, and nothing else (no internet, no LAN, no NAS host). The
+6. **The fence** is a Docker network marked internal, with its gateway isolated
+   (`com.docker.network.bridge.gateway_mode_ipv4: isolated`, so the bridge has no address on
+   the host): worker containers can reach only the node and HQ, which join it too, and
+   nothing else (no internet, no LAN, no NAS host). The
    runner, which holds Docker's socket, is its own compose profile, off until the owner
    turns it on.
 

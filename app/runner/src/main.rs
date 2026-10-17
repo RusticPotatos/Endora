@@ -51,7 +51,7 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
         work: Work {
             image: or("WORKER_IMAGE", "endora-node:latest"),
             network: or("TEAM_NETWORK", "endora_team"),
-            model_url: or("WORKER_MODEL_URL", "http://node:8787/team-relay/local/v1"),
+            model_url: or("WORKER_MODEL_URL", "http://node:8788/team-relay/local/v1"),
             hq_mcp: or("WORKER_HQ_MCP", "http://hq:8790/v1/team/mcp"),
             capacity,
         },
@@ -102,7 +102,7 @@ mod tests {
         assert_eq!(defaults.work.network, "endora_team");
         assert_eq!(
             defaults.work.model_url,
-            "http://node:8787/team-relay/local/v1"
+            "http://node:8788/team-relay/local/v1"
         );
         assert_eq!(defaults.work.hq_mcp, "http://hq:8790/v1/team/mcp");
         assert_eq!(defaults.work.capacity, 2);

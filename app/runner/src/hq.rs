@@ -150,13 +150,15 @@ impl Hq {
         }
     }
 
-    /// Tells HQ how a run ended.
+    /// Tells HQ how a run ended, quoting the lease it was handed out with. HQ refuses (409) a
+    /// report from an attempt that is no longer the run's current one.
     ///
     /// # Errors
-    /// [`HqError`] if HQ was not heard.
-    pub fn ended(&self, run: u64, succeeded: bool) -> Result<(), HqError> {
+    /// [`HqError`] if HQ was not heard, or did not take it.
+    pub fn ended(&self, run: u64, lease: u64, succeeded: bool) -> Result<(), HqError> {
         let route = format!("/v1/runner/{run}/ended");
-        let answer = self.call("POST", &route, Some(&json!({ "succeeded": succeeded })))?;
+        let body = json!({ "succeeded": succeeded, "lease": lease });
+        let answer = self.call("POST", &route, Some(&body))?;
         if !(200..300).contains(&answer.status) {
             return Err(HqError::Answered(answer.status));
         }

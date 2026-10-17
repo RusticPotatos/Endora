@@ -243,6 +243,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The agenda loop (ADR 0103): what the readers saw becomes items, every minute.
     api::spawn_agenda(state.clone());
 
+    // HQ's model relays alone, in plain HTTP, for the team's workers (ADR 0102, phase 4).
+    // Not published to the house's network: only the fenced team network reaches it.
+    if let Some(team_addr) = std::env::var("ENDORA_TEAM_ADDR")
+        .ok()
+        .filter(|a| !a.trim().is_empty())
+    {
+        let listener = tokio::net::TcpListener::bind(&team_addr).await?;
+        println!("node's team relay listening on http://{team_addr}");
+        let relay = api::team_relay(state.clone());
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, relay).await {
+                eprintln!("the team relay stopped: {e}");
+            }
+        });
+    }
+
     let app = api::app(state);
 
     // Optional self-signed HTTPS so the console is a secure context (browser voice

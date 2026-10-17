@@ -100,7 +100,7 @@ mod tests {
         let remote = runner.remote().unwrap();
         runner.start(&turn(1)).unwrap();
         assert_eq!(runner.status(RunId(1)), Liveness::Running);
-        assert_eq!(remote.next().unwrap().run, RunId(1));
+        assert_eq!(remote.next().unwrap().turn.run, RunId(1));
         runner.stop(RunId(1), Duration::ZERO);
         assert_eq!(remote.stops(), vec![RunId(1)]);
         assert_eq!(runner.capacity(), 3);

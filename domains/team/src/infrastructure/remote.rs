@@ -4,7 +4,7 @@
 //! asked for, and HQ's runner routes read and write them. A turn the runner never reports is
 //! ended by the engine's longest-turn limit.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -20,12 +20,28 @@ pub const DEFAULT_CAPACITY: usize = 2;
 /// came for (a runner kills a turn past its longest anyway).
 const KEPT: usize = 1_000;
 
+/// A turn handed out to the runner, with its lease: the number that names this attempt of
+/// the run, and no other. A run tried again (after a failure, or after HQ restarted and lost
+/// track of it) is handed out with a new lease, so a report from the earlier attempt's
+/// container cannot end the new one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Handed {
+    /// The turn.
+    pub turn: RunContext,
+    /// This attempt's lease.
+    pub lease: u64,
+}
+
 #[derive(Default)]
 struct State {
     waiting: VecDeque<RunContext>,
-    handed: HashSet<RunId>,
+    /// The runs handed out, each with its current lease.
+    handed: HashMap<RunId, u64>,
     ended: VecDeque<(RunId, bool)>,
     stops: VecDeque<RunId>,
+    /// The next lease to give. Seeded from the clock, so an HQ that restarts never hands out
+    /// a lease an earlier one already gave.
+    next_lease: u64,
 }
 
 /// A runner on another host, which asks HQ for the turns to start.
@@ -44,9 +60,18 @@ impl RemoteRunner {
     /// A runner that can take `capacity` turns at once.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
+        // A thousand leases a millisecond: far more turns than a runner could ever take.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(1, |d| {
+                u64::try_from(d.as_millis()).unwrap_or(u64::MAX / 1000) * 1000
+            });
         Self {
             capacity,
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                next_lease: seed,
+                ..State::default()
+            }),
         }
     }
 
@@ -56,26 +81,32 @@ impl RemoteRunner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The oldest turn waiting to start, handed out now; `None` when none waits.
-    pub fn next(&self) -> Option<RunContext> {
+    /// The oldest turn waiting to start, handed out now with its lease; `None` when none
+    /// waits.
+    pub fn next(&self) -> Option<Handed> {
         let mut state = self.state();
         let turn = state.waiting.pop_front()?;
-        state.handed.insert(turn.run);
-        Some(turn)
+        let lease = state.next_lease;
+        state.next_lease = state.next_lease.wrapping_add(1);
+        state.handed.insert(turn.run, lease);
+        Some(Handed { turn, lease })
     }
 
-    /// The runner reports how a turn it was handed ended. The engine's next tick reads it.
-    /// A report about a turn it was not handed, or one the engine has already stopped, is
-    /// not wanted, and changes nothing.
-    pub fn ended(&self, run: RunId, succeeded: bool) {
+    /// The runner reports how a turn it was handed ended, quoting its lease. The engine's
+    /// next tick reads it. A report about a turn it was not handed, one the engine has
+    /// already stopped, or one from an earlier attempt (its lease is not the current one) is
+    /// not wanted, changes nothing, and says so.
+    pub fn ended(&self, run: RunId, lease: u64, succeeded: bool) -> bool {
         let mut state = self.state();
-        if !state.handed.remove(&run) {
-            return;
+        if state.handed.get(&run) != Some(&lease) {
+            return false;
         }
+        state.handed.remove(&run);
         state.ended.push_back((run, succeeded));
         if state.ended.len() > KEPT {
             state.ended.pop_front();
         }
+        true
     }
 
     /// The turns asked to stop since the runner last asked, oldest first.
@@ -103,7 +134,7 @@ impl WorkerAdapter for RemoteRunner {
                 succeeded: *succeeded,
             };
         }
-        if state.handed.contains(&run) || state.waiting.iter().any(|t| t.run == run) {
+        if state.handed.contains_key(&run) || state.waiting.iter().any(|t| t.run == run) {
             return Liveness::Running;
         }
         Liveness::Gone
@@ -159,9 +190,14 @@ mod tests {
         runner.start(&turn(2, "second")).unwrap();
         assert_eq!(runner.status(RunId(1)), Liveness::Running, "waiting");
         let first = runner.next().unwrap();
-        assert_eq!((first.run, first.token.as_str()), (RunId(1), "first"));
+        assert_eq!(
+            (first.turn.run, first.turn.token.as_str()),
+            (RunId(1), "first")
+        );
         assert_eq!(runner.status(RunId(1)), Liveness::Running, "handed out");
-        assert_eq!(runner.next().unwrap().run, RunId(2));
+        let second = runner.next().unwrap();
+        assert_eq!(second.turn.run, RunId(2));
+        assert_ne!(first.lease, second.lease, "each attempt its own lease");
         assert_eq!(runner.next(), None, "nothing left to hand out");
     }
 
@@ -170,10 +206,10 @@ mod tests {
         let runner = RemoteRunner::default();
         runner.start(&turn(1, "a")).unwrap();
         runner.start(&turn(2, "b")).unwrap();
-        runner.next();
-        runner.next();
-        runner.ended(RunId(1), true);
-        runner.ended(RunId(2), false);
+        let a = runner.next().unwrap();
+        let b = runner.next().unwrap();
+        assert!(runner.ended(RunId(1), a.lease, true));
+        assert!(runner.ended(RunId(2), b.lease, false));
         assert_eq!(
             runner.status(RunId(1)),
             Liveness::Finished { succeeded: true }
@@ -188,8 +224,8 @@ mod tests {
     fn a_report_about_a_turn_never_handed_out_changes_nothing() {
         let runner = RemoteRunner::default();
         runner.start(&turn(1, "a")).unwrap();
-        runner.ended(RunId(1), true);
-        runner.ended(RunId(9), true);
+        assert!(!runner.ended(RunId(1), 0, true));
+        assert!(!runner.ended(RunId(9), 0, true));
         assert_eq!(runner.status(RunId(1)), Liveness::Running, "still waiting");
         assert_eq!(runner.status(RunId(9)), Liveness::Gone);
     }
@@ -213,8 +249,8 @@ mod tests {
         let runner = RemoteRunner::default();
         runner.start(&turn(1, "a")).unwrap();
         runner.start(&turn(2, "b")).unwrap();
-        runner.next();
-        runner.next();
+        let a = runner.next().unwrap();
+        runner.next().unwrap();
         runner.stop(RunId(2), GRACE);
         runner.stop(RunId(1), GRACE);
         // One HQ forgot on restarting may still be on the runner: it is passed on too.
@@ -222,7 +258,7 @@ mod tests {
         assert_eq!(runner.stops(), vec![RunId(2), RunId(1), RunId(9)]);
         assert!(runner.stops().is_empty(), "cleared once given");
         // The engine ended it when it asked; the runner's word after that is not wanted.
-        runner.ended(RunId(1), false);
+        assert!(!runner.ended(RunId(1), a.lease, false));
         assert_eq!(runner.status(RunId(1)), Liveness::Gone);
     }
 
@@ -230,11 +266,34 @@ mod tests {
     fn a_turn_tried_again_starts_afresh_with_its_new_token() {
         let runner = RemoteRunner::default();
         runner.start(&turn(1, "old")).unwrap();
-        runner.next();
-        runner.ended(RunId(1), false);
+        let old = runner.next().unwrap();
+        assert!(runner.ended(RunId(1), old.lease, false));
         runner.start(&turn(1, "new")).unwrap();
         assert_eq!(runner.status(RunId(1)), Liveness::Running);
-        assert_eq!(runner.next().unwrap().token, "new");
+        assert_eq!(runner.next().unwrap().turn.token, "new");
+    }
+
+    #[test]
+    fn a_report_from_an_earlier_attempt_cannot_end_the_new_one() {
+        // HQ restarted and lost track of run 1; the engine tried it again, and the runner was
+        // handed the new attempt while the old container still ran.
+        let runner = RemoteRunner::default();
+        runner.start(&turn(1, "old")).unwrap();
+        let old = runner.next().unwrap();
+        runner.start(&turn(1, "new")).unwrap();
+        let new = runner.next().unwrap();
+        // The old container, its token refused, exits and is reported failed.
+        assert!(!runner.ended(RunId(1), old.lease, false), "a stale report");
+        assert_eq!(
+            runner.status(RunId(1)),
+            Liveness::Running,
+            "the new attempt runs on"
+        );
+        assert!(runner.ended(RunId(1), new.lease, true));
+        assert_eq!(
+            runner.status(RunId(1)),
+            Liveness::Finished { succeeded: true }
+        );
     }
 
     #[test]
@@ -247,16 +306,34 @@ mod tests {
     fn a_long_lived_hq_keeps_only_the_latest_reports() {
         let runner = RemoteRunner::default();
         let most = i64::try_from(KEPT).unwrap();
+        // One more end than it keeps: the oldest goes, the newest stays.
         for run in 0..=most {
             runner.start(&turn(run, "t")).unwrap();
-            runner.next();
-            runner.ended(RunId(run), true);
-            runner.stop(RunId(run), GRACE);
+            let handed = runner.next().unwrap();
+            assert!(runner.ended(RunId(run), handed.lease, true));
         }
-        let state = runner.state.lock().unwrap();
-        assert!(state.ended.len() <= KEPT && state.stops.len() <= KEPT);
-        drop(state);
-        assert_eq!(runner.stops().last(), Some(&RunId(most)), "newest kept");
+        assert_eq!(runner.state.lock().unwrap().ended.len(), KEPT);
+        assert_eq!(
+            runner.status(RunId(0)),
+            Liveness::Gone,
+            "the oldest end let go"
+        );
+        assert_eq!(
+            runner.status(RunId(most)),
+            Liveness::Finished { succeeded: true }
+        );
+        // One more stop than it keeps, for turns it no longer holds.
+        for run in 0..=most {
+            runner.stop(RunId(run + most + 1), GRACE);
+        }
+        let stops = runner.stops();
+        assert_eq!(stops.len(), KEPT);
+        assert_eq!(
+            stops.first(),
+            Some(&RunId(most + 2)),
+            "the oldest stop let go"
+        );
+        assert_eq!(stops.last(), Some(&RunId(2 * most + 1)), "newest kept");
     }
 
     struct Noon;
@@ -293,11 +370,14 @@ mod tests {
         .unwrap();
         assert_eq!(hq.tick().unwrap().started, 1);
         let handed = hq.runner().next().unwrap();
-        assert_eq!(hq.turn_of(&handed.token).unwrap().unwrap().0.id, handed.run);
+        assert_eq!(
+            hq.turn_of(&handed.turn.token).unwrap().unwrap().0.id,
+            handed.turn.run
+        );
         assert_eq!(hq.tick().unwrap().ended, 0, "still running on the runner");
-        hq.runner().ended(handed.run, true);
+        assert!(hq.runner().ended(handed.turn.run, handed.lease, true));
         assert_eq!(hq.tick().unwrap().ended, 1);
-        let run = hq.store().run(handed.run).unwrap().unwrap();
+        let run = hq.store().run(handed.turn.run).unwrap().unwrap();
         assert_eq!(run.status, RunStatus::Succeeded);
     }
 }

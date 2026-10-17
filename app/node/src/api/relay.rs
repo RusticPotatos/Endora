@@ -942,10 +942,12 @@ mod tests {
             assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
             let body = res.into_body().collect().await.unwrap().to_bytes();
             let said: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            // Worded OpenAI's way, not Anthropic's: no top-level `type`.
             assert!(
-                said["error"]["message"].is_string(),
+                said["error"]["message"].is_string() && said["error"]["type"].is_string(),
                 "worded OpenAI's way: {said}"
             );
+            assert!(said.get("type").is_none(), "not Anthropic's shape: {said}");
         }
         assert!(to_local.lock().unwrap().is_empty());
         assert!(to_installed.lock().unwrap().is_empty());

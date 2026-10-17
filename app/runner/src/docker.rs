@@ -12,6 +12,9 @@ use crate::http::{self, Answer};
 /// The label every turn's container carries: its run.
 pub const RUN_LABEL: &str = "endora.run";
 
+/// The label every turn's container carries: the lease its turn was handed out with.
+pub const LEASE_LABEL: &str = "endora.lease";
+
 /// How long one call to Docker may take. Starting a container on a busy NAS is the slowest.
 const ANSWERS_WITHIN: Duration = Duration::from_secs(30);
 
@@ -31,6 +34,8 @@ pub struct Left {
     pub id: String,
     /// Its run label, as it is written.
     pub run: String,
+    /// Its lease label, as it is written; empty if it has none.
+    pub lease: String,
     /// When it was made, in seconds since the Unix epoch.
     pub created: u64,
 }
@@ -205,6 +210,7 @@ impl Docker for Engine {
                 Some(Left {
                     id: c["Id"].as_str()?.to_owned(),
                     run: c["Labels"][RUN_LABEL].as_str()?.to_owned(),
+                    lease: c["Labels"][LEASE_LABEL].as_str().unwrap_or("").to_owned(),
                     // Unknown is as old as can be: one still running is past its time.
                     created: c["Created"].as_u64().unwrap_or(0),
                 })
@@ -314,7 +320,7 @@ mod tests {
             }
             line if line.starts_with("GET /containers/json?") => whole(
                 "200 OK",
-                r#"[{"Id":"old","Created":1700000000,"Labels":{"endora.run":"7"},"State":"running"}]"#,
+                r#"[{"Id":"old","Created":1700000000,"Labels":{"endora.run":"7","endora.lease":"1007"},"State":"running"}]"#,
             ),
             _ => whole(
                 "500 Internal Server Error",
@@ -341,6 +347,7 @@ mod tests {
             vec![Left {
                 id: "old".to_owned(),
                 run: "7".to_owned(),
+                lease: "1007".to_owned(),
                 created: 1_700_000_000
             }]
         );

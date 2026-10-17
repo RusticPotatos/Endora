@@ -64,8 +64,8 @@ struct Room {
     free: u32,
 }
 
-/// The oldest turn waiting to start, handed out now: its run, its token, its member's name and
-/// role, and its task. 204 when none waits, or the runner has no room.
+/// The oldest turn waiting to start, handed out now: its run, this attempt's lease, its token,
+/// its member's name and role, and its task. 204 when none waits, or the runner has no room.
 async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Response {
     if state.hq.runner().remote().is_none() {
         return no_runner();
@@ -78,19 +78,20 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
         // The members first: a turn handed out is the runner's, so nothing may fail after.
         let members = hq.store().members()?;
         let turn = hq.runner().remote().and_then(RemoteRunner::next);
-        Ok::<_, StoreError>(turn.map(|turn| {
-            let member = members.into_iter().find(|m| m.id == turn.member);
-            (turn, member)
+        Ok::<_, StoreError>(turn.map(|handed| {
+            let member = members.into_iter().find(|m| m.id == handed.turn.member);
+            (handed, member)
         }))
     })
     .await;
     match handed {
-        Ok(Ok(Some((turn, member)))) => Json(json!({
-            "run": turn.run.0,
-            "token": turn.token,
+        Ok(Ok(Some((handed, member)))) => Json(json!({
+            "run": handed.turn.run.0,
+            "lease": handed.lease,
+            "token": handed.turn.token,
             "member": member.as_ref().map_or("", |m| m.name.as_str()),
             "role": member.as_ref().map_or("", |m| m.role.name()),
-            "task": turn.task.map(|t| t.0),
+            "task": handed.turn.task.map(|t| t.0),
         }))
         .into_response(),
         Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
@@ -101,9 +102,13 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
 #[derive(Deserialize)]
 struct Ended {
     succeeded: bool,
+    /// The lease the turn was handed out with.
+    lease: u64,
 }
 
-/// How a turn the runner was handed ended. The engine's next tick ends the run.
+/// How a turn the runner was handed ended. The engine's next tick ends the run. A report from
+/// an attempt that is no longer the run's current one (its lease is out of date) is refused,
+/// 409, and changes nothing.
 async fn ended(
     Extract(state): Extract<State>,
     Path(run): Path<i64>,
@@ -112,7 +117,13 @@ async fn ended(
     let Some(remote) = state.hq.runner().remote() else {
         return no_runner();
     };
-    remote.ended(RunId(run), req.succeeded);
+    if !remote.ended(RunId(run), req.lease, req.succeeded) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "not a turn this runner holds, under that lease" })),
+        )
+            .into_response();
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 

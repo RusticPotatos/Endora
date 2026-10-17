@@ -134,7 +134,7 @@ services:
     networks:
       default: {}
       # Also on the team's fenced network (ADR 0102), where a worker reaches the model relay
-      # here, opened only by its turn's token.
+      # here, opened only by its turn's token: plain HTTP on ENDORA_TEAM_ADDR, not published.
       team:
         aliases: [node]
     # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
@@ -181,6 +181,9 @@ services:
       # ENDORA_TLS_SAN to this host's LAN IP/hostname for a cleaner cert — do that
       # in docker-compose.override.yml (kept local, so no private IP is in git).
       ENDORA_TLS: "1"
+      # HQ's model relays alone, in plain HTTP, for the team's workers (ADR 0102, phase 4). No
+      # port is published for it: only the fenced team network reaches it.
+      ENDORA_TEAM_ADDR: "0.0.0.0:8788"
       # Your time zone, by name (e.g. America/New_York), so a pattern at 07:30 is your 07:30
       # and the brief stays at its hour when the clocks change. Without one, the fixed offset
       # below (minutes from UTC) is used, which is an hour out for half the year wherever the
@@ -228,6 +231,11 @@ networks:
   team:
     name: endora_team
     internal: true
+    driver_opts:
+      # Without this, the bridge's own address on the host is a gateway a worker can reach,
+      # and with it whatever the NAS serves on all addresses. Isolated: no address on the host
+      # at all (Docker 28 and later).
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
 
 volumes:
   endora-data:
