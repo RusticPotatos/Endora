@@ -966,11 +966,34 @@ repository, and any push or merge by HQ.
 Section 7 above (pull requests on Forgejo and GitHub, opened by the gateway) is superseded for
 now by this flow: branches, not pull requests, and only the owner's push.
 
+### Claude Code as a developer runtime (as built 2026-10-18, [ADR 0117](../adr/0117-claude-code-as-a-developer-runtime.md))
+
+The owner's decision of 2026-10-17: Claude Code, headless, as the runtime of one wing developer,
+with an API key through Endora's relay (the turn's token as Bearer; never a subscription login),
+measured against Endora's worker. Built:
+
+- **The setting**: `runtime` per member, `worker` or `claude-code` (a developer on Claude only),
+  the owner's route, the snapshot's `runtime` and `claude_code` per member, handed to the runner
+  and the relay. The pilot seeded once: Rae on Claude Code, Zed on the worker.
+- **The turn**: the worker does HQ's bookkeeping and the checkout, then runs `claude -p` in
+  `/work/repo` with an explicit tool list and one MCP server, the worker itself as a stdio bridge
+  to HQ's tools and the node's contracts; its JSON result is the last word.
+- **Receipts**: a `PostToolUse` hook posts Claude Code's own tools' calls to the node's
+  `/team-relay/receipt`; HQ keeps them as sandbox-reported, which no live criterion rests on.
+- **The relay**: a Claude Code turn's request shape and betas pass, held to the brain, the money,
+  the five-minute cache and the fence.
+- **The image**: Claude Code 2.1.296, digest-pinned, with read-only managed settings that turn
+  off its updates, telemetry and other traffic. A whole turn ran offline in the arm64 image
+  against fakes, with no startup traffic beyond them.
+- **The measure**: the scorecard's cost of a finished task per member, Rae's against Zed's.
+
+Deferred: per-task `--resume`, the screen's control, Claude Code for other roles.
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams;
   hiring that acts (a proposal to hire carried out once the board says yes); commits and
-  command output from the workbench as receipts; moving a task between projects; the pool and the shares as settings on
+  command output from the worker's own shell as receipts (Claude Code's are reported, ADR 0117); moving a task between projects; the pool and the shares as settings on
   screen; virtual-machine test environments; the office on the handheld.
 - **Not at all:** members holding any credential; anything merged or deployed without the
   owner; paid billing beyond the credits without the owner; the team reading the brain,

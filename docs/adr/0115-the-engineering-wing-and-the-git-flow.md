@@ -15,6 +15,13 @@ workbench image, HQ's branches, documents, checks, hiring and the wing seeded on
 the owner's approval, and the HQ screen's wing, cards and forms. The owner's scenarios in
 `domains/team/features/the-engineering-wing.feature`.
 
+Amended 2026-10-18 by [0117](0117-claude-code-as-a-developer-runtime.md): a wing developer on
+Claude may run on Claude Code instead of Endora's worker, the owner's choice per member; HQ
+seeds the pilot once, Rae on Claude Code and Zed on the worker, compared by the cost of a
+finished task. The worker checks the fork out into `/work/repo` before Claude Code starts, and
+`repo_submit` reaches it through the worker's MCP bridge, so the bundles are still the worker's
+to carry.
+
 ## Context
 
 The team could keep the home lab healthy (0106, 0108) and plan (0113), but could not change
