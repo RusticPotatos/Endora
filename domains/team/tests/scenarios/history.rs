@@ -98,3 +98,121 @@ fn still_in_thread(w: &mut Office, text: String, title: String) {
     let thread = w.hq.store().thread(task).expect("the store answers");
     assert!(thread.iter().any(|p| p.text.contains(&text)), "{thread:?}");
 }
+
+// --- Asking the past (ADR 0129) -----------------------------------------------------------
+
+#[when("a minute passes")]
+fn a_minute_passes(w: &mut Office) {
+    w.clock
+        .0
+        .fetch_add(60_000, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[when(regex = r#"^(\w+) asks the record "(.+)"$"#)]
+fn asks_the_record(w: &mut Office, name: String, question: String) {
+    w.wakes_at_ask = w.hq.wakes().expect("the store answers").len();
+    w.answer = w.use_tool(&name, "ask_record", &json!({ "question": question }));
+    assert!(w.answer.is_some(), "refused: {:?}", w.refused);
+}
+
+#[then(expr = "the answer says {string}")]
+fn answer_says(w: &mut Office, text: String) {
+    let answer = w.answer.clone().expect("the record was asked");
+    assert!(answer.contains(&text), "the record said:\n{answer}");
+}
+
+#[then("the answer holds nothing")]
+fn answer_holds_nothing(w: &mut Office) {
+    let answer = w.answer.clone().expect("the record was asked");
+    assert!(answer.starts_with("Nothing in HQ's record"), "{answer}");
+}
+
+#[then(expr = "the answer links {word}'s turn")]
+fn answer_links_turn(w: &mut Office, name: String) {
+    let run = w.turns.get(&name).expect("the turn started").run;
+    let answer = w.answer.clone().expect("the record was asked");
+    assert!(answer.contains(&format!("turn R{}", run.0)), "{answer}");
+}
+
+#[then(expr = "the answer cites the task {string}")]
+fn answer_cites_task(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let answer = w.answer.clone().expect("the record was asked");
+    assert!(
+        answer.contains(&format!("cite: task {}", task.0)),
+        "{answer}"
+    );
+}
+
+#[then("nobody was woken by the question")]
+fn nobody_woken(w: &mut Office) {
+    assert_eq!(
+        w.hq.wakes().expect("the store answers").len(),
+        w.wakes_at_ask
+    );
+}
+
+#[when(expr = "{word} consults {word} about {string}: {string}")]
+fn consults(w: &mut Office, name: String, expert: String, title: String, question: String) {
+    let task = w.task(&title);
+    let said = w.use_tool(
+        &name,
+        "consult",
+        &json!({ "member": expert, "question": question, "task": task.0 }),
+    );
+    w.answer = said;
+}
+
+#[when(expr = "{word} answers the consult: {string}")]
+fn answers_the_consult(w: &mut Office, name: String, answer: String) {
+    let done = w.use_tool(&name, "answer_consult", &json!({ "answer": answer }));
+    assert!(done.is_some(), "refused: {:?}", w.refused);
+}
+
+#[then(expr = "{word} is woken to read the answer")]
+fn woken_to_read(w: &mut Office, name: String) {
+    use endora_team::domain::WakeReason;
+    let id = w.member(&name);
+    let woken =
+        w.hq.wakes()
+            .expect("the store answers")
+            .iter()
+            .any(|x| x.member == id && x.reason == WakeReason::QuestionAnswered);
+    assert!(woken, "{name} was not woken to read an answer");
+}
+
+#[then(expr = "{word} was not woken by it")]
+fn not_woken_by_it(w: &mut Office, name: String) {
+    use endora_team::domain::WakeReason;
+    let id = w.member(&name);
+    let woken =
+        w.hq.wakes()
+            .expect("the store answers")
+            .iter()
+            .any(|x| x.member == id && x.reason == WakeReason::Consulted);
+    assert!(!woken, "{name} was woken to be consulted");
+}
+
+#[then(expr = "the thread of {string} says {string}")]
+fn thread_says(w: &mut Office, title: String, text: String) {
+    let task = w.task(&title);
+    let thread = w.hq.store().thread(task).expect("the store answers");
+    assert!(thread.iter().any(|p| p.text.contains(&text)), "{thread:?}");
+}
+
+#[when(expr = "{word} reads the lab and sees something Confidential")]
+fn reads_something_confidential(w: &mut Office, name: String) {
+    let context = w.turn_of(&name);
+    w.hq.record_receipt(
+        &context.token,
+        &endora_team::application::engine::Called {
+            tool: "homelab_status".to_owned(),
+            args: String::new(),
+            excerpt: "router: up".to_owned(),
+            ok: true,
+            act: false,
+            confidential: true,
+        },
+    )
+    .expect("the node records the call");
+}

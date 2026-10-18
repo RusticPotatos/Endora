@@ -84,6 +84,10 @@ struct Office {
     reading: Option<i64>,
     /// What the owner's last retraction said (ADR 0124): its id, and its sweep.
     retraction: Option<serde_json::Value>,
+    /// What the record last answered a member (ADR 0129), and how many wakes there were when
+    /// it was asked.
+    answer: Option<String>,
+    wakes_at_ask: usize,
 }
 
 impl Default for Office {
@@ -107,6 +111,8 @@ impl Default for Office {
             push: None,
             reading: None,
             retraction: None,
+            answer: None,
+            wakes_at_ask: 0,
         }
     }
 }

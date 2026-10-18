@@ -513,6 +513,8 @@ pub fn tools(role: Role) -> Value {
         // The team's world (ADR 0122): a lesson is a story now, which tell_story keeps;
         // note_lesson is no longer offered.
         list.extend(super::protocol_world::tools(role));
+        // Asking the past (ADR 0129).
+        list.extend(super::protocol_history::tools());
     }
     all
 }
@@ -576,6 +578,8 @@ fn ceos_tools() -> Value {
     ));
     // The team's world (ADR 0122): the CEO keeps the house page.
     list.extend(super::protocol_world::tools(Role::Ceo));
+    // Asking the past (ADR 0129): the CEO consults leads only, which the engine holds it to.
+    list.extend(super::protocol_history::tools());
     list.push(tool(
         "direct",
         "Give the lead of a task's area a direction: what you want done, looked at or weighed, on evidence from HQ's record. It is posted in the task's thread and wakes the lead, who decides what to do with it. On a task in a lead's area you read and talk, and direct; you never claim, move, close, accept or send back its work.",
@@ -724,8 +728,18 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if MAKES_WORK.contains(&tool) && engine.in_downtime(run.id).map_err(|e| said(&e))? {
         return Err(Refusal::InDowntime.to_string());
     }
-    // The team's world (ADR 0122).
+    // A consulted turn reads and answers, and has a few rounds to do it in (ADR 0129).
+    if let Some(refusal) = engine
+        .consulted_turn_refuses(run.id, tool)
+        .map_err(|e| said(&e))?
+    {
+        return Err(refusal);
+    }
+    // The team's world (ADR 0122), and asking the past (ADR 0129).
     if let Some(answer) = super::protocol_world::call(engine, run, member, tool, args) {
+        return answer;
+    }
+    if let Some(answer) = super::protocol_history::call(engine, run, member, tool, args) {
         return answer;
     }
     match tool {

@@ -7,6 +7,7 @@ pub mod history_ports;
 pub mod map_ports;
 pub mod ports;
 pub mod protocol;
+pub mod protocol_history;
 pub mod protocol_world;
 pub mod replay;
 pub mod scorecard;
@@ -92,3 +93,6 @@ mod quiz_tests;
 
 #[cfg(test)]
 mod history_tests;
+
+#[cfg(test)]
+mod asking_tests;

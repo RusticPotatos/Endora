@@ -65,6 +65,9 @@ pub enum WakeReason {
     Guard,
     /// A task its task waits on was dropped (ADR 0124): the wait will not end by itself.
     WaitDropped,
+    /// A colleague consults this member (ADR 0129): one short turn, about no task, to answer a
+    /// question from what it knows and the record. A member who cannot be woken is not.
+    Consulted,
 }
 
 impl WakeReason {
@@ -96,6 +99,7 @@ impl WakeReason {
             Self::Huddle => "huddle",
             Self::Guard => "guard",
             Self::WaitDropped => "wait_dropped",
+            Self::Consulted => "consulted",
         }
     }
 
@@ -182,6 +186,7 @@ impl WakeReason {
             Self::Huddle,
             Self::Guard,
             Self::WaitDropped,
+            Self::Consulted,
         ]
         .into_iter()
         .find(|r| r.name() == name)

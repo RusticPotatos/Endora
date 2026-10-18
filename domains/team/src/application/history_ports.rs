@@ -4,7 +4,9 @@
 
 use super::ports::Stored;
 use crate::domain::RunId;
+use crate::domain::consult::Consult;
 use crate::domain::history::{Kept, Transcript};
+use crate::domain::record::{Passage, Query};
 
 /// The history's part of HQ's store.
 pub trait HistoryStore {
@@ -31,4 +33,31 @@ pub trait HistoryStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn forget_transcripts(&self, runs: &[RunId]) -> Stored<usize>;
+
+    /// The passages of HQ's record that hold any of a query's words, newest first from each
+    /// kind of record (posts, handover notes, pages and timelines, stories, notebooks, turns'
+    /// conversations). Nothing is chosen, ranked or hidden here: that is the domain's.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn search_record(&self, query: &Query) -> Stored<Vec<Passage>>;
+
+    /// Keeps a consult asked: its id is returned.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn add_consult(&self, consult: &Consult) -> Stored<i64>;
+
+    /// Every consult, oldest first.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn consults(&self) -> Stored<Vec<Consult>>;
+
+    /// Keeps a consult's new standing: its status, the turn that answered, why, whether its
+    /// asker has been woken.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn save_consult(&self, consult: &Consult) -> Stored<()>;
 }

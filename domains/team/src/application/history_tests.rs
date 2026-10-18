@@ -12,24 +12,24 @@ use crate::domain::{GoalId, MemberId, Priority, Role, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 use endora_kernel::tier::Tier;
 
-struct Hands(AtomicI64);
+pub(super) struct Hands(pub(super) AtomicI64);
 impl Clock for &Hands {
     fn now(&self) -> i64 {
         self.0.load(Ordering::SeqCst)
     }
 }
 
-type Hq<'a> = Engine<SqliteTeamStore, SimulatedRunner, &'a Hands>;
+pub(super) type Hq<'a> = Engine<SqliteTeamStore, SimulatedRunner, &'a Hands>;
 
 /// 19 October 2026, at noon UTC.
-const NOON: i64 = 1_792_324_800_000 + 12 * 60 * 60 * 1000;
+pub(super) const NOON: i64 = 1_792_324_800_000 + 12 * 60 * 60 * 1000;
 
 struct Team {
     linus: MemberId,
     goal: GoalId,
 }
 
-fn engine(clock: &Hands) -> Hq<'_> {
+pub(super) fn engine(clock: &Hands) -> Hq<'_> {
     Engine::new(
         SqliteTeamStore::in_memory().unwrap(),
         SimulatedRunner::new(8),
@@ -51,7 +51,7 @@ fn team(hq: &Hq<'_>) -> Team {
     Team { linus, goal }
 }
 
-fn task_for(hq: &Hq<'_>, goal: GoalId, to: MemberId, title: &str) -> TaskId {
+pub(super) fn task_for(hq: &Hq<'_>, goal: GoalId, to: MemberId, title: &str) -> TaskId {
     hq.add_task(
         Author::Owner,
         NewTask {
@@ -69,7 +69,7 @@ fn task_for(hq: &Hq<'_>, goal: GoalId, to: MemberId, title: &str) -> TaskId {
 }
 
 /// The newest turn the runner started for `member`.
-fn turn_of(hq: &Hq<'_>, member: MemberId) -> RunContext {
+pub(super) fn turn_of(hq: &Hq<'_>, member: MemberId) -> RunContext {
     hq.runner()
         .started()
         .into_iter()
@@ -77,7 +77,7 @@ fn turn_of(hq: &Hq<'_>, member: MemberId) -> RunContext {
         .expect("the member's turn started")
 }
 
-fn end(hq: &Hq<'_>, context: &RunContext) {
+pub(super) fn end(hq: &Hq<'_>, context: &RunContext) {
     hq.runner().finish(context.run, true);
     hq.tick().unwrap();
 }

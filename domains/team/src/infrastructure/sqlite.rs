@@ -22,6 +22,7 @@ use crate::domain::{chess, games};
 mod guards;
 mod history;
 mod map;
+mod record;
 mod world;
 
 const SCHEMA: &str = "

@@ -7,7 +7,9 @@ use rusqlite::params;
 use super::{SqliteTeamStore, backend};
 use crate::application::history_ports::HistoryStore;
 use crate::application::ports::Stored;
+use crate::domain::consult::{Consult, Status as ConsultStatus};
 use crate::domain::history::{self, Kept, Transcript};
+use crate::domain::record::{Passage, Query};
 use crate::domain::{MemberId, RunId, TaskId};
 
 pub(super) const SCHEMA: &str = "
@@ -20,6 +22,16 @@ CREATE TABLE IF NOT EXISTS transcripts (
     at_ms INTEGER NOT NULL, kept_until INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX IF NOT EXISTS transcripts_by_member ON transcripts(member, task);
+-- A member's question to another, asked directly (ADR 0129): who, in which turn, whom, about
+-- which task, where the answer goes, and how it was answered. Never removed.
+CREATE TABLE IF NOT EXISTS consults (
+    id INTEGER PRIMARY KEY, asker INTEGER NOT NULL REFERENCES members(id),
+    asker_run INTEGER NOT NULL REFERENCES runs(id), expert INTEGER NOT NULL REFERENCES members(id),
+    topic INTEGER REFERENCES tasks(id), thread INTEGER NOT NULL REFERENCES tasks(id),
+    question TEXT NOT NULL, status TEXT NOT NULL, answer_run INTEGER REFERENCES runs(id),
+    why TEXT NOT NULL DEFAULT '', asker_woken INTEGER NOT NULL DEFAULT 0, at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS consults_by_asker ON consults(asker, at_ms);
 ";
 
 /// The full-text index over the conversations, kept apart because it is a virtual table: SQLite
@@ -121,6 +133,91 @@ impl HistoryStore for SqliteTeamStore {
         }
         tx.commit().map_err(backend)?;
         Ok(gone)
+    }
+
+    fn search_record(&self, query: &Query) -> Stored<Vec<Passage>> {
+        self.search(query)
+    }
+
+    fn add_consult(&self, c: &Consult) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO consults (asker, asker_run, expert, topic, thread, question, status,
+                answer_run, why, asker_woken, at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                c.asker.0,
+                c.asker_run.0,
+                c.expert.0,
+                c.topic.map(|t| t.0),
+                c.thread.0,
+                c.question,
+                c.status.name(),
+                c.answer_run.map(|r| r.0),
+                c.why,
+                c.asker_woken,
+                c.at
+            ],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn consults(&self) -> Stored<Vec<Consult>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, asker, asker_run, expert, topic, thread, question, status, answer_run,
+                    why, asker_woken, at_ms FROM consults ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    Consult {
+                        id: r.get(0)?,
+                        asker: MemberId(r.get(1)?),
+                        asker_run: RunId(r.get(2)?),
+                        expert: MemberId(r.get(3)?),
+                        topic: r.get::<_, Option<i64>>(4)?.map(TaskId),
+                        thread: TaskId(r.get(5)?),
+                        question: r.get(6)?,
+                        status: ConsultStatus::Queued,
+                        answer_run: r.get::<_, Option<i64>>(8)?.map(RunId),
+                        why: r.get(9)?,
+                        asker_woken: r.get(10)?,
+                        at: r.get(11)?,
+                    },
+                    r.get::<_, String>(7)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|(mut c, status)| {
+                c.status = ConsultStatus::from_name(&status)
+                    .ok_or_else(|| super::corrupt("a consult's status"))?;
+                Ok(c)
+            })
+            .collect()
+    }
+
+    fn save_consult(&self, c: &Consult) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE consults SET status = ?2, answer_run = ?3, why = ?4, asker_woken = ?5
+                 WHERE id = ?1",
+                params![
+                    c.id,
+                    c.status.name(),
+                    c.answer_run.map(|r| r.0),
+                    c.why,
+                    c.asker_woken
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
     }
 }
 
