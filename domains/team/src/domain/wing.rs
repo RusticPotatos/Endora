@@ -85,12 +85,12 @@ pub fn may_seat(role: Role, brain: Brain, wing: &[&Member]) -> Result<(), Refusa
     let (most, allowed, said) = match role {
         Role::Lead => (
             MOST_LEADS,
-            matches!(brain, Brain::Sonnet | Brain::Local),
+            matches!(brain, Brain::Sonnet | Brain::Local | Brain::Mac),
             "Claude Sonnet or the house's model",
         ),
         Role::Developer => (
             MOST_DEVELOPERS,
-            matches!(brain, Brain::Haiku | Brain::Local),
+            matches!(brain, Brain::Haiku | Brain::Local | Brain::Mac),
             "Claude Haiku or the house's model",
         ),
         _ => (0, true, ""),

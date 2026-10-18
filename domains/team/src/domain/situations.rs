@@ -146,7 +146,7 @@ pub const fn budget(role: Role, brain: Brain, situation: Situation) -> usize {
         Role::Lead => 4_000,
         _ => 3_000,
     };
-    if matches!(brain, Brain::Local) && most > LOCAL_BUDGET {
+    if brain.house() && most > LOCAL_BUDGET {
         most = LOCAL_BUDGET;
     }
     if situation.dear() {

@@ -251,7 +251,9 @@ fn cloud_of(brain: &Value) -> Result<Option<String>, ()> {
         Value::String(name) => name.as_str(),
         _ => return Err(()),
     };
-    if name == "local" {
+    // The house's own model, and the owner's Mac (ADR 0130): both through the node's local
+    // relay, which sends a Mac member's calls to the Mac and to nothing else.
+    if name == "local" || name == "mac" {
         return Ok(None);
     }
     let Some(rest) = name.strip_prefix("claude-") else {
@@ -1780,6 +1782,36 @@ mod tests {
             specs[0]["HostConfig"], specs[1]["HostConfig"],
             "the same fence either way"
         );
+    }
+
+    #[test]
+    fn a_turn_on_the_macs_brain_goes_to_the_local_relay_and_never_to_anthropic() {
+        let mut on_the_mac = turn(23);
+        on_the_mac["brain"] = json!("mac");
+        let hq = FakeHq::new(vec![on_the_mac]);
+        let docker = FakeDocker::default();
+        let mut first = runner("mac", &hq, &docker, 1);
+        first.step(T0);
+        assert_eq!(
+            docker.specs()[0]["Env"],
+            json!([
+                format!("ENDORA_RUN_TOKEN={}", token(23)),
+                "ENDORA_HQ_MCP=http://hq:8790/v1/team/mcp",
+                "ENDORA_MODEL_URL=http://node:8788/team-relay/local/v1",
+            ])
+        );
+        let mut claude_code = turn(24);
+        claude_code["brain"] = json!("mac");
+        claude_code["runtime"] = json!("claude-code");
+        let hq = FakeHq::new(vec![claude_code]);
+        let docker = FakeDocker::default();
+        let mut second = runner("mac-cc", &hq, &docker, 1);
+        second.step(T0);
+        assert!(
+            docker.specs().is_empty(),
+            "Claude Code speaks only Anthropic's API"
+        );
+        assert_eq!(hq.told(), [(24, false)]);
     }
 
     #[test]

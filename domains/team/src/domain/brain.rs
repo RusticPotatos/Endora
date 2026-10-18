@@ -13,6 +13,11 @@ pub enum Brain {
     /// it costs nothing.
     #[default]
     Local,
+    /// The owner's Mac, through the node's local relay (ADR 0130): a stronger model on a laptop
+    /// the owner also uses. Nothing leaves the house and it costs nothing, but a turn runs only
+    /// while the Mac is plugged in, switched on for the team and idle, one turn at a time, and
+    /// waits for it otherwise: it never falls back to another brain.
+    Mac,
     /// Claude Sonnet, through the node's Anthropic relay, metered against the team's pool.
     Sonnet,
     /// Claude Haiku, through the same relay.
@@ -22,7 +27,13 @@ pub enum Brain {
 }
 
 /// Every brain, in the order the owner is offered them.
-const ALL: [Brain; 4] = [Brain::Local, Brain::Opus, Brain::Sonnet, Brain::Haiku];
+const ALL: [Brain; 5] = [
+    Brain::Local,
+    Brain::Mac,
+    Brain::Opus,
+    Brain::Sonnet,
+    Brain::Haiku,
+];
 
 impl Brain {
     /// Its stable name, for storage, the snapshot and the runner: `local`, or the model id the
@@ -31,6 +42,7 @@ impl Brain {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Local => "local",
+            Self::Mac => "mac",
             Self::Sonnet => "claude-sonnet-5-5",
             Self::Haiku => "claude-haiku-5-5",
             Self::Opus => "claude-opus-5-5",
@@ -42,6 +54,7 @@ impl Brain {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Local => "Local",
+            Self::Mac => "Mac",
             Self::Sonnet => "Claude Sonnet",
             Self::Haiku => "Claude Haiku",
             Self::Opus => "Claude Opus",
@@ -54,11 +67,19 @@ impl Brain {
         ALL.into_iter().find(|b| b.name() == name)
     }
 
-    /// Whether what the member reads leaves the house: every brain but the local one. The
-    /// node gives a cloud turn no Confidential result beyond what the owner allowed (ADR 0109).
+    /// Whether what the member reads leaves the house: every brain but the house's own two (the
+    /// node's model and the owner's Mac). The node gives a cloud turn no Confidential result
+    /// beyond what the owner allowed (ADR 0109).
     #[must_use]
     pub const fn cloud(self) -> bool {
-        !matches!(self, Self::Local)
+        !self.house()
+    }
+
+    /// Whether the brain is a model in the house, whose context is smaller than Claude's and
+    /// whose turns cost nothing: the node's own model, or the owner's Mac (ADR 0130).
+    #[must_use]
+    pub const fn house(self) -> bool {
+        matches!(self, Self::Local | Self::Mac)
     }
 
     /// Its price class (ADR 0113, amended): what a token costs on it, in thousandths of what it
@@ -69,7 +90,7 @@ impl Brain {
     #[must_use]
     pub const fn price_class(self) -> i64 {
         match self {
-            Self::Local => 0,
+            Self::Local | Self::Mac => 0,
             Self::Opus => 1_000,
             Self::Sonnet => 500,
             Self::Haiku => 25,
@@ -78,7 +99,7 @@ impl Brain {
 
     /// Every brain, in the order the owner is offered them.
     #[must_use]
-    pub const fn all() -> [Self; 4] {
+    pub const fn all() -> [Self; 5] {
         ALL
     }
 
@@ -86,7 +107,7 @@ impl Brain {
     #[must_use]
     pub const fn allowed_for(self, role: Role) -> bool {
         match self {
-            Self::Local => true,
+            Self::Local | Self::Mac => true,
             Self::Opus => matches!(role, Role::Ceo),
             Self::Sonnet => !matches!(role, Role::Researcher),
             Self::Haiku => !matches!(role, Role::Ceo),
@@ -124,7 +145,8 @@ mod tests {
     #[test]
     fn a_member_thinks_locally_unless_the_owner_says_otherwise() {
         assert_eq!(Brain::default(), Brain::Local);
-        assert!(!Brain::Local.cloud());
+        assert!(!Brain::Local.cloud() && !Brain::Mac.cloud());
+        assert!(Brain::Local.house() && Brain::Mac.house() && !Brain::Haiku.house());
         assert!(Brain::Sonnet.cloud() && Brain::Haiku.cloud() && Brain::Opus.cloud());
         for brain in ALL {
             assert_eq!(Brain::from_name(brain.name()), Some(brain));
@@ -134,6 +156,7 @@ mod tests {
     #[test]
     fn a_dearer_brain_is_a_larger_price_class_and_the_house_model_none() {
         assert_eq!(Brain::Local.price_class(), 0);
+        assert_eq!(Brain::Mac.price_class(), 0);
         assert!(Brain::Opus.price_class() > Brain::Sonnet.price_class());
         assert!(Brain::Sonnet.price_class() > Brain::Haiku.price_class());
         assert!(Brain::Haiku.price_class() > 0);
@@ -144,7 +167,7 @@ mod tests {
         for role in [Role::Lead, Role::Developer, Role::Reviewer] {
             assert_eq!(
                 Brain::choices(role),
-                [Brain::Local, Brain::Sonnet, Brain::Haiku]
+                [Brain::Local, Brain::Mac, Brain::Sonnet, Brain::Haiku]
             );
             assert_eq!(
                 Brain::for_role(role, "claude-sonnet-5-5"),
@@ -153,7 +176,7 @@ mod tests {
         }
         assert_eq!(
             Brain::choices(Role::Researcher),
-            [Brain::Local, Brain::Haiku]
+            [Brain::Local, Brain::Mac, Brain::Haiku]
         );
         assert_eq!(
             Brain::for_role(Role::Researcher, "claude-haiku-5-5"),
@@ -163,7 +186,7 @@ mod tests {
         // the house's model, and Opus is nobody else's.
         assert_eq!(
             Brain::choices(Role::Ceo),
-            [Brain::Local, Brain::Opus, Brain::Sonnet]
+            [Brain::Local, Brain::Mac, Brain::Opus, Brain::Sonnet]
         );
         assert_eq!(
             Brain::for_role(Role::Ceo, "claude-opus-5-5"),
