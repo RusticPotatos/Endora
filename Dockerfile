@@ -222,6 +222,11 @@ RUN apt-get update \
 # The lab's checks and Claude Code, from their stages above (ADR 0115, 0117).
 COPY --from=lab-checks /opt/venv /opt/venv
 COPY --from=claude-code /usr/local/bin/claude /usr/local/bin/claude
+# Every shell in the sandbox is a login shell (`bash -lc`: a member's shell, Claude Code's
+# Bash, the check job), and Debian's /etc/profile resets PATH, dropping the image's own. Put
+# the lab's tools back for all of them, so no member is told they are missing.
+RUN printf 'export PATH=/opt/venv/bin:$PATH\n' > /etc/profile.d/endora-lab-tools.sh \
+    && bash -lc 'command -v ansible-playbook ansible-lint yamllint ansible-galaxy' >/dev/null
 # Fail the build, not the first check job, if a check tool did not make it across the COPY.
 RUN /opt/venv/bin/ansible-playbook --version && /opt/venv/bin/ansible-lint --version \
     && /opt/venv/bin/yamllint --version \
@@ -282,6 +287,11 @@ RUN apt-get update \
     && useradd --uid 10001 --home-dir /work --no-create-home --shell /bin/bash bench
 COPY --from=lab-checks /opt/venv /opt/venv
 COPY --from=claude-code /usr/local/bin/claude /usr/local/bin/claude
+# Every shell in the sandbox is a login shell (`bash -lc`: a member's shell, Claude Code's
+# Bash, the check job), and Debian's /etc/profile resets PATH, dropping the image's own. Put
+# the lab's tools back for all of them, so no member is told they are missing.
+RUN printf 'export PATH=/opt/venv/bin:$PATH\n' > /etc/profile.d/endora-lab-tools.sh \
+    && bash -lc 'command -v ansible-playbook ansible-lint yamllint ansible-galaxy' >/dev/null
 # Fail the build, not the first check job, if a check tool did not make it across the COPY.
 RUN /opt/venv/bin/ansible-playbook --version && /opt/venv/bin/ansible-lint --version \
     && /opt/venv/bin/yamllint --version \
