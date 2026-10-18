@@ -24,6 +24,20 @@ tagged release.
   a Games section (leaderboards, the last five results, the games in play) and tapping the
   chess table opens its board. New dependency: `cozy-chess` (MIT) in `endora-team` for chess
   rules; `shakmaty` was refused because it is GPL-3.0-or-later and Endora is Apache-2.0.
+- **A bench for an external agent harness** ([ADR 0123](docs/adr/0123-a-bench-for-an-external-agent-harness.md)),
+  proposed: to measure an outside multi-agent harness against HQ's wing on one real task, inside
+  Endora's fence. A **bench credential** on the node's model relay: a token from a file
+  (`ENDORA_BENCH_TOKEN_FILE`, mounted from `ENDORA_BENCH_TOKEN`; no file, no bench, read on every
+  call) that opens `/team-relay/v1/messages`, its `count_tokens` and `GET /team-relay/bench` and
+  nothing else (every other team-listener route refuses it before HQ is asked); Claude Code's
+  pass-through rules (ADR 0117) on `claude-haiku-5-5` or `claude-sonnet-5-5` only; a hard cap a
+  day (`ENDORA_BENCH_CAP_CENTS`, $2.00 unless set) kept in a new `bench_spend` table, with each
+  call's cost set aside before it is sent so seats side by side stay under it; metered to the
+  usage log as `bench`, never to HQ. A **bench image** (`--target bench`): Node 22, tmux, the
+  harness's package from one pinned commit, and the workbench's lab checks and Claude Code,
+  now built once in two shared stages (`lab-checks`, `claude-code`); bypass mode refused.
+  `make bench-image` builds it for the Pi. How to enable it is in `docs/homelab.md`.
+
 - **Roles as an enforced RACI** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md)), the
   owner's product-model org of 2026-10-18. The CEO sets direction and keeps out of the areas'
   work: it reads anything (on a cloud brain the logs and queues the cloud lead reads), is

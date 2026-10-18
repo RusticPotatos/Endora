@@ -30,7 +30,7 @@ const LARGEST_REPLY: u64 = 64 * 1024 * 1024;
 const LARGEST_LOCAL_CALL: usize = 4 * 1024 * 1024;
 
 /// An error as Anthropic words one, so the worker's SDK reports it sensibly.
-fn refuse(status: StatusCode, kind: &str, message: &str) -> Response {
+pub(super) fn refuse(status: StatusCode, kind: &str, message: &str) -> Response {
     (
         status,
         Json(json!({ "type": "error", "error": { "type": kind, "message": message } })),
@@ -50,7 +50,7 @@ fn refuse_openai(status: StatusCode, kind: &str, message: &str) -> Response {
 /// How a route words a refusal: [`refuse`] or [`refuse_openai`], or the contracts' own.
 pub(super) type Wording = fn(StatusCode, &str, &str) -> Response;
 
-fn header(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(super) fn header(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
         .and_then(|v| v.to_str().ok())
@@ -68,7 +68,7 @@ pub(super) fn token_of(headers: &HeaderMap) -> String {
 }
 
 /// The owner's Anthropic key: the provider whose endpoint is Anthropic's (ADR 0105).
-fn anthropic_key(config: &endora_capabilities::ConfigStore) -> Option<String> {
+pub(super) fn anthropic_key(config: &endora_capabilities::ConfigStore) -> Option<String> {
     use endora_capabilities::model_lists::ModelListRepository as _;
     config
         .providers()
@@ -290,7 +290,7 @@ fn charge(
 /// Asks Anthropic how many tokens `asked` (a call's prompt, as [`counted`] makes it) comes to.
 /// Counting is free, and tells what the call's input will cost before it is sent. Anthropic's
 /// own refusal is passed on as it said it.
-async fn count(
+pub(super) async fn count(
     upstream: Arc<String>,
     key: String,
     version: Option<String>,
@@ -381,6 +381,11 @@ pub(super) async fn messages(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let token = token_of(&headers);
+    // The bench's credential is no turn of HQ's (ADR 0123): its calls never reach HQ.
+    if let Some(bench) = super::bench::opened_by(&state, &token) {
+        return super::bench::messages(state, bench, headers, body).await;
+    }
     let Some(hq) = state.hq.clone() else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -388,7 +393,6 @@ pub(super) async fn messages(
             "HQ is not set up on this node",
         );
     };
-    let token = token_of(&headers);
     // Held until this call is charged, so the turn's next call sees what this one cost.
     let one_at_a_time = state.relay_calls.one_at_a_time(&token).await;
     let turn = match turn_of(hq.clone(), token.clone(), refuse).await {
@@ -476,35 +480,67 @@ pub(super) async fn messages(
         .unwrap_or(affordable)
         .min(affordable);
     call["max_tokens"] = json!(cap);
+    let state2 = state.clone();
+    let sent = call.clone();
+    let settle: Settle = Box::new(move |used| {
+        // Held until this call is charged, so the turn's next call sees what this one cost.
+        let _one_at_a_time = one_at_a_time;
+        let Some(used) = used else { return };
+        charge(&hq, &state2, turn.run, &model, used);
+        state2.relay_calls.remember(&token, &call, used);
+    });
+    pass_on(upstream, key, version, beta, sent, settle).await
+}
+
+/// What is done once a call passed on has been answered: told what it used, or `None` when it
+/// never reached Anthropic or Anthropic refused it (and so cost nothing). Called exactly once.
+pub(super) type Settle = Box<dyn FnOnce(Option<Used>) + Send>;
+
+/// Sends `call` (its `max_tokens` already capped) to Anthropic with the owner's `key`, whole
+/// or streamed as it asks, passes the reply back, and [`Settle`]s it once its usage is known: a
+/// whole reply's at once, a stream's when it ends. A stream cut before its last usage said how
+/// much it sent is settled as all it may have sent.
+pub(super) async fn pass_on(
+    upstream: Arc<String>,
+    key: String,
+    version: Option<String>,
+    beta: Option<String>,
+    call: serde_json::Value,
+    settle: Settle,
+) -> Response {
+    let cap = call["max_tokens"].as_u64().unwrap_or(0);
     let streamed = call["stream"].as_bool().unwrap_or(false);
     let sent = call.to_string().into_bytes();
 
     if !streamed {
-        let state2 = state.clone();
         let done = tokio::task::spawn_blocking(move || {
-            let _one_at_a_time = one_at_a_time;
-            let reply = send(
+            let answered = send(
                 &upstream,
                 Call::Messages,
                 &key,
                 version.as_deref(),
                 beta.as_deref(),
                 &sent,
-            )?;
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(
-                &mut std::io::Read::take(reply.body, LARGEST_REPLY),
-                &mut bytes,
             )
-            .map_err(|e| e.to_string())?;
-            if reply.status < 300 {
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    let used = Used::from_usage(&v["usage"]);
-                    charge(&hq, &state2, turn.run, &model, used);
-                    state2.relay_calls.remember(&token, &call, used);
+            .and_then(|reply| {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(reply.body, LARGEST_REPLY),
+                    &mut bytes,
+                )
+                .map_err(|e| e.to_string())?;
+                Ok((reply.status, bytes))
+            });
+            let used = match &answered {
+                Ok((status, bytes)) if *status < 300 => {
+                    serde_json::from_slice::<serde_json::Value>(bytes)
+                        .ok()
+                        .map(|v| Used::from_usage(&v["usage"]))
                 }
-            }
-            Ok::<_, String>((reply.status, bytes))
+                _ => None,
+            };
+            settle(used);
+            answered
         })
         .await;
         return match done {
@@ -518,12 +554,10 @@ pub(super) async fn messages(
         };
     }
 
-    // Streamed: passed on as it arrives, read for its usage on the way, charged at the end.
+    // Streamed: passed on as it arrives, read for its usage on the way, settled at the end.
     let (head_tx, head_rx) = tokio::sync::oneshot::channel::<Result<u16, String>>();
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(32);
-    let state2 = state.clone();
     tokio::task::spawn_blocking(move || {
-        let _one_at_a_time = one_at_a_time;
         let mut reply = match send(
             &upstream,
             Call::Messages,
@@ -534,6 +568,7 @@ pub(super) async fn messages(
         ) {
             Ok(reply) => reply,
             Err(why) => {
+                settle(None);
                 let _ = head_tx.send(Err(why));
                 return;
             }
@@ -559,16 +594,16 @@ pub(super) async fn messages(
                 }
             }
         }
-        // Charged for what was used, even if the worker stopped listening part way. A stream
-        // cut before its last usage said how much it sent is charged all it may have sent.
-        if reply.status < 300 {
-            let mut used = usage.used();
-            if !usage.finished() {
-                used.output = used.output.max(cap);
-            }
-            charge(&hq, &state2, turn.run, &model, used);
-            state2.relay_calls.remember(&token, &call, used);
+        // Charged for what was used, even if the caller stopped listening part way.
+        if reply.status >= 300 {
+            settle(None);
+            return;
         }
+        let mut used = usage.used();
+        if !usage.finished() {
+            used.output = used.output.max(cap);
+        }
+        settle(Some(used));
     });
     let status = match head_rx.await {
         Ok(Ok(status)) => status,
@@ -598,6 +633,9 @@ pub(super) async fn count_tokens(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Some(bench) = super::bench::opened_by(&state, &token_of(&headers)) {
+        return super::bench::count_tokens(state, bench, headers, body).await;
+    }
     let Some(hq) = state.hq.clone() else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -621,6 +659,18 @@ pub(super) async fn count_tokens(
     if let Err(why) = passable(&turn, &mut asked) {
         return refuse(StatusCode::BAD_REQUEST, "invalid_request_error", &why);
     }
+    let beta = betas_for(&turn, header(&headers, "anthropic-beta").as_deref());
+    count_on(&state, &headers, &asked, beta).await
+}
+
+/// Asks Anthropic to count `asked`, a call already made fit to pass on, with the owner's key
+/// and the `beta` header allowed, and passes its answer back.
+pub(super) async fn count_on(
+    state: &AppState,
+    headers: &HeaderMap,
+    asked: &serde_json::Value,
+    beta: Option<String>,
+) -> Response {
     // Counted as it will be sent: a Claude Code call's hours made five minutes.
     let body = asked.to_string().into_bytes();
     let Some(key) = anthropic_key(state.config.as_ref()) else {
@@ -630,8 +680,7 @@ pub(super) async fn count_tokens(
             "no Anthropic provider is set up on the AI screen",
         );
     };
-    let version = header(&headers, "anthropic-version");
-    let beta = betas_for(&turn, header(&headers, "anthropic-beta").as_deref());
+    let version = header(headers, "anthropic-version");
     let upstream = state.relay_upstream.clone();
     let done = tokio::task::spawn_blocking(move || {
         let reply = send(
@@ -899,12 +948,12 @@ pub(super) mod tests {
     }
 
     /// Anthropic: a whole reply, or a streamed one; a prompt counts 1,000 tokens.
-    fn anthropic() -> (String, Seen) {
+    pub(in crate::api) fn anthropic() -> (String, Seen) {
         anthropic_counting(1_000)
     }
 
     /// Anthropic, counting every prompt as `prompt` tokens.
-    fn anthropic_counting(prompt: u64) -> (String, Seen) {
+    pub(in crate::api) fn anthropic_counting(prompt: u64) -> (String, Seen) {
         fake(Arc::new(move |path, body| {
             if path == "/v1/messages/count_tokens" {
                 return (
@@ -986,7 +1035,7 @@ pub(super) mod tests {
     }
 
     /// The bodies of the message calls Anthropic was sent, not the counting.
-    fn messages_sent(seen: &Seen) -> Vec<serde_json::Value> {
+    pub(in crate::api) fn messages_sent(seen: &Seen) -> Vec<serde_json::Value> {
         seen.lock()
             .unwrap()
             .iter()

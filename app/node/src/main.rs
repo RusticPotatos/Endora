@@ -212,6 +212,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => state,
     };
+    // The bench's credential (ADR 0123): the model relay alone, when a token file is named.
+    let state = state.with_bench_from_env();
     // endora-sound (ADR 0104), when this node has one: the same two ways to sign as HQ.
     let state = match (
         std::env::var("ENDORA_SOUND_URL")

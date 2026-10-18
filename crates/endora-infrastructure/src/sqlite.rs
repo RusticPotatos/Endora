@@ -265,6 +265,10 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     trust_all INTEGER NOT NULL DEFAULT 0,
     reader_tool TEXT NOT NULL DEFAULT ''
 ) STRICT;
+CREATE TABLE IF NOT EXISTS bench_spend (
+    day    INTEGER PRIMARY KEY,
+    micros INTEGER NOT NULL
+) STRICT;
 ";
 
 /// A SQLite-backed store implementing the persistence ports over the shared
@@ -839,6 +843,38 @@ impl endora_application::UsageLog for SqliteStore {
 }
 
 impl SqliteStore {
+    /// What the bench credential (ADR 0123) has spent on `day` (days since the epoch, UTC), in
+    /// micros: kept apart from HQ's pool, so its daily cap holds across a restart.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database cannot be read.
+    pub fn bench_spent(&self, day: i64) -> Result<i64, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT micros FROM bench_spend WHERE day=?1",
+            params![day],
+            |r| r.get(0),
+        )
+        .optional()
+        .map(Option::unwrap_or_default)
+        .map_err(backend)
+    }
+
+    /// Adds `micros` to what the bench has spent on `day`.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database cannot be written.
+    pub fn add_bench_spent(&self, day: i64, micros: i64) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO bench_spend (day, micros) VALUES (?1, ?2)
+             ON CONFLICT(day) DO UPDATE SET micros = micros + excluded.micros",
+            params![day, micros],
+        )
+        .map(|_| ())
+        .map_err(backend)
+    }
+
     /// What `role`'s model calls have used since `since_ms`.
     ///
     /// # Errors
@@ -1396,6 +1432,22 @@ mod tests {
     /// The platform event log over the store's shared connection (ADR 0050).
     fn event_store(store: &SqliteStore) -> endora_platform::EventStore {
         endora_platform::EventStore::new(store.db())
+    }
+
+    #[test]
+    fn the_benchs_spending_is_kept_by_day_and_adds_up() {
+        let store = store();
+        assert_eq!(store.bench_spent(20_000).unwrap(), 0, "nothing spent yet");
+        store.add_bench_spent(20_000, 1_500).unwrap();
+        store.add_bench_spent(20_000, 2_500).unwrap();
+        store.add_bench_spent(20_001, 7).unwrap();
+        assert_eq!(store.bench_spent(20_000).unwrap(), 4_000);
+        assert_eq!(
+            store.bench_spent(20_001).unwrap(),
+            7,
+            "a new day starts again"
+        );
+        assert_eq!(store.bench_spent(19_999).unwrap(), 0);
     }
 
     #[test]

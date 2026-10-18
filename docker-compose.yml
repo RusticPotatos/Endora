@@ -237,6 +237,11 @@ services:
       # folder; unset, an empty volume is mounted, the node cannot push, and the owner's desk
       # offers the branch's bundle to download instead. Read-only: the node never writes it.
       - ${ENDORA_GIT_PUSH_KEY:-endora-no-git-key}:/git-push-key:ro
+      # The bench's credential (ADR 0123): a host folder holding one file, `token` (32+
+      # characters, mode 0600), that opens the team listener's model relay alone, for measuring
+      # an external agent harness. Set ENDORA_BENCH_TOKEN in local.mk to that folder; unset, an
+      # empty volume is mounted and there is no bench. Deleting the file turns it off at once.
+      - ${ENDORA_BENCH_TOKEN:-endora-no-bench}:/bench-token:ro
     networks:
       default: {}
       # Also on the team's fenced network (ADR 0102), where a worker reaches the model relay
@@ -270,6 +275,10 @@ services:
       ENDORA_ANSIBLE_NAS_REF: "${ENDORA_ANSIBLE_NAS_REF-}"
       # Where the deploy key is inside the container (the mount above); absent, no push.
       ENDORA_GIT_PUSH_KEY_FILE: /git-push-key/key
+      # The bench's token (the mount above; absent, no bench) and what it may spend a day, in
+      # cents (two dollars unless ENDORA_BENCH_CAP_CENTS says otherwise in local.mk).
+      ENDORA_BENCH_TOKEN_FILE: /bench-token/token
+      ENDORA_BENCH_CAP_CENTS: "${ENDORA_BENCH_CAP_CENTS:-200}"
       # Containers the owner has retired but kept, with a note the team's map shows beside
       # each: name=note pairs, ";" between them (e.g. owntone=retired, kept for its settings).
       ENDORA_LAB_RETIRED: "${ENDORA_LAB_RETIRED-}"
@@ -385,4 +394,6 @@ volumes:
   endora-no-mail:
   # Empty on purpose: what /git-push-key is when no deploy key is configured (ADR 0115).
   endora-no-git-key:
+  # Empty on purpose: what /bench-token is when no bench is configured (ADR 0123).
+  endora-no-bench:
   endora-models:
