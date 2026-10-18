@@ -329,6 +329,20 @@ fn a_lead_that_says_it_needs_the_ceo_or_the_board_sends_it_up_and_only_then() {
             with_ceo && decision != "drop",
             "{decision}, with a CEO: {with_ceo}"
         );
+        // Work of a member's that climbed to the CEO is counted against it (ADR 0124).
+        let rescues = hq.snapshot().unwrap()["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == w.devs[0].0)
+            .unwrap()["rescues"]
+            .clone();
+        let climbed = decision != "drop";
+        assert_eq!(
+            rescues,
+            serde_json::json!(usize::from(climbed)),
+            "{decision}"
+        );
         assert_eq!(
             desk(&hq).contains(&"stuck".to_owned()),
             to_the_desk,

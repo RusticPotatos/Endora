@@ -1334,3 +1334,68 @@ fn a_task_bounced_three_times_with_nothing_new_goes_to_a_huddle_not_another_roun
     .unwrap();
     assert_eq!(reviews(&hq), before, "it waits for the lead's decision");
 }
+
+/// A tester's pass is bound to the criteria it judged (ADR 0124): changed since, it reads
+/// "needs re-check", and the lead cannot accept on it.
+#[test]
+fn a_pass_on_criteria_that_changed_since_needs_re_checking_and_does_not_count() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, true);
+    let task = owners_task(&hq, &t, t.dev, "Look at sonarr");
+    let linus = turn(&hq, t.dev);
+    use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+    use_tool(
+        &hq,
+        &linus,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "done",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    end(&hq, &clock, &linus);
+    let grace = turn(&hq, t.tester.unwrap());
+    let mine = reading(&hq, &grace, "homelab_status", "", false);
+    use_tool(
+        &hq,
+        &grace,
+        "review",
+        &json!({ "task": task.0, "verdict": "approve", "notes": "Holds.",
+                 "evidence": [format!("r{mine}")] }),
+    )
+    .unwrap();
+    end(&hq, &clock, &grace);
+    let tested = |hq: &Hq<'_>| {
+        let snap = hq.snapshot().unwrap();
+        snap["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == task.0)
+            .unwrap()["evidence"]["cited"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["stage"] == "tested")
+            .unwrap()["needs_recheck"]
+            .clone()
+    };
+    assert_eq!(tested(&hq), json!(false));
+    hq.set_criteria(task, &[Criterion::new("sonarr stays up for a day", true)])
+        .unwrap();
+    assert_eq!(tested(&hq), json!(true), "needs re-check");
+    let ada = turn(&hq, t.lead);
+    let refused = use_tool(
+        &hq,
+        &ada,
+        "accept",
+        &json!({ "task": task.0, "verdict": "accept", "notes": "fine",
+                 "evidence": [[format!("r{mine}")]] }),
+    )
+    .unwrap_err();
+    assert_eq!(
+        refused,
+        Refusal::NotTested.to_string(),
+        "the pass does not count"
+    );
+}

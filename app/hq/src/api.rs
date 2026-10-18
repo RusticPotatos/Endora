@@ -52,6 +52,9 @@ pub struct State {
     pub demo: bool,
     /// How often the engine ticks, for the office's clock.
     pub tick_seconds: u64,
+    /// When the last tick finished, in milliseconds since the epoch; 0 before the first
+    /// (ADR 0124: `/health` says its age, so a wedged tick shows).
+    pub last_tick: Arc<std::sync::atomic::AtomicI64>,
 }
 
 /// The demo's goal: set up the demo team the first time, and find its goal after (or give
@@ -232,8 +235,20 @@ async fn blocking<T: Send + 'static>(
         .map_err(Failed)
 }
 
+/// HQ is up, and how long ago its tick last finished (ADR 0124): a process that answers while
+/// its tick is wedged is not a working HQ, and the age says so. `ok` stays the process's alone,
+/// so nothing restarts it for a slow tick; `ticking` says whether the last tick is within
+/// three of its periods.
 async fn health(Extract(state): Extract<State>) -> Json<serde_json::Value> {
-    Json(json!({ "ok": true, "demo": state.demo }))
+    let last = state.last_tick.load(std::sync::atomic::Ordering::SeqCst);
+    let age = (last > 0).then(|| SystemClock.now().saturating_sub(last));
+    let period = i64::try_from(state.tick_seconds.saturating_mul(1_000)).unwrap_or(i64::MAX);
+    Json(json!({
+        "ok": true, "demo": state.demo,
+        "last_tick_at": (last > 0).then_some(last), "tick_age_ms": age,
+        "tick_seconds": state.tick_seconds,
+        "ticking": age.is_some_and(|a| a <= period.saturating_mul(3)),
+    }))
 }
 
 async fn snapshot(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
@@ -985,6 +1000,7 @@ mod tests {
             runner_token: Some(Arc::new(RUNNER.to_owned())),
             demo,
             tick_seconds: 30,
+            last_tick: Arc::default(),
         }
     }
 
@@ -1061,6 +1077,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK, "health needs no token");
+    }
+
+    /// `/health` says how long ago the tick last finished (ADR 0124): none before the first,
+    /// and a wedged tick shows as an age past three periods.
+    #[tokio::test]
+    async fn health_says_the_ticks_age() {
+        let st = state(false);
+        let health = |st: &State| {
+            let app = app(st.clone());
+            async move { json_of(app.oneshot(call("GET", "/health", None, "")).await.unwrap()).await }
+        };
+        let before = health(&st).await;
+        assert_eq!(
+            (before["last_tick_at"].clone(), before["ticking"].clone()),
+            (json!(null), json!(false))
+        );
+        let now = SystemClock.now();
+        st.last_tick
+            .store(now - 5_000, std::sync::atomic::Ordering::SeqCst);
+        let fresh = health(&st).await;
+        assert!(fresh["tick_age_ms"].as_i64().unwrap() >= 5_000);
+        assert_eq!(fresh["ticking"], json!(true));
+        st.last_tick
+            .store(now - 120_000, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(health(&st).await["ticking"], json!(false), "wedged");
     }
 
     #[tokio::test]

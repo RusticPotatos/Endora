@@ -310,7 +310,39 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(last) = last.filter(|c| c.stage == TESTED) else {
             return Ok(None);
         };
+        // A pass on criteria that changed since needs re-checking, and does not count (ADR
+        // 0124).
+        if self.needs_recheck(task, last.run)? {
+            return Ok(None);
+        }
         Ok(Some(vec![last.run]))
+    }
+
+    /// Where HQ keeps the hash of the criteria a tester's pass judged.
+    fn passed_key(task: TaskId, run: RunId) -> String {
+        format!("passed:{}:{}", task.0, run.0)
+    }
+
+    /// Whether the tester's pass in `run` judged criteria other than `task`'s now. A pass from
+    /// before HQ kept the hash cannot tell, and stands as it did.
+    fn needs_recheck(&self, task: TaskId, run: RunId) -> Done<bool> {
+        let Some(then) = self.store.setting(&Self::passed_key(task, run))? else {
+            return Ok(false);
+        };
+        Ok(then != evidence::criteria_hash(&self.task(task)?.criteria))
+    }
+
+    /// The owner rewrites a task's criteria (ADR 0124): a tester's pass on the old ones then
+    /// reads "needs re-check" and does not count.
+    ///
+    /// # Errors
+    /// [`Refusal::TooLong`] past [`evidence::MOST_CRITERIA`]; [`EngineError::Unknown`].
+    pub fn set_criteria(&self, task: TaskId, criteria: &[Criterion]) -> Done<()> {
+        let _held = self.held();
+        self.task(task)?;
+        evidence::may_hand_on(criteria, false).map_err(EngineError::Refused)?;
+        self.store.set_criteria(task, criteria)?;
+        Ok(())
     }
 
     /// How many times a task's work was sent back, by the tester or the lead.
@@ -711,6 +743,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )?;
         self.waited_for(&current)?;
         self.keep_cited(task, &turn, TESTED, cited)?;
+        // The pass is bound to the criteria it judged (ADR 0124).
+        self.store.set_setting(
+            &Self::passed_key(task, turn.id),
+            &evidence::criteria_hash(&current.criteria),
+        )?;
         let said = self.evidence_said(&cited.concat())?;
         self.post_held_lock(
             Author::Member(tester.id),
@@ -1187,9 +1224,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
                 refs.push(shown);
             }
+            // A pass on criteria that changed since reads "needs re-check" (ADR 0124).
+            let recheck = c.stage == TESTED && self.needs_recheck(task.id, c.run)?;
             cited.push(
                 json!({ "stage": c.stage, "member": c.member.0, "criterion": c.criterion,
-                               "at": c.at, "refs": refs }),
+                               "at": c.at, "refs": refs, "needs_recheck": recheck }),
             );
         }
         Ok(json!({

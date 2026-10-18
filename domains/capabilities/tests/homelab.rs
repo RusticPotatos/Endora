@@ -20,6 +20,24 @@ fn one_source_failure_does_not_hide_successes() {
     assert_eq!(result["services"][1]["state"], "healthy");
 }
 
+/// A read that timed out is unverified, never unavailable: down needs a refusal, and a slow
+/// answer is no evidence the service is down (ADR 0124).
+#[test]
+fn a_read_that_timed_out_is_unverified_not_down() {
+    struct Observer;
+    impl endora_capabilities::application::HomelabObserver for Observer {
+        fn observe(&self, service: &str) -> Result<serde_json::Value, &'static str> {
+            if service == "sonarr" {
+                return Err("timeout");
+            }
+            Err("connection")
+        }
+    }
+    let result = endora_capabilities::application::observe_homelab(&Observer, 10);
+    assert_eq!(result["services"][0]["state"], "unavailable");
+    assert_eq!(result["services"][1]["state"], "unverified");
+}
+
 #[test]
 fn explicit_origins_only_and_no_credential_urls() {
     assert!(validate_origin("http://192.168.1.10:8989").is_ok());

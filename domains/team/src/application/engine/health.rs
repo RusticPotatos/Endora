@@ -349,6 +349,38 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.call_huddle(&current, &lead, &why)
     }
 
+    // ---- the CEO's rescues --------------------------------------------------------------------
+
+    /// How often the chain of command's top reached into each member's work (ADR 0124): the
+    /// CEO's directions on a task the member holds, and stuck work of the member's that climbed
+    /// to the CEO. A member whose work is rescued again and again needs its brain, notebook or
+    /// role looked at, not more rescuing. Counted by whoever holds each task now.
+    pub(super) fn rescues(&self) -> Done<std::collections::HashMap<i64, usize>> {
+        let tasks = self.store.tasks()?;
+        let holder = |task: Option<i64>| {
+            task.and_then(|t| tasks.iter().find(|x| x.id.0 == t))
+                .and_then(|t| t.owner.or(t.assignee))
+        };
+        let mut count = std::collections::HashMap::new();
+        for w in self.store.wakes()? {
+            if w.reason != WakeReason::Directed {
+                continue;
+            }
+            if let Some(m) = holder(w.task.map(|t| t.0)) {
+                *count.entry(m.0).or_insert(0) += 1;
+            }
+        }
+        for e in self.store.events_after(0)? {
+            if e.kind != EventKind::StuckClimbed.name() || e.data["rung"] != "ceo" {
+                continue;
+            }
+            if let Some(m) = holder(e.data["task"].as_i64()) {
+                *count.entry(m.0).or_insert(0) += 1;
+            }
+        }
+        Ok(count)
+    }
+
     // ---- the same ask, once on the desk -------------------------------------------------------
 
     /// A question or a decision for the owner goes on the desk, unless the same ask from

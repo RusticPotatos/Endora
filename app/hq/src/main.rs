@@ -392,8 +392,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // The tick: every `tick_every` seconds; a late one runs once.
+    // The tick: every `tick_every` seconds; a late one runs once. When each one finished is
+    // kept for `/health` (ADR 0124).
     let ticking = hq.clone();
+    let last_tick: Arc<std::sync::atomic::AtomicI64> = Arc::default();
+    let ticked = last_tick.clone();
     let mut ticks: u64 = 0;
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(tick_every));
@@ -401,11 +404,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             ticker.tick().await;
             let hq = ticking.clone();
+            let ticked = ticked.clone();
             ticks += 1;
             let prune = ticks % 100 == 0;
             let _ = tokio::task::spawn_blocking(move || {
-                if let Err(e) = hq.tick() {
-                    eprintln!("hq: the tick failed: {e}");
+                match hq.tick() {
+                    Ok(_) => ticked.store(
+                        endora_team::application::Clock::now(&api::SystemClock),
+                        std::sync::atomic::Ordering::SeqCst,
+                    ),
+                    Err(e) => eprintln!("hq: the tick failed: {e}"),
                 }
                 // The feed is for display: the newest 20,000 events are kept, and a reader
                 // further behind than that starts again from a snapshot.
@@ -430,6 +438,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runner_token: runner_token.map(Arc::new),
         demo: demo_mode,
         tick_seconds: tick_every,
+        last_tick,
     });
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!(

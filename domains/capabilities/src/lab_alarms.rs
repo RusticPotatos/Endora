@@ -105,8 +105,9 @@ impl LabWatch {
             let name = svc["name"].as_str().unwrap_or("");
             let state = svc["state"].as_str().unwrap_or("");
             if name == "docker" {
-                // An observer that could not see the containers says nothing about them.
-                if matches!(state, "unavailable" | "unconfigured") {
+                // An observer that could not see the containers, or could not tell in time,
+                // says nothing about them.
+                if matches!(state, "unavailable" | "unconfigured" | "unverified") {
                     continue;
                 }
                 for item in svc["items"].as_array().into_iter().flatten() {
@@ -129,6 +130,10 @@ impl LabWatch {
                 continue;
             }
             if name.is_empty() || endoras_own(name, "") {
+                continue;
+            }
+            // A read that timed out tells nothing (ADR 0124): what was last seen stands.
+            if state == "unverified" {
                 continue;
             }
             self.note(
@@ -238,6 +243,29 @@ mod tests {
         assert!(
             watch.observe(&sick, 3 * MIN).is_empty(),
             "not every 30 seconds"
+        );
+    }
+
+    /// A read that timed out is unverified (ADR 0124): never an alarm, and it changes nothing
+    /// HQ believes, so the real refusal after it still alarms, and a recovery after it is news.
+    #[test]
+    fn an_unverified_reading_raises_nothing_and_changes_nothing() {
+        let mut watch = LabWatch::new();
+        let well = lab(&[("sonarr", "running", "healthy")], "healthy");
+        watch.observe(&well, 0);
+        let slow = lab(&[("sonarr", "running", "healthy")], "unverified");
+        assert!(
+            watch.observe(&slow, MIN).is_empty(),
+            "a timeout is not down"
+        );
+        let blind =
+            json!({ "services": [{ "name": "docker", "state": "unverified", "items": [] }] });
+        assert!(watch.observe(&blind, 2 * MIN).is_empty());
+        let down = lab(&[("sonarr", "running", "healthy")], "unavailable");
+        assert_eq!(
+            watch.observe(&down, 3 * MIN).len(),
+            1,
+            "well, then refused: an alarm"
         );
     }
 

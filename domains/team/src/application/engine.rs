@@ -4375,6 +4375,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut members = Vec::new();
         let paid = self.paid_weights()?;
         let all_members = self.store.members()?;
+        let rescues = self.rescues()?;
         for m in all_members.clone() {
             let committed = self.store.committed(Some(m.id), day)?;
             let spent = self.store.spent(Some(m.id), day)?;
@@ -4400,6 +4401,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
                     .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
                     .collect::<Vec<_>>(),
+                // How often the CEO reached into its work (ADR 0124).
+                "rescues": rescues.get(&m.id.0).copied().unwrap_or(0),
             }));
         }
         let why = |task: &Task| {
