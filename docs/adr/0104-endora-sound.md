@@ -45,7 +45,9 @@ Endora gets a sound hub, **endora-sound**: the owner's own program, not a fork.
   plan, but their `nqptp` and the senders' `airptpd` both need UDP 319/320, which would have
   meant a container on a LAN address of its own; classic AirPlay needs no PTP clock, so it
   shares the host, with the same sound quality and delay. Moving to AirPlay 2 later changes
-  nothing in the hub: both write the same pipes.
+  nothing in the hub: both write the same pipes. *Superseded 2026-10-18 by
+  [0128](0128-an-airplay-2-door.md):* the door is AirPlay 2, on a LAN address of its own, so an
+  Apple TV keeps lip-sync; classic is the fall-back (`SOUND_AIRPLAY2` not 1).
 - **Endora is the remote.** A Speakers screen in the console shows the wires and changes them
   by tapping. Chat gets a fixed set of actions: apply a setup, set a level or a volume, play
   a station, say something on speakers, and stop a source. The model proposes; the hub's API

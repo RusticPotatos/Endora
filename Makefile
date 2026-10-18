@@ -103,6 +103,29 @@ export ENDORA_HQ_TICK_SECONDS
 export ENDORA_SOUND_URL
 export ENDORA_SOUND_DIR
 
+# The AirPlay 2 door (ADR 0128), so an Apple TV keeps lip-sync: SOUND_AIRPLAY2 = 1 in local.mk
+# runs "Endora Mixer" as AirPlay 2 in its own container (the airplay2 profile, added here) on a
+# LAN address of its own, and the senders' container stops running the classic door. It needs
+# the LAN's values, the owner's, in local.mk (docs/homelab.md says how to find each one):
+# SOUND_AIRPLAY2_PARENT (the NAS's LAN interface, `ip -br link` on the NAS),
+# SOUND_AIRPLAY2_SUBNET, SOUND_AIRPLAY2_GATEWAY and SOUND_AIRPLAY2_IP (a free address outside
+# the router's DHCP pool). Optional: SOUND_AIRPLAY2_MAC, SOUND_AIRPLAY2_HOSTNAME (endora-mixer)
+# and SOUND_AIRPLAY2_LATENCY (0.5, the seconds it hands its sound over early). Anything but 1:
+# the classic door, as before.
+SOUND_AIRPLAY2 ?= 0
+comma := ,
+ifeq ($(SOUND_AIRPLAY2),1)
+override COMPOSE_PROFILES := $(if $(COMPOSE_PROFILES),$(COMPOSE_PROFILES)$(comma))airplay2
+endif
+export SOUND_AIRPLAY2
+export SOUND_AIRPLAY2_PARENT
+export SOUND_AIRPLAY2_SUBNET
+export SOUND_AIRPLAY2_GATEWAY
+export SOUND_AIRPLAY2_IP
+export SOUND_AIRPLAY2_MAC
+export SOUND_AIRPLAY2_HOSTNAME
+export SOUND_AIRPLAY2_LATENCY
+
 # The house's vault (ADR 0127): OpenBao, run by the owner's ansible-nas with the endora.homelab
 # collection's `openbao` role (not by this Makefile or the compose file), on the internal
 # endora_vault network the node's compose file makes. ENDORA_VAULT_URL = http://openbao:8200 in
@@ -234,8 +257,21 @@ docker-run: ## Run the node container (loopback-only on 8787, persists ./endora-
 check-data-dir:
 	@DOCKER_CONTEXT="$(DOCKER_CONTEXT)" sh scripts/data-dir.sh check
 
+# The AirPlay 2 door's LAN values, before anything is built: without them its network would be
+# made on the wrong interface or not at all, after minutes of building.
+.PHONY: check-airplay2
+check-airplay2:
+	@[ "$(SOUND_AIRPLAY2)" != 1 ] || { \
+		missing=""; \
+		[ -n "$(SOUND_AIRPLAY2_PARENT)" ] || missing="$$missing SOUND_AIRPLAY2_PARENT"; \
+		[ -n "$(SOUND_AIRPLAY2_SUBNET)" ] || missing="$$missing SOUND_AIRPLAY2_SUBNET"; \
+		[ -n "$(SOUND_AIRPLAY2_GATEWAY)" ] || missing="$$missing SOUND_AIRPLAY2_GATEWAY"; \
+		[ -n "$(SOUND_AIRPLAY2_IP)" ] || missing="$$missing SOUND_AIRPLAY2_IP"; \
+		[ -z "$$missing" ] || { echo "SOUND_AIRPLAY2 = 1 needs, in local.mk:$$missing (docs/homelab.md, \"The AirPlay 2 door\")"; exit 1; }; \
+	}
+
 .PHONY: deploy
-deploy: check-data-dir ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target a remote host)
+deploy: check-data-dir check-airplay2 ##Build + start the node via Compose (DOCKER_CONTEXT=nas to target a remote host)
 	# Builds on the target host and starts it detached; data persists in the
 	# named volume `$(COMPOSE_PROJECT_NAME)_endora-data`, or in ENDORA_DATA_DIR when that
 	# is set (check-data-dir refuses to start on an empty one while the volume still
@@ -269,6 +305,13 @@ else
 			--target senders -t endora-senders:for-target --load .; \
 		docker --context $(ENDORA_BUILD_CONTEXT) save endora-senders:for-target | gzip -1 | $(TARGET_DOCKER) load; \
 		$(TARGET_DOCKER) tag endora-senders:for-target endora-senders:latest;; \
+	esac; \
+	case ",$(COMPOSE_PROFILES)," in *,airplay2,*) \
+		echo "building the AirPlay 2 door's image (shairport-sync and nqptp, ADR 0128)"; \
+		docker --context $(ENDORA_BUILD_CONTEXT) buildx build --platform "linux/$$arch" \
+			--target airplay2 -t endora-airplay2:for-target --load .; \
+		docker --context $(ENDORA_BUILD_CONTEXT) save endora-airplay2:for-target | gzip -1 | $(TARGET_DOCKER) load; \
+		$(TARGET_DOCKER) tag endora-airplay2:for-target endora-airplay2:latest;; \
 	esac; \
 	ENDORA_BUILD="$$build" $(COMPOSE) up -d --no-build
 endif
@@ -386,6 +429,10 @@ backup: ## Snapshot the running node's database (settings, keys, memory) into it
 .PHONY: data-dir-test
 data-dir-test: ## Test the data-dir guard and migration against a fake docker (no daemon needed)
 	sh scripts/test-data-dir.sh
+
+.PHONY: sound-airplay2-test
+sound-airplay2-test: ## Test what the AirPlay 2 door writes for shairport-sync and avahi, and its pipe (no daemon needed)
+	sh scripts/test-sound-airplay2.sh
 
 .PHONY: watch
 watch: ## Re-run tests on file change (needs cargo-watch)

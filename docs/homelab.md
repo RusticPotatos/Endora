@@ -126,6 +126,84 @@ the vault, the whole console is the unlock screen until you do, before sign-in.
 Back up `openbao_data_dir` with everything else; keep the break-glass shares apart from it,
 the way the secrets key is kept apart from the database.
 
+## The AirPlay 2 door (ADR 0128)
+
+"Endora Mixer" as an **AirPlay 2** receiver, so an Apple TV casting into it holds its picture
+back to match the sound (lip-sync). It runs in its own container, `endora-airplay2`, on a LAN
+address of its own (a macvlan network), because its clock (nqptp) needs UDP 319/320, which the
+senders' clock already holds on the NAS. Without it, the classic door in the senders' container
+works as before, about two seconds behind the picture.
+
+### What you need, once
+
+1. **The NAS's LAN interface.** On the NAS: `ip -br link` lists the interfaces; the one that is
+   `UP` and carries the NAS's LAN address (check with `ip -br addr`) is the parent, often
+   `eth0`, `enp3s0` or `eno1`. Not `docker0`, a `br-…` or a `veth…`. If the NAS's address is on
+   a bridge it made itself (say `br0`), use the bridge.
+2. **The LAN** as CIDR (`ip -br addr` shows it, for example `/24` after the address) and its
+   **gateway** (`ip route show default`, after `via`).
+3. **A free address outside the router's DHCP pool.** In UniFi: *Settings › Networks › (your
+   LAN) › DHCP*, note the range; pick an address on the LAN outside it that nothing uses
+   (`ping` it first, from another machine). After the first start, UniFi lists a new client
+   with the door's MAC (default `02:00:00:00:a2:01`, a locally administered one): give it a
+   **fixed IP** of the same address and a name, so DHCP never hands it out. Docker hands out
+   only that one address.
+
+### Turning it on
+
+In `local.mk`, with your values (never in git):
+
+```make
+SOUND_AIRPLAY2 = 1
+SOUND_AIRPLAY2_PARENT = eth0
+SOUND_AIRPLAY2_SUBNET = <your LAN, e.g. a /24>
+SOUND_AIRPLAY2_GATEWAY = <your router>
+SOUND_AIRPLAY2_IP = <the free address>
+# Optional:
+# SOUND_AIRPLAY2_MAC = 02:00:00:00:a2:01
+# SOUND_AIRPLAY2_HOSTNAME = endora-mixer
+# SOUND_AIRPLAY2_LATENCY = 0.5
+```
+
+Then `make deploy`. It adds the `airplay2` profile, builds the door's image on the Mac for the
+NAS, and the senders' container stops running the classic door (it restarts once, which
+interrupts any HomePod playing for a few seconds). `make deploy` refuses to start if one of the
+four network values is missing. With the `endora.homelab` collection instead: in the `endora`
+role, `endora_sound: true`, `endora_sound_airplay2: true` and the four
+`endora_sound_airplay2_*` values (its README).
+
+Check it: `docker logs endora-airplay2` says `1 AirPlay 2 receiver`, and on an iPhone or the
+Apple TV, "Endora Mixer" is in the AirPlay list. `ping` to the door's address works **from
+another machine but not from the NAS**: a macvlan address cannot be reached from its own
+host, which nothing needs (the door and the hub share only the pipe).
+
+### Tuning lip-sync
+
+`SOUND_AIRPLAY2_LATENCY` (seconds, 0 to 2, default 0.5) is how early the door hands its sound
+to the hub, to make up for the mix and the speaker after it. Play a video with speech from the
+Apple TV into the door, listen on the speaker you watch with, and:
+
+- sound **late** (lips move first): raise it by 0.1;
+- sound **early**: lower it by 0.1;
+
+then `make deploy` again (only the door restarts). If `docker logs endora-airplay2` warns that
+the offset is "too short" or "out of range", the Apple TV's stream does not arrive far enough
+ahead for that much: lower it. Upstream recommends staying within about 0.25 s; past that, it is
+worth listening for. A phone on the live stream can be lined up this way; the HomePods, through
+the senders' own AirPlay buffer, are seconds further behind and are for music.
+
+### If it is not found, or will not play
+
+- **Not in the AirPlay list**: the router or a Wi-Fi bridge may not pass mDNS from a second MAC
+  on the NAS's port. In UniFi, check the client appears; turn on *Multicast DNS* for the
+  network if devices are on another VLAN. Some switches and powerline or Wi-Fi bridges allow one
+  MAC per port: then use ipvlan instead (in `docker-compose.yml`'s `airplay2-lan` network,
+  `driver: ipvlan` and `ipvlan_mode: l2` under `driver_opts`), which shares the NAS's MAC.
+- **Found but silent**: `docker logs endora-airplay2`; the hub must be running (`sound`
+  profile), since the door's pipe has no reader without it.
+- **Back to classic**: `SOUND_AIRPLAY2 = 0` (or remove the line) and `make deploy`; then
+  `docker rm -f endora-airplay2`, since a profile that is off is not stopped by Compose.
+
 ## The wing's deploy key (ADR 0115)
 
 The engineering wing's branches reach your ansible-nas fork only when you approve a push on the

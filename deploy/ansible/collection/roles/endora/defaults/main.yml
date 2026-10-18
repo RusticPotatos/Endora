@@ -64,3 +64,43 @@ endora_passkey_rp_id: ""
 # scripted demo team until real workers exist. It makes its own token for the node.
 endora_hq: false
 endora_hq_demo: true
+
+# endora-sound (Endora ADR 0104): the sound hub (its `sound` profile, with the Spotify
+# receiver) and its AirPlay senders (`senders`, which cannot run beside an ansible-nas owntone
+# container: both take UDP 319/320). Their images come from `make deploy`, like the node's.
+endora_sound: false
+endora_sound_senders: false
+
+# The AirPlay 2 door (Endora ADR 0128): "Endora Mixer" as AirPlay 2, so an Apple TV keeps
+# lip-sync, in its own container on a LAN address of its own (a macvlan network on this
+# host's LAN interface), the classic door retired while it runs. The four network values are
+# yours and required (the role stops without them); the README says how to find each one.
+endora_sound_airplay2: false
+# The NAS's LAN interface (`ip -br link` on the NAS: the one that is UP with the LAN address).
+endora_sound_airplay2_parent: ""
+# The LAN, as CIDR, and its router.
+endora_sound_airplay2_subnet: ""
+endora_sound_airplay2_gateway: ""
+# A free address on the LAN outside the router's DHCP pool, reserved there for the door.
+endora_sound_airplay2_ip: ""
+# Optional: the door's MAC address (a locally administered one); empty is the compose default.
+endora_sound_airplay2_mac: ""
+# The name it is announced under on the LAN (mDNS).
+endora_sound_airplay2_hostname: endora-mixer
+# Seconds the door hands its sound over early, for the mix and the speaker after it, so an
+# Apple TV's picture and the sound line up. 0 to 2; tune by ear.
+endora_sound_airplay2_latency: 0.5
+# What is missing for the door, which the role refuses to start without.
+endora_sound_airplay2_missing: >-
+  {{ (['endora_sound_airplay2_parent'] if not endora_sound_airplay2_parent else [])
+     + (['endora_sound_airplay2_subnet'] if not endora_sound_airplay2_subnet else [])
+     + (['endora_sound_airplay2_gateway'] if not endora_sound_airplay2_gateway else [])
+     + (['endora_sound_airplay2_ip'] if not endora_sound_airplay2_ip else [])
+     + (['endora_sound'] if not (endora_sound | bool) else []) }}
+# The Compose profiles the node is started with.
+endora_profiles: >-
+  {{ (['homelab'] if endora_docker_observer | bool else [])
+     + (['hq'] if endora_hq | bool else [])
+     + (['sound'] if endora_sound | bool else [])
+     + (['senders'] if endora_sound_senders | bool else [])
+     + (['airplay2'] if endora_sound_airplay2 | bool else []) }}

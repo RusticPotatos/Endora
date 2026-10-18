@@ -61,6 +61,35 @@
           here with Endora's `make deploy` (ENDORA_BUILD_CONTEXT in its local.mk), then run this
           role again. It is never built on the NAS.
 
+    # Endora ADR 0128: without its LAN values the door's network would be made on the wrong
+    # interface, or not at all; and it is a door into the sound hub, which must run too.
+    - name: Check the AirPlay 2 door's settings
+      ansible.builtin.assert:
+        that:
+          - endora_sound_airplay2_missing | length == 0
+        fail_msg: >-
+          endora_sound_airplay2 needs {{ endora_sound_airplay2_missing | join(', ') }} set
+          (this role's README, "The AirPlay 2 door").
+      when: endora_sound_airplay2 | bool
+
+    - name: Look for the sound images
+      community.docker.docker_image_info:
+        name: "{{ item }}:latest"
+      loop: "{{ (['endora-sound'] if endora_sound | bool else []) + (['endora-senders'] if endora_sound_senders | bool else []) + (['endora-airplay2'] if endora_sound_airplay2 | bool else []) }}"
+      register: endora_sound_images
+
+    - name: Refuse to build the sound images here
+      ansible.builtin.assert:
+        that:
+          - item.images | length > 0
+        fail_msg: >-
+          There is no {{ item.item }} image on this host. Build it on another machine and copy it
+          here with Endora's `make deploy` (the matching profile, or SOUND_AIRPLAY2 = 1, in its
+          local.mk), then run this role again.
+      loop: "{{ endora_sound_images.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
     # Only the node reads it, but it holds what Endora knows about you: not world-readable.
     - name: Endora's brain folder
       ansible.builtin.file:
@@ -91,7 +120,7 @@
           - "{{ endora_root }}/docker-compose.override.yml"
         env_files:
           - "{{ endora_root }}/endora.env"
-        profiles: "{{ (['homelab'] if endora_docker_observer | bool else []) + (['hq'] if endora_hq | bool else []) }}"
+        profiles: "{{ endora_profiles }}"
         build: never
         pull: never
         state: present

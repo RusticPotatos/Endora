@@ -41,6 +41,30 @@ endora_docker_observer: true     # a read-only view of this host's containers
   NAS's own address (`endora_tls_san`, by default the address Ansible sees). Accept the
   browser's warning once.
 
+## Sound, and the AirPlay 2 door
+
+- **The sound hub** (Endora ADR 0104): `endora_sound: true` starts it (the `sound` profile,
+  with its Spotify receiver) and gives the node its address; `endora_sound_senders: true`
+  starts its AirPlay senders (not beside an ansible-nas `owntone` container: both take UDP
+  319/320). Their images come from `make deploy` like the node's; the role stops without them.
+- **The AirPlay 2 door** (Endora ADR 0128): "Endora Mixer" as AirPlay 2, so an Apple TV keeps
+  lip-sync, in its own container on a LAN address of its own (a macvlan network on this host's
+  LAN interface); the senders stop running the classic door while it is on. It needs the hub,
+  and four values that are yours (the role stops without them):
+
+  ```yaml
+  endora_sound: true
+  endora_sound_airplay2: true
+  endora_sound_airplay2_parent: eth0        # `ip -br link` on the NAS: UP, with the LAN address
+  endora_sound_airplay2_subnet: <your LAN as CIDR>
+  endora_sound_airplay2_gateway: <your router>
+  endora_sound_airplay2_ip: <a free address outside the DHCP pool, reserved in the router>
+  # endora_sound_airplay2_latency: 0.5      # seconds it hands its sound over early; tune by ear
+  ```
+
+  The NAS cannot reach the door's address (macvlan), by design. Endora's `docs/homelab.md`,
+  "The AirPlay 2 door", has the UniFi steps and lip-sync tuning.
+
 ## Where its data lives
 
 Everything Endora keeps (every setting, API key and sign-in secret) is one SQLite database. By
