@@ -434,6 +434,11 @@ fn turn_with_claude_code(setup: &Setup) -> Result<Taken, Stopped> {
         &mcp,
         &mcp_config(&worker, setup, &who, task, &ledger).to_string(),
     )?;
+    // The briefing's map, kept for the hook that gives it back after a compaction (ADR 0126).
+    let map_file = files.join("map.md");
+    if let Some(block) = map_block(&briefing) {
+        write(&map_file, &block)?;
+    }
     let claude = std::env::var("ENDORA_CLAUDE").unwrap_or_else(|_| CLAUDE.to_owned());
     let mut command = Command::new(claude);
     command
@@ -448,6 +453,7 @@ fn turn_with_claude_code(setup: &Setup) -> Result<Taken, Stopped> {
     for (name, value) in environment(setup) {
         command.env(name, value);
     }
+    command.env("ENDORA_MAP_FILE", &map_file);
     let (stdout, code, stderr) = run_within(command, &briefing, TURN_WITHIN)?;
     let kept = read_kept(&ledger);
     if let Some(why) = kept.over {
@@ -775,6 +781,49 @@ pub fn reported(hook: &Value) -> Option<Value> {
     Some(sent)
 }
 
+/// The first words of the map block of a briefing, and the line that ends it (ADR 0126): the team
+/// engine writes them (`domain::map`), and a test reads a real one.
+const MAP_STARTS: &str = "Your map of the team's world";
+const MAP_ENDS: &str = "(End of your map.)";
+
+/// The map block of a turn's briefing, from its first line to the line that ends it, if the
+/// briefing opens with one.
+#[must_use]
+pub fn map_block(briefing: &str) -> Option<String> {
+    let start = briefing.find(MAP_STARTS)?;
+    let rest = &briefing[start..];
+    let mut end = rest.find(MAP_ENDS)? + MAP_ENDS.len();
+    if rest[end..].starts_with('\n') {
+        end += 1;
+    }
+    Some(rest[..end].to_owned())
+}
+
+/// What the compaction hook says: the map as it stood at the start of the turn, in its own words,
+/// from the file the turn kept it in. Nothing without a file.
+#[must_use]
+pub fn reminder(file: Option<&str>) -> Option<String> {
+    let map = std::fs::read_to_string(file?).ok()?;
+    if map.trim().is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Your context was compacted. Your map of the team's world, as it stood when this turn \
+         began (read_world any address on it; report_gap what is not there):\n{map}"
+    ))
+}
+
+/// The hook (`endora-worker --map`): Claude Code's `SessionStart` hook after a compaction. What it
+/// prints is added to the conversation, so the turn does not lose the way to what the team knows.
+/// It never blocks the turn: whatever happens it exits 0.
+pub fn remind() -> i32 {
+    let file = std::env::var("ENDORA_MAP_FILE").ok();
+    if let Some(said) = reminder(file.as_deref()) {
+        print!("{said}");
+    }
+    0
+}
+
 /// The hook (`endora-worker --receipt`): reads what Claude Code says of one call on stdin and
 /// posts it to the node with the turn's token. It never blocks the turn: whatever happens it
 /// exits 0 and prints nothing, and a report the node does not take is said on stderr.
@@ -1058,5 +1107,75 @@ mod tests {
         assert!(kept.asked && kept.over.is_none());
         assert_eq!(kept.did.unwrap().line(), did.line());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_map_is_found_in_a_real_briefing_exactly_as_the_team_engine_composes_it() {
+        use endora_team::domain::map::{self, Entry};
+        use endora_team::domain::situations::Weight;
+        let entries = vec![
+            Entry::new(
+                "world:role/developer",
+                "How a developer works here.",
+                Weight::Core,
+            ),
+            Entry::new("world:area/2", "Ada's area. Kept by Ada.", Weight::Core),
+            Entry::new("world:area/9", "Another area.", Weight::Optional),
+        ];
+        let composed = map::compose(entries, 200);
+        let briefing = format!(
+            "You are Linus, the team's developer.\n{}Your task: fix the proxy (#3).\n",
+            composed.text
+        );
+        let found = map_block(&briefing).expect("the map is in the briefing");
+        assert_eq!(
+            found, composed.text,
+            "the worker finds what the engine wrote"
+        );
+        assert_eq!(Some(found.clone()), map::map_block(&briefing));
+        assert!(found.contains("world:area/2") && !found.contains("Your task"));
+        assert_eq!(map_block("You are Linus.\nYour task: fix it.\n"), None);
+    }
+
+    #[test]
+    fn after_a_compaction_the_hook_gives_the_turn_its_map_back_and_says_nothing_without_one() {
+        let dir = std::env::temp_dir().join(format!("endora-map-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("map.md");
+        std::fs::write(
+            &path,
+            "Your map of the team's world (...):\n- world:house\n(End of your map.)\n",
+        )
+        .unwrap();
+        let said = reminder(path.to_str()).expect("a reminder");
+        assert!(
+            said.contains("compacted") && said.contains("- world:house"),
+            "{said}"
+        );
+        assert_eq!(reminder(None), None, "no map file named");
+        assert_eq!(
+            reminder(dir.join("none.md").to_str()),
+            None,
+            "no map file kept"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_workbench_hands_the_map_back_when_claude_code_compacts_and_still_reports_receipts() {
+        let settings: Value = serde_json::from_str(include_str!(
+            "../../../deploy/workbench/managed-settings.json"
+        ))
+        .expect("the managed settings are JSON");
+        let start = &settings["hooks"]["SessionStart"];
+        assert_eq!(start[0]["matcher"], "compact", "only after a compaction");
+        assert_eq!(
+            start[0]["hooks"][0]["command"],
+            "/usr/local/bin/endora-worker --map"
+        );
+        assert_eq!(
+            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+            "/usr/local/bin/endora-worker --receipt"
+        );
     }
 }

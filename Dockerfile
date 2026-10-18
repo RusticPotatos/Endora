@@ -214,8 +214,9 @@ RUN /opt/venv/bin/ansible-playbook --version && /opt/venv/bin/ansible-lint --ver
 # Its settings, read-only and above any other (managed): no updates, telemetry, error reports,
 # feedback or other traffic but the model's; no experimental betas; the five-minute cache the
 # relay meters; no attribution of its own (the wing's commits carry Endora's trailer); the web
-# tools refused; and the hook that reports each of its own tools to the node as a
-# sandbox-reported receipt.
+# tools refused; the hook that reports each of its own tools to the node as a
+# sandbox-reported receipt; and the hook that, after a compaction, gives the turn the map its
+# briefing opened with.
 # (The folder is made first: one made by COPY --chmod takes the file's mode, and Claude Code,
 # not root, could then not open it, and would run on none of these settings, silently.)
 RUN install -d -m 755 /etc/claude-code

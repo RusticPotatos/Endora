@@ -11,7 +11,8 @@
 //!
 //! With `ENDORA_RUNTIME=claude-code` (ADR 0117), a developer on Claude in the workbench, the
 //! worker does the same bookkeeping and then hands the turn to Claude Code, headless; the same
-//! binary is Claude Code's MCP bridge (`--mcp`) and its tools' receipt hook (`--receipt`).
+//! binary is Claude Code's MCP bridge (`--mcp`), its tools' receipt hook (`--receipt`) and the
+//! hook that gives a turn its map back after a compaction (`--map`).
 //!
 //! What its exit says, for the runner: 0, a turn taken (the model's last word, or its rounds
 //! used up); 3, the turn was over before it ended (HQ or the relay answered 401 or 402); 1,
@@ -129,10 +130,12 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
 }
 
 fn main() {
-    // Claude Code's helpers (ADR 0117): its MCP bridge, and its tools' receipt hook.
+    // Claude Code's helpers (ADR 0117): its MCP bridge, its tools' receipt hook, and (ADR 0126)
+    // the hook that hands the map back after a compaction.
     match std::env::args().nth(1).as_deref() {
         Some("--mcp") => std::process::exit(claude_code::serve()),
         Some("--receipt") => std::process::exit(claude_code::report()),
+        Some("--map") => std::process::exit(claude_code::remind()),
         _ => {}
     }
     // A check job (ADR 0115): no model, no turn, a job token alone; the workbench run to check
