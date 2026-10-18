@@ -88,6 +88,19 @@ impl VaultStore {
         Ok(Self { db })
     }
 
+    /// The store, making its tables if it can; a database that cannot make them fails on
+    /// first use instead, saying why, so a node never stops starting over it.
+    #[must_use]
+    pub fn over(db: Db) -> Self {
+        if let Err(e) = db
+            .lock()
+            .and_then(|c| c.execute_batch(SCHEMA).map_err(backend))
+        {
+            eprintln!("vault: could not make its tables ({e})");
+        }
+        Self { db }
+    }
+
     /// Every passkey, oldest first.
     ///
     /// # Errors

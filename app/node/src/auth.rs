@@ -71,6 +71,15 @@ pub fn is_listen_route(path: &str) -> bool {
 /// password and a six-digit code are safe to accept at all.
 const WHERE_YOU_ASK_TO_BE_LET_IN: &str = "/v1/session";
 
+/// The vault's status and its unlock (ADR 0127), which answer an unsigned request.
+///
+/// After a reboot with the node's keys in the vault, the sign-in's authenticator secret is
+/// itself one of the locked things, so a sign-in cannot come first. The unlock is not
+/// therefore unprotected: it is authorised by the owner's passkey — a signature over a
+/// single-use challenge, and a PRF output that must open the wrapped key — throttled, and
+/// audited. The status says only which of five states the vault is in.
+const THE_VAULT_UNLOCK: [&str; 3] = ["/v1/vault", "/v1/vault/unlock/begin", "/v1/vault/unlock"];
+
 /// The one read that hands over everything at once.
 ///
 /// Every other read is a slice — this is the whole conversation, every belief and the audit
@@ -117,7 +126,11 @@ pub fn may_pass(
     accepted: &[(String, Scope)],
     is_write: bool,
 ) -> bool {
-    if !path.starts_with("/v1") || path == WHERE_YOU_ASK_TO_BE_LET_IN || is_listen_route(path) {
+    if !path.starts_with("/v1")
+        || path == WHERE_YOU_ASK_TO_BE_LET_IN
+        || is_listen_route(path)
+        || THE_VAULT_UNLOCK.contains(&path)
+    {
         return true;
     }
     if accepted.is_empty() {
@@ -183,6 +196,31 @@ mod tests {
     }
     fn nothing() -> Vec<(String, Scope)> {
         Vec::new()
+    }
+
+    #[test]
+    fn the_vault_unlock_needs_no_sign_in_and_nothing_else_of_the_vault_is_open() {
+        // After a reboot with the node's keys in the vault, the sign-in's own authenticator
+        // secret is locked: the unlock is authorised by the passkey itself (ADR 0127).
+        for open in ["/v1/vault", "/v1/vault/unlock/begin", "/v1/vault/unlock"] {
+            assert!(may_pass(open, None, None, &nothing(), true), "{open}");
+        }
+        for closed in [
+            "/v1/vault/passkeys",
+            "/v1/vault/passkeys/begin",
+            "/v1/vault/passkeys/finish",
+            "/v1/vault/passkeys/abc/remove",
+            "/v1/vault/ceremony",
+            "/v1/vault/initialise",
+            "/v1/vault/enrol",
+            "/v1/vault/adopt",
+            "/v1/vault/keys-into-vault",
+            "/v1/vault/start-over",
+            "/v1/vault/unlock/other",
+            "/v1/vaults",
+        ] {
+            assert!(!may_pass(closed, None, None, &good(), true), "{closed}");
+        }
     }
 
     #[test]

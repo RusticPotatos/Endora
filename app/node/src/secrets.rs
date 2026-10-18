@@ -33,24 +33,40 @@ pub fn key_file(database: &str, configured: Option<&str>) -> PathBuf {
 }
 
 /// The key file this process should use, from its environment.
-fn key_file_from_env(database: &str) -> PathBuf {
+pub fn key_file_from_env(database: &str) -> PathBuf {
     key_file(
         database,
         std::env::var("ENDORA_SECRETS_KEY_FILE").ok().as_deref(),
     )
 }
 
+/// The vault this node is given (`ENDORA_VAULT_URL`, ADR 0127), if any. Set-but-empty is
+/// unset, as compose leaves a blanked variable.
+#[must_use]
+pub fn vault_from_env() -> Option<std::sync::Arc<dyn endora_infrastructure::openbao::OpenBaoApi>> {
+    let url = std::env::var("ENDORA_VAULT_URL").ok()?;
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    Some(std::sync::Arc::new(
+        endora_infrastructure::openbao::HttpOpenBao::new(url),
+    ))
+}
+
 /// Opens the node's store with its secrets sealed under the key file — made on the first
-/// start, required on every later one.
+/// start, required on every later one — or, once the node's keys are in the vault (ADR 0127),
+/// through the vault, *waiting* for it if it is locked.
 ///
 /// # Errors
 /// If the key file is missing over sealed secrets, does not open them, or the database
 /// cannot be opened or migrated.
 pub fn open_store(database: &str) -> Result<SqliteStore, Box<dyn Error>> {
-    Ok(SqliteStore::open_sealed(
+    crate::vault::open_node_store(
         database,
         &key_file_from_env(database),
-    )?)
+        vault_from_env().as_ref(),
+    )
 }
 
 /// Handles `secrets …` if that is what `args` say, returning `None` otherwise.

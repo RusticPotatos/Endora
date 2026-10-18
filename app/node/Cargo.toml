@@ -54,6 +54,16 @@ qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 # Interactive host-only dashboard enrollment; masked entry must restore terminal echo.
 rpassword = "7"
 rustls = { version = "0.23.23", features = ["ring"] }
+# Passkeys and the vault unlock (ADR 0127). `ring` verifies a passkey's ES256 or Ed25519
+# signature and derives the unlock key (HKDF-SHA256); it is already in the build through
+# rustls's `ring` feature above, at this version. The unseal key and shares are sealed with
+# the same XChaCha20-Poly1305 and base64 the node's secrets at rest use (ADR 0125), and wiped
+# with zeroize: all three already in the lock file. No new crate; see webauthn.rs for why not
+# webauthn-rs.
+ring = "0.17"
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+zeroize = "1"
 
 [lints]
 workspace = true
