@@ -9,6 +9,17 @@ tagged release.
 
 ### Added
 
+- **Live mode for the sound hub's phone and browser listeners** ([ADR 0104](docs/adr/0104-endora-sound.md)).
+  The hub serves each stream speaker's mix as raw PCM in 20 ms frames (`/v1/live/{speaker}`;
+  `/v1/sound/live/{id}?ticket=` through the node, under the listen ticket), and the console
+  plays it in an AudioWorklet with an adaptive jitter buffer (300 ms, growing to 1 s when
+  frames are late or missing, shrinking slowly), so a phone is a fraction of a second behind
+  instead of seconds. The speaker card gains **Auto / Live / Listening**: Auto is live when an
+  AirPlay door is wired to the speaker; the page hands over to the MP3 when it goes to the
+  background (it plays with the screen locked) and back on return. **Measure delay** has the hub
+  put a tone in the speaker's mix and reports the hub-to-page delay for each mode, and the
+  sound that waits in the hub before the mix.
+
 - **One general AirPlay door, "Endora Mixer"** ([ADR 0104](docs/adr/0104-endora-sound.md)).
   The sound hub makes it once at start; any device (an Apple TV, a phone) casts into it and
   it can be wired to any speaker, phones included. Its card says so, and that a device wired
