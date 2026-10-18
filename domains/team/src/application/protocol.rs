@@ -195,7 +195,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "post",
-            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mention a member by name to wake them. A finding cites its evidence; a post that cites none in a turn with no readings is marked unsupported.",
+            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mention a member by name to wake them. A finding cites its evidence; a post that cites none in a turn with no receipts is marked unsupported.",
             json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What the post rests on, if anything.") }),
             &["task", "text"]
         ),
@@ -213,7 +213,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "ask_owner",
-            "Ask a question or put a proposal about your task up the chain: to the lead, or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). The lead's to the CEO, and a tester's passing on the CEO's decision, cite evidence. Asking ends your turn: you are woken when they answer.",
+            "Ask a question or put a proposal about your task up the chain: to the lead (on a project's task, that project's lead), or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). The lead's to the CEO, and a tester's passing on the CEO's decision, cite evidence. Asking ends your turn: you are woken when they answer.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),
@@ -238,9 +238,12 @@ pub fn tools(role: Role) -> Value {
     ]);
     if role == Role::Reviewer {
         if let Some(list) = all.as_array_mut() {
+            // The tester passes or sends back, and never makes work (ADR 0114): she is not
+            // offered the tool the engine would refuse her anyway.
+            list.retain(|t| t["name"] != "create_task");
             list.push(tool(
                 "review",
-                "You are the tester. Your verdict on work in review, after re-checking it yourself: take your own readings to confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of your own this turn (its lead then accepts it); send_back returns it to its owner with exactly what does not hold. Sending back is a finished test too. Never your own work.",
+                "You are the tester. Your verdict on work in review, after re-checking it yourself: take your own readings to confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of your own this turn (its lead then accepts it); send_back returns it to its owner with exactly what does not hold. Sending back is a finished test too. Never your own work. You pass or send back; you never create or assign work.",
                 json!({ "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" }, "evidence": per_criterion("For approve: your readings and what else shows each criterion holds.") }),
                 &["task", "verdict", "notes"],
             ));

@@ -6,6 +6,7 @@
 //!
 //! Amounts are millionths of a dollar, so a model's per-token price adds up without rounding.
 
+use super::brain::Brain;
 use super::work::{Millis, Role};
 
 /// Millionths of a dollar.
@@ -33,14 +34,22 @@ pub const fn pool_a_day(pool_per_month: Micros) -> Micros {
     pool_per_month / DAYS_A_MONTH
 }
 
-/// A paid member's budget for one day: its weight's part of the day's pool, shared among the
-/// paid members' weights (`paid`, its own among them). Nothing when there is no weight.
+/// A member's claim on the pool (ADR 0113, amended): its role's weight times its brain's price
+/// class ([`Brain::price_class`]), so two members on Haiku do not dilute the lead on Sonnet as
+/// if they cost what it does. Nothing for a member on the house's model.
 #[must_use]
-pub const fn member_a_day(pool_per_month: Micros, weight: u8, paid: i64) -> Micros {
+pub const fn claim(weight: u8, brain: Brain) -> i64 {
+    weight as i64 * brain.price_class()
+}
+
+/// A paid member's budget for one day: its claim's part of the day's pool, shared among the
+/// paid members' claims (`paid`, its own among them). Nothing when there is no claim.
+#[must_use]
+pub const fn member_a_day(pool_per_month: Micros, claim: i64, paid: i64) -> Micros {
     if paid <= 0 {
         return 0;
     }
-    pool_a_day(pool_per_month) * weight as Micros / paid
+    pool_a_day(pool_per_month) * claim / paid
 }
 
 /// The most one turn of a member in `role` may spend.
@@ -62,6 +71,18 @@ pub const fn day_of(at: Millis, offset_minutes: i64) -> i64 {
 #[must_use]
 pub const fn day_start(day: i64, offset_minutes: i64) -> Millis {
     day * DAY_MS - offset_minutes * 60_000
+}
+
+/// What a paid member may draw on today (ADR 0113, amended): its own share is its first
+/// claim, not a wall. Once that is spent (`own_left` below nothing is what it has borrowed),
+/// it draws on what the other paid members have not used of theirs (`others_left`, each one's
+/// share less its spend; one past its own share has nothing to lend). The pool's day stays the
+/// hard ceiling: that is [`reservation`]'s.
+#[must_use]
+pub fn may_draw(own_left: Micros, others_left: impl IntoIterator<Item = Micros>) -> Micros {
+    others_left
+        .into_iter()
+        .fold(own_left, |sum, left| sum.saturating_add(left.max(0)))
 }
 
 /// What one turn can have reserved, before it starts: the per-turn cap (`most`, the role's),
@@ -99,8 +120,8 @@ mod tests {
         );
         // Only the CEO and the lead paid: they split the day by 35 to 25.
         let (ceo, lead) = (
-            member_a_day(POOL_PER_MONTH, Role::Ceo.share(), 60),
-            member_a_day(POOL_PER_MONTH, Role::Lead.share(), 60),
+            member_a_day(POOL_PER_MONTH, i64::from(Role::Ceo.share()), 60),
+            member_a_day(POOL_PER_MONTH, i64::from(Role::Lead.share()), 60),
         );
         assert_eq!((ceo, lead), (1_361_110, 972_222), "$1.36 and $0.97");
         assert!(ceo + lead <= pool_a_day(POOL_PER_MONTH));
@@ -109,6 +130,27 @@ mod tests {
             0,
             "no weight, no share"
         );
+    }
+
+    #[test]
+    fn a_members_claim_is_its_weight_times_its_brains_price_class() {
+        // The live team: Mara on Opus, Ada and Kit on Sonnet, Cy, Rae and Zed on Haiku.
+        let team = [
+            claim(Role::Ceo.share(), Brain::Opus),
+            claim(Role::Lead.share(), Brain::Sonnet),
+            claim(Role::Lead.share(), Brain::Sonnet),
+            claim(Role::Researcher.share(), Brain::Haiku),
+            claim(Role::Developer.share(), Brain::Haiku),
+            claim(Role::Developer.share(), Brain::Haiku),
+        ];
+        let paid: i64 = team.iter().sum();
+        let share = |c: i64| member_a_day(POOL_PER_MONTH, c, paid);
+        assert!(
+            share(team[1]) > share(team[4]),
+            "the Sonnet lead's share exceeds a Haiku developer's"
+        );
+        assert!(team.iter().map(|c| share(*c)).sum::<i64>() <= pool_a_day(POOL_PER_MONTH));
+        assert_eq!(claim(Role::Developer.share(), Brain::Local), 0);
     }
 
     #[test]
@@ -131,6 +173,28 @@ mod tests {
         assert_eq!(
             reservation(1_361_110, 2_333_333, most_a_turn(Role::Ceo)),
             Some(DOLLAR)
+        );
+    }
+
+    #[test]
+    fn a_member_past_its_share_draws_on_what_the_others_left() {
+        // Within its share: its own left, and the others' unused besides.
+        assert_eq!(may_draw(300_000, [500_000, 200_000]), 1_000_000);
+        // Past its share by $0.05: what it borrowed comes off what the others left.
+        assert_eq!(may_draw(-50_000, [500_000, 200_000]), 650_000);
+        // A member past its own share lends nothing.
+        assert_eq!(may_draw(-50_000, [-100_000, 200_000]), 150_000);
+        // Nobody left anything: nothing to draw.
+        assert!(may_draw(-50_000, [0, -1]) < LEAST_A_TURN);
+        // And what it may draw is still held to the turn's cap and the pool's day.
+        let most = most_a_turn(Role::Lead);
+        assert_eq!(
+            reservation(may_draw(-50_000, [2_000_000]), 2_333_333, most),
+            Some(most)
+        );
+        assert_eq!(
+            reservation(may_draw(-50_000, [2_000_000]), 5_000, most),
+            None
         );
     }
 

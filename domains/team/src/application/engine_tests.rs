@@ -631,33 +631,207 @@ fn a_charge_that_lands_after_the_turn_ended_is_still_counted() {
     );
 }
 
+/// A turn of `member`'s own (no owner asked for it) on `task`, which spends `amount` (or what
+/// it reserved, if that is less) and ends.
+fn own_turn_spends(
+    hq: &Hq<'_>,
+    member: MemberId,
+    task: TaskId,
+    amount: i64,
+) -> crate::domain::RunId {
+    assert_eq!(
+        hq.wake(member, Some(task), WakeReason::Mentioned).unwrap(),
+        Receipt::Queued
+    );
+    hq.tick().unwrap();
+    let run = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .rfind(|r| r.member == member && r.status == RunStatus::Running)
+        .expect("its turn started");
+    hq.report_usage(run.id, amount.min(run.reserved)).unwrap();
+    hq.runner().finish(run.id, true);
+    hq.tick().unwrap();
+    run.id
+}
+
+/// A task for `to` that Endora made, not the owner: its turns are the member's own.
+fn endoras_task(hq: &Hq<'_>, goal: GoalId, title: &str) -> TaskId {
+    hq.add_task(
+        Author::Endora,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: title.to_owned(),
+            description: String::new(),
+            assignee: None,
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap()
+}
+
 #[test]
-fn a_member_whose_day_is_spent_is_turned_away() {
+fn a_member_past_its_share_still_gets_a_turn_while_the_others_have_some_left() {
     let clock = hands();
     let hq = hq(&clock, 8);
     let t = team(&hq);
-    // The researcher's day is about $0.35: one turn reserves it all.
+    // The researcher's day is about $0.35 of the pool's $2.33.
     let researcher = hq.hire("Marie", Role::Researcher, 15, 4, 0).unwrap();
     all_paid(&hq);
-    let first = task_for(&hq, t.goal, Some(researcher), "Read up on straps");
-    hq.tick().unwrap();
-    assert_eq!(hq.store().runs().unwrap()[0].task, Some(first));
-    let second = task_for(&hq, t.goal, None, "Read up on bracelets");
+    let first = endoras_task(&hq, t.goal, "Read up on straps");
+    own_turn_spends(&hq, researcher, first, MOST_A_TURN);
+    let day = crate::domain::money::day_of(NOON, 0);
     assert_eq!(
-        hq.wake(researcher, Some(second), WakeReason::Assigned)
-            .unwrap(),
-        Receipt::Refused(Refused::OutOfBudget)
+        hq.store().share_committed(researcher, day).unwrap(),
+        MOST_A_TURN
     );
-    // Tomorrow is a new day.
-    let run = hq.store().runs().unwrap()[0].id;
-    hq.runner().finish(run, true);
-    hq.tick().unwrap();
-    clock.forward(24 * 60 * 60 * 1000);
+    // Past its share, it draws on what Ada, Linus and Grace have not used: a whole turn's cap.
+    let second = endoras_task(&hq, t.goal, "Read up on bracelets");
     assert_eq!(
-        hq.wake(researcher, Some(second), WakeReason::Assigned)
+        hq.wake(researcher, Some(second), WakeReason::Mentioned)
             .unwrap(),
         Receipt::Queued
     );
+    hq.tick().unwrap();
+    let run = hq.store().runs().unwrap().into_iter().next_back().unwrap();
+    assert_eq!(
+        (run.member, run.status, run.reserved),
+        (researcher, RunStatus::Running, MOST_A_TURN),
+        "the per-turn cap still holds"
+    );
+}
+
+#[test]
+fn nobody_gets_a_turn_once_the_pools_day_is_gone_not_even_for_the_owner() {
+    let clock = hands();
+    // A pool of $0.50 a day.
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings {
+            pool_per_month: 15 * crate::domain::money::DOLLAR,
+            ..Settings::default()
+        },
+    );
+    let t = team(&hq);
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    // About $0.10 is left of the pool's day: Linus, far past his share, draws only that.
+    let run = own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    let spent = hq.store().run(run).unwrap().unwrap().spent;
+    assert!((99_000..=100_000).contains(&spent), "{spent}");
+    for member in [t.dev, t.lead, t.reviewer] {
+        assert_eq!(
+            hq.wake(member, Some(work), WakeReason::Mentioned).unwrap(),
+            Receipt::Refused(Refused::OutOfBudget)
+        );
+    }
+    // The owner's own request is the pool's, and the pool is spent.
+    task_for(&hq, t.goal, Some(t.lead), "Look at it now");
+    assert_eq!(
+        hq.wakes().unwrap().into_iter().next_back().unwrap().receipt,
+        Receipt::Refused(Refused::OutOfBudget)
+    );
+    // Tomorrow is a new day.
+    clock.forward(24 * 60 * 60 * 1000);
+    assert_eq!(
+        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
+        Receipt::Queued
+    );
+}
+
+#[test]
+fn the_owners_own_request_is_charged_to_the_pool_never_the_members_share() {
+    let clock = hands();
+    let hq = hq(&clock, 8);
+    let t = team(&hq);
+    all_paid(&hq);
+    let day = crate::domain::money::day_of(NOON, 0);
+    // The owner hands Linus a task: its turn is the owner's asking.
+    let asked = task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.tick().unwrap();
+    let run = hq.store().runs().unwrap()[0].clone();
+    assert!(run.asked_by_owner, "the owner handed it");
+    hq.report_usage(run.id, 300_000).unwrap();
+    hq.runner().finish(run.id, true);
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store().committed(None, day).unwrap(),
+        300_000,
+        "the pool's"
+    );
+    assert_eq!(
+        hq.store().committed(Some(t.dev), day).unwrap(),
+        300_000,
+        "by Linus"
+    );
+    assert_eq!(
+        hq.store().share_committed(t.dev, day).unwrap(),
+        0,
+        "and none of it his share's"
+    );
+    // A turn of his own, which he was woken to by a mention, is his share's.
+    let run = own_turn_spends(&hq, t.dev, asked, 50_000);
+    assert!(!hq.store().run(run).unwrap().unwrap().asked_by_owner);
+    assert_eq!(hq.store().share_committed(t.dev, day).unwrap(), 50_000);
+    assert_eq!(hq.store().committed(None, day).unwrap(), 350_000);
+    // The owner's reply in the thread is the owner's asking too.
+    hq.post(Author::Owner, asked, "Use the blue ones.").unwrap();
+    hq.tick().unwrap();
+    let replied = hq.store().runs().unwrap().into_iter().next_back().unwrap();
+    assert!(replied.asked_by_owner, "the owner replied");
+    hq.runner().finish(replied.id, true);
+    hq.tick().unwrap();
+    // And a routine the owner runs now; on its rhythm, it is the member's own.
+    let routine = hq
+        .add_routine(
+            Author::Owner,
+            super::ports::NewRoutine {
+                title: "Check the list".to_owned(),
+                description: String::new(),
+                goal: t.goal,
+                project: None,
+                assignee: t.lead,
+                every_ms: 6 * 60 * 60 * 1000,
+                on_lab_trouble: false,
+            },
+        )
+        .unwrap();
+    hq.fire_routine(routine).unwrap();
+    hq.tick().unwrap();
+    let ran_now = hq.store().runs().unwrap().into_iter().next_back().unwrap();
+    assert_eq!(ran_now.member, t.lead);
+    assert!(ran_now.asked_by_owner, "the owner ran it now");
+}
+
+#[test]
+fn the_owners_answer_on_the_desk_is_the_owners_asking() {
+    let clock = hands();
+    let hq = hq(&clock, 8);
+    let t = team(&hq);
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Pick a strap");
+    hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap();
+    hq.tick().unwrap();
+    let run = hq.store().runs().unwrap()[0].clone();
+    assert!(!run.asked_by_owner);
+    let super::engine::Asked::Desk(item) = hq.ask_owner(run.id, "Steel or titanium?").unwrap()
+    else {
+        panic!("the question is the owner's, with no CEO");
+    };
+    hq.tick().unwrap();
+    hq.answer(item, "Titanium.").unwrap();
+    hq.tick().unwrap();
+    let answered = hq.store().runs().unwrap().into_iter().next_back().unwrap();
+    assert_eq!(answered.member, t.dev);
+    assert!(answered.asked_by_owner, "the owner answered");
 }
 
 #[test]
@@ -1287,4 +1461,40 @@ fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
     hand_on(&hq, t.lead, check, t.dev, "Restart prowlarr", "It exited.").unwrap();
     // The owner may hand out what they like.
     task_for(&hq, t.goal, Some(t.dev), "Restart prowlarr again");
+}
+
+#[test]
+fn a_members_daily_share_is_weighted_by_its_brains_price() {
+    let clock = hands();
+    let hq = hq(&clock, 8);
+    hq.seat_ceo("Mara").unwrap();
+    let on = |name: &str, role: Role, brain: &str| {
+        let id = hq.hire(name, role, role.share(), 2, 0).unwrap();
+        hq.set_brain(id, brain).unwrap();
+        id
+    };
+    let ada = on("Ada", Role::Lead, "claude-sonnet-5-5");
+    on("Kit", Role::Lead, "claude-sonnet-5-5");
+    on("Cy", Role::Researcher, "claude-haiku-5-5");
+    let rae = on("Rae", Role::Developer, "claude-haiku-5-5");
+    on("Zed", Role::Developer, "claude-haiku-5-5");
+    let local = hq.hire("Dee", Role::Reviewer, 20, 1, 0).unwrap();
+    let snap = hq.snapshot().unwrap();
+    let share = |id: MemberId| {
+        snap["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id.0)
+            .unwrap()["per_day"]
+            .as_i64()
+            .unwrap()
+    };
+    assert!(
+        share(ada) > share(rae),
+        "the Sonnet lead's {} against a Haiku developer's {}",
+        share(ada),
+        share(rae)
+    );
+    assert_eq!(share(local), 0, "the house's model claims nothing");
 }

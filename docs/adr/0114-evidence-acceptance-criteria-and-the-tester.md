@@ -18,7 +18,14 @@ command may act on a subordinate's task) and [0113](0113-projects-budgets-and-re
 Built: receipts and their route, criteria, the evidence rule, the member → tester → lead path
 and its fallbacks, the cap on review rounds, unsupported posts, turn labels, nudges and the
 hand-up, repeated readings, check-backs replaced by a wait, the manager chain's acts, the CEO's
-effort by turn, the worker's and HQ's instructions, and the screen.
+effort by turn, the worker's and HQ's instructions, and the screen. Amended 2026-10-17
+(evening) by the owner, from that day's record: **the tester passes or sends back, and never
+makes work.** Her briefing says so, and that when the work is fine she passes it and says what
+she checked; `create_task` is no longer offered to her (the engine refused it; live, she tried
+three times before she asked). And **§5's unsupported rule is narrowed**: a member's post is
+unsupported only when it cites nothing and its turn has no receipt at all (held or refused); the
+worker's automatic last word is never tagged. Live, a closing post in a turn with two receipts,
+which its submission cited, was tagged unsupported.
 
 ## Context
 

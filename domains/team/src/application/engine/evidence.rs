@@ -495,6 +495,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// As [`Engine::add_task`].
     pub fn add_task_with(&self, by: Author, task: NewTask, criteria: &[Criterion]) -> Done<TaskId> {
         let _held = self.held();
+        let _asked = (by == Author::Owner).then(|| self.for_owner());
         evidence::may_hand_on(criteria, false).map_err(EngineError::Refused)?;
         let id = self.add_task_held_lock(by, task)?;
         self.store.set_criteria(id, criteria)?;
@@ -656,7 +657,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A turn writes in a thread, citing evidence if it has any (see [`Engine::post_in`]). A
-    /// member's post that cites nothing, in a turn that took no reading, is marked unsupported
+    /// member's post that cites nothing, in a turn with no receipt, is marked unsupported
     /// for the tester and the lead to see: allowed, never taken for a finding.
     ///
     /// # Errors
@@ -670,9 +671,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.post_in_marked(run, task, text, true, cited)
     }
 
-    /// Whether a turn took any reading that held.
-    pub(super) fn took_readings(&self, run: RunId) -> Done<bool> {
-        Ok(self.store.call_receipts_of(run)?.iter().any(|r| r.ok))
+    /// Whether a turn has any receipt in HQ's record, held or refused: a post in such a turn
+    /// rests on something the node wrote, so it is never unsupported (ADR 0114, amended).
+    pub(super) fn has_receipts(&self, run: RunId) -> Done<bool> {
+        Ok(!self.store.call_receipts_of(run)?.is_empty())
     }
 
     /// Whether what waits in a task's review is a draft for the owner, not work.

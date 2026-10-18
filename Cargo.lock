@@ -921,6 +921,7 @@ dependencies = [
  "endora-mail",
  "endora-persistence",
  "endora-platform",
+ "endora-team",
  "endora-understanding",
  "rusqlite",
  "serde_json",

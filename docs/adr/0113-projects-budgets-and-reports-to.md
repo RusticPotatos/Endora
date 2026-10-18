@@ -15,7 +15,11 @@ chain of command follows each member's `reports_to`). Built: projects and their 
 ledger's project column; caps, the 80% note and the budget pause; `reports_to`, its backfill and
 the owner's changes; the project lead woken for work handed back; `propose_project`,
 `decide_project` and `propose_goal`; the CEO's weekly planning; the start-up migration of the
-home lab's work; the HQ screen's Projects card, desk items and "reports to".
+home lab's work; the HQ screen's Projects card, desk items and "reports to". Amended
+2026-10-17 (evening) by the owner, below under **Amendment: soft shares, the owner's own
+requests, and claims by brain price**: a member's share is a first claim rather than a wall,
+work the owner asked for is the pool's alone, and a member's claim is weighted by its brain's
+price.
 
 ## Context
 
@@ -116,6 +120,45 @@ owner is the board, and a local member costs nothing.
    desk shows the CEO's proposed goals (as before), cap requests with the CEO's recommendation,
    80% notices and budget pauses. Each member's card says whom it reports to. Everything a model
    wrote is escaped.
+
+## Amendment: soft shares, the owner's own requests, and claims by brain price
+
+Decided by the owner on 2026-10-17, in the evening, from that day's record: Mara, the CEO, spent
+her share (about $0.82) while Ada and Cy had most of theirs unused, and every task waiting on her
+blocked until midnight; and hiring two developers on Haiku cut the lead on Sonnet to $0.32 a day
+while each of them got $0.52.
+
+1. **A share is a first claim, not a wall.** Once a paid member's share for the day is spent,
+   it draws on what the *other* paid members have not used today (each one's share less its
+   spend; one past its own share lends nothing). The pool's day ($70 / 30) stays the hard
+   ceiling. What a turn may reserve (`affordable()`) is the least of the per-turn cap, what is
+   left of the pool's day, what is left of the project's cap, and the member's share left plus
+   the others' unused (`money::may_draw`). A member on the house's model stays out of it, as
+   before.
+2. **The owner's own requests are the pool's.** A turn that exists because the owner asked (a
+   task they handed, their reply in a thread, their answer or decision on the desk, "Run now"
+   on a routine) is marked `asked_by_owner` from the wake that started it (a wake raised while
+   the engine does what the owner asked; a held wake keeps the mark, and a wake that folds into
+   a turn not yet started marks it). Its ledger rows carry an `owner` flag, and the share
+   arithmetic (`share_committed`) leaves them out: such a turn counts against the pool's day
+   only, never against the member's share. It is never a way past the pool's ceiling or a
+   project's cap.
+3. **A claim is weighted by the brain's price.** A member's claim on the pool is its role's
+   weight times its brain's price class (`Brain::price_class`, in thousandths of Opus by the
+   relay's input prices: Opus 1000, Sonnet 500, Haiku 25; the house's model 0), and the day's
+   pool is shared by claims. The relay's tests hold the classes to its prices, so a price
+   change there fails a test. With the live team (Mara on Opus; Ada and Kit on Sonnet; Cy, Rae
+   and Zed on Haiku) the lead on Sonnet now has more than a developer on Haiku. The roster shows
+   each member's daily share.
+
+Not built: a desk item offering a member who is out for the day an allowance from the pool.
+Under rule 1 a member's draw is never below what is left of the pool's day (the shares add up
+to the pool's day, and the others' unused is counted whole), so a member is out for the day
+only once the pool's day is spent, when there is nothing to give; the item would never be
+offered. It waits on the owner's word on whether borrowing should be limited instead.
+
+Scenarios: "A member past its share borrows what the others left" and "The owner's own request
+is the pool's, not the member's" (`features/projects-and-their-money.feature`).
 
 ## Consequences
 

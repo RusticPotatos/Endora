@@ -28,6 +28,13 @@ const TOOL_NAMES: &[&str] = &[
     "read_doc",
 ];
 
+/// What the tester is told on every turn (ADR 0114, amended): her part is the verdict. Live,
+/// a tester tried three times to make the sub-tasks of work she was testing, was refused each
+/// time, and only then asked.
+pub const TESTER: &str = "A tester passes work or sends it back; she never creates or \
+    assigns work. When the work is fine, pass it (review, verdict approve), and say what you \
+    checked.";
+
 /// What the reviewer is told when work is put before it.
 pub const REVIEW_WORK: &str = "You are the tester: re-check it yourself. Take your own \
     readings (homelab_status, container_logs, the queues) to confirm each piece of its evidence \

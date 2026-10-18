@@ -18,7 +18,11 @@ the CEO also proposes projects and goals, decides projects, and plans once a wee
 as the **tester** and re-checks work on her own readings before its lead accepts it; the CEO's
 decision for the board, the tester's passing it on, and the lead's question up to the CEO each
 carry evidence from HQ's record, refused without; and whom a member reports to, and anyone
-above, may move, close, accept, send back or hand on that member's task.
+above, may move, close, accept, send back or hand on that member's task. Amended 2026-10-17
+(evening) by the owner: **a question raised on a task in a project goes to that project's
+lead**, when the lead is at work and is not the one asking; otherwise up the asker's own chain,
+as before. Live, the tester (who reports to Ada) asked Ada about a task of Kit's project, which
+Ada knew nothing of. The briefing says whom the turn's questions go to by the same rule.
 
 ## Context
 

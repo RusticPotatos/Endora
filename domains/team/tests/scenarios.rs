@@ -692,6 +692,107 @@ fn turns_spend(w: &mut Office, name: String, title: String, first: f64, second: 
     }
 }
 
+impl Office {
+    /// The owner's day, as the ledger counts it: these scenarios keep to 17 October.
+    fn today(&self) -> i64 {
+        endora_team::domain::money::day_of(OCT_17, 0)
+    }
+}
+
+/// A task Endora hands a member, not the owner: its turns are the member's own.
+fn endora_hands(w: &mut Office, name: &str, title: &str) {
+    let to = w.member(name);
+    let goal = w.goal();
+    w.add_task(
+        Author::Endora,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: title.to_owned(),
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .expect("Endora may hand out work");
+}
+
+/// One turn of `name`'s on `title`, as it starts next, spending `amount` and ending.
+fn turn_spends(w: &mut Office, name: &str, title: &str, amount: Micros) {
+    let task = w.task(title);
+    let context = w.turn_of(name);
+    assert_eq!(context.task, Some(task), "{name}'s turn is on another task");
+    w.hq.report_usage(context.run, amount)
+        .expect("the ledger takes it");
+    w.hq.runner().finish(context.run, true);
+    w.hq.tick().expect("the tick runs");
+}
+
+#[given(regex = r"^(\w+) has spent \$(\d+(?:\.\d+)?) of (?:her|his|its) share today$")]
+fn spent_of_share(w: &mut Office, name: String, dollars: f64) {
+    let title = format!("{name}'s earlier work");
+    endora_hands(w, &name, &title);
+    let member = w.member(&name);
+    let mut left = micros(dollars);
+    while left > 0 {
+        let amount = left.min(endora_team::domain::money::MOST_A_TURN);
+        if left != micros(dollars) {
+            let task = w.task(&title);
+            w.hq.wake(member, Some(task), WakeReason::Mentioned)
+                .expect("a wake has a receipt");
+        }
+        turn_spends(w, &name, &title, amount);
+        left -= amount;
+    }
+}
+
+#[when(expr = "Endora hands {word} the task {string}")]
+fn endora_hands_step(w: &mut Office, name: String, title: String) {
+    endora_hands(w, &name, &title);
+}
+
+#[when(regex = r#"^(\w+)'s turn on "(.+)" spends \$(\d+(?:\.\d+)?)$"#)]
+fn one_turn_spends(w: &mut Office, name: String, title: String, dollars: f64) {
+    turn_spends(w, &name, &title, micros(dollars));
+}
+
+#[then(regex = r"^(\w+)'s share for today is spent$")]
+fn share_spent(w: &mut Office, name: String) {
+    let member = w.member(&name);
+    let snap = w.hq.snapshot().expect("the snapshot is built");
+    let share = snap["members"]
+        .as_array()
+        .expect("members")
+        .iter()
+        .find(|m| m["id"] == member.0)
+        .expect("on the team")["per_day"]
+        .as_i64()
+        .expect("a share");
+    let used =
+        w.hq.store()
+            .share_committed(member, w.today())
+            .expect("the store answers");
+    assert!(used >= share, "{name} used {used} of {share}");
+}
+
+#[then(regex = r"^the pool shows \$(\d+\.\d\d) spent today$")]
+fn pool_spent(w: &mut Office, dollars: f64) {
+    let snap = w.hq.snapshot().expect("the snapshot is built");
+    assert_eq!(snap["pool"]["spent"].as_i64(), Some(micros(dollars)));
+}
+
+#[then(regex = r"^(\w+)'s share shows \$(\d+\.\d\d) spent today$")]
+fn share_shows(w: &mut Office, name: String, dollars: f64) {
+    let member = w.member(&name);
+    let used =
+        w.hq.store()
+            .share_committed(member, w.today())
+            .expect("the store answers");
+    assert_eq!(used, micros(dollars));
+}
+
 // --- How the team is doing ------------------------------------------------------------------
 
 impl Office {

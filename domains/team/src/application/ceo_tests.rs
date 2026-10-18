@@ -744,8 +744,8 @@ fn the_pool_is_split_between_the_paid_and_a_local_member_is_never_turned_away_fo
         .collect();
     assert_eq!(
         per_day,
-        [1_361_110, 972_222, 0],
-        "35 to 25 of $2.33; the local free"
+        [1_719_298, 614_035, 0],
+        "35 on Opus to 25 on Sonnet, at half Opus's price, of $2.33; the local free"
     );
 
     // The developer, on the house's model, reserves nothing, and is never out of budget.
