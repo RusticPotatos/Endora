@@ -386,3 +386,87 @@ fn every_change_moves_the_revision_on_and_a_refusal_does_not() {
     let _ = bay.wire(phone, phone_out, level(1));
     assert_eq!(bay.revision(), r);
 }
+
+#[test]
+fn old_device_doors_merge_into_the_general_one_keeping_wires_and_levels() {
+    let mut bay = Patchbay::default();
+    let station = bay
+        .add_source(
+            "Test station",
+            SourceKind::Radio("https://radio.example.com/test".to_owned()),
+            None,
+        )
+        .unwrap();
+    let pad_door = bay
+        .add_source("Endora Mixer (Pad)", SourceKind::AirPlay, Some("pad"))
+        .unwrap();
+    let tv_door = bay
+        .add_source("Endora Mixer (Tv)", SourceKind::AirPlay, Some("tv"))
+        .unwrap();
+    let pad = bay
+        .add_speaker("Pad", SpeakerKind::Stream, Some("pad"))
+        .unwrap();
+    let kitchen = bay
+        .add_speaker("Kitchen", SpeakerKind::AirPlay, None)
+        .unwrap();
+    let office = bay
+        .add_speaker("Office", SpeakerKind::AirPlay, None)
+        .unwrap();
+    bay.wire(station, pad, level(50)).unwrap();
+    bay.wire(pad_door, kitchen, level(40)).unwrap();
+    bay.wire(tv_door, kitchen, level(70)).unwrap();
+    bay.wire(tv_door, office, level(20)).unwrap();
+    bay.save_setup("Evening").unwrap();
+
+    assert_eq!(bay.merge_device_doors(), Ok(2));
+    let general = bay.ensure_general_door().unwrap();
+    assert!(bay.source(pad_door).is_none() && bay.source(tv_door).is_none());
+    assert!(bay.source(station).is_some(), "an unrelated source went");
+    let wires: Vec<(SourceId, SpeakerId, u8)> = bay
+        .wires()
+        .iter()
+        .map(|w| (w.source, w.speaker, w.level.get()))
+        .collect();
+    assert_eq!(
+        wires,
+        vec![
+            (station, pad, 50),
+            (general, kitchen, 70),
+            (general, office, 20)
+        ]
+    );
+    let saved = bay.setups();
+    assert_eq!(saved[0].1.len(), 3, "the setup kept a wire per speaker");
+    let on_door = |s: SourceId| saved[0].1.iter().filter(|w| w.source == s).count();
+    assert_eq!((on_door(general), on_door(station)), (2, 1));
+    assert_eq!(bay.merge_device_doors(), Ok(0), "done twice");
+}
+
+#[test]
+fn the_general_door_is_made_once_and_has_no_device() {
+    let mut bay = Patchbay::default();
+    let first = bay.ensure_general_door().unwrap();
+    let source = bay.source(first).unwrap();
+    assert_eq!(source.name, GENERAL_DOOR);
+    assert_eq!(source.kind, SourceKind::AirPlay);
+    assert_eq!(source.device, None);
+    let revision = bay.revision();
+    assert_eq!(bay.ensure_general_door().unwrap(), first);
+    assert_eq!(bay.revision(), revision, "made twice");
+    assert_eq!(bay.sources().len(), 1);
+}
+
+#[test]
+fn the_general_door_can_be_wired_to_any_speaker_a_phone_too() {
+    let (mut bay, _, _, phone_out, _, _) = usual();
+    let general = bay.ensure_general_door().unwrap();
+    assert_eq!(bay.wire(general, phone_out, level(80)), Ok(()));
+}
+
+#[test]
+fn a_taken_name_stops_the_general_door_without_a_change() {
+    let mut bay = Patchbay::default();
+    bay.add_speaker(GENERAL_DOOR, SpeakerKind::AirPlay, None)
+        .unwrap();
+    assert_eq!(bay.ensure_general_door(), Err(Refusal::NameTaken));
+}

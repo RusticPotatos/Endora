@@ -1538,7 +1538,8 @@ if (failures.length) {
   runInContext(`SOUND.error = ""; SOUND.ticket = null; SOUND.listening = false; SOUND.found = ["Kitchen", "Living room"];
     SOUND.state = { senders: 4, listening: [4],
       sources: [{ id: 1, name: "<b>Classical</b>", kind: "radio", device: null, address: "https://radio.example.com/c" },
-                { id: 2, name: "Endora Mixer (iPhone)", kind: "airplay", device: "iphone" }],
+                { id: 2, name: "Endora Mixer (iPhone)", kind: "airplay", device: "iphone" },
+                { id: 6, name: "Endora Mixer", kind: "airplay", device: null }],
       speakers: [{ id: 3, name: "Kitchen", kind: "airplay", device: null, volume: 40, borrowed: false },
                  { id: 4, name: "iPhone", kind: "stream", device: "iphone", volume: 100, borrowed: false },
                  { id: 5, name: "Office", kind: "airplay", device: null, volume: 70, borrowed: true }],
@@ -1550,12 +1551,16 @@ if (failures.length) {
   for (const act of ['data-act="sound:wire:1-3"', 'data-act="sound:wire:1-5"', 'data-act="sound:wire:2-3"',
     'data-change="sound:level:1-3"', 'data-change="sound:all:1"', 'data-change="sound:volume:3"',
     'data-act="sound:play:0"', 'data-act="sound:forget:0"', 'data-act="sound:mine"',
-    'data-act="sound:free:5"', 'data-act="sound:addfound:1"']) {
+    'data-act="sound:free:5"', 'data-act="sound:addfound:1"', 'data-act="sound:wire:6-3"',
+    'data-act="sound:wire:6-4"', 'data-act="sound:removespeaker:4"']) {
     if (!screen.includes(act)) fail(`speakers: the screen does not offer ${act}`);
   }
   if (screen.includes('data-act="sound:wire:2-4"')) fail("speakers: the phone was offered its own stream");
-  if (!screen.includes("pick “Endora Mixer (iPhone)” in its AirPlay menu")) fail("speakers: a receiver does not say how to use it");
-  if (!screen.includes('data-act="sound:addreceiver"')) fail("speakers: a receiver cannot be added");
+  if (!screen.includes("for iphone to cast into; can&#39;t play back on iphone") && !screen.includes("for iphone to cast into; can't play back on iphone")) fail("speakers: a device door does not say it is for its device to cast into");
+  if (!screen.includes("Cast anything here (Apple TV, phone…) and wire it to where you listen")) fail("speakers: the general door does not say what it is");
+  if (!screen.includes("A device wired here hears what it casts in")) fail("speakers: the general door does not warn that a wired device hears itself");
+  if (screen.includes('data-act="sound:wire:6-') === false) fail("speakers: the general door is not offered to speakers");
+  if (screen.includes('data-act="sound:addreceiver"') || screen.includes('data-act="sound:receiver:')) fail("speakers: a per-device door can still be made");
   if (screen.includes('data-act="sound:addfound:0"')) fail("speakers: a speaker already added was offered again");
   if (screen.includes('data-act="sound:free:3"')) fail("speakers: a speaker nobody borrowed offered to be taken back");
   // A borrowed speaker says so where it is tapped, and the way back is above the sources.

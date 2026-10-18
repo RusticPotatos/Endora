@@ -8,6 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// plays one group, so no more than this many groups can include an AirPlay speaker.
 pub const SENDERS: usize = 4;
 
+/// The name of the general AirPlay door: the receiver of no device, that any device (an Apple
+/// TV, a phone) casts into and that can be wired to any speaker.
+pub const GENERAL_DOOR: &str = "Endora Mixer";
+
 /// The longest name a source, speaker or setup may have.
 pub const LONGEST_NAME: usize = 40;
 
@@ -358,6 +362,87 @@ impl Patchbay {
         self.wires.retain(|(speaker, _), _| *speaker != id);
         self.changed();
         true
+    }
+
+    /// Moves the old per-device AirPlay doors ("Endora Mixer (Pad)") into the general door:
+    /// each of their wires (and those in saved setups) goes to the general door's same
+    /// speaker, at the higher level when two meet, and the device doors are removed. The
+    /// general door is made if need be. How many device doors it removed.
+    ///
+    /// # Errors
+    /// Something other than a door has the general door's name.
+    pub fn merge_device_doors(&mut self) -> Result<usize, Refusal> {
+        let old: Vec<SourceId> = self
+            .sources
+            .values()
+            .filter(|s| s.kind == SourceKind::AirPlay && s.device.is_some())
+            .map(|s| s.id)
+            .collect();
+        if old.is_empty() {
+            return Ok(0);
+        }
+        let general = self.ensure_general_door()?;
+        let moved: Vec<((SpeakerId, SourceId), Level)> = self
+            .wires
+            .iter()
+            .filter(|((_, source), _)| old.contains(source))
+            .map(|(k, l)| (*k, *l))
+            .collect();
+        for ((speaker, source), level) in moved {
+            self.wires.remove(&(speaker, source));
+            let best = self
+                .wires
+                .get(&(speaker, general))
+                .map_or(level, |now| level.max(*now));
+            self.wires.insert((speaker, general), best);
+        }
+        for (_, wires) in self.setups.values_mut() {
+            let mut merged: BTreeMap<SpeakerId, Wire> = BTreeMap::new();
+            let mut kept: Vec<Wire> = Vec::new();
+            for w in wires.iter() {
+                if !old.contains(&w.source) {
+                    kept.push(*w);
+                    continue;
+                }
+                let at = merged.entry(w.speaker).or_insert(Wire {
+                    source: general,
+                    speaker: w.speaker,
+                    level: w.level,
+                });
+                at.level = at.level.max(w.level);
+            }
+            for (_, w) in merged {
+                match kept
+                    .iter_mut()
+                    .find(|k| k.source == general && k.speaker == w.speaker)
+                {
+                    Some(k) => k.level = k.level.max(w.level),
+                    None => kept.push(w),
+                }
+            }
+            *wires = kept;
+        }
+        for id in &old {
+            self.sources.remove(id);
+        }
+        self.changed();
+        Ok(old.len())
+    }
+
+    /// The general AirPlay door (see [`GENERAL_DOOR`]), made if there is none. Any device can
+    /// cast into it, and it can be wired to any speaker, since it belongs to no device.
+    ///
+    /// # Errors
+    /// Something else already has its name.
+    pub fn ensure_general_door(&mut self) -> Result<SourceId, Refusal> {
+        if let Some(door) = self
+            .sources
+            .values()
+            .find(|s| s.kind == SourceKind::AirPlay && s.device.is_none())
+        {
+            return Ok(door.id);
+        }
+        self.add_source(GENERAL_DOOR, SourceKind::AirPlay, None)
     }
 
     /// The source with this id.
