@@ -43,6 +43,13 @@ function hqWorldCard(s) {
     <ul class="hq-team hq-world">${sectionRows || `<li class="hq-empty">No sections yet: the CEO writes them from the timeline.</li>`}</ul>
     <details><summary>Its timeline (${timeline.length})</summary><ul class="hq-thread hq-timeline">${timelineRows || `<li class="hq-empty">Nothing yet.</li>`}</ul></details>
     ${derived}
+    <details><summary>Write as the owner</summary>
+      <p class="hq-note">Your words stand on the house page as an insight and show first in every briefing. Writing under a key that exists replaces that section; its old text stays in its history.</p>
+      <div class="hq-row"><label>Key <input id="hq-w-key" maxlength="40" placeholder="nas"></label>
+        <label>Title <input id="hq-w-title" maxlength="80" placeholder="The NAS"></label></div>
+      <textarea id="hq-w-text" rows="4" maxlength="1200" aria-label="Section text (first line is its headline)"></textarea>
+      <div class="hq-row"><button class="hq-btn ok" data-act="hq:world:write:section">Write the section</button>
+        <button class="hq-btn" data-act="hq:world:write:timeline">Add to the timeline</button></div></details>
     <h3>Stories</h3>
     <ul class="hq-team hq-world">${stories || `<li class="hq-empty">No stories yet.</li>`}</ul>
     <div class="hq-row"><button class="hq-btn" data-act="hq:world:export:md">Download the world (Markdown)</button></div></section>`;
@@ -61,6 +68,23 @@ async function hqWorldAct(kind, what) {
       flash("The world is saved as team-world.md.", "ok");
     } catch (e) { flash("Couldn't download it: " + e.message, "err"); }
     return true;
+  }
+  if (kind === "write") {
+    const val = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+    const text = val("hq-w-text");
+    if (!text) { flash("Write something first.", "err"); return true; }
+    try {
+      if (what === "section") {
+        const title = val("hq-w-title");
+        if (!title) { flash("A section needs a title.", "err"); return true; }
+        await api("POST", "/v1/hq/world/section", { page: "house", key: val("hq-w-key"), title, text });
+        flash("It is on the house page.", "ok");
+      } else {
+        await api("POST", "/v1/hq/world/timeline", { page: "house", text });
+        flash("It is on the timeline.", "ok");
+      }
+    } catch (e) { flash("Couldn't write it: " + e.message, "err"); return true; }
+    await loadHQ(); render(); return true;
   }
   const [op, n] = String(what || "").split("-");
   const list = kind === "story" ? (w.stories || []) : (w.sections || []);

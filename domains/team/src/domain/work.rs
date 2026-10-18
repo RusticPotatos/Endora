@@ -82,6 +82,18 @@ impl Role {
         }
     }
 
+    /// The role as HQ's screen names it: the reviewer is the tester (ADR 0114).
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Ceo => "CEO",
+            Self::Lead => "Lead",
+            Self::Developer => "Developer",
+            Self::Researcher => "Researcher",
+            Self::Reviewer => "Tester",
+        }
+    }
+
     /// The role with this [`name`](Self::name), if there is one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {

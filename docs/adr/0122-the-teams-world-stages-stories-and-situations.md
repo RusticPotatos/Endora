@@ -224,3 +224,14 @@ and `world_retell_asked:<member>`. No existing row changes; nothing is deleted.
   carries the moment, so it applies where no rule was written.
 - **Moving notebook notes into a new table.** Rejected as riskier than reading the notes as they
   are, with the same result for now.
+
+## Amendments
+
+- 2026-10-18: the move compares a yearless date with the move's *day*, not its instant, strips a
+  date the writer put at the start of a line, and is mended once (`world_dates_repaired`) where
+  an early-morning move had dated it a year back; the one change a timeline row ever takes, with
+  the old value kept in `world_timeline_repairs`. Every briefing states today's date with its
+  year, and a member's text starting with a date whose year is one out on today's date is
+  corrected and recorded. The owner may write a section or a timeline entry directly
+  (`POST /v1/hq/world/section`, `/timeline`); such a section is an insight at least and a
+  member cannot overwrite it.

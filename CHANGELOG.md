@@ -9,6 +9,12 @@ tagged release.
 
 ### Added
 
+- **The owner writes the world** ([ADR 0122](docs/adr/0122-the-teams-world-stages-stories-and-situations.md)).
+  `POST /v1/hq/world/section {page, key, title, text}` writes or replaces a section as the
+  owner (an insight at least, canon if it was, no evidence asked, every revision kept) and
+  `POST /v1/hq/world/timeline {page, at?, text}` adds a dated entry; both through the node and
+  its audit log, with a "Write as the owner" form on the World card. The owner's sections come
+  first in every member's briefing, and a member cannot overwrite one.
 - **Games in the office** ([ADR 0121](docs/adr/0121-games-in-the-office.md)). Ping-pong and
   pool keep score, for nothing: when two members are free HQ's engine plays the match itself,
   point by point or shot by shot, from a seeded generator and each member's hidden, practised
@@ -594,6 +600,18 @@ tagged release.
 
 ### Fixed
 
+- **The team's world, from the owner's live export** ([ADR 0122](docs/adr/0122-the-teams-world-stages-stories-and-situations.md)).
+  The move of the house log dated a yearless day by comparing its noon with the move's instant,
+  so a move in the early morning put the move's own day a year back; it now compares days, in
+  the owner's calendar. It also kept the date a writer had put at the start of a line
+  (`17 Oct: 2025-10-18: …`): those are taken off. A one-time repair (`world_dates_repaired`,
+  with each row's old date and text kept in `world_timeline_repairs`) mends the rows already
+  moved. The Markdown export lists the timeline newest first and says so, prints the lab page
+  once under a clean heading (the heading had been built from the page's whole text, so its
+  lines came out twice), and names roles as the screen does (CEO, Lead, Tester). Every
+  briefing now says today's date with the year, and a year one out on a date that starts a
+  member's note, house note, story or section, within three days of today, is corrected and
+  recorded in the feed.
 - **Time-bound criteria** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md)): a
   criterion may wait (`after`) from the work's last change; the lab's "no new alarm for the
   same containers since" waits 60 minutes, and closing or passing it before then is refused,

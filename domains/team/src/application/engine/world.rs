@@ -136,6 +136,44 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(true)
     }
 
+    /// Mends, once, what the move dated wrongly (the first run of it compared a yearless
+    /// day's noon with the move's instant, so a move in the early morning put the move's own
+    /// day a year back, and it kept the dates writers had put at the start of their lines):
+    /// the rows the house log became take the year the log's own dates imply and lose the
+    /// date at the start of their text. What a row said before is kept in
+    /// `world_timeline_repairs`. Returns how many rows were mended; 0 when it has been done,
+    /// or when there is no move yet to mend.
+    ///
+    /// # Errors
+    /// A store failure; nothing is mended then.
+    pub fn repair_world_dates(&self) -> Done<usize> {
+        let _held = self.held();
+        let Some(moved_at) = self
+            .store
+            .setting("world_migrated")?
+            .and_then(|m| m.parse::<Millis>().ok())
+        else {
+            return Ok(0);
+        };
+        let rows = self
+            .store
+            .timeline_rows_by(HOUSE.slug, world_migration::FROM_THE_HOUSE_LOG)?;
+        let fixes = world_migration::repairs(
+            &rows,
+            &self.house_log()?,
+            moved_at,
+            self.settings.offset_minutes,
+        );
+        if !self.store.repair_timeline(&fixes, self.clock.now())? || fixes.is_empty() {
+            return Ok(0);
+        }
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "dates repaired", "timeline": fixes.len(), "by": "Endora" }),
+        )?;
+        Ok(fixes.len())
+    }
+
     /// Whether the old record has been moved into the world.
     pub(super) fn world_migrated(&self) -> Done<bool> {
         Ok(self.store.setting("world_migrated")?.is_some())
@@ -333,6 +371,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .find(|s| s.handle == handle))
     }
 
+    /// A member's text with the year of a date it starts with corrected when the year is out
+    /// by one while the day and month are today's, give or take three days. The correction
+    /// is recorded in the feed.
+    pub(super) fn dated_true(&self, who: &str, what: &str, text: &str) -> Done<String> {
+        let today = crate::domain::money::day_of(self.clock.now(), self.settings.offset_minutes);
+        let Some((fixed, was)) = crate::domain::house::corrected_year(text, today) else {
+            return Ok(text.to_owned());
+        };
+        let (now, _, _) = crate::domain::lessons::civil(today);
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "year corrected", "by": who, "in": what, "was": was, "now": now }),
+        )?;
+        Ok(fixed)
+    }
+
     /// Adds a line to a page's timeline, now.
     fn timeline_line(&self, page: &str, by: &str, run: Option<RunId>, line: &str) -> Done<()> {
         let line: String = line.chars().take(world::TIMELINE_LINE_MOST).collect();
@@ -351,8 +405,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The house page's timeline gains a member's dated line: what the house log's `note_house`
     /// does now (ADR 0122). Returns the line, dated.
     pub(super) fn note_house_line(&self, run: &Run, ceo: &Member, entry: &str) -> Done<String> {
+        let entry = self.dated_true(&ceo.name, "the house page's timeline", entry)?;
         let line =
-            crate::domain::house::line(entry, self.clock.now(), self.settings.offset_minutes)
+            crate::domain::house::line(&entry, self.clock.now(), self.settings.offset_minutes)
                 .map_err(EngineError::Refused)?;
         let said = line
             .split_once(": ")
@@ -545,7 +600,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             said.push_str(&format!(
                 "- {} ({}, {}{to}{away})\n",
                 m.name,
-                m.role.name(),
+                m.role.title(),
                 m.brain.label()
             ));
         }
@@ -578,14 +633,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 steward: self.steward_named(Scope::House)?,
             }));
         }
-        let heading = world::one_line(&write.heading, world::HEADING_MOST).map_err(refused)?;
+        let said =
+            |text: &str| self.dated_true(&writer.name, &format!("world:{}", page.slug), text);
+        let (heading_in, headline_in, body_in) = (
+            said(&write.heading)?,
+            said(&write.headline)?,
+            said(&write.body)?,
+        );
+        let heading = world::one_line(&heading_in, world::HEADING_MOST).map_err(refused)?;
         let anchor = match &write.anchor {
             Some(a) if !a.trim().is_empty() => world::anchor_of(a),
             _ => world::anchor_of(&heading),
         }
         .ok_or_else(|| refused(WorldRefusal::NeedsHeading))?;
-        let headline = world::one_line(&write.headline, world::HEADLINE_MOST).map_err(refused)?;
-        let body = world::body(&write.body).map_err(refused)?;
+        let headline = world::one_line(&headline_in, world::HEADLINE_MOST).map_err(refused)?;
+        let body = world::body(&body_in).map_err(refused)?;
         let warrant = world::one_line(&write.warrant, world::WARRANT_MOST).map_err(refused)?;
         let found = self.found_all(&write.evidence)?;
         world::warranted(
@@ -597,7 +659,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
         .map_err(EngineError::Refused)?;
         let old = self.section_at(page.slug, &anchor)?;
-        if old.as_ref().is_some_and(|s| s.stage == Stage::Canon) {
+        if old
+            .as_ref()
+            .is_some_and(|s| s.stage == Stage::Canon || s.written_by == "the owner")
+        {
             return Err(refused(WorldRefusal::CanonIsTheOwners));
         }
         let heading = if heading.is_empty() {
@@ -978,6 +1043,130 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
+    /// The owner writes a section of a written page, or replaces one: its heading, a headline
+    /// (the text's first line) and the rest as its body. It stands as an insight at least, with
+    /// no evidence asked (the owner is the warrant), canon if it was; the revision it replaces
+    /// stays in the section's history. A date the text starts with is mended as a member's is.
+    /// Returns its address.
+    ///
+    /// # Errors
+    /// [`WorldRefusal::NotAnAddress`]; [`WorldRefusal::Derived`]; [`WorldRefusal::NeedsHeading`]
+    /// for no title or no text; [`WorldRefusal::TooLong`].
+    pub fn write_as_owner(&self, page: &str, key: &str, title: &str, text: &str) -> Done<String> {
+        let _held = self.held();
+        let page: Page = world::page(page.trim())
+            .ok_or_else(|| refused(WorldRefusal::NotAnAddress(page.to_owned())))?;
+        if page.derived {
+            return Err(refused(WorldRefusal::Derived(format!(
+                "world:{}",
+                page.slug
+            ))));
+        }
+        let owner = "the owner";
+        let text = self.dated_true(owner, &format!("world:{}", page.slug), text)?;
+        let heading = world::one_line(title, world::HEADING_MOST).map_err(refused)?;
+        let anchor = world::anchor_of(if key.trim().is_empty() { &heading } else { key })
+            .ok_or_else(|| refused(WorldRefusal::NeedsHeading))?;
+        let text = world::body(&text).map_err(refused)?;
+        let (first, rest) = text.split_once('\n').unwrap_or((&text, ""));
+        let headline = world::one_line(first, usize::MAX).map_err(refused)?;
+        let headline: String = headline.chars().take(world::HEADLINE_MOST).collect();
+        if heading.is_empty() || headline.is_empty() {
+            return Err(refused(WorldRefusal::NeedsHeading));
+        }
+        // A headline cut short keeps its end in the body, so nothing written is lost.
+        let body = if headline.chars().count() < first.trim().chars().count() {
+            text.clone()
+        } else {
+            rest.trim().to_owned()
+        };
+        let old = self.section_at(page.slug, &anchor)?;
+        let now = self.clock.now();
+        let section = Section {
+            id: old.as_ref().map_or(0, |s| s.id),
+            page: page.slug.to_owned(),
+            anchor,
+            heading,
+            headline,
+            body,
+            stage: if old.as_ref().is_some_and(|s| s.stage == Stage::Canon) {
+                Stage::Canon
+            } else {
+                Stage::Insight
+            },
+            warrant: "Written by the owner.".to_owned(),
+            evidence: Vec::new(),
+            verified_at: Some(now),
+            verified_by: owner.to_owned(),
+            superseded_by: None,
+            why: String::new(),
+            written_by: owner.to_owned(),
+            written_in_run: None,
+            revision: old.as_ref().map_or(1, |s| s.revision + 1),
+            updated_at: now,
+            last_used_at: now,
+        };
+        let address = section.address();
+        let what = if old.is_some() { "revised" } else { "wrote" };
+        self.store
+            .save_section(&section, &format!("the owner {what} it"))?;
+        self.timeline_line(
+            page.slug,
+            owner,
+            None,
+            &format!("The owner {what} \"{}\" ({address}).", section.heading),
+        )?;
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "owner wrote", "address": address, "by": "owner",
+                    "revision": section.revision }),
+        )?;
+        Ok(address)
+    }
+
+    /// The owner adds a dated entry to a written page's timeline: at `at`, else now. A date
+    /// the text starts with is mended if its year is out, then taken off: the entry's date is
+    /// HQ's.
+    ///
+    /// # Errors
+    /// [`WorldRefusal::NotAnAddress`]; [`WorldRefusal::Derived`]; [`WorldRefusal::NeedsHeading`]
+    /// for no text.
+    pub fn add_to_timeline_as_owner(&self, page: &str, at: Option<Millis>, text: &str) -> Done<()> {
+        let _held = self.held();
+        let page: Page = world::page(page.trim())
+            .ok_or_else(|| refused(WorldRefusal::NotAnAddress(page.to_owned())))?;
+        if page.derived {
+            return Err(refused(WorldRefusal::Derived(format!(
+                "world:{}",
+                page.slug
+            ))));
+        }
+        let owner = "the owner";
+        let text = self.dated_true(owner, &format!("world:{}", page.slug), text)?;
+        let line = world::one_line(
+            crate::domain::house::without_dates(&text),
+            world::TIMELINE_LINE_MOST,
+        )
+        .map_err(refused)?;
+        if line.is_empty() {
+            return Err(refused(WorldRefusal::NeedsHeading));
+        }
+        self.store.add_timeline(
+            &TimelineLine {
+                page: page.slug.to_owned(),
+                at: at.unwrap_or_else(|| self.clock.now()),
+                by: owner.to_owned(),
+                line: line.clone(),
+            },
+            None,
+        )?;
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "owner noted", "page": page.slug, "entry": line, "by": "owner" }),
+        )?;
+        Ok(())
+    }
+
     fn may_be_canon(stage: Stage, at: &Address) -> Done<()> {
         if stage == Stage::Canon {
             return Err(refused(WorldRefusal::AlreadyCanon(at.said())));
@@ -1071,7 +1260,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let members = self.store.members()?;
         let scope = self.scope_written(&teller, &members);
         let handle = world::handle_of(&told.handle).map_err(refused)?;
-        let part = |p: &str| world::one_line(p, world::STORY_PART_MOST).map_err(refused);
+        let part = |p: &str| {
+            let p = self.dated_true(&teller.name, "a story", p)?;
+            world::one_line(&p, world::STORY_PART_MOST).map_err(refused)
+        };
         let (moment, reflex, instead, because) = (
             part(&told.moment)?,
             part(&told.reflex)?,
@@ -1346,8 +1538,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 md.push_str(&format!("{}\n\n", s.why));
             }
         }
-        md.push_str("### Timeline\n\n");
-        for l in self.store.timeline(HOUSE.slug)? {
+        md.push_str("### Timeline (newest first)\n\n");
+        for l in self.store.timeline(HOUSE.slug)?.into_iter().rev() {
             md.push_str(&format!(
                 "- {}, {}: {}\n",
                 day_with_year(l.at, off),
@@ -1356,20 +1548,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         md.push('\n');
+        // A derived page: its heading, then its lines (its first line is the heading).
         md.push_str(&format!(
-            "## {}\n\n",
-            self.lab_said().trim_end().trim_end_matches(':')
+            "## {} (world:{})\n\n",
+            world::LAB.title,
+            world::LAB.slug
         ));
-        let lab = self.lab_said();
-        for line in lab.lines().skip(1) {
+        for line in self.lab_said().lines().skip(1) {
             md.push_str(&format!("{line}\n"));
         }
-        let team = self.team_said()?;
         md.push_str(&format!(
-            "\n## {}\n\n",
-            team.lines().next().unwrap_or("").trim_end_matches(':')
+            "\n## {} (world:{})\n\n",
+            world::TEAM.title,
+            world::TEAM.slug
         ));
-        for line in team.lines().skip(1) {
+        for line in self.team_said()?.lines().skip(1) {
             md.push_str(&format!("{line}\n"));
         }
         md.push_str("\n## Stories\n\n");

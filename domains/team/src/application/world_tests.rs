@@ -227,6 +227,254 @@ fn the_house_log_and_the_lessons_move_in_once_and_nothing_old_is_deleted() {
 }
 
 #[test]
+fn a_move_that_dated_the_house_log_a_year_out_is_repaired_once_and_nothing_is_lost() {
+    use crate::domain::world_migration::{Plan, TimelineLine};
+    // The move ran at 04:00 on 18 Oct 2026, and the live data came out as it did then.
+    let early = OCT_18 - 8 * 3_600_000;
+    let clock = Hands(AtomicI64::new(early));
+    let hq = engine(&clock);
+    assert_eq!(
+        hq.repair_world_dates().unwrap(),
+        0,
+        "nothing to mend before the move"
+    );
+    hq.set_house_log("- 18 Oct: 18 Oct: #668 accepted.\n- 17 Oct: 2025-10-18: Taken.\n- 16 Oct 2025: A year ago.")
+        .unwrap();
+    let row = |at, line: &str| TimelineLine {
+        page: "house".to_owned(),
+        at,
+        by: "the house log".to_owned(),
+        line: line.to_owned(),
+    };
+    let wrong = Plan {
+        timeline: vec![
+            row(OCT_18 - 365 * DAY, "18 Oct: #668 accepted."),
+            row(OCT_18 - DAY, "2025-10-18: Taken."),
+            row(OCT_18 - 2 * DAY - 365 * DAY, "A year ago."),
+        ],
+        lessons: Vec::new(),
+    };
+    assert!(hq.store().migrate_world(&wrong, early).unwrap());
+
+    assert_eq!(hq.repair_world_dates().unwrap(), 2, "two rows mended");
+    let lines: Vec<(i64, String)> = hq
+        .store()
+        .timeline("house")
+        .unwrap()
+        .into_iter()
+        .map(|l| (l.at, l.line))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            (OCT_18 - 2 * DAY - 365 * DAY, "A year ago.".to_owned()),
+            (OCT_18 - DAY, "Taken.".to_owned()),
+            (OCT_18, "#668 accepted.".to_owned()),
+        ],
+        "the year of a yearless date; the writer's own year, and a date written twice"
+    );
+    assert_eq!(hq.repair_world_dates().unwrap(), 0, "once");
+}
+
+#[test]
+fn the_export_reads_newest_first_and_each_page_once_with_the_screens_role_names() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    team(&hq);
+    for (at, line) in [
+        (OCT_18 - 3 * DAY, "An older line."),
+        (OCT_18 - DAY, "A newer line."),
+    ] {
+        hq.store()
+            .add_timeline(
+                &crate::domain::world_migration::TimelineLine {
+                    page: "house".to_owned(),
+                    at,
+                    by: "Mara".to_owned(),
+                    line: line.to_owned(),
+                },
+                None,
+            )
+            .unwrap();
+    }
+    let md = hq.world_markdown().unwrap();
+    let newer = md.find("A newer line.").expect("the newer line");
+    let older = md.find("An older line.").expect("the older line");
+    assert!(newer < older, "newest first\n{md}");
+    assert!(
+        md.contains("newest first"),
+        "the heading line says so\n{md}"
+    );
+    let lab = md
+        .lines()
+        .position(|l| l == "## How the lab is built (world:lab)")
+        .unwrap_or_else(|| panic!("a clean heading\n{md}"));
+    let lines: Vec<&str> = md.lines().collect();
+    assert!(lines[lab + 1].is_empty(), "{md}");
+    let first = lines[lab + 2];
+    assert!(first.starts_with("- "), "{md}");
+    assert_eq!(md.matches(first).count(), 1, "the lab's lines once\n{md}");
+    assert!(!md.contains("(world:lab):"), "{md}");
+    assert!(md.contains("- Mara (CEO, "), "{md}");
+    assert!(md.contains("- Ada (Lead, "), "{md}");
+    assert!(md.contains("- Linus (Developer, "), "{md}");
+    assert!(md.contains("- Dee (Tester, "), "{md}");
+}
+
+#[test]
+fn every_briefing_says_what_day_it_is_and_a_year_out_on_todays_date_is_corrected() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    for (member, who) in [
+        (t.ceo, "Mara"),
+        (t.lead, "Ada"),
+        (t.dev, "Linus"),
+        (t.tester, "Dee"),
+    ] {
+        task_for(&hq, t.goal, member, "Look");
+        let told = turn(&hq, member).told;
+        assert!(
+            told.contains(&format!("You are {who}, the team's"))
+                && told.contains(" Today is Sun 18 Oct 2026.\n"),
+            "{told}"
+        );
+    }
+    // The CEO writes a house note, a section, and a note, each starting with last year's date.
+    task_for(&hq, t.goal, t.ceo, "Review");
+    let mara = turn(&hq, t.ceo);
+    let fresh = reading(&hq, &mara);
+    use_tool(
+        &hq,
+        &mara,
+        "note_house",
+        &json!({ "entry": "2025-10-18: The NAS is fine." }),
+    )
+    .unwrap();
+    use_tool(
+        &hq,
+        &mara,
+        "write_world",
+        &json!({ "heading": "Backups", "headline": "18 Oct 2025: Backups run at 03:00.",
+                 "body": "2025-10-17: nightly", "stage": "insight", "warrant": "read",
+                 "evidence": [fresh.clone()] }),
+    )
+    .unwrap();
+    use_tool(
+        &hq,
+        &mara,
+        "note",
+        &json!({ "text": "Oct 18, 2025 the NAS is fine", "evidence": [fresh] }),
+    )
+    .unwrap();
+    let section = &hq.store().sections().unwrap()[0];
+    assert_eq!(section.headline, "18 Oct 2026: Backups run at 03:00.");
+    assert_eq!(section.body, "2026-10-17: nightly");
+    assert_eq!(
+        hq.notebook(t.ceo).unwrap()[0].text,
+        "Oct 18, 2026 the NAS is fine"
+    );
+    let corrected = hq
+        .store()
+        .events_after(0)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.data["what"] == "year corrected")
+        .count();
+    assert_eq!(corrected, 4, "each correction is recorded");
+}
+
+#[test]
+fn the_owner_writes_a_section_and_a_timeline_entry_that_the_team_reads_and_members_cannot_replace()
+{
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let address = hq
+        .write_as_owner(
+            "house",
+            "nas",
+            "The NAS",
+            "The NAS has 16 GB.\nSwap fills at night.",
+        )
+        .unwrap();
+    assert_eq!(address, "world:house#nas");
+    let section = hq.store().sections().unwrap().remove(0);
+    assert_eq!(
+        (
+            section.stage,
+            section.written_by.as_str(),
+            section.headline.as_str(),
+            section.body.as_str()
+        ),
+        (
+            Stage::Insight,
+            "the owner",
+            "The NAS has 16 GB.",
+            "Swap fills at night."
+        )
+    );
+    // Replacing it keeps what it said.
+    hq.write_as_owner("house", "nas", "The NAS", "The NAS has 32 GB.")
+        .unwrap();
+    let section = hq.store().sections().unwrap().remove(0);
+    assert_eq!(
+        (section.revision, section.headline.as_str()),
+        (2, "The NAS has 32 GB.")
+    );
+    assert_eq!(
+        hq.store().section_revisions(section.id).unwrap(),
+        vec![
+            (1, "The NAS has 16 GB.".to_owned()),
+            (2, "The NAS has 32 GB.".to_owned())
+        ]
+    );
+    // A page nobody writes by hand, and a section with nothing in it, are refused.
+    assert!(hq.write_as_owner("lab", "x", "X", "y").is_err());
+    assert!(hq.write_as_owner("house", "x", "X", "  ").is_err());
+    assert!(hq.write_as_owner("nowhere", "x", "X", "y").is_err());
+    // The timeline entry: a date at its start is HQ's, a year out is mended and recorded.
+    hq.add_to_timeline_as_owner("house", None, "2025-10-18: The owner moved the router.")
+        .unwrap();
+    let line = hq.store().timeline("house").unwrap().pop().unwrap();
+    assert_eq!(
+        (line.by.as_str(), line.at, line.line.as_str()),
+        ("the owner", OCT_18, "The owner moved the router.")
+    );
+    assert!(hq.add_to_timeline_as_owner("lab", None, "x").is_err());
+
+    // It is in the export, and in every member's briefing, first.
+    assert!(hq.world_markdown().unwrap().contains("The NAS has 32 GB."));
+    task_for(&hq, t.goal, t.lead, "Look over the lab");
+    let ada = turn(&hq, t.lead);
+    assert!(
+        ada.told
+            .contains("- The NAS has 32 GB. [insight] (world:house#nas)"),
+        "{}",
+        ada.told
+    );
+    task_for(&hq, t.goal, t.dev, "Fix it");
+    let linus = turn(&hq, t.dev);
+    assert!(linus.told.contains("(world:house#nas)"), "{}", linus.told);
+    // A member's own section on the same key is refused: it is the owner's.
+    task_for(&hq, t.goal, t.ceo, "Review");
+    let mara = turn(&hq, t.ceo);
+    let fresh = reading(&hq, &mara);
+    let refused = use_tool(
+        &hq,
+        &mara,
+        "write_world",
+        &json!({ "heading": "The NAS", "anchor": "nas", "headline": "Overwritten.", "stage": "insight",
+                 "warrant": "read", "evidence": [fresh] }),
+    );
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(
+        hq.store().sections().unwrap()[0].headline,
+        "The NAS has 32 GB."
+    );
+}
+
+#[test]
 fn only_the_owner_makes_something_canon_and_a_demotion_is_said_with_its_reason() {
     let clock = Hands(AtomicI64::new(OCT_18));
     let hq = engine(&clock);
@@ -703,7 +951,7 @@ fn the_world_exports_as_markdown_with_its_stages() {
         "### Timeline",
         "## How the lab is built (world:lab)",
         "## The team (world:team)",
-        "- Mara (ceo, Claude Opus",
+        "- Mara (CEO, Claude Opus",
         "## Stories",
     ] {
         assert!(md.contains(said), "{said}\n---\n{md}");
