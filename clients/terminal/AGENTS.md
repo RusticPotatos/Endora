@@ -3,7 +3,8 @@
 This is the handheld terminal client, `clients/terminal` in the Endora repository (ADR 0099);
 the repository's own AGENTS.md applies too. The terminal speaks to the node only over its
 HTTP API and imports no server crates; a change on both sides lands in one branch, and the
-repository's checks build and test both. Branch from develop.
+repository's checks build and test both. Branch from develop. Both build on the owner's
+global standards, [docs/standards.md](../../docs/standards.md).
 
 Use test-first behavior changes, Conventional Commits, and fail-loud file edits.
 No speculative dependencies, server internals, or execution of model-generated
