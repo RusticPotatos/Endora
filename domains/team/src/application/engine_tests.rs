@@ -680,28 +680,27 @@ fn a_member_past_its_share_still_gets_a_turn_while_the_others_have_some_left() {
     let clock = hands();
     let hq = hq(&clock, 8);
     let t = team(&hq);
-    // The researcher's day is about $0.35 of the pool's $2.33.
-    let researcher = hq.hire("Marie", Role::Researcher, 15, 4, 0).unwrap();
     all_paid(&hq);
-    let first = endoras_task(&hq, t.goal, "Read up on straps");
-    own_turn_spends(&hq, researcher, first, MOST_A_TURN);
+    // Linus's day is about $1.10 of the pool's $2.33: three full turns pass it.
+    let work = endoras_task(&hq, t.goal, "Read up on straps");
+    for _ in 0..3 {
+        own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    }
     let day = crate::domain::money::day_of(NOON, 0);
     assert_eq!(
-        hq.store().share_committed(researcher, day).unwrap(),
-        MOST_A_TURN
+        hq.store().share_committed(t.dev, day).unwrap(),
+        3 * MOST_A_TURN
     );
-    // Past its share, it draws on what Ada, Linus and Grace have not used: a whole turn's cap.
-    let second = endoras_task(&hq, t.goal, "Read up on bracelets");
+    // Past its share, it draws on what Ada and Grace have not used: a whole turn's cap.
     assert_eq!(
-        hq.wake(researcher, Some(second), WakeReason::Mentioned)
-            .unwrap(),
+        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
         Receipt::Queued
     );
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap().into_iter().next_back().unwrap();
     assert_eq!(
         (run.member, run.status, run.reserved),
-        (researcher, RunStatus::Running, MOST_A_TURN),
+        (t.dev, RunStatus::Running, MOST_A_TURN),
         "the per-turn cap still holds"
     );
 }
@@ -723,10 +722,11 @@ fn nobody_gets_a_turn_once_the_pools_day_is_gone_not_even_for_the_owner() {
     all_paid(&hq);
     let work = endoras_task(&hq, t.goal, "Add a list");
     own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
-    // About $0.10 is left of the pool's day: Linus, far past his share, draws only that.
-    let run = own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    // $0.10 is left of the pool's day: Ada's share and her borrowing would allow more, but the
+    // pool's day is the ceiling for everyone.
+    let run = own_turn_spends(&hq, t.lead, work, MOST_A_TURN);
     let spent = hq.store().run(run).unwrap().unwrap().spent;
-    assert!((99_000..=100_000).contains(&spent), "{spent}");
+    assert_eq!(spent, 100_000);
     for member in [t.dev, t.lead, t.reviewer] {
         assert_eq!(
             hq.wake(member, Some(work), WakeReason::Mentioned).unwrap(),
@@ -1497,4 +1497,162 @@ fn a_members_daily_share_is_weighted_by_its_brains_price() {
         share(rae)
     );
     assert_eq!(share(local), 0, "the house's model claims nothing");
+}
+
+/// A pool of $1.00 a day, three paid members: Linus's share is about $0.47, and the others
+/// leave about $0.53 of theirs unused, so he may borrow one more share and no further.
+fn dollar_a_day(clock: &Hands) -> Hq<'_> {
+    Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(8),
+        clock,
+        Settings {
+            pool_per_month: 30 * crate::domain::money::DOLLAR,
+            ..Settings::default()
+        },
+    )
+}
+
+/// What is waiting on the owner's desk about a member being out for the day.
+fn out_for_day_items(hq: &Hq<'_>) -> Vec<super::ports::DeskItem> {
+    hq.store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == "out_for_day")
+        .collect()
+}
+
+/// Linus spends his share and one more, to the cent the rule allows: two full turns, then the
+/// rest of twice his share ($0.47 + $0.47).
+fn linus_spends_twice_his_share(hq: &Hq<'_>, t: &Team, work: TaskId) -> i64 {
+    own_turn_spends(hq, t.dev, work, MOST_A_TURN);
+    own_turn_spends(hq, t.dev, work, MOST_A_TURN);
+    let last = own_turn_spends(hq, t.dev, work, MOST_A_TURN);
+    hq.store().run(last).unwrap().unwrap().spent
+}
+
+#[test]
+fn a_member_past_its_share_borrows_one_more_share_and_no_further() {
+    let clock = hands();
+    let hq = dollar_a_day(&clock);
+    let t = team(&hq);
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    // His share is 470_588; he may spend at most twice it, 941_176.
+    let last = linus_spends_twice_his_share(&hq, &t, work);
+    assert_eq!(
+        last, 141_176,
+        "the third turn gets what is left of twice his share"
+    );
+    let day = crate::domain::money::day_of(NOON, 0);
+    assert_eq!(hq.store().share_committed(t.dev, day).unwrap(), 941_176);
+    assert_eq!(
+        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
+        Receipt::Refused(Refused::OutOfBudget),
+        "no further, though the pool has about $0.06 left"
+    );
+}
+
+#[test]
+fn a_member_at_twice_its_share_asks_the_owner_once_while_the_pool_has_money() {
+    let clock = hands();
+    let hq = dollar_a_day(&clock);
+    let t = team(&hq);
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    linus_spends_twice_his_share(&hq, &t, work);
+    assert!(
+        out_for_day_items(&hq).is_empty(),
+        "nobody has been refused yet"
+    );
+    for _ in 0..3 {
+        assert_eq!(
+            hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
+            Receipt::Refused(Refused::OutOfBudget)
+        );
+    }
+    let items = out_for_day_items(&hq);
+    assert_eq!(items.len(), 1, "one item per member per day");
+    assert_eq!(items[0].member, Some(t.dev));
+    let text = &items[0].text;
+    assert!(text.contains("Linus is out for today"), "{text}");
+    assert!(text.contains("$0.94 spent"), "{text}");
+    assert!(text.contains("share $0.47"), "{text}");
+    assert!(text.contains("borrowed $0.47"), "{text}");
+    assert!(text.contains("pool has $0.06 left today"), "{text}");
+    // Tomorrow it may ask again.
+    clock.forward(24 * 60 * 60 * 1000);
+    linus_spends_twice_his_share(&hq, &t, work);
+    hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap();
+    assert_eq!(out_for_day_items(&hq).len(), 2);
+}
+
+#[test]
+fn approving_lets_the_member_spend_the_allowance_today_and_not_tomorrow() {
+    let clock = hands();
+    let hq = dollar_a_day(&clock);
+    let t = team(&hq);
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    linus_spends_twice_his_share(&hq, &t, work);
+    hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap();
+    let item = out_for_day_items(&hq)[0].id;
+    // More than the pool's day has left is refused; the item stays.
+    assert!(matches!(
+        hq.decide_saying(item, "approve", "5"),
+        Err(EngineError::Refused(_))
+    ));
+    assert_eq!(out_for_day_items(&hq)[0].status, "waiting");
+    hq.decide_saying(item, "approve", "0.05").unwrap();
+    let run = own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    assert_eq!(
+        hq.store().run(run).unwrap().unwrap().spent,
+        50_000,
+        "the allowance, not more"
+    );
+    assert_eq!(
+        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
+        Receipt::Refused(Refused::OutOfBudget),
+        "spent, and no second item today"
+    );
+    assert_eq!(out_for_day_items(&hq).len(), 1);
+    // Tomorrow the allowance is gone: twice his share again, no more.
+    clock.forward(24 * 60 * 60 * 1000);
+    let last = linus_spends_twice_his_share(&hq, &t, work);
+    assert_eq!(last, 141_176);
+}
+
+#[test]
+fn declining_changes_nothing_and_the_owners_own_turns_ignore_the_cap() {
+    let clock = hands();
+    let hq = dollar_a_day(&clock);
+    let t = team(&hq);
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    linus_spends_twice_his_share(&hq, &t, work);
+    hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap();
+    let item = out_for_day_items(&hq)[0].id;
+    hq.decide(item, "decline").unwrap();
+    assert_eq!(out_for_day_items(&hq)[0].status, "decline");
+    assert_eq!(
+        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
+        Receipt::Refused(Refused::OutOfBudget)
+    );
+    assert_eq!(
+        out_for_day_items(&hq).len(),
+        1,
+        "it does not ask again today"
+    );
+    // What the owner asks for is the pool's, outside the share and its cap.
+    let asked = task_for(&hq, t.goal, Some(t.dev), "Add a strap");
+    hq.tick().unwrap();
+    let run = hq.store().runs().unwrap().into_iter().next_back().unwrap();
+    assert_eq!((run.task, run.status), (Some(asked), RunStatus::Running));
+    assert!(run.asked_by_owner);
+    assert!(
+        run.reserved > 0 && run.reserved <= 58_824,
+        "{}",
+        run.reserved
+    );
 }

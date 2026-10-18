@@ -1385,3 +1385,30 @@ fn main() {
             .run_and_exit("features"),
     );
 }
+
+// --- A member out for the day -----------------------------------------------------------------
+
+#[then(regex = r"^the owner's desk holds one request about (\w+) being out for the day$")]
+fn desk_out_for_the_day(w: &mut Office, name: String) {
+    let member = w.member(&name);
+    let items = w.waiting_on_desk("out_for_day");
+    assert_eq!(items.len(), 1, "out for the day: {items:?}");
+    assert_eq!(items[0].member, Some(member));
+    assert!(
+        items[0]
+            .text
+            .starts_with(&format!("{name} is out for today")),
+        "{}",
+        items[0].text
+    );
+}
+
+#[when(regex = r"^the owner gives (\w+) \$(\d+(?:\.\d+)?) more today$")]
+fn give_allowance(w: &mut Office, _name: String, dollars: String) {
+    let item = w
+        .waiting_on_desk("out_for_day")
+        .pop()
+        .expect("a request waits on the desk");
+    w.hq.decide_saying(item.id, "approve", &dollars)
+        .expect("the owner decides");
+}

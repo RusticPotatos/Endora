@@ -414,6 +414,14 @@ tagged release.
 
 ### Changed
 
+- **Borrowing is capped at one extra share, and a member at the cap asks the owner**
+  ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md), amended again). A paid member
+  may spend while its spend today is below its share plus the lesser of its share and what the
+  other paid members have not used; the owner's own requests stay outside it, and the pool's
+  day is still the ceiling. The first time a member is turned away at that limit while the
+  pool's day has money, one "out for today" item goes on the owner's desk (once a member a day):
+  give it an allowance (an amount on the card, at most the pool's day left, $0.50 as offered)
+  until the owner's next day starts, or wait for tomorrow.
 - **A member's share is a first claim, not a wall; the owner's own requests are the pool's;
   and shares are weighted by brain price** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md),
   amended). Past its daily share a paid member draws on what the other paid members have not

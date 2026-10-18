@@ -136,7 +136,7 @@ while each of them got $0.52.
    ceiling. What a turn may reserve (`affordable()`) is the least of the per-turn cap, what is
    left of the pool's day, what is left of the project's cap, and the member's share left plus
    the others' unused (`money::may_draw`). A member on the house's model stays out of it, as
-   before.
+   before. (Borrowing is capped by rule 4, below, from 2026-10-18.)
 2. **The owner's own requests are the pool's.** A turn that exists because the owner asked (a
    task they handed, their reply in a thread, their answer or decision on the desk, "Run now"
    on a routine) is marked `asked_by_owner` from the wake that started it (a wake raised while
@@ -153,14 +153,38 @@ while each of them got $0.52.
    and Zed on Haiku) the lead on Sonnet now has more than a developer on Haiku. The roster shows
    each member's daily share.
 
-Not built: a desk item offering a member who is out for the day an allowance from the pool.
-Under rule 1 a member's draw is never below what is left of the pool's day (the shares add up
-to the pool's day, and the others' unused is counted whole), so a member is out for the day
-only once the pool's day is spent, when there is nothing to give; the item would never be
-offered. It waits on the owner's word on whether borrowing should be limited instead.
+### Borrowing is capped at one extra share, and a member at the cap asks the owner
 
-Scenarios: "A member past its share borrows what the others left" and "The owner's own request
-is the pool's, not the member's" (`features/projects-and-their-money.feature`).
+Decided by the owner on 2026-10-18. Uncapped borrowing (rule 1 above) meant a member was out
+for the day only once the pool's day was spent, so an "out for the day" desk item could never be
+offered. Borrowing is now limited, and the item is built.
+
+4. **A paid member's day reaches at most twice its share.** With `s` its share for the day,
+   `u` its own spend today (the owner's asking left out, as in rule 2) and `o` the sum of the
+   other paid members' unused shares today (each one's share less its spend, never below
+   nothing; furloughed members and members on the house's model are not counted), the member
+   may spend while `u < s + min(s, o)`, with the allowance below added to the right-hand side.
+   What a turn may reserve is the least of the per-turn cap, the pool's day left, the project's
+   cap left, and `s + min(s, o) - u + allowance` (`money::may_draw`, `Engine::affordable`).
+   `o` is read at the moment of the turn, so the limit moves as the others spend. Owner-asked
+   turns stay outside it, charged to the pool's day alone; members on the house's model stay out
+   of it. The pool's day is the hard ceiling for everyone.
+5. **"Out for today".** The first time a paid member is turned away because it reached that
+   limit while the pool's day (and its project's month) still has at least a turn's money, one
+   desk item (`out_for_day`) is put for that member for the owner's day, and no more that day:
+   "Mara is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has $X left
+   today. Give Mara $0.50 more today, or wait for tomorrow." Approving gives the member an
+   allowance for that day: the amount written on the card, or $0.50 (or what the pool's day has
+   left, if that is less) when nothing is written; it must be at least a turn's money and at
+   most what the pool's day has left, or it is refused. The allowance is a setting keyed by
+   member and owner's day (`allowance:<member>:<day>`), so it is gone when the owner's next
+   day begins (the day follows the owner's time zone); declining changes nothing. A member
+   furloughed or with no share is never offered. Nothing is woken on approval: the member's
+   next wake, or a turn already queued for it, starts under the allowance.
+
+Scenarios: "A member past its share borrows what the others left", "The owner's own request
+is the pool's, not the member's" and "A member may borrow one more share, then asks the owner"
+(`features/projects-and-their-money.feature`).
 
 ## Consequences
 

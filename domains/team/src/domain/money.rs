@@ -73,16 +73,42 @@ pub const fn day_start(day: i64, offset_minutes: i64) -> Millis {
     day * DAY_MS - offset_minutes * 60_000
 }
 
-/// What a paid member may draw on today (ADR 0113, amended): its own share is its first
-/// claim, not a wall. Once that is spent (`own_left` below nothing is what it has borrowed),
-/// it draws on what the other paid members have not used of theirs (`others_left`, each one's
-/// share less its spend; one past its own share has nothing to lend). The pool's day stays the
-/// hard ceiling: that is [`reservation`]'s.
+/// What the owner is offered to give a member that is out for the day, unless the pool's day has
+/// less left: $0.50.
+pub const ALLOWANCE_OFFER: Micros = 500_000;
+
+/// What a card offers a member out for the day: [`ALLOWANCE_OFFER`], or what is left of the
+/// pool's day if that is less.
 #[must_use]
-pub fn may_draw(own_left: Micros, others_left: impl IntoIterator<Item = Micros>) -> Micros {
-    others_left
+pub fn allowance_offer(pool_left: Micros) -> Micros {
+    ALLOWANCE_OFFER.min(pool_left)
+}
+
+/// What a paid member may draw on today (ADR 0113, amended twice): its own share is its first
+/// claim, and it may borrow at most one more share of what the others left, never more.
+///
+/// With `share` its share for the day, `spent` its own spend today (the owner's asking left
+/// out), `others_left` each other paid member's share less its spend (one past its own share
+/// lends nothing), and `allowance` what the owner gave it for today:
+///
+/// `may_draw = share + min(share, sum(max(0, others_left))) - spent + allowance`
+///
+/// so it may spend while `spent < share + min(share, others unused)`, and a member at twice its
+/// share is out. The pool's day stays the hard ceiling: that is [`reservation`]'s.
+#[must_use]
+pub fn may_draw(
+    share: Micros,
+    spent: Micros,
+    others_left: impl IntoIterator<Item = Micros>,
+    allowance: Micros,
+) -> Micros {
+    let unused = others_left
         .into_iter()
-        .fold(own_left, |sum, left| sum.saturating_add(left.max(0)))
+        .fold(0, |sum: Micros, left| sum.saturating_add(left.max(0)));
+    share
+        .saturating_add(share.min(unused))
+        .saturating_sub(spent)
+        .saturating_add(allowance)
 }
 
 /// What one turn can have reserved, before it starts: the per-turn cap (`most`, the role's),
@@ -177,25 +203,37 @@ mod tests {
     }
 
     #[test]
-    fn a_member_past_its_share_draws_on_what_the_others_left() {
-        // Within its share: its own left, and the others' unused besides.
-        assert_eq!(may_draw(300_000, [500_000, 200_000]), 1_000_000);
-        // Past its share by $0.05: what it borrowed comes off what the others left.
-        assert_eq!(may_draw(-50_000, [500_000, 200_000]), 650_000);
+    fn a_member_may_borrow_one_more_share_and_no_further() {
+        // Within its share ($0.30 of $0.50 spent): what is left of it, and one more share
+        // besides, when the others have that much unused.
+        assert_eq!(may_draw(500_000, 300_000, [900_000, 800_000], 0), 700_000);
+        // Past its share by $0.05: it has borrowed $0.05 of its one extra share.
+        assert_eq!(may_draw(500_000, 550_000, [900_000, 800_000], 0), 450_000);
+        // The others' unused is the lesser of the two: it borrows only what they left.
+        assert_eq!(may_draw(500_000, 550_000, [100_000, 50_000], 0), 100_000);
         // A member past its own share lends nothing.
-        assert_eq!(may_draw(-50_000, [-100_000, 200_000]), 150_000);
-        // Nobody left anything: nothing to draw.
-        assert!(may_draw(-50_000, [0, -1]) < LEAST_A_TURN);
+        assert_eq!(may_draw(500_000, 550_000, [-100_000, 200_000], 0), 150_000);
+        // At twice its share it is out, however much the others left.
+        assert_eq!(may_draw(500_000, 1_000_000, [900_000], 0), 0);
+        assert!(may_draw(500_000, 1_000_000, [900_000], 0) < LEAST_A_TURN);
+        // The owner's allowance for the day is added to what it may draw.
+        assert_eq!(may_draw(500_000, 1_000_000, [900_000], 50_000), 50_000);
         // And what it may draw is still held to the turn's cap and the pool's day.
         let most = most_a_turn(Role::Lead);
         assert_eq!(
-            reservation(may_draw(-50_000, [2_000_000]), 2_333_333, most),
+            reservation(may_draw(500_000, 550_000, [2_000_000], 0), 2_333_333, most),
             Some(most)
         );
         assert_eq!(
-            reservation(may_draw(-50_000, [2_000_000]), 5_000, most),
+            reservation(may_draw(500_000, 550_000, [2_000_000], 0), 5_000, most),
             None
         );
+    }
+
+    #[test]
+    fn the_owners_offer_is_fifty_cents_or_what_the_pools_day_has_left() {
+        assert_eq!(allowance_offer(2_000_000), 500_000);
+        assert_eq!(allowance_offer(58_824), 58_824);
     }
 
     #[test]

@@ -439,6 +439,12 @@ pub enum Refusal {
         /// What it spent this month.
         spent: super::money::Micros,
     },
+    /// An allowance for a member out for the day is more than the pool's day has left, or
+    /// less than a turn.
+    AllowanceOverPool {
+        /// What is left of the pool's day.
+        left: super::money::Micros,
+    },
     /// A proposal names at least one task or event from HQ's record.
     NoEvidence,
     /// Evidence that is not in HQ's record.
@@ -642,6 +648,12 @@ impl fmt::Display for Refusal {
                 f,
                 "a raised cap is more than this month's spend, {}",
                 super::projects::dollars(*spent)
+            ),
+            Self::AllowanceOverPool { left } => write!(
+                f,
+                "an allowance is at least a turn's worth and at most what the pool's day has \
+                 left, {}",
+                super::projects::dollars(*left)
             ),
             Self::NoEvidence => f.write_str(
                 "a proposal names its evidence: at least one task number (`tasks`) or alarm \
