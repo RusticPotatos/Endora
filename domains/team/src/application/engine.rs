@@ -54,6 +54,8 @@ pub const STRANDED_AFTER_MS: Millis = 10 * 60 * 1000;
 
 /// The most characters a goal's notes from the owner may run to.
 pub const GOAL_NOTE_MOST: usize = 2_000;
+/// The most events one read of the past returns.
+pub const MOST_EVENTS_BEFORE: usize = 200;
 
 /// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
 pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
@@ -1456,13 +1458,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<()> {
         self.task(task)?;
         let author = self.author_name(by)?;
+        let at = self.clock.now();
         self.store
-            .post_marked(task, &author, text, self.clock.now(), cited, unsupported)?;
-        let preview: String = text.chars().take(80).collect();
+            .post_marked(task, &author, text, at, cited, unsupported)?;
+        // A short line for a bubble. The feed shows the whole post: `post` is its place in the
+        // task's thread (posts are only ever added), and `cut` says the preview is not all of it.
+        let place = self.store.thread(task)?.len().saturating_sub(1);
+        let mut preview: String = text.chars().take(80).collect();
+        let cut = text.chars().count() > 80;
+        if cut {
+            preview.push('…');
+        }
         self.emit(
             EventKind::ThreadPosted,
-            json!({ "task": task.0, "author": author, "preview": preview,
-                    "unsupported": unsupported }),
+            json!({ "task": task.0, "author": author, "preview": preview, "cut": cut,
+                    "post": place, "unsupported": unsupported }),
         )?;
         if let Author::Member(member) = by {
             self.mark_turn(member, task, &|run| run.posted = true)?;
@@ -4354,6 +4364,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Store`] if the store fails.
     pub fn events_after(&self, id: i64) -> Done<Vec<crate::domain::Event>> {
         Ok(self.store.events_after(id)?)
+    }
+
+    /// The `limit` events just before an id (at most [`MOST_EVENTS_BEFORE`]), oldest first:
+    /// how the activity log goes further back than what it was opened with.
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if the store fails.
+    pub fn events_before(&self, id: i64, limit: usize) -> Done<Vec<crate::domain::Event>> {
+        Ok(self
+            .store
+            .events_before(id, limit.min(MOST_EVENTS_BEFORE))?)
     }
 
     /// Every wake, with its receipt.

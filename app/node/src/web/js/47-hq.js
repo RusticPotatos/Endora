@@ -19,6 +19,11 @@ const HQ = {
   roster: {},          // member id → its controls are open on the Team card
   notebooks: {},       // member id → its notes, read when its panel is opened (ADR 0118)
   deskNote: {},        // desk item id → why the owner's last decision on it was refused
+  logShown: 30,        // how many lines of the activity log are on screen
+  logOpen: {},         // event id → a long line opened to its whole
+  oldest: 0,           // the oldest event id the log has been told of
+  logDone: false,      // HQ has nothing older to give
+  logBusy: false,      // older lines are being fetched
   allTurns: {},        // "task-N" / "member-N" → every turn shown, not only the last five
   pods: [],            // one pod of desks per team, laid out from the snapshot (ADR 0119)
   seats: {},           // member id → its desk, where it works and where a visitor stands
@@ -201,9 +206,26 @@ function hqTurns(match, key) {
   return `${toggle}<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `R${r.id} ${esc(hqName(r.member))}${r.task ? " · " + hqKey(r.task) : ""} · ${esc(r.label || String(r.status || "").replace(/_/g, " "))}`)}</li>`).join("")}</ul>`;
 }
 
+// A line of the activity log in full: a post is read whole from its task's thread when the
+// snapshot has it, and is otherwise its preview, which says "…" where it was cut.
+const HQ_LONG_LINE = 240;
+function hqLogText(l) {
+  const w = l.whole, t = w && hqTask(w.task), p = t && (t.thread || [])[w.post];
+  return p && p.author === w.author ? `${w.author}: ${p.text}` : l.text;
+}
+// One line as a list item. A long one is shown to its first 240 characters, with "more" to
+// open it in place and "less" to fold it again; nothing is lost either way.
+function hqLogLine(l) {
+  const full = hqLogText(l), long = full.length > HQ_LONG_LINE, open = !!HQ.logOpen[l.key];
+  const shown = long && !open ? full.slice(0, HQ_LONG_LINE) + "…" : full;
+  const toggle = long ? ` <button class="hq-more" aria-expanded="${open ? "true" : "false"}" data-act="hq:logmore:${l.key}:toggle">${open ? "less" : "more"}</button>` : "";
+  return `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${esc(shown)}${toggle}</span></li>`;
+}
+
 // One event, in words for the activity log, and on screen if it is live.
-function hqTell(e, live) {
+function hqTell(e, live, older) {
   const d = e.data || {}, key = hqKey(d.task), on = key ? ` (${key})` : "";
+  if (e.id && (!HQ.oldest || e.id < HQ.oldest)) HQ.oldest = e.id;
   const name = hqName(d.member), reason = String(d.reason || "").replace(/_/g, " ");
   const result = String(d.result || "").replace(/_/g, " ");
   const said = {
@@ -265,8 +287,13 @@ function hqTell(e, live) {
   }[e.kind];
   if (said) {
     const at = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    HQ.log.unshift({ at, kind: said[0], text: said[1] });
-    HQ.log.length = Math.min(HQ.log.length, 80);
+    // A post in a thread is told whole in the feed: the line names its place in the task's
+    // thread, and the words are read from there when the line is drawn (the snapshot that has
+    // them may arrive just after the event does). The preview stands in until then.
+    const line = { key: e.id, at, kind: said[0], text: said[1],
+      whole: e.kind === "thread.posted" && d.post != null ? { task: d.task, post: d.post, author: d.author } : null };
+    if (older) HQ.log.push(line); else HQ.log.unshift(line);
+    HQ.log.length = Math.min(HQ.log.length, 500);
   }
   if (e.kind === "tick") HQ.spark = 1;
   if (!live) return;
@@ -1078,8 +1105,11 @@ function viewHQ() {
       ${d.kind === "out_for_day" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="Dollars for today (empty: as offered)" aria-label="The allowance, in dollars for today" />` : ""}
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
   }).join("");
-  // The latest twenty, newest first: enough to follow the team, short enough to read.
-  const log = HQ.log.slice(0, 20).map((l) => `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${esc(l.text)}</span></li>`).join("");
+  // The latest thirty, newest first, and "Show older" for the rest: first what is kept here,
+  // then what HQ still has.
+  const log = HQ.log.slice(0, HQ.logShown).map(hqLogLine).join("");
+  const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
+  const older = olderLeft ? `<div class="hq-row"><button class="hq-btn" data-act="hq:logolder:0:more"${HQ.logBusy ? " disabled" : ""}>${HQ.logBusy ? "Loading…" : "Show older"}</button></div>` : "";
   const wing = s.wing || {};
   const wingLine = wing.goal ? `<p class="hq-note">The engineering wing (goal "${esc(wing.goal)}") seats ${wing.most_leads || 1} lead on Claude Sonnet and at most ${wing.most_developers || 5} developers on Claude Haiku or the house's model when its lead asks to hire: ${wing.developers || 0} of ${wing.most_developers || 5} developer seats are taken. Your own hiring here is not limited.</p>` : "";
   const team = hqRoster(s);
@@ -1106,7 +1136,7 @@ function viewHQ() {
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
         ${hqScorecard(s)}
-        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul></section>
+        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
         ${hqOffice(s)}
         ${hqProjects(s)}
@@ -1543,6 +1573,21 @@ async function hqDispatch(verb, noun, id, arg) {
     await hqLoadNotebook(member); return true;
   }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
+  if (noun === "logmore") { HQ.logOpen[id] = !HQ.logOpen[id]; render(); return true; }
+  if (noun === "logolder") {
+    if (HQ.logBusy) return true;
+    // More of what is kept here first; only when that runs out, ask HQ for what is older.
+    if (HQ.log.length > HQ.logShown) { HQ.logShown += 30; render(); return true; }
+    HQ.logBusy = true; render();
+    try {
+      const got = await api("GET", `/v1/hq/events?before=${HQ.oldest}&limit=50`);
+      const events = got.events || [];
+      if (!events.length) HQ.logDone = true;
+      for (const e of events.slice().reverse()) hqTell(e, false, true);
+      HQ.logShown += 30;
+    } catch (e) { flash("Couldn't load older events: " + e.message, "err"); }
+    HQ.logBusy = false; render(); return true;
+  }
   if (noun === "decide") {
     // A question's answer, if the owner wrote one, goes in the task's thread before the member
     // wakes; so do the board's words on the CEO's decision.

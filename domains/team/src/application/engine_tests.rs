@@ -1701,6 +1701,75 @@ fn trying_stuck_work_again_while_nobody_can_be_woken_says_so_and_changes_nothing
 }
 
 #[test]
+fn a_thread_event_names_its_post_and_says_when_its_preview_was_cut() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, None, "Pick a database");
+    let last = hq.snapshot().unwrap()["last_event"].as_i64().unwrap();
+    let long = format!("{} and the rest of what was said", "word ".repeat(30));
+    hq.post(Author::Owner, task, "Short one").unwrap();
+    hq.post(Author::Owner, task, &long).unwrap();
+
+    let posted: Vec<_> = hq
+        .events_after(last)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "thread.posted")
+        .collect();
+    assert_eq!(posted.len(), 2);
+    assert_eq!(posted[0].data["cut"], false);
+    assert_eq!(posted[0].data["preview"], "Short one");
+    assert_eq!(posted[1].data["cut"], true);
+    let preview = posted[1].data["preview"].as_str().unwrap();
+    assert!(
+        preview.ends_with('…') && preview.chars().count() <= 81,
+        "{preview}"
+    );
+
+    // The event names the post it is about, so the feed can show it whole from the thread.
+    let snap = hq.snapshot().unwrap();
+    let thread = snap["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == task.0)
+        .unwrap()["thread"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let place = usize::try_from(posted[1].data["post"].as_u64().unwrap()).unwrap();
+    assert_eq!(thread[place]["text"], long.as_str());
+    assert_eq!(thread[place]["author"], posted[1].data["author"]);
+    let first = usize::try_from(posted[0].data["post"].as_u64().unwrap()).unwrap();
+    assert_eq!(thread[first]["text"], "Short one");
+}
+
+#[test]
+fn the_events_before_an_id_are_the_latest_that_many_oldest_first() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, None, "Pick a database");
+    for n in 0..6 {
+        hq.post(Author::Owner, task, &format!("post {n}")).unwrap();
+    }
+    let all = hq.events_after(0).unwrap();
+    let newest = all.last().unwrap().id;
+    let page = hq.events_before(newest, 3).unwrap();
+    let ids: Vec<i64> = page.iter().map(|e| e.id).collect();
+    assert_eq!(page.len(), 3);
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "oldest first: {ids:?}");
+    assert!(ids.iter().all(|id| *id < newest));
+    assert_eq!(ids[2], all[all.len() - 2].id, "the ones just before it");
+    assert!(hq.events_before(all[0].id, 3).unwrap().is_empty());
+    assert_eq!(
+        hq.events_before(newest, 10_000).unwrap().len(),
+        all.len() - 1
+    );
+}
+
+#[test]
 fn what_the_desk_keeps_of_a_long_text_shows_where_it_was_cut() {
     let clock = hands();
     let hq = hq(&clock, 4);

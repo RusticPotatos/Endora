@@ -704,6 +704,11 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn events_after(&self, id: i64) -> Stored<Vec<Event>>;
+    /// The latest `limit` events with an id below `id`, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn events_before(&self, id: i64, limit: usize) -> Stored<Vec<Event>>;
 
     /// Puts something on the owner's desk, about a task or a goal, from a member or not.
     ///

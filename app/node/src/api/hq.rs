@@ -85,11 +85,27 @@ pub(super) async fn hq_snapshot(State(state): State<AppState>) -> Answer {
 pub(super) struct HqAfter {
     #[serde(default)]
     after: i64,
+    /// With `before`, the past instead: the events just below this id.
+    #[serde(default)]
+    before: Option<i64>,
+    #[serde(default)]
+    limit: Option<u32>,
 }
 
-/// The events after an id: the office's stream, resumed from the last id it saw.
+/// The events after an id: the office's stream, resumed from the last id it saw. With
+/// `before` (and a `limit`), the events just below that id instead: the activity log going
+/// further back. Numbers only reach HQ, rebuilt here, never the caller's own text.
 pub(super) async fn hq_events(State(state): State<AppState>, Query(q): Query<HqAfter>) -> Answer {
-    ask(&state, format!("/v1/events?after={}", q.after), None).await
+    let Some(before) = q.before else {
+        return ask(&state, format!("/v1/events?after={}", q.after), None).await;
+    };
+    let limit = q.limit.unwrap_or(50).min(200);
+    ask(
+        &state,
+        format!("/v1/events?before={before}&limit={limit}"),
+        None,
+    )
+    .await
 }
 
 /// Replay: one turn read back in full, for the owner's screen. Read only, so nothing is

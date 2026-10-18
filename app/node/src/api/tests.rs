@@ -2189,6 +2189,37 @@ async fn the_kill_switch_goes_to_hq_signed_and_into_endoras_own_record() {
 }
 
 #[tokio::test]
+async fn the_log_can_ask_hq_for_the_events_before_the_ones_it_has() {
+    let (url, seen) = one_hq_answer(r#"{"events":[]}"#);
+    let token = "a-token-of-at-least-thirty-two-characters";
+    let state = test_state().with_hq(endora_infrastructure::HqClient::new(&url, token));
+    let res = app(state)
+        .oneshot(get("/v1/hq/events?before=40&limit=50"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let sent = seen.join().unwrap();
+    assert!(
+        sent.starts_with("GET /v1/events?before=40&limit=50 "),
+        "{sent}"
+    );
+}
+
+#[tokio::test]
+async fn the_stream_still_resumes_after_an_id() {
+    let (url, seen) = one_hq_answer(r#"{"events":[]}"#);
+    let token = "a-token-of-at-least-thirty-two-characters";
+    let state = test_state().with_hq(endora_infrastructure::HqClient::new(&url, token));
+    let res = app(state)
+        .oneshot(get("/v1/hq/events?after=7"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let sent = seen.join().unwrap();
+    assert!(sent.starts_with("GET /v1/events?after=7 "), "{sent}");
+}
+
+#[tokio::test]
 async fn providers_go_in_once_lists_sort_and_no_key_ever_comes_back_out() {
     let state = test_state();
     let added = json_body(
