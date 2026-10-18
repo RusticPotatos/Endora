@@ -1001,8 +1001,11 @@ From that day's record, each recorded in its ADR:
   share is a first claim, not a wall (past it, it draws on what the other paid members left
   today; the pool's day is the ceiling); a turn the owner asked for is charged to the pool's day
   only (`asked_by_owner` on the run, an `owner` flag on its ledger rows); and a member's claim
-  is its role's weight times its brain's price class. The out-for-the-day allowance was not
-  built (see the ADR).
+  is its role's weight times its brain's price class. Borrowing is capped at one extra share
+  (2026-10-18): a paid member may spend while `spent < share + min(share, the others' unused)`.
+  At that limit, with the pool's day not spent, it is "out for today": one `out_for_day` item a
+  day on the owner's desk, which gives it an allowance (at most the pool's day left, $0.50 as
+  offered) until the owner's next day starts, or waits for tomorrow.
 - **The chain** ([ADR 0111](../adr/0111-the-ceo-and-the-chain-of-command.md), amended): a
   question on a project's task goes to the project's lead.
 - **The tester** ([ADR 0114](../adr/0114-evidence-acceptance-criteria-and-the-tester.md),

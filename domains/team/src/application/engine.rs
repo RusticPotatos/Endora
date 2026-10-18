@@ -29,6 +29,7 @@ use crate::domain::{
 };
 use crate::domain::{docs, house};
 
+mod allowance;
 mod evidence;
 mod notebook;
 mod planning;
@@ -376,7 +377,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// it this month, and to nothing while it is paused for its budget (ADR 0113).
     ///
     /// A member's share is its first claim, not a wall (ADR 0113, amended): past it, the
-    /// member draws on what the other paid members have not used today ([`money::may_draw`]).
+    /// member borrows at most one more share of what the other paid members have not used
+    /// today, so its day reaches twice its share and no more, the owner's allowance aside
+    /// ([`money::may_draw`]). Turned away at that limit with the pool's day not spent, it puts
+    /// one "out for today" item a day on the owner's desk.
     /// A turn the owner asked for (`for_owner`) is the pool's alone and needs no share. The
     /// pool's day is the hard ceiling either way, and the per-turn cap holds.
     fn affordable(
@@ -389,8 +393,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(Some(0));
         }
         let day = self.today();
-        let pool_left =
-            money::pool_a_day(self.settings.pool_per_month) - self.store.committed(None, day)?;
+        let pool_left = self.pool_left_today()?;
         let mut most = money::most_a_turn(member.role);
         if let Some(left) = self.project_left(project)? {
             most = most.min(left);
@@ -399,17 +402,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(money::reservation(pool_left, pool_left, most));
         }
         let paid = self.paid_weights()?;
-        let share_left = |m: &Member| -> Done<Micros> {
-            Ok(self.per_day(m, paid) - self.store.share_committed(m.id, day)?)
-        };
+        let share = self.per_day(member, paid);
+        let spent = self.store.share_committed(member.id, day)?;
         let mut others = Vec::new();
         for other in self.store.members()? {
             if other.id != member.id && other.brain.cloud() && !other.furloughed() {
-                others.push(share_left(&other)?);
+                others
+                    .push(self.per_day(&other, paid) - self.store.share_committed(other.id, day)?);
             }
         }
-        let draw = money::may_draw(share_left(member)?, others);
-        Ok(money::reservation(draw, pool_left, most))
+        let allowance = self.allowance_of(member.id, day)?;
+        let draw = money::may_draw(share, spent, others, allowance);
+        let amount = money::reservation(draw, pool_left, most);
+        // Turned away at twice its share while the pool's day and the project's month have
+        // money: the owner is asked, once a day (ADR 0113, amended).
+        let out_for_the_day = share > 0
+            && !member.furloughed()
+            && draw < money::LEAST_A_TURN
+            && pool_left >= money::LEAST_A_TURN
+            && most >= money::LEAST_A_TURN;
+        if amount.is_none() && out_for_the_day {
+            self.ask_about_the_day(member, day, share, spent, pool_left)?;
+        }
+        Ok(amount)
+    }
+
+    /// What is left of the pool's day, whoever spent it.
+    fn pool_left_today(&self) -> Done<Micros> {
+        Ok(money::pool_a_day(self.settings.pool_per_month)
+            - self.store.committed(None, self.today())?)
     }
 
     // ---- the team and the work ---------------------------------------------------------
@@ -3305,6 +3326,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if matches!(found.kind.as_str(), "project_cap" | "project_budget") {
             return self.owner_decides_cap(&found, decision, "");
         }
+        if found.kind == "out_for_day" {
+            return self.owner_decides_the_day(&found, decision, "");
+        }
         self.decide_held_lock(&found, decision)
     }
 
@@ -3348,6 +3372,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         if matches!(found.kind.as_str(), "project_cap" | "project_budget") {
             return self.owner_decides_cap(&found, decision, &words);
+        }
+        if found.kind == "out_for_day" {
+            return self.owner_decides_the_day(&found, decision, &words);
         }
         if decision == "seen" && !words.is_empty() && found.kind == "question" {
             let task = found.task.ok_or(EngineError::Unknown("task"))?;

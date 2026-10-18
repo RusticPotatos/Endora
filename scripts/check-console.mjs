@@ -634,7 +634,9 @@ if (failures.length) {
              { id: 24, kind: "push", task: 9, text: "Branch hq/task-9-other is accepted (1 file, checks passed), but pushing is not set up on the node (ENDORA_GIT_PUSH_KEY_FILE names no deploy key). Download its bundle from the node at /v1/hq/bundles/9/task-9-other and push it yourself." },
              // Elastic staffing (ADR 0118): an idle member offered for furlough, and a recall.
              { id: 25, kind: "furlough", member: 3, text: "Cy has had nothing to do since 3 Oct: furlough, or keep? <b>Nobody is let go.</b>" },
-             { id: 26, kind: "recall", task: 9, member: 6, text: "Recall member 8 to report to member 6.\\nZed is on furlough; Kit asks: four branches wait\\nEvidence: task 9" }],
+             { id: 26, kind: "recall", task: 9, member: 6, text: "Recall member 8 to report to member 6.\\nZed is on furlough; Kit asks: four branches wait\\nEvidence: task 9" },
+             // A member at twice its share (ADR 0113): an allowance for today, or wait.
+             { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." }],
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
@@ -755,6 +757,13 @@ if (failures.length) {
   if (office.includes('data-act="hq:furlough:8"') || office.includes('data-act="hq:recall:2"')) fail("hq: a furloughed member was offered a furlough, or a member at work a recall");
   if (!office.includes(">Keep</button>") || !office.includes(">Bring back</button>")) fail("hq: the furlough cards are not worded as keep and bring back");
   if (office.includes("<b>Nobody is let go.</b>")) fail("hq: a furlough offer became markup");
+  // A member out for the day (ADR 0113): an allowance with an amount box, or tomorrow; the
+  // text a model-free card shows is still text.
+  for (const act of ["hq:decide:27:approve", "hq:decide:27:decline"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
+  }
+  if (!office.includes('id="hq-answer-27"') || !office.includes(">Wait for tomorrow</button>")) fail("hq: the out-for-the-day card has no amount box or no wait");
+  if (office.includes("<b>$0.50</b>")) fail("hq: an out-for-the-day card became markup");
   if (!office.includes("on furlough · ")) fail("hq: the roster does not say who is on furlough");
   if (!office.includes("3 seats · 2 at work · 1 on furlough") || !office.includes("&lt;u&gt;Kit&lt;/u&gt;")) fail("hq: the scorecard does not count a team's seats");
   // A member's notebook (ADR 0118), in its panel: each note as text with its evidence, or marked

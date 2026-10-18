@@ -764,6 +764,9 @@ function viewHQ() {
       // lead's request to bring a furloughed member back.
       furlough: [["approve", "Furlough", "ok"], ["decline", "Keep", "no"]],
       recall: [["approve", "Bring back", "ok"], ["decline", "Decline", "no"]],
+      // A member at twice its share with the pool's day not spent (ADR 0113): an allowance for
+      // the rest of today, at the amount written on the card, or wait for tomorrow.
+      out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
       push: hqCanPush(d) ? [["approve", "Push it", "ok"], ["decline", "Decline", "no"]] : [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
@@ -776,6 +779,7 @@ function viewHQ() {
       ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
       ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
       ${d.kind === "project_cap" || d.kind === "project_budget" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="${d.kind === "project_cap" ? "Dollars a month (empty: as asked)" : "The new cap, in dollars a month"}" aria-label="The cap, in dollars a month" />` : ""}
+      ${d.kind === "out_for_day" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="Dollars for today (empty: as offered)" aria-label="The allowance, in dollars for today" />` : ""}
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
   }).join("");
   // The latest twenty, newest first: enough to follow the team, short enough to read.
@@ -1200,7 +1204,7 @@ async function hqDispatch(verb, noun, id, arg) {
     // wakes; so do the board's words on the CEO's decision.
     const box = document.getElementById(`hq-answer-${id}`);
     const item = ((HQ.snap && HQ.snap.desk) || []).find((d) => d.id === Number(id));
-    const amount = item && (item.kind === "project_cap" || item.kind === "project_budget");
+    const amount = item && (item.kind === "project_cap" || item.kind === "project_budget" || item.kind === "out_for_day");
     const takesWords = arg === "seen" || amount || (item && item.kind === "decision");
     const answer = takesWords && box ? box.value.trim() : "";
     if (arg === "answer" && !answer) { flash("Write your answer first.", "warn"); return true; }

@@ -48,3 +48,16 @@ Feature: Projects, their caps and their money
     When Ada's turn on "Look at sonarr" spends $0.40
     Then the pool shows $0.40 spent today
     And Ada's share shows $0.00 spent today
+
+  # Borrowing stops at one more share; then the member waits for the owner's word.
+  Scenario: A member may borrow one more share, then asks the owner
+    Given Ada has spent $1.20 of her share today
+    When Endora hands Ada the task "Look at sonarr"
+    Then Ada's turn starts on "Look at sonarr"
+    When Ada's turn on "Look at sonarr" spends $0.025
+    And Endora hands Ada the task "Look at radarr"
+    Then Ada's turn is refused: out_of_budget
+    And the owner's desk holds one request about Ada being out for the day
+    When the owner gives Ada $0.05 more today
+    And Endora hands Ada the task "Look at mylar"
+    Then Ada's turn starts on "Look at mylar"
