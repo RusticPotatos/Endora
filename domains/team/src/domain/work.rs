@@ -534,6 +534,8 @@ pub enum Refusal {
     ForgetNeedsReason,
     /// Work is not handed to a member on furlough.
     Furloughed(String),
+    /// A notebook holds as many notes as it may.
+    NotebookFull,
 }
 
 impl fmt::Display for Refusal {
@@ -734,6 +736,11 @@ impl fmt::Display for Refusal {
             Self::Furloughed(name) => write!(
                 f,
                 "{name} is on furlough and takes no work: hand it to a member at work, or ask for staff with request_staff"
+            ),
+            Self::NotebookFull => write!(
+                f,
+                "your notebook holds {} notes, the most it may: forget some that are wrong or no longer true first",
+                super::notebook::NOTES_MOST
             ),
         }
     }

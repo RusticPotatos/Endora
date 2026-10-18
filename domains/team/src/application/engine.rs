@@ -30,12 +30,14 @@ use crate::domain::{
 use crate::domain::{docs, house};
 
 mod evidence;
+mod notebook;
 mod planning;
 mod projects;
 mod staffing;
 mod wing;
 
 pub use evidence::Called;
+pub use notebook::note_number;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
 pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
@@ -2044,6 +2046,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 role => role.name(),
             }
         );
+        // The member's own notebook, first: what it learned, newest first (ADR 0118).
+        told.push_str(&self.notebook_said(member, run)?);
         if member.role == Role::Ceo {
             told.push_str(&self.ceo_context(member, run)?);
         }
@@ -2214,7 +2218,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(
                 "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner (a \
                  decision for the board), check_back, note_house, rewrite_house, read_doc, \
-                 accept, hand_to, read_document. ",
+                 accept, hand_to, read_document, note, forget, read_notebook. ",
             );
             told.push_str(beside);
             return Ok(told);
@@ -2235,6 +2239,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             _ => ", read_document. ",
         });
         told.push_str(beside);
+        told.push_str(notebook::TOOLS);
         Ok(told)
     }
 

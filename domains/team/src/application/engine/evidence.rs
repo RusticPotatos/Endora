@@ -671,7 +671,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let _held = self.held();
             self.all_there(cited)?;
         }
-        self.post_in_marked(run, task, text, true, cited)
+        self.post_in_marked(run, task, text, true, cited)?;
+        // A note the post cites by number, or by what it rests on, was used (ADR 0118).
+        self.notes_used(run, text, cited)
     }
 
     /// Whether a turn has any receipt in HQ's record, held or refused: a post in such a turn

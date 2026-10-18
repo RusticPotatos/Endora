@@ -17,6 +17,7 @@ const HQ = {
   envelopes: [],       // wakes in flight
   lastWord: {},        // task id → the member who last wrote in its thread
   roster: {},          // member id → its controls are open on the Team card
+  notebooks: {},       // member id → its notes, read when its panel is opened (ADR 0118)
   allTurns: {},        // "task-N" / "member-N" → every turn shown, not only the last five
   t: 0,                // seconds of animation
   polling: null,
@@ -237,6 +238,9 @@ function hqTell(e, live) {
     // Elastic staffing (ADR 0118): nobody is fired; they are put on furlough and recalled.
     "member.furloughed": ["you", `${d.name} is on furlough`],
     "member.recalled": ["you", `${d.name} is back from furlough`],
+    // Notebooks (ADR 0118): what a member wrote down, and what it let go.
+    "note.written": ["run", d.by === "owner" ? `You ${d.edited ? "edited a note of" : "added a note to"} ${d.name}'s notebook` : `${d.name} noted: ${d.text}`],
+    "note.forgotten": ["run", `${d.by === "owner" ? "You deleted" : d.name + " forgot"} a note${d.by === "owner" ? " of " + d.name + "'s" : ""}: ${d.text}${d.by === "owner" ? "" : " (" + d.reason + ")"}`],
     "branch.pushed": [d.ok ? "you" : "bad", d.ok ? `You pushed ${d.branch} to the fork` : `Pushing ${d.branch} failed`],
   }[e.kind];
   if (said) {
@@ -846,9 +850,32 @@ function hqRosterLine(m, members) {
   const controls = open ? `<div class="hq-controls">
       <p class="hq-who">${hqMemberMoney(m)}</p>${hqBrains(m)}${hqReports(m, members)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
-        <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div></div>` : "";
+        <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div>${hqNotebook(m)}</div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
       <span>${esc(hqRole(m.role))} · <span class="hq-tag">${hqBrainTag(m.brain)}</span> · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : "between turns") + " · "}${money}</span></button>${controls}</li>`;
+}
+
+// A member's notebook (ADR 0118), in its panel: each note as text (a member wrote it, so it is
+// escaped), with the evidence it rests on or "from the owner", and Edit and Delete; and a box
+// to add one. The owner's notes need no evidence. Read from HQ when the panel is opened.
+function hqNotebook(m) {
+  const notes = HQ.notebooks[m.id];
+  if (!notes) return `<p class="hq-note">Reading ${esc(m.name)}'s notebook…</p>`;
+  const rows = notes.map((n) => `<li><span>${esc(n.text)}</span>
+      <small> ${n.from_owner ? "from the owner" : esc((n.evidence || []).join(", "))}${n.stale ? " · stale" : ""}</small>
+      <button class="hq-btn" data-act="hq:notebook:${m.id}:edit-${Number(n.id)}">Edit</button>
+      <button class="hq-btn no" data-act="hq:notebook:${m.id}:del-${Number(n.id)}">Delete</button></li>`).join("");
+  return `<div class="hq-notebook"><p class="hq-who">${esc(m.name)}'s notebook (${notes.length})</p>
+    ${rows ? `<ul class="hq-team">${rows}</ul>` : `<p class="hq-empty">No notes.</p>`}
+    <div class="hq-row"><input id="hq-note-new-${m.id}" maxlength="300" placeholder="A note from you, up to 300 characters" aria-label="A note for ${esc(m.name)}" />
+      <button class="hq-btn ok" data-act="hq:notebook:${m.id}:add">Add note</button></div></div>`;
+}
+
+// Reads one member's notebook from HQ and draws it.
+async function hqLoadNotebook(id) {
+  try { HQ.notebooks[id] = (await api("GET", `/v1/hq/members/${id}/notebook`)).notes || []; }
+  catch (e) { HQ.notebooks[id] = []; flash("Couldn't read the notebook: " + e.message, "err"); }
+  render();
 }
 
 // A member's furlough (ADR 0118), in its panel: put on furlough, or recalled. The CEO is never
@@ -1143,7 +1170,29 @@ function hqSelected() {
 async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
   if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; render(); return true; }
-  if (noun === "roster") { HQ.roster[id] = !HQ.roster[id]; render(); return true; }
+  if (noun === "roster") {
+    HQ.roster[id] = !HQ.roster[id]; render();
+    if (HQ.roster[id]) hqLoadNotebook(Number(id));
+    return true;
+  }
+  // The owner writes in a member's notebook (ADR 0118): add a note, or edit or delete one.
+  if (noun === "notebook") {
+    const member = Number(id), what = String(arg || "").split("-"), note = Number(what[1]);
+    try {
+      if (what[0] === "add") {
+        const text = val(`hq-note-new-${member}`); if (!text) return true;
+        await api("POST", `/v1/hq/members/${member}/notebook`, { text }); flash("Note added.", "ok");
+      } else if (what[0] === "edit") {
+        const old = ((HQ.notebooks[member] || []).find((n) => n.id === note) || {}).text || "";
+        const text = (prompt("Edit the note:", old) || "").trim(); if (!text || text === old) return true;
+        await api("POST", `/v1/hq/members/${member}/notebook/${note}`, { text }); flash("Note saved.", "ok");
+      } else if (what[0] === "del") {
+        if (!confirm("Delete this note?")) return true;
+        await api("DELETE", `/v1/hq/members/${member}/notebook/${note}`); flash("Note deleted.", "ok");
+      } else return true;
+    } catch (e) { flash("Couldn't change the notebook: " + e.message, "err"); }
+    await hqLoadNotebook(member); return true;
+  }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
   if (noun === "decide") {
     // A question's answer, if the owner wrote one, goes in the task's thread before the member

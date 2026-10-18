@@ -102,7 +102,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The day and month of `at` in the owner's time, as `16 Oct`.
-    fn said_day(&self, at: Millis) -> String {
+    pub(super) fn said_day(&self, at: Millis) -> String {
         let (day, month) = lessons::day_and_month(money::day_of(at, self.settings.offset_minutes));
         format!("{day} {month}")
     }

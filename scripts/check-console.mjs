@@ -576,6 +576,10 @@ if (failures.length) {
   const fail = (what) => { console.error(what); process.exit(1); };
   // The members whose controls the checks below read are opened, as tapping their lines does.
   runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 }; HQ.roster = { 1: true, 2: true, 4: true, 5: true, 8: true };
+    // Two members' notebooks (ADR 0118), read when their panels opened: one note a member wrote
+    // (hostile on purpose), one the owner did.
+    HQ.notebooks = { 2: [{ id: 4, text: "<img src=n onerror=alert(9)> keep the VPN up", evidence: ["task 7", "r12"], from_owner: false, stale: true },
+                         { id: 5, text: "Never at night.", evidence: [], from_owner: true, stale: false }], 8: [] };
     HQ.snap = { demo: true, stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
@@ -752,6 +756,17 @@ if (failures.length) {
   if (office.includes("<b>Nobody is let go.</b>")) fail("hq: a furlough offer became markup");
   if (!office.includes("on furlough · ")) fail("hq: the roster does not say who is on furlough");
   if (!office.includes("3 seats · 2 at work · 1 on furlough") || !office.includes("&lt;u&gt;Kit&lt;/u&gt;")) fail("hq: the scorecard does not count a team's seats");
+  // A member's notebook (ADR 0118), in its panel: each note as text with its evidence, or marked
+  // as the owner's, Edit and Delete on each, and Add note; what a member wrote is never markup.
+  for (const act of ["hq:notebook:2:edit-4", "hq:notebook:2:del-4", "hq:notebook:2:edit-5", "hq:notebook:2:del-5",
+    "hq:notebook:2:add", "hq:notebook:8:add"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: a member's notebook does not offer ${act}`);
+  }
+  for (const said of ["&lt;img src=n onerror=alert(9)&gt; keep the VPN up", "task 7, r12 · stale", "from the owner",
+    "Bo&#39;s notebook (2)", "No notes.", 'id="hq-note-new-2"', "Reading Mara"]) {
+    if (!office.includes(said) && !office.includes(said.replace("&#39;", "'"))) fail(`hq: the notebook does not say ${said}`);
+  }
+  if (office.includes("<img src=n")) fail("hq: a note a member wrote became markup");
   if (office.includes("<u>Kit</u>")) fail("hq: a lead's name became markup on the scorecard's seats");
   // A member's question can be answered on its card: the answer goes in the task's thread.
   if (!office.includes('id="hq-answer-15"')) fail("hq: a question cannot be answered from its card");

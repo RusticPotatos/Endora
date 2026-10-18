@@ -487,6 +487,15 @@ pub fn app(state: AppState) -> Router {
         // removes a member.
         .route("/v1/hq/members/{id}/furlough", post(hq_furlough))
         .route("/v1/hq/members/{id}/recall", post(hq_recall))
+        // A member's notebook (ADR 0118): the owner reads it and writes, edits and deletes notes.
+        .route(
+            "/v1/hq/members/{id}/notebook",
+            get(hq_notebook).post(hq_note_add),
+        )
+        .route(
+            "/v1/hq/members/{id}/notebook/{note}",
+            post(hq_note_edit).delete(hq_note_delete),
+        )
         // The owner hires (ADR 0115), and downloads a branch's bundle when the node cannot push.
         .route("/v1/hq/members", post(hq_hire))
         .route(
