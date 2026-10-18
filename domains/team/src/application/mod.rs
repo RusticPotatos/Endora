@@ -5,6 +5,7 @@ pub mod ports;
 pub mod protocol;
 pub mod replay;
 pub mod scorecard;
+pub mod world_ports;
 
 pub use engine::{
     Asked, Author, Engine, EngineError, Fired, Proposal, Recorded, Settings, Standing, Submission,
