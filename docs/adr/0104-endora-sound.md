@@ -119,6 +119,37 @@ Endora gets a sound hub, **endora-sound**: the owner's own program, not a fork.
     measured. Live needs AudioWorklet and a streaming `fetch`; without them the card stays on
     Listening.
 
+### Amendment: drift, a jitter buffer that settles, and lip-sync (2026-10-18)
+
+Real use of the AirPlay door found audio about a second behind the picture and losing more
+the longer it played, with a short dip every few minutes.
+
+- *The hub bounds an AirPlay source's backlog.* The door writes at the sender's clock and the
+  hub mixes at its own; a sender 0.1% fast piled unread sound up for ever. An AirPlay source's
+  buffer is now *paced*: it watches the lowest the backlog sinks to over 25 takes (half a
+  second), and when that stands above 60 ms beyond the block being taken it drops the excess,
+  at most 10 ms a take, with a 5 ms crossfade from what would have played to what plays
+  instead. A burst from the pipe passes under the window; a drift does not. Spotify and radio
+  are not paced: librespot relies on the pipe's back-pressure to play in real time, and a
+  station's delay is not lip-sync. Every AirPlay source is read and drained whether or not it
+  is wired, so the door's writer is never held back. `GET /v1/state` also carries `intake`
+  (the same per-source wait the probe reports), readable without a beep.
+- *The live buffer no longer ratchets.* It grows by fixed steps (+60 ms when it ran dry, +30 ms
+  on a gap, to at most 800 ms) and shrinks 10 ms for each 10 s of calm, but never below a
+  floor: the target that last ran dry (after its step), which itself falls 10 ms for each 30 s
+  without a dry spell. Multiplying by 1.5 reached a second in a few dry spells, and shrinking
+  to the minimum ran dry into the same trouble every few minutes. A surplus of 150 ms past the
+  target is skipped (it was 250), and one of 100 ms is played down at 2% (the half percent
+  took half a minute for 150 ms).
+- *Lip-sync.* Each speaker has `sync_ms` (-500 to +1500, step 100 on the card; zero when the
+  state file has none), set with `PUT /v1/speakers/{id}/sync {"ms": n}` (through the node at
+  `/v1/sound/speakers/{id}/sync`). Positive plays the speaker later: the live listener holds
+  that much more on top of its target. Negative plays earlier: the listener's minimum buffer
+  is lowered by that much, never under 80 ms; a request for more advance than that allows
+  says so on the card. Earlier still is the door's job (`SOUND_AIRPLAY2_LATENCY`, the AirPlay
+  2 door's early hand-over, ADR 0128). The card applies a change to the playing worklet at
+  once and saves it.
+
 ## Consequences
 
 - One mix per group, several groups at once: an all-day radio station in the kitchen at 60%,

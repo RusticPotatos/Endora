@@ -708,6 +708,17 @@ tagged release.
 
 ### Fixed
 
+- **Live sound no longer falls behind the picture over time, and no longer dips every few
+  minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
+  backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a
+  time under a crossfade (a sender with a faster clock used to pile sound up for ever), and
+  `GET /v1/state` reports each source's wait (`intake`) without a probe. The console's live
+  buffer grows by fixed steps (to 800 ms) and shrinks only to a floor set by the last dry
+  spell, instead of multiplying to a second and shrinking into the same dry spell; a surplus
+  over target is caught up sooner. New: a **Lip-sync** control on the live speaker card
+  (-0.5 s to +1.5 s in 0.1 s steps, saved per speaker as `sync_ms` in the hub's state;
+  `PUT /v1/speakers/{id}/sync`).
+
 - **The wing's check judges a branch against its base.** The fork's own develop already had
   ansible-lint findings and yamllint errors, so every branch failed the check, even one that
   only added documents, and the reviewer was refused for a gate that could never pass. A

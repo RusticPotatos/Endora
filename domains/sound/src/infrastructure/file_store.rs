@@ -115,6 +115,29 @@ mod tests {
     }
 
     #[test]
+    fn a_speakers_sync_survives_a_restart_and_a_file_without_it_loads_as_zero() {
+        let path = temporary("sync");
+        let mut bay = Patchbay::default();
+        let kitchen = bay
+            .add_speaker("Kitchen", SpeakerKind::AirPlay, None)
+            .unwrap();
+        bay.set_sync(kitchen, -300).unwrap();
+        let store = FileStore::new(&path);
+        store.save(&bay).unwrap();
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(loaded.speaker(kitchen).unwrap().sync_ms, -300);
+        // A file written before the field existed: no `sync_ms` on its speakers.
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut old: serde_json::Value = serde_json::from_str(&text).unwrap();
+        for s in old["speakers"].as_array_mut().unwrap() {
+            s.as_object_mut().unwrap().remove("sync_ms").unwrap();
+        }
+        std::fs::write(&path, old.to_string()).unwrap();
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(loaded.speaker(kitchen).unwrap().sync_ms, 0);
+    }
+
+    #[test]
     fn an_id_is_never_handed_out_twice_across_a_restart() {
         let path = temporary("ids");
         let mut bay = Patchbay::default();

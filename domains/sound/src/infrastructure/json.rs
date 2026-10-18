@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use crate::domain::patchbay::web_address;
+use crate::domain::patchbay::{SYNC_MAX, SYNC_MIN, web_address};
 use crate::domain::{
     Level, Patchbay, Source, SourceId, SourceKind, Speaker, SpeakerId, SpeakerKind, Wire,
 };
@@ -29,7 +29,7 @@ pub fn source_json(s: &Source) -> Value {
 pub fn speaker_json(s: &Speaker) -> Value {
     json!({
         "id": s.id.0, "name": s.name, "kind": s.kind.name(), "device": s.device,
-        "volume": s.volume.get(), "borrowed": s.borrowed,
+        "volume": s.volume.get(), "sync_ms": s.sync_ms, "borrowed": s.borrowed,
     })
 }
 
@@ -74,6 +74,17 @@ fn level(v: &Value, name: &str) -> Result<Level, String> {
         .ok()
         .and_then(Level::new)
         .ok_or_else(|| format!("{name} is not 0 to 100"))
+}
+
+/// A speaker's lip-sync; a file from before it existed has none, which is zero.
+fn sync(v: &Value) -> Result<i16, String> {
+    let Some(n) = v.get("sync_ms") else {
+        return Ok(0);
+    };
+    n.as_i64()
+        .and_then(|n| i16::try_from(n).ok())
+        .filter(|n| (SYNC_MIN..=SYNC_MAX).contains(n))
+        .ok_or_else(|| "sync_ms is not -500 to 1500".to_owned())
 }
 
 fn device(v: &Value) -> Result<Option<String>, String> {
@@ -141,6 +152,7 @@ pub fn from_json(v: &Value) -> Result<Patchbay, String> {
                 .ok_or_else(|| format!("unknown speaker kind {kind:?}"))?,
             device: device(s)?,
             volume: level(s, "volume")?,
+            sync_ms: sync(s)?,
             borrowed: field(s, "borrowed")?
                 .as_bool()
                 .ok_or("borrowed is not true or false")?,

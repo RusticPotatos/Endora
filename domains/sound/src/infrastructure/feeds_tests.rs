@@ -425,3 +425,90 @@ fn the_sound_waiting_in_a_sources_buffer_is_told_in_milliseconds() {
     feeds.open.insert(SourceId(3), (buffer, Running::Voice));
     assert_eq!(feeds.waiting(), vec![(SourceId(3), 200)]);
 }
+
+/// Runs a buffer for `ticks` mixer ticks of 20 ms, the writer producing `rate` times what is
+/// taken, in chunks of about 46 ms like the pump reads. Returns the largest backlog seen after
+/// a take once `warm_up` ticks are past.
+fn simulate_drift(buffer: &mut Buffer, rate: f64, ticks: u64, warm_up: u64) -> usize {
+    let block = RATE as usize / 50 * CHANNELS;
+    let mut owed = 0.0_f64;
+    let mut pending: Vec<i16> = Vec::new();
+    let mut worst = 0;
+    for tick in 0..ticks {
+        owed += block as f64 * rate;
+        let whole = (owed as usize) / CHANNELS * CHANNELS;
+        owed -= whole as f64;
+        pending.extend(std::iter::repeat_n(100i16, whole));
+        if pending.len() >= 4096 {
+            buffer.push(&pending);
+            pending.clear();
+        }
+        let _ = buffer.take(block);
+        if tick >= warm_up {
+            worst = worst.max(buffer.len());
+        }
+    }
+    worst
+}
+
+#[test]
+fn a_paced_buffer_keeps_its_backlog_bounded_against_a_faster_sender() {
+    // A sender 0.1% fast, for a simulated hour (50 ticks a second).
+    let mut b = Buffer::paced();
+    let worst = simulate_drift(&mut b, 1.001, 3600 * 50, 500);
+    let limit = PACED_TARGET + 4096 + 2 * 882;
+    assert!(
+        worst <= limit,
+        "backlog grew to {worst} samples, over {limit}"
+    );
+}
+
+#[test]
+fn an_unpaced_buffer_does_grow_against_a_faster_sender() {
+    // The control: without pacing the same sender piles sound up.
+    let mut b = Buffer::live();
+    let worst = simulate_drift(&mut b, 1.001, 3600 * 50, 500);
+    assert!(worst > PACED_TARGET * 3, "it did not grow: {worst}");
+}
+
+#[test]
+fn a_paced_buffer_settles_from_its_priming_to_the_target() {
+    let mut b = Buffer::paced();
+    b.push(&vec![9; PRIME * 3]);
+    let block = RATE as usize / 50 * CHANNELS;
+    let _ = b.take(block);
+    assert!(b.len() > PACED_TARGET, "it settled at once, with no window");
+    for _ in 0..200 {
+        let _ = b.take(0);
+    }
+    assert!(
+        b.len() <= PACED_TARGET + block,
+        "still {} samples behind",
+        b.len()
+    );
+}
+
+#[test]
+fn trimming_a_backlog_is_smooth_not_a_cut() {
+    // A ramp rising one a frame: a hard cut of 441 frames would show as a step of 441.
+    let mut b = Buffer::paced();
+    let ramp: Vec<i16> = (0..30_000i32)
+        .flat_map(|i| {
+            let v = i16::try_from(i).unwrap_or(i16::MAX);
+            [v, v]
+        })
+        .collect();
+    b.push(&ramp);
+    let block = RATE as usize / 50 * CHANNELS;
+    let mut heard: Vec<i16> = Vec::new();
+    for _ in 0..80 {
+        heard.extend(b.take(block));
+    }
+    let steps: Vec<i32> = heard
+        .chunks_exact(2)
+        .zip(heard.chunks_exact(2).skip(1))
+        .map(|(a, b)| i32::from(b[0]) - i32::from(a[0]))
+        .collect();
+    assert!(steps.iter().any(|s| *s > 1), "nothing was trimmed");
+    assert!(steps.iter().all(|s| *s < 20), "a hard cut: {steps:?}");
+}

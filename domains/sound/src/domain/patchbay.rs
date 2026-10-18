@@ -67,6 +67,11 @@ impl Level {
     }
 }
 
+/// The earliest a speaker may be played, in milliseconds.
+pub const SYNC_MIN: i16 = -500;
+/// The latest a speaker may be played, in milliseconds.
+pub const SYNC_MAX: i16 = 1500;
+
 /// What kind of thing a source is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceKind {
@@ -151,6 +156,9 @@ pub struct Speaker {
     /// How loud it plays its mix. Not part of the mix: the senders and the stream players
     /// apply it.
     pub volume: Level,
+    /// Lip-sync, in milliseconds: positive plays this speaker later, negative earlier. The
+    /// speaker's listener applies it; it is not part of the mix.
+    pub sync_ms: i16,
     /// Another device is playing to it natively. Its wires are kept; it plays none of them
     /// until it is free.
     pub borrowed: bool,
@@ -197,6 +205,8 @@ pub enum Refusal {
     NameTaken,
     /// A radio station must be an `http` or `https` address.
     NotAWebAddress,
+    /// Lip-sync is from -500 to 1500 milliseconds.
+    BadSync,
 }
 
 impl fmt::Display for Refusal {
@@ -210,6 +220,7 @@ impl fmt::Display for Refusal {
             Self::BadName => "a name must be 1 to 40 characters",
             Self::NameTaken => "something already has that name",
             Self::NotAWebAddress => "a radio station must be an http or https address",
+            Self::BadSync => "lip-sync is from -500 to 1500 milliseconds",
         })
     }
 }
@@ -337,6 +348,7 @@ impl Patchbay {
                 kind,
                 device,
                 volume: Level::FULL,
+                sync_ms: 0,
                 borrowed: false,
             },
         );
@@ -548,6 +560,23 @@ impl Patchbay {
             .get_mut(&speaker)
             .ok_or(Refusal::NoSuchSpeaker)?;
         to.volume = volume;
+        self.changed();
+        Ok(())
+    }
+
+    /// Sets a speaker's lip-sync, in milliseconds from [`SYNC_MIN`] to [`SYNC_MAX`].
+    ///
+    /// # Errors
+    /// An unknown speaker, or a sync out of range.
+    pub fn set_sync(&mut self, speaker: SpeakerId, ms: i16) -> Result<(), Refusal> {
+        if !(SYNC_MIN..=SYNC_MAX).contains(&ms) {
+            return Err(Refusal::BadSync);
+        }
+        let to = self
+            .speakers
+            .get_mut(&speaker)
+            .ok_or(Refusal::NoSuchSpeaker)?;
+        to.sync_ms = ms;
         self.changed();
         Ok(())
     }
