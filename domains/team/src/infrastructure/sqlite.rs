@@ -19,6 +19,7 @@ use crate::domain::{
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{chess, games};
 
+mod guards;
 mod world;
 
 const SCHEMA: &str = "
@@ -331,6 +332,8 @@ impl SqliteTeamStore {
         let conn = Self::before_the_world(conn)?;
         // The team's world (ADR 0122): new tables only, made if missing.
         conn.execute_batch(world::SCHEMA).map_err(backend)?;
+        // The guards (ADR 0124): new tables only, made if missing.
+        conn.execute_batch(guards::SCHEMA).map_err(backend)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })

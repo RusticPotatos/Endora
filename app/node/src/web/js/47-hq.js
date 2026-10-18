@@ -13,6 +13,7 @@ const HQ = {
   last: 0,             // the last event id seen: the stream resumes after it
   log: [],             // what happened, newest first, in words
   selected: null,      // { type: "member" | "task", id }
+  sweep: null,         // the owner's last retraction and what else says it (ADR 0124)
   people: {},          // member id → where they are and what they are doing on screen
   envelopes: [],       // wakes in flight
   lastWord: {},        // task id → the member who last wrote in its thread
@@ -193,11 +194,13 @@ function hqEvidence(t) {
   const stage = { submitted: "submitted", tested: "the tester passed it", accepted: "the lead accepted it", closed: "closed" };
   const refs = (c) => (c.refs || []).map((r) => `<li>${esc(r.ref)}${r.tool ? ` · ${esc(r.tool)}` : ""}${r.at ? ` · ${esc(hqClock(r.at))}` : ""}${r.ok === false ? " · refused" : ""}${r.excerpt ? `: ${esc(r.excerpt)}` : ""}</li>`).join("");
   const rows = (n) => cited.filter((c) => c.criterion === n)
-    .map((c) => `<li>${esc(stage[c.stage] || c.stage)}, ${esc(hqName(c.member))}<ul>${refs(c)}</ul></li>`).join("");
+    .map((c) => `<li>${esc(stage[c.stage] || c.stage)}, ${esc(hqName(c.member))}${c.needs_recheck ? " · needs re-check: the criteria changed since" : ""}<ul>${refs(c)}</ul></li>`).join("");
   const items = crit.length
     ? crit.map((c, i) => `<li><b>${esc(c.text)}</b>${c.live ? " · live: a reading the same turn" : ""}${c.after ? ` · shown ${Number(c.after)} min after the last change` : ""}<ul>${rows(i + 1) || `<li class="hq-empty">No evidence yet.</li>`}</ul></li>`).join("")
     : `<li><b>The work</b><ul>${rows(0)}</ul></li>`;
-  const passed = cited.some((c) => c.stage === "tested") ? "Tester's pass: given." : "Tester's pass: not yet.";
+  const tested = cited.filter((c) => c.stage === "tested");
+  const passed = !tested.length ? "Tester's pass: not yet."
+    : tested[tested.length - 1].needs_recheck ? "Tester's pass: needs re-check (the criteria changed since); it does not count." : "Tester's pass: given.";
   return `<div class="hq-evidence"><h3>What done means</h3><ul>${items}</ul><p class="hq-who">${passed}</p></div>`;
 }
 
@@ -1194,13 +1197,15 @@ function viewHQ() {
       // A member at twice its share with the pool's day not spent (ADR 0113): an allowance for
       // the rest of today, at the amount written on the card, or wait for tomorrow.
       out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
+      // A guard's finding (ADR 0124): the owner's verdict is how HQ measures each guard.
+      guard: [["real", "Real", "ok"], ["false_positive", "False positive", "no"], ["not_enough", "Can't tell", ""], ["resolved", "Resolved", "ok"]],
       push: hqCanPush(d) ? [["approve", "Push it", "ok"], ["decline", "Decline", "no"]] : [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
     const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
     return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(shown)}</p>
-      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
+      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKey(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval) : ""}
       ${d.kind === "decision" ? hqDecision(d.decision) : ""}
@@ -1241,7 +1246,9 @@ function viewHQ() {
         <section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
+        ${hqSweep()}
         ${hqScorecard(s)}
+        ${hqGuards(s)}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
         ${hqOffice(s)}
@@ -1290,7 +1297,7 @@ function hqRosterLine(m, members) {
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div>${hqNotebook(m)}</div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
-      <span>${esc(hqRole(m.role))} · <span class="hq-tag">${hqBrainTag(m.brain)}</span> · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : "between turns") + " · "}${money}</span></button>${controls}</li>`;
+      <span>${esc(hqRole(m.role))} · <span class="hq-tag">${hqBrainTag(m.brain)}</span> · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : "between turns") + " · "}${money}${m.rescues ? ` · the CEO stepped in ${Number(m.rescues)} ${m.rescues === 1 ? "time" : "times"}` : ""}</span></button>${controls}</li>`;
 }
 
 // A member's notebook (ADR 0118), in its panel: each note as text (a member wrote it, so it is
@@ -1302,7 +1309,8 @@ function hqNotebook(m) {
   const rows = notes.map((n) => `<li><span>${esc(n.text)}</span>
       <small> ${n.from_owner ? "from the owner" : esc((n.evidence || []).join(", "))}${n.stale ? " · stale" : ""}</small>
       <button class="hq-btn" data-act="hq:notebook:${m.id}:edit-${Number(n.id)}">Edit</button>
-      <button class="hq-btn no" data-act="hq:notebook:${m.id}:del-${Number(n.id)}">Delete</button></li>`).join("");
+      <button class="hq-btn no" data-act="hq:notebook:${m.id}:del-${Number(n.id)}">Delete</button>
+      <button class="hq-btn no" data-act="hq:notebook:${m.id}:untrue-${Number(n.id)}">Not true</button></li>`).join("");
   return `<div class="hq-notebook"><p class="hq-who">${esc(m.name)}'s notebook (${notes.length})</p>
     ${rows ? `<ul class="hq-team">${rows}</ul>` : `<p class="hq-empty">No notes.</p>`}
     <div class="hq-row"><input id="hq-note-new-${m.id}" maxlength="300" placeholder="A note from you, up to 300 characters" aria-label="A note for ${esc(m.name)}" />
@@ -1647,6 +1655,36 @@ function hqScorecard(s) {
     ${since ? `<p class="hq-note">${since}: older turns and events are no longer kept.</p>` : ""}</section>`;
 }
 
+// The guards (ADR 0124): each guard's findings and how often they were real, each project's
+// talk against its product change, and the newest findings, each with the owner's verdict to
+// give. HQ computed every number; this only renders it, and every word goes through esc.
+function hqGuards(s) {
+  const g = s.guards;
+  if (!g || !g.precision) return "";
+  const verdicts = { real: "real", false_positive: "a false positive", not_enough: "can't tell", resolved: "resolved" };
+  const lines = g.precision.map((p) => {
+    const judged = p.real + p.resolved + p.false_positive;
+    const share = p.precision == null ? "not judged yet" : `${p.precision}% real of ${judged} judged`;
+    const fixes = p.fix_judged ? ` · fixes worked ${p.fixed} of ${p.fix_judged}` : "";
+    return `<li><b>${esc(p.plainly)}</b>: ${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}</li>`;
+  }).join("");
+  const ceremony = (g.ceremony || []).map((c) => `<li${c.over ? ` class="hq-refused"` : ""}>${esc(c.title)}: ${(c.windows || []).map((w) => esc(w.said)).join(" · ")}${c.over ? " · talking more than working" : ""}</li>`).join("");
+  const finding = (f) => {
+    const said = f.verdict ? `Judged ${esc(verdicts[f.verdict] || f.verdict)}${f.judged_by ? ` by ${esc(f.judged_by)}` : ""}${f.fix_worked == null ? "" : f.fix_worked ? ", and its fix worked" : ", and its fix did not work"}.` : "Not judged yet.";
+    const judge = Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("");
+    const fixed = f.verdict ? `<button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:yes">Fix worked</button><button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:no">Fix didn't work</button>` : "";
+    return `<li><p><b>${esc(f.plainly)}</b> (finding ${Number(f.id)}${f.task ? ` · ${hqKey(f.task)}` : ""}${f.cleared_at ? " · cleared" : " · open"}): ${esc(f.evidence)}</p>
+      <p class="hq-note">The rule: ${esc(f.rule)}. ${said}</p><div class="hq-row">${judge}${fixed}</div></li>`;
+  };
+  const findings = (g.findings || []).map(finding).join("");
+  const t = g.thresholds || {};
+  return `<section class="hq-card"><h2>Guards</h2>
+    <ul class="hq-team">${lines}</ul>
+    ${ceremony ? `<details open><summary>Talk against work, each project</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
+    <details><summary>Findings</summary><ul class="hq-team hq-findings">${findings || `<li class="hq-empty">No findings.</li>`}</ul></details>
+    <p class="hq-note">Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn.</p></section>`;
+}
+
 // The house log (ADR 0111): the CEO's own document of the house, which it and the lead read
 // every turn. The owner reads it here and may rewrite it.
 function hqHouse(s) {
@@ -1786,6 +1824,7 @@ async function hqDispatch(verb, noun, id, arg) {
   // The owner writes in a member's notebook (ADR 0118): add a note, or edit or delete one.
   if (noun === "notebook") {
     const member = Number(id), what = String(arg || "").split("-"), note = Number(what[1]);
+    if (what[0] === "untrue") { await hqRetract(`note:${note}`); await hqLoadNotebook(member); return true; }
     try {
       if (what[0] === "add") {
         const text = val(`hq-note-new-${member}`); if (!text) return true;
@@ -1800,6 +1839,28 @@ async function hqDispatch(verb, noun, id, arg) {
       } else return true;
     } catch (e) { flash("Couldn't change the notebook: " + e.message, "err"); }
     await hqLoadNotebook(member); return true;
+  }
+  // What else says a retracted claim (ADR 0124): forget the ticked at once, or keep them.
+  if (noun === "sweep") {
+    const r = HQ.sweep;
+    if (!r || r.retraction !== Number(id)) return true;
+    if (arg === "forget") {
+      const targets = (r.sweep || []).filter((_, i) => (document.getElementById(`hq-sweep-${i}`) || {}).checked).map((s) => s.target);
+      try { const done = await api("POST", `/v1/hq/retractions/${Number(id)}/forget`, { targets }); flash(`Forgot ${Number(done.forgot) || 0}.`, "ok"); }
+      catch (e) { flash("Couldn't forget them: " + e.message, "err"); return true; }
+    }
+    HQ.sweep = null; await loadHQ(); render(); return true;
+  }
+  // The owner's verdict on a guard's finding, and whether its fix worked (ADR 0124).
+  if (noun === "verdict" || noun === "fixed") {
+    const f = (((HQ.snap && HQ.snap.guards) || {}).findings || []).find((x) => x.id === Number(id));
+    if (!f) return true;
+    const verdict = noun === "verdict" ? arg : f.verdict;
+    if (!verdict) { flash("Say whether it was real first.", "warn"); return true; }
+    const body = noun === "fixed" ? { verdict, fix_worked: arg === "yes" } : { verdict };
+    try { await api("POST", `/v1/hq/guards/findings/${Number(id)}/verdict`, body); flash("Judged.", "ok"); }
+    catch (e) { flash("Couldn't judge it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
   }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
   if (noun === "logmore") { HQ.logOpen[id] = !HQ.logOpen[id]; render(); return true; }

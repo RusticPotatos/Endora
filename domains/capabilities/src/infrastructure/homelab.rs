@@ -148,7 +148,12 @@ impl Reader {
             }
             request = request.header("X-Api-Key", setting("api_key"));
         }
-        let mut response = request.call().map_err(|_| "connection")?;
+        // A read that timed out is no evidence the service is down (ADR 0124): it is said
+        // apart from a refused connection, and observed as unverified.
+        let mut response = request.call().map_err(|e| match e {
+            ureq::Error::Timeout(_) => "timeout",
+            _ => "connection",
+        })?;
         match response.status().as_u16() {
             200 => {}
             401 | 403 => return Err("authentication"),

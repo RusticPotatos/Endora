@@ -88,12 +88,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Err(EngineError::Refused(Refusal::NoteNeedsEvidence));
         }
         self.all_there(cited)?;
+        // A claim the owner retracted is not written again (ADR 0124).
+        self.not_retracted(&text)?;
         if self.store.notes(who.id)?.len() >= notebook::NOTES_MOST {
             return Err(EngineError::Refused(Refusal::NotebookFull));
         }
         let id = self
             .store
             .add_note(who.id, &text, cited, false, Some(run), self.clock.now())?;
+        // The notes it cites are what it is built on.
+        self.note_parents(id, &text)?;
         self.emit(
             EventKind::NoteWritten,
             json!({ "member": who.id.0, "name": who.name, "note": id, "text": text,

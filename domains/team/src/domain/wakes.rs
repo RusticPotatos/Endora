@@ -60,6 +60,11 @@ pub enum WakeReason {
     Decide,
     /// A huddle on stuck work asks this member for its view, in one short turn (ADR 0120).
     Huddle,
+    /// A guard asks the lead of the work's area to look (ADR 0124): at work HQ cannot tell is
+    /// stopped by accident, or at a finding in its area.
+    Guard,
+    /// A task its task waits on was dropped (ADR 0124): the wait will not end by itself.
+    WaitDropped,
 }
 
 impl WakeReason {
@@ -89,6 +94,8 @@ impl WakeReason {
             Self::Directed => "directed",
             Self::Decide => "decide",
             Self::Huddle => "huddle",
+            Self::Guard => "guard",
+            Self::WaitDropped => "wait_dropped",
         }
     }
 
@@ -127,6 +134,7 @@ impl WakeReason {
                 | Self::Directed
                 | Self::Decide
                 | Self::Huddle
+                | Self::Guard
         )
     }
 
@@ -172,6 +180,8 @@ impl WakeReason {
             Self::Directed,
             Self::Decide,
             Self::Huddle,
+            Self::Guard,
+            Self::WaitDropped,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -203,6 +213,9 @@ pub enum Refused {
     ProjectPaused,
     /// The member is on furlough (ADR 0118): it is woken again only when recalled.
     Furloughed,
+    /// A wake that brings nothing new, for a member woken on the task again and again for
+    /// nothing (ADR 0124): it is parked, and its area's lead decides it.
+    Redundant,
 }
 
 impl Refused {
@@ -219,6 +232,7 @@ impl Refused {
             Self::NotForTheCeo => "not_for_the_ceo",
             Self::ProjectPaused => "project_paused",
             Self::Furloughed => "furloughed",
+            Self::Redundant => "redundant",
         }
     }
 
@@ -235,6 +249,7 @@ impl Refused {
             Self::NotForTheCeo => "the CEO is woken only for escalations",
             Self::ProjectPaused => "its project is paused",
             Self::Furloughed => "the member is on furlough",
+            Self::Redundant => "it was woken on this again and again for nothing",
         }
     }
 
@@ -251,6 +266,7 @@ impl Refused {
             Self::NotForTheCeo,
             Self::ProjectPaused,
             Self::Furloughed,
+            Self::Redundant,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -324,6 +340,9 @@ pub struct WakeSituation {
     pub project_paused: bool,
     /// Whether the member is on furlough (ADR 0118): never woken.
     pub furloughed: bool,
+    /// Whether the wake brings nothing new, to a member whose last turns on the task showed
+    /// nothing, again and again (ADR 0124): it is not woken for nothing once more.
+    pub woken_for_nothing: bool,
 }
 
 /// What to do with a wake.
@@ -365,6 +384,9 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     if situation.project_paused {
         return WakeDecision::Refuse(Refused::ProjectPaused);
     }
+    if situation.woken_for_nothing {
+        return WakeDecision::Refuse(Refused::Redundant);
+    }
     if let Some(own) = situation.live.iter().find(|turn| turn.member == member) {
         return WakeDecision::Fold(own.run);
     }
@@ -396,10 +418,21 @@ mod tests {
             not_for_the_ceo: false,
             project_paused: false,
             furloughed: false,
+            woken_for_nothing: false,
         }
     }
 
     const ME: MemberId = MemberId(1);
+
+    #[test]
+    fn a_member_woken_for_nothing_again_and_again_is_not_woken_once_more() {
+        let s = WakeSituation {
+            woken_for_nothing: true,
+            ..quiet()
+        };
+        assert_eq!(decide(ME, &s), WakeDecision::Refuse(Refused::Redundant));
+        assert_eq!(Refused::from_name("redundant"), Some(Refused::Redundant));
+    }
     const OTHER: MemberId = MemberId(2);
 
     #[test]

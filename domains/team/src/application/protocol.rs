@@ -328,6 +328,19 @@ fn office_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     }
 }
 
+/// A lead's verdict on a guard's finding in its area (ADR 0124).
+fn judge_finding_tool() -> Value {
+    json!({
+        "name": "judge_finding",
+        "description": "Say whether one of HQ's guard findings in your area was real, when HQ names one in a thread (\"finding N\"): real, false_positive (the guard fired on healthy work), not_enough (the record does not say), or resolved (real, and put right). Say whether the fix worked, if you know. Your verdicts are how HQ tunes its guards.",
+        "inputSchema": { "type": "object", "properties": {
+            "finding": { "type": "integer", "description": "the finding's number" },
+            "verdict": { "type": "string", "enum": ["real", "false_positive", "not_enough", "resolved"] },
+            "fix_worked": { "type": "boolean", "description": "whether what was done about it worked" },
+        }, "required": ["finding", "verdict"] },
+    })
+}
+
 /// What a downtime turn may not do: it makes no work.
 const MAKES_WORK: [&str; 6] = [
     "create_task",
@@ -376,14 +389,14 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "set_status",
-            "Move your task on (todo, doing, in_review, blocked), with a reason. Submitting it (in_review) cites evidence for each of its criteria, and a live criterion a reading from this turn; the tester then re-checks it and its lead accepts it. Done is set only that way, except a routine's check: close that as done, with its evidence, once you have looked.",
-            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds.") }),
+            "Move your task on (todo, doing, in_review, blocked), with a reason. Submitting it (in_review) cites evidence for each of its criteria, and a live criterion a reading from this turn; the tester then re-checks it and its lead accepts it. Done is set only that way, except a routine's check: close that as done, with its evidence, once you have looked. Done met its criteria unless you say why otherwise: superseded (name the successor task) or not_needed.",
+            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on" } }),
             &["task", "status", "reason"]
         ),
         tool(
             "create_task",
-            "Create a sub-task of your task for another member (by name), with the tasks it waits on and its acceptance criteria: what done means, a short list, required for work handed to someone else. Mark live any criterion about the lab as it is now.",
-            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
+            "Create a sub-task of your task for another member (by name), with the tasks it waits on and its acceptance criteria: what done means, a short list, required for work handed to someone else. Mark live any criterion about the lab as it is now. Say which of your task's criteria it serves (serves: its number or its words); a task holds at most five open sub-tasks, and work goes at most three deep.",
+            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "serves": { "type": "string", "description": "which of your task's criteria this serves: its number (1, 2…) or its words" }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
             &["title", "description"]
         ),
         tool(
@@ -475,17 +488,21 @@ pub fn tools(role: Role) -> Value {
             ));
             list.push(tool(
                 "decide_stuck",
-                "Decide stuck work in your area, when HQ asks you (your turn says it is stuck): proceed (say with what), drop, hand_to a member of your team (`to`), needs_ceo (money, a new goal, another area), or needs_board (the owner alone: money beyond the caps, a hire, the owner's repos). On evidence. Dropping it or handing it on needs the handover note. Only a board matter reaches the owner, through the CEO.",
+                "Decide stuck work in your area, when HQ asks you (your turn says it is stuck): proceed (say with what), drop, hand_to a member of your team (`to`), needs_ceo (money, a new goal, another area), or needs_board (the owner alone: money beyond the caps, a hire, the owner's repos). On evidence. Dropping it or handing it on needs the handover note; dropping it says why (obsolete, duplicate with duplicate_of, wont_do, blocked_forever) and names the successor task if one carries the work on. Only a board matter reaches the owner, through the CEO.",
                 json!({
                     "task": { "type": "integer", "description": "the task's number" },
                     "decision": { "type": "string", "enum": ["proceed", "drop", "hand_to", "needs_ceo", "needs_board"] },
                     "detail": { "type": "string", "description": "what, and why, in a sentence or two" },
                     "to": { "type": "string", "description": "for hand_to: the member's name" },
+                    "why": { "type": "string", "enum": ["obsolete", "duplicate", "wont_do", "blocked_forever"], "description": "for drop: why it is dropped" },
+                    "duplicate_of": { "type": "integer", "description": "for a duplicate: the task it duplicates" },
+                    "successor": { "type": "integer", "description": "for drop: the task that carries the work on, if one does" },
                     "evidence": ids("What the decision rests on: at least one."),
                     "handover": super::protocol_world::handover_schema(),
                 }),
                 &["task", "decision", "detail", "evidence"],
             ));
+            list.push(judge_finding_tool());
         }
     }
     if let Some(list) = all.as_array_mut() {
@@ -515,6 +532,7 @@ fn ceos_tools() -> Value {
         "read_notebook",
         "notebook_checked",
         "office",
+        "judge_finding",
     ];
     let mut list: Vec<Value> = all
         .as_array()
@@ -664,6 +682,19 @@ fn member_named<S: TeamStore, W: WorkerAdapter, C: Clock>(
         .ok_or_else(|| format!("no member called {name}"))
 }
 
+/// Why work closes as `status`, from `why` (one of the set's names), with `duplicate_of` for a
+/// duplicate and `successor` for what carries the work on (ADR 0124).
+fn closure_arg(
+    args: &Value,
+    status: TaskStatus,
+) -> Result<(crate::domain::closure::Closure, Option<TaskId>), String> {
+    let why = args["why"].as_str().unwrap_or("");
+    let duplicate_of = args["duplicate_of"].as_i64().map(TaskId);
+    let closure = crate::domain::closure::Closure::read(status, why, duplicate_of)
+        .map_err(|r| r.to_string())?;
+    Ok((closure, args["successor"].as_i64().map(TaskId)))
+}
+
 fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args[key]
         .as_str()
@@ -751,9 +782,22 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 })?;
             let reason = text_arg(args, "reason")?;
             let cited = evidence_lists(args)?;
+            // Done says why when it is not "met its criteria" (ADR 0124): checked first, so a
+            // reason not in the set changes nothing.
+            let why = match (to, args["why"].as_str()) {
+                (TaskStatus::Done, Some(w)) if w != "met_criteria" => {
+                    Some(closure_arg(args, TaskStatus::Done)?)
+                }
+                _ => None,
+            };
             engine
                 .set_status_citing(run.id, task, to, reason, &cited)
                 .map_err(|e| said(&e))?;
+            if let Some((closure, successor)) = why {
+                engine
+                    .done_because_in(run.id, task, closure, successor)
+                    .map_err(|e| said(&e))?;
+            }
             Ok(format!("Task {} is {}.", task.0, to.name()))
         }
         "create_task" => {
@@ -787,6 +831,12 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .as_array()
                 .map(|a| a.iter().filter_map(Value::as_i64).map(TaskId).collect())
                 .unwrap_or_default();
+            // Which of the parent's criteria it serves (ADR 0124): its number, or its words.
+            let serves = match &args["serves"] {
+                Value::Number(n) => Some(n.to_string()),
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            };
             let id = engine
                 .create_task_in(
                     run.id,
@@ -801,6 +851,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                         waits_on,
                     },
                     &criteria_arg(args),
+                    serves.as_deref(),
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!("Created task {}.", id.0))
@@ -898,6 +949,14 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 None => None,
             };
             let handover = super::protocol_world::handover_arg(args)?;
+            // A drop's reason is the engine's to refuse, after whether the decision is the
+            // lead's to make at all.
+            let dropped = match decision {
+                crate::domain::ladder::Decision::Drop => {
+                    closure_arg(args, TaskStatus::Dropped).ok()
+                }
+                _ => None,
+            };
             engine
                 .decide_stuck_in(
                     run.id,
@@ -907,6 +966,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                     to,
                     &evidence_flat(args)?,
                     handover.as_ref(),
+                    dropped,
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!(
@@ -914,6 +974,21 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 task.0,
                 decision.name().replace('_', " ")
             ))
+        }
+        "judge_finding" => {
+            let id = args["finding"]
+                .as_i64()
+                .ok_or_else(|| "which finding? Give its number as `finding`".to_owned())?;
+            let verdict = args["verdict"]
+                .as_str()
+                .and_then(crate::domain::guards::Verdict::from_name)
+                .ok_or_else(|| {
+                    "`verdict` is real, false_positive, not_enough or resolved".to_owned()
+                })?;
+            engine
+                .judge_finding_in(run.id, id, verdict, args["fix_worked"].as_bool())
+                .map_err(|e| said(&e))?;
+            Ok(format!("Finding {id} is judged {}.", verdict.name()))
         }
         "set_strategy" => {
             let goal = args["goal"]
@@ -1054,7 +1129,9 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             .ok_or_else(|| "which note? Give its number as `note` (12 for n12)".to_owned())?;
             let reason = args["reason"].as_str().unwrap_or("");
             let gone = engine.forget_in(run.id, id, reason).map_err(|e| said(&e))?;
-            Ok(format!("n{id} is forgotten: {}", gone.text))
+            // What was built on it is named (ADR 0124).
+            let built = engine.built_on(id).map_err(|e| said(&e))?;
+            Ok(format!("n{id} is forgotten: {}{built}", gone.text))
         }
         "read_notebook" => engine.read_notebook_in(run.id).map_err(|e| said(&e)),
         "notebook_checked" => {

@@ -3,7 +3,10 @@
 ## Status
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
-[0122](0122-the-teams-world-stages-stories-and-situations.md) (2026-10-18): a note has a stage,
+[0124](0124-guards-against-how-agent-teams-fail.md) (2026-10-18): the owner may say a note is
+not true, which forgets it, sweeps up the notes that say the same, and refuses it written again;
+a note that cites another (`n12`) is built on it, and forgetting one names what was built on it.
+Amended by [0122](0122-the-teams-world-stages-stories-and-situations.md) (2026-10-18): a note has a stage,
 read when it is read (a member's a field note, the owner's an insight; the `notes` table is
 unchanged); the briefing's notes, the tidy ask and the furlough line are pieces of the member's
 world, within its briefing's budget (the notes never left out on a recall, and named when left

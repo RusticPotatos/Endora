@@ -30,6 +30,10 @@ use serde_json::json;
 #[path = "scenarios/world.rs"]
 mod world;
 
+/// The guards (ADR 0124), in their own file.
+#[path = "scenarios/guards.rs"]
+mod guards;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 
@@ -70,6 +74,8 @@ struct Office {
     clock: Hands,
     /// The receipt of the last reading of the lab a step took.
     reading: Option<i64>,
+    /// What the owner's last retraction said (ADR 0124): its id, and its sweep.
+    retraction: Option<serde_json::Value>,
 }
 
 impl Default for Office {
@@ -92,6 +98,7 @@ impl Default for Office {
             wing: None,
             push: None,
             reading: None,
+            retraction: None,
         }
     }
 }

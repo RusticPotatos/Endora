@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). Amends
+Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). Amended the same day
+by [0124](0124-guards-against-how-agent-teams-fail.md): the ladder climbs only for work the
+stopped diagnosis calls parked (held work waits for what will bring it back; work HQ cannot tell
+about gets one look from its lead); work sent back three times with no new evidence between goes
+to a huddle at once, and is not reviewed again before the lead decides; a lead's drop says why;
+each briefing carries its goal's "not now". Amends
 [0111](0111-the-ceo-and-the-chain-of-command.md) (what the CEO does, what wakes it, what it
 reads, its briefings; the house log's lines), [0113](0113-projects-budgets-and-reports-to.md)
 (leads propose projects, the CEO decides them and proposes none; the CEO's planning) and

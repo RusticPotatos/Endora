@@ -404,6 +404,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store
                 .set_task_status(task.id, crate::domain::TaskStatus::Dropped)?;
             self.emit_status(task, crate::domain::TaskStatus::Dropped)?;
+            // What it was for is gone (ADR 0124): its goal retired, or its project closed.
+            self.closed(
+                task.id,
+                crate::domain::closure::Closure::Dropped(crate::domain::closure::DropWhy::Obsolete),
+                None,
+                "endora",
+            )?;
+        }
+        for task in open {
+            self.after_closing(task.id)?;
         }
         let ids: Vec<TaskId> = open.iter().map(|t| t.id).collect();
         for run in self.store.runs()? {

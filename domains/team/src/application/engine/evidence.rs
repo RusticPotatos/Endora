@@ -39,14 +39,14 @@ pub struct Called {
 }
 
 /// The stages evidence is cited at.
-const SUBMITTED: &str = "submitted";
+pub(super) const SUBMITTED: &str = "submitted";
 const TESTED: &str = "tested";
 const ACCEPTED: &str = "accepted";
 const CLOSED: &str = "closed";
 
 /// What the thread says when work is sent back, by the tester or the lead: what counts the
 /// rounds.
-const SENT_BACK: &str = "Sent back: ";
+pub(super) const SENT_BACK: &str = "Sent back: ";
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- receipts ---------------------------------------------------------------------------
@@ -104,6 +104,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "task": run.task.map(|t| t.0), "tool": receipt.tool, "ok": receipt.ok,
                     "act": receipt.act, "sandbox": sandbox }),
         )?;
+        // A refused act may be the team pushing at the fence (ADR 0124).
+        if receipt.act && !receipt.ok {
+            self.after_refused_act(run.id, &receipt.tool)?;
+        }
         Ok(id)
     }
 
@@ -265,7 +269,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Records what a turn cited for each criterion, at a stage.
-    fn keep_cited(&self, task: TaskId, run: &Run, stage: &str, cited: &[Vec<Ref>]) -> Done<()> {
+    pub(super) fn keep_cited(
+        &self,
+        task: TaskId,
+        run: &Run,
+        stage: &str,
+        cited: &[Vec<Ref>],
+    ) -> Done<()> {
         let now = self.clock.now();
         for (i, group) in cited.iter().enumerate() {
             if group.is_empty() {
@@ -300,7 +310,39 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(last) = last.filter(|c| c.stage == TESTED) else {
             return Ok(None);
         };
+        // A pass on criteria that changed since needs re-checking, and does not count (ADR
+        // 0124).
+        if self.needs_recheck(task, last.run)? {
+            return Ok(None);
+        }
         Ok(Some(vec![last.run]))
+    }
+
+    /// Where HQ keeps the hash of the criteria a tester's pass judged.
+    fn passed_key(task: TaskId, run: RunId) -> String {
+        format!("passed:{}:{}", task.0, run.0)
+    }
+
+    /// Whether the tester's pass in `run` judged criteria other than `task`'s now. A pass from
+    /// before HQ kept the hash cannot tell, and stands as it did.
+    fn needs_recheck(&self, task: TaskId, run: RunId) -> Done<bool> {
+        let Some(then) = self.store.setting(&Self::passed_key(task, run))? else {
+            return Ok(false);
+        };
+        Ok(then != evidence::criteria_hash(&self.task(task)?.criteria))
+    }
+
+    /// The owner rewrites a task's criteria (ADR 0124): a tester's pass on the old ones then
+    /// reads "needs re-check" and does not count.
+    ///
+    /// # Errors
+    /// [`Refusal::TooLong`] past [`evidence::MOST_CRITERIA`]; [`EngineError::Unknown`].
+    pub fn set_criteria(&self, task: TaskId, criteria: &[Criterion]) -> Done<()> {
+        let _held = self.held();
+        self.task(task)?;
+        evidence::may_hand_on(criteria, false).map_err(EngineError::Refused)?;
+        self.store.set_criteria(task, criteria)?;
+        Ok(())
     }
 
     /// How many times a task's work was sent back, by the tester or the lead.
@@ -589,18 +631,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A turn hands work on (see [`Engine::add_task`]): work handed to another member says what
-    /// done means. Creating it is a change.
+    /// done means, and a sub-task of a member's task which of its parent's criteria it serves
+    /// (`serves`, ADR 0124); no task holds more than five open sub-tasks, nor work go deeper
+    /// than three. Creating it is a change.
     ///
     /// # Errors
-    /// [`Refusal::NoCriteria`], [`Refusal::TooLong`], and what [`Engine::add_task`] refuses.
+    /// [`Refusal::NoCriteria`], [`Refusal::TooLong`], what [`Engine::add_task`] refuses, and
+    /// the sub-task discipline's refusals (with their counts).
     pub fn create_task_in(
         &self,
         run: RunId,
         task: NewTask,
         criteria: &[Criterion],
+        serves: Option<&str>,
     ) -> Done<TaskId> {
         let _held = self.held();
         let turn = self.running(run)?;
+        let served = match task.parent {
+            Some(parent) => self.subtask_discipline(parent, serves)?,
+            None => None,
+        };
         let to_another = task.assignee.filter(|a| *a != turn.member);
         if let Some(to) = to_another {
             let (from, to) = (self.member(turn.member)?, self.member(to)?);
@@ -623,6 +673,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
         let id = self.add_task_held_lock(Author::Member(turn.member), task)?;
         self.store.set_criteria(id, criteria)?;
+        if let Some(n) = served {
+            self.store
+                .set_setting(&super::discipline::serves_key(id), &n.to_string())?;
+        }
         if let Some(own) = turn.task {
             self.mark_progress(turn.member, own)?;
         }
@@ -689,6 +743,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )?;
         self.waited_for(&current)?;
         self.keep_cited(task, &turn, TESTED, cited)?;
+        // The pass is bound to the criteria it judged (ADR 0124).
+        self.store.set_setting(
+            &Self::passed_key(task, turn.id),
+            &evidence::criteria_hash(&current.criteria),
+        )?;
         let said = self.evidence_said(&cited.concat())?;
         self.post_held_lock(
             Author::Member(tester.id),
@@ -767,7 +826,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if let Some(owner) = worker {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
             }
-            return Ok(());
+            // Bounced with nothing new between: a huddle, not another round (ADR 0124).
+            return self.after_sent_back(task);
         }
         let tested = self.tested_since_submitted(task)?;
         let tester_there = matches!(
@@ -1164,9 +1224,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
                 refs.push(shown);
             }
+            // A pass on criteria that changed since reads "needs re-check" (ADR 0124).
+            let recheck = c.stage == TESTED && self.needs_recheck(task.id, c.run)?;
             cited.push(
                 json!({ "stage": c.stage, "member": c.member.0, "criterion": c.criterion,
-                               "at": c.at, "refs": refs }),
+                               "at": c.at, "refs": refs, "needs_recheck": recheck }),
             );
         }
         Ok(json!({
@@ -1188,6 +1250,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             run.blocked |= stored.blocked;
         }
         let label = self.label_of(run)?;
+        // Re-checking evidence already enough is talk only (ADR 0124).
+        let label = self.after_enough_label(run, label)?;
         run.label = Some(label);
         Ok(Some(label))
     }

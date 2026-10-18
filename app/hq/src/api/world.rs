@@ -141,6 +141,7 @@ mod tests {
             runner_token: None,
             demo: false,
             tick_seconds: 30,
+            last_tick: Arc::default(),
         }
     }
 

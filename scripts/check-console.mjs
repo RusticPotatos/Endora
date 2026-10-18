@@ -585,7 +585,7 @@ if (failures.length) {
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
-                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }], reports_to: 1,
+                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }], reports_to: 1, rescues: 2,
                   brain: "local", brains: [{ name: "local", label: "Local" }, { name: "claude-haiku-5-5", label: "<b>Haiku</b>" }] },
                 { id: 3, name: "Cy", role: "researcher", look: 1, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
                 { id: 4, name: "<i>Dee</i>", role: "reviewer", look: 2, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
@@ -629,7 +629,7 @@ if (failures.length) {
       desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
              { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" },
              { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" },
-             { id: 15, kind: "question", task: 7, text: "Linus asks: steel or titanium?" },
+             { id: 15, kind: "question", task: 7, also: [9], text: "Linus asks: steel or titanium?" },
              { id: 16, kind: "notice", task: 7, text: "Linus restarted sonarr: it was unhealthy. It is now running." },
              { id: 17, kind: "approval", task: 7, text: "Linus asks to run sonarr_remove_and_search with item: 102.",
                approval: { tool: "sonarr_remove_and_search", member: "Linus", why: "<script>alert(2)</script> it is stuck",
@@ -647,7 +647,17 @@ if (failures.length) {
              { id: 25, kind: "furlough", member: 3, text: "Cy has had nothing to do since 3 Oct: furlough, or keep? <b>Nobody is let go.</b>" },
              { id: 26, kind: "recall", task: 9, member: 6, text: "Recall member 8 to report to member 6.\\nZed is on furlough; Kit asks: four branches wait\\nEvidence: task 9" },
              // A member at twice its share (ADR 0113): an allowance for today, or wait.
-             { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." }],
+             { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." },
+             // A guard's finding (ADR 0124): the owner's verdict on it.
+             { id: 28, kind: "guard", task: 7, project: 1, text: "Talk about work (finding 3): <b>Upkeep</b>: 14 coordination turns, 1 product change in 24 h" }],
+      // The guards (ADR 0124): each one's precision, each project's talk against its work, and
+      // the findings, in words a member's work produced, so every word escaped.
+      guards: { thresholds: { ceremony_ratio: 4, ceremony_least: 12, carousel_returns: 3, redundant_wakes: 3, fence_refusals_in_a_turn: 3 },
+        precision: [{ guard: "ceremony", plainly: "Talk about work", rule: "r", fired: 3, open: 1, real: 1, resolved: 1, false_positive: 1, not_enough: 0, fixed: 1, fix_judged: 2, precision: 66 },
+                    { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null }],
+        ceremony: [{ project: 1, title: "<u>Upkeep</u>", over: true, windows: [{ window: "24 h", said: "14 coordination turns, 1 product change in 24 h", over: true }] }],
+        findings: [{ id: 3, guard: "ceremony", plainly: "Talk about work", task: 7, project: 1, rule: "at least 12 coordination turns", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
+                   { id: 4, guard: "stuck", plainly: "Stuck work", task: 7, project: null, rule: "parked", evidence: "#7 x", opened_at: 2, cleared_at: 3, verdict: null, fix_worked: null, judged_by: "" }] },
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
@@ -766,6 +776,37 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  // The guards (ADR 0124): a finding on the desk takes the owner's verdict; the Guards card
+  // shows each guard's precision and each project's talk, and its words stay text.
+  for (const act of ["hq:decide:28:real", "hq:decide:28:false_positive", "hq:decide:28:not_enough", "hq:decide:28:resolved",
+    "hq:verdict:3:false_positive", "hq:fixed:3:yes", "hq:fixed:3:no", "hq:verdict:4:real"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: the guards do not offer ${act}`);
+  }
+  if (office.includes('data-act="hq:fixed:4:yes"')) fail("hq: a finding nobody judged asks whether its fix worked");
+  // How often the CEO stepped into a member's work (ADR 0124), on the roster.
+  if (!office.includes("the CEO stepped in 2 times")) fail("hq: the roster does not count the CEO's rescues");
+  // The same ask from another task is put with a card (ADR 0124), and the card says so.
+  if (!office.includes("question · EL-7 · also on EL-9: one answer reaches each")) fail("hq: a card does not say which other tasks share its ask");
+  for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b>: 3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2",
+    "<b>Stuck work</b>: 0 found · 0 open · not judged yet", "&lt;u&gt;Upkeep&lt;/u&gt;: 14 coordination turns, 1 product change in 24 h · talking more than working",
+    "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep"]) {
+    if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
+  }
+  if (office.includes("<img src=g") || office.includes("<u>Upkeep</u>")) fail("hq: a guard's finding became markup");
+  // Retract and sweep (ADR 0124): "Not true" on a note, a section and a story; what else says
+  // it is listed to tick and forget, its words text.
+  for (const act of ["hq:notebook:2:untrue-4", "hq:world:section:untrue-0", "hq:world:story:untrue-0"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: "Not true" is not offered as ${act}`);
+  }
+  runInContext(`HQ.sweep = { retraction: 5, target: "note:4", built_on_it: ["note:9"],
+    sweep: [{ target: "note:7", text: "<img src=k onerror=alert(41)> the VPN must stay up", whose: "Ada's notebook", alike: 80 }] };`, context);
+  const swept = runInContext("viewHQ()", context);
+  for (const said of ["<h2>Said again</h2>", "Built on it: note:9.", "note:7 · Ada&#39;s notebook · 80% alike",
+    'data-act="hq:sweep:5:forget"', 'data-act="hq:sweep:5:close"', 'id="hq-sweep-0"']) {
+    if (!swept.includes(said) && !swept.includes(said.replace("&#39;", "'"))) fail(`hq: the sweep does not show ${said}`);
+  }
+  if (swept.includes("<img src=k")) fail("hq: a swept note became markup");
+  runInContext("HQ.sweep = null;", context);
   // "Try again" posts exactly the decision HQ takes for stuck work, and when HQ refuses it the
   // card says why and keeps saying it: a press that seems to do nothing is the worst answer.
   {

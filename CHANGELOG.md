@@ -22,6 +22,37 @@ tagged release.
   `POST /v1/hq/world/timeline {page, at?, text}` adds a dated entry; both through the node and
   its audit log, with a "Write as the owner" form on the World card. The owner's sections come
   first in every member's briefing, and a member cannot overwrite one.
+- **Guards against how agent teams fail** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md)),
+  proposed. A read-time **stopped diagnosis** (working, parked, held, indeterminate) now decides
+  every stuck step: only parked work is nudged and climbs the ladder, held work waits for its
+  check-back or answer, and work HQ cannot tell about gets one look from its lead. Recovery
+  wakes are recorded under what HQ saw before they are sent and never sent twice unchanged; a
+  stuck desk item is put up once and closes itself. **Done and dropped carry a reason** (met
+  criteria, superseded, not needed; obsolete, duplicate of #N, won't do, blocked for good) and an
+  optional successor; work waiting on a dropped task stays blocked and its holder is told at
+  once. **Process-health detectors**: per project over 24 h and 7 d, coordination turns against
+  product change (12 and 4:1 make a desk notice and wake the project's lead); a task sent back
+  three times with no new evidence goes straight to a huddle; a member woken three times for
+  nothing is not woken for nothing again. **`create_task`** refuses a sixth open sub-task, a
+  fourth level, and a sub-task of a member's task that does not say which criterion it
+  `serves`. **Evidence already enough** is said in the briefing, re-checking it is talk only,
+  and on the third HQ submits it. **Retract and sweep**: "Not true" on a note, a section or a
+  story keeps its fingerprint (word pairs, not exact strings), lists what else says it to forget
+  at once, and refuses it written again; a note citing `n12` is built on it. **Fence pushes**
+  (refused acts again and again) are a desk notice, and every briefing carries its goal's "not
+  now". **The same ask once**: a question or board decision alike to one already waiting from
+  another task joins that card, and the owner's one answer reaches each task. Every finding
+  takes a **verdict** (real, false positive, not enough, resolved; did the fix work) from the
+  owner or the lead (`judge_finding`), and a new Guards card shows each guard's precision, every
+  threshold (one table, `domain::guards::THRESHOLDS`) and each project's talk against its work.
+  Also: a tester's pass is bound to the criteria it judged ("needs re-check" once they change);
+  the roster counts how often the CEO stepped into each member's work; a home-lab read that
+  timed out is `unverified`, never `unavailable` (no alarm); HQ's `/health` says the tick's age.
+  New tables, made if missing: `nudges`, `findings`, `closures`, `retractions`, `note_parents`,
+  `desk_attached`. New owner routes through the node: `POST /v1/hq/guards/findings/{id}/verdict`,
+  `POST /v1/hq/retractions`, `GET /v1/hq/retractions/{id}/sweep`,
+  `POST /v1/hq/retractions/{id}/forget`. Scenarios in `domains/team/features/guards.feature`.
+
 - **Games in the office** ([ADR 0121](docs/adr/0121-games-in-the-office.md)). Ping-pong and
   pool keep score, for nothing: when two members are free HQ's engine plays the match itself,
   point by point or shot by shot, from a seeded generator and each member's hidden, practised

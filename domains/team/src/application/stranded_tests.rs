@@ -276,9 +276,15 @@ fn a_dropped_wait_releases_nothing_and_its_member_is_told() {
         0,
         "a dropped wait is not a finished one"
     );
-    later(&clock, STRANDED_AFTER_MS + 1_000);
-    hq.tick().unwrap();
-    assert_eq!(recoveries(&hq, after).len(), 1, "its member is woken once");
+    // Its member is told at once that the wait was dropped (ADR 0124), not ten minutes on.
+    let told_at_once = hq
+        .store()
+        .wakes()
+        .unwrap()
+        .iter()
+        .filter(|w| w.task == Some(after) && w.reason == WakeReason::WaitDropped)
+        .count();
+    assert_eq!(told_at_once, 1, "its member is woken once");
     let told = hq.store().thread(after).unwrap();
     assert!(
         told.iter().any(|p| p.text.contains("was dropped")),

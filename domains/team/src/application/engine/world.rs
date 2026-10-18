@@ -351,11 +351,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- finding things -------------------------------------------------------------------
 
-    fn address(said: &str) -> Done<Address> {
+    pub(super) fn address(said: &str) -> Done<Address> {
         Address::parse(said).ok_or_else(|| refused(WorldRefusal::NotAnAddress(said.to_owned())))
     }
 
-    fn section_at(&self, page: &str, anchor: &str) -> Done<Option<Section>> {
+    pub(super) fn section_at(&self, page: &str, anchor: &str) -> Done<Option<Section>> {
         Ok(self
             .store
             .sections()?
@@ -363,7 +363,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .find(|s| s.page == page && s.anchor == anchor))
     }
 
-    fn story_called(&self, handle: &str) -> Done<Option<Story>> {
+    pub(super) fn story_called(&self, handle: &str) -> Done<Option<Story>> {
         Ok(self
             .store
             .stories()?
@@ -388,7 +388,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Adds a line to a page's timeline, now.
-    fn timeline_line(&self, page: &str, by: &str, run: Option<RunId>, line: &str) -> Done<()> {
+    pub(super) fn timeline_line(
+        &self,
+        page: &str,
+        by: &str,
+        run: Option<RunId>,
+        line: &str,
+    ) -> Done<()> {
         let line: String = line.chars().take(world::TIMELINE_LINE_MOST).collect();
         self.store.add_timeline(
             &TimelineLine {
@@ -648,6 +654,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         .ok_or_else(|| refused(WorldRefusal::NeedsHeading))?;
         let headline = world::one_line(&headline_in, world::HEADLINE_MOST).map_err(refused)?;
         let body = world::body(&body_in).map_err(refused)?;
+        // A claim the owner retracted is not written again (ADR 0124).
+        self.not_retracted(&format!("{heading} {headline} {body}"))?;
         let warrant = world::one_line(&write.warrant, world::WARRANT_MOST).map_err(refused)?;
         let found = self.found_all(&write.evidence)?;
         world::warranted(
@@ -1276,6 +1284,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         {
             return Err(refused(WorldRefusal::StoryNeedsParts));
         }
+        // A claim the owner retracted is not told again (ADR 0124).
+        self.not_retracted(&format!("{moment} {reflex} {instead} {because}"))?;
         let warrant = world::one_line(&told.warrant, world::WARRANT_MOST).map_err(refused)?;
         if told.stage == Stage::Insight && !Self::stewards(&teller, scope) {
             return Err(refused(WorldRefusal::NotYours {

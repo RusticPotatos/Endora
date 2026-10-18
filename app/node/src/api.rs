@@ -512,6 +512,15 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/world/timeline", post(hq_world_timeline))
         .route("/v1/hq/world/promote", post(hq_world_promote))
         .route("/v1/hq/world/demote", post(hq_world_demote))
+        // The guards (ADR 0124): the owner's verdict on a finding.
+        .route(
+            "/v1/hq/guards/findings/{id}/verdict",
+            post(hq_finding_verdict),
+        )
+        // Retract and sweep (ADR 0124): "Not true", what else says it, and forgetting it.
+        .route("/v1/hq/retractions", post(hq_retract))
+        .route("/v1/hq/retractions/{id}/sweep", get(hq_sweep))
+        .route("/v1/hq/retractions/{id}/forget", post(hq_forget_swept))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
         // The owner's routines (ADR 0107).

@@ -135,6 +135,12 @@ pub enum EventKind {
     HuddleCalled,
     /// A lead decided stuck work, in a huddle or on its own (ADR 0120).
     HuddleDecided,
+    /// A guard made a finding (ADR 0124).
+    GuardFound,
+    /// A guard's finding cleared: its condition no longer holds.
+    GuardCleared,
+    /// The owner or a lead gave a guard's finding its verdict.
+    GuardJudged,
 }
 
 impl EventKind {
@@ -207,6 +213,9 @@ impl EventKind {
             Self::HuddleCalled => "huddle.called",
             Self::HuddleDecided => "huddle.decided",
             Self::PoolToppedUp => "pool.topped_up",
+            Self::GuardFound => "guard.found",
+            Self::GuardCleared => "guard.cleared",
+            Self::GuardJudged => "guard.judged",
         }
     }
 }

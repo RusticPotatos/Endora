@@ -246,12 +246,19 @@ pub trait HomelabObserver: Send + Sync {
     }
 }
 
-/// Observes sources independently; one unavailable source never hides the other two.
+/// Observes sources independently; one unavailable source never hides the other two. A read
+/// that timed out is `unverified`, never `unavailable` (ADR 0124): down needs the service to
+/// refuse, and a slow answer says only that HQ could not tell.
 pub fn observe_homelab(observer: &dyn HomelabObserver, now_ms: i64) -> serde_json::Value {
+    let state_of = |error: &str| match error {
+        "unconfigured" => "unconfigured",
+        "timeout" => "unverified",
+        _ => "unavailable",
+    };
     let services: Vec<_> = ["docker", "sonarr", "radarr"].into_iter().map(|name| {
         match observer.observe(name) {
             Ok(mut value) => { value["name"] = name.into(); value["observed_at_ms"] = now_ms.into(); value },
-            Err(error) => serde_json::json!({"name":name, "state":if error == "unconfigured" {"unconfigured"} else {"unavailable"}, "error":error, "items":[], "observed_at_ms":now_ms}),
+            Err(error) => serde_json::json!({"name":name, "state":state_of(error), "error":error, "items":[], "observed_at_ms":now_ms}),
         }
     }).collect();
     serde_json::json!({"observed_at_ms":now_ms,"services":services})

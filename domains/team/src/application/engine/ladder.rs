@@ -96,6 +96,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(lead) = self.area_lead(task)? else {
             return Ok(false);
         };
+        // Only parked work climbs (ADR 0124): work held on purpose, or with a turn on it, waits
+        // for what will bring it back, and what HQ cannot tell about is the lead's one look.
+        let parked = self
+            .diagnosis(task.id)?
+            .is_some_and(|d| d.stopped == crate::domain::guards::Stopped::Parked);
+        if !parked {
+            return Ok(true);
+        }
         let at = self.rung_of(task.id)?;
         let since = at.map_or(Millis::MIN, |(_, when)| when);
         let moved = self.store.runs()?.iter().any(|r| {
@@ -348,8 +356,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Stuck work on the owner's desk: only when no rung is left to take it.
+    /// Stuck work on the owner's desk: only when no rung is left to take it, and once while it
+    /// waits there (ADR 0124: it closes itself when the work moves again).
     pub(super) fn stuck_on_the_desk(&self, task: &Task, why: &str) -> Done<()> {
+        let there = self
+            .store
+            .desk()?
+            .iter()
+            .any(|d| d.kind == "stuck" && d.status == "waiting" && d.task == Some(task.id));
+        if there {
+            return Ok(());
+        }
         let item = self.store.add_desk(
             "stuck",
             Some(task.id),
@@ -373,7 +390,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// words, or `hand_to` with nobody; [`Refusal::NotBelow`] for a member outside the lead's
     /// team; what the evidence rule refuses;
     /// [`crate::domain::world::WorldRefusal::HandoverNeeded`] for work handed on or dropped
-    /// without its handover note (ADR 0122).
+    /// without its handover note (ADR 0122); a drop with no reason from the set (ADR 0124).
     #[allow(clippy::too_many_arguments)]
     pub fn decide_stuck_in(
         &self,
@@ -384,6 +401,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         to: Option<MemberId>,
         cited: &[Ref],
         handover: Option<&crate::domain::world::HandoverNote>,
+        dropped: Option<(crate::domain::closure::Closure, Option<TaskId>)>,
     ) -> Done<()> {
         let _held = self.held();
         let turn = self.running(run)?;
@@ -393,6 +411,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let on_it = matches!(self.rung_of(task)?, Some((Rung::Lead | Rung::Huddle, _)));
         if !ours || !on_it || current.status.finished() {
             return Err(EngineError::Refused(Refusal::NotStuckForYou));
+        }
+        // A drop says why, from the set, and may name what carries the work on (ADR 0124).
+        let dropping = dropped.filter(|(c, _)| c.status() == TaskStatus::Dropped);
+        if decision == Decision::Drop && dropping.is_none() {
+            return Err(EngineError::Refused(crate::domain::closure::not_a_closure(
+                TaskStatus::Dropped,
+            )));
         }
         let detail = one_line(detail, DECISION_MOST);
         if detail.is_empty() {
@@ -463,6 +488,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Decision::Drop => {
                 self.store.set_task_status(task, TaskStatus::Dropped)?;
                 self.emit_status(&current, TaskStatus::Dropped)?;
+                if let Some((closure, successor)) = dropping {
+                    self.closed(task, closure, successor, &lead.name)?;
+                }
                 self.after_finishing(&current)
             }
             Decision::NeedsCeo => self.to_the_ceo(&current, &lead, &detail),

@@ -228,6 +228,19 @@ impl Criterion {
     }
 }
 
+/// A hash of a task's criteria as they read (ADR 0124): a tester's pass keeps the one it
+/// judged, and counts only while the criteria still hash the same. FNV-1a over how they are
+/// kept, as sixteen hex digits: a change detector, not a secret.
+#[must_use]
+pub fn criteria_hash(criteria: &[Criterion]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in Criterion::kept(criteria).bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// Whether a member handing work to `assignee` gave criteria enough: work handed to another
 /// member says what done means; the owner's, and a member's own, need not.
 ///
@@ -710,6 +723,21 @@ mod tests {
             "nothing to wait from"
         );
         assert_eq!(waited(&[], Some(restart), restart, edt), Ok(()));
+    }
+
+    #[test]
+    fn criteria_hash_the_same_until_a_word_changes() {
+        let a = [Criterion::new("sonarr is up", true)];
+        assert_eq!(criteria_hash(&a), criteria_hash(&a.clone()));
+        assert_ne!(
+            criteria_hash(&a),
+            criteria_hash(&[Criterion::new("sonarr is up", false)])
+        );
+        assert_ne!(
+            criteria_hash(&a),
+            criteria_hash(&[Criterion::new("sonarr is down", true)])
+        );
+        assert_eq!(criteria_hash(&a).len(), 16);
     }
 
     #[test]
