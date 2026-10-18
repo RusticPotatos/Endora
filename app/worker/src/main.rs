@@ -13,6 +13,8 @@
 //! used up); 3, the turn was over before it ended (HQ or the relay answered 401 or 402); 1,
 //! anything else, with a short reason on stderr. The token is never printed.
 
+mod check;
+mod repo;
 mod shell;
 mod turn;
 
@@ -102,6 +104,18 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
 }
 
 fn main() {
+    // A check job (ADR 0115): no model, no turn, a job token alone; the workbench run to check
+    // a submitted branch and report.
+    if std::env::var("ENDORA_CHECK").as_deref() == Ok("1") {
+        let code = match check::setup(|name| std::env::var(name).ok()) {
+            Ok(job) => check::run(&job),
+            Err(why) => {
+                eprintln!("check: {why}");
+                FAILED
+            }
+        };
+        std::process::exit(code);
+    }
     let setup = match setup(|name| std::env::var(name).ok()) {
         Ok(setup) => setup,
         Err(why) => {

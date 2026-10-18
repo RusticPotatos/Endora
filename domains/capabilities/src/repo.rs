@@ -272,9 +272,64 @@ impl Mirror {
                 &["clone", "--mirror", "--no-tags", &self.url, &target],
                 &[],
             )?;
+            // The fork's branches only: a mirror's own refspec (`refs/*`) would prune the
+            // submissions kept under refs/submissions/ on the next fetch.
+            git(
+                &self.dir,
+                &[
+                    "config",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/heads/*",
+                ],
+                &[],
+            )?;
         }
         *last = Some(now);
         Ok(())
+    }
+
+    /// The whole history of a stored submission, as one bundle the check's sandbox can fetch
+    /// from (a submitted bundle alone holds only the branch's own commits). `None` when no
+    /// submission of `branch` at `head` is stored.
+    ///
+    /// # Errors
+    /// Git failing.
+    pub fn submission_bundle(&self, branch: &str, head: &str) -> Result<Option<Vec<u8>>, String> {
+        let branch = hq_branch(branch)?;
+        let kept = format!("refs/submissions/{branch}");
+        let Ok(stored) = git(
+            &self.dir,
+            &["rev-parse", "--verify", &format!("{kept}^{{commit}}")],
+            &[],
+        )
+        .map(text) else {
+            return Ok(None);
+        };
+        if head.trim().len() < 7 || !stored.starts_with(head.trim()) {
+            return Ok(None);
+        }
+        let bytes = git(&self.dir, &["bundle", "create", "-", &kept], &[])?;
+        Ok(Some(bytes))
+    }
+
+    /// The newest stored submission bundle of `branch` for `task`, whatever its head: what the
+    /// owner downloads when the node cannot push.
+    #[must_use]
+    pub fn stored_latest(&self, task: i64, branch: &str) -> Option<PathBuf> {
+        let name = branch.rsplit('/').next().unwrap_or(branch);
+        let folder = self.submissions.join(format!("task-{task}"));
+        let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(folder)
+            .ok()?
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with(&format!("{name}-")) && n.ends_with(".bundle"))
+            })
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .collect();
+        found.sort();
+        found.pop().map(|(_, p)| p)
     }
 
     /// A branch's head in the mirror.
@@ -575,6 +630,21 @@ impl Mirror {
     }
 }
 
+/// Bytes as base64, for a bundle carried in JSON.
+#[must_use]
+pub fn to_base64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Bytes from base64, as a bundle arrives in JSON; `None` for text that is not base64.
+#[must_use]
+pub fn from_base64(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let clean: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD.decode(clean).ok()
+}
+
 /// A path as one word for `sh`, which `GIT_SSH_COMMAND` is run through.
 fn shell_word(path: &str) -> String {
     format!("'{}'", path.replace('\'', "'\\''"))
@@ -810,6 +880,59 @@ mod tests {
             ),
             taken.head
         );
+        // A refresh five minutes on keeps the submission: the fork is fetched by its heads.
+        s.mirror.refresh(REFRESH_MS).unwrap();
+        assert_eq!(
+            run(
+                &s.mirror.dir,
+                &["rev-parse", "refs/submissions/hq/task-3-tidy"]
+            ),
+            taken.head
+        );
+        // The check's sandbox gets the whole history, fetchable on its own.
+        let whole = s
+            .mirror
+            .submission_bundle("hq/task-3-tidy", &taken.head)
+            .unwrap()
+            .unwrap();
+        let file = s.root.join("whole.bundle");
+        std::fs::write(&file, &whole).unwrap();
+        let heads = run(&s.root, &["bundle", "list-heads", file.to_str().unwrap()]);
+        assert!(
+            heads.ends_with("refs/submissions/hq/task-3-tidy"),
+            "{heads}"
+        );
+        run(&s.root, &["init", "-q", "check"]);
+        run(
+            &s.root.join("check"),
+            &[
+                "fetch",
+                "-q",
+                file.to_str().unwrap(),
+                "refs/submissions/hq/task-3-tidy:refs/heads/check",
+            ],
+        );
+        assert_eq!(
+            run(&s.root.join("check"), &["rev-parse", "refs/heads/check"]),
+            taken.head
+        );
+        assert!(
+            s.mirror
+                .submission_bundle("hq/task-3-tidy", "0000000")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.mirror
+                .submission_bundle("hq/task-9-none", &taken.head)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            s.mirror.stored_latest(3, "hq/task-3-tidy"),
+            Some(taken.path.clone())
+        );
+        assert_eq!(s.mirror.stored_latest(9, "hq/task-3-tidy"), None);
         // Submitted again with one more commit: the stored branch moves with it.
         std::fs::write(s.work.join("roles/deluge/x.yml"), "---\n").unwrap();
         run(&s.work, &["add", "."]);

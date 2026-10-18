@@ -111,6 +111,14 @@ export ENDORA_ANSIBLE_NAS_REPO
 export ENDORA_ANSIBLE_NAS_REF
 export ENDORA_LAB_RETIRED
 
+# The engineering wing's deploy key (ADR 0115): ENDORA_GIT_PUSH_KEY = <a host folder> in
+# local.mk, holding one file `key` (ed25519, mode 0600) that is a deploy key with write access
+# on your ansible-nas fork. The node pushes the branches you approve on the HQ screen with it,
+# as hq/* branches only, never main, never with force. Unset: the node cannot push, and your
+# desk offers each accepted branch's bundle to download instead. See docs/homelab.md.
+ENDORA_GIT_PUSH_KEY ?=
+export ENDORA_GIT_PUSH_KEY
+
 # The read-only mail copy on the NAS (ansible-nas `mail_mirror` role, ADR 0097), e.g.
 # ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read whenever the copy is there.
 export ENDORA_MAIL_DIR

@@ -16,10 +16,12 @@ use axum::http::HeaderMap;
 use endora_capabilities::ansible_nas::{self, Docs};
 use endora_capabilities::application::HomelabObserver as _;
 use endora_capabilities::contracts::{
-    self, ANSIBLE_NAS_DOC, CONTAINER_LOGS, Contract, HOMELAB_MAP, HOMELAB_STATUS,
-    RESTART_CONTAINER, RestartLedger,
+    self, ANSIBLE_NAS_DOC, CONTAINER_LOGS, Contract, HOMELAB_MAP, HOMELAB_STATUS, REPO_CHECKOUT,
+    REPO_SUBMIT, RESTART_CONTAINER, RestartLedger,
 };
 use endora_capabilities::lab_map;
+use endora_capabilities::repo::{self, Mirror};
+use std::path::PathBuf;
 
 /// Where the owner's switches are kept, among the node's settings.
 const SWITCHES: &str = "hq-contracts";
@@ -301,7 +303,11 @@ async fn called(
         return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
     };
     if !may_see(&contract, &turn) {
-        let why = if contract.may_be_seen_by(&turn.role, turn.cloud) {
+        let why = if name == REPO_CHECKOUT || name == REPO_SUBMIT {
+            "the wing's git is a lead's or a developer's: read the branch's document \
+             (read_document) and the check's receipt instead"
+                .to_owned()
+        } else if contract.may_be_seen_by(&turn.role, turn.cloud) {
             "the CEO takes no step on the house itself: hand it to the lead with create_task"
                 .to_owned()
         } else {
@@ -320,6 +326,8 @@ async fn called(
         ANSIBLE_NAS_DOC => ansible_nas_doc(&state2, &args),
         CONTAINER_LOGS => container_logs(&state2, &args),
         RESTART_CONTAINER => restart_container(&state2, &turn, &args),
+        REPO_CHECKOUT => repo_checkout(&state2, &args),
+        REPO_SUBMIT => repo_submit(&state2, &turn, &args),
         _ => Err((
             StatusCode::NOT_FOUND,
             format!("no contract is called {name2}"),
@@ -329,7 +337,13 @@ async fn called(
     match done {
         Ok(Ok(done)) => {
             record(&state, &format!("{member} (run {run}) {}", done.said));
-            let came = came(&done.text, true);
+            // A checkout's text is a bundle: its receipt says what was checked out instead.
+            let excerpt = if name == REPO_CHECKOUT {
+                &done.said
+            } else {
+                &done.text
+            };
+            let came = came(excerpt, true);
             (Json(json!({ "text": done.text })).into_response(), came)
         }
         Ok(Err((status, why))) => {
@@ -511,29 +525,405 @@ fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
 }
 
 /// How the home lab is built, as the node knows it (ADR 0112): the lab's ansible-nas docs,
-/// the owner's retired list, and the last map, kept [`lab_map::MAP_FOR_MS`].
+/// the owner's retired list, and the last map, kept [`lab_map::MAP_FOR_MS`]; and the wing's
+/// git (ADR 0115): the node's mirror of the fork, where it pushes to, and the deploy key.
 pub(crate) struct LabKnowledge {
     pub(crate) docs: Docs,
     pub(crate) retired: Vec<(String, String)>,
     map: std::sync::Mutex<Option<(i64, serde_json::Value)>>,
+    /// Where the mirror and the submissions are kept: the node's data folder.
+    repo_dir: PathBuf,
+    /// The mirror, once the fork's default branch is known.
+    repo: std::sync::Mutex<Option<Arc<Mirror>>>,
+    /// Where an approved branch is pushed: the fork over SSH, unless a test says a path.
+    push_remote: Option<String>,
+    /// The deploy key (`ENDORA_GIT_PUSH_KEY_FILE`), if one is set up.
+    push_key: Option<PathBuf>,
 }
 
 impl LabKnowledge {
-    /// The docs and the retired list as given.
+    /// The docs and the retired list as given; no mirror until a fork and a data folder are.
     pub(crate) fn new(docs: Docs, retired: Vec<(String, String)>) -> Self {
         Self {
             docs,
             retired,
             map: std::sync::Mutex::new(None),
+            repo_dir: PathBuf::from("."),
+            repo: std::sync::Mutex::new(None),
+            push_remote: None,
+            push_key: None,
         }
     }
 
-    /// From the node's environment: `ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF` and
-    /// `ENDORA_LAB_RETIRED`.
+    /// From the node's environment: `ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`,
+    /// `ENDORA_LAB_RETIRED`, the data folder beside `ENDORA_DB`, and
+    /// `ENDORA_GIT_PUSH_KEY_FILE`.
     pub(crate) fn from_env() -> Self {
         let retired = std::env::var("ENDORA_LAB_RETIRED").unwrap_or_default();
-        Self::new(Docs::from_env(), lab_map::retired_of(&retired))
+        let mut lab = Self::new(Docs::from_env(), lab_map::retired_of(&retired));
+        lab.repo_dir = std::env::var("ENDORA_DB")
+            .ok()
+            .and_then(|db| PathBuf::from(db).parent().map(PathBuf::from))
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("."));
+        lab.push_key = std::env::var("ENDORA_GIT_PUSH_KEY_FILE")
+            .ok()
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from);
+        lab
     }
+
+    /// With a mirror of the repository at `url` (its default branch `branch`) kept under
+    /// `dir`, pushed to `push_remote`: a test's local bare repository.
+    #[cfg(test)]
+    pub(crate) fn with_repo(
+        mut self,
+        dir: PathBuf,
+        url: &str,
+        branch: &str,
+        push_remote: &str,
+    ) -> Self {
+        self.repo = std::sync::Mutex::new(Some(Arc::new(Mirror::new(&dir, url, branch))));
+        self.repo_dir = dir;
+        self.push_remote = Some(push_remote.to_owned());
+        self
+    }
+
+    /// With a deploy key at `key`.
+    #[cfg(test)]
+    pub(crate) fn with_push_key(mut self, key: PathBuf) -> Self {
+        self.push_key = Some(key);
+        self
+    }
+
+    /// Whether the node can push a branch to the fork: a deploy key is set up.
+    pub(crate) fn can_push(&self) -> bool {
+        self.push_key.as_ref().is_some_and(|k| k.exists())
+    }
+
+    /// The node's mirror of the fork, made the first time it is asked for (the fork's default
+    /// branch is asked of GitHub then); `None` when no fork is configured.
+    pub(crate) fn mirror(&self, now: i64) -> Option<Arc<Mirror>> {
+        let mut kept = self
+            .repo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(mirror) = kept.as_ref() {
+            return Some(mirror.clone());
+        }
+        let fork = self.docs.fork()?;
+        let branch = self.docs.branch(now)?;
+        let mirror = Arc::new(Mirror::new(&self.repo_dir, &fork.https_url(), &branch));
+        *kept = Some(mirror.clone());
+        Some(mirror)
+    }
+
+    /// Where an approved branch is pushed: the fork over SSH.
+    fn push_remote(&self) -> Option<String> {
+        self.push_remote
+            .clone()
+            .or_else(|| self.docs.fork().map(ansible_nas::Fork::ssh_url))
+    }
+}
+
+/// What the team is told when no fork is configured for the wing.
+const NO_FORK: &str = "the lab's ansible-nas fork is not configured on the node (ENDORA_ANSIBLE_NAS_REPO): there is nothing to check out";
+
+/// `repo_checkout` (ADR 0115): a bundle of the fork's default branch, or of one of the team's
+/// `hq/` branches, as base64 in the text the worker reads (the worker unpacks it; the model
+/// never sees the bundle).
+fn repo_checkout(state: &AppState, args: &serde_json::Value) -> Result<Done, Refused> {
+    let now = state.clock.now().unix_millis();
+    let Some(mirror) = state.lab.mirror(now) else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
+    };
+    let branch = args["branch"]
+        .as_str()
+        .map(str::trim)
+        .filter(|b| !b.is_empty());
+    let bundle = mirror
+        .bundle(branch, now)
+        .map_err(|why| (StatusCode::BAD_GATEWAY, why))?;
+    let said = format!(
+        "checked out {} at {} ({} KB)",
+        bundle.branch,
+        &bundle.head[..12.min(bundle.head.len())],
+        bundle.bytes.len() >> 10
+    );
+    let text = json!({
+        "branch": bundle.branch, "head": bundle.head, "default_branch": mirror.default_branch(),
+        "bundle": repo::to_base64(&bundle.bytes),
+    })
+    .to_string();
+    Ok(Done { text, said })
+}
+
+/// `repo_submit` (ADR 0115): a bundle of one `hq/` branch from the sandbox, taken by the
+/// mirror's rules (one branch, on top of the default branch, within the limits, every commit
+/// HQ's), kept under the task, and told to HQ, which writes its document and queues its check.
+fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Result<Done, Refused> {
+    let Some(task) = turn.task else {
+        return Err((
+            StatusCode::CONFLICT,
+            "this turn is on no task: a branch is submitted for a task".to_owned(),
+        ));
+    };
+    let branch = args["branch"].as_str().unwrap_or("").trim();
+    let why = one_line(args["why"].as_str().unwrap_or(""));
+    if why.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "say what the branch does, in `why`".to_owned(),
+        ));
+    }
+    let Some(bytes) = args["bundle"].as_str().and_then(repo::from_base64) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "the bundle is sent as base64 in `bundle` (the worker does this)".to_owned(),
+        ));
+    };
+    let now = state.clock.now().unix_millis();
+    let Some(mirror) = state.lab.mirror(now) else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
+    };
+    let taken = mirror
+        .submit(&bytes, branch, task, now)
+        .map_err(|why| (StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    let Some(hq) = state.hq.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HQ is not set up on this node".to_owned(),
+        ));
+    };
+    let recorded = hq
+        .post(
+            "/v1/team/branch",
+            &json!({
+                "token": turn.token, "branch": taken.branch, "head": taken.head,
+                "base": taken.base, "files": taken.files, "plus": taken.plus,
+                "minus": taken.minus, "stat": taken.stat, "diff": taken.diff,
+                "can_push": state.lab.can_push(),
+            }),
+        )
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("the branch is kept on the node, but HQ did not record it: {e}"),
+            )
+        })?;
+    let short = &taken.head[..12.min(taken.head.len())];
+    Ok(Done {
+        text: format!(
+            "Submitted {} at {short} ({} file{}, +{} −{}): document d{} on task #{task}, \
+             check c{} queued on the dev node (its result comes back as a receipt in the \
+             thread). Nothing is pushed: once the tester and the lead accept the task, the \
+             owner decides. Now submit the task for review with set_status in_review, citing \
+             this receipt.",
+            taken.branch,
+            taken.files,
+            if taken.files == 1 { "" } else { "s" },
+            taken.plus,
+            taken.minus,
+            recorded["document"].as_i64().unwrap_or(0),
+            recorded["check"].as_i64().unwrap_or(0)
+        ),
+        said: format!(
+            "submitted branch {} at {short} ({} files, +{} −{}) for task {task}: {why}",
+            taken.branch, taken.files, taken.plus, taken.minus
+        ),
+    })
+}
+
+/// `GET /team-relay/check/{id}/bundle` (ADR 0115): the whole history of the branch a check
+/// job is for, to the job's sandbox, opened by the job's own token, which HQ checks. Nothing
+/// else of the mirror is served.
+pub(super) async fn check_bundle(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Response {
+    let token = token_of(&headers);
+    if token.len() < 32 {
+        return refuse(StatusCode::UNAUTHORIZED, "", "no check token");
+    }
+    let Some(hq) = state.hq.clone() else {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "",
+            "HQ is not set up on this node",
+        );
+    };
+    let asked =
+        tokio::task::spawn_blocking(move || hq.post("/v1/team/check", &json!({ "token": token })))
+            .await;
+    let named = match asked {
+        Ok(Ok(named)) if named["check"].as_i64() == Some(id) => named,
+        Ok(Ok(_)) => {
+            return refuse(
+                StatusCode::UNAUTHORIZED,
+                "",
+                "that token is another check's",
+            );
+        }
+        Ok(Err(endora_infrastructure::HqError::Answered { status: 404, .. })) => {
+            return refuse(StatusCode::UNAUTHORIZED, "", "no check has that token");
+        }
+        _ => return refuse(StatusCode::SERVICE_UNAVAILABLE, "", "HQ did not answer"),
+    };
+    let branch = named["branch"].as_str().unwrap_or("").to_owned();
+    let head = named["head"].as_str().unwrap_or("").to_owned();
+    let now = state.clock.now().unix_millis();
+    let looked = state.clone();
+    let bundled = tokio::task::spawn_blocking(move || {
+        let mirror = looked.lab.mirror(now).ok_or_else(|| NO_FORK.to_owned())?;
+        mirror.submission_bundle(&branch, &head)
+    })
+    .await;
+    match bundled {
+        Ok(Ok(Some(bytes))) => {
+            record(
+                &state,
+                &format!(
+                    "check c{id} fetched the bundle of {} at {}",
+                    named["branch"], named["head"]
+                ),
+            );
+            (
+                StatusCode::OK,
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        "application/octet-stream".to_owned(),
+                    ),
+                    (
+                        axum::http::HeaderName::from_static("x-endora-branch"),
+                        named["branch"].as_str().unwrap_or("").to_owned(),
+                    ),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Ok(Ok(None)) => refuse(
+            StatusCode::NOT_FOUND,
+            "",
+            "no submission of that branch is stored",
+        ),
+        Ok(Err(why)) => refuse(StatusCode::BAD_GATEWAY, "", &why),
+        Err(_) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the bundle failed"),
+    }
+}
+
+/// `GET /v1/hq/bundles/{task}/{slug}` (ADR 0115): the newest stored submission of
+/// `hq/<slug>` for a task, whole, for the owner to fetch into their own clone when the node
+/// cannot push.
+pub(super) async fn bundle_download(
+    State(state): State<AppState>,
+    Path((task, slug)): Path<(i64, String)>,
+) -> Response {
+    let branch = format!("hq/{slug}");
+    if repo::hq_branch(&branch).is_err() {
+        return refuse(StatusCode::NOT_FOUND, "", "not one of the team's branches");
+    }
+    let now = state.clock.now().unix_millis();
+    let looked = state.clone();
+    let bundled = tokio::task::spawn_blocking(move || {
+        let mirror = looked.lab.mirror(now).ok_or_else(|| NO_FORK.to_owned())?;
+        let Some(stored) = mirror.stored_latest(task, &branch) else {
+            return Ok(None);
+        };
+        let head = stored
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.rsplit('-').next())
+            .unwrap_or("")
+            .to_owned();
+        mirror.submission_bundle(&branch, &head)
+    })
+    .await;
+    match bundled {
+        Ok(Ok(Some(bytes))) => {
+            record(
+                &state,
+                &format!("you downloaded the bundle of hq/{slug} (task {task})"),
+            );
+            (
+                StatusCode::OK,
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        "application/octet-stream".to_owned(),
+                    ),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"{slug}.bundle\""),
+                    ),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Ok(Ok(None)) => refuse(
+            StatusCode::NOT_FOUND,
+            "",
+            "no submission of that branch is stored",
+        ),
+        Ok(Err(why)) => refuse(StatusCode::BAD_GATEWAY, "", &why),
+        Err(_) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the bundle failed"),
+    }
+}
+
+/// Pushes the branch of a push the owner approved (ADR 0115), as HQ named it: to the fork over
+/// SSH with the deploy key, as that branch alone, never force. Tells HQ what came of it and
+/// writes the audit line. Returns what the owner reads.
+pub(super) fn push_approved(state: &AppState, push: &serde_json::Value) -> Result<String, String> {
+    let item = push["item"]
+        .as_i64()
+        .ok_or_else(|| "HQ named no desk item".to_owned())?;
+    let branch = push["branch"].as_str().unwrap_or("").to_owned();
+    let head = push["head"].as_str().unwrap_or("").to_owned();
+    let now = state.clock.now().unix_millis();
+    let pushed = state
+        .lab
+        .mirror(now)
+        .ok_or_else(|| NO_FORK.to_owned())
+        .and_then(|mirror| {
+            let remote = state.lab.push_remote().ok_or_else(|| NO_FORK.to_owned())?;
+            mirror.push(&branch, &head, &remote, state.lab.push_key.as_deref())
+        });
+    let (ok, text) = match &pushed {
+        Ok(said) => (
+            true,
+            format!(
+                "{said}. The branch is on the fork as {branch}: merge it there when you are ready; HQ opens no pull request and merges nothing."
+            ),
+        ),
+        Err(why) => (
+            false,
+            format!("Pushing {branch} failed: {why}. It stays stored on the node."),
+        ),
+    };
+    record(
+        state,
+        &format!(
+            "you approved pushing {branch} ({}) to the fork: {}",
+            &head[..12.min(head.len())],
+            if ok { "pushed" } else { "it failed" }
+        ),
+    );
+    if let Some(hq) = state.hq.as_ref() {
+        if let Err(e) = hq.post(
+            &format!("/v1/team/push/{item}/outcome"),
+            &json!({ "ok": ok, "text": text }),
+        ) {
+            eprintln!("repo: could not tell HQ what came of push {item}: {e}");
+        }
+    }
+    if ok {
+        return Ok(text);
+    }
+    Err(text)
 }
 
 /// Why Endora's Docker observer could not be used, as the model reads it.
@@ -1652,6 +2042,448 @@ mod tests {
         }
     }
 
+    /// One `git` in a test's repository.
+    fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// A fork as a bare repository with one commit on `main`, in a folder of its own.
+    fn a_fork(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "endora-node-wing-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git_in(&root, &["init", "-q", "--bare", "-b", "main", "fork.git"]);
+        git_in(&root, &["clone", "-q", "fork.git", "seed"]);
+        let seed = root.join("seed");
+        std::fs::write(seed.join("nas.yml"), "---\n- hosts: all\n").unwrap();
+        git_in(&seed, &["add", "."]);
+        git_in(
+            &seed,
+            &[
+                "-c",
+                "user.name=John Doe",
+                "-c",
+                "user.email=john@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "the lab",
+            ],
+        );
+        git_in(&seed, &["push", "-q", "origin", "HEAD:main"]);
+        (root.clone(), root.join("fork.git"))
+    }
+
+    #[tokio::test]
+    async fn the_wing_checks_out_the_fork_submits_a_branch_and_the_check_and_the_push_follow() {
+        use super::super::relay::tests::fake;
+        let (root, fork) = a_fork("flow");
+        // HQ, faked: Kit's turn (token `good`, a lead on task 3), Dee's (`dee`, the tester),
+        // and what the node tells it: the branch, the check a job token names, the push.
+        let last_branch: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let told = last_branch.clone();
+        let (hq_url, seen) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            match path {
+                "/v1/team/turn" if body["token"] == "good" => (
+                    200,
+                    "application/json",
+                    json!({ "run": 7, "member": "Kit", "role": "lead", "left": 40_000,
+                            "cloud": true, "task": 3 })
+                    .to_string(),
+                ),
+                "/v1/team/turn" if body["token"] == "dee" => (
+                    200,
+                    "application/json",
+                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 0,
+                            "cloud": false, "task": 3 })
+                    .to_string(),
+                ),
+                "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+                "/v1/team/branch" => {
+                    *told.lock().unwrap() = Some(body);
+                    (
+                        200,
+                        "application/json",
+                        json!({ "branch": 1, "document": 5, "check": 9 }).to_string(),
+                    )
+                }
+                "/v1/team/check" if body["token"] == "a-check-jobs-token-of-thirty-two-chars-x" => {
+                    let branch = told.lock().unwrap().clone().unwrap_or_default();
+                    (
+                        200,
+                        "application/json",
+                        json!({ "check": 9, "task": 3, "branch": branch["branch"],
+                                "head": branch["head"] })
+                        .to_string(),
+                    )
+                }
+                "/v1/team/check" => (404, "application/json", "{}".to_owned()),
+                "/v1/desk/4" => {
+                    let branch = told.lock().unwrap().clone().unwrap_or_default();
+                    (
+                        200,
+                        "application/json",
+                        json!({ "decided": true, "push": { "item": 4, "task": 3,
+                                "branch": branch["branch"], "head": branch["head"] } })
+                        .to_string(),
+                    )
+                }
+                "/v1/team/receipt" => (200, "application/json", r#"{"receipt":41}"#.to_owned()),
+                _ => (200, "application/json", "{}".to_owned()),
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        state.lab = Arc::new(
+            LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new()).with_repo(
+                root.join("data"),
+                fork.to_str().unwrap(),
+                "main",
+                fork.to_str().unwrap(),
+            ),
+        );
+        // A lead and a developer are offered the wing's git; the tester is not.
+        let (_, listed) = answer(
+            &state,
+            ask("GET", "/team-relay/contracts", Some("good"), ""),
+        )
+        .await;
+        let names: Vec<&str> = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&REPO_CHECKOUT) && names.contains(&REPO_SUBMIT),
+            "{names:?}"
+        );
+        assert_eq!(
+            listed["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == REPO_SUBMIT)
+                .unwrap()["kind"],
+            "act"
+        );
+        let (_, listed) =
+            answer(&state, ask("GET", "/team-relay/contracts", Some("dee"), "")).await;
+        let names: Vec<&str> = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(
+            !names.contains(&REPO_CHECKOUT) && !names.contains(&REPO_SUBMIT),
+            "{names:?}"
+        );
+        // Dee's refusal says the wing's rule, not the CEO's.
+        let (refused, why) = answer(
+            &state,
+            ask(
+                "POST",
+                "/team-relay/contracts/repo_checkout",
+                Some("dee"),
+                r#"{"why":"look"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(refused, StatusCode::FORBIDDEN, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .unwrap()
+                .contains("lead's or a developer's"),
+            "{why}"
+        );
+        // The checkout: a bundle of main the sandbox can clone, said in the receipt by its head.
+        let (status, said) = use_contract(&state, REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        let (bundle_json, receipt) = text.rsplit_once(" (receipt ").unwrap();
+        assert!(receipt.starts_with("r41"), "{receipt}");
+        let checkout: serde_json::Value = serde_json::from_str(bundle_json).unwrap();
+        assert_eq!(checkout["branch"], "main");
+        assert_eq!(checkout["default_branch"], "main");
+        let bytes = repo::from_base64(checkout["bundle"].as_str().unwrap()).unwrap();
+        let file = root.join("checkout.bundle");
+        std::fs::write(&file, &bytes).unwrap();
+        git_in(
+            &root,
+            &["clone", "-q", "-b", "main", file.to_str().unwrap(), "work"],
+        );
+        let work = root.join("work");
+        assert_eq!(
+            git_in(&work, &["rev-parse", "HEAD"]),
+            checkout["head"].as_str().unwrap()
+        );
+        let receipts = |seen: &super::super::relay::tests::Seen| -> Vec<serde_json::Value> {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|(p, _, _)| p == "/v1/team/receipt")
+                .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+                .collect()
+        };
+        let checked_out = receipts(&seen).pop().unwrap();
+        assert!(
+            checked_out["excerpt"]
+                .as_str()
+                .unwrap()
+                .starts_with("checked out main at "),
+            "{checked_out}"
+        );
+        assert_eq!(checked_out["act"], false);
+        // Kit's work: one commit, authored HQ with its trailer, bundled from main.
+        git_in(
+            &work,
+            &["checkout", "-q", "-b", "hq/task-3-tidy-roles", "main"],
+        );
+        std::fs::write(work.join("nas.yml"), "---\n- hosts: nas\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(
+            &work,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "tidy\n\nMade-by: Endora HQ (Kit) for task #3",
+            ],
+        );
+        let head = git_in(&work, &["rev-parse", "HEAD"]);
+        let delta = root.join("delta.bundle");
+        git_in(
+            &work,
+            &[
+                "bundle",
+                "create",
+                delta.to_str().unwrap(),
+                "main..hq/task-3-tidy-roles",
+            ],
+        );
+        let delta = repo::to_base64(&std::fs::read(&delta).unwrap());
+        let (status, said) = use_contract(
+            &state,
+            REPO_SUBMIT,
+            json!({ "branch": "main", "why": "x", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "never main: {said}"
+        );
+        let (status, said) = use_contract(
+            &state,
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-3-tidy-roles", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a why: {said}");
+        let (status, said) = use_contract(
+            &state,
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-3-tidy-roles", "why": "tidies the play", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        assert!(
+            text.contains("document d5")
+                && text.contains("check c9")
+                && text.contains("Nothing is pushed"),
+            "{text}"
+        );
+        let told_hq = last_branch.lock().unwrap().clone().unwrap();
+        assert_eq!(told_hq["token"], "good", "the turn's own token");
+        assert_eq!(told_hq["branch"], "hq/task-3-tidy-roles");
+        assert_eq!(told_hq["head"], head);
+        assert_eq!(told_hq["files"], 1);
+        assert_eq!(told_hq["can_push"], false, "no deploy key on this node");
+        assert!(told_hq["diff"].as_str().unwrap().contains("+- hosts: nas"));
+        let submitted = receipts(&seen).pop().unwrap();
+        assert_eq!(submitted["act"], true);
+        assert!(
+            submitted["excerpt"]
+                .as_str()
+                .unwrap()
+                .starts_with("Submitted hq/task-3-tidy-roles")
+        );
+        // The check's sandbox fetches the whole branch with the job's token, and nothing else opens it.
+        let job = "a-check-jobs-token-of-thirty-two-chars-x";
+        let res = team_relay(state.clone())
+            .oneshot(ask("GET", "/team-relay/check/9/bundle", Some(job), ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["x-endora-branch"], "hq/task-3-tidy-roles");
+        let whole = res.into_body().collect().await.unwrap().to_bytes();
+        let file = root.join("whole.bundle");
+        std::fs::write(&file, &whole).unwrap();
+        git_in(&root, &["init", "-q", "check"]);
+        git_in(
+            &root.join("check"),
+            &[
+                "fetch",
+                "-q",
+                file.to_str().unwrap(),
+                "refs/submissions/hq/task-3-tidy-roles:refs/heads/check",
+            ],
+        );
+        assert_eq!(git_in(&root.join("check"), &["rev-parse", "check"]), head);
+        for (id, token) in [
+            (8, Some(job)),
+            (9, Some("good")),
+            (9, None),
+            (9, Some("short")),
+        ] {
+            let (status, _) = answer(
+                &state,
+                ask("GET", &format!("/team-relay/check/{id}/bundle"), token, ""),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{id} {token:?}");
+        }
+        // The owner downloads the bundle from the node's own port.
+        let owner = super::super::tests::get("/v1/hq/bundles/3/task-3-tidy-roles");
+        let mut signed = state.clone();
+        signed.token = Arc::new(super::super::tests::TEST_TOKEN.to_owned());
+        let res = app(signed.clone()).oneshot(owner).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            res.headers()["content-disposition"]
+                .to_str()
+                .unwrap()
+                .contains("task-3-tidy-roles.bundle")
+        );
+        let res = app(signed.clone())
+            .oneshot(super::super::tests::get("/v1/hq/bundles/3/nothing-here"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        // The owner approves the push (desk item 4): the node pushes that branch to the fork,
+        // as itself, and tells HQ; main is untouched.
+        let decided = super::super::hq::hq_decide(
+            State(signed.clone()),
+            Path(4),
+            Json(super::super::hq::HqDecision {
+                decision: "approve".to_owned(),
+                answer: String::new(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(decided.0["pushed"], true, "{}", decided.0);
+        assert_eq!(
+            git_in(&fork, &["rev-parse", "refs/heads/hq/task-3-tidy-roles"]),
+            head
+        );
+        assert_eq!(
+            git_in(&fork, &["rev-parse", "refs/heads/main"]),
+            checkout["head"].as_str().unwrap()
+        );
+        let outcome: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/push/4/outcome")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(outcome.len(), 1);
+        assert_eq!(outcome[0]["ok"], true);
+        assert!(
+            outcome[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("merges nothing")
+        );
+        let audit = audit(&signed);
+        assert!(
+            audit
+                .iter()
+                .any(|a| a.contains("you approved pushing hq/task-3-tidy-roles")
+                    && a.ends_with("pushed")),
+            "{audit:?}"
+        );
+        assert!(
+            audit
+                .iter()
+                .any(|a| a.contains("submitted branch hq/task-3-tidy-roles")),
+            "{audit:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn without_a_fork_the_wings_git_says_so_and_a_turn_on_no_task_submits_nothing() {
+        use super::super::relay::tests::fake;
+        let (hq_url, _) = fake(Arc::new(|path, body| match path {
+            "/v1/team/turn" if body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Kit", "role": "lead", "left": 0, "cloud": false })
+                    .to_string(),
+            ),
+            _ => (404, "application/json", "{}".to_owned()),
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        let (status, said) = use_contract(&state, REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("ENDORA_ANSIBLE_NAS_REPO"),
+            "{said}"
+        );
+        let (status, said) = use_contract(
+            &state,
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-1-x", "why": "x", "bundle": "AAAA" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "no task: {said}");
+        assert!(!state.lab.can_push(), "no key file named");
+        let missing = LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new())
+            .with_push_key(std::env::temp_dir().join("endora-no-such-key"));
+        assert!(!missing.can_push(), "a key file named but absent");
+        let present = std::env::temp_dir().join(format!("endora-key-{}", std::process::id()));
+        std::fs::write(&present, "not a real key\n").unwrap();
+        assert!(
+            LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new())
+                .with_push_key(present.clone())
+                .can_push()
+        );
+        let _ = std::fs::remove_file(present);
+    }
+
     #[tokio::test]
     async fn the_owner_switches_the_restart_or_every_contract_off() {
         let lab = lab();
@@ -1685,7 +2517,9 @@ mod tests {
                 "homelab_status",
                 "container_logs",
                 "homelab_map",
-                "ansible_nas_doc"
+                "ansible_nas_doc",
+                "repo_checkout",
+                "repo_submit"
             ]
         );
         let (status, said) = use_contract(

@@ -71,9 +71,13 @@ impl Contract {
 
     /// Whether a turn of a member in `role` is offered this contract: what it may see, and an
     /// act only for a member who works on the house. The CEO decides and hands work on; it
-    /// takes no step on the house itself (ADR 0111).
+    /// takes no step on the house itself (ADR 0111). The wing's git contracts (ADR 0115) go to
+    /// a lead or a developer, whatever its brain: the fork is public.
     #[must_use]
     pub fn offered_to(&self, role: &str, on_a_cloud_model: bool) -> bool {
+        if self.name == REPO_CHECKOUT || self.name == REPO_SUBMIT {
+            return matches!(role, "lead" | "developer");
+        }
         if self.kind == Kind::AutomaticAct && role == "ceo" {
             return false;
         }
@@ -98,6 +102,10 @@ pub const RESTART_CONTAINER: &str = "restart_container";
 pub const HOMELAB_MAP: &str = "homelab_map";
 /// The contract that reads the lab's ansible-nas docs (ADR 0112).
 pub const ANSIBLE_NAS_DOC: &str = "ansible_nas_doc";
+/// The contract that hands a sandbox a bundle of the fork to work on (ADR 0115).
+pub const REPO_CHECKOUT: &str = "repo_checkout";
+/// The contract that takes a sandbox's branch as a bundle (ADR 0115).
+pub const REPO_SUBMIT: &str = "repo_submit";
 
 /// Every contract Endora offers the team, in the order a turn is offered them.
 #[must_use]
@@ -143,6 +151,26 @@ pub fn all() -> Vec<Contract> {
             input: json!({ "type": "object", "properties": {
                 "path": { "type": "string", "description": "A doc's path, or a folder to list, e.g. roles or roles/deluge/README.md." },
             } }),
+        },
+        Contract {
+            name: REPO_CHECKOUT,
+            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches to review. Git is set up there (commits are authored Endora HQ with the trailer added for you). Free; the sandbox stays offline.",
+            kind: Kind::Read,
+            tier: "internal",
+            input: json!({ "type": "object", "properties": {
+                "branch": { "type": "string", "description": "The fork's default branch unless you name a team branch, hq/task-N-slug." },
+                "why": { "type": "string", "description": "Why, in a few words." },
+            }, "required": ["why"] }),
+        },
+        Contract {
+            name: REPO_SUBMIT,
+            description: "Send your branch (hq/task-N-slug, committed in /work/repo) to Endora, which keeps it, writes its diff as a document on your task and runs the lab's checks (ansible syntax, ansible-lint, yamllint) on the dev node; the result comes back as a receipt. Refused unless it sits on the fork's default branch, changes at most 200 files and 1 MB, and every commit is HQ's. Nothing is pushed: the owner pushes an accepted branch.",
+            kind: Kind::AutomaticAct,
+            tier: "internal",
+            input: json!({ "type": "object", "properties": {
+                "branch": { "type": "string", "description": "Your branch, hq/task-N-slug." },
+                "why": { "type": "string", "description": "What the branch does, in a sentence the tester reads." },
+            }, "required": ["branch", "why"] }),
         },
     ]
 }
@@ -356,7 +384,7 @@ mod tests {
     const NOON: i64 = 1_792_166_400_000;
 
     #[test]
-    fn five_contracts_each_a_tool_with_a_schema() {
+    fn seven_contracts_each_a_tool_with_a_schema() {
         let tools: Vec<Value> = all().iter().map(Contract::as_tool).collect();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert_eq!(
@@ -366,7 +394,9 @@ mod tests {
                 CONTAINER_LOGS,
                 RESTART_CONTAINER,
                 HOMELAB_MAP,
-                ANSIBLE_NAS_DOC
+                ANSIBLE_NAS_DOC,
+                REPO_CHECKOUT,
+                REPO_SUBMIT
             ]
         );
         for tool in &tools {
@@ -381,16 +411,42 @@ mod tests {
                 Kind::Read,
                 Kind::AutomaticAct,
                 Kind::Read,
-                Kind::Read
+                Kind::Read,
+                Kind::Read,
+                Kind::AutomaticAct
             ]
         );
         assert_eq!(all()[1].tier, "confidential", "logs are");
     }
 
     #[test]
+    fn the_wings_git_goes_to_a_lead_or_a_developer_on_any_brain_and_nobody_else() {
+        let all = all();
+        for contract in &all[5..] {
+            assert_eq!(contract.tier, "internal", "the fork is public");
+            for role in ["lead", "developer"] {
+                for cloud in [false, true] {
+                    assert!(
+                        contract.offered_to(role, cloud),
+                        "{} to a {role}",
+                        contract.name
+                    );
+                }
+            }
+            for role in ["ceo", "reviewer", "researcher", ""] {
+                assert!(
+                    !contract.offered_to(role, false),
+                    "{} to a {role}",
+                    contract.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_role_on_any_brain_is_offered_the_map_and_the_docs() {
         let all = all();
-        for contract in &all[3..] {
+        for contract in &all[3..5] {
             assert_eq!(contract.tier, "internal", "names and wiring only");
             for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
                 for cloud in [false, true] {

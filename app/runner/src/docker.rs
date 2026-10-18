@@ -15,6 +15,9 @@ pub const RUN_LABEL: &str = "endora.run";
 /// The label every turn's container carries: the lease its turn was handed out with.
 pub const LEASE_LABEL: &str = "endora.lease";
 
+/// The label a check job's container carries: its check (ADR 0115).
+pub const CHECK_LABEL: &str = "endora.check";
+
 /// How long one call to Docker may take. Starting a container on a busy NAS is the slowest.
 const ANSWERS_WITHIN: Duration = Duration::from_secs(30);
 
@@ -27,15 +30,18 @@ pub enum State {
     Exited(i64),
 }
 
-/// A turn's container, as Docker lists it: what a runner that restarts takes back.
+/// A turn's or a check's container, as Docker lists it: what a runner that restarts takes
+/// back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Left {
     /// The container.
     pub id: String,
-    /// Its run label, as it is written.
+    /// Its run label, as it is written; empty for a check's container.
     pub run: String,
     /// Its lease label, as it is written; empty if it has none.
     pub lease: String,
+    /// Its check label, as it is written; empty for a turn's container.
+    pub check: String,
     /// When it was made, in seconds since the Unix epoch.
     pub created: u64,
 }
@@ -230,30 +236,44 @@ impl Docker for Engine {
     }
 
     fn left(&self) -> Result<Vec<Left>, String> {
-        // `filters={"label":["endora.run"]}`, written for a URL.
-        let path = format!(
-            "/containers/json?all=true&filters=%7B%22label%22%3A%5B%22{}%22%5D%7D",
-            RUN_LABEL
-        );
-        let answer = self.call("GET", &path, None)?;
-        if answer.status != 200 {
-            return Err(refusal("list them", &answer));
+        let mut all: Vec<Left> = Vec::new();
+        for label in [RUN_LABEL, CHECK_LABEL] {
+            // `filters={"label":["endora.run"]}`, written for a URL.
+            let path = format!(
+                "/containers/json?all=true&filters=%7B%22label%22%3A%5B%22{label}%22%5D%7D"
+            );
+            let answer = self.call("GET", &path, None)?;
+            if answer.status != 200 {
+                return Err(refusal("list them", &answer));
+            }
+            all.extend(
+                answer
+                    .json()
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|c| {
+                        let labels = &c["Labels"];
+                        let run = labels[RUN_LABEL].as_str().unwrap_or("");
+                        let check = labels[CHECK_LABEL].as_str().unwrap_or("");
+                        if run.is_empty() && check.is_empty() {
+                            return None;
+                        }
+                        Some(Left {
+                            id: c["Id"].as_str()?.to_owned(),
+                            run: run.to_owned(),
+                            lease: labels[LEASE_LABEL].as_str().unwrap_or("").to_owned(),
+                            check: check.to_owned(),
+                            // Unknown is as old as can be: one still running is past its time.
+                            created: c["Created"].as_u64().unwrap_or(0),
+                        })
+                    }),
+            );
         }
-        Ok(answer
-            .json()
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|c| {
-                Some(Left {
-                    id: c["Id"].as_str()?.to_owned(),
-                    run: c["Labels"][RUN_LABEL].as_str()?.to_owned(),
-                    lease: c["Labels"][LEASE_LABEL].as_str().unwrap_or("").to_owned(),
-                    // Unknown is as old as can be: one still running is past its time.
-                    created: c["Created"].as_u64().unwrap_or(0),
-                })
-            })
-            .collect())
+        // Each container once, whatever labels it carries.
+        let mut seen = std::collections::BTreeSet::new();
+        all.retain(|left| seen.insert(left.id.clone()));
+        Ok(all)
     }
 }
 
@@ -404,6 +424,7 @@ mod tests {
                 id: "old".to_owned(),
                 run: "7".to_owned(),
                 lease: "1007".to_owned(),
+                check: String::new(),
                 created: 1_700_000_000
             }]
         );
@@ -416,11 +437,12 @@ mod tests {
         );
         let lines: Vec<&str> = asked.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(
-            lines.last().copied(),
-            Some(
-                "GET /containers/json?all=true&filters=%7B%22label%22%3A%5B%22endora.run%22%5D%7D HTTP/1.1"
-            ),
-            "only the runner's own containers, stopped ones too"
+            &lines[lines.len() - 2..],
+            [
+                "GET /containers/json?all=true&filters=%7B%22label%22%3A%5B%22endora.run%22%5D%7D HTTP/1.1",
+                "GET /containers/json?all=true&filters=%7B%22label%22%3A%5B%22endora.check%22%5D%7D HTTP/1.1",
+            ],
+            "only the runner's own containers, turns and checks, stopped ones too"
         );
     }
 

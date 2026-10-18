@@ -483,6 +483,12 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/projects/{id}", post(hq_change_project))
         .route("/v1/hq/projects/{id}/cap", post(hq_project_cap))
         .route("/v1/hq/members/{id}/reports_to", post(hq_reports_to))
+        // The owner hires (ADR 0115), and downloads a branch's bundle when the node cannot push.
+        .route("/v1/hq/members", post(hq_hire))
+        .route(
+            "/v1/hq/bundles/{task}/{slug}",
+            get(contracts::bundle_download),
+        )
         // The owner's switches for the team's contracts (ADR 0106).
         .route(
             "/v1/hq/contracts",
@@ -694,6 +700,9 @@ pub fn team_relay(state: AppState) -> Router {
     relay_routes().with_state(state)
 }
 
+/// The most a contract call may carry: a submitted bundle (8 MB) as base64, and its words.
+const CONTRACT_CALL_MOST: usize = 12 * 1024 * 1024;
+
 fn relay_routes() -> Router<AppState> {
     Router::new()
         .route("/team-relay/v1/messages", post(relay::messages))
@@ -707,7 +716,16 @@ fn relay_routes() -> Router<AppState> {
         )
         // The team's contracts (ADR 0106): what Endora offers a turn on the home lab.
         .route("/team-relay/contracts", get(contracts::list))
-        .route("/team-relay/contracts/{name}", post(contracts::call))
+        // A submitted bundle rides in the call (ADR 0115): room for it, and not much more.
+        .route(
+            "/team-relay/contracts/{name}",
+            post(contracts::call).layer(axum::extract::DefaultBodyLimit::max(CONTRACT_CALL_MOST)),
+        )
+        // A check job's bundle (ADR 0115), opened by the job's own token.
+        .route(
+            "/team-relay/check/{id}/bundle",
+            get(contracts::check_bundle),
+        )
         // The team gateway (ADR 0110): HQ's two doors for callers on the house's network,
         // passed on untouched.
         .route("/team-gateway/mcp", axum::routing::any(gateway::mcp))

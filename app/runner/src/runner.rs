@@ -8,11 +8,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
-use crate::docker::{Docker, LEASE_LABEL, RUN_LABEL, State};
+use crate::docker::{CHECK_LABEL, Docker, LEASE_LABEL, RUN_LABEL, State};
 use crate::hq::{Ending, Hq, HqError};
 
 /// The longest a turn's container runs before it is killed, in seconds.
 pub const LONGEST_TURN: u64 = 30 * 60;
+
+/// The longest a check job's container runs before it is killed, in seconds (ADR 0115): three
+/// checks of five minutes each, and the fetch.
+pub const LONGEST_CHECK: u64 = 20 * 60;
 
 /// The exit code of a container killed, as Docker reports one.
 const KILLED: i64 = 137;
@@ -108,6 +112,83 @@ pub struct Work {
     /// Whether each turn is a workbench (ADR 0110, ring 1 on the Pi): the worker gets a
     /// writable `/work` of its own for a shell and git, offline, and more room to use it.
     pub workbench: bool,
+    /// Where a check job fetches its bundle (ADR 0115), up to the check's id: the node's team
+    /// listener, `.../team-relay/check/`.
+    pub check_bundle: String,
+    /// Where a check job reports, up to the check's id: HQ's `/runner/check/`, through the
+    /// gateway when the runner goes through it.
+    pub check_done: String,
+}
+
+/// A check job HQ handed out (ADR 0115), once checked: the branch is in the environment for
+/// the log; the bundle itself is fetched by the job with its token.
+pub struct CheckJob {
+    id: u64,
+    token: String,
+    branch: String,
+}
+
+impl CheckJob {
+    /// Checks a check job as HQ handed it out: `kind: "check"`, a numeric id and a token of
+    /// 64 hex characters.
+    ///
+    /// # Errors
+    /// Why it is refused, in a line.
+    pub fn from_hq(handed: &Value) -> Result<Self, String> {
+        if handed["kind"] != "check" {
+            return Err("not a check".to_owned());
+        }
+        let id = handed["check"]
+            .as_u64()
+            .ok_or_else(|| "a check from HQ has no numeric id".to_owned())?;
+        let token = handed["token"].as_str().unwrap_or("");
+        if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("check {id}: its token is not 64 hex characters"));
+        }
+        let branch = handed["branch"].as_str().unwrap_or("").to_owned();
+        if branch.chars().any(char::is_control) || branch.len() > 200 {
+            return Err(format!("check {id}: its branch is not a name"));
+        }
+        Ok(Self {
+            id,
+            token: token.to_owned(),
+            branch,
+        })
+    }
+}
+
+/// The body of `POST /containers/create` for a check job (ADR 0115): the workbench image with
+/// the same fence as a turn, no model and no turn (no run token, no HQ, no relay), the job's
+/// own token and where to fetch and report, and nothing else.
+pub fn check_spec(work: &Work, job: &CheckJob) -> Value {
+    let env = vec![
+        "ENDORA_CHECK=1".to_owned(),
+        format!("ENDORA_CHECK_ID={}", job.id),
+        format!("ENDORA_CHECK_TOKEN={}", job.token),
+        format!(
+            "ENDORA_CHECK_BUNDLE_URL={}{}/bundle",
+            work.check_bundle, job.id
+        ),
+        format!("ENDORA_CHECK_DONE_URL={}{}/done", work.check_done, job.id),
+        "ENDORA_WORKBENCH=1".to_owned(),
+    ];
+    json!({
+        "Image": work.image,
+        "Entrypoint": ["endora-worker"],
+        "Env": env,
+        "Labels": { CHECK_LABEL: job.id.to_string(), "endora.branch": job.branch },
+        "HostConfig": {
+            "NetworkMode": work.network,
+            "Memory": 1024 * 1024 * 1024,
+            "NanoCpus": 2_000_000_000_i64,
+            "PidsLimit": 256,
+            "ReadonlyRootfs": true,
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges:true"],
+            "Tmpfs": { "/tmp": "size=256m", "/data": "size=1m", "/work": WORK_FOLDER },
+            "Dns": [NO_RESOLVER],
+        },
+    })
 }
 
 /// A workbench's `/work`: in memory, gone with the container, owned by the image's user.
@@ -288,12 +369,21 @@ struct Running {
     since: u64,
 }
 
+/// A check job's container the runner is watching (ADR 0115).
+struct Checking {
+    id: u64,
+    token: String,
+    container: String,
+    since: u64,
+}
+
 /// The runner: HQ on one side, Docker on the other.
 pub struct Runner<D> {
     docker: D,
     hq: Hq,
     work: Work,
     running: Vec<Running>,
+    checking: Vec<Checking>,
     /// The runs HQ asked to stop whose containers are not yet killed. HQ tells each once, so
     /// a kill that fails is tried again every round until it takes.
     stopping: BTreeSet<u64>,
@@ -310,6 +400,7 @@ impl<D: Docker> Runner<D> {
             hq,
             work,
             running: Vec::new(),
+            checking: Vec::new(),
             stopping: BTreeSet::new(),
             said: BTreeMap::new(),
         }
@@ -326,6 +417,18 @@ impl<D: Docker> Runner<D> {
             }
         };
         for container in left {
+            // A check's container (ADR 0115) reports for itself; one left behind is removed,
+            // and HQ gives up a check that never reported.
+            if !container.check.is_empty() {
+                println!(
+                    "runner: check {} was left by an earlier runner; removed",
+                    container.check
+                );
+                if let Err(e) = self.docker.remove(&container.id) {
+                    eprintln!("runner: could not remove it: {e}");
+                }
+                continue;
+            }
             let Ok(run) = container.run.parse::<u64>() else {
                 continue;
             };
@@ -346,7 +449,95 @@ impl<D: Docker> Runner<D> {
     pub fn step(&mut self, now: u64) {
         self.stop_asked();
         self.check(now);
+        self.watch_checks(now);
         self.fill(now);
+    }
+
+    /// How many turns and checks run now.
+    fn busy(&self) -> usize {
+        self.running.len() + self.checking.len()
+    }
+
+    /// Removes each check job's container that ended (the job reported for itself; one that
+    /// ended badly without reporting is reported failed with its token), and kills one past
+    /// [`LONGEST_CHECK`].
+    fn watch_checks(&mut self, now: u64) {
+        for job in std::mem::take(&mut self.checking) {
+            let state = match self.docker.inspect(&job.container) {
+                Ok(state) => state,
+                Err(e) => {
+                    self.trouble("Docker", &e);
+                    self.checking.push(job);
+                    continue;
+                }
+            };
+            let failed = match state {
+                Some(State::Running) if now.saturating_sub(job.since) > LONGEST_CHECK => {
+                    if let Err(e) = self.docker.kill(&job.container) {
+                        eprintln!(
+                            "runner: could not kill check {}, past its time: {e}",
+                            job.id
+                        );
+                        self.checking.push(job);
+                        continue;
+                    }
+                    Some("the check ran past twenty minutes and was killed".to_owned())
+                }
+                Some(State::Running) => {
+                    self.checking.push(job);
+                    continue;
+                }
+                Some(State::Exited(0)) | None => None,
+                Some(State::Exited(code)) => Some(format!(
+                    "the check ended with exit {code} without reporting"
+                )),
+            };
+            if let Some(why) = failed {
+                println!("runner: check {} failed: {why}", job.id);
+                if let Err(e) = self.hq.check_failed(job.id, &job.token, &why) {
+                    eprintln!("runner: HQ did not take check {}'s failure: {e}", job.id);
+                }
+            } else {
+                println!("runner: check {} ended", job.id);
+            }
+            if let Err(e) = self.docker.remove(&job.container) {
+                eprintln!("runner: could not remove check {}'s container: {e}", job.id);
+            }
+        }
+    }
+
+    /// Starts a check job in a fresh container, or reports it failed with its token.
+    fn start_check(&mut self, job: CheckJob, now: u64) {
+        let started = self
+            .docker
+            .create(&check_spec(&self.work, &job))
+            .and_then(|container| match self.docker.start(&container) {
+                Ok(()) => Ok(container),
+                Err(e) => {
+                    if let Err(e) = self.docker.remove(&container) {
+                        eprintln!("runner: could not remove check {}'s container: {e}", job.id);
+                    }
+                    Err(e)
+                }
+            });
+        match started {
+            Ok(container) => {
+                println!("runner: check {} started on {:?}", job.id, job.branch);
+                self.checking.push(Checking {
+                    id: job.id,
+                    token: job.token,
+                    container,
+                    since: now,
+                });
+            }
+            Err(e) => {
+                eprintln!("runner: could not start check {}: {e}", job.id);
+                let why = format!("the check never started: {}", scrubbed(&e));
+                if let Err(e) = self.hq.check_failed(job.id, &job.token, &why) {
+                    eprintln!("runner: HQ did not take check {}'s failure: {e}", job.id);
+                }
+            }
+        }
     }
 
     /// Kills the turns HQ asks to stop, and any an earlier round could not. Each is then
@@ -460,9 +651,9 @@ impl<D: Docker> Runner<D> {
         }
     }
 
-    /// While there is room, asks HQ for the next turn and starts it.
+    /// While there is room, asks HQ for the next turn (or check job) and starts it.
     fn fill(&mut self, now: u64) {
-        let room = self.work.capacity.saturating_sub(self.running.len());
+        let room = self.work.capacity.saturating_sub(self.busy());
         if room == 0 {
             return;
         }
@@ -472,12 +663,20 @@ impl<D: Docker> Runner<D> {
         }
         self.fine("Docker");
         for _ in 0..room {
-            let free = self.work.capacity.saturating_sub(self.running.len());
+            let free = self.work.capacity.saturating_sub(self.busy());
             let handed = match self.hq.next(free) {
                 Ok(Some(handed)) => handed,
                 Ok(None) => return,
                 Err(e) => return self.trouble("HQ", &e.to_string()),
             };
+            // A check job (ADR 0115) comes before any turn: model-free, with its own token.
+            if handed["kind"] == "check" {
+                match CheckJob::from_hq(&handed) {
+                    Ok(job) => self.start_check(job, now),
+                    Err(why) => eprintln!("runner: refused a check from HQ: {why}"),
+                }
+                continue;
+            }
             match Turn::from_hq(&handed) {
                 Ok(turn) => self.start(&turn, now),
                 Err(Refused::NoRun) => {
@@ -644,9 +843,23 @@ mod tests {
                     let mut body = vec![0u8; length];
                     let _ = stream.read_exact(&mut body);
                     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-                    let signed = header("authorization").as_deref()
-                        == Some(&format!("Bearer {RUNNER_TOKEN}"));
+                    let bearer = header("authorization").unwrap_or_default();
+                    let signed = bearer == format!("Bearer {RUNNER_TOKEN}");
+                    // A check's report (ADR 0115) is signed with the job's own token.
+                    let a_check = asked.starts_with("POST /v1/runner/check/");
                     let (status, reply) = match asked.as_str() {
+                        a if a_check => {
+                            let id: u64 = a
+                                .trim_start_matches("POST /v1/runner/check/")
+                                .trim_end_matches("/done")
+                                .parse()
+                                .unwrap_or(0);
+                            if bearer == format!("Bearer {}", check_token(id)) {
+                                (204, Value::Null)
+                            } else {
+                                (404, json!({ "error": "no check has that token" }))
+                            }
+                        }
                         _ if !signed => (401, json!({ "error": "not the runner" })),
                         "POST /v1/runner/next" => match to_hand.lock().unwrap().pop_front() {
                             Some(turn) => (200, turn),
@@ -699,6 +912,23 @@ mod tests {
             self.endings()
                 .into_iter()
                 .map(|(run, b)| (run, b["succeeded"].as_bool().unwrap()))
+                .collect()
+        }
+
+        /// Each check reported failed by the runner itself, with why.
+        fn check_failures(&self) -> Vec<(u64, String)> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|(a, b)| {
+                    let id = a
+                        .strip_prefix("POST /v1/runner/check/")?
+                        .strip_suffix("/done")?
+                        .parse()
+                        .ok()?;
+                    Some((id, b["summary"].as_str().unwrap_or("").to_owned()))
+                })
                 .collect()
         }
 
@@ -854,7 +1084,20 @@ mod tests {
             hq_mcp: "http://hq:8790/v1/team/mcp".to_owned(),
             capacity,
             workbench: false,
+            check_bundle: "http://node:8788/team-relay/check/".to_owned(),
+            check_done: "http://hq:8790/v1/runner/check/".to_owned(),
         }
+    }
+
+    /// A check job's token: 64 hex characters, the job's own.
+    fn check_token(id: u64) -> String {
+        format!("{id:032x}{id:032x}")
+    }
+
+    /// A check job as HQ hands it out.
+    fn check_job(id: u64) -> Value {
+        json!({ "kind": "check", "check": id, "token": check_token(id), "task": 3,
+                "branch": "hq/task-3-tidy", "head": "a1b2c3d4e5f6" })
     }
 
     fn runner(name: &str, hq: &FakeHq, docker: &FakeDocker, capacity: usize) -> Runner<FakeDocker> {
@@ -922,6 +1165,8 @@ mod tests {
             hq_mcp: format!("{gateway}/team-gateway/mcp"),
             capacity: 1,
             workbench: true,
+            check_bundle: format!("{gateway}/team-relay/check/"),
+            check_done: format!("{gateway}/team-gateway/runner/check/"),
         };
         let mut runner = Runner::new(
             docker.clone(),
@@ -1159,6 +1404,80 @@ mod tests {
     }
 
     #[test]
+    fn a_check_job_runs_the_workbench_model_free_with_its_own_token_and_is_removed_when_done() {
+        let hq = FakeHq::new(vec![check_job(9), turn(12)]);
+        let docker = FakeDocker::default();
+        let mut runner = runner("check", &hq, &docker, 2);
+        runner.step(T0);
+        let specs = docker.specs();
+        assert_eq!(specs.len(), 2, "the check, then the turn");
+        let check = &specs[0];
+        assert_eq!(
+            check["Env"],
+            json!([
+                "ENDORA_CHECK=1",
+                "ENDORA_CHECK_ID=9",
+                format!("ENDORA_CHECK_TOKEN={}", check_token(9)),
+                "ENDORA_CHECK_BUNDLE_URL=http://node:8788/team-relay/check/9/bundle",
+                "ENDORA_CHECK_DONE_URL=http://hq:8790/v1/runner/check/9/done",
+                "ENDORA_WORKBENCH=1",
+            ]),
+            "no run token, no HQ, no model: a job token and two addresses"
+        );
+        assert_eq!(check["Labels"][CHECK_LABEL], "9");
+        assert_eq!(check["Labels"][RUN_LABEL], Value::Null);
+        assert_eq!(check["HostConfig"]["NetworkMode"], "endora_team");
+        assert_eq!(check["HostConfig"]["ReadonlyRootfs"], true);
+        assert_eq!(check["HostConfig"]["Dns"], json!([NO_RESOLVER]));
+        assert!(check["HostConfig"]["Tmpfs"]["/work"].is_string());
+        assert_eq!(specs[1]["Labels"][RUN_LABEL], "12");
+        assert_eq!(hq.asked_with(), [2, 1], "a check takes a place");
+        // The job reports for itself: when its container ends well, it is only removed.
+        docker.exits("c1", 0);
+        runner.step(T0 + 10);
+        assert_eq!(docker.containers(), ["c2"], "the check's container is gone");
+        assert!(
+            hq.check_failures().is_empty(),
+            "nothing reported by the runner"
+        );
+        assert!(hq.told().is_empty(), "a check is no run: nothing ended");
+        // One that ends badly without reporting is reported failed with the job's token; one
+        // past twenty minutes is killed and reported.
+        let hq = FakeHq::new(vec![check_job(10), check_job(11)]);
+        let docker = FakeDocker::default();
+        let mut bad = self::runner("check-bad", &hq, &docker, 2);
+        bad.step(T0);
+        docker.exits("c1", 1);
+        bad.step(T0 + LONGEST_CHECK + 1);
+        let mut failures = hq.check_failures();
+        failures.sort();
+        assert_eq!(failures.len(), 2, "{failures:?}");
+        assert!(
+            failures[0].1.contains("exit 1 without reporting"),
+            "{failures:?}"
+        );
+        assert!(
+            failures[1].1.contains("past twenty minutes"),
+            "{failures:?}"
+        );
+        assert!(docker.containers().is_empty());
+        // A check with no token, or one that is not 64 hex characters, never reaches Docker.
+        let mut odd = check_job(12);
+        odd["token"] = json!("short");
+        let mut none = check_job(13);
+        none.as_object_mut().unwrap().remove("check");
+        let hq = FakeHq::new(vec![odd, none]);
+        let docker = FakeDocker::default();
+        let mut odd_runner = self::runner("check-odd", &hq, &docker, 2);
+        odd_runner.step(T0);
+        assert!(
+            docker.calls().iter().all(|c| c == "ping"),
+            "{:?}",
+            docker.calls()
+        );
+    }
+
+    #[test]
     fn a_malformed_run_or_token_is_refused_and_never_reaches_docker() {
         let mut word = turn(0);
         word["run"] = json!("12; docker run --privileged");
@@ -1262,18 +1581,28 @@ mod tests {
                     id: "old".to_owned(),
                     run: "7".to_owned(),
                     lease: lease(7).to_string(),
+                    check: String::new(),
                     created: T0,
                 },
                 Left {
                     id: "older".to_owned(),
                     run: "6".to_owned(),
                     lease: lease(6).to_string(),
+                    check: String::new(),
                     created: T0 - LONGEST_TURN - 60,
                 },
                 Left {
                     id: "odd".to_owned(),
                     run: "not-a-run".to_owned(),
                     lease: String::new(),
+                    check: String::new(),
+                    created: T0,
+                },
+                Left {
+                    id: "stale-check".to_owned(),
+                    run: String::new(),
+                    lease: String::new(),
+                    check: "4".to_owned(),
                     created: T0,
                 },
             ];
@@ -1289,7 +1618,11 @@ mod tests {
             [(6, false), (7, true)],
             "one ended while the runner was away, one ran too long"
         );
-        assert_eq!(docker.containers(), ["odd"], "not a turn: left alone");
+        assert_eq!(
+            docker.containers(),
+            ["odd"],
+            "not a turn: left alone; a stale check's container is removed"
+        );
         assert_eq!(hq.asked_with(), [2], "both places are free again");
     }
 

@@ -76,6 +76,14 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
         "0" => false,
         other => return Err(format!("WORKBENCH is 1 or 0, not {other:?}")),
     };
+    // A check job (ADR 0115) fetches its bundle from the node's team listener and reports to
+    // HQ: through the gateway on the Pi, straight to HQ on the NAS.
+    let check_bundle = if pi {
+        format!("{listener}/team-relay/check/")
+    } else {
+        "http://node:8788/team-relay/check/".to_owned()
+    };
+    let check_done = hq.check_done_prefix();
     Ok(Config {
         hq,
         socket: or("DOCKER_SOCKET", "/var/run/docker.sock"),
@@ -87,6 +95,8 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
             hq_mcp: or("WORKER_HQ_MCP", &hq_mcp),
             capacity,
             workbench,
+            check_bundle,
+            check_done,
         },
     })
 }
@@ -143,6 +153,11 @@ mod tests {
             "the Anthropic relay, on the same team listener"
         );
         assert_eq!(defaults.work.capacity, 2);
+        assert_eq!(
+            defaults.work.check_bundle,
+            "http://node:8788/team-relay/check/"
+        );
+        assert_eq!(defaults.work.check_done, "http://hq:8790/v1/runner/check/");
 
         let given = config(|name| match name {
             "HQ_URL" => Some("http://192.168.1.10:8790".to_owned()),
@@ -181,6 +196,14 @@ mod tests {
             "http://192.168.1.10:8788/team-relay/local/v1"
         );
         assert_eq!(pi.work.cloud_url, "http://192.168.1.10:8788/team-relay/v1");
+        assert_eq!(
+            pi.work.check_bundle,
+            "http://192.168.1.10:8788/team-relay/check/"
+        );
+        assert_eq!(
+            pi.work.check_done,
+            "http://192.168.1.10:8788/team-gateway/runner/check/"
+        );
 
         let told = config(|name| match name {
             "HQ_URL" => Some("http://192.168.1.10:8788/team-gateway".to_owned()),
