@@ -3,6 +3,12 @@
 ## Status
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
+[0122](0122-the-teams-world-stages-stories-and-situations.md) (2026-10-18): **the house log is
+the house page** of the team's world. Its lines moved, once, into the house page's dated
+timeline; `note_house` adds a dated line there; the CEO writes the page's current-truth sections
+with `write_world`, on evidence, and only the owner makes one canon; `rewrite_house` is refused
+for a release, and the old log is kept read-only. The CEO's and the leads' turns read the house
+page within their briefing's budget instead of the whole log, and lessons are stories. Amended by
 [0120](0120-roles-as-an-enforced-raci.md) (2026-10-18): roles are an enforced RACI. The CEO
 sets direction and keeps out of the areas' work: it reads anything (on a cloud brain what the
 cloud lead reads), acts on nothing in the lab, is never woken by its alarms, and on a lead's

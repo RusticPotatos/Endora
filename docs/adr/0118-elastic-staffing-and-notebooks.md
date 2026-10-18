@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
+Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
+[0122](0122-the-teams-world-stages-stories-and-situations.md) (2026-10-18): a note has a stage,
+read when it is read (a member's a field note, the owner's an insight; the `notes` table is
+unchanged); the briefing's notes, the tidy ask and the furlough line are pieces of the member's
+world, within its briefing's budget (the notes never left out on a recall, and named when left
+out otherwise); and the first turn after a recall starts from the `recalled` situation, with what
+changed since the furlough began. Amends
 [0113](0113-projects-budgets-and-reports-to.md) (the scorecard counts each team's seats; a
 member on furlough takes no share) and [0115](0115-the-engineering-wing-and-the-git-flow.md)
 (`request_staff`, beside `request_hire`; the wing's seats count a member on furlough). Built:

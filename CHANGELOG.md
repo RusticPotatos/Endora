@@ -9,6 +9,29 @@ tagged release.
 
 ### Added
 
+- **The team's world: stages, stories and situations**
+  ([ADR 0122](docs/adr/0122-the-teams-world-stages-stories-and-situations.md)). What HQ's team
+  knows is kept as addressed pieces with a stage, from an observation to canon: the **house page**
+  (`world:house`, the CEO's to write with `write_world` on evidence, with a dated append-only
+  timeline that `note_house` adds to), the derived `world:lab` and `world:team`, and **stories**
+  (a lesson as when it matters, the tempting move, what to do instead and why, under a handle a
+  post can cite). An insight needs evidence from two turns or a reading the node witnessed; trust
+  is read when read, so an insight or canon past its horizon shows "unconfirmed since <date>";
+  **only the owner makes something canon**, from the World card or a `propose_canon` card on the
+  desk, and demotes it with a reason the feed and the page say. Every turn starts from a
+  **situation** (fresh, continuing, after a gap, handover, recalled), decided from the record,
+  and carries the world within its role's **budget**, naming on its last line whatever it left
+  out; the run records it and the replay shows it. `hand_to` and a stuck task's hand-on or drop
+  need a **handover note** (done, not done, next, watch out), which starts the next holder's
+  turn. `tell_story`, `read_world`, `verify_world`, `retire_world` and `propose_canon` join the
+  team protocol; `note_lesson` is no longer offered and `rewrite_house` is refused. The HQ screen
+  gains a **World card** with Make canon, Demote and a Markdown download
+  (`GET /v1/hq/world`, `GET /v1/hq/world/export.md`, `POST /v1/hq/world/promote`,
+  `POST /v1/hq/world/demote`, through the node and its audit log). At start, once, the house
+  log's lines move into the house page's timeline at their dates and the goals' lessons become
+  stories to retell; nothing is deleted, and the old log is read-only. New tables made if
+  missing: `world_sections`, `world_revisions`, `world_timeline`, `stories`, `handovers`,
+  `run_briefings`. Scenarios in `domains/team/features/the-world.feature`.
 - **Roles as an enforced RACI** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md)), the
   owner's product-model org of 2026-10-18. The CEO sets direction and keeps out of the areas'
   work: it reads anything (on a cloud brain the logs and queues the cloud lead reads), is

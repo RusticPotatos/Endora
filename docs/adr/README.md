@@ -276,6 +276,7 @@ of an existing record and take the next number.
 | [0118](0118-elastic-staffing-and-notebooks.md) | Elastic staffing and notebooks | — |
 | [0119](0119-the-open-office.md) | The open office | — |
 | [0120](0120-roles-as-an-enforced-raci.md) | Roles as an enforced RACI | — |
+| [0122](0122-the-teams-world-stages-stories-and-situations.md) | The team's world: stages, stories and situations | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
