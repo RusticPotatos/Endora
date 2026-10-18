@@ -161,7 +161,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task,
             &format!(
                 "Submitted {title} at {}: document d{document}. Check c{check} is queued on the \
-                 dev node (ansible syntax, ansible-lint, yamllint); its result comes back as a \
+                 dev node (ansible syntax, ansible-lint, yamllint), judged against develop: it \
+                 passes when no check is worse than on develop. Its result comes back as a \
                  receipt.",
                 short(&s.head)
             ),

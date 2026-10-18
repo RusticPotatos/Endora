@@ -708,6 +708,13 @@ tagged release.
 
 ### Fixed
 
+- **The wing's check judges a branch against its base.** The fork's own develop already had
+  ansible-lint findings and yamllint errors, so every branch failed the check, even one that
+  only added documents, and the reviewer was refused for a gate that could never pass. A
+  branch with a failure now has the same checks run on the commit it was cut from (the node
+  sends the recorded base with the bundle) and passes when none is worse: "no worse than
+  develop" ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)).
+
 - **Sound: a phone no longer hears silence from its own door.** Apple TV casting to "Endora
   Mixer (iPhone)" while listening on the iPhone played nothing, because a device's own door
   never feeds that device. Per-device doors are gone: the hub merges existing ones into the

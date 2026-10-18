@@ -2,7 +2,10 @@
 //! no turn, given a job token alone. It fetches the submitted branch's bundle from the node's
 //! team listener, unpacks it, runs the fork's own checks (the playbook's syntax, ansible-lint,
 //! yamllint, each within five minutes) and reports pass or fail, a line and each command's
-//! last words to HQ through the gateway. The sandbox stays offline: the bundle comes from the
+//! last words to HQ through the gateway. A branch is judged against its base: when any check
+//! fails, the same checks run on the commit the branch was cut from (the node names it with
+//! the bundle), and the branch passes if none is worse than it was there. A fork whose own
+//! develop already has findings is not failed for them. The sandbox stays offline: the bundle comes from the
 //! node, and nothing else is reached.
 
 use std::path::{Path, PathBuf};
@@ -95,9 +98,14 @@ pub fn commands(repo: &Path) -> Vec<(&'static str, String)> {
         ("syntax", syntax.to_owned()),
         // Offline: the sandbox cannot fetch requirements.yml; the image bakes them in.
         ("ansible-lint", "ansible-lint --offline nas.yml".to_owned()),
-        ("yamllint", "yamllint .".to_owned()),
+        ("yamllint", YAMLLINT.to_owned()),
     ]
 }
+
+/// yamllint over everything, its exit code kept, and its error lines counted in a last line of
+/// its own: the shell keeps only the head and tail of a long output, and a count taken from
+/// what is left would be the same on a branch and its base.
+const YAMLLINT: &str = r#"set -o pipefail; yamllint . | awk '/  error  /{n++} 1; END{printf "yamllint: %d error(s)\n", n}'"#;
 
 /// `command` with the lab venv first on `PATH`, set after the login shell has had its say, so
 /// the tools and the ones they run themselves (ansible-lint runs ansible-playbook and yamllint)
@@ -163,6 +171,118 @@ pub fn summarise(outcomes: &[Outcome]) -> (bool, String) {
     (ok, parts.join(", "))
 }
 
+/// Whether a check passed: it ended, with exit 0.
+fn passed(o: &Outcome) -> bool {
+    !o.timed_out && o.code == Some(0)
+}
+
+/// How much a failed check found, if it said: ansible-lint's findings, yamllint's errors (from
+/// the count the command ends with, else the error lines themselves). A check that passed
+/// found nothing. `None` when a count cannot be read, and the exit code stands alone.
+fn measure(o: &Outcome) -> Option<u32> {
+    if passed(o) {
+        return Some(0);
+    }
+    match o.name {
+        "ansible-lint" => findings(&o.output),
+        "yamllint" => {
+            let counted = o.output.lines().rev().find_map(|line| {
+                line.strip_prefix("yamllint: ")?
+                    .strip_suffix(" error(s)")?
+                    .parse()
+                    .ok()
+            });
+            let lines = || {
+                o.output
+                    .lines()
+                    .filter(|l| {
+                        let mut words = l.split_whitespace();
+                        words.next().is_some_and(|w| w.contains(':'))
+                            && words.next() == Some("error")
+                    })
+                    .count()
+            };
+            counted.or_else(|| u32::try_from(lines()).ok().filter(|n| *n > 0))
+        }
+        _ => None,
+    }
+}
+
+/// What one failed check says, with its count: "ansible-lint 3 findings", "yamllint 1 error".
+fn said(o: &Outcome) -> String {
+    if o.timed_out {
+        return "timed out".to_owned();
+    }
+    let unit = match o.name {
+        "ansible-lint" => "finding",
+        "yamllint" => "error",
+        _ => return "failed".to_owned(),
+    };
+    measure(o).map_or_else(
+        || "failed".to_owned(),
+        |n| format!("{n} {unit}{}", if n == 1 { "" } else { "s" }),
+    )
+}
+
+/// Pass or fail against the branch's base ("no worse than develop"), and the line HQ keeps.
+/// A branch with no failure passes as it is, in [`summarise`]'s words, without the base being
+/// asked for. Otherwise each check is held to what the base did: its count no higher, or,
+/// where no count can be read, a failure only where the base passed. A timeout on the branch
+/// always fails. `base` is the base's outcomes, or why it could not be checked, in which case
+/// the failure stands as it is and the line says so.
+#[must_use]
+pub fn judge(branch: &[Outcome], base: Result<&[Outcome], String>) -> (bool, String) {
+    let (clean, plain) = summarise(branch);
+    if clean {
+        return (true, plain);
+    }
+    let base = match base {
+        Ok(base) => base,
+        Err(why) => {
+            return (
+                false,
+                format!("{plain} (develop could not be checked: {why})"),
+            );
+        }
+    };
+    let mut worse: Vec<&str> = Vec::new();
+    let parts: Vec<String> = branch
+        .iter()
+        .map(|o| {
+            if passed(o) {
+                return format!("{} ok", o.name);
+            }
+            let theirs = base.iter().find(|b| b.name == o.name);
+            let no_worse = !o.timed_out
+                && theirs.is_some_and(|b| match (measure(o), measure(b)) {
+                    (Some(mine), Some(theirs)) => mine <= theirs,
+                    _ => !passed(b),
+                });
+            if !no_worse {
+                worse.push(o.name);
+            }
+            let mine = said(o);
+            match theirs {
+                Some(b) if passed(b) => format!("{} {mine} (develop ok)", o.name),
+                // The base's count alone: the unit was said just before it.
+                Some(b) => match measure(b).filter(|_| !b.timed_out) {
+                    Some(n) => format!("{} {mine} (develop {n})", o.name),
+                    None => format!("{} {mine} (develop {})", o.name, said(b)),
+                },
+                None => format!("{} {mine}", o.name),
+            }
+        })
+        .collect();
+    let line = parts.join(", ");
+    if worse.is_empty() {
+        return (true, format!("{line}: no worse than develop"));
+    }
+    (
+        false,
+        format!("{line}: worse than develop on {}", worse.join(", ")),
+    )
+}
+
 /// The report HQ keeps as a document: each check's command, how it ended and its last words.
 #[must_use]
 pub fn report(outcomes: &[Outcome], commands: &[(&'static str, String)]) -> String {
@@ -218,6 +338,58 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+/// The report with the base's outcomes after the branch's, when the base was checked.
+#[must_use]
+pub fn full_report(
+    outcomes: &[Outcome],
+    commands: &[(&'static str, String)],
+    base: Option<(&str, &[Outcome])>,
+) -> String {
+    let ours = report(outcomes, commands);
+    let Some((sha, theirs)) = base else {
+        return ours;
+    };
+    let short = &sha[..sha.len().min(12)];
+    format!(
+        "{ours}\n# develop at {short}\n\n{}",
+        report(theirs, commands)
+    )
+}
+
+/// Checks out the branch's base, the commit it was cut from, beside `repo` as `dir/base`. The
+/// commit is in the unpacked history: the node bundles the whole of it behind the branch.
+///
+/// # Errors
+/// No base given, one that is not a commit hash, or not in the history.
+pub fn checkout_base(dir: &Path, repo: &Path, base: Option<&str>) -> Result<PathBuf, String> {
+    let sha = base.map(str::trim).unwrap_or("");
+    if sha.is_empty() {
+        return Err("no base was given".to_owned());
+    }
+    if sha.len() < 7 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the base is not a commit hash".to_owned());
+    }
+    git(repo, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
+        .map_err(|_| "the base is not in the bundle's history".to_owned())?;
+    let there = dir.join("base");
+    if there.exists() {
+        std::fs::remove_dir_all(&there).map_err(|e| format!("the old base stays: {e}"))?;
+    }
+    git(repo, &["worktree", "prune"])?;
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &there.to_string_lossy(),
+            sha,
+        ],
+    )?;
+    Ok(there)
+}
+
 /// Unpacks the bundle at `file` (its one ref, whatever it is called) into `dir/repo`, checked
 /// out as `check`.
 ///
@@ -260,8 +432,8 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
-/// Fetches the bundle with the job's token.
-fn fetch(setup: &Setup) -> Result<Vec<u8>, String> {
+/// Fetches the bundle with the job's token, and the base the node says it sits on.
+fn fetch(setup: &Setup) -> Result<(Vec<u8>, Option<String>), String> {
     let mut response = agent()
         .get(&setup.bundle_url)
         .header("authorization", &format!("Bearer {}", setup.token))
@@ -271,12 +443,18 @@ fn fetch(setup: &Setup) -> Result<Vec<u8>, String> {
     if status != 200 {
         return Err(format!("the node answered {status} for the bundle"));
     }
-    response
+    let base = response
+        .headers()
+        .get("x-endora-base")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let bytes = response
         .body_mut()
         .with_config()
         .limit(BUNDLE_MOST)
         .read_to_vec()
-        .map_err(|e| format!("the bundle could not be read: {e}"))
+        .map_err(|e| format!("the bundle could not be read: {e}"))?;
+    Ok((bytes, base))
 }
 
 /// Tells HQ, with the job's token.
@@ -315,15 +493,30 @@ pub fn run(setup: &Setup) -> i32 {
 
 fn checked(setup: &Setup) -> Result<(bool, String, String), String> {
     std::fs::create_dir_all(&setup.dir).map_err(|e| format!("no {}: {e}", setup.dir.display()))?;
-    let bytes = fetch(setup)?;
+    let (bytes, base) = fetch(setup)?;
     let file = setup.dir.join("check.bundle");
     std::fs::write(&file, &bytes).map_err(|e| format!("the bundle could not be written: {e}"))?;
     let repo = unpack(&setup.dir, &file)?;
     let _ = std::fs::remove_file(&file);
     let commands = commands(&repo);
-    let outcomes = run_checks(&Shell::new(repo, &setup.token), &commands);
-    let (ok, summary) = summarise(&outcomes);
-    Ok((ok, summary, report(&outcomes, &commands)))
+    let outcomes = run_checks(&Shell::new(repo.clone(), &setup.token), &commands);
+    // Judged against the base only when the branch has a failure to excuse.
+    if outcomes.iter().all(passed) {
+        let (ok, summary) = summarise(&outcomes);
+        return Ok((ok, summary, report(&outcomes, &commands)));
+    }
+    let base_outcomes = checkout_base(&setup.dir, &repo, base.as_deref()).map(|there| {
+        let commands = self::commands(&there);
+        run_checks(&Shell::new(there, &setup.token), &commands)
+    });
+    let (ok, summary) = judge(&outcomes, base_outcomes.as_deref().map_err(Clone::clone));
+    let sha = base.as_deref().unwrap_or("");
+    let text = full_report(
+        &outcomes,
+        &commands,
+        base_outcomes.as_ref().ok().map(|b| (sha, b.as_slice())),
+    );
+    Ok((ok, summary, text))
 }
 
 #[cfg(test)]
@@ -430,6 +623,234 @@ mod tests {
         assert_eq!(tail(&long).len(), TAIL_MOST);
     }
 
+    fn out(name: &'static str, code: i32, output: &str) -> Outcome {
+        Outcome {
+            name,
+            code: Some(code),
+            timed_out: false,
+            output: output.to_owned(),
+        }
+    }
+
+    fn lint(n: u32) -> Outcome {
+        let said = format!("Failed after min profile: {n} failure(s), 0 warning(s) on 9 files.");
+        if n == 0 {
+            return out("ansible-lint", 0, "");
+        }
+        out("ansible-lint", 2, &said)
+    }
+
+    fn yaml(n: u32) -> Outcome {
+        if n == 0 {
+            return out("yamllint", 0, "");
+        }
+        out(
+            "yamllint",
+            1,
+            &format!(
+                "./a.yml\n  1:1       warning  missing document start \"---\"  (document-start)\n  3:5       error    wrong indentation  (indentation)\nyamllint: {n} error(s)\n"
+            ),
+        )
+    }
+
+    fn ran(syntax: i32, l: u32, y: u32) -> Vec<Outcome> {
+        vec![out("syntax", syntax, ""), lint(l), yaml(y)]
+    }
+
+    #[test]
+    fn a_branch_no_worse_than_its_base_passes_and_says_both() {
+        let (ok, said) = judge(&ran(0, 25, 14), Ok(&ran(0, 25, 14)));
+        assert!(ok, "{said}");
+        assert_eq!(
+            said,
+            "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 errors (develop 14): no worse than develop"
+        );
+        // Fewer is better, and a base that was worse on syntax is tolerated.
+        let (ok, said) = judge(&ran(1, 24, 0), Ok(&ran(1, 25, 14)));
+        assert!(ok, "{said}");
+        assert!(said.contains("syntax failed (develop failed)"), "{said}");
+        assert!(said.ends_with(": no worse than develop"), "{said}");
+    }
+
+    #[test]
+    fn a_branch_worse_than_its_base_fails_and_says_where() {
+        let (ok, said) = judge(&ran(0, 26, 14), Ok(&ran(0, 25, 14)));
+        assert!(!ok);
+        assert!(
+            said.ends_with(": worse than develop on ansible-lint"),
+            "{said}"
+        );
+        let (ok, said) = judge(&ran(1, 0, 15), Ok(&ran(0, 0, 14)));
+        assert!(!ok);
+        assert!(
+            said.ends_with(": worse than develop on syntax, yamllint"),
+            "{said}"
+        );
+        assert!(said.contains("yamllint 15 errors (develop 14)"), "{said}");
+        // A clean base makes any failure worse, even one whose count cannot be read.
+        let mut bare = ran(0, 0, 0);
+        bare[1] = out("ansible-lint", 1, "boom");
+        let (ok, said) = judge(&bare, Ok(&ran(0, 0, 0)));
+        assert!(!ok);
+        assert!(said.contains("ansible-lint failed (develop ok)"), "{said}");
+    }
+
+    #[test]
+    fn a_timeout_on_the_branch_always_fails() {
+        let mut branch = ran(0, 25, 14);
+        branch[2] = Outcome {
+            name: "yamllint",
+            code: None,
+            timed_out: true,
+            output: String::new(),
+        };
+        let mut base = ran(0, 25, 14);
+        base[2] = branch[2].clone();
+        let (ok, said) = judge(&branch, Ok(&base));
+        assert!(!ok);
+        assert!(said.contains("yamllint timed out"), "{said}");
+        assert!(said.ends_with("worse than develop on yamllint"), "{said}");
+    }
+
+    #[test]
+    fn a_clean_branch_keeps_the_plain_summary_and_costs_no_base() {
+        let clean = ran(0, 0, 0);
+        assert_eq!(
+            judge(&clean, Err("never looked".to_owned())),
+            (true, "syntax ok, ansible-lint ok, yamllint ok".to_owned())
+        );
+    }
+
+    #[test]
+    fn without_a_base_the_failure_stands_and_the_summary_says_why() {
+        let (ok, said) = judge(&ran(0, 2, 0), Err("no base was given".to_owned()));
+        assert!(!ok);
+        assert_eq!(
+            said,
+            "syntax ok, ansible-lint 2 findings, yamllint ok (develop could not be checked: no base was given)"
+        );
+    }
+
+    #[test]
+    fn yamllints_errors_are_counted_from_its_own_line_or_its_output() {
+        let counted = out(
+            "yamllint",
+            1,
+            "  3:5  error  x  (y)\nyamllint: 7 error(s)\n",
+        );
+        assert_eq!(measure(&counted), Some(7));
+        let plain = out(
+            "yamllint",
+            1,
+            "./a.yml\n  1:1       warning  w  (a)\n  3:5       error    e  (b)\n  4:5       error    e  (b)\n",
+        );
+        assert_eq!(measure(&plain), Some(2));
+        assert_eq!(measure(&out("yamllint", 1, "")), None);
+        assert_eq!(measure(&out("syntax", 1, "")), None);
+    }
+
+    #[test]
+    fn the_bases_outcomes_ride_in_the_report() {
+        let commands = vec![("syntax", "echo s".to_owned())];
+        let text = full_report(
+            &[out("syntax", 1, "mine")],
+            &commands,
+            Some(("0123456789abcdef", &[out("syntax", 0, "theirs")])),
+        );
+        assert!(
+            text.starts_with("## syntax (exit 1)\n$ echo s\nmine\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n# develop at 0123456789ab\n\n## syntax (exit 0)\n$ echo s\ntheirs\n"),
+            "{text}"
+        );
+        assert_eq!(
+            full_report(&[out("syntax", 1, "mine")], &commands, None),
+            report(&[out("syntax", 1, "mine")], &commands)
+        );
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "endora-check-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn commit(repo: &Path, file: &str, message: &str) -> String {
+        std::fs::write(repo.join(file), "---\n").unwrap();
+        git(repo, &["add", "."]).unwrap();
+        git(
+            repo,
+            &[
+                "-c",
+                "user.name=John Doe",
+                "-c",
+                "user.email=john@example.com",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+        )
+        .unwrap();
+        git(repo, &["rev-parse", "HEAD"]).unwrap()
+    }
+
+    #[test]
+    fn the_base_is_found_in_the_unpacked_history_and_checked_out_beside_the_branch() {
+        let root = scratch("base");
+        let seed = root.join("seed");
+        std::fs::create_dir_all(&seed).unwrap();
+        git(&seed, &["init", "-q", "-b", "develop"]).unwrap();
+        let base = commit(&seed, "nas.yml", "base");
+        git(&seed, &["checkout", "-q", "-b", "hq/task-1-x"]).unwrap();
+        commit(&seed, "added.md", "branch");
+        // As the node bundles it: the branch's ref alone, whole history behind it.
+        git(
+            &seed,
+            &["update-ref", "refs/submissions/hq/task-1-x", "HEAD"],
+        )
+        .unwrap();
+        let file = root.join("whole.bundle");
+        git(
+            &seed,
+            &[
+                "bundle",
+                "create",
+                "-q",
+                file.to_str().unwrap(),
+                "refs/submissions/hq/task-1-x",
+            ],
+        )
+        .unwrap();
+        let work = root.join("work");
+        let repo = unpack(&work, &file).unwrap();
+        let there = checkout_base(&work, &repo, Some(&base)).unwrap();
+        assert!(there.join("nas.yml").exists());
+        assert!(!there.join("added.md").exists(), "the base, not the branch");
+        assert!(repo.join("added.md").exists());
+        // The same checks run on both, and a second job's leftovers do not stand in the way.
+        let shell = Shell::new(there.clone(), "a-jobs-token");
+        let ran = run_checks(&shell, &[("syntax", "test -f nas.yml".to_owned())]);
+        assert_eq!(ran[0].code, Some(0));
+        assert!(checkout_base(&work, &repo, Some(&base)).is_ok());
+        // Nothing to find: no base given, an odd one, or one the history lacks.
+        assert!(checkout_base(&work, &repo, None).is_err());
+        assert!(checkout_base(&work, &repo, Some("")).is_err());
+        assert!(checkout_base(&work, &repo, Some("--help")).is_err());
+        assert!(checkout_base(&work, &repo, Some(&"0".repeat(40))).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_checks_run_with_the_lab_venv_first_on_the_path_whatever_a_login_shell_resets() {
         // The shell is `bash -lc`, and a login shell rebuilds PATH from /etc/profile, dropping
@@ -460,7 +881,14 @@ mod tests {
             "ansible-playbook --syntax-check nas.yml -i tests/inventories/integration_testing"
         );
         assert_eq!(with[1].1, "ansible-lint --offline nas.yml");
-        assert_eq!(with[2].1, "yamllint .");
+        // yamllint's own exit code stays the check's, and its errors are counted at the end,
+        // where the shell's head-and-tail trimming of a long output cannot lose them.
+        assert!(
+            with[2].1.starts_with("set -o pipefail; yamllint . | "),
+            "{}",
+            with[2].1
+        );
+        assert!(with[2].1.contains("error(s)"), "{}", with[2].1);
         let without = commands(&root.join("elsewhere"));
         assert_eq!(without[0].1, "ansible-playbook --syntax-check nas.yml");
         let _ = std::fs::remove_dir_all(&root);

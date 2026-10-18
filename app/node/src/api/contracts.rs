@@ -802,6 +802,12 @@ pub(super) async fn check_bundle(
                         axum::http::HeaderName::from_static("x-endora-branch"),
                         named["branch"].as_str().unwrap_or("").to_owned(),
                     ),
+                    // The default branch's head the submission sits on: what the job judges
+                    // the branch against ("no worse than develop").
+                    (
+                        axum::http::HeaderName::from_static("x-endora-base"),
+                        named["base"].as_str().unwrap_or("").to_owned(),
+                    ),
                 ],
                 bytes,
             )
@@ -2122,7 +2128,7 @@ mod tests {
                         200,
                         "application/json",
                         json!({ "check": 9, "task": 3, "branch": branch["branch"],
-                                "head": branch["head"] })
+                                "head": branch["head"], "base": branch["base"] })
                         .to_string(),
                     )
                 }
@@ -2332,6 +2338,11 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers()["x-endora-branch"], "hq/task-3-tidy-roles");
+        assert_eq!(
+            res.headers()["x-endora-base"].to_str().unwrap(),
+            told_hq["base"].as_str().unwrap(),
+            "the base HQ recorded rides with the bundle"
+        );
         let whole = res.into_body().collect().await.unwrap().to_bytes();
         let file = root.join("whole.bundle");
         std::fs::write(&file, &whole).unwrap();

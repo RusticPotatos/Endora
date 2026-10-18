@@ -416,6 +416,7 @@ pub(crate) async fn check(Extract(state): Extract<State>, Json(req): Json<TokenA
     match found {
         Ok(Ok(Some((check, branch)))) => Json(json!({
             "check": check.id, "task": check.task.0, "branch": branch.name, "head": branch.head,
+            "base": branch.base,
         }))
         .into_response(),
         Ok(Ok(None)) => (

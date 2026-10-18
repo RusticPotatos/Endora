@@ -164,7 +164,7 @@ pub fn all() -> Vec<Contract> {
         },
         Contract {
             name: REPO_SUBMIT,
-            description: "Send your branch (hq/task-N-slug, committed in /work/repo) to Endora, which keeps it, writes its diff as a document on your task and runs the lab's checks (ansible syntax, ansible-lint, yamllint) on the dev node; the result comes back as a receipt. Refused unless it sits on the fork's default branch, changes at most 200 files and 1 MB, and every commit is HQ's. Nothing is pushed: the owner pushes an accepted branch.",
+            description: "Send your branch (hq/task-N-slug, committed in /work/repo) to Endora, which keeps it, writes its diff as a document on your task and runs the lab's checks (ansible syntax, ansible-lint, yamllint) on the dev node, judged against the fork's develop (it passes when no check is worse than on develop); the result comes back as a receipt. Refused unless it sits on the fork's default branch, changes at most 200 files and 1 MB, and every commit is HQ's. Nothing is pushed: the owner pushes an accepted branch.",
             kind: Kind::AutomaticAct,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
