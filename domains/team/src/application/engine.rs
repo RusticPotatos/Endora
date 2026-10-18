@@ -32,6 +32,7 @@ use crate::domain::{docs, house};
 mod evidence;
 mod planning;
 mod projects;
+mod replay;
 mod wing;
 
 pub use evidence::Called;
@@ -225,6 +226,9 @@ pub struct Engine<S, W, C> {
     /// is the pool's, never the member's share (ADR 0113, amended). Only ever set under the
     /// engine's lock, and cleared when that work is done.
     for_owner: AtomicBool,
+    /// The turn whose call the engine is taking now, if it is one's: every event it emits
+    /// names it, for Replay. Cleared each time the lock is taken.
+    acting: Mutex<Option<RunId>>,
 }
 
 /// While it lives, the engine is doing what the owner asked; see [`Engine::for_owner`].
@@ -248,6 +252,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             lab: Mutex::new(None),
             docs: &[],
             for_owner: AtomicBool::new(false),
+            acting: Mutex::new(None),
         }
     }
 
@@ -288,9 +293,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn held(&self) -> std::sync::MutexGuard<'_, ()> {
         // A panic while holding the lock leaves nothing half-written that the store has not
         // already refused, so the lock is taken back rather than poisoning the engine.
-        self.lock
+        let held = self
+            .lock
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.act_for(None);
+        held
     }
 
     /// Marks what follows, until the guard is dropped, as the owner's asking. Taken under the
@@ -306,6 +314,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     fn emit(&self, kind: EventKind, data: serde_json::Value) -> Done<()> {
+        let data = self.name_the_turn(data)?;
         self.store.emit(self.clock.now(), kind.name(), &data)?;
         Ok(())
     }
@@ -1113,6 +1122,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if run.status != RunStatus::Running {
             return Err(EngineError::Refused(Refusal::TurnOver));
         }
+        self.act_for(Some(run.id));
         Ok(run)
     }
 

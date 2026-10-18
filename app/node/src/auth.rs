@@ -77,6 +77,14 @@ const WHERE_YOU_ASK_TO_BE_LET_IN: &str = "/v1/session";
 /// trail in a single call, which is what makes it worth naming separately from "reads".
 const THE_ONE_THAT_HANDS_OVER_EVERYTHING: &str = "/v1/export";
 
+/// Whether `path` is one of HQ's replays: a turn read back in full, with what its member was
+/// told and the Confidential excerpts of its calls (ADR 0114: those are the owner's screen's).
+/// The owner's alone, never a checking credential's.
+fn is_a_replay(path: &str) -> bool {
+    (path.starts_with("/v1/hq/runs/") || path.starts_with("/v1/hq/tasks/"))
+        && path.ends_with("/replay")
+}
+
 /// Whether this scope permits this request.
 ///
 /// Split from [`may_pass`] because they answer different questions — *is this credential real*
@@ -86,7 +94,9 @@ const THE_ONE_THAT_HANDS_OVER_EVERYTHING: &str = "/v1/export";
 pub fn scope_permits(scope: Scope, path: &str, is_write: bool) -> bool {
     match scope {
         Scope::Full => true,
-        Scope::Checks => !is_write && path != THE_ONE_THAT_HANDS_OVER_EVERYTHING,
+        Scope::Checks => {
+            !is_write && path != THE_ONE_THAT_HANDS_OVER_EVERYTHING && !is_a_replay(path)
+        }
         Scope::Dashboard => !is_write && path == "/v1/homelab/overview",
         Scope::Denied => false,
     }
@@ -403,6 +413,19 @@ mod what_a_checking_credential_may_do {
                 "{path} should not be writable"
             );
         }
+    }
+
+    #[test]
+    fn a_checking_credential_cannot_read_a_replay_and_the_owner_can() {
+        for path in ["/v1/hq/runs/1599/replay", "/v1/hq/tasks/7/replay"] {
+            assert!(!scope_permits(Scope::Checks, path, false), "{path}");
+            assert!(!scope_permits(Scope::Dashboard, path, false), "{path}");
+            assert!(scope_permits(Scope::Full, path, false), "{path}");
+        }
+        assert!(
+            scope_permits(Scope::Checks, "/v1/hq", false),
+            "the office is still read"
+        );
     }
 
     #[test]

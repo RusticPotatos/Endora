@@ -156,6 +156,16 @@ rounds, the chain) is code; no model's word is taken for one.
   member's own draft for the owner approved by the tester still closes as before, with no
   evidence rule of its own.
 
+## Amended (2026-10-17): every event names its turn
+
+For Replay (the owner's screen, [docs/plans/endora-hq.md](../plans/endora-hq.md)), every event
+a turn's call emits carries the turn's run id (`"run"`), as the events of starts, ends, receipts
+and spend already did; the feed's contract gains the field and loses nothing. HQ keeps when it
+began (`events_name_their_turn_from`): a turn queued since has its events found by id, one from
+before is matched by its member, task and time and is shown as matched so. Replay shows a
+call's Confidential excerpt on the owner's screen, as the evidence card does; the node serves it
+to a full credential only.
+
 ## Alternatives considered
 
 - **The worker reports its own receipts.** Rejected: the model's process would be the one

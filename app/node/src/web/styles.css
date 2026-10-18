@@ -442,6 +442,35 @@
   .hq-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11.5px; color: var(--hq-muted); margin-top: 8px; }
   .hq-legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 2px; background: var(--c); vertical-align: -1px; }
   .hq-note { color: var(--hq-muted); font-size: 12px; max-width: 80ch; margin: 8px 0 0; }
+  /* Replay: a turn read back as a timeline, phone first; a task's turns stepped through. */
+  .hq .hq-thread .hq-link { font-weight: 400; color: inherit; text-align: left; }
+  .hq-replay-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+  .hq-replay-progress { font: 11px var(--hq-pixel); color: var(--hq-muted); }
+  .hq .hq-btn[disabled] { opacity: .45; cursor: default; }
+  .hq-replay-who { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .hq-face { flex: none; width: 24px; height: 48px; background-repeat: no-repeat; background-position: 0 0; background-size: 168px 144px; image-rendering: pixelated; }
+  .hq-replay-line { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+  .hq-replay-moment { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 2px 10px; padding: 7px 0 7px 10px; border-left: 3px solid var(--hq-line); font-size: 12.5px; }
+  .hq-replay-moment time { color: var(--hq-muted); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+  .hq-replay-tag { grid-column: 1; grid-row: 2; font: 9px var(--hq-pixel); color: var(--hq-muted); text-transform: uppercase; letter-spacing: .04em; }
+  .hq-replay-body { grid-column: 2; grid-row: 1 / span 2; min-width: 0; overflow-wrap: anywhere; }
+  .hq-replay-moment.t-wake { border-left-color: var(--hq-blue); }
+  .hq-replay-moment.t-brief, .hq-replay-moment.t-start { border-left-color: var(--hq-violet); }
+  .hq-replay-moment.t-call { border-left-color: var(--hq-amber); }
+  .hq-replay-moment.t-post { border-left-color: var(--hq-neon); }
+  .hq-replay-moment.t-move, .hq-replay-moment.t-done { border-left-color: var(--hq-green); }
+  .hq-replay-moment.t-warn, .hq-replay-moment.t-desk { border-left-color: var(--hq-amber); }
+  .hq-replay-moment.t-bad { border-left-color: var(--hq-red); }
+  .hq-replay-said { white-space: pre-wrap; }
+  .hq-replay-args, .hq-replay-cites { color: var(--hq-muted); }
+  .hq-replay-conf { color: var(--hq-violet); font-size: 11px; border: 1px solid var(--hq-violet); border-radius: 3px; padding: 0 4px; }
+  .hq-replay-time { color: var(--hq-amber); font-size: 11px; border: 1px dashed var(--hq-amber); border-radius: 3px; padding: 0 4px; }
+  .hq-card .hq-replay-told summary, .hq-card .hq-replay-fold summary { display: list-item; font: inherit; letter-spacing: normal; color: inherit; margin: 0; cursor: pointer; }
+  .hq-card .hq-replay-told summary { color: var(--hq-violet); text-decoration: underline dotted; }
+  .hq-replay-told pre { font: 11.5px var(--hq-mono); max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0; padding: 8px; background: var(--hq-panel-2); border-radius: 4px; }
+  .hq-replay-fold summary { overflow-wrap: anywhere; }
+  .hq-replay-fold[open] summary { color: var(--hq-muted); }
+  @media (min-width: 720px) { .hq-replay-moment { grid-template-columns: 70px 64px minmax(0, 1fr); } .hq-replay-tag { grid-column: 2; grid-row: 1; padding-top: 2px; } .hq-replay-body { grid-column: 3; grid-row: 1; } }
   @media (prefers-reduced-motion: reduce) { .hq .hq-btn:active { transform: none; } }
 
   /* ---- The agenda (ADR 0103): the Now line and what is pinned above the chat ------------- */

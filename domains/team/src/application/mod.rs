@@ -3,6 +3,7 @@
 pub mod engine;
 pub mod ports;
 pub mod protocol;
+pub mod replay;
 pub mod scorecard;
 
 pub use engine::{
@@ -46,3 +47,6 @@ mod scorecard_tests;
 
 #[cfg(test)]
 mod wing_tests;
+
+#[cfg(test)]
+mod replay_tests;

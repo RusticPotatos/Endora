@@ -8,6 +8,7 @@ use crate::application::ports::{
     DeskItem, NewProject, NewRoutine, NewTask, Post, Run, StoreError, Stored, TeamStore, Timer,
     Wake,
 };
+use crate::application::ports::{LedgerRow, ThreadPost};
 use crate::domain::{
     Brain, CheckBack, CheckBackStatus, DeskId, Event, Evidence, Goal, GoalId, GoalStatus, Member,
     MemberId, Micros, Millis, Pause, Priority, Project, ProjectId, ProjectStatus, Receipt, Refused,
@@ -1856,6 +1857,49 @@ impl TeamStore for SqliteTeamStore {
             )
             .map_err(backend)?;
         Ok(())
+    }
+
+    fn thread_cited(&self, task: TaskId) -> Stored<Vec<ThreadPost>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT author, text, at_ms, unsupported, evidence FROM posts WHERE task = ?1
+                 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([task.0], |r| {
+                Ok(ThreadPost {
+                    task,
+                    post: Post {
+                        author: r.get(0)?,
+                        text: r.get(1)?,
+                        at: r.get(2)?,
+                        unsupported: r.get::<_, i64>(3)? != 0,
+                    },
+                    evidence: crate::domain::Ref::read(&r.get::<_, String>(4)?),
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn ledger_of(&self, run: RunId) -> Stored<Vec<LedgerRow>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT kind, amount, at_ms FROM ledger WHERE run = ?1 ORDER BY id")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([run.0], |r| {
+                Ok(LedgerRow {
+                    run,
+                    kind: r.get(0)?,
+                    amount: r.get(1)?,
+                    at: r.get(2)?,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
 }
 

@@ -9,6 +9,15 @@ tagged release.
 
 ### Added
 
+- **Replay, on the HQ screen**: tap a run line, or "Replay this task" on a task card, to read a
+  turn back in full: why it was woken, what it was told (folded), every call with its receipt
+  and excerpt (Confidential ones too, on the owner's screen), every post with what it cited and
+  the unsupported mark, its claims, status changes and desk items, and its money and tokens; a
+  task's turns step through in order ("run 3 of 6"). Served by HQ as `GET /v1/runs/{id}/replay`
+  and `GET /v1/tasks/{id}/replay`, through the node as `/v1/hq/runs/{id}/replay` and
+  `/v1/hq/tasks/{id}/replay`, which only a full credential may read. Every event a turn's call
+  emits now names its turn (`"run"`), so a turn's own events are found by id; a turn from before
+  is matched by its member, task and time, and says so.
 - **The engineering wing and the git flow** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)).
   A second team works on the owner's public ansible-nas fork through branches. The node keeps
   a bare mirror of the fork and offers a lead or a developer two contracts: `repo_checkout`

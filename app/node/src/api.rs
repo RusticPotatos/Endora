@@ -461,6 +461,9 @@ pub fn app(state: AppState) -> Router {
         .route("/hq-art/{*file}", get(hq_art))
         .route("/v1/hq", get(hq_snapshot))
         .route("/v1/hq/events", get(hq_events))
+        // Replay: a turn, or a task's turns, read back in full (the owner's only).
+        .route("/v1/hq/runs/{id}/replay", get(hq_run_replay))
+        .route("/v1/hq/tasks/{id}/replay", get(hq_task_replay))
         .route("/v1/hq/goals", post(hq_goal))
         .route("/v1/hq/tasks", post(hq_task))
         .route("/v1/hq/desk/{id}", post(hq_decide))

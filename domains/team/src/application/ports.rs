@@ -802,6 +802,43 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn save_check(&self, check: &Check) -> Stored<()>;
+
+    /// Every post in a task's thread with the evidence it cited, oldest first: what Replay
+    /// reads back.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn thread_cited(&self, task: TaskId) -> Stored<Vec<ThreadPost>>;
+    /// A turn's rows of the ledger, oldest first: what Replay says it held, used, was charged
+    /// and released.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn ledger_of(&self, run: RunId) -> Stored<Vec<LedgerRow>>;
+}
+
+/// A post in a task's thread with what it cited, as Replay reads it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadPost {
+    /// The task whose thread it is in.
+    pub task: TaskId,
+    /// The post.
+    pub post: Post,
+    /// What it cited (ADR 0114).
+    pub evidence: Vec<Ref>,
+}
+
+/// One row of the ledger, as Replay reads it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerRow {
+    /// The turn it is for.
+    pub run: RunId,
+    /// `reserve`, `use`, `charge` or `release`.
+    pub kind: String,
+    /// How much.
+    pub amount: Micros,
+    /// When.
+    pub at: Millis,
 }
 
 /// What a member's turn is started with: the run, the member, the task and what it is told.
