@@ -10,6 +10,7 @@ pub mod house;
 pub mod lessons;
 pub mod money;
 pub mod notebook;
+pub mod office;
 pub mod projects;
 pub mod review;
 pub mod routines;

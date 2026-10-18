@@ -45,6 +45,8 @@ pub enum WakeReason {
     /// A check of the member's submitted branch reported, pass or fail (ADR 0115): the
     /// submitter reads it, and so does the tester.
     CheckDone,
+    /// Nothing to do: a turn about no task, for the office and the notebook (ADR 0119).
+    Downtime,
 }
 
 impl WakeReason {
@@ -70,6 +72,7 @@ impl WakeReason {
             Self::QuestionAnswered => "question_answered",
             Self::AcceptanceAsked => "acceptance_asked",
             Self::CheckDone => "check_done",
+            Self::Downtime => "downtime",
         }
     }
 
@@ -110,12 +113,17 @@ impl WakeReason {
 
     /// Whether the wake reaches the CEO (ADR 0111), who wakes only for escalations, the
     /// board's word, its own work (its daily review, what it handed on) and the continuations
-    /// of its own turns: never to be named in a thread, for an alarm, or for a look round.
+    /// of its own turns: never to be named in a thread, for an alarm, for a look round, or for
+    /// downtime (the CEO is paid, and has an office of its own).
     #[must_use]
     pub const fn reaches_the_ceo(self) -> bool {
         !matches!(
             self,
-            Self::Mentioned | Self::LeadReview | Self::Alarm | Self::ReviewRequested
+            Self::Mentioned
+                | Self::LeadReview
+                | Self::Alarm
+                | Self::ReviewRequested
+                | Self::Downtime
         )
     }
 
@@ -141,6 +149,7 @@ impl WakeReason {
             Self::QuestionAnswered,
             Self::AcceptanceAsked,
             Self::CheckDone,
+            Self::Downtime,
         ]
         .into_iter()
         .find(|r| r.name() == name)

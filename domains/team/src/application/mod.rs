@@ -7,7 +7,7 @@ pub mod replay;
 pub mod scorecard;
 
 pub use engine::{
-    Asked, Author, Engine, EngineError, Fired, Proposal, Recorded, Settings, Submission,
+    Asked, Author, Engine, EngineError, Fired, Proposal, Recorded, Settings, Standing, Submission,
     TickReport, WingSeeded,
 };
 pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
@@ -59,3 +59,6 @@ mod notebook_tests;
 
 #[cfg(test)]
 mod runtime_tests;
+
+#[cfg(test)]
+mod office_tests;

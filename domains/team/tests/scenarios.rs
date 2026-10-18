@@ -1412,3 +1412,237 @@ fn give_allowance(w: &mut Office, _name: String, dollars: String) {
     w.hq.decide_saying(item.id, "approve", &dollars)
         .expect("the owner decides");
 }
+
+// --- The open office (ADR 0119) ------------------------------------------------------------------
+
+impl Office {
+    /// Makes sure `member` has a turn about no task running, as a mention would.
+    fn office_turn(&mut self, member: &str) {
+        let id = self.member(member);
+        let live = self
+            .hq
+            .store()
+            .runs()
+            .expect("the store answers")
+            .iter()
+            .any(|r| r.member == id && r.status.live());
+        if !live {
+            self.hq
+                .wake(id, None, WakeReason::Mentioned)
+                .expect("the member is woken");
+        }
+    }
+
+    fn office_items(&self) -> Vec<endora_team::domain::office::Item> {
+        self.hq.store().office_items().expect("the store answers")
+    }
+
+    /// The newest proposal for the office.
+    fn newest_proposal(&self) -> endora_team::domain::office::Proposal {
+        self.hq
+            .store()
+            .office_proposals()
+            .expect("the store answers")
+            .pop()
+            .expect("somebody proposed something")
+    }
+
+    /// `member`'s downtime turns, as the record has them.
+    fn downtime_turns(&self, member: &str) -> Vec<endora_team::application::ports::Run> {
+        let id = self.member(member);
+        let wakes = self.hq.wakes().expect("the store answers");
+        self.hq
+            .store()
+            .runs()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|r| r.member == id)
+            .filter(|r| {
+                wakes
+                    .iter()
+                    .any(|w| w.id == r.wake && w.reason == WakeReason::Downtime)
+            })
+            .collect()
+    }
+
+    fn proposes(&mut self, name: &str, kind: &str, x: i64, y: i64, why: &str) {
+        self.office_turn(name);
+        self.use_tool(
+            name,
+            "office",
+            &json!({ "action": "propose", "why": why,
+                     "changes": [{ "op": "place", "kind": kind, "x": x, "y": y }] }),
+        );
+    }
+
+    fn votes(&mut self, name: &str, vote: &str) {
+        let proposal = self.newest_proposal().id;
+        self.office_turn(name);
+        self.use_tool(
+            name,
+            "office",
+            &json!({ "action": "react", "proposal": proposal, "vote": vote }),
+        );
+    }
+}
+
+#[given("the office has its default layout")]
+fn office_seeded(w: &mut Office) {
+    assert!(w.hq.seed_office().expect("HQ seeds the office"));
+}
+
+#[when(regex = r#"^(\w+) proposes to add a "(.+)" at (\d+), (\d+) because "(.*)"$"#)]
+fn proposes_because(w: &mut Office, name: String, kind: String, x: i64, y: i64, why: String) {
+    w.proposes(&name, &kind, x, y, &why);
+}
+
+#[when(regex = r#"^(\w+) proposes to add a "(.+)" at (\d+), (\d+)$"#)]
+fn proposes_plainly(w: &mut Office, name: String, kind: String, x: i64, y: i64) {
+    w.proposes(&name, &kind, x, y, "");
+}
+
+#[when(regex = r"^(\w+) votes (yes|no) on the proposal$")]
+fn votes_on_it(w: &mut Office, name: String, vote: String) {
+    w.votes(&name, &vote);
+}
+
+#[when("the owner undoes the last change")]
+fn owner_undoes(w: &mut Office) {
+    let undone = w.hq.undo_office();
+    w.note(undone);
+}
+
+#[when("the owner vetoes the proposal")]
+fn owner_vetoes(w: &mut Office) {
+    let id = w.newest_proposal().id;
+    let vetoed = w.hq.veto_office(id);
+    w.note(vetoed);
+}
+
+#[when("the owner resets the office")]
+fn owner_resets(w: &mut Office) {
+    let reset = w.hq.reset_office();
+    w.note(reset);
+}
+
+#[given(regex = r"^(\d+) hours pass$")]
+#[when(regex = r"^(\d+) hours pass$")]
+fn hours_pass(w: &mut Office, hours: i64) {
+    w.clock.0.fetch_add(hours * HOUR_MS, Ordering::SeqCst);
+    w.hq.tick().expect("the tick runs");
+}
+
+#[then(expr = "the activity feed says {string}")]
+fn feed_says(w: &mut Office, said: String) {
+    let feed: Vec<String> =
+        w.hq.store()
+            .events_after(0)
+            .expect("the store answers")
+            .into_iter()
+            .filter_map(|e| e.data["text"].as_str().map(str::to_owned))
+            .collect();
+    assert!(
+        feed.iter().any(|t| t.contains(&said)),
+        "the feed: {feed:#?}"
+    );
+}
+
+#[then(expr = "the activity feed does not say {string}")]
+fn feed_does_not_say(w: &mut Office, said: String) {
+    let feed: Vec<String> =
+        w.hq.store()
+            .events_after(0)
+            .expect("the store answers")
+            .into_iter()
+            .filter_map(|e| e.data["text"].as_str().map(str::to_owned))
+            .collect();
+    assert!(
+        !feed.iter().any(|t| t.contains(&said)),
+        "the feed: {feed:#?}"
+    );
+}
+
+#[then(regex = r#"^the office has no "(.+)"$"#)]
+fn office_has_no(w: &mut Office, kind: String) {
+    let kind = endora_team::domain::office::Kind::from_name(&kind).expect("a kind in the catalog");
+    assert!(w.office_items().iter().all(|i| i.kind != kind));
+}
+
+#[then(regex = r#"^the office has a "(.+)" at (\d+), (\d+)$"#)]
+fn office_has_at(w: &mut Office, kind: String, x: i64, y: i64) {
+    let kind = endora_team::domain::office::Kind::from_name(&kind).expect("a kind in the catalog");
+    assert!(
+        w.office_items()
+            .iter()
+            .any(|i| i.kind == kind && (i.x, i.y) == (x, y)),
+        "the office: {:?}",
+        w.office_items()
+    );
+}
+
+#[then("the office has the default layout")]
+fn office_is_default(w: &mut Office) {
+    let items = w.office_items();
+    assert_eq!(
+        items.len(),
+        endora_team::domain::office::default_layout().len()
+    );
+    assert!(items.iter().all(|i| i.placed_by == "endora"));
+}
+
+#[then("the proposal is not a task on the board or a card on the owner's desk")]
+fn proposal_is_no_work(w: &mut Office) {
+    assert!(w.hq.store().tasks().expect("the store answers").is_empty());
+    assert!(w.hq.store().desk().expect("the store answers").is_empty());
+    let snap = w.hq.snapshot().expect("the snapshot is built");
+    assert_eq!(snap["tasks"].as_array().expect("tasks").len(), 0);
+    assert_eq!(snap["desk"].as_array().expect("desk").len(), 0);
+}
+
+#[given("downtime is on")]
+fn downtime_on(w: &mut Office) {
+    w.hq.set_downtime(true);
+}
+
+#[when("a tick passes")]
+fn a_tick_passes(w: &mut Office) {
+    w.hq.tick().expect("the tick runs");
+}
+
+#[then(regex = r"^(\w+) has a downtime turn that costs nothing$")]
+fn has_a_free_downtime_turn(w: &mut Office, name: String) {
+    let turns = w.downtime_turns(&name);
+    assert_eq!(turns.len(), 1, "{name}'s downtime turns: {turns:?}");
+    assert_eq!(turns[0].reserved, 0);
+    assert!(!turns[0].asked_by_owner);
+}
+
+#[then(regex = r"^(\w+) has no downtime turn$")]
+fn has_no_downtime_turn(w: &mut Office, name: String) {
+    assert!(w.downtime_turns(&name).is_empty());
+}
+
+#[when(regex = r"^(\w+) tries to create a task in her downtime turn$")]
+fn tries_to_make_work(w: &mut Office, name: String) {
+    w.use_tool(
+        &name,
+        "create_task",
+        &json!({ "title": "A job", "description": "Anything", "assignee": "Bo" }),
+    );
+}
+
+#[when(regex = r"^the owner allows (\d+) cents a day for paid members' downtime$")]
+fn owner_allows_downtime(w: &mut Office, cents: i64) {
+    let set = w.hq.set_downtime_paid_cents(cents);
+    w.note(set);
+}
+
+#[then(regex = r"^(\w+) has a downtime turn charged to the pool, not to \w+'s share$")]
+fn has_a_pooled_downtime_turn(w: &mut Office, name: String) {
+    let turns = w.downtime_turns(&name);
+    assert_eq!(turns.len(), 1, "{name}'s downtime turns: {turns:?}");
+    assert!(turns[0].asked_by_owner, "the pool pays it");
+    let day = endora_team::domain::money::day_of(w.clock.0.load(Ordering::SeqCst), 0);
+    let id = w.member(&name);
+    assert_eq!(w.hq.store().share_committed(id, day).expect("answers"), 0);
+}

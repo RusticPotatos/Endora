@@ -120,8 +120,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store.set_setting(IDLE_CHECKED_DAY, &day.to_string())?;
         let now = self.clock.now();
         let tasks = self.store.tasks()?;
-        let runs = self.store.runs()?;
-        let wakes = self.store.wakes()?;
+        // Downtime is nothing to do, so it is not what keeps a member from being offered for
+        // furlough (ADR 0119): its wakes and turns are left out.
+        let downtime = self.downtime_wakes()?;
+        let runs: Vec<_> = self
+            .store
+            .runs()?
+            .into_iter()
+            .filter(|r| !downtime.contains(&r.wake))
+            .collect();
+        let wakes: Vec<_> = self
+            .store
+            .wakes()?
+            .into_iter()
+            .filter(|w| w.reason != WakeReason::Downtime)
+            .collect();
         let routines = self.store.routines()?;
         let desk = self.store.desk()?;
         let mut offered = 0;

@@ -3,6 +3,7 @@
 use core::fmt;
 use std::time::Duration;
 
+use crate::domain::office;
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{CallReceipt, Criterion, Label, Ref};
 use crate::domain::{CheckBack, CheckBackStatus, Goal, Liveness, Project, Routine, RoutineId};
@@ -870,6 +871,88 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn ledger_of(&self, run: RunId) -> Stored<Vec<LedgerRow>>;
+
+    // ---- the office (ADR 0119) ----------------------------------------------------------
+
+    /// Every item in the office, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn office_items(&self) -> Stored<Vec<office::Item>>;
+    /// Puts a new item in the office; returns its number.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_office_item(
+        &self,
+        kind: office::Kind,
+        x: i64,
+        y: i64,
+        by: &str,
+        at: Millis,
+    ) -> Stored<i64>;
+    /// Moves an item.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn move_office_item(&self, id: i64, x: i64, y: i64) -> Stored<()>;
+    /// Takes an item away.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn remove_office_item(&self, id: i64) -> Stored<()>;
+    /// Makes the office exactly these items, numbers kept: for an undo and a reset.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn replace_office_items(&self, items: &[office::Item]) -> Stored<()>;
+    /// Keeps a proposal, open; returns its number.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_office_proposal(
+        &self,
+        by: &str,
+        changes: &[office::Change],
+        why: &str,
+        at: Millis,
+    ) -> Stored<i64>;
+    /// Every proposal with its votes, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn office_proposals(&self) -> Stored<Vec<office::Proposal>>;
+    /// Closes a proposal, or reopens none: its status and how it ended.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_office_proposal(
+        &self,
+        id: i64,
+        status: office::Status,
+        outcome: &str,
+        at: Millis,
+    ) -> Stored<()>;
+    /// Records a vote; `false` when the member had voted already (the vote is kept as it was).
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_office_vote(&self, proposal: i64, vote: &office::Vote) -> Stored<bool>;
+    /// Keeps what the office was before a change, for the owner's undo.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn push_office_history(&self, what: &str, before: &[office::Item], at: Millis) -> Stored<i64>;
+    /// Takes the newest of those back: what the change was, and the office before it.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn pop_office_history(&self) -> Stored<Option<(String, Vec<office::Item>)>>;
+    /// How many changes the owner could undo.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn office_history_len(&self) -> Stored<i64>;
 }
 
 /// A post in a task's thread with what it cited, as Replay reads it back.

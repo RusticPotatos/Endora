@@ -492,6 +492,11 @@ pub fn app(state: AppState) -> Router {
         // removes a member.
         .route("/v1/hq/members/{id}/furlough", post(hq_furlough))
         .route("/v1/hq/members/{id}/recall", post(hq_recall))
+        // The owner as landlord of the office (ADR 0119): only these four routes.
+        .route("/v1/hq/office/undo", post(hq_office_undo))
+        .route("/v1/hq/office/reset", post(hq_office_reset))
+        .route("/v1/hq/office/proposals/{id}/veto", post(hq_office_veto))
+        .route("/v1/hq/office/downtime", post(hq_office_downtime))
         // A member's notebook (ADR 0118): the owner reads it and writes, edits and deletes notes.
         .route(
             "/v1/hq/members/{id}/notebook",

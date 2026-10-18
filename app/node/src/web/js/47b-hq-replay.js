@@ -89,6 +89,12 @@ function replayEvent(m) {
     case "lesson.noted": return ["note", `Noted a lesson: ${d.lesson || ""}`];
     case "budget.crossed": return ["bad", `Crossed its limit at ${hqDollars(d.spent)}`];
     case "gate.result": return [d.passed ? "done" : "bad", `The gate ${d.passed ? "passed" : "failed"}${on}`];
+    // The open office (ADR 0119): a proposal, a vote, a change, a proposal let go or vetoed.
+    case "office.proposed": return ["note", d.text || "Proposed a change to the office"];
+    case "office.voted": return ["note", d.text || "Voted on a proposal for the office"];
+    case "office.changed": return ["done", d.text || "The office changed"];
+    case "office.dropped": return ["warn", d.text || "A proposal for the office was dropped"];
+    case "office.vetoed": return ["warn", d.text || "A proposal for the office was vetoed"];
     default: {
       const said = Object.entries(d).filter(([k, v]) => k !== "run" && v !== null && typeof v !== "object")
         .map(([k, v]) => `${words(k)}: ${v}`).join(" · ");

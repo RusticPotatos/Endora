@@ -532,7 +532,9 @@ authenticated routes.
 - A screen in Endora's console, **phone first**: the office scales to the width, people and
   sticky notes are tapped to see their detail and their chain of why, and the desk, activity
   and the team sit below as tabs.
-- Each member picks a look from the characters when hired; a team's name hangs on its wall.
+- Each member picks a look from the characters when hired; a team's name hangs over its pod.
+  The floor is open-plan, one pod of desks per team with no walls, and what stands on it is the
+  team's to change ([ADR 0119](../adr/0119-the-open-office.md)).
 - A **simulated runner** (scripted members, no model, no cost) drives the engine's tests and a
   labelled demo mode, so the view is built and tested before real workers exist.
 - **The owner's scenarios** ([docs/testing.md](../testing.md), from 2026-10-17): the decisions
@@ -1072,6 +1074,48 @@ measured against Endora's worker. Built:
 - **The measure**: the scorecard's cost of a finished task per member, Rae's against Zed's.
 
 Deferred: per-task `--resume`, the screen's control, Claude Code for other roles.
+
+### The open office (as built 2026-10-18, [ADR 0119](../adr/0119-the-open-office.md))
+
+The owner's decision: "the teams should look, work, interact as one", and "let them do something"
+in their downtime. Built:
+
+- **The floor** (32 by 20 tiles): the board room (0,2,7×5), the task board on the back wall,
+  Mara's office (20,2,7×5, its two-tile door open on the bottom wall) and the server closet
+  (27,2,5×5) along the top; the open floor under them with a lane on row 7; **one pod of desks
+  per team** in the band rows 8 to 13, x 1 to 27, side by side with no walls and spread across
+  it when they fit in one row (a desk is 3×2 tiles, two to a row with a 2-tile aisle, the pod 8
+  wide, 13 for a team over six; a pod that does not fit starts a second row); a lane on row 14;
+  the ping-pong corner (0 to 8, rows 15 to 19), the meeting room (9,15,7×5, its door open on the
+  top wall) and the kitchen and lounge (16 to 31, rows 15 to 19); the front door on the right
+  wall at rows 10 to 13. The pods are laid out in the console from the snapshot
+  (`hqLayout`): the roster's teams and labels, a desk for every member, an empty desk with an
+  "away" card for a member on furlough.
+- **Movement**: a search over the floor's cells (`hqPathCells`) round desks and furniture and
+  through the two open doors; a working member at its pod desk, or at the desk of the project
+  lead whose team's work it is on (Mara's door for hers), or of whoever's task it is testing;
+  idle members drift at random between ping-pong, the kitchen, the tap, the couches, the coffee
+  machine and what else stands on the floor; none with the device's reduced-motion setting.
+- **Data**: `office_items`, `office_proposals`, `office_votes` and `office_history` (all made if
+  missing), the placement rules and verdict in `domain/office.rs`, the engine in
+  `engine/office.rs`; the snapshot's `office` (items, catalog, open proposals, the last few
+  settled, `can_undo`, the allowance and today's use). Events: `office.proposed`,
+  `office.voted`, `office.changed`, `office.dropped`, `office.vetoed`, in the feed and in
+  Replay.
+- **The tool**: `office` for every role: `propose`, `react`, `look`. Proposals carry on two yes
+  (the proposer's counted) or six quiet hours, are dropped on more no or at 48 hours, and are
+  checked again when they carry.
+- **The owner**: the Office card (open proposals with votes and a Veto on each, Undo, Reset, the
+  allowance); `POST /v1/office/undo`, `/reset`, `/proposals/{id}/veto`, `/downtime`, through the
+  node's `/v1/hq/office/...`, each in the audit log.
+- **Downtime**: the wake reason `downtime`; the scheduler wakes at most one member a tick, one
+  at a time, once a member a day, 12 hours apart, only for a member with nothing to do and, by
+  default, only on the house's model; Claude members only within `downtime_paid_cents_per_day`,
+  pool-charged. The engine setting `downtime` is on in the service and off in the demo.
+- Scenarios: `domains/team/features/the-office.feature`.
+
+Not built: pictures for the kinds that have only a pixel shape; the owner placing or pinning an
+item; events beyond decorating.
 
 ### The team's standards ([ADR 0116](../adr/0116-the-teams-standards.md), proposed 2026-10-17)
 

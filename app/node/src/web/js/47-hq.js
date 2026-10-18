@@ -19,6 +19,11 @@ const HQ = {
   roster: {},          // member id → its controls are open on the Team card
   notebooks: {},       // member id → its notes, read when its panel is opened (ADR 0118)
   allTurns: {},        // "task-N" / "member-N" → every turn shown, not only the last five
+  pods: [],            // one pod of desks per team, laid out from the snapshot (ADR 0119)
+  seats: {},           // member id → its desk, where it works and where a visitor stands
+  world: null,         // the cells nobody walks through, and the walls between cells
+  rand: Math.random,   // where idle members drift: replaceable, so a check can fix it
+  settled: false,      // set once the first snapshot has put everyone at a desk
   t: 0,                // seconds of animation
   polling: null,
   looping: false,
@@ -31,42 +36,49 @@ const HQ_C = {
   green: "#45c486", blue: "#7fb2ff", violet: "#b98cf0", sticky: "#fff2a8", text: "#1f1d29", shadow: "rgba(60,40,20,.18)",
 };
 const HQ_STATUS_COL = { todo: HQ_C.sticky, doing: HQ_C.lamp, in_review: HQ_C.blue, done: HQ_C.green, blocked: HQ_C.red, dropped: "#cfcac0" };
-// The office, in tiles. Along the wall: the board room (the owner's), the task board, the
-// CEO's office and the server closet; the open floor's desks and the front door; then
-// ping-pong, the meeting room, the lounge and the engineering wing (ADR 0115).
+// The open office (ADR 0119), in tiles; a person stands on a tile (a cell), and `hqAt` says
+// where their sprite goes. Along the back wall: the board room (the owner's), the task board,
+// Mara's office with its door open, and the server closet. The open floor under them holds
+// one pod of desks for each team, side by side with no walls (row 8 down, laid out from the
+// snapshot); under that, ping-pong, the meeting room, and the kitchen and lounge that
+// everyone shares. The things that can move are not here: they come from the snapshot.
+function hqAt(cx, cy, extra) { return { cx, cy, x: cx, y: cy - 0.5, ...extra }; }
 const HQ_P = {
   board: { x: 8, y: 0, w: 12, h: 2 }, owner: { x: 2, y: 3 }, lever: { x: 6.1, y: 2.3 },
-  boardRoom: { x: 0, y: 2, w: 7, h: 5 }, boardDoor: { x: 5.7, y: 7.3 },
+  boardRoom: { x: 0, y: 2, w: 7, h: 5 }, boardDoor: hqAt(6, 7, { dir: "up" }),
   engine: { x: 27, y: 2, w: 5, h: 5 }, rack: { x: 30.2, y: 2.4 }, jar: { x: 27.8, y: 2.8 },
-  door: { x: 30, y: 10.5 }, pong: { x: 2.5, y: 15.6 }, tap: { x: 16.8, y: 15 },
-  upperLane: 7.8, lowerLane: 12.9, split: 11.8, aisles: [7.5, 13.5, 19.5, 25.5],
+  door: { x: 30, y: 10.5 }, lobby: hqAt(29, 12, { dir: "left" }), pong: { x: 3, y: 17 }, tap: { x: 16.4, y: 15.6 },
 };
-// The three rooms people walk into, each with its open door: `out` is the step outside it,
-// `in` the step inside; a member goes through the gap between them. The wing (ADR 0115) is
-// the engineering team's room: six desks and a door onto the lower lane.
+// The pods' ground: the band the teams' desks stand in, each desk three tiles by two, two
+// desks to a row with a two-tile aisle between them where their members stand facing each
+// other. Nothing else is ever put there (the rules of the office say so too).
+const HQ_POD = { top: 8, left: 1, right: 28, bottom: 14, desk: { w: 3, h: 2 }, aisle: 2, between: 1 };
+// The two rooms people walk into, each with its door open: a member goes through the gap in
+// the wall (cells `from` to `to` on that side), `out` the step outside it and `in` inside.
 const HQ_ROOMS = {
-  ceo: { x: 20, y: 2, w: 7, h: 5, out: { x: 20.4, y: 7.6 }, in: { x: 20.4, y: 6.2 } },
-  meeting: { x: 9, y: 14, w: 7, h: 6, out: { x: 9.5, y: 13.0 }, in: { x: 9.5, y: 15.0 } },
-  wing: { x: 22, y: 14, w: 10, h: 6, out: { x: 22.5, y: 13.0 }, in: { x: 22.5, y: 15.0 } },
+  ceo: { x: 20, y: 2, w: 7, h: 5, door: { side: "bottom", from: 20, to: 22 }, out: hqAt(21, 7, { dir: "up" }), in: hqAt(21, 6, { room: "ceo", dir: "down" }) },
+  meeting: { x: 9, y: 15, w: 7, h: 5, door: { side: "top", from: 9, to: 11 }, out: hqAt(10, 14, { dir: "down" }), in: hqAt(10, 15, { room: "meeting", dir: "down" }) },
 };
-// The wing's six desks, two rows of three; a member of the wing rests beside its own desk.
-const HQ_WING_DESKS = [
-  { x: 22.4, y: 15.2, room: "wing" }, { x: 25.6, y: 15.2, room: "wing" }, { x: 28.8, y: 15.2, room: "wing" },
-  { x: 22.4, y: 17.6, room: "wing" }, { x: 25.6, y: 17.6, room: "wing" }, { x: 28.8, y: 17.6, room: "wing" },
-];
 // Where people sit in the meeting room: the CEO at the head, behind the table; the others on
 // the chairs before it, their backs to us.
 const HQ_MEETING = {
-  table: { x: 11.5, y: 15.8 },
-  head: { x: 12, y: 15.5, room: "meeting", dir: "down" },
-  chairs: [{ x: 11.6, y: 17.4, room: "meeting", dir: "up" }, { x: 12.6, y: 17.4, room: "meeting", dir: "up" }],
+  table: { x: 12, y: 16 },
+  head: hqAt(12, 16, { room: "meeting", dir: "down" }),
+  chairs: [hqAt(12, 18, { room: "meeting", dir: "up" }), hqAt(13, 18, { room: "meeting", dir: "up" })],
 };
-// A desk for everyone: the CEO's in its office, four on the open floor for the rest, taken in
-// the order they joined; and a place each to rest. The CEO rests on its office's sofa.
-const HQ_CEO_DESK = { x: 21.4, y: 3.6, room: "ceo" };
-const HQ_CEO_REST = { x: 24.5, y: 5.9, room: "ceo" };
-const HQ_DESKS = [{ x: 3, y: 9.6 }, { x: 9, y: 9.6 }, { x: 15, y: 9.6 }, { x: 21, y: 9.6 }];
-const HQ_RESTS = [{ x: 1.2, y: 15.4 }, { x: 7, y: 15.4 }, { x: 18.2, y: 17.6 }, { x: 20.2, y: 17.6 }];
+// The CEO's desk in its own office, where it works, and the sofa where it rests.
+const HQ_CEO = {
+  desk: { x: 21, y: 3 },
+  work: hqAt(22, 3, { room: "ceo", dir: "down", desk: true }),
+  rest: hqAt(25, 5, { room: "ceo", dir: "down" }),
+};
+// Where idle members drift, picking one at random so the teams mix: the ping-pong table's two
+// ends, the kitchen table's chairs, the tap. The couches, the coffee machine and the rest come
+// from what stands on the floor now (`hqWanderSpots`).
+const HQ_WANDER = [
+  hqAt(2, 17, { dir: "right", pong: "L" }), hqAt(7, 17, { dir: "left", pong: "R" }),
+  hqAt(26, 18, { dir: "up" }), hqAt(27, 18, { dir: "up" }), hqAt(17, 17, { dir: "up" }),
+];
 const HQ_ART = {
   floors: { plank: "floors/floor_5.png", grid: "floors/floor_3.png", plain: "floors/floor_1.png", check: "floors/floor_7.png" },
   f: ["DESK_FRONT", "PC_FRONT_OFF", "PC_FRONT_ON_1", "PC_FRONT_ON_2", "PC_FRONT_ON_3", "CUSHIONED_CHAIR_BACK",
@@ -242,6 +254,13 @@ function hqTell(e, live) {
     "note.written": ["run", d.by === "owner" ? `You ${d.edited ? "edited a note of" : "added a note to"} ${d.name}'s notebook` : `${d.name} noted: ${d.text}`],
     "note.forgotten": ["run", `${d.by === "owner" ? "You deleted" : d.name + " forgot"} a note${d.by === "owner" ? " of " + d.name + "'s" : ""}: ${d.text}${d.by === "owner" ? "" : " (" + d.reason + ")"}`],
     "branch.pushed": [d.ok ? "you" : "bad", d.ok ? `You pushed ${d.branch} to the fork` : `Pushing ${d.branch} failed`],
+    // The open office (ADR 0119): the team decides its decorations together. The words come from
+    // HQ, and a member's reason is in them, so the log escapes them like any other.
+    "office.proposed": ["run", d.text || ""],
+    "office.voted": ["run", d.text || ""],
+    "office.changed": [d.via === "owner_undo" || d.via === "owner_reset" ? "you" : "done", d.text || "The office changed"],
+    "office.dropped": ["warn", d.text || ""],
+    "office.vetoed": ["you", d.text || ""],
   }[e.kind];
   if (said) {
     const at = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -263,19 +282,22 @@ function hqTell(e, live) {
   if (e.kind === "run.ended" && p) hqSay(p, d.result === "succeeded" ? "done" : result);
   if (e.kind === "stopped" || e.kind === "resumed") HQ.doorFlash = 1.5;
   const ceo = hqCeo(), boss = ceo && HQ.people[ceo.id];
-  // A member's question woke the CEO: the one who asked, if between turns, goes to the CEO's
-  // open door and waits there until the CEO's turn on it is over.
-  if (e.kind === "wake.queued" && d.reason === "question_asked" && ceo && d.member === ceo.id) {
+  // A member's question woke the one it went to: the one who asked, if between turns, goes to
+  // them (the CEO's open door, or the desk of someone on a team) and waits there until their
+  // turn on it is over.
+  if (e.kind === "wake.queued" && d.reason === "question_asked") {
     const task = hqTask(d.task), who = HQ.lastWord[d.task] || (task && task.owner);
-    const asker = who !== ceo.id && HQ.people[who];
-    if (asker && !asker.working) {
-      asker.errand = { kind: "ask", task: d.task, hold: 40, spot: { ...HQ_ROOMS.ceo.out, dir: "up" } };
-      hqSay(asker, "a question for " + ceo.name); hqGo(asker);
+    const asker = who !== d.member && HQ.people[who], there = HQ.seats[d.member] && HQ.seats[d.member].visit;
+    if (asker && there && !asker.working) {
+      asker.errand = { kind: "ask", task: d.task, to: d.member, hold: 40, spot: { ...there, dir: "up" } };
+      hqSay(asker, "a question for " + hqName(d.member)); hqGo(asker);
     }
   }
-  if (e.kind === "run.ended" && ceo && d.member === ceo.id) {
-    for (const q of Object.values(HQ.people)) if (q.errand && q.errand.kind === "ask" && q.errand.task === d.task) { q.errand = null; hqGo(q); }
+  if (e.kind === "run.ended") {
+    for (const q of Object.values(HQ.people)) if (q.errand && q.errand.kind === "ask" && q.errand.task === d.task && q.errand.to === d.member) { q.errand = null; hqGo(q); }
   }
+  // Someone proposed a change to the office: they say so over their head.
+  if (e.kind === "office.proposed" && p) hqSay(p, "an idea for the office");
   // The CEO's decision for the board: it takes it to the board room's door, and back.
   if (e.kind === "desk.added" && d.kind === "decision" && boss) {
     boss.errand = { kind: "board", hold: 2.5, say: "for the board", spot: { ...HQ_P.boardDoor, dir: "up" } };
@@ -289,33 +311,81 @@ function hqCeo() { return ((HQ.snap && HQ.snap.members) || []).find((m) => m.rol
 function hqShort(text) { return String(text || "").replace(/^[a-z_]+ → [a-z_]+: /, "").toLowerCase().slice(0, 26); }
 function hqSay(p, text) { p.bubble = hqShort(text); p.bubbleT = 3.2; }
 
-// Each member's desk and place to rest, by id: the CEO's office for the CEO, the wing's room
-// for the wing's members (its project's lead and whoever reports up to them, as HQ says in
-// `wing.members`; they rest at their desks), and the open floor's desks for the others in the
-// order they joined (`rank`), so five members have five desks. Past four others they share
-// again, as the floor holds four; past six in the wing, likewise.
-function hqSeats(members) {
-  const out = {};
-  const wing = new Set(((HQ.snap && HQ.snap.wing) || {}).members || []);
-  let rank = 0, boss = false, seated = 0;
-  for (const m of members || []) {
-    if (m.role === "ceo" && !boss) {
-      boss = true;
-      out[m.id] = { desk: HQ_CEO_DESK, deskNo: HQ_DESKS.length, rest: HQ_CEO_REST, rank: -1 };
-      continue;
-    }
-    if (wing.has(m.id)) {
-      const w = seated % HQ_WING_DESKS.length, desk = HQ_WING_DESKS[w];
-      out[m.id] = { desk, deskNo: HQ_DESKS.length + 1 + w, rest: { x: desk.x + 0.3, y: desk.y - 0.5, room: "wing", dir: "down" }, rank: 100 + seated };
-      seated++;
-      continue;
-    }
-    const n = rank % HQ_DESKS.length;
-    out[m.id] = { desk: HQ_DESKS[n], deskNo: n, rest: HQ_RESTS[rank % HQ_RESTS.length], rank };
-    rank++;
-  }
-  return out;
+// A team's name, on the roster and over its pod alike: Engineering for the engineering wing's
+// lead, Ops for any other.
+function hqTeamLabel(lead, wingLeads) {
+  return `${(wingLeads || []).includes(lead.id) ? "Engineering" : "Ops"} · ${lead.name}`;
 }
+
+// The teams, from the snapshot alone (ADR 0119): a lead and those who report to it, up the
+// chain; members with no lead above them but the CEO join the first team; the CEO sits in its
+// office, outside every team. Within a team the lead first, then those at work, then those on
+// furlough, whose desks stay and are drawn empty. With no lead at all there is one team.
+function hqTeams(members) {
+  const wingLeads = ((HQ.snap && HQ.snap.wing) || {}).leads || [];
+  const leads = members.filter((m) => m.role === "lead");
+  const rest = members.filter((m) => m.role !== "ceo" && m.role !== "lead");
+  if (!leads.length) return rest.length ? [{ lead: null, label: "Team", people: rest }] : [];
+  const teams = leads.map((l) => ({ lead: l, label: hqTeamLabel(l, wingLeads), people: [] }));
+  for (const m of rest) {
+    const lead = hqLeadOf(m, members);
+    (teams.find((t) => lead && t.lead.id === lead.id) || teams[0]).people.push(m);
+  }
+  for (const t of teams) {
+    t.people = [t.lead].concat(t.people.filter((m) => !m.furloughed), t.people.filter((m) => m.furloughed));
+  }
+  return teams;
+}
+
+// The pods and the seats (ADR 0119): one pod for each team, side by side from the left of the
+// open floor with no walls between, each a cluster of desks two to a row, a desk for every
+// member of the team. A desk is three tiles by two; between the two desks of a row is an
+// aisle where their members stand facing each other, one above the other's visitors. A pod
+// that would not fit in the row starts a new one below; none ever leaves the band the rules
+// of the office keep clear. Everything comes from the members: no name is in this.
+function hqLayout(members) {
+  const P = HQ_POD, seats = {}, pods = [];
+  // Two to a row; a team of more than six, whose third row would leave the band, three.
+  const sized = hqTeams(members || []).map((team) => {
+    const n = team.people.length, cols = n > 6 ? 3 : n > 1 ? 2 : 1;
+    return { team, cols, rows: Math.ceil(n / cols), width: cols > 1 ? cols * P.desk.w + (cols - 1) * P.aisle : P.desk.w + 1 };
+  });
+  // When all the pods fit in one row they are spread across the floor, centred, with room
+  // between them, so that two small teams do not leave the other half of the floor bare.
+  const total = sized.reduce((sum, s) => sum + s.width, 0), span = P.right - P.left;
+  const fits = total + P.between * Math.max(0, sized.length - 1) <= span, free = fits ? span - total : 0;
+  const between = fits && sized.length > 1 ? Math.max(P.between, Math.min(4, Math.floor(free / (sized.length + 1)))) : P.between;
+  let x = fits ? P.left + Math.floor((free - between * (sized.length - 1)) / 2) : P.left, y = P.top, shelf = 0;
+  for (const { team, cols, rows, width } of sized) {
+    if (x > P.left && x + width > P.right) { x = P.left; y += shelf; shelf = 0; }
+    const top = Math.max(P.top, Math.min(y, P.bottom - rows * P.desk.h));
+    const pod = { label: team.label, lead: team.lead ? team.lead.id : null, x, y: top, cols, rows, width, desks: [] };
+    team.people.forEach((m, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      const dx = x + col * (P.desk.w + P.aisle), dy = top + row * P.desk.h;
+      const stand = cols === 1 ? dx + P.desk.w : col === 0 ? dx + P.desk.w : dx - 1;
+      const dir = cols === 1 ? "down" : col === 0 ? "right" : "left";
+      seats[m.id] = {
+        desk: { x: dx, y: dy, w: P.desk.w, h: P.desk.h, member: m.id },
+        // A visitor stands on the desk's outer side, away from where its member sits.
+        work: hqAt(stand, dy + 1, { dir, desk: true }),
+        visit: cols === 1 || col === 0 ? hqAt(dx - 1, dy + 1, { dir: "right" }) : hqAt(dx + P.desk.w, dy + 1, { dir: "left" }),
+        pod: pods.length,
+      };
+      pod.desks.push(seats[m.id].desk);
+    });
+    pods.push(pod);
+    x += width + between; shelf = Math.max(shelf, rows * P.desk.h);
+  }
+  const ceo = (members || []).find((m) => m.role === "ceo");
+  if (ceo) {
+    seats[ceo.id] = { desk: { ...HQ_CEO.desk, w: 3, h: 2, member: ceo.id }, work: HQ_CEO.work, visit: HQ_ROOMS.ceo.out, rest: HQ_CEO.rest, pod: -1 };
+  }
+  return { pods, seats };
+}
+
+// Each member's seat, by id.
+function hqSeats(members) { return hqLayout(members).seats; }
 
 // The CEO's daily review: its turn on the task of a routine of its own. The CEO takes the
 // head of the meeting table for it.
@@ -327,80 +397,169 @@ function hqReview(members) {
   return !!routine && routine.assignee === ceo.id;
 }
 
-// Where each member is, kept across redraws: on an errand, in the review, at their desk while
-// a turn runs, resting otherwise.
+// Where a working member goes when its turn's work is not at its own desk (ADR 0119): a tester
+// on someone's task goes to whose it is; work in another team's project goes to that project
+// lead's desk (the CEO's door, for a project the CEO leads). Otherwise nowhere: its own desk.
+function hqVisit(m, task) {
+  if (!task || m.role === "ceo") return null;
+  const seats = HQ.seats, mine = seats[m.id], owner = task.owner || task.assignee;
+  if (m.role === "reviewer" && owner && owner !== m.id && seats[owner]) return seats[owner].visit;
+  const project = task.project ? ((HQ.snap && HQ.snap.projects) || []).find((x) => x.id === task.project) : null;
+  const there = project && project.lead !== m.id ? seats[project.lead] : null;
+  return there && mine && there.pod !== mine.pod ? there.visit : null;
+}
+
+// Where each member is, kept across redraws: on an errand, in the review, at their desk (or
+// where its work is) while a turn runs, drifting about the office otherwise. A furloughed
+// member is not there: its desk stands empty. Someone who joins after the office has been
+// seen walks in at the front door.
 function hqPlacePeople() {
-  const members = (HQ.snap && HQ.snap.members) || [], seats = hqSeats(members), review = hqReview(members);
+  const members = (HQ.snap && HQ.snap.members) || [], review = hqReview(members);
+  const layout = hqLayout(members);
+  HQ.pods = layout.pods; HQ.seats = layout.seats; HQ.world = hqWorld(); HQ_FURN = hqFurniture();
   for (const m of members) {
-    const seat = seats[m.id];
+    const seat = HQ.seats[m.id];
+    if (m.furloughed) { delete HQ.people[m.id]; continue; }
     let p = HQ.people[m.id];
     if (!p) {
-      p = HQ.people[m.id] = { id: m.id, x: seat.rest.x * HQ_T, y: seat.rest.y * HQ_T, path: [], frame: 0, bubble: "", bubbleT: 0,
-        working: false, errand: null, spotKey: seat.rest.x + "," + seat.rest.y, at: seat.rest };
+      const from = HQ.settled ? HQ_P.lobby : seat.work;
+      p = HQ.people[m.id] = { id: m.id, x: from.x * HQ_T, y: from.y * HQ_T, path: [], frame: 0, bubble: "", bubbleT: 0,
+        working: false, errand: null, spotKey: "", at: from, wander: null, idleT: 2 + HQ.rand() * 6 };
     }
-    p.look = m.look || 0; p.name = m.name; p.role = m.role; p.paused = m.paused; p.seat = seat; p.rank = seat.rank;
+    p.look = m.look || 0; p.name = m.name; p.role = m.role; p.paused = m.paused; p.seat = seat;
     const run = (m.running || [])[0];
     const task = run && run.task ? hqTask(run.task) : null;
     // What a working member is doing, said above their head: their latest word on the task.
     const last = task && (task.thread || []).filter((t) => t.author === m.name).pop();
     p.doing = task ? (last ? last.text : "on " + hqKey(task.id)) : "";
+    const was = p.working;
     p.working = !!run;
+    p.visit = p.working ? hqVisit(m, task) : null;
+    if (p.working) p.wander = null;
+    if (was && !p.working) p.idleT = 3 + HQ.rand() * 5;
     // The review: the CEO at the head of the table, the lead on a chair if between turns.
     p.meeting = !review ? null : m.role === "ceo" ? HQ_MEETING.head : m.role === "lead" && !p.working ? HQ_MEETING.chairs[0] : null;
     // One who went to ask the CEO and has since been woken goes back to work.
     if (p.working && p.errand && p.errand.kind === "ask") p.errand = null;
     hqGo(p);
   }
+  for (const id of Object.keys(HQ.people)) if (!members.some((m) => String(m.id) === id)) delete HQ.people[id];
+  HQ.settled = true;
 }
 
-// Where a member should be now, as a spot: its tile, the room it is in, and which way they face.
+// Where a member should be now, as a spot: its cell, the room it is in, and which way they face.
 function hqSpot(p) {
   if (p.errand) return p.errand.spot;
   if (p.meeting) return p.meeting;
   const s = p.seat;
-  if (p.working) return { x: s.desk.x + 1.6, y: s.desk.y - 0.5, room: s.desk.room, dir: "down", desk: true };
-  return s.rest;
+  if (p.working) return p.visit || s.work;
+  if (p.paused) return s.work;
+  return p.wander || s.rest || s.work;
 }
 
 // Sets a member walking to where they should be, if that is not where they are going already.
 function hqGo(p) {
   if (!p.seat) return;
-  const spot = hqSpot(p), key = spot.x + "," + spot.y;
+  const spot = hqSpot(p), key = spot.cx + "," + spot.cy;
+  p.at = spot;
   if (key === p.spotKey) return;
-  p.spotKey = key; p.at = spot;
+  p.spotKey = key;
   hqWalk(p, spot);
 }
 
-// The room a tile is in, of the two people walk into.
-function hqRoomAt(x, y) {
-  return Object.values(HQ_ROOMS).find((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) || null;
+// Whether the person asked their device for calm: then nobody drifts about the office.
+function hqCalm() {
+  try { return typeof matchMedia === "function" && !!matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (_) { return false; }
 }
 
-// The way from where a member is to a spot: out of the room they are in through its open door,
-// along the lanes and aisles of the open floor, and in through the door of the spot's room.
-// Nobody walks through glass.
-function hqWalk(p, spot) {
-  const T = HQ_T, P = HQ_P, path = [], at = { x: p.x / T, y: p.y / T };
-  const go = (x, y) => path.push({ x: x * T, y: y * T });
-  const from = hqRoomAt(at.x, at.y), to = spot.room ? HQ_ROOMS[spot.room] : null;
-  if (from && from === to) { go(from.in.x, at.y); go(from.in.x, spot.y); go(spot.x, spot.y); p.path = path; return; }
-  if (from) { go(from.in.x, at.y); go(from.in.x, from.in.y); go(from.out.x, from.out.y); at.x = from.out.x; at.y = from.out.y; }
-  const end = to ? to.out : spot, lane = (y) => (y <= P.split ? P.upperLane : P.lowerLane);
-  const la = lane(at.y), lb = lane(end.y);
-  go(at.x, la);
-  if (la !== lb) {
-    const ax = P.aisles.slice().sort((a, b) => Math.abs(a - at.x) - Math.abs(b - at.x))[0];
-    go(ax, la); go(ax, lb);
+// The places an idle member may drift to: the fixed ones, and by what stands on the floor now
+// (the couches' seats, the bean bag, a spot before the coffee machine, the fish tank, the
+// whiteboard and the shelf), so a thing the team moved moves where people gather.
+function hqWanderSpots() {
+  const spots = HQ_WANDER.slice();
+  for (const it of hqItems()) {
+    if (it.kind === "couch") spots.push(hqAt(it.x, it.y, { dir: "down" }), hqAt(it.x + 1, it.y, { dir: "down" }));
+    else if (it.kind === "bean_bag") spots.push(hqAt(it.x, it.y, { dir: "down" }));
+    else if (["coffee_machine", "fish_tank", "whiteboard", "bookshelf"].includes(it.kind)) spots.push(hqAt(it.x, it.y + 1, { dir: "up" }));
   }
-  go(end.x, lb); go(end.x, end.y);
-  if (to) { go(to.in.x, to.in.y); go(to.in.x, spot.y); go(spot.x, spot.y); }
-  p.path = path;
+  return spots;
+}
+
+// An idle member at rest picks somewhere else to be, now and then, at random: so the teams mix.
+function hqIdle(p, dt) {
+  if (p.working || p.errand || p.meeting || p.paused || !p.seat || hqCalm()) return;
+  p.idleT -= dt;
+  if (p.idleT > 0) return;
+  // Not where somebody else is going already: two do not take the same couch seat.
+  const taken = new Set(Object.values(HQ.people).filter((q) => q !== p).map((q) => q.spotKey));
+  const spots = hqWanderSpots().filter((s) => !taken.has(s.cx + "," + s.cy));
+  p.idleT = 8 + HQ.rand() * 12;
+  if (!spots.length) return;
+  p.wander = spots[Math.floor(HQ.rand() * spots.length)];
+  hqGo(p);
+}
+
+// The cells nobody walks into, and the glass between cells (ADR 0119): the back wall, the rooms
+// nobody enters, the desks and everything that stands on the floor, and the walls of the two
+// rooms people walk into, but for their open doors. Where a person is going is always allowed:
+// they sit at a desk, on a couch and on a chair.
+function hqWorld() {
+  const blocked = new Set(), edges = new Set(), key = (x, y) => x + "," + y;
+  const block = (x, y, w = 1, h = 1) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) blocked.add(key(i, j)); };
+  const wall = (a, b) => { edges.add(key(a[0], a[1]) + ">" + key(b[0], b[1])); edges.add(key(b[0], b[1]) + ">" + key(a[0], a[1])); };
+  block(0, 0, HQ_COLS, 2);
+  const B = HQ_P.boardRoom, E = HQ_P.engine;
+  block(B.x, B.y, B.w, B.h); block(E.x, E.y, E.w, E.h);
+  for (const r of Object.values(HQ_ROOMS)) {
+    for (let j = r.y; j < r.y + r.h; j++) { wall([r.x - 1, j], [r.x, j]); wall([r.x + r.w - 1, j], [r.x + r.w, j]); }
+    for (let i = r.x; i < r.x + r.w; i++) {
+      if (i >= r.door.from && i < r.door.to) continue;
+      if (r.door.side === "bottom") wall([i, r.y + r.h - 1], [i, r.y + r.h]); else wall([i, r.y - 1], [i, r.y]);
+    }
+  }
+  const c = HQ_CEO.desk, m = HQ_MEETING.table;
+  block(c.x, c.y, 3, 2); block(24, 2, 2, 1); block(24, 5, 2, 1); block(26, 4); block(22, 5);
+  block(m.x, m.y, 2, 2); block(12, 18); block(13, 18); block(14, 17, 2, 1);
+  block(26, 16, 2, 2); block(26, 18); block(27, 18); block(28, 16);
+  block(HQ_P.pong.x, HQ_P.pong.y, 4, 1); block(16, 15, 4, 2);
+  for (const pod of HQ.pods) for (const d of pod.desks) block(d.x, d.y, d.w, d.h);
+  for (const it of hqItems()) if (it.kind !== "rug" && !it.wall) block(it.x, it.y, it.w, it.h);
+  return { blocked, edges };
+}
+
+// The cells from where a member stands to a spot, the way round what is in the way: a search
+// over the floor's cells a step at a time. `null` if there is no way; empty if already there.
+function hqPathCells(from, to) {
+  const W = HQ.world || hqWorld(), key = (x, y) => x + "," + y, goal = key(to.cx, to.cy);
+  const prev = new Map([[key(from.cx, from.cy), null]]), queue = [[from.cx, from.cy]];
+  for (let at = 0; at < queue.length && !prev.has(goal); at++) {
+    const [x, y] = queue[at];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy, k = key(nx, ny);
+      if (nx < 0 || ny < 2 || nx >= HQ_COLS || ny >= HQ_ROWS || prev.has(k)) continue;
+      if (W.edges.has(key(x, y) + ">" + k) || (W.blocked.has(k) && k !== goal)) continue;
+      prev.set(k, [x, y]); queue.push([nx, ny]);
+    }
+  }
+  if (!prev.has(goal)) return null;
+  const cells = [];
+  for (let c = [to.cx, to.cy]; prev.get(key(c[0], c[1])); c = prev.get(key(c[0], c[1]))) cells.unshift({ cx: c[0], cy: c[1] });
+  return cells;
+}
+
+// The way from where a member is to a spot, out of the room they are in by its open door,
+// round the desks and the furniture, in by the door of the room the spot is in. Nobody walks
+// through glass. Where there is no way, they go straight.
+function hqWalk(p, spot) {
+  const T = HQ_T, from = { cx: Math.round(p.x / T), cy: Math.round(p.y / T + 0.5) };
+  const cells = hqPathCells(from, spot);
+  p.path = cells ? cells.map((c) => ({ x: c.cx * T, y: (c.cy - 0.5) * T })) : [{ x: spot.x * T, y: spot.y * T }];
 }
 
 // An errand's end: once there, a member says what they came to say, waits, and goes back.
 function hqErrand(p, dt) {
   const e = p.errand;
-  if (!e || p.path.length || p.spotKey !== e.spot.x + "," + e.spot.y) return;
+  if (!e || p.path.length || p.spotKey !== e.spot.cx + "," + e.spot.cy) return;
   if (!e.arrived) { e.arrived = true; if (e.say) hqSay(p, e.say); }
   e.hold -= dt;
   if (e.hold > 0) return;
@@ -433,9 +592,11 @@ function hqPaintRoom() {
   floor("grid", "#d9e1ea", 0, 2, 7, 7);
   floor("plain", "#d9b9a0", 20, 2, 27, 7);
   floor("plain", "#c3c8d0", 27, 2, HQ_COLS, 7);
-  floor("grid", "#8fa6c7", 0, 14, 9, HQ_ROWS);
-  floor("grid", "#d9e1ea", 9, 14, 16, HQ_ROWS);
-  floor("check", "#efe9de", 22, 14, HQ_COLS, HQ_ROWS);
+  // The ping-pong corner, the meeting room, the lounge and the kitchen along the bottom.
+  floor("grid", "#8fa6c7", 0, 15, 9, HQ_ROWS);
+  floor("grid", "#d9e1ea", 9, 15, 16, HQ_ROWS);
+  floor("plain", "#d9c3a5", 16, 15, 24, HQ_ROWS);
+  floor("check", "#efe9de", 24, 15, HQ_COLS, HQ_ROWS);
   // The wall.
   g.fillStyle = C.wall; g.fillRect(0, 0, W, 2 * T); g.fillStyle = C.wallTop; g.fillRect(0, 0, W, 5); g.fillStyle = C.trim; g.fillRect(0, 2 * T - 3, W, 3);
   // A window onto the bay, with the bridge.
@@ -459,72 +620,188 @@ function hqPaintRoom() {
     g.fillStyle = "rgba(150,205,235,.5)"; g.fillRect(x, y0, 3, 18); g.fillStyle = C.glassEdge; g.fillRect(x + 2, y0, 1, 18);
     g.fillStyle = C.trim; g.fillRect(x, y0 + (dir < 0 ? 3 : 13), 2, 2);
   };
-  const B = P.boardRoom, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = P.engine, G = HQ_ROOMS.wing;
+  const B = P.boardRoom, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = P.engine;
   glass(B); edge((B.x + B.w) * T - 2, B.y * T, 2, B.h * T); edge(0, (B.y + B.h) * T - 2, (B.x + B.w) * T - 22, 2);
+  // Mara's office: its door stands open, a two-tile gap in the glass with the leaf swung in.
   glass(O); edge(O.x * T, O.y * T, 2, O.h * T);
-  edge(O.x * T, (O.y + O.h) * T - 2, 0.3 * T, 2); edge((O.x + 1.7) * T, (O.y + O.h) * T - 2, (O.w - 1.7) * T, 2);
-  swung((O.x + 1.7) * T - 3, (O.y + O.h) * T - 2, -1);
+  edge((O.x + 2) * T, (O.y + O.h) * T - 2, (O.w - 2) * T, 2);
+  swung((O.x + 2) * T - 3, (O.y + O.h) * T - 2, -1);
   glass(E, "rgba(60,70,90,.08)"); edge(E.x * T, E.y * T, 2, E.h * T); edge(E.x * T + 22, (E.y + E.h) * T - 2, E.w * T - 22, 2);
   glass(M); edge(M.x * T, M.y * T, 2, M.h * T); edge((M.x + M.w) * T - 2, M.y * T, 2, M.h * T);
-  edge(M.x * T, M.y * T, 0.3 * T, 2); edge((M.x + 1.7) * T, M.y * T, (M.w - 1.7) * T, 2);
-  swung((M.x + 1.7) * T - 3, M.y * T + 2, 1);
-  // The engineering wing (ADR 0115): glass like the meeting room's, its door onto the lane.
-  glass(G, "rgba(120,185,140,.16)"); edge(G.x * T, G.y * T, 2, G.h * T);
-  edge(G.x * T, G.y * T, 0.3 * T, 2); edge((G.x + 1.7) * T, G.y * T, (G.w - 1.7) * T, 2);
-  swung((G.x + 1.7) * T - 3, G.y * T + 2, 1);
-  // Ping-pong.
+  edge((M.x + 2) * T, M.y * T, (M.w - 2) * T, 2);
+  swung((M.x + 2) * T - 3, M.y * T + 2, 1);
+  // Ping-pong: the table, with a player at each end.
   const px = P.pong.x * T, py = P.pong.y * T;
   g.fillStyle = C.shadow; g.fillRect(px + 2, py + 13, 66, 4); g.fillStyle = "#1f7a4f"; g.fillRect(px, py, 66, 13); g.fillStyle = "#ffffff"; g.fillRect(px, py + 6, 66, 1); g.fillRect(px + 32, py - 3, 2, 16);
   g.fillStyle = "#3b4048"; g.fillRect(px + 4, py + 13, 2, 4); g.fillRect(px + 60, py + 13, 2, 4);
-  // The lounge: cold brew and the snack wall.
+  // The kitchen and lounge: cold brew and the snack shelf on the lounge's back, shared by all.
   g.fillStyle = "#cfd6dd"; g.fillRect(P.tap.x * T, P.tap.y * T - 6, 14, 20); g.fillStyle = "#3a2a1e"; g.fillRect(P.tap.x * T + 3, P.tap.y * T - 3, 8, 7); g.fillStyle = "#222"; g.fillRect(P.tap.x * T + 6, P.tap.y * T + 5, 2, 3);
-  g.fillStyle = "#b8a68a"; g.fillRect(18 * T, 14.6 * T, 4 * T, 3); g.fillRect(18 * T, 15.4 * T, 4 * T, 3);
+  g.fillStyle = "#b8a68a"; g.fillRect(17.8 * T, 15.6 * T, 2.2 * T, 3); g.fillRect(17.8 * T, 16.4 * T, 2.2 * T, 3);
   const snacks = ["#ff4fa3", "#ffb347", "#45c486", "#7fb2ff", "#ef5a5f", "#fff2a8"];
-  for (let i = 0; i < 14; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(18 * T + 2 + i * 4.4, 14.6 * T - 5 + (i % 2) * 13, 3, 5); }
+  for (let i = 0; i < 8; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(17.8 * T + 2 + i * 4.4, 15.6 * T - 5 + (i % 2) * 13, 3, 5); }
   // The front door, on the floor's right wall.
   g.fillStyle = "#3d3a44"; g.fillRect(P.door.x * T, P.door.y * T, 2 * T, 3 * T); g.fillStyle = "#9fd3f0"; g.fillRect(P.door.x * T + 4, P.door.y * T + 4, 2 * T - 8, 3 * T - 4);
   // Labels.
   g.font = HQ_PIXEL; g.fillStyle = "rgba(31,29,41,.6)";
   g.fillText("BOARD ROOM", 4, 2 * T + 9); g.fillText("CEO", O.x * T + 5, O.y * T + 9);
   g.fillText("SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4); g.fillText("MEETING", M.x * T + 5, (M.y + M.h) * T - 4);
-  g.fillStyle = "rgba(255,255,255,.8)"; g.fillText("PING-PONG", 4, 14 * T + 9); g.fillStyle = "rgba(31,29,41,.6)"; g.fillText("COLD BREW", 16.3 * T, HQ_ROWS * T - 4);
-  g.fillText("WING", (G.x + 2) * T, G.y * T + 9);
+  g.fillStyle = "rgba(255,255,255,.8)"; g.fillText("PING-PONG", 4, 15 * T + 9); g.fillStyle = "rgba(31,29,41,.6)";
+  g.fillText("KITCHEN", 24.6 * T, HQ_ROWS * T - 4); g.fillText("LOUNGE", 16.3 * T, HQ_ROWS * T - 4);
   return bg;
 }
 
+// The things on the floor now, from the snapshot's office (ADR 0119): where each stands, how
+// big it is (the catalog's size comes with it), who put it there. Nothing here is fixed.
+function hqItems() {
+  const office = (HQ.snap && HQ.snap.office) || {};
+  return (office.items || []).map((i) => ({ ...i, w: i.w || 1, h: i.h || 1, wall: !!i.wall }));
+}
+
+// A sprite from the loaded art at a pixel, or false if it is not loaded.
+function hqSprite(g, key, x, y, w, h) {
+  const img = HQ_IMG[key]; if (!img) return false;
+  if (w) g.drawImage(img, Math.round(x), Math.round(y), w, h); else g.drawImage(img, Math.round(x), Math.round(y));
+  return true;
+}
+// A pot with leaves: what a plant is when its art is not loaded.
+function hqPot(g, it, leaf) {
+  const x = it.x * HQ_T, y = it.y * HQ_T;
+  g.fillStyle = "#b5651d"; g.fillRect(x + 4, y + 10, 8, 6); g.fillStyle = leaf; g.fillRect(x + 3, y + 2, 10, 9);
+}
+// How each kind of thing is drawn, at its tile. Plants, the couch and the shelf use the office's
+// art; for the kinds with none, a small pixel shape. Each is given the 2D context and the item.
+const HQ_ITEM_ART = {
+  plant: (g, it) => hqSprite(g, "PLANT", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#3f9b5b"),
+  fern: (g, it) => hqSprite(g, "PLANT_2", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#5fbf7a"),
+  cactus: (g, it) => hqSprite(g, "CACTUS", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#6aa84f"),
+  palm: (g, it) => hqSprite(g, "LARGE_PLANT", it.x * HQ_T - 8, (it.y + 1) * HQ_T - 48) || hqPot(g, it, "#2e8b57"),
+  couch: (g, it) => {
+    if (hqSprite(g, "SOFA_FRONT", it.x * HQ_T, it.y * HQ_T)) return;
+    g.fillStyle = "#7d6bb0"; g.fillRect(it.x * HQ_T, it.y * HQ_T + 2, it.w * HQ_T, 14); g.fillStyle = "#9a89c9"; g.fillRect(it.x * HQ_T + 2, it.y * HQ_T, it.w * HQ_T - 4, 6);
+  },
+  bookshelf: (g, it) => {
+    if (hqSprite(g, "BOOKSHELF", it.x * HQ_T, it.y * HQ_T)) return;
+    g.fillStyle = "#8a5a2b"; g.fillRect(it.x * HQ_T, it.y * HQ_T, it.w * HQ_T, 16);
+  },
+  lamp: (g, it) => {
+    const x = it.x * HQ_T, y = it.y * HQ_T;
+    g.fillStyle = HQ_C.shadow; g.fillRect(x + 4, y + 14, 8, 2);
+    g.fillStyle = "#3b4048"; g.fillRect(x + 7, y + 4, 2, 10); g.fillRect(x + 5, y + 13, 6, 2);
+    g.fillStyle = HQ_C.lamp; g.fillRect(x + 3, y, 10, 5); g.fillStyle = "#fff2a8"; g.fillRect(x + 5, y + 1, 6, 2);
+  },
+  rug: (g, it) => {
+    const x = it.x * HQ_T, y = it.y * HQ_T, w = it.w * HQ_T, h = it.h * HQ_T;
+    g.fillStyle = "rgba(185,140,240,.55)"; g.fillRect(x + 1, y + 1, w - 2, h - 2);
+    g.fillStyle = "rgba(255,255,255,.4)"; g.fillRect(x + 3, y + 3, w - 6, 1); g.fillRect(x + 3, y + h - 4, w - 6, 1);
+    g.fillRect(x + 3, y + 3, 1, h - 6); g.fillRect(x + w - 4, y + 3, 1, h - 6);
+  },
+  whiteboard: (g, it) => {
+    const x = it.x * HQ_T, y = it.y * HQ_T;
+    g.fillStyle = "#9aa"; g.fillRect(x + 3, y + 11, 2, 5); g.fillRect(x + 11, y + 11, 2, 5);
+    g.fillStyle = HQ_C.boardEdge; g.fillRect(x, y + 1, 16, 11); g.fillStyle = HQ_C.board; g.fillRect(x + 1, y + 2, 14, 9);
+    g.fillStyle = "#2a64c9"; g.fillRect(x + 3, y + 4, 8, 1); g.fillStyle = "#d33"; g.fillRect(x + 3, y + 7, 5, 1);
+  },
+  coffee_machine: (g, it) => {
+    const x = it.x * HQ_T, y = it.y * HQ_T;
+    g.fillStyle = HQ_C.shadow; g.fillRect(x + 2, y + 14, 12, 2);
+    g.fillStyle = "#3b4048"; g.fillRect(x + 3, y + 2, 10, 12); g.fillStyle = "#59606c"; g.fillRect(x + 4, y + 3, 8, 4);
+    g.fillStyle = HQ_C.red; g.fillRect(x + 10, y + 4, 2, 2); g.fillStyle = "#fff"; g.fillRect(x + 6, y + 10, 4, 4);
+  },
+  fish_tank: (g, it) => {
+    const x = it.x * HQ_T, y = it.y * HQ_T, swim = Math.round((Math.sin(HQ.t * 1.5 + it.id) + 1) * 3);
+    g.fillStyle = "#6b4f33"; g.fillRect(x, y + 11, 16, 5);
+    g.fillStyle = "rgba(127,178,255,.55)"; g.fillRect(x + 1, y + 3, 14, 8); g.fillStyle = "#e8d7a0"; g.fillRect(x + 1, y + 10, 14, 1);
+    g.fillStyle = HQ_C.lamp; g.fillRect(x + 3 + swim, y + 6, 3, 2); g.fillStyle = HQ_C.neon; g.fillRect(x + 10 - swim, y + 8, 2, 1);
+    g.fillStyle = "rgba(255,255,255,.5)"; g.fillRect(x + 2, y + 4, 1, 5);
+  },
+  bean_bag: (g, it) => {
+    const x = it.x * HQ_T + 8, y = it.y * HQ_T + 9;
+    g.fillStyle = HQ_C.shadow; g.fillRect(x - 6, y + 5, 12, 2);
+    g.fillStyle = "#ef7aa6"; g.beginPath(); g.arc(x, y, 6, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#f7a3c2"; g.fillRect(x - 3, y - 4, 4, 2);
+  },
+  poster: (g, it) => {
+    const x = it.x * HQ_T + 2;
+    g.fillStyle = "#ffffff"; g.fillRect(x, 5, 12, 17); g.fillStyle = HQ_C.neon; g.fillRect(x + 1, 6, 10, 7);
+    g.fillStyle = "#2a64c9"; g.fillRect(x + 2, 15, 8, 1); g.fillRect(x + 2, 18, 5, 1);
+  },
+  art: (g, it) => {
+    if (HQ_IMG.LARGE_PAINTING) { g.drawImage(HQ_IMG.LARGE_PAINTING, it.x * HQ_T, 6, 16, 16); return; }
+    g.fillStyle = "#8a5a2b"; g.fillRect(it.x * HQ_T + 1, 6, 14, 14); g.fillStyle = HQ_C.blue; g.fillRect(it.x * HQ_T + 3, 8, 10, 10);
+  },
+  // The wall clock shows the arc to the next tick of the real engine.
+  clock: (g, it) => {
+    const snap = HQ.snap || {}, cx = it.x * HQ_T + 8, cy = 14, every = (snap.tick_seconds || 30) * 1000;
+    const since = snap.last_tick_at ? Math.max(0, Date.now() - snap.last_tick_at) % every : 0;
+    g.fillStyle = "#ffffff"; g.beginPath(); g.arc(cx, cy, 8, 0, Math.PI * 2); g.fill(); g.strokeStyle = HQ_C.trim; g.stroke();
+    g.fillStyle = snap.stopped ? HQ_C.red : HQ_C.neon; g.beginPath(); g.moveTo(cx, cy);
+    g.arc(cx, cy, 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (since / every)); g.fill();
+  },
+  string_lights: (g, it) => {
+    const x0 = it.x * HQ_T, y0 = it.y * HQ_T + 3, span = it.w * HQ_T, colors = [HQ_C.red, HQ_C.lamp, HQ_C.green, HQ_C.blue, HQ_C.neon];
+    const sag = (dx) => Math.round(Math.sin((dx / span) * Math.PI) * 4);
+    g.fillStyle = "#6b6577"; for (let dx = 0; dx < span; dx += 2) g.fillRect(x0 + dx, y0 + sag(dx), 2, 1);
+    for (let i = 0; i < 6; i++) {
+      const dx = 2 + i * Math.floor((span - 4) / 5);
+      g.fillStyle = (Math.floor(HQ.t * 2) + i) % 3 !== 0 ? colors[i % colors.length] : "#8a8396"; g.fillRect(x0 + dx, y0 + 1 + sag(dx), 2, 3);
+    }
+  },
+};
+// A kind this screen has no picture for yet is drawn as a plain box, so nothing vanishes.
+function hqDrawItem(g, it) {
+  (HQ_ITEM_ART[it.kind] || ((ctx, i) => { ctx.fillStyle = "#b8a68a"; ctx.fillRect(i.x * HQ_T + 1, i.y * HQ_T + 1, i.w * HQ_T - 2, i.h * HQ_T - 2); }))(g, it);
+}
+
 function hqFurniture() {
-  const T = HQ_T, out = [], c = HQ_CEO_DESK, m = HQ_MEETING.table;
+  const T = HQ_T, out = [], c = HQ_CEO.desk, m = HQ_MEETING.table, members = (HQ.snap && HQ.snap.members) || [];
   const f = (key, x, y, extra = {}) => { const i = HQ_IMG[key]; if (i) out.push({ key, x, y, base: y + i.height + (extra.lift || 0), ...extra }); };
-  HQ_DESKS.forEach((d, i) => {
-    f("DESK_FRONT", d.x * T, d.y * T);
-    f("PC_FRONT_OFF", d.x * T + 4, d.y * T - 6, { lift: 0.5, pc: i });
-    f("BIN", (d.x + 3) * T, (d.y + 1) * T);
-  });
+  const ceo = members.find((x) => x.role === "ceo");
+  // Every pod's desks, a PC on each, lit while its member works; a furloughed member's stands
+  // empty with a small card that says it is away (ADR 0119).
+  for (const pod of HQ.pods) {
+    for (const d of pod.desks) {
+      f("DESK_FRONT", d.x * T, d.y * T);
+      f("PC_FRONT_OFF", d.x * T + 4, d.y * T - 6, { lift: 0.5, pcOf: d.member });
+      const away = members.find((x) => x.id === d.member && x.furloughed);
+      if (away) out.push({ base: d.y * T + 33, draw: (g) => hqAwayCard(g, d) });
+    }
+  }
   // The board room: the owner's table, with the decisions on it.
   f("SMALL_TABLE_FRONT", HQ_P.owner.x * T, HQ_P.owner.y * T);
   f("COFFEE", (HQ_P.owner.x + 1.3) * T, HQ_P.owner.y * T + 4, { lift: 40 });
   f("CUSHIONED_CHAIR_BACK", (HQ_P.owner.x + 0.1) * T, (HQ_P.owner.y + 1.9) * T);
   f("CUSHIONED_CHAIR_BACK", (HQ_P.owner.x + 1.1) * T, (HQ_P.owner.y + 1.9) * T);
   f("PLANT_2", 0.2 * T, 4.8 * T);
-  // The CEO's office: its desk and PC, a visitor's chair before it, the bookshelf, a sofa, a plant.
+  // Mara's office: its desk and PC, a visitor's chair before it, the bookshelf, a sofa, a plant.
   f("DESK_FRONT", c.x * T, c.y * T);
-  f("PC_FRONT_OFF", c.x * T + 4, c.y * T - 6, { lift: 0.5, pc: HQ_DESKS.length });
-  f("CUSHIONED_CHAIR_BACK", (c.x + 1) * T, (c.y + 1.9) * T);
-  f("BOOKSHELF", 24.4 * T, 2 * T); f("SOFA_FRONT", 24 * T, 5.2 * T); f("PLANT", 26 * T, 4.6 * T);
+  f("PC_FRONT_OFF", c.x * T + 4, c.y * T - 6, { lift: 0.5, pcOf: ceo ? ceo.id : -1 });
+  f("CUSHIONED_CHAIR_BACK", 22 * T, 5 * T);
+  f("BOOKSHELF", 24 * T, 2 * T); f("SOFA_FRONT", 24 * T, 5 * T); f("PLANT", 26 * T, 4 * T);
   // The meeting room: the table, two chairs before it, a large plant in the corner.
   f("SMALL_TABLE_FRONT", m.x * T, m.y * T);
-  f("CUSHIONED_CHAIR_BACK", (m.x + 0.1) * T, (m.y + 1.9) * T);
-  f("CUSHIONED_CHAIR_BACK", (m.x + 1.1) * T, (m.y + 1.9) * T);
-  f("LARGE_PLANT", 14.2 * T, 14.1 * T);
-  // The floor and the lounge.
-  f("PLANT", 0.1 * T, 10.2 * T); f("PLANT_2", 28.4 * T, 9.6 * T); f("CACTUS", 25.6 * T, 10.4 * T);
-  f("SOFA_FRONT", 17.6 * T, 16.8 * T); f("SOFA_FRONT", 19.6 * T, 16.8 * T); f("PLANT", 21 * T, 16.6 * T);
-  // The engineering wing (ADR 0115): six desks with their PCs, two rows of three.
-  HQ_WING_DESKS.forEach((d, i) => {
-    f("DESK_FRONT", d.x * T, d.y * T);
-    f("PC_FRONT_OFF", d.x * T + 4, d.y * T - 6, { lift: 0.5, pc: HQ_DESKS.length + 1 + i });
-  });
+  f("CUSHIONED_CHAIR_BACK", 12 * T, 18 * T);
+  f("CUSHIONED_CHAIR_BACK", 13 * T, 18 * T);
+  f("LARGE_PLANT", 14 * T, 15 * T);
+  // The kitchen: a table, two chairs, a bin. The couches, the coffee machine and the rest of
+  // what makes it a lounge are the team's to place.
+  f("SMALL_TABLE_FRONT", 26 * T, 16 * T);
+  f("CUSHIONED_CHAIR_BACK", 26 * T, 18 * T); f("CUSHIONED_CHAIR_BACK", 27 * T, 18 * T);
+  f("BIN", 28 * T, 16 * T);
+  // Whatever stands on the floor now, as the snapshot has it: not the rugs and what hangs on the
+  // wall, which are drawn flat on the ground.
+  for (const it of hqItems()) {
+    if (it.kind === "rug" || it.wall) continue;
+    out.push({ base: (it.y + it.h) * T, item: it, draw: (g) => hqDrawItem(g, it) });
+  }
   return out;
+}
+
+// The card on an empty desk: its member is away on furlough (ADR 0118), and keeps the desk.
+function hqAwayCard(g, d) {
+  const x = d.x * HQ_T + 12, y = d.y * HQ_T + 13;
+  g.fillStyle = HQ_C.shadow; g.fillRect(x + 1, y + 1, 24, 9);
+  g.fillStyle = "#ffffff"; g.fillRect(x, y, 24, 9); g.fillStyle = HQ_C.blue; g.fillRect(x, y, 24, 1);
+  g.font = HQ_PIXEL; g.fillStyle = "rgba(31,29,41,.75)"; g.fillText("AWAY", x + 3, y + 8);
 }
 
 // The sticky notes: the newest tasks that are not long finished, two rows of seventeen. A
@@ -538,11 +815,12 @@ function hqCards() {
   return shown.map((t, i) => ({ t, x: HQ_P.board.x * HQ_T + 4 + (i % 17) * 11, y: 7 + Math.floor(i / 17) * 10, w: 8, h: 8 }));
 }
 
-// The first two members after the CEO (the lead and the developer) play ping-pong when both
-// are resting.
+// Whoever is at the two ends of the ping-pong table, both of them idle and standing there,
+// play. Any two: the teams mix at the table as anywhere else.
 function hqPong() {
-  const two = Object.values(HQ.people).filter((p) => p.rank === 0 || p.rank === 1);
-  return two.length === 2 && two.every((p) => !p.working && !p.path.length && !p.paused && !p.errand && !p.meeting) ? two : null;
+  const at = (end) => Object.values(HQ.people).find((p) => p.at && p.at.pong === end && !p.working && !p.path.length && !p.paused && !p.errand && !p.meeting);
+  const left = at("L"), right = at("R");
+  return left && right ? [left, right] : null;
 }
 
 function hqFrame(p) {
@@ -555,7 +833,7 @@ function hqFrame(p) {
   const reads = p.role === "researcher" || p.role === "reviewer" || !at.desk;
   if (p.working) return { dir, frame: reads ? 5 + (Math.floor(HQ.t * 1.5) % 2) : 3 + (Math.floor(HQ.t * 6) % 2) };
   const pong = hqPong();
-  if (pong && pong.includes(p)) return { dir: p.rank === 0 ? "right" : "left", frame: 3 + (Math.floor(HQ.t * 4) % 2) };
+  if (pong && pong.includes(p)) return { dir: at.pong === "L" ? "right" : "left", frame: 3 + (Math.floor(HQ.t * 4) % 2) };
   return { dir, frame: p.paused ? 1 : 0 };
 }
 
@@ -591,12 +869,15 @@ function hqDraw() {
     ctx.fillStyle = snap.stopped ? C.red : on ? C.green : "#24412f"; ctx.fillRect(rx + 4, ry + 5 + i * 5, 2, 2);
     ctx.fillStyle = snap.stopped ? "#5a2224" : "#4a5a6a"; ctx.fillRect(rx + 8, ry + 5 + i * 5, 6, 2);
   }
-  // The wall clock: the arc to the next tick of the real engine.
-  const cx = 28.6 * T, cy = 14, every = (snap.tick_seconds || 30) * 1000;
-  const since = snap.last_tick_at ? Math.max(0, Date.now() - snap.last_tick_at) % every : 0;
-  ctx.fillStyle = "#ffffff"; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = C.trim; ctx.stroke();
-  ctx.fillStyle = snap.stopped ? C.red : C.neon; ctx.beginPath(); ctx.moveTo(cx, cy);
-  ctx.arc(cx, cy, 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (since / every)); ctx.fill();
+  // What lies flat on the floor or hangs on the back wall, from the snapshot's office (ADR 0119):
+  // rugs, posters, art, string lights, and the wall clock with its arc to the next tick.
+  for (const it of hqItems()) if (it.kind === "rug" || it.wall) hqDrawItem(ctx, it);
+  // The pods: a faint patch of floor under each team's desks and its name, no walls.
+  ctx.font = HQ_PIXEL;
+  for (const pod of HQ.pods) {
+    ctx.fillStyle = "rgba(255,255,255,.12)"; ctx.fillRect(pod.x * T - 4, pod.y * T - 18, pod.width * T + 8, pod.rows * HQ_POD.desk.h * T + 20);
+    ctx.fillStyle = "rgba(31,29,41,.7)"; ctx.fillText(String(pod.label).toUpperCase(), pod.x * T, pod.y * T - 9);
+  }
   // The burn gauge: today's spend against the pool's day.
   const pool = snap.pool || { per_day: 1, committed: 0 }, fill = Math.min(1, (pool.committed || 0) / Math.max(1, pool.per_day));
   const jx = P.jar.x * T, jy = P.jar.y * T, hgt = 30;
@@ -608,7 +889,7 @@ function hqDraw() {
   ctx.fillStyle = "#3a3a46"; ctx.fillRect(lx + 2, ly + 14, 12, 4);
   ctx.fillStyle = "#9aa"; ctx.fillRect(lx + 7, up ? ly + 4 : ly + 10, 2, up ? 10 : 6); ctx.fillStyle = C.red; ctx.fillRect(lx + 5, up ? ly + 1 : ly + 14, 6, 4);
   if ((HQ.doorFlash || 0) > 0) { ctx.fillStyle = `rgba(255,79,163,${Math.min(.35, HQ.doorFlash / 3)})`; ctx.fillRect(P.door.x * T - 4, P.door.y * T - 4, 2 * T + 8, 3 * T + 4); }
-  // A ping-pong ball between the two idle founders.
+  // A ping-pong ball between the two at the table.
   if (hqPong()) { const k = (Math.sin(HQ.t * 4) + 1) / 2, bx = P.pong.x * T + 6 + k * 56, by = P.pong.y * T + 2 - Math.abs(Math.sin(HQ.t * 8)) * 9; ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(bx), Math.round(by), 2, 2); }
   // People and furniture, in depth order.
   const people = Object.values(HQ.people);
@@ -617,15 +898,22 @@ function hqDraw() {
   items.sort((a, b) => a.base - b.base);
   for (const it of items) {
     if (it.p) { hqDrawPerson(ctx, it.p); continue; }
+    if (it.f.draw) { it.f.draw(ctx); continue; }
     let key = it.f.key;
-    if (it.f.pc !== undefined) {
-      const at = people.find((p) => p.working && !p.path.length && p.at && p.at.desk && p.seat.deskNo === it.f.pc);
+    if (it.f.pcOf !== undefined) {
+      const at = people.find((p) => p.working && !p.path.length && p.at && p.at.desk && p.id === it.f.pcOf);
       key = at ? "PC_FRONT_ON_" + (1 + (Math.floor(HQ.t * 4) % 3)) : "PC_FRONT_OFF";
     }
     if (HQ_IMG[key]) ctx.drawImage(HQ_IMG[key], Math.round(it.f.x), Math.round(it.f.y));
   }
+  // Names under their people; at a pod's aisle they run out over their own desk, so the two
+  // who face each other do not write over one another.
   ctx.font = HQ_PIXEL;
-  for (const p of people) { ctx.fillStyle = "rgba(31,29,41,.85)"; ctx.fillText(String(p.name || "").toUpperCase(), Math.round(p.x) + 1, Math.round(p.y) + 24); }
+  for (const p of people) {
+    const name = String(p.name || "").toUpperCase(), at = p.at || {}, w = Math.ceil(ctx.measureText(name).width);
+    const x = at.desk && at.dir === "right" ? Math.round(p.x) + 16 - w : at.desk && at.dir === "left" ? Math.round(p.x) : Math.round(p.x) + 1;
+    ctx.fillStyle = "rgba(31,29,41,.85)"; ctx.fillText(name, x, Math.round(p.y) + 24);
+  }
   // Decisions waiting on the board room table.
   (snap.desk || []).slice(0, 5).forEach((n, i) => {
     ctx.fillStyle = n.kind === "goal" ? C.violet : n.kind === "stuck" ? C.red : C.lamp;
@@ -681,7 +969,7 @@ function hqLoop() {
     HQ.spark = Math.max(0, (HQ.spark || 0) - dt * 2); HQ.doorFlash = Math.max(0, (HQ.doorFlash || 0) - dt);
     for (const p of Object.values(HQ.people)) {
       if (p.bubbleT > 0) p.bubbleT -= dt;
-      if (!p.path.length) { hqErrand(p, dt); continue; }
+      if (!p.path.length) { hqErrand(p, dt); hqIdle(p, dt); continue; }
       const n = p.path[0], dx = n.x - p.x, dy = n.y - p.y, d = Math.hypot(dx, dy), v = 46 * dt;
       if (d <= v) { p.x = n.x; p.y = n.y; p.path.shift(); } else { p.x += (dx / d) * v; p.y += (dy / d) * v; }
       p.frame += dt * 8;
@@ -705,6 +993,12 @@ function hqTap(ev) {
   }
   if (x >= HQ_P.lever.x * HQ_T && x <= HQ_P.lever.x * HQ_T + 16 && y >= HQ_P.lever.y * HQ_T && y <= HQ_P.lever.y * HQ_T + 20) {
     dispatch(HQ.snap && HQ.snap.stopped ? "hq:resume" : "hq:stop"); return;
+  }
+  // A thing on the floor: who put it there.
+  for (const it of hqItems()) {
+    if (x >= it.x * HQ_T && x <= (it.x + it.w) * HQ_T && y >= (it.wall ? 0 : it.y * HQ_T - 16) && y <= (it.y + it.h) * HQ_T) {
+      HQ.selected = { type: "item", id: it.id }; render(); return;
+    }
   }
   HQ.selected = null; render();
 }
@@ -800,7 +1094,7 @@ function viewHQ() {
     <div class="hq-main">
       <div class="hq-stage">
         <canvas id="hq-office" width="${HQ_W}" height="${HQ_H}"
-          aria-label="The team's office: members at their desks, the board of tasks, the CEO's office, the meeting room, the engineering wing, the server closet, the board room"></canvas>
+          aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the CEO's office with its door open, the meeting room, the kitchen and lounge, ping-pong, the server closet, the board room"></canvas>
         <div class="hq-stats">${stats}</div>
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
         ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
@@ -812,6 +1106,7 @@ function viewHQ() {
         ${hqScorecard(s)}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul></section>
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
+        ${hqOffice(s)}
         ${hqProjects(s)}
         ${hqHouse(s)}
         <details class="hq-card"><summary>Set the team a goal</summary>
@@ -904,8 +1199,48 @@ function hqRoster(s) {
   const loose = rest.filter((m) => !hqLeadOf(m, members));
   const group = (title, people) => `<div class="hq-group"><h3>${title}</h3><ul class="hq-team">${people.map(line).join("")}</ul></div>`;
   return group("Board: you", ceo.concat(loose)) + leads.map((l) =>
-    group(`${wingLeads.includes(l.id) ? "Engineering" : "Ops"} · ${esc(l.name)}`,
+    group(esc(hqTeamLabel(l, wingLeads)),
       [l].concat(rest.filter((m) => (hqLeadOf(m, members) || {}).id === l.id)))).join("");
+}
+
+// Roughly where a thing stands, in words: the same names HQ gives its proposals.
+function hqAreaOf(it) {
+  const x = it.x, y = it.y, within = (l, t, r, b) => x >= l && x < r && y >= t && y < b;
+  if (y < 2) return "the back wall";
+  if (within(16, 15, 24, 20)) return "the lounge";
+  if (within(24, 15, 32, 20)) return "the kitchen";
+  if (within(0, 15, 9, 20)) return "the ping-pong corner";
+  if (within(9, 15, 16, 20)) return "the meeting room side";
+  if (within(7, 2, 20, 7)) return "the commons";
+  if (within(0, 2, 7, 8)) return "the board room side";
+  if (within(20, 2, 32, 8)) return "the CEO's side";
+  return "the open floor";
+}
+
+// The Office card (ADR 0119): what the team proposes to change, who has voted how, and the
+// owner's say as landlord: veto any open proposal, undo the last change, reset to how the
+// office started, and what paid members' downtime may spend a day (nothing, until you say). The
+// proposals are the team's own words, so every one is escaped.
+function hqOffice(s) {
+  const o = s.office;
+  if (!o) return "";
+  const open = o.proposals || [], recent = (o.recent || []).slice(0, 3);
+  const proposals = open.map((p) => {
+    const votes = (p.votes || []).map((v) => `${esc(v.who)} ${esc(v.vote)}${v.why ? ` (${esc(v.why)})` : ""}`).join(", ");
+    return `<li><b>${esc(p.by)}</b> proposes: ${(p.changes || []).map((c) => esc(c)).join("; ")}${p.why ? ` — <i>${esc(p.why)}</i>` : ""}
+      <small> yes ${Number(p.yes)}, no ${Number(p.no)} · ${votes} · carries on a second yes, or at ${esc(hqClock(p.carries_at))} if nobody objects</small>
+      <button class="hq-btn no" data-act="hq:office:veto:${Number(p.id)}">Veto</button></li>`;
+  }).join("");
+  const done = recent.map((r) => `<li>${esc(r.status)}: ${(r.changes || []).map((c) => esc(c)).join("; ")}${r.outcome ? ` <small>(${esc(r.outcome)})</small>` : ""}</li>`).join("");
+  const cents = o.downtime_paid_cents_per_day || 0;
+  return `<section class="hq-card hq-office-card"><h2>Office <span class="hq-count">${open.length}</span></h2>
+    <p class="hq-note">${(o.items || []).length} things on the floor. The team decides what to change together, in its downtime; you can veto, undo or reset.</p>
+    ${proposals ? `<ul class="hq-team">${proposals}</ul>` : `<p class="hq-empty">No proposals open.</p>`}
+    ${done ? `<details><summary>Lately</summary><ul class="hq-team">${done}</ul></details>` : ""}
+    <div class="hq-row"><button class="hq-btn" data-act="hq:office:undo:go"${o.can_undo ? "" : " disabled"}>Undo last change</button>
+      <button class="hq-btn no" data-act="hq:office:reset:go">Reset the office</button></div>
+    <p class="hq-who">Paid members' downtime: ${hqDollars(cents * 10000)} a day${cents ? ` (${hqDollars((o.downtime_paid_cents_used || 0) * 10000)} used today)` : ""} — <button class="hq-btn" data-act="hq:office:downtime:set">change</button></p>
+  </section>`;
 }
 
 // Whether a push on the desk can be approved: the node has a deploy key, so the card says
@@ -1157,8 +1492,15 @@ function hqSelected() {
       <dt>Brain</dt><dd>${esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
       <dt>Budget</dt><dd>${hqMemberMoney(m)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}${hqTurns((r) => r.member === m.id, "member-" + m.id)}`;
   }
+  if (sel.type === "item") {
+    const it = hqItems().find((x) => x.id === sel.id); if (!it) return "";
+    const by = it.placed_by === "endora" ? "Endora, when the office was set up" : it.placed_by === "owner" ? "you" : it.placed_by;
+    return `<div class="hq-sel">${esc(String(it.kind).replace(/_/g, " "))}</div><dl class="hq-kv">
+      <dt>Put there by</dt><dd>${esc(by)}</dd><dt>Where</dt><dd>${esc(hqAreaOf(it))}</dd></dl>
+      <p class="hq-note">The team moves what stands here by proposing it together; the Office card below lets you undo, reset or veto.</p>`;
+  }
   const t = hqTask(sel.id); if (!t) return "";
-  const runner = ((HQ.snap && HQ.snap.runs) || []).find((r) => r.task === t.id && r.status === "running");
+  const runner =((HQ.snap && HQ.snap.runs) || []).find((r) => r.task === t.id && r.status === "running");
   const thread = (t.thread || []).slice(-3).map((p) => `<li>${esc(p.author)}${p.unsupported ? ` <span class="hq-unsupported">unsupported</span>` : ""}: ${esc(p.text)}</li>`).join("");
   return `<div class="hq-sel">${hqKey(t.id)} · ${esc(t.title)}</div><dl class="hq-kv">
     <dt>Status</dt><dd>${esc(String(t.status).replace("_", " "))}${t.gate === true ? " · gate passed" : t.gate === false ? " · gate failed" : ""}</dd>
@@ -1275,6 +1617,29 @@ async function hqDispatch(verb, noun, id, arg) {
       flash(noun === "furlough" ? `${m.name} is on furlough.` : `${m.name} is back at work.`, "ok");
     }
     catch (e) { flash("Couldn't do it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner as the office's landlord (ADR 0119): undo the last change, reset the office to how
+  // it started, veto an open proposal, and say what paid members' downtime may spend a day.
+  if (noun === "office") {
+    try {
+      if (id === "undo") {
+        const done = await api("POST", "/v1/hq/office/undo", {});
+        flash(done.undone ? `Undone: ${done.undone}` : "Nothing to undo.", "ok");
+      } else if (id === "reset") {
+        if (!confirm("Put the office back as it started? The team's changes go; you can undo the reset.")) return true;
+        await api("POST", "/v1/hq/office/reset", {}); flash("The office is back as it started.", "ok");
+      } else if (id === "veto") {
+        await api("POST", `/v1/hq/office/proposals/${Number(arg)}/veto`, {}); flash("Vetoed.", "ok");
+      } else if (id === "downtime") {
+        const now = (((HQ.snap || {}).office || {}).downtime_paid_cents_per_day || 0) / 100;
+        const said = prompt("Dollars a day that paid members' downtime may spend, together (0 for none, the default):", now.toFixed(2));
+        if (said === null) return true;
+        const cents = Math.round(parseFloat(said) * 100);
+        if (!Number.isFinite(cents) || cents < 0) { flash("That is not an amount in dollars.", "err"); return true; }
+        await api("POST", "/v1/hq/office/downtime", { cents }); flash(`Paid members' downtime: ${hqDollars(cents * 10000)} a day.`, "ok");
+      }
+    } catch (e) { flash("Couldn't change the office: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // Whom a member reports to.
