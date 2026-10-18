@@ -647,7 +647,17 @@ if (failures.length) {
              { id: 25, kind: "furlough", member: 3, text: "Cy has had nothing to do since 3 Oct: furlough, or keep? <b>Nobody is let go.</b>" },
              { id: 26, kind: "recall", task: 9, member: 6, text: "Recall member 8 to report to member 6.\\nZed is on furlough; Kit asks: four branches wait\\nEvidence: task 9" },
              // A member at twice its share (ADR 0113): an allowance for today, or wait.
-             { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." }],
+             { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." },
+             // A guard's finding (ADR 0124): the owner's verdict on it.
+             { id: 28, kind: "guard", task: 7, project: 1, text: "Talk about work (finding 3): <b>Upkeep</b>: 14 coordination turns, 1 product change in 24 h" }],
+      // The guards (ADR 0124): each one's precision, each project's talk against its work, and
+      // the findings, in words a member's work produced, so every word escaped.
+      guards: { thresholds: { ceremony_ratio: 4, ceremony_least: 12, carousel_returns: 3, redundant_wakes: 3, fence_refusals_in_a_turn: 3 },
+        precision: [{ guard: "ceremony", plainly: "Talk about work", rule: "r", fired: 3, open: 1, real: 1, resolved: 1, false_positive: 1, not_enough: 0, fixed: 1, fix_judged: 2, precision: 66 },
+                    { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null }],
+        ceremony: [{ project: 1, title: "<u>Upkeep</u>", over: true, windows: [{ window: "24 h", said: "14 coordination turns, 1 product change in 24 h", over: true }] }],
+        findings: [{ id: 3, guard: "ceremony", plainly: "Talk about work", task: 7, project: 1, rule: "at least 12 coordination turns", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
+                   { id: 4, guard: "stuck", plainly: "Stuck work", task: 7, project: null, rule: "parked", evidence: "#7 x", opened_at: 2, cleared_at: 3, verdict: null, fix_worked: null, judged_by: "" }] },
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
@@ -752,6 +762,19 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  // The guards (ADR 0124): a finding on the desk takes the owner's verdict; the Guards card
+  // shows each guard's precision and each project's talk, and its words stay text.
+  for (const act of ["hq:decide:28:real", "hq:decide:28:false_positive", "hq:decide:28:not_enough", "hq:decide:28:resolved",
+    "hq:verdict:3:false_positive", "hq:fixed:3:yes", "hq:fixed:3:no", "hq:verdict:4:real"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: the guards do not offer ${act}`);
+  }
+  if (office.includes('data-act="hq:fixed:4:yes"')) fail("hq: a finding nobody judged asks whether its fix worked");
+  for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b>: 3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2",
+    "<b>Stuck work</b>: 0 found · 0 open · not judged yet", "&lt;u&gt;Upkeep&lt;/u&gt;: 14 coordination turns, 1 product change in 24 h · talking more than working",
+    "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep"]) {
+    if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
+  }
+  if (office.includes("<img src=g") || office.includes("<u>Upkeep</u>")) fail("hq: a guard's finding became markup");
   // "Try again" posts exactly the decision HQ takes for stuck work, and when HQ refuses it the
   // card says why and keeps saying it: a press that seems to do nothing is the worst answer.
   {

@@ -328,6 +328,19 @@ fn office_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     }
 }
 
+/// A lead's verdict on a guard's finding in its area (ADR 0124).
+fn judge_finding_tool() -> Value {
+    json!({
+        "name": "judge_finding",
+        "description": "Say whether one of HQ's guard findings in your area was real, when HQ names one in a thread (\"finding N\"): real, false_positive (the guard fired on healthy work), not_enough (the record does not say), or resolved (real, and put right). Say whether the fix worked, if you know. Your verdicts are how HQ tunes its guards.",
+        "inputSchema": { "type": "object", "properties": {
+            "finding": { "type": "integer", "description": "the finding's number" },
+            "verdict": { "type": "string", "enum": ["real", "false_positive", "not_enough", "resolved"] },
+            "fix_worked": { "type": "boolean", "description": "whether what was done about it worked" },
+        }, "required": ["finding", "verdict"] },
+    })
+}
+
 /// What a downtime turn may not do: it makes no work.
 const MAKES_WORK: [&str; 6] = [
     "create_task",
@@ -489,6 +502,7 @@ pub fn tools(role: Role) -> Value {
                 }),
                 &["task", "decision", "detail", "evidence"],
             ));
+            list.push(judge_finding_tool());
         }
     }
     if let Some(list) = all.as_array_mut() {
@@ -518,6 +532,7 @@ fn ceos_tools() -> Value {
         "read_notebook",
         "notebook_checked",
         "office",
+        "judge_finding",
     ];
     let mut list: Vec<Value> = all
         .as_array()
@@ -952,6 +967,21 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 task.0,
                 decision.name().replace('_', " ")
             ))
+        }
+        "judge_finding" => {
+            let id = args["finding"]
+                .as_i64()
+                .ok_or_else(|| "which finding? Give its number as `finding`".to_owned())?;
+            let verdict = args["verdict"]
+                .as_str()
+                .and_then(crate::domain::guards::Verdict::from_name)
+                .ok_or_else(|| {
+                    "`verdict` is real, false_positive, not_enough or resolved".to_owned()
+                })?;
+            engine
+                .judge_finding_in(run.id, id, verdict, args["fix_worked"].as_bool())
+                .map_err(|e| said(&e))?;
+            Ok(format!("Finding {id} is judged {}.", verdict.name()))
         }
         "set_strategy" => {
             let goal = args["goal"]

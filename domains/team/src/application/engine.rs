@@ -36,6 +36,7 @@ mod areas;
 mod evidence;
 mod games;
 mod guards;
+mod health;
 mod ladder;
 mod memory;
 mod notebook;
@@ -995,6 +996,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             live: self.live_turns(member.id, task)?,
             already_held,
             nothing_to_do,
+            // A wake that brings nothing new, to a member its last turns showed nothing for,
+            // again and again (ADR 0124): parked, not woken once more.
+            woken_for_nothing: match task {
+                Some(task) if !reason.brings_news() => self.woken_for_nothing(member.id, task)?,
+                _ => false,
+            },
         })
     }
 
@@ -1054,6 +1061,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .add_wake(member, task, reason, Receipt::Refused(why), None, now)?;
                 about["why"] = json!(why.name());
                 self.emit(EventKind::WakeRefused, about)?;
+                if let (wakes::Refused::Redundant, Some(task)) = (why, task) {
+                    self.found_redundant(member, task)?;
+                }
                 Ok(Receipt::Refused(why))
             }
         }
@@ -1629,10 +1639,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn review_asked(&self, task: &Task) -> Done<()> {
         // Sent back three times: a huddle of its area decides it (ADR 0120, amending 0114's
         // owner's round); the owner's only with no lead to call one.
-        let decided = matches!(
-            self.rung_of(task.id)?,
-            Some((crate::domain::ladder::Rung::Decided, _))
-        );
+        let rung = self.rung_of(task.id)?;
+        // The carousel's huddle is deciding it (ADR 0124): no round before its decision.
+        let carousel = self
+            .store
+            .findings()?
+            .iter()
+            .any(|f| f.key == format!("carousel:{}", task.id.0) && f.cleared_at.is_none());
+        if carousel && matches!(rung, Some((crate::domain::ladder::Rung::Huddle, _))) {
+            self.post_held_lock(
+                Author::Endora,
+                task.id,
+                "Submitted while its huddle decides it: it waits for the lead's decision, not \
+                 another round.",
+            )?;
+            return Ok(());
+        }
+        let decided = matches!(rung, Some((crate::domain::ladder::Rung::Decided, _)));
         if !decided && crate::domain::evidence::to_the_owner(self.sent_back(task.id)?) {
             if let Some(lead) = self.area_lead(task)? {
                 let rounds = self.sent_back(task.id)?;
@@ -1735,7 +1758,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if let Some(owner) = worker {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
             }
-            return Ok(());
+            // Bounced with nothing new between: a huddle, not another round (ADR 0124).
+            return self.after_sent_back(task);
         }
         let the_home_labs = self.the_home_labs(&current)?;
         let gated = review::needs_gate(self.routine_of(task)?.is_some(), the_home_labs);
@@ -2389,7 +2413,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                  direct, set_strategy, decide_project, propose_goal, ask_owner (for the board), \
                  check_back, note_house, write_world, verify_world, retire_world, \
                  propose_canon, tell_story, read_world, read_doc, hand_to (to a lead), \
-                 read_document, note, forget, read_notebook, office.\n",
+                 read_document, note, forget, read_notebook, office, judge_finding.\n",
             );
             return Ok(told);
         }
@@ -2404,7 +2428,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str(match member.role {
             Role::Reviewer => ", review, read_document, read_doc, read_world, tell_story, office. ",
             Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, read_document, read_doc, read_world, tell_story, verify_world, retire_world, propose_canon, office. "
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, judge_finding, read_document, read_doc, read_world, tell_story, verify_world, retire_world, propose_canon, office. "
             }
             _ => ", read_document, read_doc, read_world, tell_story, office. ",
         });
@@ -2915,8 +2939,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let (stranded_nudged, stranded_stuck) = self.recover_stranded(&tasks, &live, now)?;
         report.nudged += stranded_nudged;
         report.stuck += stranded_stuck;
-        // 5c. The guards (ADR 0124): what is stuck and has moved again closes itself.
+        // 5c. The guards (ADR 0124): what is stuck and has moved again closes itself, and every
+        //     few minutes each project's process health is looked at.
         self.guards_tick()?;
+        self.health_tick()?;
 
         // 6. Tasks whose waits have all finished are woken, once.
         for task in &tasks {
@@ -3696,6 +3722,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("recall", "approve" | "decline") => {
                 self.decide_recall(found, decision == "approve")?;
             }
+            // A guard's notice (ADR 0124): the owner's verdict on its finding.
+            ("guard", "real" | "false_positive" | "not_enough" | "resolved" | "dismiss") => {
+                self.desk_verdict(item, decision)?;
+            }
             ("push", "seen" | "dismiss")
             | ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
@@ -4473,6 +4503,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "office": self.office_shown()?,
             // Ping-pong, pool and chess in the office (ADR 0121).
             "games": self.games_shown()?,
+            // The guards (ADR 0124): their thresholds, precision, ceremony and findings.
+            "guards": self.guards_shown()?,
         }))
     }
 

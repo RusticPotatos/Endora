@@ -25,6 +25,7 @@ use endora_team::infrastructure::demo;
 
 use crate::Hq;
 
+mod guards;
 mod world;
 
 /// The system clock.
@@ -150,6 +151,8 @@ pub fn app(state: State) -> Router {
         // The team's world (ADR 0122): the owner reads and downloads it, and alone makes
         // something canon or demotes it.
         .merge(world::routes())
+        // The guards (ADR 0124): the owner's verdict on a finding.
+        .merge(guards::routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             signed_by_the_node,
@@ -1347,7 +1350,9 @@ mod tests {
         // reports on its area, decides its area's stuck work, and gives its view in a huddle
         // (ADR 0120). It reads the world, tells stories (a lesson is one now), confirms and
         // retires what it stewards, and proposes canon (ADR 0122). And it may play chess (ADR 0121).
-        assert_eq!(names.len(), 30, "{names:?}");
+        // And it judges the guards' findings in its area (ADR 0124).
+        assert_eq!(names.len(), 31, "{names:?}");
+        assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"office"), "every member shapes the office");
         assert!(names.contains(&"chess"), "every member may play chess");
         assert!(names.contains(&"tell_story") && names.contains(&"propose_project"));

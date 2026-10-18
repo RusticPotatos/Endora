@@ -770,12 +770,23 @@ fn work_sent_back_three_times_goes_to_a_huddle_on_its_fourth_submission_not_the_
         }
         let linus = turn(&hq, t.dev);
         use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+        // Each round cites something new (the newest event about the task), so this is the
+        // rounds' cap at work, not the carousel (ADR 0124), which a round with nothing new
+        // between would be.
+        let newest = hq
+            .events_after(0)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|e| e.data["task"].as_i64() == Some(task.0))
+            .unwrap()
+            .id;
         use_tool(
             &hq,
             &linus,
             "set_status",
             &json!({ "task": task.0, "status": "in_review", "reason": format!("round {round}"),
-                     "evidence": [format!("task {}", task.0)] }),
+                     "evidence": [format!("task {}", task.0), format!("event {newest}")] }),
         )
         .unwrap();
         end(&hq, &clock, &linus);
@@ -1242,4 +1253,84 @@ fn the_snapshot_scores_how_the_team_is_doing() {
         week["since"].is_i64(),
         "the record is younger than the week"
     );
+}
+
+/// The review carousel (ADR 0124): work sent back a third time with nothing new submitted
+/// between goes straight to a huddle of its area, and is not reviewed again before the lead
+/// decides it.
+#[test]
+fn a_task_bounced_three_times_with_nothing_new_goes_to_a_huddle_not_another_round() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, true);
+    let task = owners_task(&hq, &t, t.dev, "Look at sonarr");
+    let grace = t.tester.unwrap();
+    let huddles = |hq: &Hq<'_>| {
+        hq.store()
+            .events_after(0)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "huddle.called")
+            .collect::<Vec<_>>()
+    };
+    for round in 1..=3 {
+        let linus = turn(&hq, t.dev);
+        use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+        use_tool(
+            &hq,
+            &linus,
+            "set_status",
+            &json!({ "task": task.0, "status": "in_review", "reason": format!("round {round}"),
+                     "evidence": [format!("task {}", task.0)] }),
+        )
+        .unwrap();
+        end(&hq, &clock, &linus);
+        assert!(huddles(&hq).is_empty(), "not before the third return");
+        let tester = turn(&hq, grace);
+        use_tool(
+            &hq,
+            &tester,
+            "review",
+            &json!({ "task": task.0, "verdict": "send_back", "notes": format!("not yet ({round})") }),
+        )
+        .unwrap();
+        end(&hq, &clock, &tester);
+    }
+    let called = huddles(&hq);
+    assert_eq!(called.len(), 1, "at the third return");
+    assert!(
+        called[0].data["why"]
+            .as_str()
+            .unwrap()
+            .contains("sent back 3 times with no new evidence between"),
+        "{}",
+        called[0].data
+    );
+    let found = crate::application::guard_ports::GuardStore::findings(hq.store()).unwrap();
+    assert!(
+        found
+            .iter()
+            .any(|f| f.guard == crate::domain::guards::Guard::Carousel && f.cleared_at.is_none())
+    );
+    // Linus submits again while the huddle decides: no fourth round for the tester.
+    let reviews = |hq: &Hq<'_>| {
+        hq.store()
+            .wakes()
+            .unwrap()
+            .iter()
+            .filter(|w| w.member == grace && w.reason == WakeReason::ReviewRequested)
+            .count()
+    };
+    let before = reviews(&hq);
+    let linus = turn(&hq, t.dev);
+    let _ = use_tool(&hq, &linus, "claim", &json!({ "task": task.0 }));
+    use_tool(
+        &hq,
+        &linus,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "round 4",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    assert_eq!(reviews(&hq), before, "it waits for the lead's decision");
 }

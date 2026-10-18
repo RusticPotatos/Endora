@@ -52,14 +52,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let woken_for_nothing = match holder {
             None => false,
-            Some(h) => {
-                self.shown_nothing(h, task.id)?
-                    .iter()
-                    .rev()
-                    .take_while(|(_, nothing)| *nothing)
-                    .count()
-                    >= THRESHOLDS.redundant_wakes
-            }
+            Some(h) => self.woken_for_nothing(h, task.id)?,
         };
         Ok(TaskFacts {
             status: task.status,
@@ -73,6 +66,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             last_turn_failed,
             woken_for_nothing,
         })
+    }
+
+    /// Whether `member`'s last [`THRESHOLDS`]`.redundant_wakes` turns on `task`, in a row, each
+    /// showed nothing (ADR 0124).
+    pub(super) fn woken_for_nothing(&self, member: MemberId, task: TaskId) -> Done<bool> {
+        Ok(self
+            .shown_nothing(member, task)?
+            .iter()
+            .rev()
+            .take_while(|(_, nothing)| *nothing)
+            .count()
+            >= THRESHOLDS.redundant_wakes)
     }
 
     /// Whether a member said why the task is blocked: its newest move by a member is to
@@ -226,7 +231,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// A finding whose condition no longer holds clears, and so does its desk notice if the
     /// owner had not decided it.
-    fn clear(&self, finding: &Finding) -> Done<()> {
+    pub(super) fn clear(&self, finding: &Finding) -> Done<()> {
         self.store.clear_finding(finding.id, self.clock.now())?;
         self.emit(
             EventKind::GuardCleared,

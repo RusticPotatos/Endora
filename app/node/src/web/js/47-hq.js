@@ -1194,6 +1194,8 @@ function viewHQ() {
       // A member at twice its share with the pool's day not spent (ADR 0113): an allowance for
       // the rest of today, at the amount written on the card, or wait for tomorrow.
       out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
+      // A guard's finding (ADR 0124): the owner's verdict is how HQ measures each guard.
+      guard: [["real", "Real", "ok"], ["false_positive", "False positive", "no"], ["not_enough", "Can't tell", ""], ["resolved", "Resolved", "ok"]],
       push: hqCanPush(d) ? [["approve", "Push it", "ok"], ["decline", "Decline", "no"]] : [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
@@ -1241,6 +1243,7 @@ function viewHQ() {
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
         ${hqScorecard(s)}
+        ${hqGuards(s)}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
         ${hqOffice(s)}
@@ -1638,6 +1641,36 @@ function hqScorecard(s) {
     ${since ? `<p class="hq-note">${since}: older turns and events are no longer kept.</p>` : ""}</section>`;
 }
 
+// The guards (ADR 0124): each guard's findings and how often they were real, each project's
+// talk against its product change, and the newest findings, each with the owner's verdict to
+// give. HQ computed every number; this only renders it, and every word goes through esc.
+function hqGuards(s) {
+  const g = s.guards;
+  if (!g || !g.precision) return "";
+  const verdicts = { real: "real", false_positive: "a false positive", not_enough: "can't tell", resolved: "resolved" };
+  const lines = g.precision.map((p) => {
+    const judged = p.real + p.resolved + p.false_positive;
+    const share = p.precision == null ? "not judged yet" : `${p.precision}% real of ${judged} judged`;
+    const fixes = p.fix_judged ? ` · fixes worked ${p.fixed} of ${p.fix_judged}` : "";
+    return `<li><b>${esc(p.plainly)}</b>: ${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}</li>`;
+  }).join("");
+  const ceremony = (g.ceremony || []).map((c) => `<li${c.over ? ` class="hq-refused"` : ""}>${esc(c.title)}: ${(c.windows || []).map((w) => esc(w.said)).join(" · ")}${c.over ? " · talking more than working" : ""}</li>`).join("");
+  const finding = (f) => {
+    const said = f.verdict ? `Judged ${esc(verdicts[f.verdict] || f.verdict)}${f.judged_by ? ` by ${esc(f.judged_by)}` : ""}${f.fix_worked == null ? "" : f.fix_worked ? ", and its fix worked" : ", and its fix did not work"}.` : "Not judged yet.";
+    const judge = Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("");
+    const fixed = f.verdict ? `<button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:yes">Fix worked</button><button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:no">Fix didn't work</button>` : "";
+    return `<li><p><b>${esc(f.plainly)}</b> (finding ${Number(f.id)}${f.task ? ` · ${hqKey(f.task)}` : ""}${f.cleared_at ? " · cleared" : " · open"}): ${esc(f.evidence)}</p>
+      <p class="hq-note">The rule: ${esc(f.rule)}. ${said}</p><div class="hq-row">${judge}${fixed}</div></li>`;
+  };
+  const findings = (g.findings || []).map(finding).join("");
+  const t = g.thresholds || {};
+  return `<section class="hq-card"><h2>Guards</h2>
+    <ul class="hq-team">${lines}</ul>
+    ${ceremony ? `<details open><summary>Talk against work, each project</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
+    <details><summary>Findings</summary><ul class="hq-team hq-findings">${findings || `<li class="hq-empty">No findings.</li>`}</ul></details>
+    <p class="hq-note">Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn.</p></section>`;
+}
+
 // The house log (ADR 0111): the CEO's own document of the house, which it and the lead read
 // every turn. The owner reads it here and may rewrite it.
 function hqHouse(s) {
@@ -1791,6 +1824,17 @@ async function hqDispatch(verb, noun, id, arg) {
       } else return true;
     } catch (e) { flash("Couldn't change the notebook: " + e.message, "err"); }
     await hqLoadNotebook(member); return true;
+  }
+  // The owner's verdict on a guard's finding, and whether its fix worked (ADR 0124).
+  if (noun === "verdict" || noun === "fixed") {
+    const f = (((HQ.snap && HQ.snap.guards) || {}).findings || []).find((x) => x.id === Number(id));
+    if (!f) return true;
+    const verdict = noun === "verdict" ? arg : f.verdict;
+    if (!verdict) { flash("Say whether it was real first.", "warn"); return true; }
+    const body = noun === "fixed" ? { verdict, fix_worked: arg === "yes" } : { verdict };
+    try { await api("POST", `/v1/hq/guards/findings/${Number(id)}/verdict`, body); flash("Judged.", "ok"); }
+    catch (e) { flash("Couldn't judge it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
   }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
   if (noun === "logmore") { HQ.logOpen[id] = !HQ.logOpen[id]; render(); return true; }

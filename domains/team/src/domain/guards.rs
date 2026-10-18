@@ -11,6 +11,7 @@
 //! finding was real ([`precision`]): a guard that never fires looks the same as one that works,
 //! and a guard that fires on everything is worse than none.
 
+use super::evidence::Label;
 use super::work::{Millis, TaskStatus};
 
 /// A minute, in milliseconds.
@@ -222,6 +223,139 @@ pub fn diagnose(facts: &TaskFacts) -> Option<Diagnosis> {
 #[must_use]
 pub fn nudge_key(task: i64, member: i64, reason: &str, saw: &str) -> String {
     format!("{task}:{member}:{reason}:{saw}")
+}
+
+// ---- process health ---------------------------------------------------------------------------
+
+/// What one ended turn did, as the ceremony detector reads it from the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnSeen {
+    /// When it ended.
+    pub ended_at: Millis,
+    /// Its label.
+    pub label: Label,
+    /// It was woken to test or accept work (a review round), or for a huddle.
+    pub checking: bool,
+    /// An act of its succeeded.
+    pub acted: bool,
+    /// It submitted a branch.
+    pub branch: bool,
+    /// Evidence it cited was judged to meet a criterion.
+    pub criterion_met: bool,
+    /// It took a reading nobody on the task had taken before.
+    pub new_evidence: bool,
+    /// It put a question up the chain or to the owner.
+    pub asked: bool,
+}
+
+/// What a turn was, to the ceremony detector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnKind {
+    /// It changed the product: an act, a branch, a criterion met.
+    Product,
+    /// It coordinated: talk, a re-check with nothing new, a review round, a question.
+    Coordination,
+    /// Neither: an empty turn, a first reading, a move with nothing behind it.
+    Neither,
+}
+
+/// What a turn was (ADR 0124): product change, coordination, or neither.
+#[must_use]
+pub const fn turn_kind(t: &TurnSeen) -> TurnKind {
+    let product = t.acted || t.branch || t.criterion_met;
+    if matches!(t.label, Label::Advanced) && product {
+        return TurnKind::Product;
+    }
+    if t.checking {
+        return TurnKind::Coordination;
+    }
+    match t.label {
+        Label::TalkOnly => TurnKind::Coordination,
+        Label::Checked if !t.new_evidence => TurnKind::Coordination,
+        Label::Blocked if t.asked => TurnKind::Coordination,
+        _ => TurnKind::Neither,
+    }
+}
+
+/// A project's ceremony over one window: its coordination turns and its product changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ceremony {
+    /// Coordination turns.
+    pub coordination: usize,
+    /// Turns that changed the product.
+    pub product: usize,
+}
+
+impl Ceremony {
+    /// Whether the window is talk about work rather than work: at least
+    /// [`Thresholds::ceremony_least`] coordination turns, and [`Thresholds::ceremony_ratio`]
+    /// of them or more for each product change.
+    #[must_use]
+    pub const fn over(&self) -> bool {
+        self.coordination >= THRESHOLDS.ceremony_least
+            && self.coordination >= THRESHOLDS.ceremony_ratio * self.product
+    }
+
+    /// As the scorecard and a finding say it.
+    #[must_use]
+    pub fn said(&self, window: &str) -> String {
+        format!(
+            "{} coordination turns, {} product {} in {window}",
+            self.coordination,
+            self.product,
+            if self.product == 1 {
+                "change"
+            } else {
+                "changes"
+            }
+        )
+    }
+}
+
+/// The ceremony of `turns` that ended within `ms` before `now`.
+#[must_use]
+pub fn ceremony(turns: &[TurnSeen], now: Millis, ms: Millis) -> Ceremony {
+    let within = turns
+        .iter()
+        .filter(|t| t.ended_at <= now && now - t.ended_at < ms);
+    let mut found = Ceremony {
+        coordination: 0,
+        product: 0,
+    };
+    for t in within {
+        match turn_kind(t) {
+            TurnKind::Product => found.product += 1,
+            TurnKind::Coordination => found.coordination += 1,
+            TurnKind::Neither => {}
+        }
+    }
+    found
+}
+
+/// Whether a task is on the review carousel (ADR 0124): sent back at least
+/// [`Thresholds::carousel_returns`] times (`returns`, when, oldest first), with no new evidence
+/// submitted between the last of them: every reference each submission (`submitted`, when
+/// and what it cited) made between two returns had been cited before the first of the two.
+#[must_use]
+pub fn carousel(returns: &[Millis], submitted: &[(Millis, Vec<super::evidence::Ref>)]) -> bool {
+    let most = THRESHOLDS.carousel_returns;
+    if returns.len() < most {
+        return false;
+    }
+    let last = &returns[returns.len() - most..];
+    last.windows(2).all(|pair| {
+        let (from, until) = (pair[0], pair[1]);
+        let before: Vec<super::evidence::Ref> = submitted
+            .iter()
+            .filter(|(at, _)| *at <= from)
+            .flat_map(|(_, refs)| refs.iter().copied())
+            .collect();
+        submitted
+            .iter()
+            .filter(|(at, _)| from < *at && *at <= until)
+            .flat_map(|(_, refs)| refs.iter())
+            .all(|r| before.contains(r))
+    })
 }
 
 // ---- findings and their verdicts ------------------------------------------------------------
@@ -614,6 +748,117 @@ mod tests {
         for v in ["real", "false_positive", "not_enough", "resolved"] {
             assert_eq!(Verdict::from_name(v).map(Verdict::name), Some(v));
         }
+    }
+
+    fn seen(label: Label) -> TurnSeen {
+        TurnSeen {
+            ended_at: 100,
+            label,
+            checking: false,
+            acted: false,
+            branch: false,
+            criterion_met: false,
+            new_evidence: false,
+            asked: false,
+        }
+    }
+
+    #[test]
+    fn product_change_is_an_act_a_branch_or_a_criterion_met_and_talk_is_coordination() {
+        let acted = TurnSeen {
+            acted: true,
+            ..seen(Label::Advanced)
+        };
+        assert_eq!(turn_kind(&acted), TurnKind::Product);
+        let claimed = seen(Label::Advanced);
+        assert_eq!(
+            turn_kind(&claimed),
+            TurnKind::Neither,
+            "a move is not product"
+        );
+        assert_eq!(turn_kind(&seen(Label::TalkOnly)), TurnKind::Coordination);
+        assert_eq!(turn_kind(&seen(Label::Checked)), TurnKind::Coordination);
+        let first_look = TurnSeen {
+            new_evidence: true,
+            ..seen(Label::Checked)
+        };
+        assert_eq!(turn_kind(&first_look), TurnKind::Neither);
+        let review = TurnSeen {
+            checking: true,
+            ..seen(Label::Advanced)
+        };
+        assert_eq!(turn_kind(&review), TurnKind::Coordination, "a review round");
+        let asked = TurnSeen {
+            asked: true,
+            ..seen(Label::Blocked)
+        };
+        assert_eq!(turn_kind(&asked), TurnKind::Coordination);
+        assert_eq!(turn_kind(&seen(Label::Blocked)), TurnKind::Neither);
+        assert_eq!(turn_kind(&seen(Label::Empty)), TurnKind::Neither);
+    }
+
+    #[test]
+    fn talking_about_work_is_over_at_twelve_turns_and_four_to_one() {
+        let talk = |n: usize, at: Millis| {
+            vec![
+                TurnSeen {
+                    ended_at: at,
+                    ..seen(Label::TalkOnly)
+                };
+                n
+            ]
+        };
+        let product = TurnSeen {
+            acted: true,
+            ..seen(Label::Advanced)
+        };
+        let mut turns = talk(11, 1_000);
+        let c = ceremony(&turns, 2_000, DAY);
+        assert_eq!(
+            (c.coordination, c.product, c.over()),
+            (11, 0, false),
+            "too few"
+        );
+        turns.extend(talk(1, 1_500));
+        assert!(ceremony(&turns, 2_000, DAY).over());
+        turns.extend(vec![product; 3]);
+        let c = ceremony(&turns, 2_000, DAY);
+        assert_eq!(
+            (c.coordination, c.product, c.over()),
+            (12, 3, true),
+            "12:3 is 4:1"
+        );
+        turns.push(product);
+        assert!(!ceremony(&turns, 2_000, DAY).over(), "12:4 is under");
+        assert_eq!(
+            ceremony(&turns, 1_000 + DAY, DAY).coordination,
+            1,
+            "only the window's turns"
+        );
+        assert_eq!(
+            ceremony(&turns, 2_000, DAY).said("24 h"),
+            "12 coordination turns, 4 product changes in 24 h"
+        );
+    }
+
+    #[test]
+    fn a_task_bounced_three_times_with_nothing_new_is_on_the_carousel() {
+        use super::super::evidence::Ref;
+        let r = Ref::Receipt;
+        let first = vec![(10, vec![r(1)])];
+        assert!(!carousel(&[20, 40], &first), "twice is not yet");
+        let same = vec![(10, vec![r(1)]), (30, vec![r(1)]), (50, vec![r(1)])];
+        assert!(carousel(&[20, 40, 60], &same));
+        let renewed = vec![(10, vec![r(1)]), (30, vec![r(1)]), (50, vec![r(2)])];
+        assert!(
+            !carousel(&[20, 40, 60], &renewed),
+            "new evidence between the last two returns"
+        );
+        let silent = vec![(10, vec![r(1)])];
+        assert!(
+            carousel(&[20, 40, 60], &silent),
+            "nothing submitted between is nothing new"
+        );
     }
 
     #[test]

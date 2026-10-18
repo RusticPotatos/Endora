@@ -309,3 +309,218 @@ fn work_waiting_on_a_dropped_task_stays_blocked_and_its_member_is_told_why() {
         "the owner's plain drop"
     );
 }
+
+// ---- process health -------------------------------------------------------------------------
+
+/// A lead on its own project's task, with no one above it (so no hand-up), and the task.
+fn project_work(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(4),
+        clock,
+        Settings::default(),
+    );
+    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let goal = hq
+        .set_goal("Keep the home lab healthy", "", Author::Owner)
+        .unwrap();
+    let project = hq
+        .add_project(goal, "Home lab upkeep", "", ada, None)
+        .unwrap();
+    let task = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Plan the backups".to_owned(),
+                description: String::new(),
+                assignee: Some(ada),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    let first = turn(&hq, ada);
+    hq.claim_in(first.run, task).unwrap();
+    hq.runner().finish(first.run, true);
+    hq.tick().unwrap();
+    (hq, ada, task)
+}
+
+/// One turn of `member`'s on `task`, woken by a mention: it talks, or (with `act`) it also
+/// restarts something and the node records the act.
+fn one_turn(hq: &Hq<'_>, member: MemberId, task: TaskId, act: bool) {
+    hq.wake(member, Some(task), WakeReason::Mentioned).unwrap();
+    let t = turn(hq, member);
+    if act {
+        hq.record_receipt(
+            &t.token,
+            &super::engine::Called {
+                tool: "restart_container".to_owned(),
+                args: "{\"name\":\"sonarr\"}".to_owned(),
+                excerpt: "restarted".to_owned(),
+                ok: true,
+                act: true,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    }
+    hq.post_in(
+        t.run,
+        task,
+        "Still thinking about how the backups should go.",
+    )
+    .unwrap();
+    hq.runner().finish(t.run, true);
+    hq.tick().unwrap();
+}
+
+fn guards(hq: &Hq<'_>) -> serde_json::Value {
+    hq.snapshot().unwrap()["guards"].clone()
+}
+
+/// Talking about work isn't work: twelve turns that only talk, against no product change, is
+/// a finding, a notice on the owner's desk, and the project's lead woken on the task.
+#[test]
+fn a_project_that_only_talks_about_its_work_is_a_finding_for_its_lead() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, task) = project_work(&clock);
+    for _ in 0..12 {
+        one_turn(&hq, ada, task, false);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let ceremony = guards(&hq)["ceremony"][0].clone();
+    assert_eq!(ceremony["over"], true, "{ceremony}");
+    assert_eq!(
+        ceremony["windows"][0]["said"],
+        "12 coordination turns, 0 product changes in 24 h"
+    );
+    let notice: Vec<_> = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == "guard" && d.status == "waiting")
+        .collect();
+    assert_eq!(notice.len(), 1, "one notice");
+    assert!(
+        notice[0].text.starts_with("Talk about work (finding "),
+        "{}",
+        notice[0].text
+    );
+    assert_eq!(
+        wakes_for(&hq, task, WakeReason::Guard),
+        1,
+        "the project's lead"
+    );
+    // Ada, its lead, reads it in her thread and judges it.
+    let looked = turn(&hq, ada);
+    let thread = hq.store().thread(task).unwrap();
+    let said = thread
+        .iter()
+        .rfind(|p| p.author == "endora")
+        .expect("HQ says it in the thread");
+    assert!(
+        said.text
+            .starts_with("Talking about work isn't work (finding "),
+        "{}",
+        said.text
+    );
+    let (run, member) = hq.turn_of(&looked.token).unwrap().unwrap();
+    let id = hq.store().findings().unwrap()[0].id;
+    super::protocol::call(
+        &hq,
+        &run,
+        &member,
+        "judge_finding",
+        &serde_json::json!({ "finding": id, "verdict": "not_enough" }),
+    )
+    .unwrap();
+    assert_eq!(
+        hq.store().findings().unwrap()[0].judged_by,
+        "Ada",
+        "the lead of its area judged it"
+    );
+    hq.runner().finish(looked.run, true);
+    hq.tick().unwrap();
+    // Looked at again, it is the same finding: no second notice.
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .filter(|d| d.kind == "guard")
+            .count(),
+        1
+    );
+    // The owner says it was real: the guard's precision is measured.
+    hq.decide(notice[0].id, "real").unwrap();
+    let precision = guards(&hq)["precision"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["guard"] == "ceremony")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (precision["real"].clone(), precision["precision"].clone()),
+        (1.into(), 100.into())
+    );
+}
+
+/// The same talk beside enough real change (four acts to twelve turns of talk) is healthy.
+#[test]
+fn talk_beside_enough_product_change_is_healthy() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, task) = project_work(&clock);
+    for i in 0..16 {
+        one_turn(&hq, ada, task, i % 4 == 0);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let ceremony = guards(&hq)["ceremony"][0].clone();
+    assert_eq!(ceremony["over"], false, "{ceremony}");
+    assert!(hq.store().findings().unwrap().is_empty());
+}
+
+/// A member woken on a task again and again with nothing coming of it is not woken once more
+/// for nothing: it is a finding, and the work is parked for its lead.
+#[test]
+fn a_member_woken_for_nothing_again_and_again_is_parked_not_woken() {
+    let clock = Hands(AtomicI64::new(NOON));
+    // No lead: nobody above Linus takes the work up after his third turn of nothing (ADR
+    // 0114's hand-up), so he is the one woken again.
+    let (hq, dev, task) = team(&clock, false);
+    for _ in 0..3 {
+        hq.wake(dev, Some(task), WakeReason::Mentioned).unwrap();
+        let t = turn(&hq, dev);
+        hq.runner().finish(t.run, true);
+        hq.tick().unwrap();
+    }
+    assert_eq!(
+        hq.wake(dev, Some(task), WakeReason::AssignmentRecovery)
+            .unwrap(),
+        crate::domain::Receipt::Refused(crate::domain::Refused::Redundant)
+    );
+    assert_eq!(
+        hq.diagnosis(task).unwrap().map(|d| d.stopped),
+        Some(crate::domain::guards::Stopped::Parked)
+    );
+    let found = hq.store().findings().unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].guard, crate::domain::guards::Guard::RedundantWake);
+    // News still wakes it; a turn that does something clears the finding.
+    hq.post(Author::Owner, task, "The downloads are back.")
+        .unwrap();
+    let t = turn(&hq, dev);
+    hq.claim_in(t.run, task).unwrap();
+    hq.runner().finish(t.run, true);
+    hq.tick().unwrap();
+    assert!(hq.store().findings().unwrap()[0].cleared_at.is_some());
+}

@@ -30,6 +30,10 @@ use serde_json::json;
 #[path = "scenarios/world.rs"]
 mod world;
 
+/// The guards (ADR 0124), in their own file.
+#[path = "scenarios/guards.rs"]
+mod guards;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

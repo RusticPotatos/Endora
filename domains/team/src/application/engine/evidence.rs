@@ -46,7 +46,7 @@ const CLOSED: &str = "closed";
 
 /// What the thread says when work is sent back, by the tester or the lead: what counts the
 /// rounds.
-const SENT_BACK: &str = "Sent back: ";
+pub(super) const SENT_BACK: &str = "Sent back: ";
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- receipts ---------------------------------------------------------------------------
@@ -767,7 +767,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if let Some(owner) = worker {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
             }
-            return Ok(());
+            // Bounced with nothing new between: a huddle, not another round (ADR 0124).
+            return self.after_sent_back(task);
         }
         let tested = self.tested_since_submitted(task)?;
         let tester_there = matches!(

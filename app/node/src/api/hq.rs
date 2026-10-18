@@ -9,6 +9,10 @@ use endora_infrastructure::HqError;
 mod world;
 pub(super) use world::*;
 
+/// The guards (ADR 0124).
+mod guards;
+pub(super) use guards::*;
+
 fn client(
     state: &AppState,
 ) -> Result<Arc<endora_infrastructure::HqClient>, (StatusCode, Json<serde_json::Value>)> {

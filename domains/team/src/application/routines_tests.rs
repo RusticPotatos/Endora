@@ -334,8 +334,8 @@ fn coming_back_up_is_said_in_the_alarms_open_task_and_wakes_its_owner() {
         told.contains(
             "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
              check_back, run_gate, request_action, propose_project, accept, hand_to, \
-             request_hire, request_staff, report_area, decide_stuck, read_document, read_doc, \
-             read_world, tell_story, verify_world, retire_world, propose_canon, office. Endora's own tools on the home lab \
+             request_hire, request_staff, report_area, decide_stuck, judge_finding, \
+             read_document, read_doc, read_world, tell_story, verify_world, retire_world, propose_canon, office. Endora's own tools on the home lab \
              (homelab_status and the like) come beside them: what your tool list offers, you \
              have.\n"
         ),
@@ -605,13 +605,15 @@ fn a_task_that_moves_nothing_twice_backs_off_its_stale_wakes_but_never_news() {
     hq.runner().finish(run, true);
     hq.tick().unwrap();
 
-    // Three: four minutes. Then someone writes to it: it wakes at once.
-    hq.wake(t.dev, Some(task), WakeReason::Recovery).unwrap();
-    let waiting = hq.store().runs().unwrap().pop().unwrap();
-    assert_eq!(waiting.retry_at, Some(clock.at() + 4 * MINUTE_MS));
+    // Three: it is no longer woken for nothing (ADR 0124), it is parked. Then someone writes
+    // to it: it wakes at once.
+    assert_eq!(
+        hq.wake(t.dev, Some(task), WakeReason::Recovery).unwrap(),
+        Receipt::Refused(crate::domain::Refused::Redundant)
+    );
     assert_eq!(
         hq.wake(t.dev, Some(task), WakeReason::Mentioned).unwrap(),
-        Receipt::Folded
+        Receipt::Queued
     );
     assert_eq!(hq.tick().unwrap().started, 1, "news is never kept waiting");
 }
