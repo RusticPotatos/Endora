@@ -279,6 +279,68 @@ nowhere else; never paste it into a chat, a file in git or an image. What the be
 today: `GET http://<the NAS>:8788/team-relay/bench` with the token as `Authorization: Bearer`.
 To turn it off: delete the file (no restart needed), and remove the line from `local.mk`.
 
+## The Mac's brain (ADR 0130)
+
+A team member can think with your Mac: a strong coding model running in `llama-server` on the
+laptop you use all day. Its work waits for the Mac and never falls back to another model, so the
+Mac stays yours: the model is loaded only while the Mac is **plugged in** and **Mac busy** is
+off, and a turn runs on it only after you have been **idle** (ten minutes unless you change it),
+one at a time. On battery, or with Mac busy on, the model is unloaded and its memory (about
+15 GB) comes back. Mac busy is a switch on the HQ screen of the console, so you can flip it from
+your phone.
+
+A small helper on the Mac, run by launchd every 30 seconds, reads the power source and your idle
+time, tells the node, and loads or unloads the model. It touches no other process.
+
+### Setting it up, once
+
+1. **On the Mac:** `brew install llama.cpp`, and put the model file (a `.gguf`) somewhere on it.
+2. **In `local.mk` on the Mac** (git-ignored; these are your own values, never committed):
+
+   ```make
+   ENDORA_MAC_NODE_URL    = https://192.168.1.10:8787
+   ENDORA_MAC_MODEL       = /path/to/model.gguf
+   ENDORA_MAC_TOKEN_FILE  = $(HOME)/.config/endora/mac-token
+   ENDORA_MAC_KEY_FILE    = $(HOME)/.config/endora/mac-key
+   # Optional:
+   # ENDORA_MAC_LLAMA_ARGS  = -ngl 99 -c 32768
+   # ENDORA_MAC_PORT        = 8080
+   # ENDORA_MAC_NODE_CACERT = /path/to/node-certificate.pem   (if the node's certificate is self-signed)
+   ```
+
+   The node's address is the one you reach the console at. `ENDORA_MAC_KEY_FILE` is the key the
+   model's server will ask its clients for; the install makes it if it is not there.
+3. **In the console** (HQ, *The Mac* card, *Set up the Mac*): *Make a token for the helper*, and
+   save the token it shows (once) in the file `ENDORA_MAC_TOKEN_FILE` names:
+
+   ```sh
+   mkdir -p ~/.config/endora && chmod 700 ~/.config/endora
+   pbpaste > ~/.config/endora/mac-token && chmod 600 ~/.config/endora/mac-token
+   ```
+
+4. **On the Mac:** `make mac-brain-install`. It copies the helper and its settings under
+   `~/Library/Application Support/Endora/mac-brain/` and loads the agent
+   `net.endora.mac-brain` (no sudo). Its log is `~/Library/Logs/endora-mac-brain.log`.
+   `make mac-brain-uninstall` removes the agent and unloads the model.
+5. **In the console again:** enter the model's address as the node reaches the Mac,
+   `http://<the Mac's address>:8080/v1`, the key (`cat` the key file), and a model name
+   (anything: `llama-server` serves the one model it has), and save. The node refuses an address
+   that is not on your own network. Give the Mac a fixed address (a DHCP reservation in UniFi) so
+   this stays true.
+6. **The firewall prompt.** The first time `llama-server` listens on the network, macOS asks
+   whether to allow incoming connections for it: allow it. If you answered no, or it never asked,
+   open *System Settings › Network › Firewall › Options* and allow `llama-server`.
+7. Choose **Mac** as a member's brain (roster, tap the member, *Brain*), or when hiring.
+
+The card says *Free: the team may use it* when all of it holds, and otherwise why: *Not heard
+from lately* (the helper is not running, or the node cannot be reached), *Mac busy is on*, *On
+battery*, *the model is loading*, or *You are using it*. A turn waiting for the Mac says so in
+its replay and on the roster. Without the helper the Mac is "not heard from" and nothing runs on
+it.
+
+To check by hand, on the Mac: `sh ~/Library/Application\ Support/Endora/mac-brain/endora-mac-brain.sh`
+runs one pass. `make mac-brain-test` tests the helper against stubs, on any machine.
+
 ## Docker boundary
 
 For the supplied Compose deployment, enable the optional `homelab` profile after
