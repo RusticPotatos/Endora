@@ -629,7 +629,7 @@ if (failures.length) {
       desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
              { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" },
              { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" },
-             { id: 15, kind: "question", task: 7, text: "Linus asks: steel or titanium?" },
+             { id: 15, kind: "question", task: 7, also: [9], text: "Linus asks: steel or titanium?" },
              { id: 16, kind: "notice", task: 7, text: "Linus restarted sonarr: it was unhealthy. It is now running." },
              { id: 17, kind: "approval", task: 7, text: "Linus asks to run sonarr_remove_and_search with item: 102.",
                approval: { tool: "sonarr_remove_and_search", member: "Linus", why: "<script>alert(2)</script> it is stuck",
@@ -769,12 +769,28 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the guards do not offer ${act}`);
   }
   if (office.includes('data-act="hq:fixed:4:yes"')) fail("hq: a finding nobody judged asks whether its fix worked");
+  // The same ask from another task is put with a card (ADR 0124), and the card says so.
+  if (!office.includes("question · EL-7 · also on EL-9: one answer reaches each")) fail("hq: a card does not say which other tasks share its ask");
   for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b>: 3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2",
     "<b>Stuck work</b>: 0 found · 0 open · not judged yet", "&lt;u&gt;Upkeep&lt;/u&gt;: 14 coordination turns, 1 product change in 24 h · talking more than working",
     "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep"]) {
     if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
   }
   if (office.includes("<img src=g") || office.includes("<u>Upkeep</u>")) fail("hq: a guard's finding became markup");
+  // Retract and sweep (ADR 0124): "Not true" on a note, a section and a story; what else says
+  // it is listed to tick and forget, its words text.
+  for (const act of ["hq:notebook:2:untrue-4", "hq:world:section:untrue-0", "hq:world:story:untrue-0"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: "Not true" is not offered as ${act}`);
+  }
+  runInContext(`HQ.sweep = { retraction: 5, target: "note:4", built_on_it: ["note:9"],
+    sweep: [{ target: "note:7", text: "<img src=k onerror=alert(41)> the VPN must stay up", whose: "Ada's notebook", alike: 80 }] };`, context);
+  const swept = runInContext("viewHQ()", context);
+  for (const said of ["<h2>Said again</h2>", "Built on it: note:9.", "note:7 · Ada&#39;s notebook · 80% alike",
+    'data-act="hq:sweep:5:forget"', 'data-act="hq:sweep:5:close"', 'id="hq-sweep-0"']) {
+    if (!swept.includes(said) && !swept.includes(said.replace("&#39;", "'"))) fail(`hq: the sweep does not show ${said}`);
+  }
+  if (swept.includes("<img src=k")) fail("hq: a swept note became markup");
+  runInContext("HQ.sweep = null;", context);
   // "Try again" posts exactly the decision HQ takes for stuck work, and when HQ refuses it the
   // card says why and keeps saying it: a press that seems to do nothing is the worst answer.
   {

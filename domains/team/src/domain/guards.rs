@@ -54,6 +54,9 @@ pub struct Thresholds {
     pub retracted_shared_least: usize,
     /// How often the tick looks for process-health findings.
     pub look_every_ms: Millis,
+    /// How alike, both ways, a new question or decision for the owner must be to one waiting
+    /// on the desk to be the same ask (in percent of each one's shingles the other holds).
+    pub same_ask_percent: usize,
 }
 
 /// The thresholds HQ starts with (ADR 0124): loose enough to learn real numbers before they
@@ -72,7 +75,21 @@ pub const THRESHOLDS: Thresholds = Thresholds {
     retracted_percent: 60,
     retracted_shared_least: 2,
     look_every_ms: 5 * MINUTE,
+    same_ask_percent: 60,
 };
+
+/// Whether a new ask for the owner (`new`, a fingerprint) is the same as one waiting
+/// (`waiting`): each holds at least [`Thresholds::same_ask_percent`] of the other's shingles,
+/// and at least [`Thresholds::retracted_shared_least`] of them (ADR 0124).
+#[must_use]
+pub fn same_ask(waiting: &[String], new: &[String]) -> bool {
+    let one = super::retraction::likeness(waiting, new);
+    let other = super::retraction::likeness(new, waiting);
+    let least = THRESHOLDS.retracted_shared_least;
+    one.shared >= least
+        && one.percent >= THRESHOLDS.same_ask_percent
+        && other.percent >= THRESHOLDS.same_ask_percent
+}
 
 /// What a guard refuses (ADR 0124), as the member or the owner reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +117,15 @@ pub enum GuardRefusal {
         /// The parent's criteria, in order.
         criteria: Vec<String>,
     },
+    /// What a member writes says again what the owner retracted.
+    Retracted {
+        /// What was retracted.
+        target: String,
+        /// On what day, as the owner reads it.
+        on: String,
+    },
+    /// Not something the owner can retract: a note, a section or a story.
+    NotRetractable(String),
 }
 
 impl core::fmt::Display for GuardRefusal {
@@ -137,6 +163,17 @@ impl core::fmt::Display for GuardRefusal {
                     listed.join("; ")
                 )
             }
+            Self::Retracted { target, on } => write!(
+                f,
+                "this says again what was retracted on {on} ({target}): the owner said it is \
+                 not true. Do not write it again; if the record now shows otherwise, ask the \
+                 owner"
+            ),
+            Self::NotRetractable(said) => write!(
+                f,
+                "`{said}` is not a note (note:12), a section (world:house#backups) or a story \
+                 (story:a-handle)"
+            ),
         }
     }
 }
@@ -487,16 +524,19 @@ pub enum Guard {
     RedundantWake,
     /// Members pushing at the fence: acts refused again and again.
     FencePush,
+    /// The same ask for the owner from two tasks, put on one desk card.
+    SameAsk,
 }
 
 impl Guard {
     /// Every guard, in the order the scorecard shows them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Stuck,
         Self::Ceremony,
         Self::Carousel,
         Self::RedundantWake,
         Self::FencePush,
+        Self::SameAsk,
     ];
 
     /// Stable lowercase name.
@@ -508,6 +548,7 @@ impl Guard {
             Self::Carousel => "carousel",
             Self::RedundantWake => "redundant_wake",
             Self::FencePush => "fence_push",
+            Self::SameAsk => "same_ask",
         }
     }
 
@@ -526,6 +567,7 @@ impl Guard {
             Self::Carousel => "Review carousel",
             Self::RedundantWake => "Woken for nothing",
             Self::FencePush => "Pushing at the fence",
+            Self::SameAsk => "The same ask twice",
         }
     }
 
@@ -552,6 +594,10 @@ impl Guard {
             Self::FencePush => format!(
                 "{} refused acts in one turn, or the same refused act by {} members within 24 h",
                 t.fence_refusals_in_a_turn, t.fence_members
+            ),
+            Self::SameAsk => format!(
+                "a question or decision for the owner {}% alike, both ways, to one already waiting",
+                t.same_ask_percent
             ),
         }
     }
@@ -1028,6 +1074,31 @@ mod tests {
             asked.contains("which of #4's criteria does this serve?")
                 && asked.contains("1. The cause is found; 2. Sonarr is running"),
             "{asked}"
+        );
+    }
+
+    /// Live, 18 October 2026: the CEO put the same board decision on the desk twice, once a
+    /// task, both checks exiting 127.
+    #[test]
+    fn the_same_ask_from_two_tasks_is_one_and_a_different_one_is_not() {
+        use super::super::retraction::fingerprint;
+        let first = fingerprint(
+            "Decision: Install ansible-playbook, ansible-lint and yamllint on the dev node?\n\
+             Recommendation: Yes.\nWhy: The check exited 127.\nEvidence: task 671",
+        );
+        let again = fingerprint(
+            "Decision: Install ansible-playbook, ansible-lint and yamllint on the dev node?\n\
+             Recommendation: Yes, once.\nWhy: The check exited 127.\nEvidence: task 672",
+        );
+        let other = fingerprint(
+            "Decision: Give sonarr 2 GB of memory?\nRecommendation: Yes.\nWhy: It was killed \
+             for memory three times.\nEvidence: task 690",
+        );
+        assert!(same_ask(&first, &again));
+        assert!(!same_ask(&first, &other));
+        assert!(
+            !same_ask(&first, &fingerprint("Install yamllint?")),
+            "a short ask inside a long one is not the same ask"
         );
     }
 

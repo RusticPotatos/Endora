@@ -46,6 +46,7 @@ mod planning;
 mod projects;
 mod raci;
 mod replay;
+mod retract;
 mod runtime;
 mod staffing;
 mod wing;
@@ -2286,6 +2287,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !note.is_empty() {
             told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
         }
+        // What the goal chose not to do now (ADR 0120's strategy), in every briefing on it: the
+        // premise each turn works in is bounded in its own words (ADR 0124).
+        let not_now = self.strategy_of(task.goal)?.not_now;
+        if !not_now.trim().is_empty() {
+            told.push_str(&format!(
+                "Not now, for this goal: {}. Work outside the goal's bets waits.\n",
+                one_line(&not_now, 600)
+            ));
+        }
         if member.role == Role::Lead {
             told.push_str(&self.team_for_the_lead(member)?);
         }
@@ -3270,18 +3280,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(reviewer) = checked_by {
             text.push_str(&format!("\nChecked by {}, the reviewer.", reviewer.name));
         }
-        let desk = self.store.add_desk(
-            "decision",
-            Some(task.id),
-            None,
-            Some(ceo.id),
-            &text,
-            self.clock.now(),
-        )?;
-        self.emit(
-            EventKind::DeskAdded,
-            json!({ "item": desk.0, "kind": "decision", "task": task.id.0 }),
-        )?;
+        // The same decision from another task, already waiting, is one card (ADR 0124).
+        let desk = self.ask_on_the_desk("decision", task.id, ceo.id, &text)?;
         let id = run.id;
         self.end_blocked(run, RunStatus::Succeeded, "put a decision to the board")?;
         self.runner.stop(id, self.settings.grace);
@@ -3453,12 +3453,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Whether a question or an approval from `member` about `task` still waits on the desk.
     fn waiting_question(&self, member: MemberId, task: TaskId) -> Done<bool> {
-        Ok(self.store.desk()?.into_iter().any(|d| {
-            matches!(d.kind.as_str(), "question" | "approval" | "decision")
-                && d.status == "waiting"
-                && d.member == Some(member)
-                && d.task == Some(task)
-        }))
+        for d in self.store.desk()? {
+            if !matches!(d.kind.as_str(), "question" | "approval" | "decision")
+                || d.status != "waiting"
+            {
+                continue;
+            }
+            if d.member == Some(member) && d.task == Some(task) {
+                return Ok(true);
+            }
+            // Put with another task's card, the same ask still waits (ADR 0124).
+            if self.store.attached(d.id.0)?.contains(&(task, Some(member))) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The node asks the owner's approval for an action a member proposed through Endora's
@@ -3490,18 +3499,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.waiting_question(member.id, task)? {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
-        let desk = self.store.add_desk(
-            kind,
-            Some(task),
-            None,
-            Some(member.id),
-            &say(&member.name),
-            self.clock.now(),
-        )?;
-        self.emit(
-            EventKind::DeskAdded,
-            json!({ "item": desk.0, "kind": kind, "task": task.0 }),
-        )?;
+        // The same question from another task, already waiting, is one card (ADR 0124). An
+        // approval never is: each runs exactly the one action it stored.
+        let desk = if kind == "question" {
+            self.ask_on_the_desk(kind, task, member.id, &say(&member.name))?
+        } else {
+            let desk = self.store.add_desk(
+                kind,
+                Some(task),
+                None,
+                Some(member.id),
+                &say(&member.name),
+                self.clock.now(),
+            )?;
+            self.emit(
+                EventKind::DeskAdded,
+                json!({ "item": desk.0, "kind": kind, "task": task.0 }),
+            )?;
+            desk
+        };
         // The worker ends its turn on reading that it has; its container is let go too, so a
         // worker that does not cannot linger.
         let id = run.id;
@@ -3530,7 +3546,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if found.kind == "out_for_day" {
             return self.owner_decides_the_day(&found, decision, "");
         }
-        self.decide_held_lock(&found, decision)
+        self.decide_held_lock(&found, decision)?;
+        self.answer_the_same_asks(item, decision, "")
     }
 
     /// The owner answers a member's question: the answer goes in the task's thread, as the
@@ -3549,7 +3566,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let task = found.task.ok_or(EngineError::Unknown("task"))?;
         self.post_held_lock(Author::Owner, task, text)?;
-        self.decide_held_lock(&found, "seen")
+        self.decide_held_lock(&found, "seen")?;
+        // One answer to the same ask from other tasks reaches each of them (ADR 0124).
+        self.answer_the_same_asks(item, "seen", text)
     }
 
     /// The owner decides an item on their desk, with words for the thread if they wrote any:
@@ -3569,7 +3588,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let found = self.waiting_on_desk(item)?;
         let words = cut(words.trim(), 4000);
         if found.kind == "decision" {
-            return self.board_decides(&found, decision, &words);
+            self.board_decides(&found, decision, &words)?;
+            // The board's one word on the same decision from other tasks (ADR 0124).
+            return self.answer_the_same_asks(item, decision, &words);
         }
         if matches!(found.kind.as_str(), "project_cap" | "project_budget") {
             return self.owner_decides_cap(&found, decision, &words);
@@ -3581,7 +3602,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let task = found.task.ok_or(EngineError::Unknown("task"))?;
             self.post_held_lock(Author::Owner, task, &words)?;
         }
-        self.decide_held_lock(&found, decision)
+        self.decide_held_lock(&found, decision)?;
+        self.answer_the_same_asks(item, decision, &words)
     }
 
     /// The board's word on the CEO's decision (ADR 0111): in the task's thread as the owner's,
@@ -4486,6 +4508,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "id": d.id.0, "kind": d.kind, "task": d.task.map(|t| t.0),
                     "goal": d.goal.map(|g| g.0), "project": d.project.map(|p| p.0),
                     "text": d.text, "at": d.at,
+                    // The same ask from other tasks, put with this card (ADR 0124).
+                    "also": self.store.attached(d.id.0).unwrap_or_default().iter()
+                        .map(|(t, _)| t.0).collect::<Vec<_>>(),
                 });
                 // The CEO's decision for the board, in its three parts (ADR 0111).
                 if let Some(decided) = (d.kind == "decision").then(|| Decision::read(&d.text)).flatten() {

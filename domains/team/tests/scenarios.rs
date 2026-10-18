@@ -74,6 +74,8 @@ struct Office {
     clock: Hands,
     /// The receipt of the last reading of the lab a step took.
     reading: Option<i64>,
+    /// What the owner's last retraction said (ADR 0124): its id, and its sweep.
+    retraction: Option<serde_json::Value>,
 }
 
 impl Default for Office {
@@ -96,6 +98,7 @@ impl Default for Office {
             wing: None,
             push: None,
             reading: None,
+            retraction: None,
         }
     }
 }

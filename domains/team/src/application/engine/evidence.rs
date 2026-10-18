@@ -104,6 +104,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "task": run.task.map(|t| t.0), "tool": receipt.tool, "ok": receipt.ok,
                     "act": receipt.act, "sandbox": sandbox }),
         )?;
+        // A refused act may be the team pushing at the fence (ADR 0124).
+        if receipt.act && !receipt.ok {
+            self.after_refused_act(run.id, &receipt.tool)?;
+        }
         Ok(id)
     }
 

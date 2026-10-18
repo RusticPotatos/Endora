@@ -39,6 +39,23 @@ Feature: Guards against how agent teams fail
     Then a huddle is called on "Look at sonarr", because it was "sent back 3 times with no new evidence between"
     And the owner's desk is empty
 
+  # Seed: not_retracted always passing fails the refusal step.
+  Scenario: A retracted claim can't come back
+    Given Linus is the developer
+    And Linus has the task "Look at sonarr"
+    When Linus writes the note "Sonarr needs a restart every night."
+    And Linus's turn ends
+    And Ada is woken about "Look at sonarr"
+    And Ada writes the note "As we found, sonarr needs a restart every night or the queue sticks."
+    And Ada's turn ends
+    And the owner says Linus's note "Sonarr needs a restart every night." is not true
+    Then the sweep finds Ada's note "As we found, sonarr needs a restart every night or the queue sticks."
+    When the owner forgets what the sweep found
+    Then Ada has no notes
+    When Linus is woken about "Look at sonarr"
+    And Linus writes the note "Reminder: sonarr needs a restart every night."
+    Then it is refused, saying "this says again what was retracted on"
+
   # Seed: submit_when_enough returning at once fails the in_review step.
   Scenario: Enough evidence means submit
     Given Linus is the developer

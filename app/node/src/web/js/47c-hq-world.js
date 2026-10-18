@@ -15,9 +15,37 @@ function hqStageTag(p) {
 
 // The owner's two acts on a piece: make it canon, or demote canon saying why.
 function hqWorldActs(kind, i, p) {
-  if (p.stage === "canon") return `<button class="hq-btn no" data-act="hq:world:${kind}:demote-${Number(i)}">Demote…</button>`;
   if (p.stage === "retired" || p.stage === "superseded") return "";
-  return `<button class="hq-btn ok" data-act="hq:world:${kind}:promote-${Number(i)}">Make canon</button>`;
+  // "Not true" (ADR 0124): retracted, its claim refused if written again, and what else says it found.
+  const untrue = `<button class="hq-btn no" data-act="hq:world:${kind}:untrue-${Number(i)}">Not true</button>`;
+  if (p.stage === "canon") return `<button class="hq-btn no" data-act="hq:world:${kind}:demote-${Number(i)}">Demote…</button>${untrue}`;
+  return `<button class="hq-btn ok" data-act="hq:world:${kind}:promote-${Number(i)}">Make canon</button>${untrue}`;
+}
+
+// The owner says a note, a section or a story is not true (ADR 0124): HQ takes it out, and
+// answers with what else says the same, kept here for the owner to forget at once.
+async function hqRetract(target) {
+  if (!confirm(`Say ${target} is not true? It is taken out, and the team may not write it again.`)) return true;
+  try {
+    HQ.sweep = await api("POST", "/v1/hq/retractions", { target });
+    const n = (HQ.sweep.sweep || []).length;
+    flash(n ? `Retracted. ${n} more say the same: see "Said again".` : "Retracted. Nothing else says it.", "ok");
+  } catch (e) { flash("Couldn't retract it: " + e.message, "err"); }
+  await loadHQ(); render(); return true;
+}
+
+// What else says a retracted claim, each to tick and forget at once.
+function hqSweep() {
+  const r = HQ.sweep;
+  if (!r || !(r.sweep || []).length) return "";
+  const rows = r.sweep.map((s, i) => `<li><label><input type="checkbox" id="hq-sweep-${i}" checked />
+      <span>${esc(s.text)}</span></label><small> ${esc(s.target)} · ${esc(s.whose)} · ${Number(s.alike)}% alike</small></li>`).join("");
+  const built = (r.built_on_it || []).length ? `<p class="hq-note">Built on it: ${r.built_on_it.map(esc).join(", ")}.</p>` : "";
+  return `<section class="hq-card"><h2>Said again</h2>
+    <p class="hq-note">You said ${esc(r.target)} is not true. These say the same:</p>
+    <ul class="hq-team">${rows}</ul>${built}
+    <div class="hq-row"><button class="hq-btn no" data-act="hq:sweep:${Number(r.retraction)}:forget">Forget the ticked</button>
+      <button class="hq-btn" data-act="hq:sweep:${Number(r.retraction)}:close">Keep them</button></div></section>`;
 }
 
 function hqWorldCard(s) {
@@ -66,6 +94,7 @@ async function hqWorldAct(kind, what) {
   const list = kind === "story" ? (w.stories || []) : (w.sections || []);
   const p = list[Number(n)];
   if (!p) return true;
+  if (op === "untrue") return hqRetract(p.address);
   try {
     if (op === "promote") {
       if (!confirm(`Make "${p.headline || p.handle}" canon? The team will treat it as established.`)) return true;

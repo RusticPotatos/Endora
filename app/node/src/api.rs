@@ -515,6 +515,10 @@ pub fn app(state: AppState) -> Router {
             "/v1/hq/guards/findings/{id}/verdict",
             post(hq_finding_verdict),
         )
+        // Retract and sweep (ADR 0124): "Not true", what else says it, and forgetting it.
+        .route("/v1/hq/retractions", post(hq_retract))
+        .route("/v1/hq/retractions/{id}/sweep", get(hq_sweep))
+        .route("/v1/hq/retractions/{id}/forget", post(hq_forget_swept))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
         // The owner's routines (ADR 0107).

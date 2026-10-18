@@ -13,6 +13,7 @@ const HQ = {
   last: 0,             // the last event id seen: the stream resumes after it
   log: [],             // what happened, newest first, in words
   selected: null,      // { type: "member" | "task", id }
+  sweep: null,         // the owner's last retraction and what else says it (ADR 0124)
   people: {},          // member id → where they are and what they are doing on screen
   envelopes: [],       // wakes in flight
   lastWord: {},        // task id → the member who last wrote in its thread
@@ -1202,7 +1203,7 @@ function viewHQ() {
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
     const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
     return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(shown)}</p>
-      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
+      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKey(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval) : ""}
       ${d.kind === "decision" ? hqDecision(d.decision) : ""}
@@ -1242,6 +1243,7 @@ function viewHQ() {
         <section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
+        ${hqSweep()}
         ${hqScorecard(s)}
         ${hqGuards(s)}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
@@ -1304,7 +1306,8 @@ function hqNotebook(m) {
   const rows = notes.map((n) => `<li><span>${esc(n.text)}</span>
       <small> ${n.from_owner ? "from the owner" : esc((n.evidence || []).join(", "))}${n.stale ? " · stale" : ""}</small>
       <button class="hq-btn" data-act="hq:notebook:${m.id}:edit-${Number(n.id)}">Edit</button>
-      <button class="hq-btn no" data-act="hq:notebook:${m.id}:del-${Number(n.id)}">Delete</button></li>`).join("");
+      <button class="hq-btn no" data-act="hq:notebook:${m.id}:del-${Number(n.id)}">Delete</button>
+      <button class="hq-btn no" data-act="hq:notebook:${m.id}:untrue-${Number(n.id)}">Not true</button></li>`).join("");
   return `<div class="hq-notebook"><p class="hq-who">${esc(m.name)}'s notebook (${notes.length})</p>
     ${rows ? `<ul class="hq-team">${rows}</ul>` : `<p class="hq-empty">No notes.</p>`}
     <div class="hq-row"><input id="hq-note-new-${m.id}" maxlength="300" placeholder="A note from you, up to 300 characters" aria-label="A note for ${esc(m.name)}" />
@@ -1810,6 +1813,7 @@ async function hqDispatch(verb, noun, id, arg) {
   // The owner writes in a member's notebook (ADR 0118): add a note, or edit or delete one.
   if (noun === "notebook") {
     const member = Number(id), what = String(arg || "").split("-"), note = Number(what[1]);
+    if (what[0] === "untrue") { await hqRetract(`note:${note}`); await hqLoadNotebook(member); return true; }
     try {
       if (what[0] === "add") {
         const text = val(`hq-note-new-${member}`); if (!text) return true;
@@ -1824,6 +1828,17 @@ async function hqDispatch(verb, noun, id, arg) {
       } else return true;
     } catch (e) { flash("Couldn't change the notebook: " + e.message, "err"); }
     await hqLoadNotebook(member); return true;
+  }
+  // What else says a retracted claim (ADR 0124): forget the ticked at once, or keep them.
+  if (noun === "sweep") {
+    const r = HQ.sweep;
+    if (!r || r.retraction !== Number(id)) return true;
+    if (arg === "forget") {
+      const targets = (r.sweep || []).filter((_, i) => (document.getElementById(`hq-sweep-${i}`) || {}).checked).map((s) => s.target);
+      try { const done = await api("POST", `/v1/hq/retractions/${Number(id)}/forget`, { targets }); flash(`Forgot ${Number(done.forgot) || 0}.`, "ok"); }
+      catch (e) { flash("Couldn't forget them: " + e.message, "err"); return true; }
+    }
+    HQ.sweep = null; await loadHQ(); render(); return true;
   }
   // The owner's verdict on a guard's finding, and whether its fix worked (ADR 0124).
   if (noun === "verdict" || noun === "fixed") {

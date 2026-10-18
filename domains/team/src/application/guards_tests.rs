@@ -789,3 +789,274 @@ fn evidence_already_enough_is_submitted_by_hq_after_three_re_checks() {
         "on that evidence"
     );
 }
+
+// ---- retract and sweep ----------------------------------------------------------------------
+
+/// A claim the owner retracts is taken out, what else says it is swept for the owner to
+/// forget at once, and a member writing it again is refused, saying when it was retracted.
+#[test]
+fn a_retracted_claim_is_swept_and_cannot_come_back() {
+    use crate::domain::Ref;
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task) = team(&clock, true);
+    let ada = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == Role::Lead)
+        .unwrap()
+        .id;
+    let on = [Ref::Task(task)];
+    let t = turn(&hq, dev);
+    let wrong = hq
+        .note_in(t.run, "Sonarr needs a restart every night.", &on)
+        .unwrap();
+    let built = hq
+        .note_in(t.run, &format!("Per n{wrong}, restart it at 02:00."), &on)
+        .unwrap();
+    let other = hq
+        .note_in(t.run, "Radarr's queue is empty on Sundays.", &on)
+        .unwrap();
+    hq.runner().finish(t.run, true);
+    hq.tick().unwrap();
+    hq.wake(ada, Some(task), WakeReason::Mentioned).unwrap();
+    let a = turn(&hq, ada);
+    let copied = hq
+        .note_in(
+            a.run,
+            "As we found, sonarr needs a restart every night or the queue sticks",
+            &on,
+        )
+        .unwrap();
+    hq.runner().finish(a.run, true);
+    hq.tick().unwrap();
+
+    let said = hq.retract(&format!("note:{wrong}")).unwrap();
+    assert_eq!(
+        said["built_on_it"],
+        serde_json::json!([format!("note:{built}")])
+    );
+    let swept: Vec<String> = said["sweep"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["target"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(swept, [format!("note:{copied}")], "only what says it again");
+    assert!(hq.store().notes(dev).unwrap().iter().all(|n| n.id != wrong));
+    let id = said["retraction"].as_i64().unwrap();
+    assert_eq!(
+        hq.forget_swept(id, &[format!("note:{copied}"), format!("note:{other}")])
+            .unwrap(),
+        1,
+        "only what the sweep found"
+    );
+    assert!(hq.store().notes(ada).unwrap().is_empty());
+    assert_eq!(hq.store().notes(dev).unwrap().len(), 2, "the rest stay");
+    // Written again, in other words around it: refused, with the day it was retracted.
+    hq.wake(dev, Some(task), WakeReason::Mentioned).unwrap();
+    let again = turn(&hq, dev);
+    let refused = hq
+        .note_in(
+            again.run,
+            "Reminder: sonarr needs a restart every night (r9).",
+            &on,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("this says again what was retracted on")
+            && refused.contains(&format!("note:{wrong}")),
+        "{refused}"
+    );
+    assert!(hq.retract("note:9999").is_err());
+}
+
+// ---- the same ask, once on the desk ---------------------------------------------------------
+
+/// Linus's two tasks, and a question asked on each in its own turn: the desk items after.
+fn two_asks(first: &str, second: &str) -> Vec<super::ports::DeskItem> {
+    let clock = Hands(AtomicI64::new(NOON));
+    {
+        let (hq, dev, a) = team(&clock, false);
+        let goal = hq.store().task(a).unwrap().unwrap().goal;
+        let b = hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: None,
+                    parent: None,
+                    title: "Check the other branch".to_owned(),
+                    description: String::new(),
+                    assignee: Some(dev),
+                    priority: Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+        for (task, text) in [(a, first), (b, second)] {
+            // Linus's running turn on the task: started by its handing-on, or a mention.
+            let running = |hq: &Hq<'_>| {
+                hq.tick().unwrap();
+                hq.runner()
+                    .started()
+                    .into_iter()
+                    .rfind(|c| c.task == Some(task) && hq.turn_of(&c.token).unwrap().is_some())
+            };
+            let t = match running(&hq) {
+                Some(t) => t,
+                None => {
+                    hq.wake(dev, Some(task), WakeReason::Mentioned).unwrap();
+                    running(&hq).expect("a turn on the task")
+                }
+            };
+            hq.ask_owner(t.run, text).unwrap();
+            hq.tick().unwrap();
+        }
+        let desk: Vec<_> = hq
+            .store()
+            .desk()
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.kind == "question" && d.status == "waiting")
+            .collect();
+        // One answer for one card reaches every task put with it.
+        if desk.len() == 1 {
+            hq.answer(desk[0].id, "Yes: install them on the dev node.")
+                .unwrap();
+            for task in [a, b] {
+                assert!(
+                    hq.store()
+                        .thread(task)
+                        .unwrap()
+                        .iter()
+                        .any(|p| p.author == "owner"
+                            && p.text.contains("install them on the dev node")),
+                    "#{task} hears the answer"
+                );
+                assert!(
+                    hq.store()
+                        .wakes()
+                        .unwrap()
+                        .iter()
+                        .any(|w| w.task == Some(task)
+                            && w.member == dev
+                            && w.reason == WakeReason::ProposalDecided),
+                    "#{task}'s asker is woken"
+                );
+            }
+            let found = hq.store().findings().unwrap();
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].guard, crate::domain::guards::Guard::SameAsk);
+        }
+        desk
+    }
+}
+
+/// Live, 18 October 2026: the same board decision twice, once a task. The same ask from a
+/// second task is put with the first card, and the owner's one answer reaches both.
+#[test]
+fn the_same_ask_from_two_tasks_is_one_card_and_one_answer_reaches_both() {
+    let desk = two_asks(
+        "Install ansible-playbook, ansible-lint and yamllint on the dev node? The check exited 127.",
+        "Install ansible-playbook, ansible-lint and yamllint on the dev node? Its check exited 127 too.",
+    );
+    assert_eq!(desk.len(), 1, "one card: {desk:?}");
+}
+
+#[test]
+fn two_different_asks_are_two_cards() {
+    let desk = two_asks(
+        "Install ansible-playbook, ansible-lint and yamllint on the dev node? The check exited 127.",
+        "May sonarr have 2 GB of memory? It was killed for memory three times.",
+    );
+    assert_eq!(desk.len(), 2, "{desk:?}");
+}
+
+// ---- pushing at the fence -------------------------------------------------------------------
+
+fn refused_act(hq: &Hq<'_>, t: &RunContext, tool: &str) {
+    hq.record_receipt(
+        &t.token,
+        &super::engine::Called {
+            tool: tool.to_owned(),
+            args: String::new(),
+            excerpt: "refused: not in the contract".to_owned(),
+            ok: false,
+            act: true,
+            confidential: false,
+        },
+    )
+    .unwrap();
+}
+
+fn fence_notices(hq: &Hq<'_>) -> Vec<String> {
+    hq.store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == "guard" && d.text.starts_with("Pushing at the fence"))
+        .map(|d| d.text)
+        .collect()
+}
+
+/// Refused acts again and again are a notice naming the tool and who tried; and each briefing
+/// carries the goal's "not now".
+#[test]
+fn pushing_at_the_fence_is_a_notice_and_the_briefing_says_what_is_not_now() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task) = team(&clock, true);
+    let goal = hq.store().task(task).unwrap().unwrap().goal;
+    hq.set_strategy(
+        goal,
+        &crate::domain::areas::StrategyEdit {
+            purpose: None,
+            success: None,
+            measures: None,
+            bets: None,
+            not_now: Some("moving the media stack off the NAS".to_owned()),
+        },
+    )
+    .unwrap();
+    let t = turn(&hq, dev);
+    assert!(
+        t.told
+            .contains("Not now, for this goal: moving the media stack off the NAS."),
+        "{}",
+        t.told
+    );
+    refused_act(&hq, &t, "remove_container");
+    refused_act(&hq, &t, "remove_container");
+    assert!(fence_notices(&hq).is_empty(), "twice is not yet");
+    refused_act(&hq, &t, "edit_compose");
+    let notices = fence_notices(&hq);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains("Linus was refused 3 acts in one turn: remove_container, edit_compose"),
+        "{}",
+        notices[0]
+    );
+    hq.runner().finish(t.run, true);
+    hq.tick().unwrap();
+    // Another member refused the same act within the day: the team keeps trying it.
+    let ada = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == Role::Lead)
+        .unwrap()
+        .id;
+    hq.wake(ada, Some(task), WakeReason::Mentioned).unwrap();
+    let a = turn(&hq, ada);
+    refused_act(&hq, &a, "remove_container");
+    let notices = fence_notices(&hq);
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(
+        notices[1].contains("remove_container was refused for Linus, Ada within a day"),
+        "{}",
+        notices[1]
+    );
+}

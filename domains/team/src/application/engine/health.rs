@@ -54,6 +54,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if finding.cleared_at.is_some() {
                 continue;
             }
+            // A fence push clears once a day has passed since it was found: what it counted is
+            // out of its window.
+            if finding.guard == Guard::FencePush {
+                if self.clock.now() - finding.opened_at >= THRESHOLDS.fence_window_ms {
+                    self.clear(&finding)?;
+                }
+                continue;
+            }
+            // The same ask clears once the owner answered its card.
+            if finding.guard == Guard::SameAsk {
+                let desk: Option<i64> = finding.key.split(':').nth(1).and_then(|d| d.parse().ok());
+                let answered = self
+                    .store
+                    .desk()?
+                    .iter()
+                    .any(|d| Some(d.id.0) == desk && d.status != "waiting");
+                if answered {
+                    self.clear(&finding)?;
+                }
+                continue;
+            }
             let Some(task) = finding.task.map(TaskId) else {
                 continue;
             };
@@ -326,6 +347,177 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         };
         self.call_huddle(&current, &lead, &why)
+    }
+
+    // ---- the same ask, once on the desk -------------------------------------------------------
+
+    /// A question or a decision for the owner goes on the desk, unless the same ask from
+    /// another task already waits there (ADR 0124): then it is put with that card ("also on
+    /// #672"), said in its own thread, and counted as a finding. Live, the CEO put the same
+    /// board decision on the desk twice, once a task, both checks having exited 127.
+    pub(super) fn ask_on_the_desk(
+        &self,
+        kind: &str,
+        task: TaskId,
+        member: MemberId,
+        text: &str,
+    ) -> Done<crate::domain::DeskId> {
+        let print = crate::domain::retraction::fingerprint(text);
+        let waiting = self.store.desk()?.into_iter().find(|d| {
+            d.kind == kind
+                && d.status == "waiting"
+                && d.task.is_some_and(|t| t != task)
+                && guards::same_ask(&crate::domain::retraction::fingerprint(&d.text), &print)
+        });
+        let Some(open) = waiting else {
+            let desk = self.store.add_desk(
+                kind,
+                Some(task),
+                None,
+                Some(member),
+                text,
+                self.clock.now(),
+            )?;
+            self.emit(
+                EventKind::DeskAdded,
+                json!({ "item": desk.0, "kind": kind, "task": task.0 }),
+            )?;
+            return Ok(desk);
+        };
+        let main = open.task.map_or(0, |t| t.0);
+        self.store.attach_to_desk(open.id.0, task, Some(member))?;
+        self.post_held_lock(
+            Author::Endora,
+            task,
+            &format!(
+                "The same ask as #{main}'s is already on the owner's desk: it is put with it, \
+                 and the owner's one answer comes here too."
+            ),
+        )?;
+        let project = self.task(task)?.project.map(|p| p.0);
+        self.find(
+            Guard::SameAsk,
+            &format!("same_ask:{}:{}", open.id.0, task.0),
+            Some(task),
+            project,
+            &format!(
+                "#{}'s {kind} is the same ask as #{main}'s, on the desk as item {}",
+                task.0, open.id.0
+            ),
+        )?;
+        Ok(open.id)
+    }
+
+    /// The owner's one answer to an ask, delivered to every task put with it (ADR 0124): in
+    /// each one's thread, as the owner's, and whoever asked there woken to read it.
+    pub(super) fn answer_the_same_asks(
+        &self,
+        item: crate::domain::DeskId,
+        decision: &str,
+        words: &str,
+    ) -> Done<()> {
+        let attached = self.store.attached(item.0)?;
+        if attached.is_empty() {
+            return Ok(());
+        }
+        let Some(found) = self.store.desk()?.into_iter().find(|d| d.id == item) else {
+            return Ok(());
+        };
+        let main = found.task.map_or(0, |t| t.0);
+        let said = match (decision, words.trim()) {
+            ("approve", "") => "approved".to_owned(),
+            ("decline", "") => "declined".to_owned(),
+            ("approve", w) => format!("approved: {w}"),
+            ("decline", w) => format!("declined: {w}"),
+            (_, "") => "seen".to_owned(),
+            (_, w) => format!("answered: {w}"),
+        };
+        for (task, member) in attached {
+            self.post_held_lock(
+                Author::Owner,
+                task,
+                &format!("The owner {said} (the same ask, put with #{main}'s)"),
+            )?;
+            let Some(to) = member.or(self.task(task)?.owner) else {
+                continue;
+            };
+            self.wake_held_lock(to, Some(task), WakeReason::ProposalDecided)?;
+        }
+        Ok(())
+    }
+
+    // ---- pushing at the fence -----------------------------------------------------------------
+
+    /// A refused act was just recorded in `run` (ADR 0124): three in one turn, or the same act
+    /// refused for two members within a day, is a finding and a notice on the owner's desk
+    /// naming the tool and the members. A notice, not a tripwire: the fence held; what the
+    /// owner learns is what the team believes it should be doing.
+    pub(super) fn after_refused_act(&self, run: RunId, tool: &str) -> Done<()> {
+        let t = THRESHOLDS;
+        let now = self.clock.now();
+        let members = self.store.members()?;
+        let name = |id: MemberId| {
+            members
+                .iter()
+                .find(|m| m.id == id)
+                .map_or_else(|| "someone".to_owned(), |m| m.name.clone())
+        };
+        let mine: Vec<_> = self
+            .store
+            .call_receipts_of(run)?
+            .into_iter()
+            .filter(|r| r.act && !r.ok)
+            .collect();
+        let task = mine.first().and_then(|r| r.task);
+        let project = match task {
+            Some(task) => self.store.task(task)?.and_then(|t| t.project).map(|p| p.0),
+            None => None,
+        };
+        if mine.len() >= t.fence_refusals_in_a_turn {
+            let who = mine.first().map(|r| name(r.member)).unwrap_or_default();
+            let mut tools: Vec<String> = mine.iter().map(|r| r.tool.clone()).collect();
+            tools.dedup();
+            self.find_on_the_desk(
+                Guard::FencePush,
+                &format!("fence:run:{}", run.0),
+                task,
+                project,
+                &format!(
+                    "{who} was refused {} acts in one turn: {}",
+                    mine.len(),
+                    tools.join(", ")
+                ),
+            )?;
+        }
+        let mut who: Vec<MemberId> = Vec::new();
+        for r in self.store.runs()? {
+            if r.started_at.is_none_or(|s| now - s >= t.fence_window_ms) {
+                continue;
+            }
+            for receipt in self.store.call_receipts_of(r.id)? {
+                if receipt.act
+                    && !receipt.ok
+                    && receipt.tool == tool
+                    && !who.contains(&receipt.member)
+                {
+                    who.push(receipt.member);
+                }
+            }
+        }
+        if who.len() >= t.fence_members {
+            let named: Vec<String> = who.iter().map(|m| name(*m)).collect();
+            self.find_on_the_desk(
+                Guard::FencePush,
+                &format!("fence:tool:{tool}"),
+                task,
+                project,
+                &format!(
+                    "{tool} was refused for {} within a day: the team keeps trying it",
+                    named.join(", ")
+                ),
+            )?;
+        }
+        Ok(())
     }
 
     // ---- woken for nothing --------------------------------------------------------------------

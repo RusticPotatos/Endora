@@ -168,6 +168,78 @@ fn hq_says_in(w: &mut Office, title: String, said: String) {
     );
 }
 
+/// A note on the member's own turn's task, which it rests on.
+#[when(regex = r#"^(\w+) writes the note "(.+)"$"#)]
+fn writes_note(w: &mut Office, name: String, text: String) {
+    let task = w.turn_of(&name).task.expect("a turn on a task");
+    w.use_tool(
+        &name,
+        "note",
+        &json!({ "text": text, "evidence": [format!("task {}", task.0)] }),
+    );
+}
+
+impl Office {
+    /// The note of `name`'s that says `text`.
+    fn note_saying(&self, name: &str, text: &str) -> i64 {
+        let member = self.member(name);
+        self.hq
+            .store()
+            .notes(member)
+            .expect("the store answers")
+            .into_iter()
+            .find(|n| n.text == text)
+            .unwrap_or_else(|| panic!("{name} has no note {text:?}"))
+            .id
+    }
+}
+
+#[when(regex = r#"^the owner says (\w+)'s note "(.+)" is not true$"#)]
+fn owner_retracts(w: &mut Office, name: String, text: String) {
+    let note = w.note_saying(&name, &text);
+    let said =
+        w.hq.retract(&format!("note:{note}"))
+            .expect("the owner retracts it");
+    w.retraction = Some(said);
+}
+
+#[then(regex = r#"^the sweep finds (\w+)'s note "(.+)"$"#)]
+fn sweep_finds(w: &mut Office, name: String, text: String) {
+    let note = w.note_saying(&name, &text);
+    let said = w.retraction.clone().expect("a retraction");
+    let found: Vec<&str> = said["sweep"]
+        .as_array()
+        .expect("its sweep")
+        .iter()
+        .filter_map(|s| s["target"].as_str())
+        .collect();
+    assert_eq!(found, [format!("note:{note}").as_str()], "{said}");
+}
+
+#[when("the owner forgets what the sweep found")]
+fn forgets_swept(w: &mut Office) {
+    let said = w.retraction.clone().expect("a retraction");
+    let targets: Vec<String> = said["sweep"]
+        .as_array()
+        .expect("its sweep")
+        .iter()
+        .filter_map(|s| s["target"].as_str().map(str::to_owned))
+        .collect();
+    let id = said["retraction"].as_i64().expect("its id");
+    w.hq.forget_swept(id, &targets).expect("the owner forgets");
+}
+
+#[then(regex = r"^(\w+) has no notes$")]
+fn no_notes(w: &mut Office, name: String) {
+    let member = w.member(&name);
+    assert!(
+        w.hq.store()
+            .notes(member)
+            .expect("the store answers")
+            .is_empty()
+    );
+}
+
 #[then(regex = r#"^a huddle is called on "(.+)", because it was "(.+)"$"#)]
 fn huddle_called_because(w: &mut Office, title: String, why: String) {
     let task = w.task(&title);

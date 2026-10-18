@@ -5,6 +5,7 @@
 use super::ports::Stored;
 use crate::domain::closure::Closed;
 use crate::domain::guards::{Finding, Verdict};
+use crate::domain::retraction::Retraction;
 use crate::domain::{MemberId, Millis, TaskId};
 
 /// The guards' part of HQ's store.
@@ -73,4 +74,40 @@ pub trait GuardStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn closure(&self, task: TaskId) -> Stored<Option<Closed>>;
+
+    /// Keeps a retraction, returning its id. A retraction is never changed or removed.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn add_retraction(&self, retraction: &Retraction) -> Stored<i64>;
+
+    /// Every retraction, oldest first.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn retractions(&self) -> Stored<Vec<Retraction>>;
+
+    /// Records that note `note` was built on note `parent` (it cites it).
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn add_note_parent(&self, note: i64, parent: i64) -> Stored<()>;
+
+    /// Attaches the same ask, from `task` (asked by `member`), to the desk item `desk`.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn attach_to_desk(&self, desk: i64, task: TaskId, member: Option<MemberId>) -> Stored<()>;
+
+    /// The tasks (and who asked on each) attached to a desk item, oldest first.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn attached(&self, desk: i64) -> Stored<Vec<(TaskId, Option<MemberId>)>>;
+
+    /// The notes built on `parent`, oldest first.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn note_children(&self, parent: i64) -> Stored<Vec<i64>>;
 }

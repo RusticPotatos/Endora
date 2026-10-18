@@ -1129,7 +1129,9 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             .ok_or_else(|| "which note? Give its number as `note` (12 for n12)".to_owned())?;
             let reason = args["reason"].as_str().unwrap_or("");
             let gone = engine.forget_in(run.id, id, reason).map_err(|e| said(&e))?;
-            Ok(format!("n{id} is forgotten: {}", gone.text))
+            // What was built on it is named (ADR 0124).
+            let built = engine.built_on(id).map_err(|e| said(&e))?;
+            Ok(format!("n{id} is forgotten: {}{built}", gone.text))
         }
         "read_notebook" => engine.read_notebook_in(run.id).map_err(|e| said(&e)),
         "notebook_checked" => {
