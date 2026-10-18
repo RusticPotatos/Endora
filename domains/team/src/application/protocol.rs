@@ -83,7 +83,17 @@ fn criteria_arg(args: &Value) -> Vec<Criterion> {
                             other["live"].as_bool() == Some(true),
                         ),
                     };
-                    (!text.trim().is_empty()).then(|| Criterion::new(text, live))
+                    if text.trim().is_empty() {
+                        return None;
+                    }
+                    let made = Criterion::new(text, live);
+                    // A wait, in minutes from the work's last change (ADR 0120).
+                    Some(
+                        match c["after"].as_u64().and_then(|m| u32::try_from(m).ok()) {
+                            Some(minutes) => made.after(minutes),
+                            None => made,
+                        },
+                    )
                 })
                 .collect()
         })
@@ -234,7 +244,7 @@ pub fn tools(role: Role) -> Value {
         tool(
             "create_task",
             "Create a sub-task of your task for another member (by name), with the tasks it waits on and its acceptance criteria: what done means, a short list, required for work handed to someone else. Mark live any criterion about the lab as it is now.",
-            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" } }, "required": ["text"] } } }),
+            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
             &["title", "description"]
         ),
         tool(

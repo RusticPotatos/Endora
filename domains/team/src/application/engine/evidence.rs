@@ -17,7 +17,7 @@ use crate::domain::evidence::{
     self, AfterNothing, CallReceipt, Checkers, Criterion, Found, Judged, Label, Ref, TurnFacts,
 };
 use crate::domain::{
-    EventKind, Member, MemberId, Refusal, Role, RunId, RunStatus, Task, TaskId, TaskStatus,
+    EventKind, Member, MemberId, Millis, Refusal, Role, RunId, RunStatus, Task, TaskId, TaskStatus,
     WakeReason,
 };
 
@@ -183,6 +183,43 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn judge_work(&self, task: &Task, cited: &[Vec<Ref>], how: &Judged<'_>) -> Done<()> {
         let found = self.look_up(Some(task), cited)?;
         evidence::judge(&task.criteria, &found, how).map_err(EngineError::Refused)
+    }
+
+    /// The work's last change, which a time-bound criterion waits from (ADR 0120): its latest
+    /// act that succeeded (a restart's receipt) on the task or under it, or the latest alarm
+    /// about the task, whichever is later; `None` when neither happened.
+    fn last_change(&self, task: TaskId) -> Done<Option<Millis>> {
+        let work = self.work_of(task)?;
+        let mut latest: Option<Millis> = None;
+        for run in self.store.runs()? {
+            if !run.task.is_some_and(|t| work.contains(&t)) {
+                continue;
+            }
+            for receipt in self.store.call_receipts_of(run.id)? {
+                if receipt.ok && receipt.act && receipt.tool != "push" {
+                    latest = latest.max(Some(receipt.at));
+                }
+            }
+        }
+        for event in self.store.events_after(0)? {
+            let alarm = (event.kind == "routine.fired" && event.data["firing"] == "alarm")
+                || (event.kind == "routine.posted" && event.data["recovered"] != true);
+            if alarm && event.data["task"].as_i64() == Some(task.0) {
+                latest = latest.max(Some(event.at));
+            }
+        }
+        Ok(latest)
+    }
+
+    /// Whether `task`'s time-bound criteria have waited their time, now.
+    pub(super) fn waited_for(&self, task: &Task) -> Done<()> {
+        evidence::waited(
+            &task.criteria,
+            self.last_change(task.id)?,
+            self.clock.now(),
+            self.settings.offset_minutes,
+        )
+        .map_err(EngineError::Refused)
     }
 
     /// Judges evidence for a decision or a message up: at least one reference, each in HQ's
@@ -469,6 +506,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 },
             )?;
         }
+        if check && holds {
+            self.waited_for(&current)?;
+        }
         self.set_status_held_lock(turn.member, task, to, reason)?;
         if judged {
             let stage = if check { CLOSED } else { SUBMITTED };
@@ -566,6 +606,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 own_reading: Some(turn.id),
             },
         )?;
+        self.waited_for(&current)?;
         self.keep_cited(task, &turn, TESTED, cited)?;
         let said = self.evidence_said(&cited.concat())?;
         self.post_held_lock(
@@ -664,6 +705,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 own_reading: None,
             },
         )?;
+        self.waited_for(&current)?;
         self.keep_cited(task, &turn, ACCEPTED, cited)?;
         let said = self.evidence_said(&cited.concat())?;
         self.post_held_lock(
@@ -785,10 +827,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A member's ended turns on a task, oldest first, each with whether it showed nothing:
-    /// talk only or empty by its label, or a reading of the same tools with the same arguments
-    /// as its turn before, which changed nothing (ADR 0114: live, a member read the lab's state
-    /// fourteen turns in a row to no effect). A first reading always shows something.
-    fn shown_nothing(&self, member: MemberId, task: TaskId) -> Done<Vec<(RunId, bool)>> {
+    /// talk only or empty by its label, or readings that its turn before had already taken
+    /// (the same tools with the same arguments, as their arguments read once spaces and an
+    /// empty `{}` are put aside), which changed nothing (ADR 0114: live, a member read the
+    /// lab's state fourteen turns in a row to no effect; and on #667 a lead re-read only the
+    /// status its turn before had read, four times). A first reading always shows something.
+    pub(super) fn shown_nothing(&self, member: MemberId, task: TaskId) -> Done<Vec<(RunId, bool)>> {
         let mut runs: Vec<Run> = self
             .store
             .runs()?
@@ -804,12 +848,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .call_receipts_of(run.id)?
                 .into_iter()
                 .filter(|r| r.ok)
-                .map(|r| (r.tool, r.args))
+                .map(|r| (r.tool, evidence::same_args(&r.args)))
                 .collect();
             read.sort();
             read.dedup();
             let nothing = match run.label {
-                Some(Label::Checked) => before.as_ref() == Some(&read),
+                Some(Label::Checked) => before
+                    .as_ref()
+                    .is_some_and(|b| !read.is_empty() && read.iter().all(|r| b.contains(r))),
                 Some(label) => !label.productive(),
                 None => false,
             };
@@ -855,7 +901,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             } else {
                 ""
             };
-            told.push_str(&format!("{}. {}{live}\n", i + 1, c.text));
+            let after = c
+                .after
+                .map(|m| format!(" [shown only {m} minutes after the work's last change]"))
+                .unwrap_or_default();
+            told.push_str(&format!("{}. {}{live}{after}\n", i + 1, c.text));
         }
         told
     }
@@ -1010,7 +1060,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         Ok(json!({
             "criteria": task.criteria.iter()
-                .map(|c| json!({ "text": c.text, "live": c.live })).collect::<Vec<_>>(),
+                .map(|c| json!({ "text": c.text, "live": c.live, "after": c.after }))
+                .collect::<Vec<_>>(),
             "cited": cited,
         }))
     }

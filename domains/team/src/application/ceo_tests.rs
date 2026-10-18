@@ -572,12 +572,12 @@ fn the_house_log_is_the_ceos_to_keep_and_starts_the_ceos_and_the_leads_turns() {
     )
     .unwrap();
     assert!(
-        said.ends_with("- 17 Oct: The NAS has 16 GB; sonarr needs 2."),
+        said.ends_with("- 17 Oct 2026: The NAS has 16 GB; sonarr needs 2."),
         "{said}"
     );
     assert_eq!(
         hq.house_log().unwrap(),
-        "- 17 Oct: The NAS has 16 GB; sonarr needs 2."
+        "- 17 Oct 2026: The NAS has 16 GB; sonarr needs 2."
     );
     let long = "x".repeat(501);
     assert!(use_tool(&hq, &ceo, "note_house", &json!({ "entry": long })).is_err());

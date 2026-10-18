@@ -170,7 +170,7 @@ function hqEvidence(t) {
   const rows = (n) => cited.filter((c) => c.criterion === n)
     .map((c) => `<li>${esc(stage[c.stage] || c.stage)}, ${esc(hqName(c.member))}<ul>${refs(c)}</ul></li>`).join("");
   const items = crit.length
-    ? crit.map((c, i) => `<li><b>${esc(c.text)}</b>${c.live ? " · live: a reading the same turn" : ""}<ul>${rows(i + 1) || `<li class="hq-empty">No evidence yet.</li>`}</ul></li>`).join("")
+    ? crit.map((c, i) => `<li><b>${esc(c.text)}</b>${c.live ? " · live: a reading the same turn" : ""}${c.after ? ` · shown ${Number(c.after)} min after the last change` : ""}<ul>${rows(i + 1) || `<li class="hq-empty">No evidence yet.</li>`}</ul></li>`).join("")
     : `<li><b>The work</b><ul>${rows(0)}</ul></li>`;
   const passed = cited.some((c) => c.stage === "tested") ? "Tester's pass: given." : "Tester's pass: not yet.";
   return `<div class="hq-evidence"><h3>What done means</h3><ul>${items}</ul><p class="hq-who">${passed}</p></div>`;

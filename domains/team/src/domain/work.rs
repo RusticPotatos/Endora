@@ -468,6 +468,15 @@ pub enum Refusal {
         /// What it says.
         text: String,
     },
+    /// A time-bound criterion that has not waited its time yet (ADR 0120).
+    TooSoon {
+        /// Which criterion, from 1.
+        criterion: usize,
+        /// What it says.
+        text: String,
+        /// When it may be shown, by the owner's clock: `00:44`.
+        until: String,
+    },
     /// Evidence from another piece of work than this one.
     NotThisWork(String),
     /// A receipt of a call that was refused or failed: it shows nothing.
@@ -678,6 +687,16 @@ impl fmt::Display for Refusal {
                 "criterion {criterion} ({text}) is about the lab now: cite a reading from this \
                  turn (take one now, e.g. homelab_status, and cite its receipt), not an older \
                  one or someone's word"
+            ),
+            Self::TooSoon {
+                criterion,
+                text,
+                until,
+            } => write!(
+                f,
+                "criterion {criterion} ({text}) needs time to show: wait until {until} (owner's \
+                 time), then cite a fresh reading. Set a check_back for then, rather than \
+                 closing it now"
             ),
             Self::NotThisWork(what) => {
                 write!(f, "{what} is not from this task's work: cite this work's own")

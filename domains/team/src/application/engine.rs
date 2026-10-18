@@ -1049,15 +1049,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .count())
     }
 
-    /// How long a wake that brings nothing new to `task` waits now (ADR 0107).
-    fn back_off(&self, task: Option<TaskId>, reason: WakeReason) -> Done<Millis> {
+    /// How long a wake that brings nothing new to `task` waits now (ADR 0107): its back-off,
+    /// and at least until [`wakes::AGAIN_AFTER_MS`] after `member`'s last turn on the task ended.
+    fn back_off(&self, member: MemberId, task: Option<TaskId>, reason: WakeReason) -> Done<Millis> {
         let Some(task) = task else {
             return Ok(0);
         };
         if reason.brings_news() {
             return Ok(0);
         }
-        Ok(routines::back_off(self.empty_turns(task)?))
+        let last_ended = self
+            .store
+            .runs()?
+            .iter()
+            .filter(|r| r.member == member && r.task == Some(task))
+            .filter_map(|r| r.ended_at)
+            .max();
+        let gap = last_ended.map_or(0, |at| {
+            (at + wakes::AGAIN_AFTER_MS - self.clock.now()).max(0)
+        });
+        Ok(routines::back_off(self.empty_turns(task)?).max(gap))
     }
 
     /// Queues a turn for a wake: at once, or, for a stale wake on a task whose turns keep
@@ -1078,13 +1089,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             run.asked_by_owner = true;
             self.store.save_run(&run)?;
         }
-        let wait = self.back_off(task, reason)?;
+        let wait = self.back_off(member, task, reason)?;
         if wait == 0 {
             return Ok((id, None));
         }
         run.status = RunStatus::RetryWaiting;
         run.retry_at = Some(now + wait);
-        run.end_reason = "backing off: its last turns moved nothing".to_owned();
+        run.end_reason =
+            "backing off: its last turns moved nothing, or it took one on this moments ago"
+                .to_owned();
         self.store.save_run(&run)?;
         Ok((id, Some(now + wait)))
     }
@@ -2004,7 +2017,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "input": tokens.map(|t| t.0), "output": tokens.map(|t| t.1) }),
         )?;
         if let Some(task) = run.task {
-            if label.is_some_and(crate::domain::Label::productive) {
+            // A turn that showed something earns its task a fresh recovery nudge; a reading the
+            // turn before had already taken shows nothing, so it earns none.
+            let repeated = self
+                .shown_nothing(run.member, task)?
+                .last()
+                .is_some_and(|(id, nothing)| *id == run.id && *nothing);
+            if label.is_some_and(crate::domain::Label::productive) && !repeated {
                 self.store.set_nudged(task, false)?;
             }
             self.release_held(task)?;
@@ -2029,7 +2048,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(false);
         };
         // A retry is a stale continuation: it backs off like one.
-        let due = due.max(now + self.back_off(run.task, WakeReason::Retry)?);
+        let due = due.max(now + self.back_off(run.member, run.task, WakeReason::Retry)?);
         if run.started_at.is_some() {
             self.store.settle(run.id, run.member, self.today(), now)?;
         }
@@ -2727,6 +2746,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(owner) = task.owner else {
                 continue;
             };
+            // Its member said when it comes back: that is its plan, not a stall (live, #667
+            // was woken every ten seconds while its check-back waited).
+            let coming_back = self.store.check_backs()?.iter().any(|c| {
+                c.task == task.id && c.member == owner && c.status == CheckBackStatus::Pending
+            });
+            if coming_back {
+                continue;
+            }
             if !task.nudged {
                 self.store.set_nudged(task.id, true)?;
                 self.wake_held_lock(owner, Some(task.id), WakeReason::Recovery)?;

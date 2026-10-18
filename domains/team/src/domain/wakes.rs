@@ -1,6 +1,11 @@
 //! Wakes: every turn a member takes starts with one, and every one leaves a receipt.
 
-use super::work::{MemberId, RunId};
+use super::work::{MemberId, Millis, RunId};
+
+/// How long after a member's turn on a task ended a wake that brings nothing new waits before
+/// its next turn on it: two minutes. Something new (a reply, an answer, an alarm, a
+/// check-back's time) is never kept waiting.
+pub const AGAIN_AFTER_MS: Millis = 2 * 60 * 1000;
 
 /// Why a member is asked to take a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
