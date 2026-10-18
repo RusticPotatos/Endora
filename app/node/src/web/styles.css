@@ -485,6 +485,14 @@
   .hq-replay-fold summary { overflow-wrap: anywhere; }
   .hq-replay-fold[open] summary { color: var(--hq-muted); }
   @media (min-width: 720px) { .hq-replay-moment { grid-template-columns: 70px 64px minmax(0, 1fr); } .hq-replay-tag { grid-column: 2; grid-row: 1; padding-top: 2px; } .hq-replay-body { grid-column: 3; grid-row: 1; } }
+  /* Games in the office (ADR 0121): a chess board of 64 squares, light and dark, with the pieces as letters. */
+  .hq-chess { display: grid; grid-template-columns: repeat(8, 1fr); width: min(100%, 288px); aspect-ratio: 1; border: 2px solid var(--hq-line); margin: 6px 0; }
+  .hq-chess span { display: grid; place-items: center; font: 400 clamp(16px, 5vw, 26px)/1 system-ui, sans-serif; background: #ecdcb8; color: #1f1d29; }
+  .hq-chess span.dark { background: #a97c50; }
+  .hq-chess span.white { color: #fffdf5; text-shadow: 0 0 2px #1f1d29, 0 0 1px #1f1d29; }
+  .hq-board { width: 100%; border-collapse: collapse; }
+  .hq-board td, .hq-board th { padding: 2px 6px; text-align: left; font-weight: 400; }
+  .hq-board td.n { text-align: right; }
   @media (prefers-reduced-motion: reduce) { .hq .hq-btn:active { transform: none; } }
 
   /* ---- The agenda (ADR 0103): the Now line and what is pinned above the chat ------------- */

@@ -1188,6 +1188,84 @@ if (failures.length) {
       runInContext(`HQ_BG = null; HQ_FURN = []; HQ.people = {}; HQ.snap = JSON.parse(${JSON.stringify(saved)});`, context);
     }
   }
+  // Games in the office (ADR 0121): a pool table and a chess table on the floor, kept in the
+  // places the rules of the office keep for them; leaderboards, the last five results and the
+  // chess games in the Office card; a board in the panel when the chess table is tapped; and the
+  // two players of a match walking to their table. Every name is the team's own words: text.
+  {
+    const saved = JSON.stringify(runInContext("HQ.snap", context));
+    try {
+      const fixtures = runInContext(`(() => {
+        const inside = (c, r) => c.cx >= r[0] && c.cx < r[2] && c.cy >= r[1] && c.cy < r[3];
+        const pool = [29, 15, 32, 18], chess = [23, 16, 24, 19];
+        const spots = (key) => HQ_WANDER.filter((s) => s[key]);
+        const tiles = (t, w, h) => { const out = []; for (let j = t.y; j < t.y + h; j++) for (let i = t.x; i < t.x + w; i++) out.push({ cx: i, cy: j }); return out; };
+        hqPlacePeople();
+        const W = HQ.world;
+        return [
+          HQ_P.pool.x === 29 && HQ_P.pool.y === 15 && HQ_P.pool.w === 3 && HQ_P.pool.h === 2 && HQ_P.chess.x === 23 && HQ_P.chess.y === 17,
+          tiles(HQ_P.pool, 3, 2).every((c) => inside(c, pool) && W.blocked.has(c.cx + "," + c.cy)),
+          inside(HQ_P.chess.x === 23 ? { cx: 23, cy: 17 } : {}, chess) && W.blocked.has("23,17"),
+          spots("pool").length === 2 && spots("pool").every((s) => inside(s, pool) && !W.blocked.has(s.cx + "," + s.cy)),
+          spots("chess").length === 2 && spots("chess").every((s) => inside(s, chess) && !W.blocked.has(s.cx + "," + s.cy)),
+          !!hqPathCells(hqAt(2, 17), spots("pool")[0]) && !!hqPathCells(hqAt(2, 17), spots("chess")[1]),
+        ];
+      })()`, context);
+      if (fixtures.some((ok) => !ok)) fail(`hq: the pool and chess tables are not where the office's rules keep them, or cannot be walked to: ${fixtures}`);
+      runInContext(`HQ.snap.games = {
+        ping_pong: { label: "ping-pong", last: { winner: "Bo", loser: "<i>Dee</i>", score: [11, 8], note: "" },
+          leaderboard: [{ member: 2, name: "Bo", wins: 3, losses: 1, streak: 2 }, { member: 4, name: "<i>Dee</i>", wins: 1, losses: 3, streak: -2 }] },
+        pool: { label: "pool", last: { winner: "Cy", loser: "Bo", score: [4, 7], note: "Bo scratched on the 8" },
+          leaderboard: [{ member: 3, name: "Cy", wins: 1, losses: 0, streak: 1 }] },
+        chess: { label: "chess", leaderboard: [{ member: 1, name: "Ada", wins: 1, losses: 0, draws: 2 }],
+          games: [{ id: 1, white: "Ada", black: "<b>Bo</b>", status: "in_progress", reason: "", moves: ["e4", "e5"], move_text: "1. e4 e5 2. Nf3 <script>x</script>",
+            rows: ["rnbqkbnr", "pppp.ppp", "........", "....p...", "....P...", "........", "PPPP.PPP", "RNBQKBNR"], fen: "x", check: false, to_move: "Ada", result: "" }] },
+        recent: [1, 2, 3, 4, 5].map((n) => ({ id: n, game: "pool", text: "Result " + n + " <u>x</u>", at: 100 - n })) };
+        HQ.selected = null;`, context);
+      const card = runInContext("hqOffice(HQ.snap)", context);
+      for (const want of ["<h3>Games</h3>", "Ping-pong", "Pool", "Chess", "W2", "L2", "Result 5", 'data-act="hq:pick:chess:0"', "&lt;i&gt;Dee&lt;/i&gt;", "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) {
+        if (!card.includes(want)) fail(`hq: the Office card's Games section lacks ${want}`);
+      }
+      if (["<i>Dee</i>", "<b>Bo</b>", "<u>x</u>"].some((raw) => card.includes(raw))) fail("hq: a name or result in the Games section is not escaped");
+      runInContext(`HQ.selected = { type: "chess", id: 0 };`, context);
+      const panel = runInContext("hqSelected()", context);
+      if ((panel.match(/<span/g) || []).length !== 64) fail(`hq: the chess panel's board is not 64 squares: ${(panel.match(/<span/g) || []).length}`);
+      for (const want of ["Ada (white) against &lt;b&gt;Bo&lt;/b&gt; (black)", "Ada to move", "1. e4 e5 2. Nf3 &lt;script&gt;x&lt;/script&gt;", "♚", "♟"]) {
+        if (!panel.includes(want)) fail(`hq: the chess panel lacks ${want}`);
+      }
+      if (panel.includes("<script>")) fail("hq: the chess panel does not escape a move list");
+      runInContext(`HQ.selected = { type: "pool", id: 0 };`, context);
+      const table = runInContext("hqSelected()", context);
+      if (!table.includes("Pool") || !table.includes("Cy") || !table.includes("Bo scratched on the 8")) fail("hq: tapping the pool table does not show its board");
+      runInContext(`HQ.selected = { type: "ping_pong", id: 0 };`, context);
+      if (!runInContext("hqSelected()", context).includes("BO 11-8 &lt;I&gt;")) fail("hq: tapping the ping-pong table does not show its latest match");
+      // A match played: the winner and the other walk to the table's two sides, each saying so.
+      const played = runInContext(`(() => {
+        for (const m of HQ.snap.members) m.running = [];
+        hqPlacePeople();
+        const bo = HQ.people[2], cy = HQ.people[3], out = [];
+        hqTell({ id: 90, at: 0, kind: "game.played", data: { game: "pool", winner: "Cy", winner_id: 3, loser: "Bo", loser_id: 2, score: [8, 5], text: "Cy beat Bo 8–5 at pool" } }, true);
+        out.push(cy.wander.pool === "L", bo.wander.pool === "R", cy.path.length > 0, cy.bubble.includes("8"), bo.bubble === "good game", HQ.log[0].text === "Cy beat Bo 8–5 at pool");
+        cy.path = []; bo.path = []; cy.at = cy.wander; bo.at = bo.wander;
+        out.push(!!hqPool() && hqPool().length === 2);
+        // For someone who asked for calm, nobody walks.
+        cy.wander = null; bo.wander = null; globalThis.matchMedia = () => ({ matches: true });
+        hqTell({ id: 91, at: 0, kind: "game.played", data: { game: "ping_pong", winner: "Cy", winner_id: 3, loser: "Bo", loser_id: 2, score: [11, 9], text: "x" } }, true);
+        out.push(cy.wander === null && bo.wander === null); delete globalThis.matchMedia;
+        // A member at work stays at work.
+        HQ.snap.members.find((m) => m.id === 3).running = [{ run: 5, task: 7 }]; hqPlacePeople();
+        hqTell({ id: 92, at: 0, kind: "game.played", data: { game: "ping_pong", winner: "Cy", winner_id: 3, loser: "Bo", loser_id: 2, score: [11, 9], text: "x" } }, true);
+        out.push(HQ.people[3].wander === null || HQ.people[3].working);
+        HQ.snap.members.find((m) => m.id === 3).running = [];
+        for (const p of Object.values(HQ.people)) { p.wander = null; p.path = []; }
+        return out;
+      })()`, context);
+      if (played.some((ok) => !ok)) fail(`hq: a match played does not take its two players to the table: ${played}`);
+    } finally {
+      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.people = {};`, context);
+    }
+    console.log("hq: the pool and chess tables stand where the rules keep them, the Games section and the chess board read the snapshot, and a match takes its players to the table");
+  }
   const cards = runInContext(`HQ.snap.goals.push({ id: 2, title: "The demo's goal", status: "dropped" });
     for (let i = 0; i < 40; i++) HQ.snap.tasks.unshift({ id: 100 + i, goal: 2, title: "demo", status: "done" });
     hqCards().map((c) => c.t.id)`, context);

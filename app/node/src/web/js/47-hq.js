@@ -54,6 +54,10 @@ const HQ_P = {
   boardRoom: { x: 0, y: 2, w: 7, h: 5 }, boardDoor: hqAt(6, 7, { dir: "up" }),
   engine: { x: 27, y: 2, w: 5, h: 5 }, rack: { x: 30.2, y: 2.4 }, jar: { x: 27.8, y: 2.8 },
   door: { x: 30, y: 10.5 }, lobby: hqAt(29, 12, { dir: "left" }), pong: { x: 3, y: 17 }, tap: { x: 16.4, y: 15.6 },
+  // The games (ADR 0121): a pool table three tiles by two at the lounge's far side, and a chess
+  // table one tile square. The rules of the office keep these tiles, and the row below the pool
+  // table and the tiles above and below the chess table where their players stand, free.
+  pool: { x: 29, y: 15, w: 3, h: 2 }, chess: { x: 23, y: 17 },
 };
 // The pods' ground: the band the teams' desks stand in, each desk three tiles by two, two
 // desks to a row with a two-tile aisle between them where their members stand facing each
@@ -84,6 +88,9 @@ const HQ_CEO = {
 const HQ_WANDER = [
   hqAt(2, 17, { dir: "right", pong: "L" }), hqAt(7, 17, { dir: "left", pong: "R" }),
   hqAt(26, 18, { dir: "up" }), hqAt(27, 18, { dir: "up" }), hqAt(17, 17, { dir: "up" }),
+  // The pool table's two sides and the chess table's two seats: two idle members at a pair play.
+  hqAt(29, 17, { dir: "up", pool: "L" }), hqAt(31, 17, { dir: "up", pool: "R" }),
+  hqAt(23, 16, { dir: "down", chess: "W" }), hqAt(23, 18, { dir: "up", chess: "B" }),
 ];
 const HQ_ART = {
   floors: { plank: "floors/floor_5.png", grid: "floors/floor_3.png", plain: "floors/floor_1.png", check: "floors/floor_7.png" },
@@ -284,6 +291,12 @@ function hqTell(e, live, older) {
     "office.changed": [d.via === "owner_undo" || d.via === "owner_reset" ? "you" : "done", d.text || "The office changed"],
     "office.dropped": ["warn", d.text || ""],
     "office.vetoed": ["you", d.text || ""],
+    // Games (ADR 0121): ping-pong and pool the engine plays, and chess the members play. The
+    // words are HQ's, with the members' names in them, so the log escapes them like the rest.
+    "game.played": ["run", d.text || ""],
+    "chess.started": ["run", d.text || ""],
+    "chess.moved": ["run", d.text || ""],
+    "chess.ended": ["done", d.text || ""],
   }[e.kind];
   if (said) {
     const at = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -326,6 +339,8 @@ function hqTell(e, live, older) {
   }
   // Someone proposed a change to the office: they say so over their head.
   if (e.kind === "office.proposed" && p) hqSay(p, "an idea for the office");
+  // A match of ping-pong or pool was played: the two walk to the table and say how it went.
+  if (e.kind === "game.played") hqPlayMatch(d);
   // The CEO's decision for the board: it takes it to the board room's door, and back.
   if (e.kind === "desk.added" && d.kind === "decision" && boss) {
     boss.errand = { kind: "board", hold: 2.5, say: "for the board", spot: { ...HQ_P.boardDoor, dir: "up" } };
@@ -550,6 +565,7 @@ function hqWorld() {
   block(m.x, m.y, 2, 2); block(12, 18); block(13, 18); block(14, 17, 2, 1);
   block(26, 16, 2, 2); block(26, 18); block(27, 18); block(28, 16);
   block(HQ_P.pong.x, HQ_P.pong.y, 4, 1); block(16, 15, 4, 2);
+  block(HQ_P.pool.x, HQ_P.pool.y, HQ_P.pool.w, HQ_P.pool.h); block(HQ_P.chess.x, HQ_P.chess.y);
   for (const pod of HQ.pods) for (const d of pod.desks) block(d.x, d.y, d.w, d.h);
   for (const it of hqItems()) if (it.kind !== "rug" && !it.wall) block(it.x, it.y, it.w, it.h);
   return { blocked, edges };
@@ -662,6 +678,19 @@ function hqPaintRoom() {
   const px = P.pong.x * T, py = P.pong.y * T;
   g.fillStyle = C.shadow; g.fillRect(px + 2, py + 13, 66, 4); g.fillStyle = "#1f7a4f"; g.fillRect(px, py, 66, 13); g.fillStyle = "#ffffff"; g.fillRect(px, py + 6, 66, 1); g.fillRect(px + 32, py - 3, 2, 16);
   g.fillStyle = "#3b4048"; g.fillRect(px + 4, py + 13, 2, 4); g.fillRect(px + 60, py + 13, 2, 4);
+  // Pool (ADR 0121): a wooden rail round green cloth, six pockets, the rack of balls and the cue ball.
+  const lx = P.pool.x * T, ly = P.pool.y * T, lw = P.pool.w * T, lh = P.pool.h * T;
+  g.fillStyle = C.shadow; g.fillRect(lx + 2, ly + 3, lw, lh); g.fillStyle = "#6b4423"; g.fillRect(lx, ly, lw, lh - 2);
+  g.fillStyle = "#1d6b46"; g.fillRect(lx + 3, ly + 3, lw - 6, lh - 8);
+  g.fillStyle = "#12261c";
+  for (const [qx, qy] of [[0, 0], [lw / 2 - 2, -1], [lw - 5, 0], [0, lh - 7], [lw / 2 - 2, lh - 6], [lw - 5, lh - 7]]) g.fillRect(lx + qx + 1, ly + qy + 1, 4, 4);
+  const balls = ["#e8d12e", "#2f5fc4", "#d8434a", "#7a3fb0", "#e8801f", "#2c9a5a"];
+  [[0, 0], [2, -1], [2, 1], [4, -2], [4, 0], [4, 2]].forEach(([bx, by], i) => { g.fillStyle = balls[i]; g.fillRect(lx + 30 + bx, ly + 12 + by, 2, 2); });
+  g.fillStyle = "#ffffff"; g.fillRect(lx + 12, ly + 12, 2, 2); g.fillStyle = "#12261c"; g.fillRect(lx + 36, ly + 12, 2, 2);
+  // Chess: a small table with a board on it; the position of the live game is drawn on top.
+  const cx = P.chess.x * T, cy = P.chess.y * T;
+  g.fillStyle = C.shadow; g.fillRect(cx + 1, cy + 1, 16, 16); g.fillStyle = "#6b4423"; g.fillRect(cx - 1, cy - 1, 18, 18);
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { g.fillStyle = (r + c) % 2 ? "#a97c50" : "#ecdcb8"; g.fillRect(cx + c * 2, cy + r * 2, 2, 2); }
   // The kitchen and lounge: cold brew and the snack shelf on the lounge's back, shared by all.
   g.fillStyle = "#cfd6dd"; g.fillRect(P.tap.x * T, P.tap.y * T - 6, 14, 20); g.fillStyle = "#3a2a1e"; g.fillRect(P.tap.x * T + 3, P.tap.y * T - 3, 8, 7); g.fillStyle = "#222"; g.fillRect(P.tap.x * T + 6, P.tap.y * T + 5, 2, 3);
   g.fillStyle = "#b8a68a"; g.fillRect(17.8 * T, 15.6 * T, 2.2 * T, 3); g.fillRect(17.8 * T, 16.4 * T, 2.2 * T, 3);
@@ -845,10 +874,27 @@ function hqCards() {
 
 // Whoever is at the two ends of the ping-pong table, both of them idle and standing there,
 // play. Any two: the teams mix at the table as anywhere else.
-function hqPong() {
-  const at = (end) => Object.values(HQ.people).find((p) => p.at && p.at.pong === end && !p.working && !p.path.length && !p.paused && !p.errand && !p.meeting);
-  const left = at("L"), right = at("R");
-  return left && right ? [left, right] : null;
+function hqPair(key, ends) {
+  const at = (end) => Object.values(HQ.people).find((p) => p.at && p.at[key] === end && !p.working && !p.path.length && !p.paused && !p.errand && !p.meeting);
+  const first = at(ends[0]), second = at(ends[1]);
+  return first && second ? [first, second] : null;
+}
+function hqPong() { return hqPair("pong", ["L", "R"]); }
+// The same at the pool table's two sides and at the chess table's two seats (ADR 0121).
+function hqPool() { return hqPair("pool", ["L", "R"]); }
+function hqChessPair() { return hqPair("chess", ["W", "B"]); }
+
+// A match was played in the engine (ADR 0121): the two walk to that game's table, the winner
+// says the score and the other says good game. Nobody walks for someone who asks for calm, or
+// who is at work.
+function hqPlayMatch(d) {
+  const key = d.game === "pool" ? "pool" : "pong";
+  const ends = HQ_WANDER.filter((s) => s[key]);
+  const winner = HQ.people[d.winner_id], loser = HQ.people[d.loser_id];
+  if (hqCalm() || ends.length < 2 || !winner || !loser || winner.working || loser.working || winner.errand || loser.errand) return;
+  [[winner, ends[0], (d.score || []).join("–") + "!"], [loser, ends[1], "good game"]].forEach(([p, spot, say]) => {
+    p.wander = spot; p.idleT = 30; hqGo(p); hqSay(p, say); p.bubbleT = 14;
+  });
 }
 
 function hqFrame(p) {
@@ -862,6 +908,10 @@ function hqFrame(p) {
   if (p.working) return { dir, frame: reads ? 5 + (Math.floor(HQ.t * 1.5) % 2) : 3 + (Math.floor(HQ.t * 6) % 2) };
   const pong = hqPong();
   if (pong && pong.includes(p)) return { dir: at.pong === "L" ? "right" : "left", frame: 3 + (Math.floor(HQ.t * 4) % 2) };
+  // Pool: they lean over the table by turns; chess: they sit and think, reading.
+  const pool = hqPool(), chess = hqChessPair();
+  if (pool && pool.includes(p)) return { dir, frame: Math.floor(HQ.t / 2 + (at.pool === "L" ? 0 : 1)) % 2 ? 3 : 0 };
+  if (chess && chess.includes(p)) return { dir, frame: 5 + (Math.floor(HQ.t * 1.5) % 2) };
   return { dir, frame: p.paused ? 1 : 0 };
 }
 
@@ -919,6 +969,7 @@ function hqDraw() {
   if ((HQ.doorFlash || 0) > 0) { ctx.fillStyle = `rgba(255,79,163,${Math.min(.35, HQ.doorFlash / 3)})`; ctx.fillRect(P.door.x * T - 4, P.door.y * T - 4, 2 * T + 8, 3 * T + 4); }
   // A ping-pong ball between the two at the table.
   if (hqPong()) { const k = (Math.sin(HQ.t * 4) + 1) / 2, bx = P.pong.x * T + 6 + k * 56, by = P.pong.y * T + 2 - Math.abs(Math.sin(HQ.t * 8)) * 9; ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(bx), Math.round(by), 2, 2); }
+  hqDrawGames(ctx, snap);
   // People and furniture, in depth order.
   const people = Object.values(HQ.people);
   const items = HQ_FURN.map((f) => ({ base: f.base, f }));
@@ -958,9 +1009,42 @@ function hqDraw() {
   for (const p of people) hqBubble(ctx, p);
 }
 
+// The games on the floor (ADR 0121): the scoreboards the engine keeps by the ping-pong and the
+// pool table, the cue ball while two play pool, and the live game of chess on its board. The
+// names are the team's own, so they are drawn as canvas text and never as markup.
+function hqScoreLine(last) {
+  if (!last) return "";
+  const short = (name) => String(name || "").toUpperCase().slice(0, 5);
+  return `${short(last.winner)} ${(last.score || []).join("-")} ${short(last.loser)}`;
+}
+function hqDrawGames(ctx, snap) {
+  const T = HQ_T, P = HQ_P, games = snap.games || {};
+  ctx.font = HQ_PIXEL;
+  const ping = hqScoreLine((games.ping_pong || {}).last);
+  if (ping) { ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.fillText(ping, 4, 15 * T + 21); }
+  const pool = hqScoreLine((games.pool || {}).last);
+  if (pool) { ctx.fillStyle = "rgba(31,29,41,.75)"; ctx.fillText(pool, HQ_W - Math.ceil(ctx.measureText(pool).width) - 3, P.pool.y * T - 3); }
+  // Two at the pool table: the cue ball rolls to and fro along the cloth.
+  if (hqPool()) {
+    const k = (Math.sin(HQ.t * 1.6) + 1) / 2;
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(P.pool.x * T + 8 + k * 14), Math.round(P.pool.y * T + 12), 2, 2);
+  }
+  // The live game of chess, as pieces on the little board: white ones light, black ones dark,
+  // pawns a single dot.
+  const live = ((games.chess || {}).games || []).find((g) => g.status === "in_progress");
+  if (live && live.rows) {
+    live.rows.forEach((row, r) => [...String(row)].forEach((ch, c) => {
+      if (ch === ".") return;
+      const white = ch === ch.toUpperCase(), pawn = ch.toLowerCase() === "p";
+      ctx.fillStyle = white ? "#fffdf5" : "#1f1d29";
+      ctx.fillRect(P.chess.x * T + c * 2, P.chess.y * T + r * 2, pawn ? 1 : 2, pawn ? 1 : 2);
+    }));
+  }
+}
+
 // A speech bubble: what was just said, else what they are doing, else their idle word.
 function hqBubble(ctx, p) {
-  const pong = hqPong(), playing = pong && pong.includes(p);
+  const playing = [hqPong(), hqPool(), hqChessPair()].some((pair) => pair && pair.includes(p));
   const said = p.bubbleT > 0 ? p.bubble : "";
   const doing = p.working && !p.path.length ? hqShort(p.doing) : "";
   const idle = !p.working && !playing && !p.path.length && !p.errand && !p.meeting ? (p.paused ? "over budget" : HQ_IDLE[p.role] || "") : "";
@@ -1021,6 +1105,11 @@ function hqTap(ev) {
   }
   if (x >= HQ_P.lever.x * HQ_T && x <= HQ_P.lever.x * HQ_T + 16 && y >= HQ_P.lever.y * HQ_T && y <= HQ_P.lever.y * HQ_T + 20) {
     dispatch(HQ.snap && HQ.snap.stopped ? "hq:resume" : "hq:stop"); return;
+  }
+  // A games table (ADR 0121): the chess board, or the pool and ping-pong leaderboards.
+  const over = (r) => x >= r.x * HQ_T - 2 && x <= (r.x + (r.w || 1)) * HQ_T + 2 && y >= r.y * HQ_T - 2 && y <= (r.y + (r.h || 1)) * HQ_T + 2;
+  for (const [type, table] of [["chess", HQ_P.chess], ["pool", HQ_P.pool], ["ping_pong", { ...HQ_P.pong, w: 4 }]]) {
+    if (over(table)) { HQ.selected = { type, id: 0 }; render(); return; }
   }
   // A thing on the floor: who put it there.
   for (const it of hqItems()) {
@@ -1126,7 +1215,7 @@ function viewHQ() {
     <div class="hq-main">
       <div class="hq-stage">
         <canvas id="hq-office" width="${HQ_W}" height="${HQ_H}"
-          aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the CEO's office with its door open, the meeting room, the kitchen and lounge, ping-pong, the server closet, the board room"></canvas>
+          aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the CEO's office with its door open, the meeting room, the kitchen and lounge, ping-pong, a pool table, a chess table, the server closet, the board room"></canvas>
         <div class="hq-stats">${stats}</div>
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
         ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
@@ -1272,7 +1361,75 @@ function hqOffice(s) {
     <div class="hq-row"><button class="hq-btn" data-act="hq:office:undo:go"${o.can_undo ? "" : " disabled"}>Undo last change</button>
       <button class="hq-btn no" data-act="hq:office:reset:go">Reset the office</button></div>
     <p class="hq-who">Paid members' downtime: ${hqDollars(cents * 10000)} a day${cents ? ` (${hqDollars((o.downtime_paid_cents_used || 0) * 10000)} used today)` : ""} — <button class="hq-btn" data-act="hq:office:downtime:set">change</button></p>
+    ${hqGames(s)}
   </section>`;
+}
+
+// ---- games in the office (ADR 0121) -----------------------------------------------------
+// Ping-pong and pool the engine plays for nothing, and chess the members play in their
+// downtime. Every name and every result is the team's own words, so all of it is escaped.
+
+const HQ_PIECES = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+
+function hqStreak(n) { return n > 0 ? `W${n}` : n < 0 ? `L${-n}` : "–"; }
+
+// One game's leaderboard as a table: most wins first.
+function hqLeaderboard(game, chess) {
+  const rows = (game && game.leaderboard) || [];
+  if (!rows.length) return `<p class="hq-empty">Nobody has played yet.</p>`;
+  const head = chess ? "<th>Won</th><th>Lost</th><th>Drawn</th>" : "<th>Won</th><th>Lost</th><th>Run</th>";
+  const body = rows.map((r) => `<tr><td>${esc(r.name)}</td><td class="n">${Number(r.wins)}</td><td class="n">${Number(r.losses)}</td>
+    <td class="n">${chess ? Number(r.draws) : esc(hqStreak(Number(r.streak)))}</td></tr>`).join("");
+  return `<table class="hq-board"><thead><tr><th>Player</th>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+// A chess board of 64 squares from the position's eight rows; capitals are white's pieces.
+function hqChessBoard(c) {
+  const squares = (c.rows || []).map((row, r) => [...String(row)].map((ch, f) => {
+    const piece = ch === "." ? "" : HQ_PIECES[ch.toLowerCase()] || "", white = ch !== "." && ch === ch.toUpperCase();
+    return `<span class="${(r + f) % 2 ? "dark" : ""}${white ? " white" : ""}">${piece}</span>`;
+  }).join("")).join("");
+  return `<div class="hq-chess" role="img" aria-label="${esc(`Chess board, ${c.white} against ${c.black}: ${c.fen}`)}">${squares}</div>`;
+}
+
+// One game of chess: who plays, the board, whose move it is or the result, and the moves.
+function hqChessGame(c) {
+  const state = c.status === "in_progress" ? `${esc(c.to_move)} to move${c.check ? " · in check" : ""}` : esc(c.result);
+  return `<div class="hq-sel">${esc(c.white)} (white) against ${esc(c.black)} (black)</div>${hqChessBoard(c)}
+    <p>${state}</p><p class="hq-note">${c.move_text ? esc(c.move_text) : "No moves yet."}</p>`;
+}
+
+// What the chess table shows when tapped: the games being played and the last finished ones.
+function hqChessPanel() {
+  const games = (((HQ.snap || {}).games || {}).chess || {}).games || [];
+  if (!games.length) return `<div class="hq-sel">Chess</div><p class="hq-empty">No game of chess yet. A member challenges another in their downtime.</p>`;
+  return games.map(hqChessGame).join("");
+}
+
+// What a games table shows when tapped: its leaderboard and the latest match there.
+function hqTablePanel(id) {
+  const g = ((HQ.snap || {}).games || {})[id] || {};
+  const label = id === "pool" ? "Pool" : "Ping-pong", last = g.last;
+  return `<div class="hq-sel">${label}</div>${hqLeaderboard(g, false)}
+    <p class="hq-note">${last ? `Latest: ${esc(hqScoreLine(last))}${last.note ? ` (${esc(last.note)})` : ""}` : "Played by whoever has nothing to do, for nothing."}</p>`;
+}
+
+// The Games section of the Office card: the three leaderboards, the last five results, and the
+// games of chess being played, each a tap away from its board.
+function hqGames(s) {
+  const g = s.games;
+  if (!g) return "";
+  const recent = (g.recent || []).map((r) => `<li>${esc(r.text)}</li>`).join("");
+  const playing = (((g.chess || {}).games) || []).filter((c) => c.status === "in_progress")
+    .map((c) => `<li>${esc(c.white)} against ${esc(c.black)}: ${esc(c.to_move)} to move, ${(c.moves || []).length} moves
+      <button class="hq-btn" data-act="hq:pick:chess:0">Look at the board</button></li>`).join("");
+  return `<h3>Games</h3>
+    <p class="hq-note">Ping-pong and pool are played by the office on its own, for nothing; chess is played by the members, a move in each downtime turn.</p>
+    <details open><summary>Ping-pong</summary>${hqLeaderboard(g.ping_pong, false)}</details>
+    <details open><summary>Pool</summary>${hqLeaderboard(g.pool, false)}</details>
+    <details open><summary>Chess</summary>${hqLeaderboard(g.chess, true)}</details>
+    ${playing ? `<p class="hq-who">Playing now</p><ul class="hq-team">${playing}</ul>` : ""}
+    ${recent ? `<p class="hq-who">Latest results</p><ul class="hq-team">${recent}</ul>` : `<p class="hq-empty">No results yet.</p>`}`;
 }
 
 // Whether a push on the desk can be approved: the node has a deploy key, so the card says
@@ -1514,6 +1671,8 @@ function hqRoutines(s) {
 function hqSelected() {
   const sel = HQ.selected;
   if (!sel) return `<p class="hq-empty">Tap a worker or a card on the board.</p>`;
+  if (sel.type === "chess") return hqChessPanel();
+  if (sel.type === "pool" || sel.type === "ping_pong") return hqTablePanel(sel.type);
   const why = (t) => `<ul class="hq-why">${(t.why || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul>`;
   if (sel.type === "member") {
     const m = hqMember(sel.id); if (!m) return "";
