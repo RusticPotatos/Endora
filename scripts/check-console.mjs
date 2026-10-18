@@ -746,6 +746,10 @@ if (failures.length) {
     hqTell({ id: 52, at: 0, kind: "run.ended", data: { run: 10, member: 2, task: 7, result: "succeeded", label: "talk only" } }, false);
     hqTell({ id: 53, at: 0, kind: "huddle.called", data: { task: 7, lead: 1, members: [1, 2] } }, false);
     hqTell({ id: 54, at: 0, kind: "huddle.decided", data: { task: 7, lead: 1, decision: "hand_to" } }, false);`, context);
+  // The activity log shows ten lines at first (the Work tab is not the place for a wall of
+  // them); this block reads all of them.
+  if (runInContext("HQ.logShown", context) !== 10) fail("hq: the activity log does not start at ten lines");
+  runInContext("HQ.logShown = 30;", context);
   const office = runInContext("viewHQ()", context);
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · in 19000 / out 100 · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
     "R7 Bo retry waiting: the turn was over: exit 3: worker: the turn is over: HQ answered 401 (&lt;token&gt;)",
@@ -1138,12 +1142,21 @@ if (failures.length) {
       HQ.snap.mac = { ready: false, why: "owner active", running: 0, waiting: 2 }; HQ.macToken = "";`, context);
     const card = runInContext("hqMacCard(HQ.snap)", context);
     for (const want of ["<h2>The Mac", ">away<", "You are using it", "2 turns wait for it", "plugged in · idle 0 min · model up", "heard 12 s ago",
-      'data-act="hq:mac:busy:on"', "Mac busy: off", 'aria-pressed="false"', 'id="hq-mac-url" value="http://192.168.1.10:8080/v1"', 'id="hq-mac-model" value="coder"',
-      'id="hq-mac-key" type="password"', "Key kept; type to replace it", 'id="hq-mac-idle"', 'data-act="hq:mac:save:go"', 'data-act="hq:mac:token:make"',
-      "Make a new token for the helper", "never fall back to another model"]) {
+      'data-act="hq:mac:busy:on"', "Mac busy: off", 'aria-pressed="false"', 'data-act="go:macbrain">Set up in Settings']) {
       if (!card.includes(want)) fail(`mac: the card does not show ${want}`);
     }
-    if (card.includes("the-macs-key")) fail("mac: the card shows the key");
+    // The setup is not on HQ: it is on the Settings screen, which says so in its breadcrumb.
+    for (const setup of ['id="hq-mac-url"', 'id="hq-mac-model"', 'id="hq-mac-key"', 'id="hq-mac-idle"', 'data-act="hq:mac:save:go"', 'data-act="hq:mac:token:make"', "Set up the Mac"]) {
+      if (card.includes(setup) || runInContext("viewHQ()", context).includes(setup)) fail(`mac: the HQ screen still has the setup (${setup})`);
+    }
+    const setup = runInContext("viewMacbrain()", context);
+    for (const want of ["Settings", "The Mac&#39;s brain", 'id="hq-mac-url" value="http://192.168.1.10:8080/v1"', 'id="hq-mac-model" value="coder"',
+      'id="hq-mac-key" type="password"', "Key kept; type to replace it", 'id="hq-mac-idle"', 'data-act="hq:mac:save:go"', 'data-act="hq:mac:token:make"',
+      "Make a new token for the helper", "never fall back to another model"]) {
+      if (!setup.includes(want) && !setup.includes(want.replace("&#39;", "'"))) fail(`mac: the Settings screen does not show ${want}`);
+    }
+    if (setup.includes("the-macs-key")) fail("mac: the Settings screen shows the key");
+    if (!runInContext("UNDER_SETTINGS.map((p) => p.view)", context).includes("macbrain") || !runInContext("viewSettings()", context).includes('data-act="go:macbrain"')) fail("mac: Settings does not lead to the Mac's setup");
     if (!runInContext("viewHQ()", context).includes("<h2>The Mac")) fail("mac: the HQ screen has no Mac card");
     const reasons = {
       ready: "Free: the team may use it", "on battery": "On battery: the model is unloaded", busy: "Mac busy is on: the model is unloaded",
@@ -1155,11 +1168,11 @@ if (failures.length) {
     }
     const busy = runInContext(`HQ.mac.busy = true; hqMacCard(HQ.snap)`, context);
     if (!busy.includes('data-act="hq:mac:busy:off"') || !busy.includes("Mac busy: on") || !busy.includes('aria-pressed="true"')) fail("mac: the busy switch does not show it is on");
-    const hostile = runInContext(`HQ.mac.url = '"><b>x</b>'; HQ.mac.model = "<i>m</i>"; const h = hqMacCard(HQ.snap); HQ.mac.url = "http://192.168.1.10:8080/v1"; HQ.mac.model = "coder"; HQ.mac.busy = false; h`, context);
+    const hostile = runInContext(`HQ.mac.url = '"><b>x</b>'; HQ.mac.model = "<i>m</i>"; const h = hqMacCard(HQ.snap) + viewMacbrain(); HQ.mac.url = "http://192.168.1.10:8080/v1"; HQ.mac.model = "coder"; HQ.mac.busy = false; h`, context);
     if (hostile.includes("<b>x</b>") || hostile.includes("<i>m</i>")) fail("mac: an address or model name became markup");
     if (runInContext("HQ.mac = null; hqMacCard(HQ.snap)", context) !== "") fail("mac: a node that cannot say shows a card");
     runInContext(`HQ.mac = { ready: true, why: "ready", busy: false, url: "", model: "mac", has_key: false, has_token: false, idle_minutes: 10, heard_s_ago: null };`, context);
-    const fresh = runInContext("hqMacCard(HQ.snap)", context);
+    const fresh = runInContext("hqMacCard(HQ.snap) + viewMacbrain()", context);
     if (!fresh.includes("heard never") || !fresh.includes("Make a token for the helper") || !fresh.includes("Key (the server&#39;s --api-key)") && !fresh.includes("Key (the server's --api-key)")) fail("mac: a Mac never set up does not say so");
     // The Mac is a brain on the roster and on the hire form, and costs nothing.
     if (runInContext('hqBrainTag("mac")', context) !== "Mac") fail("mac: the roster does not tag the Mac brain");
@@ -1178,9 +1191,9 @@ if (failures.length) {
     await runInContext(`hqDispatch("hq", "mac", "save", "go")`, context);
     await runInContext(`HQ.mac.has_token = true; confirm = () => false; hqDispatch("hq", "mac", "token", "make")`, context);
     await runInContext(`confirm = () => true; hqDispatch("hq", "mac", "token", "make")`, context);
-    const shownOnce = runInContext("hqMacCard(HQ.snap)", context);
+    const shownOnce = runInContext("viewMacbrain()", context);
     await runInContext(`hqDispatch("hq", "mac", "busy", "off")`, context);
-    const forgotten = runInContext("hqMacCard(HQ.snap)", context);
+    const forgotten = runInContext("viewMacbrain()", context);
     const calls = JSON.stringify(runInContext("macCalls", context));
     runInContext(`api = macKeepApi; document.getElementById = macKeepGet; confirm = macKeepConfirm;`, context);
     const want = ["POST /v1/mac/settings {\"busy\":true}", "GET /v1/mac",
@@ -1466,6 +1479,176 @@ if (failures.length) {
     for (let i = 0; i < 40; i++) HQ.snap.tasks.unshift({ id: 100 + i, goal: 2, title: "demo", status: "done" });
     hqCards().map((c) => c.t.id)`, context);
   if (cards.length !== 2 || cards[0] !== 7 || cards[1] !== 9) fail(`hq: a dropped goal's tasks are still on the board: ${cards}`);
+  // The screen's tabs (the owner: "it's all been expanded over time, hard to find stuff").
+  {
+    runInContext("HQ.selected = null; HQ.tab = null; HQ.working = false; HQ.workDraft = {}; HQ.stageOpen = null;", context);
+    const shown = () => runInContext("viewHQ()", context);
+    const tabs = shown();
+    for (const id of ["desk", "team", "work", "knowledge", "office"]) {
+      if (!tabs.includes(`role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}"`)) fail(`hq: no ${id} tab`);
+      if (!tabs.includes(`role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"`)) fail(`hq: no ${id} panel`);
+    }
+    if (!tabs.includes('role="tablist"')) fail("hq: the tabs are not a tablist");
+    const selected = (html) => [...html.matchAll(/id="hq-tab-(\w+)"[^>]*aria-selected="true"/g)].map((m) => m[1]);
+    const hiddenPanels = (html) => [...html.matchAll(/id="hq-panel-(\w+)"[^>]*? hidden>/g)].map((m) => m[1]).sort().join(",");
+    if (selected(tabs).join() !== "desk") fail(`hq: the default tab is ${selected(tabs)}, not desk`);
+    if (hiddenPanels(tabs) !== "knowledge,office,team,work") fail(`hq: with Desk showing, these panels are hidden: ${hiddenPanels(tabs)}`);
+    // What is on which tab.
+    const panelOf = (html, id) => html.split(`id="hq-panel-${id}"`)[1].split('role="tabpanel"')[0];
+    const where = { desk: ["Looking at", "Your desk", "hq:decide:11:approve"], team: ["<h2>Team</h2>", "How the team is doing", "hq:hire:new:add"],
+      work: ["<h2>Projects</h2>", "Set the team a goal", "<h2>Activity</h2>", "<h2>Guards</h2>", "<h2>Routines</h2>"],
+      knowledge: ["<h2>World</h2>", "<h2>House log</h2>", "Goals: strategy and notes"], office: ["<h2>Office", "What the team may do on the home lab"] };
+    for (const [id, said] of Object.entries(where)) {
+      for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
+    }
+    // Badges: the desk's items, and the guards' open findings (one open, one cleared).
+    const badge = (html, id) => (html.match(new RegExp(`id="hq-tab-${id}"[^>]*>[^<]*<span class="hq-badge"[^>]*>(\\d+)</span>`)) || [])[1];
+    const deskCount = runInContext("HQ.snap.desk.length", context);
+    if (Number(badge(tabs, "desk")) !== deskCount) fail(`hq: the Desk badge is ${badge(tabs, "desk")}, not ${deskCount}`);
+    if (badge(tabs, "work") !== "1") fail(`hq: the Work badge is ${badge(tabs, "work")}, not the one open finding`);
+    if (badge(tabs, "team") !== undefined) fail("hq: a tab with nothing to count has a badge");
+    // The waiting chip jumps to the Desk; the pool chip reads the snapshot; no Mac block, no Mac chip.
+    if (!tabs.includes(`data-act="hq:tab:desk:go">${deskCount} waiting on you</button>`)) fail("hq: no \"waiting on you\" chip to the Desk");
+    if (!tabs.includes("Pool $0.00 spent · $1.93 left")) fail("hq: no chip for today's pool");
+    if (/>Mac (free|away|busy)</.test(tabs)) fail("hq: a Mac chip when the node cannot say about the Mac");
+    runInContext('HQ.mac = { ready: false, why: "on battery", busy: false };', context);
+    if (!shown().includes('title="On battery: the model is unloaded">Mac away</span>')) fail("hq: the Mac chip does not say the Mac is away and why");
+    runInContext('HQ.mac.busy = true;', context);
+    if (!shown().includes(">Mac busy</span>")) fail("hq: the Mac chip does not say it is busy");
+    // Its busy switch stays on HQ, on the Team tab.
+    if (!panelOf(shown(), "team").includes('data-act="hq:mac:busy:off"')) fail("hq: the Mac busy switch is not on the Team tab");
+    runInContext("HQ.mac = null;", context);
+    // Switching, remembered per viewer in localStorage, with a failing store harmless.
+    const kept = {};
+    const realStore = context.localStorage;
+    context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem() {} };
+    await runInContext('dispatch("hq:tab:knowledge:go")', context);
+    if (selected(shown()).join() !== "knowledge" || kept["endora.hq.tab"] !== "knowledge") fail("hq: choosing a tab does not show and remember it");
+    if (hiddenPanels(shown()) !== "desk,office,team,work") fail("hq: the other panels stay showing");
+    await runInContext('dispatch("hq:tab:bogus:go")', context);
+    if (selected(shown()).join() !== "knowledge") fail("hq: a tab that does not exist was chosen");
+    runInContext("HQ.tab = null;", context);
+    if (selected(shown()).join() !== "knowledge") fail("hq: the remembered tab is not restored");
+    kept["endora.hq.tab"] = "nonsense"; runInContext("HQ.tab = null;", context);
+    if (selected(shown()).join() !== "desk") fail("hq: a bad remembered tab does not fall back to Desk");
+    context.localStorage = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); }, removeItem() {} };
+    runInContext("HQ.tab = null;", context);
+    await runInContext('dispatch("hq:tab:work:go")', context);
+    if (selected(shown()).join() !== "work") fail("hq: blocked storage breaks switching tabs");
+    context.localStorage = realStore;
+    // Looking at something from another tab brings the Desk forward.
+    await runInContext('dispatch("hq:pick:member:2")', context);
+    if (selected(shown()).join() !== "desk") fail("hq: looking at a member does not show the Desk");
+    // Arrow keys move between tabs (Home and End to the ends), wrapping round.
+    runInContext("HQ.tab = 'desk';", context);
+    for (const [key, then] of [["ArrowRight", "team"], ["ArrowLeft", "desk"], ["ArrowLeft", "office"], ["Home", "desk"], ["End", "office"]]) {
+      runInContext(`hqTabKey({ key: ${JSON.stringify(key)}, target: { closest: () => ({}) }, preventDefault() {} })`, context);
+      if (runInContext("HQ.tab", context) !== then) fail(`hq: ${key} goes to ${runInContext("HQ.tab", context)}, not ${then}`);
+    }
+    runInContext("hqTabKey({ key: 'ArrowRight', target: { closest: () => null }, preventDefault() {} })", context);
+    if (runInContext("HQ.tab", context) !== "office") fail("hq: arrow keys outside the tabs move them");
+    runInContext("HQ.tab = null;", context);
+  }
+  // Every kind of desk item says in a line what its choices do.
+  {
+    const kinds = runInContext("Object.keys(HQ_DESK_CHOICES).concat('push')", context);
+    for (const kind of kinds) {
+      if (!runInContext(`typeof HQ_DESK_HELP[${JSON.stringify(kind)}] === "string" && HQ_DESK_HELP[${JSON.stringify(kind)}].length > 20`, context)) fail(`hq: a ${kind} item on the desk has no help line`);
+    }
+    const desk = runInContext("viewHQ()", context);
+    const cardsShown = [...desk.matchAll(/<div class="hq-need (\w+)">/g)].map((m) => m[1]);
+    if (cardsShown.length < 15) fail(`hq: only ${cardsShown.length} desk items rendered`);
+    for (const kind of new Set(cardsShown)) {
+      const card = desk.split(`<div class="hq-need ${kind}">`)[1].split('<div class="hq-row">')[0];
+      if (!card.includes('class="hq-help"')) fail(`hq: a ${kind} desk item shows no help line`);
+    }
+    const guardHelp = runInContext("HQ_DESK_HELP.guard", context);
+    for (const said of ["Real = the guard was right", "False positive", "Resolved = the cause is fixed"]) if (!guardHelp.includes(said)) fail(`hq: the guard help does not say ${said}`);
+    if (!runInContext("HQ_DESK_HELP.canon", context).includes("Canon = settled truth only you can change")) fail("hq: the canon help is missing");
+    if (!runInContext("HQ_DESK_HELP.out_for_day", context).includes("Give it today lets this member keep working today")) fail("hq: the out-for-the-day help is missing");
+  }
+  // "Give work" is a form with the lead chosen by name and area; it posts to that lead, with the
+  // "done" lines split on newlines and semicolons.
+  {
+    runInContext("HQ.tab = null; HQ.working = false; HQ.workDraft = {};", context);
+    if (runInContext("viewHQ()", context).includes('id="hq-work-title"')) fail("hq: the give-work form is open before it is asked for");
+    await runInContext('dispatch("hq:work")', context);
+    const form = runInContext("viewHQ()", context);
+    for (const said of ["What should the team do?", "What does done mean?", "Who leads it?", 'id="hq-work-title"', 'id="hq-work-done"', 'data-act="hq:work:send:go"', 'data-act="hq:work:cancel:go"', "live:"]) {
+      if (!form.includes(said)) fail(`hq: the give-work form does not show ${said}`);
+    }
+    if (!form.includes('<option value="6" selected>Kit — Engineering</option>') || !form.includes('<option value="1">Ada — Ops</option>')) fail("hq: the leads are not offered by name and area, with Engineering's chosen");
+    const fields = { "hq-work-title": "Fix the <b>backups</b>", "hq-work-done": "backups run nightly; live: disk is under 80%\nreport sent\n\n", "hq-work-lead": "6" };
+    const realGet = context.document.getElementById;
+    context.document.getElementById = (id) => (id in fields ? { ...element(), value: fields[id] } : realGet(id));
+    const sent = [];
+    const realFetch = context.fetch;
+    const snapshot = JSON.parse(runInContext("JSON.stringify(HQ.snap)", context));
+    context.fetch = (path, opts = {}) => { sent.push([String(path), opts.method, opts.body]); return Promise.resolve({ ok: true, status: 200, json: async () => snapshot }); };
+    runInContext("HQ_ART_READY = Promise.resolve();", context);
+    fields["hq-work-title"] = "";
+    await runInContext('dispatch("hq:work:send:go")', context);
+    if (sent.some(([path]) => path === "/v1/hq/tasks")) fail("hq: work with no words was sent");
+    fields["hq-work-title"] = "Fix the <b>backups</b>";
+    await runInContext('dispatch("hq:work:send:go")', context);
+    const post = sent.find(([path]) => path === "/v1/hq/tasks");
+    if (!post || post[1] !== "POST") fail(`hq: the form does not post a task: ${JSON.stringify(sent)}`);
+    const body = JSON.parse(post[2]);
+    if (body.assignee !== 6 || body.title !== "Fix the <b>backups</b>") fail(`hq: the task goes to ${body.assignee} as ${body.title}`);
+    if (JSON.stringify(body.criteria) !== JSON.stringify(["backups run nightly", "live: disk is under 80%", "report sent"])) fail(`hq: the done lines are ${JSON.stringify(body.criteria)}`);
+    if (runInContext("HQ.working", context)) fail("hq: the form stays open after sending");
+    fields["hq-work-lead"] = "1";
+    await runInContext('dispatch("hq:work")', context);
+    await runInContext('dispatch("hq:work:send:go")', context);
+    const second = JSON.parse(sent.filter(([path]) => path === "/v1/hq/tasks")[1][2]);
+    if (second.assignee !== 1) fail("hq: choosing Ada does not send the work to Ada");
+    await runInContext('dispatch("hq:work")', context);
+    await runInContext('dispatch("hq:work:cancel:go")', context);
+    if (runInContext("viewHQ()", context).includes('id="hq-work-title"')) fail("hq: Cancel leaves the form open");
+    context.fetch = realFetch;
+    context.document.getElementById = realGet;
+    runInContext("clearInterval(HQ.polling); HQ.polling = null; HQ_ART_READY = null;", context);
+  }
+  // Knowledge: "Paste Markdown" is a button at the top of the World card, and the stages and the
+  // buttons on sections are explained in a line.
+  {
+    const world = runInContext("viewHQ()", context).split('id="hq-panel-knowledge"')[1].split('role="tabpanel"')[0];
+    const top = world.split("<h3>The house page</h3>")[0];
+    if (!top.includes('data-act="hq:world:paste:show">Paste Markdown</button>')) fail("hq: Paste Markdown is not a button at the top of the World card");
+    for (const said of ["field note", "observation", "insight", "canon", "Unconfirmed", "<b>Edit</b>", "<b>Make canon</b>", "<b>Not true</b>"]) {
+      if (!top.includes(said)) fail(`hq: the World legend does not say ${said}`);
+    }
+    await runInContext('dispatch("hq:world:paste:show")', context);
+    if (!runInContext("viewHQ()", context).includes("<details open><summary>The paste box</summary>")) fail("hq: the Paste Markdown button does not open the paste box");
+    await runInContext('dispatch("hq:world:paste:show")', context);
+    if (runInContext("viewHQ()", context).includes("<details open><summary>The paste box")) fail("hq: the Paste Markdown button does not close the paste box again");
+    runInContext("HQ.worldDoc = null;", context);
+  }
+  // On a phone the office canvas is a thin strip until the owner opens it, and that is remembered.
+  {
+    const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
+    const phone = css.split("@media (max-width: 767px)").map((part) => part.split("\n  }\n")[0]).slice(1).join("\n");
+    if (!/\.hq-stage:not\(\.open\) \.hq-canvas-wrap \{ height: 120px; \}/.test(phone)) fail("hq: the office is not a 120px strip on a phone");
+    if (!/\.hq-stage-toggle \{ display: inline-block/.test(phone)) fail("hq: the office toggle is not shown on a phone");
+    if (!/\.hq-tabs \{ order: -2;/.test(phone)) fail("hq: the tabs do not sit first on a phone");
+    if (!/\.hq-stage-toggle \{ display: none; \}/.test(css)) fail("hq: the office toggle shows on a desktop");
+    const kept = {};
+    const realStore = context.localStorage;
+    context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem() {} };
+    runInContext("HQ.stageOpen = null;", context);
+    const closed = runInContext("viewHQ()", context);
+    if (!closed.includes('<div class="hq-stage">') || !closed.includes('aria-expanded="false" aria-controls="hq-office" data-act="hq:stage:toggle:go">Show the office</button>')) fail("hq: the office does not start as a strip with \"Show the office\"");
+    await runInContext('dispatch("hq:stage:toggle:go")', context);
+    const opened = runInContext("viewHQ()", context);
+    if (!opened.includes('<div class="hq-stage open">') || !opened.includes("Hide the office") || kept["endora.hq.office"] !== "open") fail("hq: opening the office is not shown and remembered");
+    runInContext("HQ.stageOpen = null;", context);
+    if (!runInContext("viewHQ()", context).includes('<div class="hq-stage open">')) fail("hq: the open office is not restored");
+    await runInContext('dispatch("hq:stage:toggle:go")', context);
+    if (kept["endora.hq.office"] !== "closed") fail("hq: closing the office is not remembered");
+    context.localStorage = realStore;
+    runInContext("HQ.stageOpen = null;", context);
+  }
+  console.log("hq: tabs switch and are remembered, the desk explains every choice, work goes to the lead picked, and a phone gets a strip");
   runInContext("HQ.snap.stopped = true;", context);
   if (!runInContext("viewHQ()", context).includes('data-act="hq:resume"')) fail("hq: a stopped team cannot be resumed");
   runInContext('HQ.snap = null; HQ.error = "HQ is not set up on this node yet."; HQ.selected = null;', context);

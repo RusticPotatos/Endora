@@ -106,7 +106,8 @@ async function hqRetract(target) {
   try {
     HQ.sweep = await api("POST", "/v1/hq/retractions", { target });
     const n = (HQ.sweep.sweep || []).length;
-    flash(n ? `Retracted. ${n} more say the same: see "Said again".` : "Retracted. Nothing else says it.", "ok");
+    if (n) hqSetTab("desk");
+    flash(n ? `Retracted. ${n} more say the same: see "Said again" on the Desk.` : "Retracted. Nothing else says it.", "ok");
   } catch (e) { flash("Couldn't retract it: " + e.message, "err"); }
   await loadHQ(); render(); return true;
 }
@@ -139,7 +140,7 @@ function hqWorldPaste() {
       <ul class="hq-world hq-changes">${items || `<li class="hq-empty">Nothing to apply: no \u201c## page / key \u2014 Title\u201d section or \u201c## timeline\u201d bullet was found.</li>`}</ul>
       <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:world:paste:apply"${waiting ? "" : " disabled"}>Apply ${waiting} change${waiting === 1 ? "" : "s"}</button>
         <button class="hq-btn tall" data-act="hq:world:paste:clear">Clear</button></div>`;
-  return `<details${doc.md ? " open" : ""}><summary>Paste Markdown</summary>
+  return `<details${doc.md || doc.open ? " open" : ""}><summary>The paste box</summary>
       <p class="hq-note">Paste a whole document. A section starts with <code>## house / key \u2014 Title</code> (a <code>-</code> or <code>:</code> works for the dash) and runs to the next <code>##</code>. Under <code>## timeline</code>, each bullet <code>- 17 Oct 2026: what happened</code> is a timeline entry. A <code># Title</code> line is ignored. Same key as a section that exists replaces it; the old text stays in its history.</p>
       <textarea id="hq-wd-md" class="hq-doc" rows="14" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Markdown to paste">${esc(doc.md)}</textarea>
       <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:world:paste:preview">Preview</button></div>
@@ -259,6 +260,10 @@ function hqWorldCard(s) {
       <div class="hq-row">${hqWorldActs("story", i, p)}</div></li>`).join("");
   return `<section class="hq-card"><h2>World</h2>
     <p class="hq-note">What the team knows, by stage. Only you make something canon; an insight not confirmed in time reads as unconfirmed.</p>
+    <div class="hq-row"><button class="hq-btn tall ok" aria-expanded="${hqWorldDoc().md || hqWorldDoc().open ? "true" : "false"}" data-act="hq:world:paste:show">Paste Markdown</button>
+      <button class="hq-btn tall" data-act="hq:world:export:md">Download the world (Markdown)</button></div>
+    <p class="hq-note hq-legend-line"><b>Stages:</b> field note, then observation, then insight, then canon (settled truth only you can set). <b>Unconfirmed</b> = an insight nobody confirmed in time.
+      <b>Edit</b> rewrites a section; <b>Make canon</b> settles it; <b>Not true</b> takes it out and the team may not write it again.</p>
     ${hqWorldPaste()}
     <h3>The house page</h3>
     <ul class="hq-team hq-world">${sectionRows || `<li class="hq-empty">No sections yet: the CEO writes them from the timeline.</li>`}</ul>
@@ -276,7 +281,6 @@ function hqWorldCard(s) {
     ${hqMapWatch(w)}
     <h3>Stories</h3>
     <ul class="hq-team hq-world">${stories || `<li class="hq-empty">No stories yet.</li>`}</ul>
-    <div class="hq-row"><button class="hq-btn tall" data-act="hq:world:export:md">Download the world (Markdown)</button></div>
     ${hqWorldEditor()}</section>`;
 }
 
@@ -358,6 +362,13 @@ async function hqWorldPasteAct(what) {
     render(); return true;
   }
   if (op === "clear") { HQ.worldDoc = null; render(); return true; }
+  // The button at the top of the World card opens (or closes) the paste box and goes to it.
+  if (op === "show") {
+    doc.open = !doc.open; render();
+    const again = document.getElementById("hq-wd-md");
+    if (doc.open && again && again.focus) again.focus();
+    return true;
+  }
   if (op === "toggle") {
     const it = (doc.items || [])[Number(n)];
     if (it) it.on = !it.on;

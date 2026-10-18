@@ -23,6 +23,7 @@ const UNDER_SETTINGS = [
   { view: "understanding", icon: "person", label: "About you", note: "what you've told it, and the pages of what it knows" },
   { view: "signin", icon: "lock", label: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
   { view: "vault", icon: "lock", label: "Vault", note: "the house's secrets, and the passkeys that unlock them" },
+  { view: "macbrain", icon: "gear", label: "The Mac's brain", short: "The Mac", note: "let the team think on your Mac when it is plugged in and idle: its address, key and helper token" },
   { view: "data", icon: "export", label: "Your data", note: "take a copy of what Endora knows, or delete it" },
 ];
 

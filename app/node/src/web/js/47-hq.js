@@ -20,7 +20,11 @@ const HQ = {
   roster: {},          // member id → its controls are open on the Team card
   notebooks: {},       // member id → its notes, read when its panel is opened (ADR 0118)
   deskNote: {},        // desk item id → why the owner's last decision on it was refused
-  logShown: 30,        // how many lines of the activity log are on screen
+  logShown: 10,        // how many lines of the activity log are on screen
+  tab: null,           // the screen's tab: desk, team, work, knowledge or office (read from storage)
+  stageOpen: null,     // the office canvas opened on a phone (null: not read from storage yet)
+  working: false,      // the "Give work" form is open
+  workDraft: {},       // what is typed in it, kept across live updates
   logOpen: {},         // event id → a long line opened to its whole
   oldest: 0,           // the oldest event id the log has been told of
   logDone: false,      // HQ has nothing older to give
@@ -1142,14 +1146,17 @@ function hqLoop() {
 }
 
 // A tap on the office: a person, a sticky note, or the kill switch.
+// Something chosen on the office floor is looked at on the Desk tab.
+function hqSelect(sel) { HQ.selected = sel; hqSetTab("desk"); render(); }
+
 function hqTap(ev) {
   const cv = document.getElementById("hq-office"); if (!cv) return;
   const b = cv.getBoundingClientRect(), x = (ev.clientX - b.left) * (HQ_W / b.width), y = (ev.clientY - b.top) * (HQ_H / b.height);
   for (const p of Object.values(HQ.people)) {
-    if (x >= p.x && x <= p.x + 16 && y >= p.y - 16 && y <= p.y + 16) { HQ.selected = { type: "member", id: p.id }; render(); return; }
+    if (x >= p.x && x <= p.x + 16 && y >= p.y - 16 && y <= p.y + 16) { hqSelect({ type: "member", id: p.id }); return; }
   }
   for (const r of hqCards()) {
-    if (x >= r.x - 2 && x <= r.x + r.w + 2 && y >= r.y - 2 && y <= r.y + r.h + 2) { HQ.selected = { type: "task", id: r.t.id }; render(); return; }
+    if (x >= r.x - 2 && x <= r.x + r.w + 2 && y >= r.y - 2 && y <= r.y + r.h + 2) { hqSelect({ type: "task", id: r.t.id }); return; }
   }
   if (x >= HQ_P.lever.x * HQ_T && x <= HQ_P.lever.x * HQ_T + 16 && y >= HQ_P.lever.y * HQ_T && y <= HQ_P.lever.y * HQ_T + 20) {
     dispatch(HQ.snap && HQ.snap.stopped ? "hq:resume" : "hq:stop"); return;
@@ -1157,12 +1164,12 @@ function hqTap(ev) {
   // A games table (ADR 0121): the chess board, or the pool and ping-pong leaderboards.
   const over = (r) => x >= r.x * HQ_T - 2 && x <= (r.x + (r.w || 1)) * HQ_T + 2 && y >= r.y * HQ_T - 2 && y <= (r.y + (r.h || 1)) * HQ_T + 2;
   for (const [type, table] of [["chess", HQ_P.chess], ["pool", HQ_P.pool], ["ping_pong", { ...HQ_P.pong, w: 4 }]]) {
-    if (over(table)) { HQ.selected = { type, id: 0 }; render(); return; }
+    if (over(table)) { hqSelect({ type, id: 0 }); return; }
   }
   // A thing on the floor: who put it there.
   for (const it of hqItems()) {
     if (x >= it.x * HQ_T && x <= (it.x + it.w) * HQ_T && y >= (it.wall ? 0 : it.y * HQ_T - 16) && y <= (it.y + it.h) * HQ_T) {
-      HQ.selected = { type: "item", id: it.id }; render(); return;
+      hqSelect({ type: "item", id: it.id }); return;
     }
   }
   HQ.selected = null; render();
@@ -1179,6 +1186,176 @@ function hqFonts() {
 
 // ---- the screen ------------------------------------------------------------------------
 
+// The screen is five tabs (the owner, on a phone: "it's all been expanded over time, hard to
+// find stuff"): what needs the owner first, then the team, the work, what the team knows, and
+// the office itself. Every tab is drawn and the others are hidden, so a live update never
+// loses what is typed on a tab that is not showing.
+const HQ_TABS = [["desk", "Desk"], ["team", "Team"], ["work", "Work"], ["knowledge", "Knowledge"], ["office", "Office"]];
+
+// A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
+// screen works the same without it.
+function hqStored(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem("endora.hq." + key);
+    localStorage.setItem("endora.hq." + key, value);
+  } catch (_) { /* private window or blocked storage: nothing is remembered */ }
+  return null;
+}
+
+function hqTab() {
+  if (HQ.tab) return HQ.tab;
+  const kept = hqStored("tab");
+  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "desk";
+  return HQ.tab;
+}
+
+function hqSetTab(id) {
+  if (!HQ_TABS.some(([t]) => t === id)) return;
+  HQ.tab = id; hqStored("tab", id);
+}
+
+// The office canvas on a phone: a thin strip until the owner opens it (and it stays as chosen).
+function hqStageOpen() {
+  if (HQ.stageOpen === null) HQ.stageOpen = hqStored("office") === "open";
+  return HQ.stageOpen;
+}
+
+// What each kind of desk item's choices do, in one plain line under it (the owner: "didn't know
+// what each button meant"). Every kind a desk item can have is here.
+const HQ_DESK_HELP = {
+  goal: "Approve starts the team on this goal; Decline drops it.",
+  stuck: "Try again sends the work back to the team; Drop it gives up on it.",
+  ready_to_merge: "The work is done and checked. Mark merged once you have merged it yourself; Not now leaves it for later.",
+  ready_to_read: "A write-up is ready for you. Mark read once you have read it; Not now keeps it for later.",
+  question: "A member is asking you. Type an answer if you like, then Answer & wake sends it and wakes them; Dismiss closes it unanswered.",
+  notice: "Only to know of. Seen or Dismiss clears it.",
+  approval: "A member wants to run exactly what is shown, once. Approve runs it; Decline runs nothing.",
+  decision: "The CEO asks the board to choose. Approve or Decline, or Answer in your own words; your words go in the task for the CEO.",
+  project_cap: "The CEO asks for a monthly spending cap on a project. Grant the cap gives it (type another amount to change it); No cap lets the project run on the pool's limits alone.",
+  project_budget: "This project spent its monthly cap, so its paid work waits. Raise the cap (type the new amount) to go on now; Wait for next month lets it resume when the month turns.",
+  rounds: "This work was sent back three times. Accept as done closes it; Send it back gives it one more round.",
+  hire: "A lead asks to add a member. Hire adds them; Decline does not.",
+  furlough: "This member has had nothing to do. Furlough rests them (nobody is let go); Keep leaves them working.",
+  recall: "A lead asks to bring a resting member back. Bring back does; Decline keeps them resting.",
+  canon: "Canon = settled truth only you can change. Make it canon once you are sure it is true; Not canon leaves it as a note.",
+  out_for_day: "This member has used twice its share and is stopped. Give it today lets this member keep working today up to the amount (type one, or leave it empty for as offered); Wait stops them until tomorrow's budget.",
+  guard: "A guard noticed a possible problem. Real = the guard was right; False positive = it was wrong; Can't tell; Resolved = the cause is fixed. Your verdicts tune the guards.",
+  push: "Push it sends the accepted branch to your fork; Decline does not. Without a push key on the node, download the bundle and push it yourself.",
+};
+
+// The choices each kind of desk item offers: [decision, label, style].
+const HQ_DESK_CHOICES = {
+  goal: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]], stuck: [["retry", "Try again", "ok"], ["drop", "Drop it", "no"]],
+  ready_to_merge: [["merged", "Mark merged", "ok"], ["not_now", "Not now", "no"]],
+  ready_to_read: [["read", "Mark read", "ok"], ["not_now", "Not now", "no"]],
+  // A member's question (the team protocol's ask_owner): seeing it wakes the member who
+  // asked, to read the task's thread, where the answer typed on the card is written first.
+  question: [["seen", "Answer & wake", "ok"], ["dismiss", "Dismiss", "no"]],
+  // Something a member did through Endora's contracts, such as a restart: only to know of.
+  notice: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]],
+  // An action a member proposed through Endora's bridge (ADR 0108): approving runs exactly
+  // what the card shows, once; declining runs nothing.
+  approval: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]],
+  // The CEO's decision for the board (ADR 0111): approve, decline, or answer in words; what
+  // the owner writes goes in the task's thread, and the CEO is woken to act on it.
+  decision: [["approve", "Approve", "ok"], ["decline", "Decline", "no"], ["answer", "Answer", ""]],
+  // A cap the CEO asks for a project (ADR 0113): granted as asked, or at what the owner
+  // writes; or not at all, and the project runs on the pool's limits alone.
+  project_cap: [["approve", "Grant the cap", "ok"], ["decline", "No cap", "no"]],
+  // A project that spent its cap: its Claude turns wait until the owner raises the cap, or
+  // the month turns and the pause lifts itself.
+  project_budget: [["raise", "Raise the cap", "ok"], ["wait", "Wait for next month", "no"]],
+  // Work sent back three times (ADR 0114): its next round is the owner's alone.
+  rounds: [["accept", "Accept as done", "ok"], ["send_back", "Send it back", "no"]],
+  // The wing (ADR 0115): a lead's request to hire, and an accepted branch to push to the
+  // fork. Without a deploy key on the node there is nothing to approve: the card offers
+  // the branch's bundle to download instead.
+  hire: [["approve", "Hire", "ok"], ["decline", "Decline", "no"]],
+  // Elastic staffing (ADR 0118): an idle member offered for furlough (never fired), and a
+  // lead's request to bring a furloughed member back.
+  furlough: [["approve", "Furlough", "ok"], ["decline", "Keep", "no"]],
+  recall: [["approve", "Bring back", "ok"], ["decline", "Decline", "no"]],
+  // A piece of the world proposed for canon (ADR 0122): only the owner makes it so.
+  canon: [["approve", "Make it canon", "ok"], ["decline", "Not canon", "no"]],
+  // A member at twice its share with the pool's day not spent (ADR 0113): an allowance for
+  // the rest of today, at the amount written on the card, or wait for tomorrow.
+  out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
+  // A guard's finding (ADR 0124): the owner's verdict is how HQ measures each guard.
+  guard: [["real", "Real", "ok"], ["false_positive", "False positive", "no"], ["not_enough", "Can't tell", ""], ["resolved", "Resolved", "ok"]],
+};
+
+function hqDeskChoices(d) {
+  if (d.kind === "push") return hqCanPush(d) ? [["approve", "Push it", "ok"], ["decline", "Decline", "no"]] : [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]];
+  return HQ_DESK_CHOICES[d.kind] || [];
+}
+
+// "Give work": a form, not pop-ups. Who leads it defaults to the engineering wing's lead.
+function hqWorkForm(s) {
+  if (!HQ.working) return "";
+  const wingLeads = (s.wing && s.wing.leads) || [];
+  const leads = (s.members || []).filter((m) => m.role === "lead");
+  const draft = HQ.workDraft || {};
+  const pick = draft.lead ? Number(draft.lead) : (leads.find((m) => wingLeads.includes(m.id)) || leads[0] || {}).id;
+  const options = leads.map((m) => `<option value="${m.id}"${m.id === pick ? " selected" : ""}>${esc(m.name)} — ${wingLeads.includes(m.id) ? "Engineering" : "Ops"}</option>`).join("");
+  return `<div class="hq-work" role="group" aria-label="Give the team work">
+    <label for="hq-work-title">What should the team do?</label>
+    <input id="hq-work-title" maxlength="200" autocomplete="off" value="${esc(draft.title || "")}" placeholder="e.g. Check why the backups are slow" />
+    <label for="hq-work-done">What does done mean? (optional)</label>
+    <textarea id="hq-work-done" rows="3" placeholder="One per line, or separated by ;">${esc(draft.done || "")}</textarea>
+    <p class="hq-note" style="margin:0">Start one with <code>live:</code> to have it checked against the lab as it is now.</p>
+    <label for="hq-work-lead">Who leads it?</label>
+    <select id="hq-work-lead">${options || `<option value="">Nobody leads yet</option>`}</select>
+    <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:work:send:go">Send</button>
+      <button class="hq-btn tall" data-act="hq:work:cancel:go">Cancel</button></div></div>`;
+}
+
+// The small status chips under the title: today's pool, the Mac, and what waits on the owner.
+function hqChips(s) {
+  const pool = s.pool || {}, waiting = (s.desk || []).length;
+  const chips = [];
+  if (pool.per_day != null) {
+    const left = Math.max(0, pool.per_day - (pool.committed || 0));
+    chips.push(`<span class="hq-chip" title="Today's money for the whole team">Pool ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left</span>`);
+  }
+  if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${HQ.mac.busy ? "busy" : HQ.mac.ready ? "free" : "away"}</span>`);
+  chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:desk:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
+  return `<div class="hq-chips">${chips.join("")}</div>`;
+}
+
+// The tab strip, and the badge on the tabs that count something.
+function hqTabs(s) {
+  const guards = (s.guards && s.guards.findings || []).filter((f) => !f.cleared_at).length;
+  const badge = { desk: (s.desk || []).length, work: guards };
+  const here = hqTab();
+  return `<div class="hq-tabs" role="tablist" aria-label="HQ sections">${HQ_TABS.map(([id, label]) =>
+    `<button role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}" aria-selected="${id === here ? "true" : "false"}" tabindex="${id === here ? 0 : -1}" data-act="hq:tab:${id}:go">${label}${badge[id] ? ` <span class="hq-badge" aria-label="${badge[id]} waiting">${badge[id]}</span>` : ""}</button>`).join("")}</div>`;
+}
+
+function hqPanel(id, html) {
+  return `<div class="hq-side" role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"${hqTab() === id ? "" : " hidden"}>${html}</div>`;
+}
+
+// Arrow keys move between tabs (and Home and End jump), as a tab strip does.
+function hqTabKey(ev) {
+  const t = ev.target && ev.target.closest ? ev.target.closest("[role=tab].hq-tab") : null;
+  if (!t || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key)) return;
+  const ids = HQ_TABS.map(([id]) => id), at = ids.indexOf(hqTab());
+  const next = ev.key === "Home" ? 0 : ev.key === "End" ? ids.length - 1
+    : (at + (ev.key === "ArrowRight" ? 1 : -1) + ids.length) % ids.length;
+  ev.preventDefault();
+  hqSetTab(ids[next]); render();
+  const el = document.getElementById("hq-tab-" + ids[next]); if (el && el.focus) el.focus();
+}
+document.body.addEventListener("keydown", hqTabKey);
+
+// What is typed in the give-work form is kept, so a live update never empties it.
+document.body.addEventListener("input", (ev) => {
+  const id = ev.target && ev.target.id;
+  if (id === "hq-work-title") HQ.workDraft.title = ev.target.value;
+  else if (id === "hq-work-done") HQ.workDraft.done = ev.target.value;
+  else if (id === "hq-work-lead") HQ.workDraft.lead = ev.target.value;
+});
+
 function viewHQ() {
   if (HQ.error) return `<div class="hq"><h1>Endora HQ</h1><section class="hq-card"><p class="hq-empty">${esc(HQ.error)}</p></section></div>`;
   const s = HQ.snap;
@@ -1193,50 +1370,14 @@ function viewHQ() {
     ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
   const desk = (s.desk || []).map((d) => {
-    const choices = { goal: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]], stuck: [["retry", "Try again", "ok"], ["drop", "Drop it", "no"]],
-      ready_to_merge: [["merged", "Mark merged", "ok"], ["not_now", "Not now", "no"]],
-      ready_to_read: [["read", "Mark read", "ok"], ["not_now", "Not now", "no"]],
-      // A member's question (the team protocol's ask_owner): seeing it wakes the member who
-      // asked, to read the task's thread, where the answer typed on the card is written first.
-      question: [["seen", "Answer & wake", "ok"], ["dismiss", "Dismiss", "no"]],
-      // Something a member did through Endora's contracts, such as a restart: only to know of.
-      notice: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]],
-      // An action a member proposed through Endora's bridge (ADR 0108): approving runs exactly
-      // what the card shows, once; declining runs nothing.
-      approval: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]],
-      // The CEO's decision for the board (ADR 0111): approve, decline, or answer in words; what
-      // the owner writes goes in the task's thread, and the CEO is woken to act on it.
-      decision: [["approve", "Approve", "ok"], ["decline", "Decline", "no"], ["answer", "Answer", ""]],
-      // A cap the CEO asks for a project (ADR 0113): granted as asked, or at what the owner
-      // writes; or not at all, and the project runs on the pool's limits alone.
-      project_cap: [["approve", "Grant the cap", "ok"], ["decline", "No cap", "no"]],
-      // A project that spent its cap: its Claude turns wait until the owner raises the cap, or
-      // the month turns and the pause lifts itself.
-      project_budget: [["raise", "Raise the cap", "ok"], ["wait", "Wait for next month", "no"]],
-      // Work sent back three times (ADR 0114): its next round is the owner's alone.
-      rounds: [["accept", "Accept as done", "ok"], ["send_back", "Send it back", "no"]],
-      // The wing (ADR 0115): a lead's request to hire, and an accepted branch to push to the
-      // fork. Without a deploy key on the node there is nothing to approve: the card offers
-      // the branch's bundle to download instead.
-      hire: [["approve", "Hire", "ok"], ["decline", "Decline", "no"]],
-      // Elastic staffing (ADR 0118): an idle member offered for furlough (never fired), and a
-      // lead's request to bring a furloughed member back.
-      furlough: [["approve", "Furlough", "ok"], ["decline", "Keep", "no"]],
-      recall: [["approve", "Bring back", "ok"], ["decline", "Decline", "no"]],
-      // A piece of the world proposed for canon (ADR 0122): only the owner makes it so.
-      canon: [["approve", "Make it canon", "ok"], ["decline", "Not canon", "no"]],
-      // A member at twice its share with the pool's day not spent (ADR 0113): an allowance for
-      // the rest of today, at the amount written on the card, or wait for tomorrow.
-      out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
-      // A guard's finding (ADR 0124): the owner's verdict is how HQ measures each guard.
-      guard: [["real", "Real", "ok"], ["false_positive", "False positive", "no"], ["not_enough", "Can't tell", ""], ["resolved", "Resolved", "ok"]],
-      push: hqCanPush(d) ? [["approve", "Push it", "ok"], ["decline", "Decline", "no"]] : [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
+    const choices = hqDeskChoices(d);
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
     const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
     return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(shown)}</p>
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKey(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
+      ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval) : ""}
       ${d.kind === "decision" ? hqDecision(d.decision) : ""}
@@ -1255,44 +1396,52 @@ function viewHQ() {
   const wing = s.wing || {};
   const wingLine = wing.goal ? `<p class="hq-note">The engineering wing (goal "${esc(wing.goal)}") seats ${wing.most_leads || 1} lead on Claude Sonnet and at most ${wing.most_developers || 5} developers on Claude Haiku or the house's model when its lead asks to hire: ${wing.developers || 0} of ${wing.most_developers || 5} developer seats are taken. Your own hiring here is not limited.</p>` : "";
   const team = hqRoster(s);
+  const open = hqStageOpen();
   return `<div class="hq">
     <div class="hq-bar">
       <h1>Endora HQ</h1>
       ${s.demo ? `<span class="hq-demo">Demo · scripted team</span>` : ""}
       <span class="hq-grow"></span>
       <div class="hq-row">
-        <button class="hq-btn" data-act="hq:work">Give the team work</button>
-        <button class="hq-btn stop" aria-pressed="${s.stopped ? "true" : "false"}" data-act="${s.stopped ? "hq:resume" : "hq:stop"}">${s.stopped ? "Resume" : "Kill switch"}</button>
+        <button class="hq-btn tall" data-act="hq:work" aria-expanded="${HQ.working ? "true" : "false"}">Give work</button>
+        <button class="hq-btn tall stop" aria-pressed="${s.stopped ? "true" : "false"}" data-act="${s.stopped ? "hq:resume" : "hq:stop"}">${s.stopped ? "Resume" : "Kill switch"}</button>
       </div>
     </div>
+    ${hqWorkForm(s)}
+    ${hqChips(s)}
     <div class="hq-main">
-      <div class="hq-stage">
-        <canvas id="hq-office" width="${HQ_W}" height="${HQ_H}"
-          aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the CEO's office with its door open, the meeting room, the kitchen and lounge, ping-pong, a pool table, a chess table, the server closet, the board room"></canvas>
+      ${hqTabs(s)}
+      <div class="hq-stage${open ? " open" : ""}">
+        <div class="hq-stage-bar"><button class="hq-btn hq-stage-toggle" aria-expanded="${open ? "true" : "false"}" aria-controls="hq-office" data-act="hq:stage:toggle:go">${open ? "Hide the office" : "Show the office"}</button></div>
+        <div class="hq-canvas-wrap"><canvas id="hq-office" width="${HQ_W}" height="${HQ_H}"
+          aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the CEO's office with its door open, the meeting room, the kitchen and lounge, ping-pong, a pool table, a chess table, the server closet, the board room"></canvas></div>
         <div class="hq-stats">${stats}</div>
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
         ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
       </div>
-      <aside class="hq-side">
+      ${hqPanel("desk", `
         <section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
-        ${hqSweep()}
-        ${hqScorecard(s)}
-        ${hqGuards(s)}
-        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
+        ${hqSweep()}`)}
+      ${hqPanel("team", `
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
         ${hqMacCard(s)}
-        ${hqOffice(s)}
+        ${hqScorecard(s)}`)}
+      ${hqPanel("work", `
         ${hqProjects(s)}
-        ${hqWorldCard(s)}
-        ${hqHouse(s)}
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
-        ${hqNotes(s)}
-        ${hqRoutines(s)}
-        ${hqContracts(s.contracts)}
-      </aside>
+        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
+        ${hqGuards(s)}
+        ${hqRoutines(s)}`)}
+      ${hqPanel("knowledge", `
+        ${hqWorldCard(s)}
+        ${hqHouse(s)}
+        ${hqNotes(s)}`)}
+      ${hqPanel("office", `
+        ${hqOffice(s)}
+        ${hqContracts(s.contracts)}`)}
     </div>
     <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
@@ -1751,6 +1900,7 @@ function hqMacWhy(why) {
     busy: "Mac busy is on: the model is unloaded", "model loading": "Plugged in; the model is loading", "not heard from": "Not heard from lately" }[why] || String(why || "");
 }
 
+// On HQ: the Mac's state and the busy switch. Setting it up is under Settings.
 function hqMacCard(s) {
   const m = HQ.mac;
   if (!m) return "";
@@ -1759,22 +1909,31 @@ function hqMacCard(s) {
   const facts = m.plugged == null ? "" : `${m.plugged ? "plugged in" : "on battery"} · idle ${Math.floor((m.idle_s || 0) / 60)} min · model ${m.model_up ? "up" : "down"} · `;
   const waiting = hq.waiting ? ` ${hq.waiting} ${hq.waiting === 1 ? "turn waits" : "turns wait"} for it.` : "";
   const running = hq.running ? " A turn is running on it." : "";
-  const token = HQ.macToken ? `<p class="hq-who" role="status">The helper's token, shown this once: <code>${esc(HQ.macToken)}</code>
-      Save it in the file the install names (ENDORA_MAC_TOKEN_FILE).</p>` : "";
   return `<section class="hq-card" aria-live="polite"><h2>The Mac <span class="hq-tag">${m.ready ? "free" : "away"}</span></h2>
     <p class="hq-who">${esc(hqMacWhy(m.why))}.${esc(waiting)}${esc(running)}</p>
     <p class="hq-note">${esc(facts)}heard ${esc(heard)}. A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes) || 10} min; one at a time.</p>
     <div class="hq-row"><button class="hq-btn ${m.busy ? "stop" : "ok"}" aria-pressed="${m.busy ? "true" : "false"}"
-      data-act="hq:mac:busy:${m.busy ? "off" : "on"}">Mac busy: ${m.busy ? "on" : "off"}</button></div>
-    <details><summary>Set up the Mac</summary>
-      <div class="hq-row" style="margin-top:8px;">
+      data-act="hq:mac:busy:${m.busy ? "off" : "on"}">Mac busy: ${m.busy ? "on" : "off"}</button>
+      <button class="hq-link" data-act="go:macbrain">Set up in Settings</button></div></section>`;
+}
+
+// The Mac's setup, on the Settings screen: the helper's token, the model's address, key and
+// name, and how long the owner must be idle. The buttons are the same ones the node always had.
+function hqMacSetup() {
+  const m = HQ.mac;
+  if (!m) return `<div class="card"><p class="sub">The node could not say about the Mac.</p></div>`;
+  const token = HQ.macToken ? `<p class="hq-who" role="status">The helper's token, shown this once: <code>${esc(HQ.macToken)}</code>
+      Save it in the file the install names (ENDORA_MAC_TOKEN_FILE).</p>` : "";
+  return `<div class="card hq-macsetup">
+      <p class="sub">Now: ${esc(hqMacWhy(m.why))}. Its busy switch is on the HQ screen, under Team.</p>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px;">
         <input id="hq-mac-url" value="${esc(m.url || "")}" placeholder="http://192.168.1.10:8080/v1" aria-label="The Mac's model address" />
         <input id="hq-mac-model" value="${esc(m.model || "")}" placeholder="Model name" aria-label="The model's name" />
         <input id="hq-mac-key" type="password" autocomplete="off" placeholder="${m.has_key ? "Key kept; type to replace it" : "Key (the server's --api-key)"}" aria-label="The server's key" />
         <label>idle for <input id="hq-mac-idle" type="number" min="1" max="1440" value="${Number(m.idle_minutes) || 10}" aria-label="Minutes the owner must be idle" /> min</label>
-        <button class="hq-btn ok" data-act="hq:mac:save:go">Save</button></div>
-      <div class="hq-row"><button class="hq-btn" data-act="hq:mac:token:make">${m.has_token ? "Make a new token for the helper" : "Make a token for the helper"}</button></div>${token}
-      <p class="hq-note">Teams on the Mac brain wait for the Mac and never fall back to another model.</p></details></section>`;
+        <button class="primary" data-act="hq:mac:save:go">Save</button></div>
+      <div class="row" style="margin-top:8px;"><button class="ghost" data-act="hq:mac:token:make">${m.has_token ? "Make a new token for the helper" : "Make a token for the helper"}</button></div>${token}
+      <p class="sub" style="margin-top:8px;">Teams on the Mac brain wait for the Mac and never fall back to another model.</p></div>`;
 }
 
 async function hqMacAct(what, arg) {
@@ -1911,7 +2070,7 @@ function hqSelected() {
 // The verbs this screen uses. Returns true when it handled one.
 async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
-  if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; render(); return true; }
+  if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; hqSetTab("desk"); render(); return true; }
   // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
   if (noun === "mac") return hqMacAct(id, arg);
   if (noun === "roster") {
@@ -2199,18 +2358,28 @@ async function hqDispatch(verb, noun, id, arg) {
     }
     await loadHQ(); render(); return true;
   }
-  // Hand the team a piece of work, under the first goal it is working towards, to its lead.
+  // Tabs, and the office strip on a phone: per-viewer, kept in this browser.
+  if (noun === "tab") { hqSetTab(id); render(); return true; }
+  if (noun === "stage") {
+    HQ.stageOpen = !hqStageOpen(); hqStored("office", HQ.stageOpen ? "open" : "closed"); render(); return true;
+  }
+  // Hand the team a piece of work, under the first goal it is working towards, to the lead the
+  // owner picks: a form on the screen, not pop-ups.
   if (noun === "work") {
-    const title = (prompt("What should the team do?") || "").trim(); if (!title) return true;
+    if (id === "cancel") { HQ.working = false; HQ.workDraft = {}; render(); return true; }
+    if (id !== "send") { HQ.working = !HQ.working; render(); return true; }
+    const field = (name) => { const el = document.getElementById(name); return el && el.value ? String(el.value).trim() : ""; };
+    const title = field("hq-work-title");
+    if (!title) { flash("Say what the team should do.", "warn"); return true; }
     const s = HQ.snap || {}, goal = (s.goals || []).find((g) => g.status === "active");
-    const lead = (s.members || []).find((m) => m.role === "lead");
     if (!goal) { flash("Set the team a goal first.", "warn"); return true; }
-    // What done means, if the owner says (ADR 0114): separated by semicolons, "live:" before one
-    // about the lab as it is now.
-    const said = prompt("What does done mean? (optional; separate with ;, and put live: before one about the lab now)") || "";
-    const criteria = said.split(";").map((c) => c.trim()).filter(Boolean);
-    try { await api("POST", "/v1/hq/tasks", { goal: goal.id, title, assignee: lead ? lead.id : null, criteria }); flash("Handed to the team.", "ok"); }
-    catch (e) { flash("Couldn't hand it over: " + e.message, "err"); }
+    // What done means, if the owner says (ADR 0114): one a line or separated by semicolons,
+    // "live:" before one about the lab as it is now.
+    const criteria = field("hq-work-done").split(/[;\n]/).map((c) => c.trim()).filter(Boolean);
+    const lead = Number(field("hq-work-lead"));
+    try { await api("POST", "/v1/hq/tasks", { goal: goal.id, title, assignee: lead || null, criteria }); flash("Handed to the team.", "ok"); }
+    catch (e) { flash("Couldn't hand it over: " + e.message, "err"); return true; }
+    HQ.working = false; HQ.workDraft = {};
     await loadHQ(); render(); return true;
   }
   return false;

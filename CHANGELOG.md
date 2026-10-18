@@ -7,6 +7,21 @@ tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- **The HQ screen is tidied into tabs** (console only, no API change). Desk (what is looked at
+  and what waits on you), Team (roster, hiring, how the team is doing), Work (projects, goal,
+  activity, guards, routines), Knowledge (the world, house log, notes) and Office (games,
+  contracts); the tab is remembered per viewer, and Desk and Work carry badge counts. "Give
+  work" is a form (what to do, what done means, which lead, Engineering's by default) instead
+  of two pop-ups, with chips for today's pool, the Mac and what waits on you. Every desk item
+  says in a line what its choices do; the World card has a visible Paste Markdown button and a
+  legend for its stages and buttons; the activity log starts at ten lines. On a phone the
+  office canvas is a thin strip with a "Show the office" toggle, so the desk is first on screen.
+  The Mac's setup (helper token, model address, key and name, idle minutes) moves to
+  Settings, "The Mac's brain"; HQ keeps the Mac's state, a chip, and the busy switch on the
+  Team tab, with a "Set up in Settings" link.
+
 ### Added
 
 - **The Mac's brain** ([ADR 0130](docs/adr/0130-the-macs-brain.md)). A team member may think

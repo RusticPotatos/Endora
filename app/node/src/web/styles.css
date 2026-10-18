@@ -378,7 +378,27 @@
      many columns as fit (one on a phone, two or three on a big screen). */
   .hq-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
   .hq-stage, .hq-card { background: var(--hq-panel); border: 1px solid var(--hq-line); border-radius: 6px; min-width: 0; }
-  .hq-stage { padding: 8px; }
+  .hq-stage { padding: 8px; order: -1; }
+  .hq-stage-toggle { display: none; }
+  .hq-canvas-wrap { overflow: hidden; border-radius: 3px; }
+  /* The tabs: Desk first, then the rest, one panel at a time. */
+  .hq-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--hq-line); }
+  .hq-tabs::-webkit-scrollbar { display: none; }
+  .hq .hq-tab { flex: 0 0 auto; min-height: 44px; padding: 8px 14px; font: 400 12px var(--hq-pixel); letter-spacing: .04em; background: none; color: var(--hq-muted);
+    border: 0; border-bottom: 3px solid transparent; border-radius: 0; box-shadow: none; cursor: pointer; }
+  .hq .hq-tab[aria-selected="true"] { color: var(--hq-fg); border-bottom-color: var(--hq-neon); }
+  .hq .hq-tab:focus-visible { outline: 2px solid var(--hq-neon); outline-offset: -2px; }
+  .hq-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: var(--hq-neon); color: #fff; font: 11px var(--hq-mono); text-align: center; }
+  .hq-side[hidden] { display: none; }
+  /* The status chips under the title, and the give-work form. */
+  .hq-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .hq .hq-chip { border: 1px solid var(--hq-line); border-radius: 12px; padding: 3px 10px; font: 12px var(--hq-mono); color: var(--hq-muted); background: var(--hq-panel); }
+  .hq .hq-chip-go { cursor: pointer; min-height: 32px; color: var(--hq-fg); }
+  .hq .hq-chip-go.has { border-color: var(--hq-violet); color: var(--hq-violet); font-weight: 600; }
+  .hq-work { display: grid; gap: 6px; background: var(--hq-panel); border: 1px solid var(--hq-line); border-radius: 6px; padding: 12px 14px; }
+  .hq-work label { font-weight: 600; font-size: 12.5px; }
+  .hq-work input, .hq-work textarea, .hq-work select { font: 16px var(--hq-mono); width: 100%; box-sizing: border-box; min-height: 44px; }
+  .hq-help { margin: 0 0 6px; font-size: 12px; color: var(--hq-muted); }
   .hq-card { padding: 12px 14px; }
   .hq canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges; cursor: pointer; border-radius: 3px; }
   .hq-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -506,6 +526,23 @@
   .hq-board td, .hq-board th { padding: 2px 6px; text-align: left; font-weight: 400; }
   .hq-board td.n { text-align: right; }
   @media (prefers-reduced-motion: reduce) { .hq .hq-btn:active { transform: none; } }
+  /* A phone: the office is a thin strip until the owner opens it, so the desk is first on
+     screen; the tabs sit straight under the top bar. */
+  @media (max-width: 767px) {
+    .hq-main { gap: 10px; }
+    .hq-tabs { order: -2; gap: 0; justify-content: space-between; }
+    .hq .hq-tab { padding: 8px 6px; font-size: 10.5px; letter-spacing: 0; }
+    .hq-badge { padding: 0 4px; margin-left: 2px; }
+    .hq-stage { order: -1; }
+    .hq-stage-toggle { display: inline-block; min-height: 44px; }
+    .hq-stage:not(.open) .hq-canvas-wrap { height: 120px; }
+    .hq-stage:not(.open) canvas { margin-top: -60px; }
+    .hq-stage:not(.open) .hq-stats, .hq-stage:not(.open) .hq-legend, .hq-stage:not(.open) .hq-note { display: none; }
+    .hq-stage-bar { margin-bottom: 6px; }
+    .hq-side { grid-template-columns: minmax(0, 1fr); }
+    .hq-bar .hq-row { width: 100%; }
+    .hq-bar .hq-row .hq-btn { flex: 1 1 0; }
+  }
 
   /* ---- The agenda (ADR 0103): the Now line and what is pinned above the chat ------------- */
   .chat-top { flex: none; padding: 6px 16px 0; overflow: hidden; }
