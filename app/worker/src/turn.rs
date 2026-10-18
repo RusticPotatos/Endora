@@ -20,7 +20,7 @@ use crate::repo;
 use crate::shell::Shell;
 
 /// The MCP version the worker speaks.
-const PROTOCOL: &str = "2025-06-18";
+pub(crate) const PROTOCOL: &str = "2025-06-18";
 
 /// How long HQ has to answer a protocol call. It is on the same network, so anything slower
 /// is a fault.
@@ -33,7 +33,7 @@ const LONGEST_CALL: Duration = Duration::from_secs(10 * 60);
 const SAYS_AT_MOST: usize = 300;
 
 /// The most HQ keeps of a post in a thread (the protocol's own limit).
-const POST_AT_MOST: usize = 4000;
+pub(crate) const POST_AT_MOST: usize = 4000;
 
 /// The most HQ keeps of a question to the owner.
 const ASK_AT_MOST: usize = 1200;
@@ -46,11 +46,11 @@ const NAMES_AT_MOST: usize = 12;
 const MOST_A_REPLY: u32 = 4096;
 
 /// The workbench's shell, as the model names it.
-const SHELL: &str = "shell";
+pub(crate) const SHELL: &str = "shell";
 
 /// The wing's git (ADR 0115), as the node offers it: the worker unpacks and makes the bundles,
 /// in the workbench alone.
-const REPO_CHECKOUT: &str = "repo_checkout";
+pub(crate) const REPO_CHECKOUT: &str = "repo_checkout";
 const REPO_SUBMIT: &str = "repo_submit";
 
 /// The most of a command the line saying what a turn did shows.
@@ -90,6 +90,8 @@ pub struct Setup {
     /// How hard Claude tries this turn, as HQ decided it (one of [`EFFORTS`]); `None` leaves
     /// it to the model. The local relay is never told.
     pub effort: Option<String>,
+    /// Whether Claude Code takes the turn (ADR 0117), started by the worker in the workbench.
+    pub claude_code: bool,
 }
 
 /// The efforts Claude may be asked for, least first.
@@ -236,7 +238,12 @@ const LAB_TOOLS: [&str; 3] = ["homelab_status", "container_logs", "restart_conta
 /// home lab, reading HQ's briefing, which lists only HQ's tools, as all it had); `lessons`,
 /// whether it keeps the team's lessons (`note_lesson`); `shell`, whether it is in the
 /// workbench, with a shell.
-fn instructions(posted: bool, on_the_node: &[String], lessons: bool, shell: bool) -> String {
+pub(crate) fn instructions(
+    posted: bool,
+    on_the_node: &[String],
+    lessons: bool,
+    shell: bool,
+) -> String {
     let mut told = String::from(
         "You are one member of a small team at Endora HQ, taking one turn of work. The first \
          message is what my_turn says: who you are, your task, why it exists, and what is new \
@@ -355,12 +362,12 @@ fn instructions(posted: bool, on_the_node: &[String], lessons: bool, shell: bool
 }
 
 /// Whether a tool is the wing's git, which the worker carries out in the sandbox (ADR 0115).
-fn is_repo_tool(name: &str) -> bool {
+pub(crate) fn is_repo_tool(name: &str) -> bool {
     name == REPO_CHECKOUT || name == REPO_SUBMIT
 }
 
 /// The member a turn is of, from HQ's briefing: its first line, "You are Kit, the team's lead."
-fn member_of(briefing: &str) -> Option<String> {
+pub(crate) fn member_of(briefing: &str) -> Option<String> {
     let first = briefing.lines().next()?.strip_prefix("You are ")?;
     let (name, _) = first.split_once(',')?;
     let name = name.trim();
@@ -371,7 +378,7 @@ fn member_of(briefing: &str) -> Option<String> {
 /// fork's bundle and unpacks it into /work/repo; a submission bundles the member's branch and
 /// sends it to the node, which decides it. The model reads where the checkout is, or what the
 /// node said; it never sees a bundle.
-fn in_the_repo(
+pub(crate) fn in_the_repo(
     node: &Node<'_>,
     dir: &Path,
     member: &str,
@@ -484,7 +491,7 @@ fn in_the_repo(
 ///
 /// A title written to look like that line's end can name another task: the last word then
 /// lands in that task's thread, which the member could post in anyway.
-fn task_of(briefing: &str) -> Option<i64> {
+pub(crate) fn task_of(briefing: &str) -> Option<i64> {
     let line = briefing.lines().find(|l| l.starts_with("Your task: "))?;
     let (_, inside) = line.strip_suffix(')')?.rsplit_once("(#")?;
     let mut parts = inside.split(", ");
@@ -493,7 +500,7 @@ fn task_of(briefing: &str) -> Option<i64> {
 }
 
 /// A tool's input schema as MCP lists it, or an empty object's for one that has none.
-fn schema_of(tool: &Value) -> Value {
+pub(crate) fn schema_of(tool: &Value) -> Value {
     match &tool["inputSchema"] {
         Value::Null => json!({ "type": "object", "properties": {} }),
         schema => schema.clone(),
@@ -534,13 +541,13 @@ fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
 }
 
 /// One tool call the model asked for, whichever API it came by.
-struct Call {
+pub(crate) struct Call {
     /// Its id, as the model gave it, for the answer to name.
-    id: Value,
+    pub(crate) id: Value,
     /// The tool.
-    name: String,
+    pub(crate) name: String,
     /// Its arguments, as the model gave them: JSON text (OpenAI's) or an object (Anthropic's).
-    arguments: Value,
+    pub(crate) arguments: Value,
 }
 
 /// What the model said in a round.
@@ -554,13 +561,13 @@ struct Said {
 }
 
 /// What the worker answers one call with.
-struct Reply {
+pub(crate) struct Reply {
     /// What the model reads.
-    text: String,
+    pub(crate) text: String,
     /// Whether it was refused, or could not be done.
-    refused: bool,
+    pub(crate) refused: bool,
     /// Whether it put something on the owner's desk, which ends the turn.
-    asked: bool,
+    pub(crate) asked: bool,
 }
 
 /// The conversation with the model, in the API the relay speaks: the instructions, the
@@ -669,7 +676,7 @@ const ALREADY: &str = "You already have this result; use it, or do something els
 /// call asked again with nothing new is answered from it. A small model will otherwise ask
 /// for the same thing round after round.
 #[derive(Default)]
-struct Answered {
+pub(crate) struct Answered {
     /// The call made last.
     last: Option<String>,
     /// What each call last said.
@@ -685,7 +692,7 @@ struct Answered {
 /// something about it. The same call asked again straight after is not sent at all; asked
 /// again after something else, it is sent, and if it says just what it said before the model
 /// is told it already has that.
-fn run(
+pub(crate) fn run(
     hq: &mut Hq<'_>,
     node: &Node<'_>,
     on_the_node: &[String],
@@ -845,7 +852,7 @@ fn cut(command: &str) -> String {
 
 /// Posts the model's last word in the task's thread, with a line saying what the turn
 /// actually did beside it. With no task, or no words, there is nothing to post.
-fn last_word(
+pub(crate) fn last_word(
     hq: &mut Hq<'_>,
     task: Option<i64>,
     answer: &str,
@@ -873,7 +880,7 @@ fn last_word(
 
 /// How a tool call came back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Outcome {
+pub(crate) enum Outcome {
     /// It did what it was asked.
     Done,
     /// HQ, the node or the worker said no.
@@ -885,14 +892,53 @@ enum Outcome {
 /// The tool calls a turn actually made, and how each came back: what the line beside its
 /// claims is written from. A model may say it restarted something it only looked at; this
 /// is what the audit would show.
-struct Ledger {
+pub(crate) struct Ledger {
     /// The tools that only look.
-    reads: Vec<String>,
+    pub(crate) reads: Vec<String>,
     /// Each call made, in order: what it was, whether it only looked, and how it came back.
-    calls: Vec<(String, bool, Outcome)>,
+    pub(crate) calls: Vec<(String, bool, Outcome)>,
 }
 
 impl Ledger {
+    /// The calls, as kept between the processes of a Claude Code turn (ADR 0117): the bridge
+    /// writes them, the worker reads them for the line under the last word.
+    pub(crate) fn kept(&self) -> Value {
+        let calls: Vec<Value> = self
+            .calls
+            .iter()
+            .map(|(said, read, outcome)| {
+                let how = match outcome {
+                    Outcome::Done => "done",
+                    Outcome::Refused => "refused",
+                    Outcome::Failed => "failed",
+                };
+                json!([said, read, how])
+            })
+            .collect();
+        Value::Array(calls)
+    }
+
+    /// The calls read back from [`Self::kept`]; what does not read is left out.
+    pub(crate) fn from_kept(kept: &Value) -> Self {
+        let calls = kept
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                let outcome = match c[2].as_str()? {
+                    "done" => Outcome::Done,
+                    "refused" => Outcome::Refused,
+                    _ => Outcome::Failed,
+                };
+                Some((c[0].as_str()?.to_owned(), c[1].as_bool()?, outcome))
+            })
+            .collect();
+        Self {
+            reads: Vec::new(),
+            calls,
+        }
+    }
+
     /// Notes a call that was made.
     fn note(&mut self, tool: &str, args: &Value, outcome: Outcome) {
         let (done, tried) = what_a_call_is(tool, args);
@@ -951,7 +997,7 @@ impl Ledger {
     }
 
     /// The line under a turn's last word.
-    fn line(&self) -> String {
+    pub(crate) fn line(&self) -> String {
         let Some(list) = self.list() else {
             return "This turn made no tool calls.".to_owned();
         };
@@ -1033,7 +1079,7 @@ fn what_a_call_is(tool: &str, args: &Value) -> (String, String) {
 
 /// `text`, then a blank line and `line`, within `most` characters: the text is cut to make
 /// room, never the line.
-fn beside(text: &str, line: &str, most: usize) -> String {
+pub(crate) fn beside(text: &str, line: &str, most: usize) -> String {
     let room = most.saturating_sub(line.chars().count() + 2);
     let kept: String = text.trim().chars().take(room).collect();
     format!("{}\n\n{line}", kept.trim_end())
@@ -1050,7 +1096,7 @@ fn with_what_was_done(args: &Value, did: &Ledger) -> Value {
 
 /// A reason as the worker may say it: never the token, and short. The token goes first, so
 /// that cutting it short can never leave a piece of it.
-fn quiet(why: &str, token: &str) -> String {
+pub(crate) fn quiet(why: &str, token: &str) -> String {
     let why = if token.is_empty() {
         why.to_owned()
     } else {
@@ -1061,7 +1107,7 @@ fn quiet(why: &str, token: &str) -> String {
 
 /// An HTTP client that hands every status back to be read here, follows no redirect and goes
 /// through no proxy: the token goes to the address it was given, or nowhere.
-fn agent(within: Duration) -> ureq::Agent {
+pub(crate) fn agent(within: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(within))
         .http_status_as_error(false)
@@ -1118,7 +1164,7 @@ fn read(
 }
 
 /// HQ's team protocol: JSON-RPC over HTTP, opened by the turn's token.
-struct Hq<'a> {
+pub(crate) struct Hq<'a> {
     agent: ureq::Agent,
     url: &'a str,
     token: &'a str,
@@ -1129,7 +1175,7 @@ struct Hq<'a> {
 }
 
 impl<'a> Hq<'a> {
-    fn new(url: &'a str, token: &'a str) -> Self {
+    pub(crate) fn new(url: &'a str, token: &'a str) -> Self {
         Self {
             agent: agent(HQ_ANSWERS_WITHIN),
             url,
@@ -1152,7 +1198,7 @@ impl<'a> Hq<'a> {
     }
 
     /// A request, and its result.
-    fn request(&mut self, method: &str, params: Value) -> Result<Value, Stopped> {
+    pub(crate) fn request(&mut self, method: &str, params: Value) -> Result<Value, Stopped> {
         self.id += 1;
         let reply = self.send(&json!({
             "jsonrpc": "2.0", "id": self.id, "method": method, "params": params,
@@ -1164,7 +1210,7 @@ impl<'a> Hq<'a> {
     }
 
     /// Opens the protocol: `initialize`, then the notification that the worker is ready.
-    fn open(&mut self) -> Result<(), Stopped> {
+    pub(crate) fn open(&mut self) -> Result<(), Stopped> {
         let agreed = self.request(
             "initialize",
             json!({
@@ -1180,7 +1226,11 @@ impl<'a> Hq<'a> {
     }
 
     /// Calls a tool: what it said, and whether that was a refusal.
-    fn call(&mut self, tool: &str, arguments: &Value) -> Result<(String, bool), Stopped> {
+    pub(crate) fn call(
+        &mut self,
+        tool: &str,
+        arguments: &Value,
+    ) -> Result<(String, bool), Stopped> {
         let result = self.request(
             "tools/call",
             json!({ "name": tool, "arguments": arguments }),
@@ -1198,14 +1248,14 @@ impl<'a> Hq<'a> {
 
 /// The node's contracts (ADR 0106): listed as MCP lists tools, each called with its arguments
 /// as a JSON body, opened by the same token.
-struct Node<'a> {
+pub(crate) struct Node<'a> {
     agent: ureq::Agent,
     url: &'a str,
     token: &'a str,
 }
 
 impl<'a> Node<'a> {
-    fn new(url: &'a str, token: &'a str) -> Self {
+    pub(crate) fn new(url: &'a str, token: &'a str) -> Self {
         Self {
             agent: agent(HQ_ANSWERS_WITHIN),
             url: url.trim_end_matches('/'),
@@ -1215,7 +1265,7 @@ impl<'a> Node<'a> {
 
     /// The contracts offered. A node that offers none, or cannot say, leaves the turn to the
     /// team's tools: only a 401 or a 402 ends it.
-    fn list(&self) -> Result<Vec<Value>, Stopped> {
+    pub(crate) fn list(&self) -> Result<Vec<Value>, Stopped> {
         let sent = self
             .agent
             .get(self.url)

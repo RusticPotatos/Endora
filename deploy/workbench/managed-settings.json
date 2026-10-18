@@ -1,0 +1,27 @@
+{
+  "env": {
+    "DISABLE_AUTOUPDATER": "1",
+    "DISABLE_UPDATES": "1",
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "DISABLE_FEEDBACK_COMMAND": "1",
+    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+    "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"
+  },
+  "permissions": {
+    "deny": ["WebFetch", "WebSearch"],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "attribution": { "commit": "", "pr": "" },
+  "includeCoAuthoredBy": false,
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/local/bin/endora-worker --receipt", "timeout": 15 }] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/local/bin/endora-worker --receipt", "timeout": 15 }] }
+    ]
+  }
+}
