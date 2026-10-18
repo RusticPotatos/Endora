@@ -135,6 +135,34 @@ pub(in crate::api) async fn hq_world_demote(
     Ok(answer)
 }
 
+#[derive(Deserialize)]
+pub(in crate::api) struct HqProposal {
+    id: i64,
+    accept: bool,
+    #[serde(default)]
+    why: String,
+}
+
+/// The owner decides a proposal to a page: written as their word, or declined with a reason.
+pub(in crate::api) async fn hq_world_proposal(
+    State(state): State<AppState>,
+    Json(req): Json<HqProposal>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/world/proposals/decide".to_owned(),
+        Some(json!({ "id": req.id, "accept": req.accept, "why": req.why })),
+    )
+    .await?;
+    let said = if req.accept {
+        format!("you accepted proposal {} to a page", req.id)
+    } else {
+        format!("you declined proposal {} to a page: {}", req.id, req.why)
+    };
+    record(&state, &said);
+    Ok(answer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::super::relay::tests::{fake, node};
@@ -234,5 +262,47 @@ mod tests {
             4,
             "reading and downloading record nothing: {audit:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_owners_word_on_a_proposal_to_a_page_passes_through_and_is_recorded() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            (
+                200,
+                "application/json",
+                json!({ "section": "world:role/developer#flow" }).to_string(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        for (id, accept, why) in [(3, true, ""), (4, false, "not now")] {
+            let _ = hq_world_proposal(
+                State(state.clone()),
+                Json(HqProposal {
+                    id,
+                    accept,
+                    why: why.to_owned(),
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/world/proposals/decide"; 2]);
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        for line in [
+            "HQ: you accepted proposal 3 to a page",
+            "HQ: you declined proposal 4 to a page: not now",
+        ] {
+            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+        }
     }
 }

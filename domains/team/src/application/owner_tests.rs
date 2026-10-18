@@ -143,6 +143,8 @@ fn a_goals_notes_from_the_owner_reach_every_briefing_under_it() {
     let context = hq.runner().started()[0].clone();
     let (run, me) = hq.turn_of(&context.token).unwrap().unwrap();
     let briefing = call(&hq, &run, &me, "my_turn", &json!({})).unwrap();
+    // After the map, which opens every briefing (ADR 0126).
+    let briefing = crate::domain::map::without_map(&briefing);
     let lines: Vec<&str> = briefing.lines().collect();
     let at = lines
         .iter()

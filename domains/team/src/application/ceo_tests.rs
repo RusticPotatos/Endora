@@ -1031,12 +1031,17 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
     ] {
         assert!(!quiet.told.contains(gone), "{gone}\n---\n{}", quiet.told);
     }
+    // Not counting the map, which is the same size on every turn (ADR 0126).
+    let (quiet_told, first_told) = (
+        crate::domain::map::without_map(&quiet.told),
+        crate::domain::map::without_map(&first.told),
+    );
     assert!(
-        quiet.told.len() * 2 < first.told.len(),
+        quiet_told.len() * 2 < first_told.len(),
         "under half as long: {} against {}\n{}",
-        quiet.told.len(),
-        first.told.len(),
-        quiet.told
+        quiet_told.len(),
+        first_told.len(),
+        quiet_told
     );
     // The house and the team open every briefing, in one order.
     let house = quiet.told.find("The house page").unwrap();

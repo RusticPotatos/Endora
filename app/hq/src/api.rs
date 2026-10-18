@@ -1409,8 +1409,9 @@ mod tests {
         // reports on its area, decides its area's stuck work, and gives its view in a huddle
         // (ADR 0120). It reads the world, tells stories (a lesson is one now), confirms and
         // retires what it stewards, and proposes canon (ADR 0122). And it may play chess (ADR 0121).
-        // And it judges the guards' findings in its area (ADR 0124).
-        assert_eq!(names.len(), 31, "{names:?}");
+        // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
+        // keeps (ADR 0126).
+        assert_eq!(names.len(), 37, "{names:?}");
         assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"office"), "every member shapes the office");
         assert!(names.contains(&"chess"), "every member may play chess");

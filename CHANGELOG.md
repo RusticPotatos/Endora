@@ -9,6 +9,22 @@ tagged release.
 
 ### Added
 
+- **The team's map** ([ADR 0126](docs/adr/0126-the-teams-map.md)). The world gains a page for
+  every lead's area, every project and goal not given up, and every role
+  (`world:area/3`, `world:project/2`, `world:role/developer`), made once each from the team as it
+  stands and as it grows. Each page's **steward is worked out from the data** (a lead its area,
+  a project's lead its project, the CEO the house and goals, the owner a role); only the steward
+  or the owner writes it, and anyone else **proposes** (`propose_world`) and the steward accepts
+  or declines with a reason (`decide_proposal`; the owner too, from the World card). **Every
+  briefing opens with a short map** of the pages that matter to its member, by address, within a
+  size and naming what it left off. A member that looked and found nothing reports a **gap**
+  (`report_gap`), one item for its lead and never the owner's desk, apart from the **broken
+  roads** HQ finds itself (a cited address that does not resolve). Each night a free member on
+  the house's model is asked a few questions made from its own map in a downtime turn, and **code
+  scores the answers**; a night with nobody free is recorded as skipped, and a page that fails
+  three nights running is flagged to its steward. A Claude Code turn gets its map back after it
+  compacts. The World card shows the pages, proposals (Accept, Decline), gaps, broken roads and
+  last night's check; `POST /v1/hq/world/proposals/decide` through the node and its audit log.
 - **The owner's one-day top-up of the money pool** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md)
   rule 6). `POST /v1/hq/pool/top-up {amount_micros}` (through the node and its audit log) adds
   to today's pool only: it is gone when the owner's next day begins, and a day's top-ups are

@@ -94,7 +94,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 let said = format!("{why} ({})", self.said_day(now));
                 let title = match Self::address(address)? {
                     Address::Section { page, anchor } => {
-                        let Some(mut s) = self.section_at(page, &anchor)? else {
+                        let Some(mut s) = self.section_at(&page, &anchor)? else {
                             return Ok(());
                         };
                         s.stage = Stage::Retired;

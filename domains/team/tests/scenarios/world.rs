@@ -356,8 +356,10 @@ fn recorded_as(w: &mut Office, name: String, situation: String) {
 
 #[then(expr = "{word}'s briefing opens with {string}")]
 fn opens_with(w: &mut Office, name: String, text: String) {
+    // After who it is, and the map every briefing opens with (ADR 0126).
     let told = w.told(&name);
-    let first = told.lines().nth(1).unwrap_or_default();
+    let without_map = endora_team::domain::map::without_map(&told);
+    let first = without_map.lines().nth(1).unwrap_or_default();
     assert!(first.starts_with(&text), "{name} was told:\n{told}");
 }
 

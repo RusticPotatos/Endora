@@ -784,7 +784,8 @@ fn work_is_handed_on_only_with_a_handover_note_and_the_next_turn_starts_from_it(
     assert_eq!(rae_turn.task, Some(task));
     let briefed = hq.briefed(rae_turn.run).unwrap().unwrap();
     assert_eq!(briefed.situation, Situation::Handover);
-    let first = rae_turn.told.lines().nth(1).unwrap();
+    let without_map = crate::domain::map::without_map(&rae_turn.told);
+    let first = without_map.lines().nth(1).unwrap();
     assert!(
         first.starts_with("Handed over by Ada on #")
             && first.contains("Watch out: The VPN drops for a minute."),
@@ -848,7 +849,12 @@ fn each_turn_records_its_situation_and_a_recall_starts_with_what_changed() {
     let back = turn(&hq, t.dev);
     let briefed = hq.briefed(back.run).unwrap().unwrap();
     assert_eq!(briefed.situation, Situation::Recalled);
-    let after_name = back.told.lines().nth(1).unwrap();
+    // The map opens every briefing (ADR 0126); what the situation is about follows it.
+    let after_name = crate::domain::map::without_map(&back.told)
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_owned();
     assert_eq!(after_name, "What changed since 19 Oct:", "{}", back.told);
     assert!(
         back.told.contains("Mara: Sonarr moved to the new disk."),

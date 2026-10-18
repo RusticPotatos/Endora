@@ -102,6 +102,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if composed.briefed.iter().any(|b| b == "tidy") {
             self.tidy_asked(member.id)?;
         }
+        if composed.briefed.iter().any(|b| b == "your proposals") {
+            self.proposals_told(member)?;
+        }
         if composed.briefed.iter().any(|b| b == "retell") {
             self.store.set_setting(
                 &super::world::retell_key(member.id),
@@ -125,7 +128,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The pieces a situation needs, in the order they are told: what the situation is about
     /// first (core), then the house page, the lab, the team, the stories and the notebook.
     fn pieces(&self, member: &Member, run: &Run, situation: Situation) -> Done<Vec<Piece>> {
-        let mut pieces = Vec::new();
+        // The map opens it: the pages that matter to this member, by address (ADR 0126).
+        let mut pieces = vec![Piece::new(
+            "map",
+            self.map_for(member, run)?.text,
+            Weight::Core,
+        )];
         let last = self.last_turn_of(member, run)?;
         let back = self.back_from_furlough(member, run)?;
         // What changed while it was away: since its furlough began, or its last turn.
@@ -154,6 +162,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Weight::Core,
             ));
         }
+        // Proposals to pages it keeps, and how its own went (ADR 0126).
+        pieces.push(Piece::new(
+            "proposals to decide",
+            self.proposals_to_decide(member)?,
+            Weight::Core,
+        ));
+        pieces.push(Piece::new(
+            "your proposals",
+            self.proposals_decided(member)?,
+            Weight::Core,
+        ));
+        // The two ways the map fails, to those who keep the pages: what members looked for and
+        // did not find, and the roads that lead nowhere (ADR 0126).
+        pieces.push(Piece::new(
+            "gaps",
+            self.gaps_to_answer(member)?,
+            Weight::Core,
+        ));
+        pieces.push(Piece::new(
+            "broken roads",
+            self.roads_to_mend(member)?,
+            Weight::Core,
+        ));
+        pieces.push(Piece::new(
+            "failing pages",
+            self.quiz_flags_for(member)?,
+            Weight::Core,
+        ));
         pieces.extend(self.house_pieces(member, situation, last)?);
         // How the lab is built, for those who read the house log it was seeded in: a lead on
         // every turn, the CEO (whose briefings are held short) when it starts afresh or comes

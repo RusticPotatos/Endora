@@ -38,11 +38,11 @@ pub enum Standing {
 }
 
 /// What the downtime turns so far say.
-struct Downtimes {
+pub(super) struct Downtimes {
     /// Whether a downtime turn is queued or running now.
-    live: bool,
+    pub(super) live: bool,
     /// When each member's last downtime turn ended (or began, while it runs).
-    last: HashMap<MemberId, Millis>,
+    pub(super) last: HashMap<MemberId, Millis>,
     /// What today's downtime turns hold or have spent, together.
     today: Micros,
 }
@@ -468,7 +468,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.downtime_wakes()?.contains(&found.wake))
     }
 
-    fn downtimes(&self) -> Done<Downtimes> {
+    pub(super) fn downtimes(&self) -> Done<Downtimes> {
         let wakes = self.downtime_wakes()?;
         let today = self.today();
         let offset = self.settings.offset_minutes;
@@ -611,6 +611,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store.last_event()?
         ));
         told.push_str(&self.chess_briefed(member)?);
+        // The nightly quiz on its map, if tonight's was asked of this member (ADR 0126).
+        told.push_str(&self.quiz_said(member)?);
         Ok(told)
     }
 
@@ -670,6 +672,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 }
 
 /// The owner's day a member last had a downtime turn queued on.
-fn downtime_day(member: MemberId) -> String {
+pub(super) fn downtime_day(member: MemberId) -> String {
     format!("downtime_day:{}", member.0)
 }

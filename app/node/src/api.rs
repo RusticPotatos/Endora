@@ -512,6 +512,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/world/timeline", post(hq_world_timeline))
         .route("/v1/hq/world/promote", post(hq_world_promote))
         .route("/v1/hq/world/demote", post(hq_world_demote))
+        .route("/v1/hq/world/proposals/decide", post(hq_world_proposal))
         // The guards (ADR 0124): the owner's verdict on a finding.
         .route(
             "/v1/hq/guards/findings/{id}/verdict",

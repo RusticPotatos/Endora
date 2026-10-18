@@ -335,7 +335,7 @@ fn coming_back_up_is_said_in_the_alarms_open_task_and_wakes_its_owner() {
             "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
              check_back, run_gate, request_action, propose_project, accept, hand_to, \
              request_hire, request_staff, report_area, decide_stuck, judge_finding, \
-             read_document, read_doc, read_world, tell_story, verify_world, retire_world, propose_canon, office. Endora's own tools on the home lab \
+             read_document, read_doc, read_world, tell_story, propose_world, decide_proposal, write_world, verify_world, retire_world, propose_canon, office. Endora's own tools on the home lab \
              (homelab_status and the like) come beside them: what your tool list offers, you \
              have.\n"
         ),

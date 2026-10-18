@@ -34,6 +34,10 @@ mod world;
 #[path = "scenarios/guards.rs"]
 mod guards;
 
+/// The team's map (ADR 0126), in its own file.
+#[path = "scenarios/map.rs"]
+mod map;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

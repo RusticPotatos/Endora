@@ -285,6 +285,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         downtime: !demo_mode,
         // Ping-pong and pool between free members (ADR 0121): played in code, free.
         games: !demo_mode,
+        // The nightly quiz on the map (ADR 0126): a free member on the house's model, in a
+        // downtime turn, scored by code. The scripted demo has none.
+        quiz: !demo_mode,
         ..Settings::default()
     };
     let hq: Arc<Hq> = Arc::new(
@@ -356,6 +359,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(true) => println!("hq: moved the house log and the lessons into the team's world"),
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not move the house log into the team's world: {e}"),
+        }
+        // The team's map (ADR 0126): a page for every area, project, goal and role, made once
+        // each from the team as it stands. Nothing is changed or deleted.
+        match hq.migrate_map() {
+            Ok(made) if made.total() == 0 => {}
+            Ok(made) => println!(
+                "hq: made the map's pages: {} areas, {} projects, {} goals, {} roles",
+                made.areas, made.projects, made.goals, made.roles
+            ),
+            Err(e) => eprintln!("hq: could not make the map's pages: {e}"),
         }
         // What the move dated wrongly, mended once (ADR 0122).
         match hq.repair_world_dates() {

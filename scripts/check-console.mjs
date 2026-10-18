@@ -606,7 +606,22 @@ if (failures.length) {
                 { slug: "team", title: "The team", derived: true, lines: ["Ada (lead, Claude Sonnet)"] }],
         sections: [{ address: "world:house#backups", heading: "<b>Backups</b>", headline: "<img src=w onerror=alert(32)> at 03:00", stage: "insight", said: "insight", revision: 2, written_by: "Mara", warrant: "read", why: "" },
                    { address: "world:house#disk", heading: "Disk", headline: "16 GB", stage: "canon", said: "canon", revision: 3, written_by: "the owner", warrant: "", why: "" }],
-        stories: [{ address: "story:closed-too-soon", handle: "closed-too-soon", stage: "insight", said: "unconfirmed since 17 Sep", unconfirmed_since: 1, instead: "<img src=y onerror=alert(33)> wait", to_retell: true, author: "Dee", whose: "Ada's area" }] },
+        stories: [{ address: "story:closed-too-soon", handle: "closed-too-soon", stage: "insight", said: "unconfirmed since 17 Sep", unconfirmed_since: 1, instead: "<img src=y onerror=alert(33)> wait", to_retell: true, author: "Dee", whose: "Ada's area" }],
+        // The team's map (ADR 0126): pages by steward, proposals, gaps, broken roads and the
+        // nightly quiz; every word a member's, so every word escaped.
+        map: {
+          pages: [
+            { slug: "house", address: "world:house", kind: "house", title: "The house", derived: false, steward: "Mara, the CEO", steward_kind: "ceo", sections: 2, proposals: 0, quiz: null },
+            { slug: "lab", address: "world:lab", kind: "lab", title: "How the lab is built", derived: true, steward: "HQ", steward_kind: "hq", sections: 0, proposals: 0, quiz: null },
+            { slug: "area/2", address: "world:area/2", kind: "area", title: "<img src=m1 onerror=alert(40)>'s area", derived: false, steward: "Ada", steward_kind: "lead", sections: 1, proposals: 1, quiz: { slug: "area/2", passed: 0, asked: 3, flagged: true } },
+            { slug: "role/developer", address: "world:role/developer", kind: "role", title: "The developer role", derived: false, steward: "the owner", steward_kind: "owner", sections: 0, proposals: 0, quiz: null }],
+          proposals: [
+            { id: 4, page: "area/2", page_title: "Ada's area", anchor: null, heading: "<img src=m2 onerror=alert(41)>", headline: "Backups run at 03:00", by: "Rae", status: "open", decided_by: "", why: "", day: "18 Oct 2026", evidence: [{ ref: "r12", said: "homelab_status" }] },
+            { id: 3, page: "area/2", page_title: "Ada's area", anchor: null, heading: "Restores", headline: "x", by: "Rae", status: "declined", decided_by: "Ada", why: "<img src=m3 onerror=alert(42)> too early", day: "17 Oct 2026", evidence: [] }],
+          gaps: [{ id: 1, what: "<img src=m4 onerror=alert(43)> the desk notice", where_looked: "world:lab", by: "Rae", to: "Ada", count: 2, open: true, how: "", closed_by: "", day: "18 Oct 2026" }],
+          roads: [{ from: "world:house#disk", to: "world:area/2#restores", why: "the section is retired (<img src=m5 onerror=alert(44)>)" }],
+          quiz: { enabled: true, nights: [{ night: 1, status: "answered", member: "Rae", passed: 4, asked: 6, why: "", day: "18 Oct 2026" }],
+                  pages: [{ slug: "area/2", title: "Ada's area", passed: 0, asked: 3, flagged: true }] } } },
       goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack",
                 strategy: { purpose: "</textarea><img src=s onerror=alert(12)> the house runs itself", success: "", measures: "unplanned outages over 10 min",
                             bets: "", not_now: "", by: "Mara", updated_at: 5 } },
@@ -1018,6 +1033,16 @@ if (failures.length) {
   if (office.indexOf("Disk") > office.indexOf("&lt;b&gt;Backups")) fail("hq: canon is not shown first in the World card");
   for (const hostile of ["<img src=t", "<img src=w", "<img src=y", "<b>Backups</b>"]) {
     if (office.includes(hostile)) fail(`hq: the World card let markup through: ${hostile}`);
+  }
+  // The team's map (ADR 0126): the pages with their stewards and quiz scores, the owner's word on
+  // a proposal, the gaps, the broken roads and last night's quiz; every word a member's.
+  for (const said of ['data-act="hq:world:proposal:accept-4"', 'data-act="hq:world:proposal:decline-4"', "Rae got 4 of 6",
+    "failed three nights running", "the desk notice", "world:area/2#restores", "quiz 0/3, failing", 'value="area/2"',
+    "kept by Ada", "Proposals to pages", "Broken roads", "Last night's map check"]) {
+    if (!office.includes(said)) fail(`hq: the World card's map does not show ${said}`);
+  }
+  for (const hostile of ["<img src=m1", "<img src=m2", "<img src=m3", "<img src=m4", "<img src=m5"]) {
+    if (office.includes(hostile)) fail(`hq: the map on the World card let markup through: ${hostile}`);
   }
   // Once moved into the world, the old house log is read-only, and still escaped.
   runInContext("HQ.snap.world.migrated = true;", context);
@@ -2444,6 +2469,13 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (runInContext("HQ.worldEdit", context) !== null) fail("the editor stayed open after saving");
   runInContext(`hqWorldEditAct("open-1"); hqWorldEditAct("cancel")`, context);
   if (runInContext("HQ.worldEdit", context) !== null) fail("Cancel did not close the editor");
+  // The owner's word on a proposal to a page (ADR 0126): accepting posts the decision.
+  runInContext(`__calls.length = 0; await1 = hqProposalAct("accept-4")`, context);
+  await runInContext("await1", context);
+  const decided = JSON.parse(runInContext("JSON.stringify(__calls.filter((c) => c.startsWith('POST')))", context));
+  if (decided.length !== 1 || !decided[0].includes("/v1/hq/world/proposals/decide") || !decided[0].includes('"id":4') || !decided[0].includes('"accept":true')) {
+    fail("accepting a proposal did not post the owner's decision: " + decided.join("|"));
+  }
   runInContext(`[api, loadHQ, render, flash] = __saved; HQ.worldDoc = null; HQ.snap = null; document.getElementById = __getById;`, context);
   console.log("world editor: paste, preview, apply and the section editor behave");
 }

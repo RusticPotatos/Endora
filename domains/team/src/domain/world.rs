@@ -151,12 +151,12 @@ pub fn page(slug: &str) -> Option<Page> {
 /// Where a piece of the world is: a page, a section of one, or a story.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Address {
-    /// A whole page: `world:house`.
-    Page(&'static str),
+    /// A whole page: `world:house`, `world:area/3`.
+    Page(String),
     /// One section: `world:house#backups`.
     Section {
-        /// Its page.
-        page: &'static str,
+        /// Its page's slug.
+        page: String,
         /// Its anchor, stable for its life.
         anchor: String,
     },
@@ -166,7 +166,8 @@ pub enum Address {
 
 impl Address {
     /// An address as a member writes it: `world:house#backups`, `house#backups`, `world:lab`,
-    /// `story:closed-too-soon`, case aside.
+    /// `world:area/3#backups`, `story:closed-too-soon`, case aside. Whether the page is there
+    /// is for the record to say.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         let text = text.trim().to_ascii_lowercase();
@@ -178,15 +179,12 @@ impl Address {
             Some((slug, anchor)) => (slug, Some(anchor)),
             None => (text, None),
         };
-        let page = page(slug)?;
+        let page = super::map::PageKey::parse(slug)?.slug();
         let Some(anchor) = anchor else {
-            return Some(Self::Page(page.slug));
+            return Some(Self::Page(page));
         };
         let made = anchor_of(anchor)?;
-        (made == anchor).then_some(Self::Section {
-            page: page.slug,
-            anchor: made,
-        })
+        (made == anchor).then_some(Self::Section { page, anchor: made })
     }
 
     /// As it is cited: `world:house#backups`, `story:closed-too-soon`.
@@ -753,6 +751,44 @@ pub enum WorldRefusal {
     AlreadyCanon(String),
     /// A derived page is HQ's to write.
     Derived(String),
+    /// A page that is someone else's to write: propose the change instead (ADR 0126).
+    ProposeInstead {
+        /// The page.
+        what: String,
+        /// Whose it is.
+        steward: String,
+    },
+    /// A proposal only the page's steward decides.
+    DecidedBy {
+        /// The page.
+        what: String,
+        /// Whose it is.
+        steward: String,
+    },
+    /// A proposal to a page the proposer stewards: it writes it.
+    YourOwnPage(String),
+    /// No page of the world is called that.
+    NoSuchPage(String),
+    /// No proposal has that number.
+    NoSuchProposal(i64),
+    /// The proposal was decided already.
+    ProposalDecided(i64),
+    /// A member has this many proposals open: they wait for their stewards first.
+    TooManyProposals(usize),
+    /// A gap says what was looked for and where.
+    GapNeedsParts,
+    /// No gap has that number.
+    NoSuchGap(i64),
+    /// The gap is closed already.
+    GapClosed(i64),
+    /// Closing a gap says how it was answered.
+    GapNeedsHow,
+    /// The gap is another steward's.
+    GapNotYours(i64),
+    /// There is no quiz open for this member.
+    NoQuizForYou,
+    /// A quiz is answered with one answer per question.
+    QuizAnswers(usize),
 }
 
 impl fmt::Display for WorldRefusal {
@@ -761,7 +797,8 @@ impl fmt::Display for WorldRefusal {
             Self::NotAnAddress(said) => write!(
                 f,
                 "`{said}` is not an address in the world: world:house, world:house#<section>, \
-                 world:lab, world:team or story:<handle>"
+                 world:lab, world:team, world:area/<n>, world:project/<n>, world:goal/<n>, \
+                 world:role/<role> (any of them with #<section>) or story:<handle>"
             ),
             Self::Nothing(address) => write!(f, "nothing is at {address}"),
             Self::NotYours { what, steward } => write!(
@@ -830,6 +867,40 @@ impl fmt::Display for WorldRefusal {
                     "{address} is derived by HQ from the record: nobody writes it"
                 )
             }
+            Self::ProposeInstead { what, steward } => write!(
+                f,
+                "{what} is kept by {steward}: propose the change with propose_world, and \
+                 they decide"
+            ),
+            Self::DecidedBy { what, steward } => write!(
+                f,
+                "{what} is kept by {steward}: only they decide what is proposed to it"
+            ),
+            Self::YourOwnPage(page) => write!(
+                f,
+                "world:{page} is yours: write it with write_world, a proposal is for a page \
+                 someone else keeps"
+            ),
+            Self::NoSuchPage(said) => write!(f, "there is no page {said} in the world"),
+            Self::NoSuchProposal(id) => write!(f, "there is no proposal {id}"),
+            Self::ProposalDecided(id) => write!(f, "proposal {id} is decided already"),
+            Self::TooManyProposals(most) => write!(
+                f,
+                "you have {most} proposals open: wait for their stewards to decide them"
+            ),
+            Self::GapNeedsParts => f.write_str(
+                "a gap says what you looked for (what) and where you looked (where_looked)",
+            ),
+            Self::NoSuchGap(id) => write!(f, "there is no gap {id}"),
+            Self::GapClosed(id) => write!(f, "gap {id} is closed already"),
+            Self::GapNeedsHow => f.write_str(
+                "say how the gap was answered (how): the address you wrote, or why nothing",
+            ),
+            Self::GapNotYours(id) => write!(f, "gap {id} was reported to another steward"),
+            Self::NoQuizForYou => f.write_str("there is no quiz open for you"),
+            Self::QuizAnswers(n) => {
+                write!(f, "answer all {n} questions, one answer each, in order")
+            }
         }
     }
 }
@@ -847,6 +918,9 @@ mod tests {
             ("world:lab", "world:lab"),
             ("team", "world:team"),
             ("story:Closed-Too-Soon", "story:closed-too-soon"),
+            ("World:Area/3#Backups", "world:area/3#backups"),
+            ("role/tester", "world:role/tester"),
+            ("project/2", "world:project/2"),
         ] {
             assert_eq!(
                 Address::parse(written).map(|a| a.said()),
@@ -860,6 +934,8 @@ mod tests {
             "house#not an anchor",
             "story:x",
             "",
+            "world:area/x",
+            "world:role/janitor#a",
         ] {
             assert_eq!(Address::parse(wrong), None, "{wrong}");
         }

@@ -159,15 +159,96 @@ function hqWorldEditor() {
     ${e.note ? `<p class="hq-note">${esc(e.note)}</p>` : ""}</div>`;
 }
 
+// The pages of areas, projects, goals and roles (ADR 0126), each with its steward, its sections
+// and its score in the nightly quiz. Everything in them is a member's, so all of it is escaped.
+function hqMapPages(w, sections, sectionRow) {
+  const pages = ((w.map || {}).pages || []).filter((pg) => !pg.derived && pg.slug !== "house");
+  if (!pages.length) return "";
+  const rows = pages.map((pg) => {
+    const mine = sections.filter(({ p }) => p.page === pg.slug);
+    const q = pg.quiz;
+    const score = q ? ` <span class="hq-tag ${q.flagged ? "stage-retired" : "stage-insight"}">quiz ${Number(q.passed)}/${Number(q.asked)}${q.flagged ? ", failing" : ""}</span>` : "";
+    const proposed = Number(pg.proposals) ? ` · ${Number(pg.proposals)} proposed` : "";
+    const count = Number(pg.sections);
+    return `<details><summary><b>${esc(pg.title)}</b>${score} <small>${esc(pg.address)} · kept by ${esc(pg.steward)} · ${count} section${count === 1 ? "" : "s"}${proposed}</small></summary>
+      <ul class="hq-team hq-world">${mine.map(sectionRow).join("") || `<li class="hq-empty">No sections yet.</li>`}</ul></details>`;
+  }).join("");
+  return `<h3>Pages</h3><p class="hq-note">One for every area, project, goal and role. Its steward writes it; anyone else proposes. Edit any section here.</p>${rows}`;
+}
+
+// The written pages, for the owner's "Write as the owner" form.
+function hqWorldPageOptions(w) {
+  const pages = ((w.map || {}).pages || []).filter((pg) => !pg.derived);
+  const list = pages.length ? pages : [{ slug: "house", title: "The house" }];
+  return list.map((pg) => `<option value="${esc(pg.slug)}">${esc(pg.title)}</option>`).join("");
+}
+
+// What the map has for someone to do: proposals to decide, gaps members reported, roads that
+// lead nowhere, and last night's quiz. A gap is knowledge missing; a road is a way broken.
+function hqMapWatch(w) {
+  const m = w.map || {};
+  const pageOf = (slug) => (m.pages || []).find((pg) => pg.slug === slug) || {};
+  const proposals = m.proposals || [];
+  const open = proposals.filter((p) => p.status === "open");
+  const decided = proposals.filter((p) => p.status !== "open").slice(0, 5);
+  const openRows = open.map((p) => `<li><b>${esc(p.heading)}</b> <small>on ${esc(p.page_title)} (world:${esc(p.page)}), kept by ${esc(pageOf(p.page).steward || "its steward")} · from ${esc(p.by)}, ${esc(p.day)}</small>
+      <span>${esc(p.headline)}</span>${(p.evidence || []).length ? `<small> rests on: ${p.evidence.map((e) => esc(e.ref)).join(", ")}</small>` : ""}
+      <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:world:proposal:accept-${Number(p.id)}">Accept</button>
+        <button class="hq-btn tall no" data-act="hq:world:proposal:decline-${Number(p.id)}">Decline…</button></div></li>`).join("");
+  const decidedRows = decided.map((p) => `<li>${esc(p.heading)} on ${esc(p.page_title)}: ${esc(p.status)} by ${esc(p.decided_by)}${p.why ? ` — ${esc(p.why)}` : ""}</li>`).join("");
+  const gaps = (m.gaps || []).filter((g) => g.open);
+  const gapRows = gaps.map((g) => `<li><b>${esc(g.what)}</b> <small>looked in ${esc(g.where_looked)} · reported by ${esc(g.by)}${Number(g.count) > 1 ? ` and ${Number(g.count) - 1} more time${Number(g.count) === 2 ? "" : "s"}` : ""} · with ${esc(g.to)}, ${esc(g.day)}</small></li>`).join("");
+  const roadRows = (m.roads || []).map((r) => `<li><code>${esc(r.from)}</code> cites <code>${esc(r.to)}</code>: ${esc(r.why)}.</li>`).join("");
+  const quiz = m.quiz || {};
+  const last = (quiz.nights || [])[0];
+  let night = "No quiz has run yet.";
+  if (last) {
+    const day = last.day ? `${esc(last.day)}: ` : "";
+    if (last.status === "answered") night = `${day}${esc(last.member)} got ${Number(last.passed)} of ${Number(last.asked)}.`;
+    else if (last.status === "asked") night = `${day}asked of ${esc(last.member)}, waiting for the answers.`;
+    else if (last.status === "unanswered") night = `${day}${esc(last.member)} did not answer in time.`;
+    else night = `Skipped: ${esc(last.why)}.`;
+  }
+  const failing = (quiz.pages || []).filter((pg) => pg.flagged).map((pg) => `<li><code>world:${esc(pg.slug)}</code> (${esc(pg.title)}) failed three nights running; its steward is told.</li>`).join("");
+  return `<h3>Proposals to pages</h3>
+    <ul class="hq-team hq-world">${openRows || `<li class="hq-empty">None waiting.</li>`}</ul>
+    ${decidedRows ? `<details><summary>Decided lately</summary><ul>${decidedRows}</ul></details>` : ""}
+    <h3>Gaps</h3><p class="hq-note">Something a member looked for on its map and did not find. It goes to its lead, not your desk.</p>
+    <ul class="hq-team hq-world">${gapRows || `<li class="hq-empty">None open.</li>`}</ul>
+    <h3>Broken roads</h3><p class="hq-note">An address a page cites that leads nowhere, found by HQ.</p>
+    <ul class="hq-team hq-world">${roadRows || `<li class="hq-empty">None.</li>`}</ul>
+    <h3>Last night's map check</h3><p class="hq-note">A member on the house's model is asked a few questions made from its own map; HQ scores them by code.</p>
+    <p>${night}</p>${failing ? `<ul class="hq-team hq-world">${failing}</ul>` : ""}`;
+}
+
+// The owner's word on a proposal to a page: written as theirs, or declined, saying why.
+async function hqProposalAct(what) {
+  const [op, n] = String(what || "").split("-");
+  const id = Number(n);
+  if (!id) return true;
+  try {
+    if (op === "accept") {
+      await api("POST", "/v1/hq/world/proposals/decide", { id, accept: true, why: "" });
+      flash("Written as your word.", "ok");
+    } else {
+      const why = (prompt("Why not?") || "").trim(); if (!why) return true;
+      await api("POST", "/v1/hq/world/proposals/decide", { id, accept: false, why });
+      flash("Declined; the member is told why.", "ok");
+    }
+  } catch (e) { flash("Couldn't decide it: " + e.message, "err"); }
+  await loadHQ(); render(); return true;
+}
+
 function hqWorldCard(s) {
   const w = s.world;
   if (!w) return "";
   const sections = (w.sections || []).map((p, i) => ({ p, i }))
     .sort((a, b) => (HQ_STAGE_ORDER[a.p.unconfirmed_since ? "observation" : a.p.stage] ?? 9) - (HQ_STAGE_ORDER[b.p.unconfirmed_since ? "observation" : b.p.stage] ?? 9));
-  const sectionRows = sections.map(({ p, i }) => `<li><b>${esc(p.heading)}</b> ${hqStageTag(p)}
+  const sectionRow = ({ p, i }) => `<li><b>${esc(p.heading)}</b> ${hqStageTag(p)}
       <span>${esc(p.headline)}</span>
       <small> ${esc(p.address)} · revision ${Number(p.revision) || 1}, ${esc(p.written_by || "")}${p.warrant ? ` · warrant: ${esc(p.warrant)}` : ""}${p.why ? ` · ${esc(p.why)}` : ""}</small>
-      <div class="hq-row">${hqWorldActs("section", i, p)}</div></li>`).join("");
+      <div class="hq-row">${hqWorldActs("section", i, p)}</div></li>`;
+  const sectionRows = sections.filter(({ p }) => (p.page || "house") === "house").map(sectionRow).join("");
   const timeline = ((w.pages || [])[0] || {}).timeline || [];
   const timelineRows = timeline.slice(0, 12).map((l) => `<li><b>${esc(l.day)}</b>, ${esc(l.by)}: ${esc(l.line)}</li>`).join("");
   const derived = (w.pages || []).filter((p) => p.derived).map((p) => `<details><summary>${esc(p.title)} <small>(world:${esc(p.slug)}, from the record)</small></summary>
@@ -183,13 +264,16 @@ function hqWorldCard(s) {
     <ul class="hq-team hq-world">${sectionRows || `<li class="hq-empty">No sections yet: the CEO writes them from the timeline.</li>`}</ul>
     <details><summary>Its timeline (${timeline.length})</summary><ul class="hq-thread hq-timeline">${timelineRows || `<li class="hq-empty">Nothing yet.</li>`}</ul></details>
     ${derived}
+    ${hqMapPages(w, sections, sectionRow)}
     <details><summary>Write as the owner</summary>
-      <p class="hq-note">Your words stand on the house page as an insight and show first in every briefing. Writing under a key that exists replaces that section; its old text stays in its history.</p>
-      <div class="hq-row"><label>Key <input id="hq-w-key" maxlength="40" placeholder="nas"></label>
+      <p class="hq-note">Your words stand on the page you pick (the house, or an area, project, goal or role) as an insight; on the house page they show first in every briefing. Writing under a key that exists replaces that section; its old text stays in its history.</p>
+      <div class="hq-row"><label>Page <select id="hq-w-page">${hqWorldPageOptions(w)}</select></label>
+        <label>Key <input id="hq-w-key" maxlength="40" placeholder="nas"></label>
         <label>Title <input id="hq-w-title" maxlength="80" placeholder="The NAS"></label></div>
       <textarea id="hq-w-text" rows="4" autocapitalize="off" maxlength="1200" aria-label="Section text (first line is its headline)"></textarea>
       <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:world:write:section">Write the section</button>
         <button class="hq-btn tall" data-act="hq:world:write:timeline">Add to the timeline</button></div></details>
+    ${hqMapWatch(w)}
     <h3>Stories</h3>
     <ul class="hq-team hq-world">${stories || `<li class="hq-empty">No stories yet.</li>`}</ul>
     <div class="hq-row"><button class="hq-btn tall" data-act="hq:world:export:md">Download the world (Markdown)</button></div>
@@ -210,6 +294,7 @@ async function hqWorldAct(kind, what) {
     } catch (e) { flash("Couldn't download it: " + e.message, "err"); }
     return true;
   }
+  if (kind === "proposal") return hqProposalAct(what);
   if (kind === "paste") return hqWorldPasteAct(what);
   if (kind === "edit") return hqWorldEditAct(what);
   if (kind === "write") {
@@ -220,10 +305,11 @@ async function hqWorldAct(kind, what) {
       if (what === "section") {
         const title = val("hq-w-title");
         if (!title) { flash("A section needs a title.", "err"); return true; }
-        await api("POST", "/v1/hq/world/section", { page: "house", key: val("hq-w-key"), title, text });
-        flash("It is on the house page.", "ok");
+        const page = val("hq-w-page") || "house";
+        await api("POST", "/v1/hq/world/section", { page, key: val("hq-w-key"), title, text });
+        flash(page === "house" ? "It is on the house page." : `It is on world:${page}.`, "ok");
       } else {
-        await api("POST", "/v1/hq/world/timeline", { page: "house", text });
+        await api("POST", "/v1/hq/world/timeline", { page: val("hq-w-page") || "house", text });
         flash("It is on the timeline.", "ok");
       }
     } catch (e) { flash("Couldn't write it: " + e.message, "err"); return true; }

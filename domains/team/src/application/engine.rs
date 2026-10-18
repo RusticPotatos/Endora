@@ -36,14 +36,18 @@ mod areas;
 mod discipline;
 mod evidence;
 mod games;
+mod gaps;
 mod guards;
 mod health;
 mod ladder;
+mod map;
 mod memory;
 mod notebook;
 mod office;
 mod planning;
 mod projects;
+mod proposals;
+mod quiz;
 mod raci;
 mod replay;
 mod retract;
@@ -54,10 +58,13 @@ mod world;
 
 pub use areas::{DAILY_REVIEW, PATTERNS_ASKS, REPORT_ASKS};
 pub use evidence::Called;
+pub use gaps::GapReported;
+pub use map::MapMigrated;
 pub use notebook::note_number;
 pub use office::Standing;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
+pub use proposals::PageProposing;
 pub use raci::DIRECTION_MOST;
 pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
 pub use world::{RETELL_AT_ONCE, StoryTelling, WorldWrite};
@@ -130,6 +137,9 @@ pub struct Settings {
     /// Whether free members play ping-pong and pool between themselves (ADR 0121): matches
     /// the engine plays in code, with no model asked. Off unless the service turns it on.
     pub games: bool,
+    /// Whether a free member on the house's model is quizzed on the map overnight (ADR 0126),
+    /// in a downtime turn, free. Off unless the service turns it on.
+    pub quiz: bool,
 }
 
 impl Default for Settings {
@@ -140,6 +150,7 @@ impl Default for Settings {
             grace: Duration::from_secs(10),
             downtime: false,
             games: false,
+            quiz: false,
         }
     }
 }
@@ -297,6 +308,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn with_docs(mut self, docs: Library) -> Self {
         self.docs = docs;
         self
+    }
+
+    /// Turns the nightly quiz on the map on or off (ADR 0126): whether a free member on the
+    /// house's model is asked a few questions made from its map, overnight, in a downtime turn.
+    /// The service turns it on at start; a scenario, when it is about the quiz.
+    pub fn set_quiz(&mut self, on: bool) {
+        self.settings.quiz = on;
     }
 
     /// Turns downtime on or off (ADR 0119): whether a member with nothing to do is given a turn
@@ -2218,7 +2236,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(&self.downtime_said(member)?);
             told.push_str(
                 "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc, \
-                 read_world.\n",
+                 read_world, answer_quiz.\n",
             );
             return Ok(told);
         }
@@ -2430,8 +2448,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(
                 "Your tools at HQ: my_turn, claim, post, set_status, create_task (to a lead), \
                  direct, set_strategy, decide_project, propose_goal, ask_owner (for the board), \
-                 check_back, note_house, write_world, verify_world, retire_world, \
-                 propose_canon, tell_story, read_world, read_doc, hand_to (to a lead), \
+                 check_back, note_house, write_world, decide_proposal, verify_world, \
+                 retire_world, propose_canon, tell_story, read_world, propose_world, read_doc, \
+                 hand_to (to a lead), \
                  read_document, note, forget, read_notebook, office, judge_finding.\n",
             );
             return Ok(told);
@@ -2445,11 +2464,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
              check_back, run_gate, request_action"
         });
         told.push_str(match member.role {
-            Role::Reviewer => ", review, read_document, read_doc, read_world, tell_story, office. ",
-            Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, judge_finding, read_document, read_doc, read_world, tell_story, verify_world, retire_world, propose_canon, office. "
+            Role::Reviewer => {
+                ", review, read_document, read_doc, read_world, tell_story, propose_world, office. "
             }
-            _ => ", read_document, read_doc, read_world, tell_story, office. ",
+            Role::Lead => {
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, judge_finding, read_document, read_doc, read_world, tell_story, propose_world, decide_proposal, write_world, verify_world, retire_world, propose_canon, office. "
+            }
+            _ => ", read_document, read_doc, read_world, tell_story, propose_world, office. ",
         });
         told.push_str(beside);
         told.push_str(notebook::TOOLS);
@@ -2883,6 +2904,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // 3b. The office (ADR 0119): proposals whose time came carry or are dropped, and one
         //     member with nothing to do is given a downtime turn.
         self.office_tick()?;
+        // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
+        // gets its page.
+        self.migrate_map_held()?;
+        // The nightly quiz on the map (ADR 0126) takes a free member's downtime first.
+        if self.settings.quiz {
+            self.quiz_look(now)?;
+        }
         if self.settings.downtime {
             self.downtime_look(now)?;
         }
