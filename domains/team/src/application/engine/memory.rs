@@ -272,6 +272,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 newest.push(said);
             }
             let more = timeline.len() - newest.len();
+            // The house log's lines are on the timeline now (ADR 0122): the CEO, who keeps the
+            // page, is asked to write what is true now from them.
+            if member.role == Role::Ceo {
+                pieces.push(Piece::new(
+                    "world:house",
+                    "No sections yet: write what is true of the house now, from its timeline, \
+                     with write_world (as insights, on evidence).\n",
+                    Weight::Core,
+                ));
+            }
             let mut text = String::from("No sections yet. Its timeline, newest last:\n");
             if more > 0 {
                 text.push_str(&format!(

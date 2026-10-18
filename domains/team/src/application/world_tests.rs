@@ -207,6 +207,22 @@ fn the_house_log_and_the_lessons_move_in_once_and_nothing_old_is_deleted() {
         "the lead is asked to retell: {}",
         ada.told
     );
+    // The CEO, who keeps the house page, is asked to write its sections from the timeline.
+    task_for(&hq, t.goal, t.ceo, "Review the house");
+    let mara = turn(&hq, t.ceo);
+    assert!(
+        mara.told.contains(
+            "No sections yet: write what is true of the house now, from its timeline, with \
+             write_world"
+        ),
+        "{}",
+        mara.told
+    );
+    assert!(
+        mara.told.contains("the house log: Sonarr may have 2 GB."),
+        "{}",
+        mara.told
+    );
     let _ = task;
 }
 
