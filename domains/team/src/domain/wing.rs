@@ -261,6 +261,8 @@ mod tests {
             paused: false,
             brain,
             reports_to: to.map(MemberId),
+            furloughed_at: None,
+            recalled_at: None,
         }
     }
 

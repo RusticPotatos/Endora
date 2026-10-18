@@ -87,6 +87,14 @@ pub enum EventKind {
     CheckDone,
     /// The owner had a branch pushed to the fork, or it failed (ADR 0115).
     BranchPushed,
+    /// A member was put on furlough, on the owner's word (ADR 0118).
+    MemberFurloughed,
+    /// A furloughed member came back to work (ADR 0118).
+    MemberRecalled,
+    /// A note was written in a member's notebook, by the member or the owner (ADR 0118).
+    NoteWritten,
+    /// A note was forgotten, edited or deleted (ADR 0118).
+    NoteForgotten,
 }
 
 impl EventKind {
@@ -136,6 +144,10 @@ impl EventKind {
             Self::BranchSubmitted => "branch.submitted",
             Self::CheckDone => "check.done",
             Self::BranchPushed => "branch.pushed",
+            Self::MemberFurloughed => "member.furloughed",
+            Self::MemberRecalled => "member.recalled",
+            Self::NoteWritten => "note.written",
+            Self::NoteForgotten => "note.forgotten",
         }
     }
 }

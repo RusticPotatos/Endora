@@ -13,6 +13,7 @@ pub mod projects;
 pub mod review;
 pub mod routines;
 pub mod runs;
+pub mod staffing;
 pub mod wakes;
 pub mod wing;
 pub mod work;

@@ -163,6 +163,19 @@ fn request_hire_tool() -> Value {
     })
 }
 
+/// The tool a lead asks for staff with when its project has a backlog (ADR 0118).
+fn request_staff_tool() -> Value {
+    json!({
+        "name": "request_staff",
+        "description": "Ask the owner for more hands on one of your projects, when its work is piling up: the project, why, and the project's open tasks as evidence (task numbers; at least twice the developers the project has at work, each checked to be open and in the project). A developer on furlough is offered back first; with none, it becomes a hire request under the same seats. The owner approves either; the member reports to you. One request at a time.",
+        "inputSchema": { "type": "object", "properties": {
+            "project": { "type": "integer", "description": "the project's number" },
+            "why": { "type": "string" },
+            "evidence": ids("The project's open tasks that wait for hands, as task numbers."),
+        }, "required": ["project", "why", "evidence"] },
+    })
+}
+
 /// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
 /// input. Only the reviewer is offered `review`. The CEO (ADR 0111) is offered the team's
 /// tools but the gate and privileged actions, puts decisions to the board with `ask_owner`,
@@ -255,6 +268,7 @@ pub fn tools(role: Role) -> Value {
             list.push(accept_tool());
             list.push(hand_to_tool());
             list.push(request_hire_tool());
+            list.push(request_staff_tool());
         }
     }
     if let Some(list) = all.as_array_mut() {
@@ -688,6 +702,24 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .map_err(|e| said(&e))?;
             Ok(format!(
                 "The request is on the owner's desk (item {}): they hire or decline, and you hear in this thread. Go on with your turn.",
+                item.0
+            ))
+        }
+        "request_staff" => {
+            let project = args["project"]
+                .as_i64()
+                .map(ProjectId)
+                .ok_or_else(|| "which project? Give its number as `project`".to_owned())?;
+            let item = engine
+                .request_staff(
+                    run.id,
+                    project,
+                    text_arg(args, "why")?,
+                    &evidence_flat(args)?,
+                )
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "The request is on the owner's desk (item {}): they bring a member back or hire, and you hear in this thread. Go on with your turn.",
                 item.0
             ))
         }

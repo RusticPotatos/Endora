@@ -80,7 +80,7 @@ pub fn escalation(member: &Member, members: &[Member]) -> Option<MemberId> {
         }
         seen.push(up);
         let found = members.iter().find(|m| m.id == up)?;
-        if !found.paused {
+        if found.at_work() {
             return Some(up);
         }
         at = found;
@@ -228,6 +228,8 @@ mod tests {
             paused: false,
             brain: crate::domain::Brain::Local,
             reports_to: reports_to.map(MemberId),
+            furloughed_at: None,
+            recalled_at: None,
         }
     }
 

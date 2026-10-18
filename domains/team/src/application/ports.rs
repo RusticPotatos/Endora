@@ -266,6 +266,17 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_paused(&self, member: MemberId, paused: bool) -> Stored<()>;
+    /// Puts a member on furlough from `at` (ADR 0118). Nothing else about it changes: members
+    /// are never deleted.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn furlough_member(&self, member: MemberId, at: Millis) -> Stored<()>;
+    /// Ends a member's furlough at `at`.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()>;
     /// Sets what a member thinks with.
     ///
     /// # Errors

@@ -313,6 +313,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Err(EngineError::Refused(Refusal::Finished));
         }
         let (by, target) = (self.member(turn.member)?, self.member(to)?);
+        if target.furloughed() {
+            return Err(EngineError::Refused(Refusal::Furloughed(target.name)));
+        }
         if target.id != by.id {
             crate::domain::work::may_delegate(by.role, target.role)
                 .map_err(EngineError::Refused)?;
@@ -346,13 +349,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let worker = task.owner.or(task.assignee);
         let at_work = |id: Option<MemberId>| {
             id.and_then(|id| members.iter().find(|m| m.id == id))
-                .filter(|m| !m.paused && m.role.leads() && Some(m.id) != worker)
+                .filter(|m| m.at_work() && m.role.leads() && Some(m.id) != worker)
                 .cloned()
         };
         let first = |role: Role| {
             members
                 .iter()
-                .filter(|m| m.role == role && !m.paused && Some(m.id) != worker)
+                .filter(|m| m.role == role && m.at_work() && Some(m.id) != worker)
                 .min_by_key(|m| m.id)
                 .cloned()
         };
@@ -372,7 +375,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Who checks `task`'s work now.
     pub(super) fn checkers_of(&self, task: &Task) -> Done<Checkers<MemberId>> {
         let worker = task.owner.or(task.assignee);
-        let tester = self.reviewer()?.filter(|r| !r.paused).map(|r| r.id);
+        let tester = self.reviewer()?.filter(|r| r.at_work()).map(|r| r.id);
         let lead = self.lead_for(task)?.map(|l| l.id);
         Ok(evidence::checkers(worker, tester, lead))
     }

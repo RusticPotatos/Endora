@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS members (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
     share_percent INTEGER NOT NULL, slots INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
     look INTEGER NOT NULL DEFAULT 0, brain TEXT NOT NULL DEFAULT 'local',
-    reports_to INTEGER REFERENCES members(id)
+    reports_to INTEGER REFERENCES members(id), furloughed_at INTEGER, recalled_at INTEGER
 ) STRICT;
 CREATE TABLE IF NOT EXISTS goals (
     id INTEGER PRIMARY KEY, title TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
@@ -192,6 +192,13 @@ const OWNER_COLUMNS: [(&str, &str); 3] = [
     ("ledger", "owner INTEGER NOT NULL DEFAULT 0"),
 ];
 
+/// The columns a store made before elastic staffing (ADR 0118) gains, each empty: nobody was
+/// ever furloughed or recalled. Adding a column changes no row.
+const STAFFING_COLUMNS: [(&str, &str); 2] = [
+    ("members", "furloughed_at INTEGER"),
+    ("members", "recalled_at INTEGER"),
+];
+
 /// Adds `column` (its name, then its type) to `table`, unless the table has it already.
 fn add_column(conn: &Connection, table: &str, column: &str) -> Stored<()> {
     let name = column.split_whitespace().next().unwrap_or(column);
@@ -296,6 +303,7 @@ impl SqliteTeamStore {
             .into_iter()
             .chain(EVIDENCE_COLUMNS)
             .chain(OWNER_COLUMNS)
+            .chain(STAFFING_COLUMNS)
         {
             add_column(&conn, table, column)?;
         }
@@ -498,7 +506,8 @@ impl TeamStore for SqliteTeamStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, role, share_percent, slots, paused, look, brain, reports_to FROM members ORDER BY id",
+                "SELECT id, name, role, share_percent, slots, paused, look, brain, reports_to, \
+                 furloughed_at, recalled_at FROM members ORDER BY id",
             )
             .map_err(backend)?;
         let rows = stmt
@@ -516,6 +525,8 @@ impl TeamStore for SqliteTeamStore {
                     // misreading.
                     brain: Brain::from_name(&r.get::<_, String>(7)?).unwrap_or(Brain::Local),
                     reports_to: r.get::<_, Option<i64>>(8)?.map(MemberId),
+                    furloughed_at: r.get(9)?,
+                    recalled_at: r.get(10)?,
                 })
             })
             .map_err(backend)?;
@@ -527,6 +538,26 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET paused = ?2 WHERE id = ?1",
                 params![member.0, paused],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn furlough_member(&self, member: MemberId, at: Millis) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET furloughed_at = ?2, recalled_at = NULL WHERE id = ?1",
+                params![member.0, at],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET recalled_at = ?2 WHERE id = ?1 AND furloughed_at IS NOT NULL",
+                params![member.0, at],
             )
             .map_err(backend)?;
         Ok(())
@@ -2193,6 +2224,61 @@ CREATE TABLE IF NOT EXISTS check_backs (
             )
             .unwrap();
         assert_eq!(indexed, 2, "a project's month reads the ledger by index");
+    }
+
+    /// The members table as it is on the live store before elastic staffing (ADR 0118).
+    const MEMBERS_BEFORE_STAFFING: &str = "
+CREATE TABLE members (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
+    share_percent INTEGER NOT NULL, slots INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
+    look INTEGER NOT NULL DEFAULT 0, brain TEXT NOT NULL DEFAULT 'local',
+    reports_to INTEGER REFERENCES members(id)
+) STRICT;
+INSERT INTO members (id, name, role, share_percent, slots, brain, reports_to) VALUES
+    (1, 'Mara', 'ceo', 35, 1, 'claude-opus-5-5', NULL),
+    (2, 'Kit', 'lead', 25, 2, 'claude-sonnet-5-5', 1),
+    (3, 'Rae', 'developer', 40, 2, 'claude-haiku-5-5', 2);
+";
+
+    #[test]
+    fn a_store_made_before_elastic_staffing_gains_its_columns_and_loses_no_member() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MEMBERS_BEFORE_STAFFING).unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        let before = store.members().unwrap();
+        assert_eq!(
+            before
+                .iter()
+                .map(|m| (m.name.as_str(), m.furloughed(), m.recalled_at))
+                .collect::<Vec<_>>(),
+            [
+                ("Mara", false, None),
+                ("Kit", false, None),
+                ("Rae", false, None)
+            ]
+        );
+        // Opening it again changes nothing, and a furlough is a column, never a deletion.
+        let store = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
+        store.furlough_member(MemberId(3), 77).unwrap();
+        let rae = store.members().unwrap().remove(2);
+        assert_eq!(
+            (rae.furloughed(), rae.furloughed_at, rae.name.as_str()),
+            (true, Some(77), "Rae")
+        );
+        store.recall_member(MemberId(3), 99).unwrap();
+        let rae = store.members().unwrap().remove(2);
+        assert_eq!(
+            (rae.furloughed(), rae.furloughed_at, rae.recalled_at),
+            (false, Some(77), Some(99))
+        );
+        // A second furlough starts afresh.
+        store.furlough_member(MemberId(3), 120).unwrap();
+        let rae = store.members().unwrap().remove(2);
+        assert_eq!(
+            (rae.furloughed(), rae.furloughed_at, rae.recalled_at),
+            (true, Some(120), None)
+        );
+        assert_eq!(store.members().unwrap().len(), 3);
     }
 
     /// The schema as it was before evidence (ADR 0114): the live store was made with it.

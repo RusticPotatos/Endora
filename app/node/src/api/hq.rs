@@ -482,6 +482,29 @@ pub(super) async fn hq_reports_to(
     Ok(answer)
 }
 
+/// The owner puts a member on furlough (ADR 0118); HQ refuses the CEO and a member with open
+/// work.
+pub(super) async fn hq_furlough(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/furlough"),
+        Some(json!({})),
+    )
+    .await?;
+    record(&state, &format!("you put member {id} on furlough"));
+    Ok(answer)
+}
+
+/// The owner brings a furloughed member back to work.
+pub(super) async fn hq_recall(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    let answer = ask(&state, format!("/v1/members/{id}/recall"), Some(json!({}))).await?;
+    record(
+        &state,
+        &format!("you brought member {id} back from furlough"),
+    );
+    Ok(answer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::relay::tests::{fake, node};
@@ -732,6 +755,41 @@ mod tests {
             "HQ: you made a routine: Check the home lab",
             "HQ: you switched routine 2 off",
             "HQ: you ran routine 2 now",
+        ] {
+            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owner_furloughs_and_recalls_through_the_node_and_it_is_recorded() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            let furloughed = path.ends_with("/furlough");
+            (
+                200,
+                "application/json",
+                json!({ "member": 5, "furloughed": furloughed }).to_string(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_furlough(State(state.clone()), Path(5)).await.unwrap();
+        assert_eq!(answer.0["furloughed"], true);
+        let answer = hq_recall(State(state.clone()), Path(5)).await.unwrap();
+        assert_eq!(answer.0["furloughed"], false);
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/members/5/furlough", "/v1/members/5/recall"]);
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        for line in [
+            "HQ: you put member 5 on furlough",
+            "HQ: you brought member 5 back from furlough",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
