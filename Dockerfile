@@ -97,10 +97,11 @@ RUN git clone --depth 1 -b "$OWNTONE_VERSION" https://github.com/owntone/owntone
     && autoreconf -fi && ./configure --enable-daemon --prefix=/usr && make \
     && install -D daemon/airptpd /tmp/build/usr/sbin/airptpd \
     && rm -rf /tmp/build/var /tmp/build/etc
-# The hub's AirPlay receivers ("Endora · iPhone" and so on): shairport-sync, built for classic
-# AirPlay, which needs no PTP clock of its own and so shares the host with airptpd (an AirPlay 2
-# build's nqptp would want the same ports; the owner chose classic, 2026-10-17). Its own layer,
-# so OwnTone's build above stays cached.
+# The hub's classic AirPlay door ("Endora Mixer"): shairport-sync built for classic AirPlay,
+# which needs no PTP clock of its own and so shares the host with airptpd. Since ADR 0128 it is
+# the fall-back: with SOUND_AIRPLAY2=1 the door is the AirPlay 2 one (the airplay2 stage below,
+# on a LAN address of its own) and this build runs nothing. Its own layer, so OwnTone's build
+# above stays cached.
 ARG SHAIRPORT_VERSION=5.6
 RUN apk add -U -q --no-cache --no-progress popt-dev libconfig-dev openssl-dev \
     && git clone --depth 1 -b "$SHAIRPORT_VERSION" https://github.com/mikebrady/shairport-sync.git /tmp/shairport \
@@ -121,6 +122,47 @@ COPY --from=owntone-build /tmp/build/ /
 COPY --chmod=755 scripts/sound-senders.sh /usr/local/bin/sound-senders
 VOLUME /data
 ENTRYPOINT ["/usr/local/bin/sound-senders"]
+
+# endora-sound's AirPlay 2 door (ADR 0128): shairport-sync built for AirPlay 2 and the nqptp
+# clock it needs, so an Apple TV holds its picture back to match the door's sound (lip-sync).
+# Built with `--target airplay2`. nqptp needs UDP 319/320 to itself, which the senders'
+# airptpd holds on the host, so this runs on a LAN address of its own (a macvlan network,
+# docker-compose.yml) and shares only the pipes volume with the hub. Both pinned to releases:
+# shairport-sync 5.6 (the classic build's, AirPlay 2 from 4.0 on) and nqptp 1.2.9 (keeps one
+# clock per receiver, which several AirPlay 2 receivers on one nqptp need).
+FROM alpine:3.23 AS airplay2-build
+ARG SHAIRPORT_VERSION=5.6
+ARG NQPTP_VERSION=1.2.9
+RUN apk add -U -q --no-cache --no-progress \
+      autoconf automake avahi-dev build-base ffmpeg-dev git libconfig-dev libgcrypt-dev \
+      libplist-dev libplist-util libsodium-dev libtool linux-headers openssl-dev pkgconf \
+      popt-dev util-linux-dev xxd
+RUN git clone --depth 1 -b "$NQPTP_VERSION" https://github.com/mikebrady/nqptp.git /tmp/nqptp \
+    && cd /tmp/nqptp \
+    && autoreconf -fi \
+    && ./configure --prefix=/usr \
+    && make \
+    && install -D nqptp /tmp/build/usr/bin/nqptp
+RUN git clone --depth 1 -b "$SHAIRPORT_VERSION" https://github.com/mikebrady/shairport-sync.git /tmp/shairport \
+    && cd /tmp/shairport \
+    && autoreconf -fi \
+    && ./configure --with-airplay-2 --with-pipe --with-avahi --with-ssl=openssl \
+         --prefix=/usr --sysconfdir=/etc \
+    && make \
+    && install -D shairport-sync /tmp/build/usr/bin/shairport-sync
+
+FROM alpine:3.23 AS airplay2
+RUN apk add -U -q --no-cache --no-progress \
+      avahi dbus ffmpeg-libavcodec ffmpeg-libavformat ffmpeg-libavutil ffmpeg-libswresample \
+      libconfig libgcrypt libplist libsodium libuuid openssl popt su-exec \
+    && rm -f /etc/avahi/services/* \
+    && adduser -S -H -D shairport
+COPY --from=airplay2-build /tmp/build/ /
+# It must load and be the AirPlay 2 build: a library missing here fails the build, not the
+# first cast.
+RUN shairport-sync -V | tee /dev/stderr | grep -q AirPlay2
+COPY --chmod=755 scripts/sound-airplay2.sh /usr/local/bin/sound-airplay2
+ENTRYPOINT ["/usr/local/bin/sound-airplay2"]
 
 # endora-sound (ADR 0104): the sound hub, in an image of its own, because it needs ffmpeg and
 # the node does not. Built with `--target sound`. It sits before the node's stage on purpose:

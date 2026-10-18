@@ -9,6 +9,20 @@ tagged release.
 
 ### Added
 
+- **An AirPlay 2 door** ([ADR 0128](docs/adr/0128-an-airplay-2-door.md)), so an Apple TV
+  casting into "Endora Mixer" keeps lip-sync. shairport-sync 5.6 built for AirPlay 2 with
+  nqptp 1.2.9 (Dockerfile target `airplay2`, image `endora-airplay2`), in its own container on
+  a LAN address of its own through a macvlan network (its clock needs UDP 319/320, which the
+  senders' airptpd holds on the host); it reads the hub's list of doors and writes the same
+  pipe in the hub's format, and its own avahi announces it. `SOUND_AIRPLAY2 = 1` in `local.mk`
+  turns it on (`make deploy` adds the `airplay2` profile, builds the image, and refuses without
+  the LAN interface, subnet, gateway and address), and the senders' container then runs no
+  classic door; anything else keeps the classic door as before. `SOUND_AIRPLAY2_LATENCY`
+  (0.5 s by default, 0 to 2) hands the sound over that much early to make up for the hub's path,
+  tuned by ear. The `endora.homelab` collection's `endora` role gained `endora_sound`,
+  `endora_sound_senders` and `endora_sound_airplay2` with the door's values. Setup, UniFi and
+  tuning: `docs/homelab.md`. Not yet tried with a real Apple TV.
+
 - **One general AirPlay door, "Endora Mixer"** ([ADR 0104](docs/adr/0104-endora-sound.md)).
   The sound hub makes it once at start; any device (an Apple TV, a phone) casts into it and
   it can be wired to any speaker, phones included. Its card says so, and that a device wired

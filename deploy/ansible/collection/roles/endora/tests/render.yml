@@ -40,6 +40,20 @@
         endora_time_zone: ""
         endora_brain_dir: ""
 
+    - name: With the sound hub and its AirPlay 2 door
+      ansible.builtin.template:
+        src: ../templates/endora.env.j2
+        dest: "{{ out }}/door.env"
+        mode: "0600"
+      vars:
+        endora_sound: true
+        endora_sound_airplay2: true
+        endora_sound_airplay2_parent: eth0
+        endora_sound_airplay2_subnet: 192.168.1.0/24
+        endora_sound_airplay2_gateway: 192.0.2.1
+        endora_sound_airplay2_ip: 192.168.1.10
+        endora_sound_airplay2_latency: 0.25
+
     - name: Override with an address
       ansible.builtin.template:
         src: ../templates/docker-compose.override.yml.j2
@@ -60,6 +74,7 @@
       ansible.builtin.set_fact:
         full: "{{ lookup('file', out ~ '/full.env').splitlines() }}"
         bare: "{{ lookup('file', out ~ '/bare.env').splitlines() }}"
+        door: "{{ lookup('file', out ~ '/door.env').splitlines() }}"
         san: "{{ lookup('file', out ~ '/san.yml') | from_yaml }}"
         nosan: "{{ lookup('file', out ~ '/nosan.yml') | from_yaml }}"
 
@@ -90,6 +105,46 @@
           - "bare | select('match', 'ENDORA_DATA_DIR') | list | length == 0"
           - "san.services.node.environment.ENDORA_TLS_SAN == '192.168.1.10'"
           - "nosan.services == {}"
+          # The sound hub and the AirPlay 2 door (ADR 0128): off unless asked for; with the
+          # door, its LAN values for the compose file's macvlan network, and the lead.
+          - "bare | select('match', 'ENDORA_SOUND_URL|SOUND_AIRPLAY2') | list | length == 0"
+          - "'ENDORA_SOUND_URL=http://sound:8791' in door"
+          - "'SOUND_AIRPLAY2=1' in door"
+          - "'SOUND_AIRPLAY2_PARENT=eth0' in door"
+          - "'SOUND_AIRPLAY2_SUBNET=192.168.1.0/24' in door"
+          - "'SOUND_AIRPLAY2_GATEWAY=192.0.2.1' in door"
+          - "'SOUND_AIRPLAY2_IP=192.168.1.10' in door"
+          - "'SOUND_AIRPLAY2_HOSTNAME=endora-mixer' in door"
+          - "'SOUND_AIRPLAY2_LATENCY=0.25' in door"
+          - "door | select('match', 'SOUND_AIRPLAY2_MAC') | list | length == 0"
+
+    - name: No profiles and everything missing, with nothing set
+      ansible.builtin.assert:
+        that:
+          - "endora_profiles == []"
+          - "endora_sound_airplay2_missing == ['endora_sound_airplay2_parent', 'endora_sound_airplay2_subnet', 'endora_sound_airplay2_gateway', 'endora_sound_airplay2_ip', 'endora_sound']"
+
+    - name: The hub, its senders and the door, with the door's values
+      ansible.builtin.assert:
+        that:
+          - "endora_profiles == ['sound', 'senders', 'airplay2']"
+          - "endora_sound_airplay2_missing == []"
+      vars: &door
+        endora_sound: true
+        endora_sound_senders: true
+        endora_sound_airplay2: true
+        endora_sound_airplay2_parent: eth0
+        endora_sound_airplay2_subnet: 192.168.1.0/24
+        endora_sound_airplay2_gateway: 192.0.2.1
+        endora_sound_airplay2_ip: 192.168.1.10
+
+    - name: The door without the hub is refused
+      ansible.builtin.assert:
+        that:
+          - "endora_sound_airplay2_missing == ['endora_sound']"
+      vars:
+        <<: *door
+        endora_sound: false
 
     # The rule this role exists to keep: Endora is never built or pulled on the NAS.
     - name: Every Compose call in the role neither builds nor pulls

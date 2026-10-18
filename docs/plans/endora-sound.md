@@ -66,7 +66,10 @@ and the senders' `airptpd` both bind UDP 319/320 with no port sharing. AirPlay 2
 would have needed a container on a LAN address of their own. Classic AirPlay needs no PTP
 clock, so its receivers share the NAS's address, beside the senders, with the same lossless
 sound and the same two-second delay. The owner chose it on 2026-10-17; moving to AirPlay 2
-later needs that address, and nothing else in the hub changes.
+later needs that address, and nothing else in the hub changes. *2026-10-18:* that move is
+[ADR 0128](../adr/0128-an-airplay-2-door.md), for an Apple TV's lip-sync: with
+`SOUND_AIRPLAY2 = 1` the door is AirPlay 2 in a container of its own on a macvlan address,
+writing the same pipe, and the classic door is the fall-back.
 
 **Why stock OwnTone, and why four.** OwnTone's player is single-session: one queue, one input
 and one clock, on file-scope state throughout `player.c`, `input.c` and `outputs/`. Several

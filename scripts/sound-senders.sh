@@ -31,7 +31,14 @@ names_now() { cksum < "$NAMES" 2>/dev/null || echo none; }
 # The AirPlay receivers to run, written by the hub: a pipe's file name, a tab, the name the
 # owner's devices show. One classic AirPlay receiver each, writing into its pipe.
 RECEIVERS=/pipes/airplay-receivers.txt
-receivers_now() { cksum < "$RECEIVERS" 2>/dev/null || echo none; }
+# SOUND_AIRPLAY2=1: the doors are the AirPlay 2 container's (scripts/sound-airplay2.sh, ADR
+# 0128), on an address of its own; here none run, and a change to them is not a reason to
+# restart the senders. Anything else: the classic doors run here, as before.
+AIRPLAY2=${SOUND_AIRPLAY2:-0}
+receivers_now() {
+  [ "$AIRPLAY2" = 1 ] && { echo airplay2; return; }
+  cksum < "$RECEIVERS" 2>/dev/null || echo none
+}
 
 if [ ! -s "$SECRET" ]; then
   # Private to its owner, and only it: a umask left set for the rest of the script made the
@@ -116,7 +123,7 @@ done
 
 r=0
 TAB=$(printf '\t')
-if [ -f "$RECEIVERS" ]; then
+if [ -f "$RECEIVERS" ] && [ "$AIRPLAY2" != 1 ]; then
   while IFS="$TAB" read -r pipe name; do
     [ -n "$pipe" ] && [ -n "$name" ] || continue
     # A file name in /pipes and nothing else: never a path somewhere else.
