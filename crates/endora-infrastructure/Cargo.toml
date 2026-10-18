@@ -29,6 +29,9 @@ endora-capabilities = { path = "../../domains/capabilities" }
 endora-understanding = { path = "../../domains/understanding" }
 endora-platform = { path = "../../domains/platform" }
 endora-conversation = { path = "../../domains/conversation" }
+# HQ's members claim the pool by their brain's price class (ADR 0113, amended); the relay's
+# tests hold that table to the prices here, so changing one fails a test. Tests only.
+endora-team = { path = "../../domains/team" }
 
 [lints]
 workspace = true

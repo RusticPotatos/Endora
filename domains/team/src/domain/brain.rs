@@ -61,6 +61,27 @@ impl Brain {
         !matches!(self, Self::Local)
     }
 
+    /// Its price class (ADR 0113, amended): what a token costs on it, in thousandths of what it
+    /// costs on Opus, by the relay's input prices (Opus $4, Sonnet $2, Haiku $0.10 a million;
+    /// their output prices stand in the same ratios). Nothing for the house's model, which costs
+    /// nothing. A member's claim on the pool is its role's weight times this, so a cheap brain
+    /// claims a small part. `endora-infrastructure`'s relay tests hold this to its prices.
+    #[must_use]
+    pub const fn price_class(self) -> i64 {
+        match self {
+            Self::Local => 0,
+            Self::Opus => 1_000,
+            Self::Sonnet => 500,
+            Self::Haiku => 25,
+        }
+    }
+
+    /// Every brain, in the order the owner is offered them.
+    #[must_use]
+    pub const fn all() -> [Self; 4] {
+        ALL
+    }
+
     /// Whether a member in `role` may think with this.
     #[must_use]
     pub const fn allowed_for(self, role: Role) -> bool {
@@ -108,6 +129,14 @@ mod tests {
         for brain in ALL {
             assert_eq!(Brain::from_name(brain.name()), Some(brain));
         }
+    }
+
+    #[test]
+    fn a_dearer_brain_is_a_larger_price_class_and_the_house_model_none() {
+        assert_eq!(Brain::Local.price_class(), 0);
+        assert!(Brain::Opus.price_class() > Brain::Sonnet.price_class());
+        assert!(Brain::Sonnet.price_class() > Brain::Haiku.price_class());
+        assert!(Brain::Haiku.price_class() > 0);
     }
 
     #[test]

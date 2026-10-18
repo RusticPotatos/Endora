@@ -597,6 +597,24 @@ pub fn counted(call: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hqs_price_classes_are_the_relays_input_prices_relative_to_opus() {
+        use endora_team::domain::Brain;
+        let opus = price_of(Brain::Opus.name(), 0).unwrap().input;
+        for brain in Brain::all() {
+            let Some(price) = price_of(brain.name(), 0) else {
+                assert_eq!(
+                    brain.price_class(),
+                    0,
+                    "{brain:?} is not relayed, so costs nothing"
+                );
+                continue;
+            };
+            let class = (price.input / opus * 1_000.0).round() as i64;
+            assert_eq!(brain.price_class(), class, "{brain:?}");
+        }
+    }
+
     use super::*;
     use serde_json::json;
 

@@ -326,25 +326,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store.task(id)?.ok_or(EngineError::Unknown("task"))
     }
 
-    /// The weights of the members with a paid brain, together: what the day's pool is shared
-    /// among (ADR 0111).
+    /// The claims of the members with a paid brain, together: what the day's pool is shared
+    /// among (ADR 0111), each its role's weight times its brain's price class (ADR 0113,
+    /// amended).
     fn paid_weights(&self) -> Done<i64> {
         Ok(self
             .store
             .members()?
             .iter()
-            .filter(|m| m.brain.cloud())
-            .map(|m| i64::from(m.share_percent))
+            .map(|m| money::claim(m.share_percent, m.brain))
             .sum())
     }
 
-    /// A member's budget for one day: its weight's part of the pool among the paid, and
+    /// A member's budget for one day: its claim's part of the pool among the paid, and
     /// nothing for a member on the house's model, which costs nothing.
     fn per_day(&self, member: &Member, paid: i64) -> Micros {
-        if !member.brain.cloud() {
-            return 0;
-        }
-        money::member_a_day(self.settings.pool_per_month, member.share_percent, paid)
+        money::member_a_day(
+            self.settings.pool_per_month,
+            money::claim(member.share_percent, member.brain),
+            paid,
+        )
     }
 
     /// What a member could have reserved for a turn now, on work in `project` if any, if

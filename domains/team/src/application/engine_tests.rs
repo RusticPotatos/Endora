@@ -1462,3 +1462,39 @@ fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
     // The owner may hand out what they like.
     task_for(&hq, t.goal, Some(t.dev), "Restart prowlarr again");
 }
+
+#[test]
+fn a_members_daily_share_is_weighted_by_its_brains_price() {
+    let clock = hands();
+    let hq = hq(&clock, 8);
+    hq.seat_ceo("Mara").unwrap();
+    let on = |name: &str, role: Role, brain: &str| {
+        let id = hq.hire(name, role, role.share(), 2, 0).unwrap();
+        hq.set_brain(id, brain).unwrap();
+        id
+    };
+    let ada = on("Ada", Role::Lead, "claude-sonnet-5-5");
+    on("Kit", Role::Lead, "claude-sonnet-5-5");
+    on("Cy", Role::Researcher, "claude-haiku-5-5");
+    let rae = on("Rae", Role::Developer, "claude-haiku-5-5");
+    on("Zed", Role::Developer, "claude-haiku-5-5");
+    let local = hq.hire("Dee", Role::Reviewer, 20, 1, 0).unwrap();
+    let snap = hq.snapshot().unwrap();
+    let share = |id: MemberId| {
+        snap["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id.0)
+            .unwrap()["per_day"]
+            .as_i64()
+            .unwrap()
+    };
+    assert!(
+        share(ada) > share(rae),
+        "the Sonnet lead's {} against a Haiku developer's {}",
+        share(ada),
+        share(rae)
+    );
+    assert_eq!(share(local), 0, "the house's model claims nothing");
+}
