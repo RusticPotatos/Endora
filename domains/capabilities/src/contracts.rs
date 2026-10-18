@@ -70,8 +70,8 @@ impl Contract {
     }
 
     /// Whether a turn of a member in `role` is offered this contract: what it may see, and an
-    /// act only for a member who works on the house. The CEO decides and hands work on; it
-    /// takes no step on the house itself (ADR 0111). The wing's git contracts (ADR 0115) go to
+    /// act only for a member who works on the house. The CEO reads what the lead reads and
+    /// directs; it takes no step on the house itself (ADR 0111, 0120). The wing's git contracts (ADR 0115) go to
     /// a lead or a developer, whatever its brain: the fork is public.
     #[must_use]
     pub fn offered_to(&self, role: &str, on_a_cloud_model: bool) -> bool {
@@ -469,12 +469,13 @@ mod tests {
             assert!(status.may_be_seen_by(role, true) && restart.may_be_seen_by(role, true));
         }
         assert!(logs.may_be_seen_by("lead", true));
-        for role in ["ceo", "developer", "reviewer", "researcher"] {
+        for role in ["developer", "reviewer", "researcher"] {
             assert!(!logs.may_be_seen_by(role, true), "a cloud {role}");
         }
-        // The CEO reads the home lab's state, and never a log or a restart (ADR 0111).
-        assert!(status.offered_to("ceo", true));
-        assert!(!logs.offered_to("ceo", true) && !restart.offered_to("ceo", true));
+        // The CEO reads the home lab as the lead does, its state and its logs, and never acts
+        // on it (ADR 0120, the owner's word of 2026-10-18).
+        assert!(status.offered_to("ceo", true) && logs.offered_to("ceo", true));
+        assert!(!restart.offered_to("ceo", true) && !restart.offered_to("ceo", false));
         assert!(restart.offered_to("lead", true));
     }
 

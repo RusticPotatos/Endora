@@ -50,6 +50,9 @@ pub enum WakeReason {
     /// A check of the member's submitted branch reported, pass or fail (ADR 0115): the
     /// submitter reads it, and so does the tester.
     CheckDone,
+    /// The CEO gave the lead of the task's area a direction (ADR 0120): the lead decides what
+    /// to do with it. Kept last, apart from the rest, for an easy merge.
+    Directed,
 }
 
 impl WakeReason {
@@ -75,6 +78,7 @@ impl WakeReason {
             Self::QuestionAnswered => "question_answered",
             Self::AcceptanceAsked => "acceptance_asked",
             Self::CheckDone => "check_done",
+            Self::Directed => "directed",
         }
     }
 
@@ -110,6 +114,7 @@ impl WakeReason {
                 | Self::QuestionAsked
                 | Self::QuestionAnswered
                 | Self::CheckDone
+                | Self::Directed
         )
     }
 
@@ -146,6 +151,7 @@ impl WakeReason {
             Self::QuestionAnswered,
             Self::AcceptanceAsked,
             Self::CheckDone,
+            Self::Directed,
         ]
         .into_iter()
         .find(|r| r.name() == name)

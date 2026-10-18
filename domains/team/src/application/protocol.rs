@@ -132,7 +132,7 @@ fn propose_project_tool() -> Value {
     let ids = |what: &str| json!({ "type": "array", "items": { "type": "integer" }, "description": what });
     json!({
         "name": "propose_project",
-        "description": "Propose a project: a piece of one goal with its own lead, for work that keeps coming back. Cite its evidence from HQ's record: task numbers and alarm event ids (at least one, each checked). A lead's proposal waits for the CEO; the CEO's starts at once. A monthly cap, if you ask one, is the owner's to grant.",
+        "description": "Propose a project: a piece of one goal with its own lead, for work that keeps coming back in your area. Cite its evidence from HQ's record: task numbers and alarm event ids (at least one, each checked). It waits for the CEO, who decides it (yes, no or not now). A monthly cap, if you ask one, is the owner's to grant.",
         "inputSchema": { "type": "object", "properties": {
             "goal": { "type": "integer", "description": "the goal it serves (default: your task's)" },
             "title": { "type": "string" },
@@ -200,9 +200,9 @@ fn request_staff_tool() -> Value {
 }
 
 /// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
-/// input. Only the reviewer is offered `review`. The CEO (ADR 0111) is offered the team's
-/// tools but the gate and privileged actions, puts decisions to the board with `ask_owner`,
-/// and keeps the house log and reads Endora's public records.
+/// input. Only the reviewer is offered `review`. The CEO (ADR 0111, 0120) sets direction:
+/// it directs the leads (`direct`), decides their proposals, puts decisions to the board with
+/// `ask_owner`, keeps the house log and reads; it neither proposes projects nor accepts work.
 #[must_use]
 pub fn tools(role: Role) -> Value {
     if role == Role::Ceo {
@@ -357,6 +357,14 @@ fn ceos_tools() -> Value {
         .filter(|t| keep.iter().any(|k| t["name"] == *k))
         .cloned()
         .collect();
+    // The CEO delegates to leads from its own work (ADR 0120); in a lead's area it directs.
+    for listed in &mut list {
+        if listed["name"] == "create_task" {
+            listed["description"] = json!(
+                "Hand a lead new work from one of your own tasks (your review, your planning, a project you lead), with its acceptance criteria. Only to a lead: the lead plans it and hands its parts on in its area. On a task in a lead's area, use direct instead."
+            );
+        }
+    }
     let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
         json!({
             "name": name,
@@ -388,7 +396,16 @@ fn ceos_tools() -> Value {
         json!({ "log": { "type": "string", "maxLength": crate::domain::house::HOUSE_LOG_MOST } }),
         &["log"],
     ));
-    list.push(propose_project_tool());
+    list.push(tool(
+        "direct",
+        "Give the lead of a task's area a direction: what you want done, looked at or weighed, on evidence from HQ's record. It is posted in the task's thread and wakes the lead, who decides what to do with it. On a task in a lead's area you read and talk, and direct; you never claim, move, close, accept or send back its work.",
+        json!({
+            "task": { "type": "integer", "description": "the task's number" },
+            "direction": { "type": "string", "maxLength": super::engine::DIRECTION_MOST },
+            "evidence": ids("What it rests on: at least one."),
+        }),
+        &["task", "direction", "evidence"],
+    ));
     list.push(tool(
         "decide_project",
         "Decide a project a lead proposed: accept it (it starts, and its lead is handed its first task) or send it back, saying why; your why is posted to whoever proposed it. A cap it asks, or one you give, goes to the owner with your why as the recommendation.",
@@ -412,8 +429,11 @@ fn ceos_tools() -> Value {
         }),
         &["title", "reason"],
     ));
-    list.push(accept_tool());
-    list.push(hand_to_tool());
+    let mut hand_to = hand_to_tool();
+    hand_to["description"] = json!(
+        "Hand a task of your own, or one held by someone below you, to a lead (never to anyone else: the lead hands it on in its area). Say why; it goes in the thread, and the lead is woken."
+    );
+    list.push(hand_to);
     list.push(read_document_tool());
     list.push(read_doc_tool());
     Value::Array(list)
@@ -645,17 +665,6 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let id = engine
                 .propose_project(run.id, &proposal)
                 .map_err(|e| said(&e))?;
-            if member.role == Role::Ceo {
-                return Ok(format!(
-                    "Project {} is started, and its lead handed its first task.{}",
-                    id.0,
-                    if proposal.cap.is_some() {
-                        " The cap is on the owner's desk with your reason."
-                    } else {
-                        ""
-                    }
-                ));
-            }
             Ok(format!(
                 "Project {} is proposed: it waits for the CEO, whose word comes back in this thread.",
                 id.0
@@ -683,6 +692,24 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!("Project {} is {}.", project.0, now.name()))
+        }
+        "direct" => {
+            let task = task_arg(args)?;
+            let direction = text_arg(args, "direction")?;
+            let lead = engine
+                .direct_in(run.id, task, direction, &evidence_flat(args)?)
+                .map_err(|e| said(&e))?;
+            let name = engine
+                .store()
+                .members()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|m| m.id == lead)
+                .map_or_else(|| "the lead".to_owned(), |m| m.name);
+            Ok(format!(
+                "Your direction is in task {}'s thread, and {name} is woken: {name} decides.",
+                task.0
+            ))
         }
         "propose_goal" => {
             let tasks: Vec<TaskId> = numbers(args, "tasks").into_iter().map(TaskId).collect();

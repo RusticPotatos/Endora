@@ -1013,7 +1013,7 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
             description: String::new(),
             goal: t.goal,
             project: None,
-            assignee: t.lead,
+            assignee: t.dev,
             every_ms: 6 * HOUR_MS,
             on_lab_trouble: true,
         },
@@ -1021,26 +1021,39 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
     .unwrap();
     hq.alarm("deluge exited at 12:01").unwrap();
     let task = hq.store().routines().unwrap()[0].last_task.unwrap();
-    let ada = turn(&hq, t.lead);
-    use_tool(&hq, &ada, "claim", &json!({ "task": task.0 })).unwrap();
-    end(&hq, &clock, &ada);
-    // Mara, above Ada, confirms the recovery herself: done on her own fresh reading.
-    // Nudged once (two minutes after her turn) and still not moving, it is stuck and blocked,
+    let linus = turn(&hq, t.dev);
+    use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+    end(&hq, &clock, &linus);
+    // Nudged once (two minutes after his turn) and still not moving, it is stuck and blocked,
     // as #663 was live.
     hq.tick().unwrap();
     clock.0.fetch_add(2 * 60_000, Ordering::SeqCst);
-    let nudged = turn(&hq, t.lead);
+    let nudged = turn(&hq, t.dev);
     end(&hq, &clock, &nudged);
     assert_eq!(
         hq.store().task(task).unwrap().unwrap().status,
         TaskStatus::Blocked
     );
+    // The CEO does not close an area's work (ADR 0120): she directs its lead.
     hq.wake(ceo, Some(task), WakeReason::Assigned).unwrap();
     let mara = turn(&hq, ceo);
-    let close = |evidence: Value| {
+    assert_eq!(
         use_tool(
             &hq,
             &mara,
+            "set_status",
+            &json!({ "task": task.0, "status": "done", "reason": "deluge is back" }),
+        ),
+        Err(Refusal::CeoDirects("Ada".to_owned()).to_string())
+    );
+    end(&hq, &clock, &mara);
+    // Ada, above Linus, confirms the recovery herself: done on her own fresh reading.
+    hq.wake(t.lead, Some(task), WakeReason::Assigned).unwrap();
+    let ada = turn(&hq, t.lead);
+    let close = |evidence: Value| {
+        use_tool(
+            &hq,
+            &ada,
             "set_status",
             &json!({ "task": task.0, "status": "done", "reason": "deluge is back",
                      "evidence": evidence }),
@@ -1049,7 +1062,7 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
     assert!(close(json!([])).unwrap_err().contains("criterion 1"));
     // An hour on from the alarm, "no new alarm since" may be shown.
     clock.0.fetch_add(60 * 60_000, Ordering::SeqCst);
-    let now = reading(&hq, &mara, "homelab_status", "", false);
+    let now = reading(&hq, &ada, "homelab_status", "", false);
     close(json!([format!("r{now}"), format!("r{now}")])).unwrap();
     assert_eq!(
         hq.store().task(task).unwrap().unwrap().status,
@@ -1058,11 +1071,11 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
     assert!(
         thread(&hq, task)
             .iter()
-            .any(|p| p.ends_with("deluge is back (for Ada, as one above them)")),
+            .any(|p| p.ends_with("deluge is back (for Linus, as one above them)")),
         "{:?}",
         thread(&hq, task)
     );
-    end(&hq, &clock, &mara);
+    end(&hq, &clock, &ada);
 
     // Ada hands Linus's task to herself; Linus may not hand hers.
     let mine = owners_task(&hq, &t, t.dev, "Look at radarr");

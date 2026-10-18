@@ -64,6 +64,8 @@ struct Office {
     push: Option<DeskId>,
     /// The clock the engine reads, for steps that let days pass.
     clock: Hands,
+    /// The receipt of the last reading of the lab a step took.
+    reading: Option<i64>,
 }
 
 impl Default for Office {
@@ -85,6 +87,7 @@ impl Default for Office {
             seeded: None,
             wing: None,
             push: None,
+            reading: None,
         }
     }
 }
@@ -1375,6 +1378,128 @@ fn options() -> cucumber::cli::Opts<
         kept.push(arg);
     }
     cucumber::cli::Opts::try_parse_from(kept).expect("cucumber's own options")
+}
+
+// --- Roles as an enforced RACI (ADR 0120) ------------------------------------------------------
+
+#[then(expr = "{word} has never been woken")]
+fn never_woken(w: &mut Office, name: String) {
+    let member = w.member(&name);
+    let wakes: Vec<_> =
+        w.hq.wakes()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|wake| wake.member == member)
+            .collect();
+    assert!(wakes.is_empty(), "{name} was woken: {wakes:?}");
+}
+
+#[when(expr = "{word} closes {string} as done")]
+fn closes_bare(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "done", "reason": "it held" }),
+    );
+}
+
+/// The CEO's direction, on the task as its evidence; her turn ends, so the lead's turn may
+/// start on the task.
+#[when(expr = "{word} directs {word} on {string}: {string}")]
+fn directs(w: &mut Office, name: String, _lead: String, title: String, direction: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "direct",
+        &json!({ "task": task.0, "direction": direction,
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .expect("the CEO directs the area's lead");
+    turn_ends(w, name);
+}
+
+#[then(regex = r#"^(\w+)'s turn is told "(.+)"$"#)]
+fn turn_is_told(w: &mut Office, name: String, text: String) {
+    let context = w.turn_of(&name);
+    assert!(
+        context.told.contains(&text),
+        "{name} was told:\n{}",
+        context.told
+    );
+}
+
+/// A reading of the lab in the member's turn, as the node records it.
+fn reads_the_lab(w: &mut Office, name: &str, tool: &str, act: bool) -> i64 {
+    let context = w.turn_of(name);
+    w.hq.record_receipt(
+        &context.token,
+        &Called {
+            tool: tool.to_owned(),
+            args: if act {
+                "container: deluge".to_owned()
+            } else {
+                String::new()
+            },
+            excerpt: "deluge: running".to_owned(),
+            ok: true,
+            act,
+            confidential: false,
+        },
+    )
+    .expect("the node records the call")
+}
+
+#[when(expr = "{word} restarts deluge and reads the lab")]
+fn restarts_and_reads(w: &mut Office, name: String) {
+    let task = w.turn_of(&name).task.expect("a turn on a task");
+    w.use_tool(&name, "claim", &json!({ "task": task.0 }))
+        .expect("the member takes its task");
+    reads_the_lab(w, &name, "restart_container", true);
+    w.clock.0.fetch_add(2 * 60_000, Ordering::SeqCst);
+    w.reading = Some(reads_the_lab(w, &name, "homelab_status", false));
+}
+
+#[when(expr = "{word} closes {string} as done on her reading")]
+fn closes_on_reading(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let r = format!("r{}", w.reading.expect("a reading was taken"));
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "done", "reason": "deluge is up",
+                 "evidence": [r.clone(), r] }),
+    );
+}
+
+#[when(expr = "{word} reads the lab again and closes {string} as done on her reading")]
+fn reads_again_and_closes(w: &mut Office, name: String, title: String) {
+    w.reading = Some(reads_the_lab(w, &name, "homelab_status", false));
+    closes_on_reading(w, name, title);
+}
+
+#[then(expr = "it is refused, saying {string}")]
+fn refused_containing(w: &mut Office, part: String) {
+    let said = w.refused.clone().expect("it was refused");
+    assert!(said.contains(&part), "{said}");
+}
+
+#[when(expr = "{word} checks back in an hour")]
+fn checks_back(w: &mut Office, name: String) {
+    w.use_tool(
+        &name,
+        "check_back",
+        &json!({ "minutes": 60, "why": "no new alarm since the restart" }),
+    )
+    .expect("the member says when it comes back");
+    turn_ends(w, name);
+}
+
+/// An hour and a minute on the clock, ticked: what was due comes.
+#[when("an hour passes")]
+fn an_hour_passes(w: &mut Office) {
+    w.clock.0.fetch_add(HOUR_MS + 60_000, Ordering::SeqCst);
+    w.hq.tick().expect("the tick runs");
 }
 
 fn main() {

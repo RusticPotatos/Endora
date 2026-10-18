@@ -561,16 +561,15 @@ fn a_proposal_needs_a_lead_or_the_ceo_and_evidence_in_hqs_record() {
     };
     for (role, offered) in [
         (Role::Lead, ["propose_project"].as_slice()),
-        (
-            Role::Ceo,
-            ["propose_project", "decide_project", "propose_goal"].as_slice(),
-        ),
+        (Role::Ceo, ["decide_project", "propose_goal"].as_slice()),
     ] {
         for tool in offered {
             assert!(names(role).iter().any(|n| n == tool), "{role:?} {tool}");
         }
     }
     assert!(!names(Role::Lead).iter().any(|n| n == "decide_project"));
+    // Leads propose; the CEO decides (ADR 0120).
+    assert!(!names(Role::Ceo).iter().any(|n| n == "propose_project"));
     let task = task_in(&hq, t.goal, None, t.dev, "Fix sonarr").unwrap();
     let dev = turn(&hq, t.dev);
     let args = json!({ "title": "Media stack", "reason": "it keeps failing", "tasks": [task.0] });

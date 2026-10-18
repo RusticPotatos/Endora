@@ -34,6 +34,7 @@ mod evidence;
 mod notebook;
 mod planning;
 mod projects;
+mod raci;
 mod replay;
 mod runtime;
 mod staffing;
@@ -43,6 +44,7 @@ pub use evidence::Called;
 pub use notebook::note_number;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
+pub use raci::DIRECTION_MOST;
 pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
@@ -1226,6 +1228,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let run = self.running(run)?;
         self.reach(&run, task, false)?;
+        self.ceo_keeps_out(run.member, &self.task(task)?)?;
         self.claim_held_lock(run.member, task)
     }
 
@@ -1243,6 +1246,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let run = self.running(run)?;
         self.reach(&run, task, false)?;
+        self.ceo_keeps_out(run.member, &self.task(task)?)?;
         self.set_status_held_lock(run.member, task, to, reason)
     }
 
@@ -2225,9 +2229,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 told.push_str(&format!("{asker} asks you: {question}\n"));
             }
             told.push_str(if member.role == Role::Ceo {
-                "Answer in the thread with post: whoever asked is woken when you do. Decide it \
-                 yourself, or hand the work on with create_task; only what the board alone \
-                 decides goes to them, as a decision with ask_owner.\n"
+                "Answer in the thread with post: whoever asked is woken when you do. Give your \
+                 decision or your direction there; the lead acts on it in its area. Only what the \
+                 board alone decides goes to them, as a decision with ask_owner.\n"
             } else {
                 "Answer in the thread with post: whoever asked is woken when you do. Decide it, \
                  hand the work on with create_task, or, if it is beyond you, ask up the chain \
@@ -2271,17 +2275,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         told.push_str(&self.checking_said(member, run, &task)?);
+        if self.reason_for(run)? == WakeReason::Directed.name() {
+            told.push_str(&self.direction_said(member, task.id)?);
+        }
+        if member.role == Role::Ceo {
+            if let Some(lead) = self.area_lead(&task)? {
+                told.push_str(&format!(
+                    "This task is in {}'s area: you read, talk and direct (direct); {} decides \
+                     its work.\n",
+                    lead.name, lead.name
+                ));
+            }
+        }
         // HQ's own tools, never as all a member has: live, a lead on Claude offered the home
         // lab's read took this line for its whole kit and said it could not read the lab.
         let beside = "Endora's own tools on the home lab (homelab_status and the like) come \
                       beside them: what your tool list offers, you have.\n";
         if member.role == Role::Ceo {
             told.push_str(
-                "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner (a \
-                 decision for the board), check_back, note_house, rewrite_house, read_doc, \
-                 accept, hand_to, read_document, note, forget, read_notebook. ",
+                "Your tools at HQ: my_turn, claim, post, set_status, create_task (to a lead), \
+                 direct, decide_project, propose_goal, ask_owner (a decision for the board), \
+                 check_back, note_house, rewrite_house, read_doc, hand_to (to a lead), \
+                 read_document, note, forget, read_notebook.\n",
             );
-            told.push_str(beside);
             return Ok(told);
         }
         // The tester is not offered create_task: she passes or sends back (ADR 0114).
@@ -2344,7 +2360,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             })
             .collect();
         told.push_str(&format!(
-            "Your team: {}. The lead runs the work; you decide what it brings you.\n",
+            "Your team: {}. Each lead runs and decides its area; you set direction, decide \
+             what leads propose, and direct a lead (direct).\n",
             if team.is_empty() {
                 "nobody yet".to_owned()
             } else {
@@ -2353,9 +2370,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ));
         told.push_str(chain::BOARD_ITEMS);
         told.push_str(
-            "\nYou wake only for a question up the chain, the board's word, and your daily \
-             review. Members' findings are in their tasks' threads: read those, never the house's \
-             logs yourself. Endora's public records and plans are yours to read with read_doc.\n",
+            "\nYou wake only for a question up the chain, the board's word, your review and \
+             planning, never for the lab's alarms. Read what you choose (threads, the lab, \
+             read_doc); acting on the lab is the areas'.\n",
         );
         let last = self
             .store
@@ -3893,7 +3910,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(None);
         };
         self.post_held_lock(Author::Endora, task.id, &format!("Recovered: {said}"))?;
-        let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+        let to = self.alarm_to(&task, routine.assignee)?;
         self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
         self.emit(
             EventKind::RoutinePosted,
@@ -3934,7 +3951,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let (Some(task), Firing::Alarm(said)) = (open, firing) {
             let text = format!("Alarm: {said}");
             self.post_held_lock(Author::Endora, task.id, &text)?;
-            let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+            let to = self.alarm_to(&task, routine.assignee)?;
             self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
             routine.last_fired_at = Some(now);
             self.store.save_routine(&routine)?;

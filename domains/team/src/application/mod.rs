@@ -59,3 +59,6 @@ mod notebook_tests;
 
 #[cfg(test)]
 mod runtime_tests;
+
+#[cfg(test)]
+mod raci_tests;

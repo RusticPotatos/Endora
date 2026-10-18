@@ -369,6 +369,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if target.furloughed() {
             return Err(EngineError::Refused(Refusal::Furloughed(target.name)));
         }
+        // The CEO hands work to a lead only (ADR 0120).
+        if by.role == Role::Ceo && target.role != Role::Lead {
+            return Err(EngineError::Refused(Refusal::CeoToLeads));
+        }
         if target.id != by.id {
             crate::domain::work::may_delegate(by.role, target.role)
                 .map_err(EngineError::Refused)?;
@@ -419,10 +423,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let manager = worker
             .and_then(|w| members.iter().find(|m| m.id == w))
             .and_then(|m| chain::manager(m, &members));
+        // The CEO accepts only its own work: in a lead's area the lead does (ADR 0120).
+        let ceos_own = self.area_lead(task)?.is_none();
         Ok(at_work(project_lead)
-            .or_else(|| at_work(manager))
+            .filter(|m| ceos_own || m.role != Role::Ceo)
+            .or_else(|| at_work(manager).filter(|m| ceos_own || m.role != Role::Ceo))
             .or_else(|| first(Role::Lead))
-            .or_else(|| first(Role::Ceo)))
+            .or_else(|| first(Role::Ceo).filter(|_| ceos_own)))
     }
 
     /// Who checks `task`'s work now.
@@ -492,6 +499,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let turn = self.running(run)?;
         self.reach(&turn, task, false)?;
         let current = self.task(task)?;
+        self.ceo_keeps_out(turn.member, &current)?;
         let check = to == TaskStatus::Done && self.routine_of(task)?.is_some();
         let judged = to == TaskStatus::InReview || (check && !current.criteria.is_empty());
         let holds = current.owner == Some(turn.member)
@@ -538,6 +546,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(to) = to_another {
             let (from, to) = (self.member(turn.member)?, self.member(to)?);
             crate::domain::work::may_delegate(from.role, to.role).map_err(EngineError::Refused)?;
+        }
+        // The CEO delegates to leads, from its own work; in a lead's area it directs
+        // (ADR 0120).
+        if self.member(turn.member)?.role == Role::Ceo {
+            if let Some(parent) = task.parent {
+                self.ceo_keeps_out(turn.member, &self.task(parent)?)?;
+            }
+            let to_a_lead = match task.assignee {
+                Some(to) => self.member(to)?.role == Role::Lead,
+                None => false,
+            };
+            if !to_a_lead {
+                return Err(EngineError::Refused(Refusal::CeoToLeads));
+            }
         }
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
         let id = self.add_task_held_lock(Author::Member(turn.member), task)?;
@@ -667,6 +689,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !lead.role.leads() || worker == Some(lead.id) {
             return Err(EngineError::Refused(Refusal::NotTheLead));
         }
+        self.ceo_keeps_out(lead.id, &current)?;
         if current.status != TaskStatus::InReview {
             return Err(EngineError::Refused(Refusal::NotAStep {
                 from: current.status,
@@ -799,6 +822,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         };
         self.store.set_setting(&key, "1")?;
+        // The CEO never takes an area's work (ADR 0120): live, #667 went up from Ada to Mara,
+        // who closed it two minutes after a restart. It stays with the area's lead, said so.
+        if manager.role == Role::Ceo {
+            if let Some(lead) = self.area_lead(&task)? {
+                self.post_held_lock(
+                    Author::Endora,
+                    task_id,
+                    &format!(
+                        "{} took {count} turns on this that showed nothing (talk only, empty or \
+                         the same reading again), after {} nudges. It stays in {}'s area: the \
+                         CEO directs, and does not take the area's work. Take one concrete step, \
+                         or mark it blocked and say why.",
+                        member.name,
+                        evidence::MOST_NUDGES,
+                        lead.name
+                    ),
+                )?;
+                return Ok(());
+            }
+        }
         self.post_held_lock(
             Author::Endora,
             task_id,

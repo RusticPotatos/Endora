@@ -558,6 +558,13 @@ pub enum Refusal {
     Furloughed(String),
     /// A notebook holds as many notes as it may.
     NotebookFull,
+    /// The task is in a lead's area (named): the CEO does not claim, move, close, accept or
+    /// send back its work, but directs the lead (ADR 0120).
+    CeoDirects(String),
+    /// The CEO hands work to a lead only; the lead hands it on in its area (ADR 0120).
+    CeoToLeads,
+    /// The task is in no lead's area: there is nobody to direct.
+    NoAreaLead,
 }
 
 impl fmt::Display for Refusal {
@@ -640,7 +647,9 @@ impl fmt::Display for Refusal {
                 names.join(", ")
             ),
             Self::NotAProjectLead => f.write_str("a project's lead is a lead or the CEO"),
-            Self::OnlyLeadsPropose => f.write_str("only a lead or the CEO proposes a project"),
+            Self::OnlyLeadsPropose => f.write_str(
+                "only a lead proposes a project; the CEO decides proposals with decide_project",
+            ),
             Self::OtherGoal => f.write_str(
                 "that project serves another goal: a task's or a routine's project serves its goal",
             ),
@@ -785,6 +794,18 @@ impl fmt::Display for Refusal {
                 f,
                 "your notebook holds {} notes, the most it may: forget some that are wrong or no longer true first",
                 super::notebook::NOTES_MOST
+            ),
+            Self::CeoDirects(lead) => write!(
+                f,
+                "this is {lead}'s area: the CEO does not claim, move, close, accept or send back \
+                 its work. Give {lead} a direction with direct (task, direction, evidence), and \
+                 {lead} decides"
+            ),
+            Self::CeoToLeads => f.write_str(
+                "the CEO hands work to a lead only, and the lead hands it on in its area",
+            ),
+            Self::NoAreaLead => f.write_str(
+                "that task is in no lead's area: there is no lead at work to direct",
             ),
         }
     }
