@@ -310,7 +310,7 @@ time, tells the node, and loads or unloads the model. It touches no other proces
 
    The node's address is the one you reach the console at. `ENDORA_MAC_KEY_FILE` is the key the
    model's server will ask its clients for; the install makes it if it is not there.
-3. **In the console** (HQ, *The Mac* card, *Set up the Mac*): *Make a token for the helper*, and
+3. **In the console** (Settings › AI, *The Mac's brain*): *Make a token for the helper*, and
    save the token it shows (once) in the file `ENDORA_MAC_TOKEN_FILE` names:
 
    ```sh

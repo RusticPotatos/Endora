@@ -364,14 +364,6 @@ function viewSettings() {
     </div>`;
 }
 
-// The owner's Mac as a team brain (ADR 0130): set up here; its state and busy switch are on HQ.
-function viewMacbrain() {
-  return `
-    ${settingsCrumbs("macbrain")}
-    <h2>The Mac's brain</h2>
-    ${hqMacSetup()}`;
-}
-
 // Taking a copy of what Endora knows, and deleting it: the person's rights over their memory,
 // on their own screen rather than a red button at the foot of Settings.
 function viewData() {
@@ -456,6 +448,8 @@ function viewModels() {
     <h2>AI</h2>
     ${aiOverviewSection()}
     ${modelsSection()}
+    <h3>The Mac's brain</h3>
+    ${hqMacSetup()}
     ${worthKnowingSection()}`;
 }
 

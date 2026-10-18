@@ -1142,21 +1142,22 @@ if (failures.length) {
       HQ.snap.mac = { ready: false, why: "owner active", running: 0, waiting: 2 }; HQ.macToken = "";`, context);
     const card = runInContext("hqMacCard(HQ.snap)", context);
     for (const want of ["<h2>The Mac", ">away<", "You are using it", "2 turns wait for it", "plugged in · idle 0 min · model up", "heard 12 s ago",
-      'data-act="hq:mac:busy:on"', "Mac busy: off", 'aria-pressed="false"', 'data-act="go:macbrain">Set up in Settings']) {
+      'data-act="hq:mac:busy:on"', "Mac busy: off", 'aria-pressed="false"', 'data-act="go:models">Set up in AI']) {
       if (!card.includes(want)) fail(`mac: the card does not show ${want}`);
     }
-    // The setup is not on HQ: it is on the Settings screen, which says so in its breadcrumb.
+    // The setup is not on HQ: it is on the AI screen, where every model lives (where-things-go.md).
     for (const setup of ['id="hq-mac-url"', 'id="hq-mac-model"', 'id="hq-mac-key"', 'id="hq-mac-idle"', 'data-act="hq:mac:save:go"', 'data-act="hq:mac:token:make"', "Set up the Mac"]) {
       if (card.includes(setup) || runInContext("viewHQ()", context).includes(setup)) fail(`mac: the HQ screen still has the setup (${setup})`);
     }
-    const setup = runInContext("viewMacbrain()", context);
-    for (const want of ["Settings", "The Mac&#39;s brain", 'id="hq-mac-url" value="http://192.168.1.10:8080/v1"', 'id="hq-mac-model" value="coder"',
+    const setup = runInContext("viewModels()", context);
+    for (const want of ["<h2>AI</h2>", "The Mac&#39;s brain", 'id="hq-mac-url" value="http://192.168.1.10:8080/v1"', 'id="hq-mac-model" value="coder"',
       'id="hq-mac-key" type="password"', "Key kept; type to replace it", 'id="hq-mac-idle"', 'data-act="hq:mac:save:go"', 'data-act="hq:mac:token:make"',
       "Make a new token for the helper", "never fall back to another model"]) {
-      if (!setup.includes(want) && !setup.includes(want.replace("&#39;", "'"))) fail(`mac: the Settings screen does not show ${want}`);
+      if (!setup.includes(want) && !setup.includes(want.replace("&#39;", "'"))) fail(`mac: the AI screen does not show ${want}`);
     }
-    if (setup.includes("the-macs-key")) fail("mac: the Settings screen shows the key");
-    if (!runInContext("UNDER_SETTINGS.map((p) => p.view)", context).includes("macbrain") || !runInContext("viewSettings()", context).includes('data-act="go:macbrain"')) fail("mac: Settings does not lead to the Mac's setup");
+    if (setup.includes("the-macs-key")) fail("mac: the AI screen shows the key");
+    // One thing, one home: no separate Settings entry for the Mac.
+    if (runInContext("UNDER_SETTINGS.map((p) => p.view)", context).includes("macbrain") || runInContext("viewSettings()", context).includes("go:macbrain")) fail("mac: the Mac still has its own Settings entry beside AI");
     if (!runInContext("viewHQ()", context).includes("<h2>The Mac")) fail("mac: the HQ screen has no Mac card");
     const reasons = {
       ready: "Free: the team may use it", "on battery": "On battery: the model is unloaded", busy: "Mac busy is on: the model is unloaded",
@@ -1168,11 +1169,11 @@ if (failures.length) {
     }
     const busy = runInContext(`HQ.mac.busy = true; hqMacCard(HQ.snap)`, context);
     if (!busy.includes('data-act="hq:mac:busy:off"') || !busy.includes("Mac busy: on") || !busy.includes('aria-pressed="true"')) fail("mac: the busy switch does not show it is on");
-    const hostile = runInContext(`HQ.mac.url = '"><b>x</b>'; HQ.mac.model = "<i>m</i>"; const h = hqMacCard(HQ.snap) + viewMacbrain(); HQ.mac.url = "http://192.168.1.10:8080/v1"; HQ.mac.model = "coder"; HQ.mac.busy = false; h`, context);
+    const hostile = runInContext(`HQ.mac.url = '"><b>x</b>'; HQ.mac.model = "<i>m</i>"; const h = hqMacCard(HQ.snap) + hqMacSetup(); HQ.mac.url = "http://192.168.1.10:8080/v1"; HQ.mac.model = "coder"; HQ.mac.busy = false; h`, context);
     if (hostile.includes("<b>x</b>") || hostile.includes("<i>m</i>")) fail("mac: an address or model name became markup");
     if (runInContext("HQ.mac = null; hqMacCard(HQ.snap)", context) !== "") fail("mac: a node that cannot say shows a card");
     runInContext(`HQ.mac = { ready: true, why: "ready", busy: false, url: "", model: "mac", has_key: false, has_token: false, idle_minutes: 10, heard_s_ago: null };`, context);
-    const fresh = runInContext("hqMacCard(HQ.snap) + viewMacbrain()", context);
+    const fresh = runInContext("hqMacCard(HQ.snap) + hqMacSetup()", context);
     if (!fresh.includes("heard never") || !fresh.includes("Make a token for the helper") || !fresh.includes("Key (the server&#39;s --api-key)") && !fresh.includes("Key (the server's --api-key)")) fail("mac: a Mac never set up does not say so");
     // The Mac is a brain on the roster and on the hire form, and costs nothing.
     if (runInContext('hqBrainTag("mac")', context) !== "Mac") fail("mac: the roster does not tag the Mac brain");
@@ -1191,9 +1192,9 @@ if (failures.length) {
     await runInContext(`hqDispatch("hq", "mac", "save", "go")`, context);
     await runInContext(`HQ.mac.has_token = true; confirm = () => false; hqDispatch("hq", "mac", "token", "make")`, context);
     await runInContext(`confirm = () => true; hqDispatch("hq", "mac", "token", "make")`, context);
-    const shownOnce = runInContext("viewMacbrain()", context);
+    const shownOnce = runInContext("hqMacSetup()", context);
     await runInContext(`hqDispatch("hq", "mac", "busy", "off")`, context);
-    const forgotten = runInContext("viewMacbrain()", context);
+    const forgotten = runInContext("hqMacSetup()", context);
     const calls = JSON.stringify(runInContext("macCalls", context));
     runInContext(`api = macKeepApi; document.getElementById = macKeepGet; confirm = macKeepConfirm;`, context);
     const want = ["POST /v1/mac/settings {\"busy\":true}", "GET /v1/mac",
