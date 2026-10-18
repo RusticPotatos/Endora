@@ -1195,6 +1195,24 @@ mod tests {
             (found.run, found.tool.as_str(), found.excerpt.as_str()),
             (turn.run, "homelab_status", "sonarr: running")
         );
+        assert!(!found.sandbox, "the node witnessed it");
+        // What a Claude Code sandbox reported (ADR 0117), told by the node as such.
+        let reported = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/team/receipt",
+                    Some(TOKEN),
+                    &json!({ "token": turn.token, "tool": "Bash", "args": "git status",
+                             "excerpt": "clean", "ok": true, "sandbox": true })
+                    .to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = reported["receipt"].as_i64().expect("a receipt");
+        assert!(st.hq.store().call_receipt(id).unwrap().unwrap().sandbox);
         // Once the turn has ended, its token records nothing more.
         scripted(&st).finish(turn.run, true);
         st.hq.tick().unwrap();

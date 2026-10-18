@@ -192,6 +192,79 @@ fn receipts_are_written_only_for_a_turn_that_is_running_known_by_its_token() {
 }
 
 #[test]
+fn a_sandbox_report_is_cited_for_what_the_sandbox_did_but_never_for_the_lab_now() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, true);
+    let parent = owners_task(&hq, &t, t.lead, "Keep sonarr up");
+    let ada = turn(&hq, t.lead);
+    use_tool(&hq, &ada, "claim", &json!({ "task": parent.0 })).unwrap();
+    use_tool(
+        &hq,
+        &ada,
+        "create_task",
+        &json!({ "title": "Tidy sonarr's role", "description": "and check it is up",
+                 "assignee": "Linus", "criteria": [
+                    { "text": "the role's tasks are named" },
+                    { "text": "sonarr is running and healthy", "live": true }] }),
+    )
+    .unwrap();
+    let sub = hq.store().tasks().unwrap().pop().unwrap();
+    end(&hq, &clock, &ada);
+    let linus = turn(&hq, t.dev);
+    use_tool(&hq, &linus, "claim", &json!({ "task": sub.id.0 })).unwrap();
+    let edit = hq
+        .record_sandbox_receipt(
+            &linus.token,
+            &Called {
+                tool: "Edit".to_owned(),
+                args: "roles/sonarr/tasks/main.yml".to_owned(),
+                excerpt: "edited".to_owned(),
+                ok: true,
+                act: true,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    let curl = hq
+        .record_sandbox_receipt(
+            &linus.token,
+            &Called {
+                tool: "Bash".to_owned(),
+                args: "curl sonarr".to_owned(),
+                excerpt: "sonarr: running, healthy".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    let kept = hq.store().call_receipt(edit).unwrap().unwrap();
+    assert!(kept.sandbox && kept.line(true).contains("sandbox-reported"));
+    let submit = |evidence: Value| {
+        use_tool(
+            &hq,
+            &linus,
+            "set_status",
+            &json!({ "task": sub.id.0, "status": "in_review", "reason": "tidied",
+                     "evidence": evidence }),
+        )
+    };
+    let said = submit(json!([[format!("r{edit}")], [format!("r{curl}")]])).unwrap_err();
+    assert!(said.contains("is about the lab now"), "{said}");
+    let fresh = reading(&hq, &linus, "homelab_status", "", false);
+    submit(json!([
+        [format!("r{edit}")],
+        [format!("r{curl}"), format!("r{fresh}")]
+    ]))
+    .unwrap();
+    assert_eq!(
+        hq.store().task(sub.id).unwrap().unwrap().status,
+        TaskStatus::InReview
+    );
+}
+
+#[test]
 fn work_is_handed_on_with_criteria_and_submitted_only_with_evidence_for_each() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);

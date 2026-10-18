@@ -727,6 +727,7 @@ mod tests {
             task: None,
             token: "good".to_owned(),
             cloud: true,
+            claude_code: false,
         };
         let tool = catalog(&state)
             .into_iter()

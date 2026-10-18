@@ -221,6 +221,10 @@ pub(crate) struct ReceiptTold {
     act: bool,
     #[serde(default)]
     confidential: bool,
+    /// Whether the turn's sandbox reported it rather than the node witnessing it (ADR 0117):
+    /// the node says so for what a Claude Code hook posts.
+    #[serde(default)]
+    sandbox: bool,
 }
 
 /// For the node's contracts and bridge (ADR 0114): one call a turn made of Endora's tools,
@@ -233,17 +237,18 @@ pub(crate) async fn receipt(
 ) -> Response {
     let hq = state.hq.clone();
     let recorded = tokio::task::spawn_blocking(move || {
-        hq.record_receipt(
-            &req.token,
-            &endora_team::application::engine::Called {
-                tool: req.tool,
-                args: req.args,
-                excerpt: req.excerpt,
-                ok: req.ok,
-                act: req.act,
-                confidential: req.confidential,
-            },
-        )
+        let called = endora_team::application::engine::Called {
+            tool: req.tool,
+            args: req.args,
+            excerpt: req.excerpt,
+            ok: req.ok,
+            act: req.act,
+            confidential: req.confidential,
+        };
+        if req.sandbox {
+            return hq.record_sandbox_receipt(&req.token, &called);
+        }
+        hq.record_receipt(&req.token, &called)
     })
     .await;
     match recorded {

@@ -4,6 +4,10 @@
 //! - A **receipt** is the node's record of one call a turn made of Endora's tools (a reading
 //!   such as `homelab_status`, or an act such as `restart_container`): written by the node,
 //!   never reported by the model, so a model cannot forge one.
+//! - A **sandbox-reported** receipt (ADR 0117) is what a turn's sandbox said its own tools did
+//!   (Claude Code's Bash or Edit, posted by a hook): recorded by the node with the turn's token,
+//!   but not witnessed by it. It may be cited; a live criterion still needs a node-witnessed
+//!   reading.
 //! - A task's **acceptance criteria** say what "done" means. A criterion about the lab as it
 //!   is now is **live**: only a reading taken in the same turn shows it.
 //! - **One evidence rule** ([`judge`]) decides every claim that work is done or a decision is
@@ -63,6 +67,8 @@ pub struct CallReceipt {
     pub act: bool,
     /// Whether what it gave back is Confidential: never shown to a member on a cloud model.
     pub confidential: bool,
+    /// Whether the turn's sandbox reported it (ADR 0117) rather than the node witnessing it.
+    pub sandbox: bool,
     /// When.
     pub at: Millis,
 }
@@ -89,7 +95,16 @@ impl CallReceipt {
         } else {
             self.excerpt.clone()
         };
-        format!("{} {}{args} ({how}): {excerpt}", self.said(), self.tool)
+        let from = if self.sandbox {
+            ", sandbox-reported"
+        } else {
+            ""
+        };
+        format!(
+            "{} {}{args} ({how}{from}): {excerpt}",
+            self.said(),
+            self.tool
+        )
     }
 }
 
@@ -261,6 +276,8 @@ pub enum Found {
         ok: bool,
         /// Whether it was made on this work.
         in_work: bool,
+        /// Whether the node witnessed it, rather than the turn's sandbox reporting it.
+        witnessed: bool,
     },
     /// A task or an event: whether it is about this work.
     Other {
@@ -283,7 +300,8 @@ pub struct Judged<'a> {
 /// The one evidence rule (ADR 0114). `cited[i]` is criterion `i + 1`'s evidence; with no
 /// criteria, the claim still needs one reference (the work itself is its criterion). Every
 /// reference must be in HQ's record, about this work, and not a refused call; a live criterion
-/// needs a reading from a fresh turn; and a tester's pass a reading of her own.
+/// needs a reading from a fresh turn that the node witnessed (a sandbox's own report of its
+/// tools is no reading of the lab, ADR 0117); and a tester's pass a reading of her own.
 ///
 /// # Errors
 /// The [`Refusal`] naming what is missing, and for which criterion.
@@ -304,7 +322,7 @@ pub fn judge(
     }
     let fresh = |group: &Vec<(Ref, Found)>| {
         group.iter().any(
-            |(_, f)| matches!(f, Found::Receipt { run, ok: true, .. } if how.fresh.contains(run)),
+            |(_, f)| matches!(f, Found::Receipt { run, ok: true, witnessed: true, .. } if how.fresh.contains(run)),
         )
     };
     if criteria.is_empty() && cited.iter().all(Vec::is_empty) {
@@ -504,6 +522,7 @@ mod tests {
                 run,
                 ok: true,
                 in_work: true,
+                witnessed: true,
             },
         )
     }
@@ -639,6 +658,7 @@ mod tests {
                 run: NOW,
                 ok: false,
                 in_work: true,
+                witnessed: true,
             },
         )]];
         assert_eq!(
@@ -747,6 +767,7 @@ mod tests {
             ok: true,
             act: false,
             confidential: true,
+            sandbox: false,
             at: 0,
         };
         assert_eq!(
@@ -754,5 +775,47 @@ mod tests {
             "r12 container_logs container: sonarr (ok): GET /api 500"
         );
         assert!(!r.line(true).contains("GET /api"));
+        let reported = CallReceipt {
+            tool: "Bash".to_owned(),
+            args: "git status".to_owned(),
+            excerpt: "clean".to_owned(),
+            confidential: false,
+            sandbox: true,
+            ..r
+        };
+        assert_eq!(
+            reported.line(true),
+            "r12 Bash git status (ok, sandbox-reported): clean"
+        );
+    }
+
+    #[test]
+    fn a_sandbox_report_may_be_cited_but_a_live_criterion_needs_the_nodes_own_reading() {
+        let reported = |run: RunId| {
+            (
+                Ref::Receipt(run.0 * 10 + 1),
+                Found::Receipt {
+                    run,
+                    ok: true,
+                    in_work: true,
+                    witnessed: false,
+                },
+            )
+        };
+        let plain = [Criterion::new("the role's tasks are tidied", false)];
+        assert!(
+            judge(&plain, &[vec![reported(NOW)]], &now()).is_ok(),
+            "cited for what the sandbox did"
+        );
+        let live = [Criterion::new("sonarr is running", true)];
+        assert_eq!(
+            judge(&live, &[vec![reported(NOW)]], &now()),
+            Err(Refusal::NotFresh {
+                criterion: 1,
+                text: "sonarr is running".to_owned()
+            }),
+            "a sandbox's word is no reading of the lab"
+        );
+        assert!(judge(&live, &[vec![reported(NOW), reading(NOW)]], &now()).is_ok());
     }
 }

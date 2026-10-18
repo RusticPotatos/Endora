@@ -92,6 +92,10 @@ pub(super) struct Turn {
     /// the check point for Confidential results (ADR 0105, 0108), and the only turns the
     /// Anthropic relay passes on. A turn HQ says nothing of counts as local.
     pub(super) cloud: bool,
+    /// Whether Claude Code runs the turn (ADR 0117): its calls pass in Claude Code's own
+    /// shape, held to the brain, and its sandbox may report its own tools. An older HQ says
+    /// nothing: Endora's worker.
+    pub(super) claude_code: bool,
 }
 
 /// A turn's calls to Anthropic, one at a time, by token. HQ knows only what has been
@@ -232,6 +236,7 @@ pub(super) async fn turn_of(
             task: v["task"].as_i64(),
             token: presented,
             cloud: v["cloud"].as_bool().unwrap_or(false),
+            claude_code: v["runtime"] == "claude-code",
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
             StatusCode::UNAUTHORIZED,

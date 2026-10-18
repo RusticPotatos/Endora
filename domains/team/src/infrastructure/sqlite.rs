@@ -183,7 +183,11 @@ const PROJECT_COLUMNS: [(&str, &str); 5] = [
 
 /// The columns a store made before Claude Code ran turns (ADR 0117) gains: every member on
 /// Endora's worker.
-const RUNTIME_COLUMNS: [(&str, &str); 1] = [("members", "runtime TEXT NOT NULL DEFAULT 'worker'")];
+/// Its receipts, likewise, were all witnessed by the node: none is sandbox-reported.
+const RUNTIME_COLUMNS: [(&str, &str); 2] = [
+    ("members", "runtime TEXT NOT NULL DEFAULT 'worker'"),
+    ("call_receipts", "sandbox INTEGER NOT NULL DEFAULT 0"),
+];
 
 /// Adds `column` (its name, then its type) to `table`, unless the table has it already.
 fn add_column(conn: &Connection, table: &str, column: &str) -> Stored<()> {
@@ -446,7 +450,7 @@ const RUN_COLUMNS: &str = "id, member, task, wake, status, attempts, queued_at, 
     cache_read_tokens, cache_write_tokens, output_tokens, posted, blocked, label";
 
 const RECEIPT_SELECT: &str = "SELECT id, run, member, task, tool, args, excerpt, ok, act, \
-    confidential, at_ms FROM call_receipts";
+    confidential, at_ms, sandbox FROM call_receipts";
 
 fn call_receipt_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<crate::domain::CallReceipt> {
     Ok(crate::domain::CallReceipt {
@@ -461,6 +465,7 @@ fn call_receipt_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<crate::domain::C
         act: r.get::<_, i64>(8)? != 0,
         confidential: r.get::<_, i64>(9)? != 0,
         at: r.get(10)?,
+        sandbox: r.get::<_, i64>(11)? != 0,
     })
 }
 
@@ -877,7 +882,7 @@ impl TeamStore for SqliteTeamStore {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO call_receipts (run, member, task, tool, args, excerpt, ok, act,
-                confidential, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                confidential, at_ms, sandbox) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 r.run.0,
                 r.member.0,
@@ -888,7 +893,8 @@ impl TeamStore for SqliteTeamStore {
                 r.ok,
                 r.act,
                 r.confidential,
-                r.at
+                r.at,
+                r.sandbox
             ],
         )
         .map_err(backend)?;
@@ -2336,6 +2342,7 @@ CREATE TABLE IF NOT EXISTS projects (
                 ok: true,
                 act: false,
                 confidential: false,
+                sandbox: false,
                 at: 7,
             })
             .unwrap();
@@ -2449,6 +2456,39 @@ CREATE TABLE IF NOT EXISTS projects (
         // Opened again, the column is there already and nothing changes.
         let again = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
         assert_eq!(again.members().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_store_whose_receipts_predate_sandbox_reports_reads_them_all_as_the_nodes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // Today's schema, before the receipts' column: what a store made last week has.
+        conn.execute_batch(SCHEMA).unwrap();
+        for (table, column) in PROJECT_COLUMNS.into_iter().chain(EVIDENCE_COLUMNS) {
+            add_column(&conn, table, column).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
+                (1, 'Jane Doe', 'developer', 40, 2);
+             INSERT INTO wakes (id, member, task, reason, receipt, at_ms) VALUES
+                (1, 1, NULL, 'assigned', 'started', 0);
+             INSERT INTO runs (id, member, task, wake, status, queued_at, started_at, ended_at,
+                moved_forward) VALUES (1, 1, NULL, 1, 'running', 0, 0, NULL, 0);
+             INSERT INTO call_receipts (run, member, task, tool, args, excerpt, ok, act,
+                confidential, at_ms) VALUES (1, 1, NULL, 'homelab_status', '', 'up', 1, 0, 0, 5);",
+        )
+        .unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        let old = store.call_receipts_of(RunId(1)).unwrap();
+        assert!(!old[0].sandbox, "every old receipt was the node's own");
+        let reported = crate::domain::CallReceipt {
+            id: 0,
+            tool: "Bash".to_owned(),
+            sandbox: true,
+            ..old[0].clone()
+        };
+        let id = store.add_call_receipt(&reported).unwrap();
+        assert!(store.call_receipt(id).unwrap().unwrap().sandbox);
     }
 
     #[test]
