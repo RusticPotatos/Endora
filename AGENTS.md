@@ -8,6 +8,9 @@ edit this file, never a copy. For the full picture, read [README.md](README.md),
 [docs/architecture.md](docs/architecture.md), and
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+This file builds on the owner's global standards, [docs/standards.md](docs/standards.md):
+the base principles every project shares. What follows is Endora's own.
+
 ## Before you touch anything
 
 - **Verify the repository root** is this Endora repo before editing

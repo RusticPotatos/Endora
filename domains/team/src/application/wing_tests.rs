@@ -833,3 +833,59 @@ fn the_wing_is_seeded_once_and_an_old_team_keeps_what_it_had() {
         "Mara, Kit, Rae, Zed"
     );
 }
+
+#[test]
+fn the_wing_is_told_the_forks_agents_md_is_its_rules_and_its_lead_that_the_draft_comes_first() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let kit = turn(&hq, t.kit);
+    for said in [
+        "The team's standards: read_doc docs/standards.md",
+        "The fork's own AGENTS.md, when it exists, is the repo's rules; propose one if missing.",
+        "docs/drafts/ansible-nas-AGENTS.md",
+        "the first branch to propose",
+    ] {
+        assert!(kit.told.contains(said), "{said}\n---\n{}", kit.told);
+    }
+    raes_task(&hq, &t);
+    let rae = turn(&hq, t.rae);
+    assert!(
+        rae.told
+            .contains("The fork's own AGENTS.md, when it exists, is the repo's rules"),
+        "{}",
+        rae.told
+    );
+    assert!(
+        !rae.told.contains("the first branch to propose"),
+        "{}",
+        rae.told
+    );
+    hq.add_task_with(
+        Author::Owner,
+        NewTask {
+            goal: t.lab,
+            project: None,
+            parent: None,
+            title: "Check the home lab".to_owned(),
+            description: String::new(),
+            assignee: Some(t.ada),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+        &[],
+    )
+    .unwrap();
+    let ada = turn(&hq, t.ada);
+    assert!(
+        ada.told
+            .contains("The team's standards: read_doc docs/standards.md"),
+        "{}",
+        ada.told
+    );
+    assert!(
+        !ada.told.contains("AGENTS.md"),
+        "not the wing's: {}",
+        ada.told
+    );
+}

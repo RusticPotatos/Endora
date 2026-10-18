@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
+Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
+[0116](0116-the-teams-standards.md): `read_doc` is every member's, and its library gains the
+team's standards and drafts. Amends
 [0102](0102-endora-hq.md) (the owner is the board, and a CEO member takes most of the desk),
 [0107](0107-routines-alarms-and-check-backs.md) (the reviewer checks the CEO's decisions before
 the desk, and the CEO has a daily review), [0108](0108-the-bridge.md) and

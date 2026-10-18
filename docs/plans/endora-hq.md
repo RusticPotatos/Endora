@@ -321,7 +321,7 @@ container:
 | `note_lesson` | The lead's and the reviewer's: `{ "lesson" }`, at most 300 characters, appended as "- <lesson> (Ada, 17 Oct)" to the task's goal's notes for the team (which every briefing carries). A lesson that would overflow the notes' 2,000 characters is refused: "the notes are full; ask the owner to tidy them". Each is a `lesson.noted` event and a notice on the owner's desk ("Ada noted: …"), so the owner sees and can edit it |
 | `note_house` | The CEO's only: `{ "entry" }`, at most 500 characters, appended to the house log as "- 17 Oct: …"; refused when the log would pass 6,000 characters ("rewrite it shorter with rewrite_house"). A `house.noted` event |
 | `rewrite_house` | The CEO's only: `{ "log" }`, the whole house log, at most 6,000 characters |
-| `read_doc` | The CEO's only: `{ "path", "part"? }`, one of Endora's public records or plans (`docs/adr/*.md`, `docs/plans/*.md`, embedded in HQ at build time), 20,000 characters a part; a folder alone lists them; any other path is refused |
+| `read_doc` | Every member's (ADR 0116; the CEO's only before): `{ "path", "part"? }`, one of Endora's public library (`docs/standards.md`, `docs/adr/*.md`, `docs/plans/*.md`, `docs/drafts/*.md`, embedded in HQ at build time), 20,000 characters a part; a folder alone lists them; any other path is refused |
 | `review` | The reviewer's only: its verdict on work in review, `approve` or `send_back`, with notes. `send_back` posts the notes, sets the task to `doing` and wakes its owner. `approve` closes work that needs no gate (a routine's task, or work under a goal the home lab's routine serves) as `done`; work that needs the gate stays in review until the gate passes, and the reviewer is told so |
 
 **What a turn may touch** (engine rules, whatever the way in): `claim` and `set_status`
@@ -1069,6 +1069,15 @@ measured against Endora's worker. Built:
 - **The measure**: the scorecard's cost of a finished task per member, Rae's against Zed's.
 
 Deferred: per-task `--resume`, the screen's control, Claude Code for other roles.
+
+### The team's standards ([ADR 0116](../adr/0116-the-teams-standards.md), proposed 2026-10-17)
+
+- The owner's global standards are [docs/standards.md](../standards.md): every member's
+  briefing names them once ("The team's standards: read_doc docs/standards.md"; the CEO's
+  `read_doc` description, since its quiet briefing is held short), and every member reads them
+  with `read_doc`. The wing is told the fork's own `AGENTS.md` is the repo's rules; its lead,
+  that the draft [docs/drafts/ansible-nas-AGENTS.md](../drafts/ansible-nas-AGENTS.md) is the
+  first branch to propose.
 
 ## 16. Later, and not at all
 

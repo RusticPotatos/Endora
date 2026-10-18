@@ -169,13 +169,17 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(names.len(), 14, "{names:?}");
+    assert_eq!(names.len(), 15, "{names:?}");
     assert!(names.contains(&"read_document".to_owned()));
     // Every role keeps a notebook of its own (ADR 0118).
     assert!(
         ["note", "forget", "read_notebook", "notebook_checked"]
             .iter()
             .all(|n| names.contains(&(*n).to_owned()))
+    );
+    assert!(
+        names.contains(&"read_doc".to_owned()),
+        "every member reads the library"
     );
     assert!(
         !names.contains(&"review".to_owned()),
@@ -187,7 +191,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(reviewers.len(), 15, "{reviewers:?}");
+    assert_eq!(reviewers.len(), 16, "{reviewers:?}");
     assert!(
         !reviewers.contains(&"create_task".to_owned()),
         "the tester passes or sends back, and never makes work"

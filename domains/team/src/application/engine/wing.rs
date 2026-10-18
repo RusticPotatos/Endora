@@ -632,6 +632,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
+    /// What a member of the wing is told about the fork's own rules: its `AGENTS.md` is the
+    /// repository's rules when it exists, and one is proposed when it is missing; its lead is
+    /// told the draft in Endora's library is the first branch to propose (ADR 0116). Nothing
+    /// for anyone outside the wing.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub(super) fn wing_rules(&self, member: &crate::domain::Member) -> Done<&'static str> {
+        if !matches!(member.role, Role::Lead | Role::Developer) {
+            return Ok("");
+        }
+        if !self.wing_members()?.contains(&member.id) {
+            return Ok("");
+        }
+        if member.role == Role::Lead {
+            return Ok(wing::FORK_RULES_LEAD);
+        }
+        Ok(wing::FORK_RULES)
+    }
+
     fn wing_leads(&self) -> Done<Vec<MemberId>> {
         let goals: Vec<GoalId> = self
             .store

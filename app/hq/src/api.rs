@@ -1201,11 +1201,16 @@ mod tests {
             .collect();
         // The demo's first turn is its lead's, who keeps the team's lessons and proposes
         // projects, accepts tested work, hands a subordinate's task on, asks the owner to hire
-        // and reads a task's documents, too, and asks for staff when a project has a backlog.
-        // Every member keeps a notebook of its own, too (ADR 0118): note, forget, read and check.
-        assert_eq!(names.len(), 20, "{names:?}");
+        // and reads a task's documents and the team's library, too, and asks for staff when a
+        // project has a backlog. Every member keeps a notebook of its own, too (ADR 0118):
+        // note, forget, read and check.
+        assert_eq!(names.len(), 21, "{names:?}");
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
         assert!(names.contains(&"request_staff") && names.contains(&"note"));
+        assert!(
+            names.contains(&"read_doc"),
+            "every member reads the library"
+        );
         assert!(names.contains(&"accept") && names.contains(&"hand_to"));
         assert!(names.contains(&"request_hire") && names.contains(&"read_document"));
         assert!(

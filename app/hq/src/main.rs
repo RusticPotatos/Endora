@@ -9,7 +9,7 @@ mod api;
 mod runner;
 mod team;
 
-/// Endora's public records and plans, embedded at build time for the CEO's `read_doc`.
+/// Endora's public library, embedded at build time for every member's `read_doc`.
 pub(crate) mod public_docs {
     include!(concat!(env!("OUT_DIR"), "/public_docs.rs"));
 }
@@ -470,11 +470,13 @@ mod tests {
     }
 
     #[test]
-    fn the_ceos_library_is_the_public_records_and_plans_and_nothing_else() {
+    fn the_teams_library_is_the_public_records_plans_drafts_and_standards_and_nothing_else() {
         let docs = crate::public_docs::PUBLIC_DOCS;
         for wanted in [
             "docs/adr/0111-the-ceo-and-the-chain-of-command.md",
             "docs/plans/endora-hq.md",
+            "docs/standards.md",
+            "docs/drafts/ansible-nas-AGENTS.md",
         ] {
             let (_, text) = docs.iter().find(|(p, _)| *p == wanted).expect(wanted);
             assert!(text.starts_with("# "), "{wanted}");

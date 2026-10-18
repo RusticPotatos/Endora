@@ -148,6 +148,19 @@ fn read_document_tool() -> Value {
     })
 }
 
+/// The tool every member reads Endora's public library with (ADR 0111, 0116): the decision
+/// records, the plans, the drafts the team proposes, and the team's standards.
+fn read_doc_tool() -> Value {
+    json!({
+        "name": "read_doc",
+        "description": "Read Endora's public library: the team's standards (docs/standards.md), a decision record or plan (docs/adr, docs/plans), or a draft the team proposes (docs/drafts). A folder alone lists it. 20,000 characters a part.",
+        "inputSchema": { "type": "object", "properties": {
+            "path": { "type": "string", "description": "e.g. docs/standards.md, docs/plans/endora-hq.md, or docs/adr to list the records" },
+            "part": { "type": "integer", "minimum": 1 },
+        }, "required": ["path"] },
+    })
+}
+
 /// The tool a lead asks the owner to hire with (ADR 0115).
 fn request_hire_tool() -> Value {
     json!({
@@ -297,6 +310,7 @@ pub fn tools(role: Role) -> Value {
     }
     if let Some(list) = all.as_array_mut() {
         list.push(read_document_tool());
+        list.push(read_doc_tool());
     }
     if crate::domain::lessons::keeps_lessons(role) {
         if let Some(list) = all.as_array_mut() {
@@ -391,12 +405,7 @@ fn ceos_tools() -> Value {
     list.push(accept_tool());
     list.push(hand_to_tool());
     list.push(read_document_tool());
-    list.push(tool(
-        "read_doc",
-        "Read one of Endora's public decision records or plans: a path in docs/adr or docs/plans (that folder alone lists them), 20,000 characters a part.",
-        json!({ "path": { "type": "string", "description": "e.g. docs/plans/endora-hq.md, or docs/adr to list the records" }, "part": { "type": "integer", "minimum": 1 } }),
-        &["path"],
-    ));
+    list.push(read_doc_tool());
     Value::Array(list)
 }
 

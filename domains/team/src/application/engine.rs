@@ -88,7 +88,11 @@ const CEO_SEATED: &str = "ceo_seated";
 /// Set once Endora has seeded the house log, so it is never seeded again (ADR 0112).
 const HOUSE_LOG_SEEDED: &str = "house_log_seeded";
 
-/// Endora's public records and plans, as `(path, text)`, for the CEO's `read_doc`.
+/// Every member's briefing but the CEO's names the team's standards once, after who it is; the
+/// CEO's `read_doc` names them (ADR 0116).
+const STANDARDS: &str = "The team's standards: read_doc docs/standards.md\n";
+
+/// Endora's public library, as `(path, text)`, for every member's `read_doc` (ADR 0116).
 pub type Library = &'static [(&'static str, &'static str)];
 
 /// How the engine is set up.
@@ -260,7 +264,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
     }
 
-    /// The engine with Endora's public records and plans, for the CEO's `read_doc`.
+    /// The engine with Endora's public library, for every member's `read_doc`.
     #[must_use]
     pub fn with_docs(mut self, docs: Library) -> Self {
         self.docs = docs;
@@ -612,15 +616,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok((run, member))
     }
 
-    /// A turn of the CEO's reads one of Endora's public records or plans, a part at a time
-    /// ([`docs::DOC_PART`] characters), or the list of a folder's. They are public already;
-    /// nothing else is read.
+    /// A member's turn reads one of Endora's public library (its records, plans, drafts and
+    /// the team's standards), a part at a time ([`docs::DOC_PART`] characters), or the list of
+    /// a folder's. They are public already; nothing else is read.
     ///
     /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`]; [`Refusal::NotADoc`] for any other
-    /// path; [`EngineError::Unknown`] for a document there is not.
+    /// [`Refusal::TurnOver`]; [`Refusal::NotADoc`] for any other path;
+    /// [`EngineError::Unknown`] for a document there is not.
     pub fn read_doc(&self, run: RunId, path: &str, part: usize) -> Done<String> {
-        self.the_ceos_turn(run)?;
+        self.running(run)?;
         match docs::asked(path).map_err(EngineError::Refused)? {
             docs::Asked::Folder(folder) => {
                 let names: Vec<&str> = self
@@ -637,7 +641,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         .iter()
                         .find(|(p, _)| *p == path)
                         .ok_or(EngineError::Unknown(
-                            "document: read_doc docs/adr or docs/plans to list them",
+                            "document: read_doc docs/adr, docs/plans or docs/drafts to list them",
                         ))?;
                 let part = part.max(1);
                 let (said, parts) = docs::part(text, part);
@@ -2059,12 +2063,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         );
         // The member's own notebook, first: what it learned, newest first (ADR 0118).
         told.push_str(&self.notebook_said(member, run)?);
+        // The CEO's quiet briefing is held under half its whole one: its read_doc names the
+        // standards instead.
+        if member.role != Role::Ceo {
+            told.push_str(STANDARDS);
+        }
         if member.role == Role::Ceo {
             told.push_str(&self.ceo_context(member, run)?);
         }
         if member.role == Role::Reviewer {
             told.push_str(&format!("{}\n", review::TESTER));
         }
+        told.push_str(self.wing_rules(member)?);
         let log = self.house_log()?;
         if member.role == Role::Lead && !log.trim().is_empty() {
             told.push_str(&format!(
@@ -2243,11 +2253,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
              check_back, run_gate, request_action"
         });
         told.push_str(match member.role {
-            Role::Reviewer => ", review, read_document. ",
+            Role::Reviewer => ", review, read_document, read_doc. ",
             Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, read_document. "
+                ", propose_project, accept, hand_to, request_hire, request_staff, read_document, read_doc. "
             }
-            _ => ", read_document. ",
+            _ => ", read_document, read_doc. ",
         });
         told.push_str(beside);
         told.push_str(notebook::TOOLS);
