@@ -182,6 +182,8 @@ and `make deploy`. It starts with a scripted demo team (`ENDORA_HQ_DEMO = 0` tur
 its own database in a named volume (`ENDORA_HQ_DIR` for a host folder), and makes its own token
 for the node in a volume only the two mount, so there is no secret to keep. The console's
 **HQ** screen shows the office; the `endora` Ansible role does the same with `endora_hq: true`.
+The engineering wing's deploy key, for pushing the team's branches to your ansible-nas fork
+on your approval, is described in [the home-lab notes](homelab.md#the-wings-deploy-key-adr-0115).
 
 ### Optional: the mail
 

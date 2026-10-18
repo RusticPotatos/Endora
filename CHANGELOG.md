@@ -9,6 +9,28 @@ tagged release.
 
 ### Added
 
+- **The engineering wing and the git flow** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)).
+  A second team works on the owner's public ansible-nas fork through branches. The node keeps
+  a bare mirror of the fork and offers a lead or a developer two contracts: `repo_checkout`
+  hands the sandbox a bundle of the fork's base branch (`ENDORA_ANSIBLE_NAS_REF`, else the
+  fork's default branch asked of GitHub once; compose no longer defaults to `master`), which
+  the worker unpacks into `/work/repo` with git set up (commits authored Endora HQ, the trailer
+  added by a hook, no remote); `repo_submit` takes a bundle of one `hq/task-N-<slug>` branch
+  only when it sits on the base, changes at most 200 files and 1 MB, every commit is HQ's and
+  nothing of the owner's values (`group_vars/*.yml`, `host_vars`, inventories) is touched. HQ
+  writes the branch's diff as a document on the task and queues a model-free **check job** for
+  the Pi's runner (the workbench image with ansible-core, ansible-lint 6.14.6 and yamllint
+  1.30.0 baked in): syntax check, `ansible-lint --offline`, `yamllint`, five minutes each,
+  reported with the job's own token as a receipt and the task's gate; a failing check sends the
+  work back. Once the tester passes and the lead accepts, the owner's desk offers the push: on
+  Approve the node pushes the stored branch to the fork over SSH with a deploy key
+  (`ENDORA_GIT_PUSH_KEY`), `hq/*` only, never force, never main; without a key the card offers
+  the bundle to download. HQ opens no pull request and merges nothing. The owner hires on the
+  HQ screen (one CEO); a lead may request a hire within the wing's seats (one Sonnet lead, at
+  most five Haiku developers), on evidence. HQ seeds the wing once: the goal "Improve the lab",
+  the project "ansible-nas clean-up", Kit, Rae and Zed, and Kit's first task. The office gains
+  the wing's room; the owner's scenarios in `domains/team/features/the-engineering-wing.feature`.
+
 - **How the team is doing**: a scorecard on the HQ screen, today beside the last seven days by
   the owner's days, computed by code from HQ's own record (`application::scorecard`, served in
   the snapshot): turns and the share that showed nothing (talk only or empty), per member with

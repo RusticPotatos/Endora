@@ -7,6 +7,13 @@ assistance (Claude). Amends [0102](0102-endora-hq.md) (the Pi becomes a runner, 
 through the node), [0106](0106-team-contracts.md) and [0108](0108-the-bridge.md) (the contracts
 and the bridge stay the team's only way to the house, now from the Pi too).
 
+Amended 2026-10-17 by [0115](0115-the-engineering-wing-and-the-git-flow.md): the first piece of
+ring 2, the lab, is the **check job**: the workbench image run model-free on the Pi's runner,
+with a job token alone, to run the fork's own checks on a branch the wing submitted. Code
+reaches the sandbox as a bundle from the node's mirror of the fork (`repo_checkout`) and leaves
+it as a bundle the node takes by its rules (`repo_submit`); the sandbox still holds no key and
+no remote, and the owner alone pushes.
+
 **Ring 1 is the sandbox on the Pi, with no internet: a turn's workbench reaches the node's team
 gateway and nothing else.** Built: the team gateway on the node's team listener, published on
 the house's network on 8788 (`/team-gateway/mcp` and `/team-gateway/runner/...`, passed on to
@@ -176,7 +183,8 @@ with undo.
 
 - The egress proxy (allowlist, desk cards, audit), the canaries, and later inspection with the
   team CA and credential injection.
-- Ring 2 (the lab) and ring 3 (production changes with undo).
+- Ring 2 (the lab) beyond its first piece, the check job (0115), and ring 3 (production
+  changes with undo).
 - Pairing a runner from HQ (0102's phase 3); the Pi's runner is configured by its role.
 
 ## Alternatives considered

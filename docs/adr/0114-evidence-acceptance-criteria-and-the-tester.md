@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
+Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended 2026-10-17 by
+[0115](0115-the-engineering-wing-and-the-git-flow.md): a branch the wing submits and the check
+of it are receipts the node and HQ write (a document on the task holds the diff and the report),
+the check is the task's gate, a branch that fails its checks is sent back by HQ itself, and the
+owner's push is a receipt too. Hiring that acts, deferred below, is built there. Amends
 [0107](0107-routines-alarms-and-check-backs.md) (the empty-turn back-off reads turn labels; a
 routine's check closes on evidence; a check-back waits behind a wait),
 [0108](0108-the-bridge.md) (every call through the contracts and the bridge leaves a receipt),
