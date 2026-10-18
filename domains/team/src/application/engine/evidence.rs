@@ -495,6 +495,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// As [`Engine::add_task`].
     pub fn add_task_with(&self, by: Author, task: NewTask, criteria: &[Criterion]) -> Done<TaskId> {
         let _held = self.held();
+        let _asked = (by == Author::Owner).then(|| self.for_owner());
         evidence::may_hand_on(criteria, false).map_err(EngineError::Refused)?;
         let id = self.add_task_held_lock(by, task)?;
         self.store.set_criteria(id, criteria)?;

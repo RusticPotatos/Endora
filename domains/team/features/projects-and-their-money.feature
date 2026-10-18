@@ -34,3 +34,17 @@ Feature: Projects, their caps and their money
     Then Ada's turn is refused: out_of_budget
     When Linus is handed the task "Read the logs" in the project "Upkeep"
     Then Linus's turn starts on "Read the logs"
+
+  # A member's daily share is its first claim on the pool, not a wall (ADR 0113, amended).
+  Scenario: A member past its share borrows what the others left
+    Given Ada has spent $1.00 of her share today
+    Then Ada's share for today is spent
+    When Endora hands Ada the task "Look at sonarr"
+    Then Ada's turn starts on "Look at sonarr"
+
+  # What the owner asks for is paid from the pool's day, never the member's share.
+  Scenario: The owner's own request is the pool's, not the member's
+    Given Ada has the task "Look at sonarr"
+    When Ada's turn on "Look at sonarr" spends $0.40
+    Then the pool shows $0.40 spent today
+    And Ada's share shows $0.00 spent today

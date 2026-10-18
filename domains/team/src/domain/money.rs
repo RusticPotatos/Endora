@@ -64,6 +64,18 @@ pub const fn day_start(day: i64, offset_minutes: i64) -> Millis {
     day * DAY_MS - offset_minutes * 60_000
 }
 
+/// What a paid member may draw on today (ADR 0113, amended): its own share is its first
+/// claim, not a wall. Once that is spent (`own_left` below nothing is what it has borrowed),
+/// it draws on what the other paid members have not used of theirs (`others_left`, each one's
+/// share less its spend; one past its own share has nothing to lend). The pool's day stays the
+/// hard ceiling: that is [`reservation`]'s.
+#[must_use]
+pub fn may_draw(own_left: Micros, others_left: impl IntoIterator<Item = Micros>) -> Micros {
+    others_left
+        .into_iter()
+        .fold(own_left, |sum, left| sum.saturating_add(left.max(0)))
+}
+
 /// What one turn can have reserved, before it starts: the per-turn cap (`most`, the role's),
 /// or what is left of the member's day or the pool's day if that is less. `None` when less
 /// than a turn is left.
@@ -131,6 +143,28 @@ mod tests {
         assert_eq!(
             reservation(1_361_110, 2_333_333, most_a_turn(Role::Ceo)),
             Some(DOLLAR)
+        );
+    }
+
+    #[test]
+    fn a_member_past_its_share_draws_on_what_the_others_left() {
+        // Within its share: its own left, and the others' unused besides.
+        assert_eq!(may_draw(300_000, [500_000, 200_000]), 1_000_000);
+        // Past its share by $0.05: what it borrowed comes off what the others left.
+        assert_eq!(may_draw(-50_000, [500_000, 200_000]), 650_000);
+        // A member past its own share lends nothing.
+        assert_eq!(may_draw(-50_000, [-100_000, 200_000]), 150_000);
+        // Nobody left anything: nothing to draw.
+        assert!(may_draw(-50_000, [0, -1]) < LEAST_A_TURN);
+        // And what it may draw is still held to the turn's cap and the pool's day.
+        let most = most_a_turn(Role::Lead);
+        assert_eq!(
+            reservation(may_draw(-50_000, [2_000_000]), 2_333_333, most),
+            Some(most)
+        );
+        assert_eq!(
+            reservation(may_draw(-50_000, [2_000_000]), 5_000, most),
+            None
         );
     }
 

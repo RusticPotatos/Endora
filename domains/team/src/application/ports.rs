@@ -145,6 +145,9 @@ pub struct Wake {
     pub run: Option<RunId>,
     /// When it was raised.
     pub at: Millis,
+    /// Whether the owner's own request raised it (ADR 0113, amended): their task, reply,
+    /// answer or "Run now". The turn it starts is then the pool's, not the member's share's.
+    pub by_owner: bool,
 }
 
 /// One turn, as stored.
@@ -195,6 +198,9 @@ pub struct Run {
     pub cache_write_tokens: i64,
     /// The output tokens its model calls produced, as the relay reported them.
     pub output_tokens: i64,
+    /// Whether it exists because the owner asked (ADR 0113, amended): what it spends is
+    /// counted against the pool's day only, never the member's share.
+    pub asked_by_owner: bool,
 }
 
 /// One item on the owner's desk.
@@ -455,6 +461,11 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_wake(&self, id: WakeId, receipt: Receipt, run: Option<RunId>) -> Stored<()>;
+    /// Marks a wake as raised by the owner's own request.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_wake_by_owner(&self, id: WakeId) -> Stored<()>;
     /// The wakes held for a task, oldest first.
     ///
     /// # Errors
@@ -555,6 +566,12 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn committed(&self, member: Option<MemberId>, day: i64) -> Stored<Micros>;
+    /// What `member` has committed on `day` against its own share: as [`Self::committed`],
+    /// less its turns the owner asked for, which are the pool's alone (ADR 0113, amended).
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn share_committed(&self, member: MemberId, day: i64) -> Stored<Micros>;
     /// What `member` has really spent on `day`: the use its turns reported, not what they
     /// hold. `None` for the whole pool.
     ///

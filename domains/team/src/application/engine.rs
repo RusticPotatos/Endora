@@ -3,6 +3,7 @@
 //! word on done, the kill switch, and the event feed.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::json;
@@ -219,6 +220,20 @@ pub struct Engine<S, W, C> {
     lab: Mutex<Option<Vec<String>>>,
     /// Endora's public records and plans, which the CEO may read.
     docs: Library,
+    /// Set while the engine does what the owner asked (their task, reply, answer, decision or
+    /// "Run now"): every wake raised meanwhile is the owner's asking, and the turn it starts
+    /// is the pool's, never the member's share (ADR 0113, amended). Only ever set under the
+    /// engine's lock, and cleared when that work is done.
+    for_owner: AtomicBool,
+}
+
+/// While it lives, the engine is doing what the owner asked; see [`Engine::for_owner`].
+struct ForOwner<'a>(&'a AtomicBool);
+
+impl Drop for ForOwner<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -232,6 +247,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             lock: Mutex::new(()),
             lab: Mutex::new(None),
             docs: &[],
+            for_owner: AtomicBool::new(false),
         }
     }
 
@@ -275,6 +291,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Marks what follows, until the guard is dropped, as the owner's asking. Taken under the
+    /// engine's lock, after it.
+    fn for_owner(&self) -> ForOwner<'_> {
+        self.for_owner.store(true, Ordering::SeqCst);
+        ForOwner(&self.for_owner)
+    }
+
+    /// Whether the engine is doing what the owner asked.
+    fn asked_by_owner(&self) -> bool {
+        self.for_owner.load(Ordering::SeqCst)
     }
 
     fn emit(&self, kind: EventKind, data: serde_json::Value) -> Done<()> {
@@ -323,20 +351,42 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// anything. A member on the house's model reserves nothing and is never turned away for
     /// money (ADR 0111). A project with a cap holds a turn of a paid member to what is left of
     /// it this month, and to nothing while it is paused for its budget (ADR 0113).
-    fn affordable(&self, member: &Member, project: Option<ProjectId>) -> Done<Option<Micros>> {
+    ///
+    /// A member's share is its first claim, not a wall (ADR 0113, amended): past it, the
+    /// member draws on what the other paid members have not used today ([`money::may_draw`]).
+    /// A turn the owner asked for (`for_owner`) is the pool's alone and needs no share. The
+    /// pool's day is the hard ceiling either way, and the per-turn cap holds.
+    fn affordable(
+        &self,
+        member: &Member,
+        project: Option<ProjectId>,
+        for_owner: bool,
+    ) -> Done<Option<Micros>> {
         if !member.brain.cloud() {
             return Ok(Some(0));
         }
         let day = self.today();
-        let member_left = self.per_day(member, self.paid_weights()?)
-            - self.store.committed(Some(member.id), day)?;
         let pool_left =
             money::pool_a_day(self.settings.pool_per_month) - self.store.committed(None, day)?;
         let mut most = money::most_a_turn(member.role);
         if let Some(left) = self.project_left(project)? {
             most = most.min(left);
         }
-        Ok(money::reservation(member_left, pool_left, most))
+        if for_owner {
+            return Ok(money::reservation(pool_left, pool_left, most));
+        }
+        let paid = self.paid_weights()?;
+        let share_left = |m: &Member| -> Done<Micros> {
+            Ok(self.per_day(m, paid) - self.store.share_committed(m.id, day)?)
+        };
+        let mut others = Vec::new();
+        for other in self.store.members()? {
+            if other.id != member.id && other.brain.cloud() {
+                others.push(share_left(&other)?);
+            }
+        }
+        let draw = money::may_draw(share_left(member)?, others);
+        Ok(money::reservation(draw, pool_left, most))
     }
 
     // ---- the team and the work ---------------------------------------------------------
@@ -633,6 +683,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Unknown`] for a goal, task or member that does not exist.
     pub fn add_task(&self, by: Author, task: NewTask) -> Done<TaskId> {
         let _held = self.held();
+        let _asked = (by == Author::Owner).then(|| self.for_owner());
         self.add_task_held_lock(by, task)
     }
 
@@ -846,7 +897,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             project_paused: self.held_by_owner(project)?,
             stopped: self.store.stopped()?,
             paused: member.paused,
-            can_afford_a_turn: self.affordable(member, project)?.is_some(),
+            can_afford_a_turn: self
+                .affordable(member, project, self.asked_by_owner())?
+                .is_some(),
             live: self.live_turns(member.id, task)?,
             already_held,
             nothing_to_do,
@@ -875,7 +928,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 let wake = self
                     .store
                     .add_wake(member, task, reason, Receipt::Queued, None, now)?;
-                let (run, delayed) = self.queue_turn(member, task, wake, reason)?;
+                self.mark_owners(wake, None)?;
+                let (run, delayed) =
+                    self.queue_turn(member, task, wake, reason, self.asked_by_owner())?;
                 self.store.set_wake(wake, Receipt::Queued, Some(run))?;
                 if let Some(until) = delayed {
                     about["delayed_until"] = json!(until);
@@ -884,14 +939,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Ok(Receipt::Queued)
             }
             WakeDecision::Fold(run) => {
-                self.store
-                    .add_wake(member, task, reason, Receipt::Folded, Some(run), now)?;
+                let wake =
+                    self.store
+                        .add_wake(member, task, reason, Receipt::Folded, Some(run), now)?;
+                self.mark_owners(wake, Some(run))?;
                 self.emit(EventKind::WakeFolded, about)?;
                 Ok(Receipt::Folded)
             }
             WakeDecision::Hold => {
-                self.store
+                let wake = self
+                    .store
                     .add_wake(member, task, reason, Receipt::Held, None, now)?;
+                self.mark_owners(wake, None)?;
                 self.emit(EventKind::WakeHeld, about)?;
                 Ok(Receipt::Held)
             }
@@ -903,6 +962,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Ok(Receipt::Refused(why))
             }
         }
+    }
+
+    /// Marks a wake the owner's asking, while the engine does what they asked; and the turn it
+    /// folds into, if that has not started yet (its reservation is still to be made).
+    fn mark_owners(&self, wake: crate::domain::WakeId, folded: Option<RunId>) -> Done<()> {
+        if !self.asked_by_owner() {
+            return Ok(());
+        }
+        self.store.set_wake_by_owner(wake)?;
+        let Some(run) = folded else {
+            return Ok(());
+        };
+        let Some(mut run) = self.store.run(run)? else {
+            return Ok(());
+        };
+        if run.started_at.is_none() && !run.asked_by_owner {
+            run.asked_by_owner = true;
+            self.store.save_run(&run)?;
+        }
+        Ok(())
     }
 
     /// How many turns in a row on a task, newest first, moved nothing forward.
@@ -934,21 +1013,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Queues a turn for a wake: at once, or, for a stale wake on a task whose turns keep
-    /// moving nothing, waiting out its back-off. Returns the turn, and until when it waits.
+    /// moving nothing, waiting out its back-off. Returns the turn, and until when it waits. A
+    /// wake the owner's asking raised starts a turn the owner asked for.
     fn queue_turn(
         &self,
         member: MemberId,
         task: Option<TaskId>,
         wake: crate::domain::WakeId,
         reason: WakeReason,
+        by_owner: bool,
     ) -> Done<(RunId, Option<Millis>)> {
         let now = self.clock.now();
         let id = self.store.add_run(member, task, wake, now)?;
+        let mut run = self.store.run(id)?.ok_or(EngineError::Unknown("run"))?;
+        if by_owner {
+            run.asked_by_owner = true;
+            self.store.save_run(&run)?;
+        }
         let wait = self.back_off(task, reason)?;
         if wait == 0 {
             return Ok((id, None));
         }
-        let mut run = self.store.run(id)?.ok_or(EngineError::Unknown("run"))?;
         run.status = RunStatus::RetryWaiting;
         run.retry_at = Some(now + wait);
         run.end_reason = "backing off: its last turns moved nothing".to_owned();
@@ -981,8 +1066,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         );
         match decision {
             WakeDecision::Queue => {
-                let (run, _) =
-                    self.queue_turn(oldest.member, Some(task), oldest.id, oldest.reason)?;
+                let (run, _) = self.queue_turn(
+                    oldest.member,
+                    Some(task),
+                    oldest.id,
+                    oldest.reason,
+                    oldest.by_owner,
+                )?;
                 self.store.set_wake(oldest.id, Receipt::Queued, Some(run))?;
                 self.emit(
                     EventKind::WakeQueued,
@@ -1218,6 +1308,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         // The owner's reply on an open task wakes whoever has it at once, named or not: it is
         // new, so the back-off never holds it.
+        let _asked = self.for_owner();
         let found = self.task(task)?;
         if found.status.finished() {
             return Err(EngineError::Refused(Refusal::Finished));
@@ -2664,7 +2755,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.held_by_owner(project)? {
                 continue;
             }
-            let Some(amount) = self.affordable(&member, project)? else {
+            let Some(amount) = self.affordable(&member, project, run.asked_by_owner)? else {
                 continue;
             };
             run.told = self.briefing(&member, &run)?;
@@ -3128,6 +3219,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// take; [`EngineError::Refused`] with [`Refusal::Finished`] if it is already decided.
     pub fn decide(&self, item: crate::domain::DeskId, decision: &str) -> Done<()> {
         let _held = self.held();
+        let _asked = self.for_owner();
         let found = self.waiting_on_desk(item)?;
         if matches!(found.kind.as_str(), "project_cap" | "project_budget") {
             return self.owner_decides_cap(&found, decision, "");
@@ -3143,6 +3235,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// answer with no words.
     pub fn answer(&self, item: crate::domain::DeskId, text: &str) -> Done<()> {
         let _held = self.held();
+        let _asked = self.for_owner();
         let found = self.waiting_on_desk(item)?;
         let text = text.trim();
         if found.kind != "question" || text.is_empty() {
@@ -3166,6 +3259,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         words: &str,
     ) -> Done<()> {
         let _held = self.held();
+        let _asked = self.for_owner();
         let found = self.waiting_on_desk(item)?;
         let words: String = words.trim().chars().take(4000).collect();
         if found.kind == "decision" {
@@ -3596,6 +3690,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Unknown`] for a routine that does not exist; a store failure.
     pub fn fire_routine(&self, id: RoutineId) -> Done<Fired> {
         let _held = self.held();
+        let _asked = self.for_owner();
         let routine = self.routine(id)?;
         self.fire_held_lock(routine, &Firing::Now)
     }
@@ -3764,7 +3859,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.held_by_owner(routine.project)? {
             return Ok(Some("its project is paused".to_owned()));
         }
-        if self.affordable(&member, routine.project)?.is_none() {
+        if self
+            .affordable(&member, routine.project, self.asked_by_owner())?
+            .is_none()
+        {
             return Ok(Some(format!(
                 "{}'s budget for today, or its project's for the month, is spent",
                 member.name

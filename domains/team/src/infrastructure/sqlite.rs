@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS posts (
 CREATE TABLE IF NOT EXISTS wakes (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
     task INTEGER REFERENCES tasks(id), reason TEXT NOT NULL, receipt TEXT NOT NULL,
-    refused TEXT, run INTEGER, at_ms INTEGER NOT NULL
+    refused TEXT, run INTEGER, at_ms INTEGER NOT NULL, by_owner INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
@@ -58,19 +58,22 @@ CREATE TABLE IF NOT EXISTS runs (
     moved_forward INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
-    posted INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0, label TEXT
+    posted INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0, label TEXT,
+    asked_by_owner INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 -- A turn's token for the team protocol: its worker's only credential, valid while it runs.
 CREATE TABLE IF NOT EXISTS run_tokens (
     run INTEGER PRIMARY KEY REFERENCES runs(id), token TEXT NOT NULL UNIQUE
 ) STRICT;
 -- Append-only: a reservation before a turn starts, use while it runs, the charge and the
--- release when it ends. Rows are never changed or removed.
+-- release when it ends. Rows are never changed or removed. `owner` marks a turn the owner
+-- asked for: the pool's alone, never its member's share (ADR 0113, amended).
 CREATE TABLE IF NOT EXISTS ledger (
     id INTEGER PRIMARY KEY, run INTEGER NOT NULL REFERENCES runs(id),
     member INTEGER NOT NULL REFERENCES members(id), day INTEGER NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('reserve', 'use', 'charge', 'release')),
-    amount INTEGER NOT NULL, at_ms INTEGER NOT NULL, project INTEGER REFERENCES projects(id)
+    amount INTEGER NOT NULL, at_ms INTEGER NOT NULL, project INTEGER REFERENCES projects(id),
+    owner INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TRIGGER IF NOT EXISTS ledger_is_append_only_update
     BEFORE UPDATE ON ledger BEGIN SELECT RAISE(ABORT, 'the ledger is append-only'); END;
@@ -181,6 +184,14 @@ const PROJECT_COLUMNS: [(&str, &str); 5] = [
     ("ledger", "project INTEGER REFERENCES projects(id)"),
 ];
 
+/// The columns a store made before the owner's own requests were the pool's (ADR 0113,
+/// amended) gains: no wake was the owner's, no turn asked for by them, and no ledger row theirs.
+const OWNER_COLUMNS: [(&str, &str); 3] = [
+    ("wakes", "by_owner INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "asked_by_owner INTEGER NOT NULL DEFAULT 0"),
+    ("ledger", "owner INTEGER NOT NULL DEFAULT 0"),
+];
+
 /// Adds `column` (its name, then its type) to `table`, unless the table has it already.
 fn add_column(conn: &Connection, table: &str, column: &str) -> Stored<()> {
     let name = column.split_whitespace().next().unwrap_or(column);
@@ -281,7 +292,11 @@ impl SqliteTeamStore {
                 .map_err(backend)?;
             }
         }
-        for (table, column) in PROJECT_COLUMNS.into_iter().chain(EVIDENCE_COLUMNS) {
+        for (table, column) in PROJECT_COLUMNS
+            .into_iter()
+            .chain(EVIDENCE_COLUMNS)
+            .chain(OWNER_COLUMNS)
+        {
             add_column(&conn, table, column)?;
         }
         // A project's month is read on every wake and turn about its work, each row with its
@@ -364,6 +379,9 @@ fn project_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
 const RUNS_PROJECT: &str =
     "(SELECT project FROM ledger WHERE run = ?1 AND kind = 'reserve' ORDER BY id DESC LIMIT 1)";
 
+/// Whether a run's ledger rows are the owner's asking: the pool's, never the member's share.
+const RUNS_OWNER: &str = "(SELECT asked_by_owner FROM runs WHERE id = ?1)";
+
 /// A project's rows of the ledger, booked in the month its turn reserved, from ?2 until ?3.
 const PROJECTS_ROWS: &str = "FROM ledger l WHERE l.project = ?1 AND COALESCE((SELECT MAX(r.at_ms) \
     FROM ledger r WHERE r.run = l.run AND r.kind = 'reserve'), l.at_ms) >= ?2 AND COALESCE((SELECT \
@@ -396,6 +414,7 @@ fn wake_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<(Wake, String, Option<
             receipt: Receipt::Queued,
             run: row.get::<_, Option<i64>>(6)?.map(RunId),
             at: row.get(7)?,
+            by_owner: row.get::<_, i64>(8)? != 0,
         },
         row.get(4)?,
         row.get(5)?,
@@ -430,12 +449,13 @@ fn run_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
             .get::<_, Option<String>>(21)?
             .as_deref()
             .and_then(crate::domain::Label::from_name),
+        asked_by_owner: row.get::<_, i64>(22)? != 0,
     })
 }
 
 const RUN_COLUMNS: &str = "id, member, task, wake, status, attempts, queued_at, started_at, \
     retry_at, ended_at, reserved, spent, told, end_reason, moved_forward, input_tokens, \
-    cache_read_tokens, cache_write_tokens, output_tokens, posted, blocked, label";
+    cache_read_tokens, cache_write_tokens, output_tokens, posted, blocked, label, asked_by_owner";
 
 const RECEIPT_SELECT: &str = "SELECT id, run, member, task, tool, args, excerpt, ok, act, \
     confidential, at_ms FROM call_receipts";
@@ -990,6 +1010,13 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
+    fn set_wake_by_owner(&self, id: WakeId) -> Stored<()> {
+        self.conn()?
+            .execute("UPDATE wakes SET by_owner = 1 WHERE id = ?1", [id.0])
+            .map_err(backend)?;
+        Ok(())
+    }
+
     fn held_wakes(&self, task: TaskId) -> Stored<Vec<Wake>> {
         Ok(self
             .wakes()?
@@ -1002,7 +1029,8 @@ impl TeamStore for SqliteTeamStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, member, task, reason, receipt, refused, run, at_ms FROM wakes ORDER BY id",
+                "SELECT id, member, task, reason, receipt, refused, run, at_ms, by_owner FROM wakes \
+                 ORDER BY id",
             )
             .map_err(backend)?;
         let rows = stmt
@@ -1116,7 +1144,8 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE runs SET status = ?2, attempts = ?3, started_at = ?4, retry_at = ?5,
                     ended_at = ?6, reserved = ?7, spent = ?8, told = ?9, end_reason = ?10,
-                    moved_forward = ?11, posted = ?12, blocked = ?13, label = ?14
+                    moved_forward = ?11, posted = ?12, blocked = ?13, label = ?14,
+                    asked_by_owner = ?15
                  WHERE id = ?1",
                 params![
                     run.id.0,
@@ -1132,7 +1161,8 @@ impl TeamStore for SqliteTeamStore {
                     run.moved_forward,
                     run.posted,
                     run.blocked,
-                    run.label.map(crate::domain::Label::name)
+                    run.label.map(crate::domain::Label::name),
+                    run.asked_by_owner
                 ],
             )
             .map_err(backend)?;
@@ -1149,8 +1179,12 @@ impl TeamStore for SqliteTeamStore {
     ) -> Stored<()> {
         self.conn()?
             .execute(
-                "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project) VALUES (?1, ?2, ?3, 'reserve', ?4, ?5,
-                    (SELECT t.project FROM runs r JOIN tasks t ON t.id = r.task WHERE r.id = ?1))",
+                &format!(
+                    "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project, owner)
+                     VALUES (?1, ?2, ?3, 'reserve', ?4, ?5,
+                        (SELECT t.project FROM runs r JOIN tasks t ON t.id = r.task WHERE r.id = ?1),
+                        {RUNS_OWNER})"
+                ),
                 params![run.0, member.0, day, amount, at],
             )
             .map_err(backend)?;
@@ -1168,8 +1202,8 @@ impl TeamStore for SqliteTeamStore {
         self.conn()?
             .execute(
                 &format!(
-                    "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project)
-                     VALUES (?1, ?2, ?3, 'use', ?4, ?5, {RUNS_PROJECT})"
+                    "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project, owner)
+                     VALUES (?1, ?2, ?3, 'use', ?4, ?5, {RUNS_PROJECT}, {RUNS_OWNER})"
                 ),
                 params![run.0, member.0, day, amount, at],
             )
@@ -1205,8 +1239,8 @@ impl TeamStore for SqliteTeamStore {
             if amount != 0 {
                 tx.execute(
                     &format!(
-                        "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, {RUNS_PROJECT})"
+                        "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project, owner)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, {RUNS_PROJECT}, {RUNS_OWNER})"
                     ),
                     params![run.0, member.0, booked, kind, amount, at],
                 )
@@ -1223,6 +1257,18 @@ impl TeamStore for SqliteTeamStore {
                                               WHEN 'release' THEN -amount ELSE 0 END), 0)
                  FROM ledger WHERE day = ?1 AND (?2 IS NULL OR member = ?2)",
                 params![day, member.map(|m| m.0)],
+                |r| r.get(0),
+            )
+            .map_err(backend)
+    }
+
+    fn share_committed(&self, member: MemberId, day: i64) -> Stored<Micros> {
+        self.conn()?
+            .query_row(
+                "SELECT COALESCE(SUM(CASE kind WHEN 'charge' THEN amount WHEN 'reserve' THEN amount
+                                              WHEN 'release' THEN -amount ELSE 0 END), 0)
+                 FROM ledger WHERE day = ?1 AND member = ?2 AND owner = 0",
+                params![day, member.0],
                 |r| r.get(0),
             )
             .map_err(backend)
