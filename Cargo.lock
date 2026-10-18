@@ -900,6 +900,7 @@ name = "endora-hq"
 version = "0.12.0"
 dependencies = [
  "axum",
+ "endora-infrastructure",
  "endora-team",
  "http-body-util",
  "serde",
