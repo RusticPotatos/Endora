@@ -16,6 +16,7 @@ use super::scorecard;
 use crate::domain::chain::{self, Decision};
 use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
+use crate::domain::guards::Stopped;
 use crate::domain::lessons;
 use crate::domain::money::{self, Micros};
 use crate::domain::review;
@@ -34,6 +35,7 @@ mod allowance;
 mod areas;
 mod evidence;
 mod games;
+mod guards;
 mod ladder;
 mod memory;
 mod notebook;
@@ -1086,11 +1088,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| r.task == Some(task) && !r.status.live() && r.started_at.is_some())
             .collect();
         ended.sort_by_key(|r| core::cmp::Reverse(r.id));
-        // A turn's label says whether it did something (ADR 0114); a turn from before labels,
-        // whether it moved its task forward.
+        // A turn's label says whether it did something (ADR 0114). A turn with none (from
+        // before labels, or that never settled) cannot be told, so the count stops there
+        // rather than guess from whether it moved its task (ADR 0124).
         Ok(ended
             .iter()
-            .take_while(|r| r.label.map_or(!r.moved_forward, |l| !l.productive()))
+            .take_while(|r| r.label.is_some_and(|l| !l.productive()))
             .count())
     }
 
@@ -2852,7 +2855,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         //    runner has room: urgent work first, then the oldest.
         report.started = self.start_queued(now)?;
 
-        // 5. Doing, with no turn and nothing to wait for: one nudge, then the owner's desk.
+        // 5. Doing, with no turn: parked work (ADR 0124) gets one nudge, then climbs the
+        //    ladder; work held on purpose is left alone, and work HQ cannot tell about gets
+        //    one look from its area's lead.
         let tasks = self.store.tasks()?;
         let live: Vec<Option<TaskId>> = self
             .store
@@ -2865,24 +2870,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if task.status != TaskStatus::Doing || live.contains(&Some(task.id)) {
                 continue;
             }
-            if !self.waits_over(&task.waits_on)? {
-                continue;
-            }
             let Some(owner) = task.owner else {
                 continue;
             };
-            // Its member said when it comes back: that is its plan, not a stall (live, #667
-            // was woken every ten seconds while its check-back waited).
-            let coming_back = self.store.check_backs()?.iter().any(|c| {
-                c.task == task.id && c.member == owner && c.status == CheckBackStatus::Pending
-            });
-            if coming_back {
+            // Its member said when it comes back, or it waits on open work: that is its plan,
+            // not a stall (live, #667 was woken every ten seconds while its check-back waited).
+            let Some(found) = self.diagnosis(task.id)? else {
                 continue;
+            };
+            match found.stopped {
+                Stopped::Working | Stopped::Held => continue,
+                Stopped::Indeterminate => {
+                    self.look_once(task, found)?;
+                    continue;
+                }
+                Stopped::Parked => {}
             }
             if !task.nudged {
                 self.store.set_nudged(task.id, true)?;
-                self.wake_held_lock(owner, Some(task.id), WakeReason::Recovery)?;
-                report.nudged += 1;
+                if self.nudge_once(task, owner, WakeReason::Recovery)? {
+                    report.nudged += 1;
+                }
                 continue;
             }
             // In a lead's area it climbs the ladder (ADR 0120), once it has sat as long as
@@ -2897,6 +2905,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
             )?;
             report.stuck += 1;
+            self.found_stuck(task, found.why)?;
             // Stuck work climbs the ladder (ADR 0120); the owner's desk only with no lead.
             if !self.climb_stuck(task, "it was nudged once and did not move")? {
                 self.stuck_on_the_desk(task, "It was nudged once and did not move.")?;
@@ -2910,6 +2919,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let (stranded_nudged, stranded_stuck) = self.recover_stranded(&tasks, &live, now)?;
         report.nudged += stranded_nudged;
         report.stuck += stranded_stuck;
+        // 5c. The guards (ADR 0124): what is stuck and has moved again closes itself.
+        self.guards_tick()?;
 
         // 6. Tasks whose waits have all finished are woken, once.
         for task in &tasks {
@@ -3719,13 +3730,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             {
                 continue;
             }
-            // Still waiting on work that will happen (what it waits for, or its open sub-tasks):
-            // not stranded, and the wait's end is its wake (ADR 0114). Waiting on work that was
-            // dropped: stranded, and its member is told why.
-            let dropped = self.dropped_wait(&task.waits_on)?;
-            if dropped.is_none() && !self.waiting_on(task)?.is_empty() {
-                continue;
-            }
             let Some(member) = task.owner.or(task.assignee) else {
                 continue;
             };
@@ -3754,9 +3758,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if now.saturating_sub(last) <= STRANDED_AFTER_MS {
                 continue;
             }
+            // Still waiting on work that will happen (what it waits for, or its open sub-tasks),
+            // or with a check-back or an answer to come: held on purpose, and what it waits for
+            // is its wake (ADR 0114, 0124). Waiting on work that was dropped: parked, and its
+            // member is told why. What HQ cannot tell about, its lead looks at once.
+            let Some(found) = self.diagnosis(task.id)? else {
+                continue;
+            };
+            match found.stopped {
+                Stopped::Working | Stopped::Held => continue,
+                Stopped::Indeterminate => {
+                    self.look_once(task, found)?;
+                    continue;
+                }
+                Stopped::Parked => {}
+            }
+            let dropped = self.dropped_wait(&task.waits_on)?;
             if !task.nudged {
                 self.store.set_nudged(task.id, true)?;
-                nudged += 1;
                 if let Some(gone) = &dropped {
                     self.post_held_lock(
                         Author::Endora,
@@ -3769,10 +3788,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     )?;
                 }
                 if task.status == TaskStatus::InReview {
+                    nudged += 1;
                     self.review_asked(task)?;
                     continue;
                 }
-                self.wake_held_lock(member, Some(task.id), WakeReason::AssignmentRecovery)?;
+                // Recorded before it is sent, and never sent again unchanged (ADR 0124).
+                if self.nudge_once(task, member, WakeReason::AssignmentRecovery)? {
+                    nudged += 1;
+                }
                 continue;
             }
             if task.status != TaskStatus::Blocked {
@@ -3784,6 +3807,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 )?;
             }
             stuck += 1;
+            self.found_stuck(task, found.why)?;
             // Stuck work climbs the ladder (ADR 0120); the owner's desk only with no lead.
             let why = "it was handed on, woken once, and nobody came back to it";
             if !self.climb_stuck(task, why)? {

@@ -96,6 +96,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(lead) = self.area_lead(task)? else {
             return Ok(false);
         };
+        // Only parked work climbs (ADR 0124): work held on purpose, or with a turn on it, waits
+        // for what will bring it back, and what HQ cannot tell about is the lead's one look.
+        let parked = self
+            .diagnosis(task.id)?
+            .is_some_and(|d| d.stopped == crate::domain::guards::Stopped::Parked);
+        if !parked {
+            return Ok(true);
+        }
         let at = self.rung_of(task.id)?;
         let since = at.map_or(Millis::MIN, |(_, when)| when);
         let moved = self.store.runs()?.iter().any(|r| {
@@ -348,8 +356,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Stuck work on the owner's desk: only when no rung is left to take it.
+    /// Stuck work on the owner's desk: only when no rung is left to take it, and once while it
+    /// waits there (ADR 0124: it closes itself when the work moves again).
     pub(super) fn stuck_on_the_desk(&self, task: &Task, why: &str) -> Done<()> {
+        let there = self
+            .store
+            .desk()?
+            .iter()
+            .any(|d| d.kind == "stuck" && d.status == "waiting" && d.task == Some(task.id));
+        if there {
+            return Ok(());
+        }
         let item = self.store.add_desk(
             "stuck",
             Some(task.id),

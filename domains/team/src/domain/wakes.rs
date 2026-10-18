@@ -60,6 +60,9 @@ pub enum WakeReason {
     Decide,
     /// A huddle on stuck work asks this member for its view, in one short turn (ADR 0120).
     Huddle,
+    /// A guard asks the lead of the work's area to look (ADR 0124): at work HQ cannot tell is
+    /// stopped by accident, or at a finding in its area.
+    Guard,
 }
 
 impl WakeReason {
@@ -89,6 +92,7 @@ impl WakeReason {
             Self::Directed => "directed",
             Self::Decide => "decide",
             Self::Huddle => "huddle",
+            Self::Guard => "guard",
         }
     }
 
@@ -127,6 +131,7 @@ impl WakeReason {
                 | Self::Directed
                 | Self::Decide
                 | Self::Huddle
+                | Self::Guard
         )
     }
 
@@ -172,6 +177,7 @@ impl WakeReason {
             Self::Directed,
             Self::Decide,
             Self::Huddle,
+            Self::Guard,
         ]
         .into_iter()
         .find(|r| r.name() == name)

@@ -2,6 +2,7 @@
 
 mod chess_tool;
 pub mod engine;
+pub mod guard_ports;
 pub mod ports;
 pub mod protocol;
 pub mod protocol_world;
@@ -77,3 +78,6 @@ mod ladder_tests;
 
 #[cfg(test)]
 mod world_tests;
+
+#[cfg(test)]
+mod guards_tests;

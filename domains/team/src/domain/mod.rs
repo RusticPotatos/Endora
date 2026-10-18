@@ -10,6 +10,7 @@ pub mod effort;
 pub mod events;
 pub mod evidence;
 pub mod games;
+pub mod guards;
 pub mod house;
 pub mod ladder;
 pub mod lessons;
