@@ -101,17 +101,16 @@ function soundName(kind, id) {
   return x ? x.name : "?";
 }
 
-// The name a device's AirPlay receiver shows in its AirPlay menu.
-// "Endora Mixer (Mac)": what it is (the way into the mixer) and whose it is. The owner's name.
-function soundReceiverName(name) { return `Endora Mixer (${name})`; }
-
-// Whether a device already plays into Endora: an AirPlay source of the same device.
-function soundHasReceiver(device) {
-  return !!device && ((SOUND.state && SOUND.state.sources) || []).some((x) => x.kind === "airplay" && x.device === device);
-}
-
 function soundWire(source, speaker) {
   return ((SOUND.state && SOUND.state.wires) || []).find((w) => w.source === source && w.speaker === speaker) || null;
+}
+
+// What a source's card says it is. The general AirPlay door takes anything cast into it and
+// can be wired to any speaker; an old device door is for that device to cast into.
+function soundSourceSaid(src) {
+  if (src.kind !== "airplay") return SOUND_KIND[src.kind] || src.kind;
+  if (src.device) return `AirPlay door for ${src.device} to cast into; can't play back on ${src.device}`;
+  return `Cast anything here (Apple TV, phone…) and wire it to where you listen: pick “${src.name}” in the AirPlay menu. A device wired here hears what it casts in.`;
 }
 
 const SOUND_KIND = { airplay: "AirPlay", spotify: "Spotify", radio: "radio", voice: "Endora's voice", stream: "stream" };
@@ -136,14 +135,10 @@ function viewSound() {
   const hearing = !SOUND.listening ? "Not listening · a stream, a few seconds behind the speakers"
     : wiredHere ? "Listening to its wires · a stream, a few seconds behind the speakers"
     : `Listening, but nothing is wired to this ${mine ? mine.name : "device"} yet: tap ${mine ? mine.name : "it"} under a source below`;
-  // This device playing into Endora too: a receiver, offered once if it has none.
-  const intoHere = mine && !soundHasReceiver(mine.device)
-    ? `<div class="row" style="justify-content:flex-end;margin-top:6px;"><button class="ghost" data-act="sound:receiver:${mine.id}">Let this ${esc(mine.name)} play into Endora (AirPlay)</button></div>`
-    : "";
   const here = mine
     ? `<div class="card"><div class="row" style="align-items:center;gap:10px;">
         <div class="grow"><div class="title">This ${esc(mine.name)}</div>
-          <div class="sub">${esc(hearing)}</div>${intoHere}</div>
+          <div class="sub">${esc(hearing)}</div></div>
         ${SOUND.listening
           ? `<button class="ghost" data-act="sound:stop">Stop</button>`
           : `<button class="primary" data-act="sound:listen">Listen here</button>`}
@@ -178,9 +173,7 @@ function viewSound() {
       : "";
     return `<div class="card">
       <div class="title">${esc(src.name)}</div>
-      <div class="sub">${src.kind === "airplay"
-        ? `AirPlay into Endora: on the device, pick “${esc(src.name)}” in its AirPlay menu`
-        : esc(SOUND_KIND[src.kind] || src.kind)}</div>
+      <div class="sub">${esc(soundSourceSaid(src))}</div>
       <div class="model-picker" style="margin-top:8px;">${chips || `<span class="sub">No speakers yet.</span>`}</div>
       ${wires}${all}</div>`;
   }).join("");
@@ -198,7 +191,8 @@ function viewSound() {
     ].filter(Boolean).join(" · ");
     return `<div class="card"><div class="title">${esc(sp.name)}</div><div class="sub">${esc(said)}</div>
       <div class="row" style="gap:8px;align-items:center;margin-top:6px;"><span class="sub" style="min-width:84px;">Volume</span>
-        ${range(`sound:volume:${sp.id}`, sp.volume, `${sp.name} volume`)}<span class="sub level-n">${sp.volume}</span></div></div>`;
+        ${range(`sound:volume:${sp.id}`, sp.volume, `${sp.name} volume`)}<span class="sub level-n">${sp.volume}</span></div>
+      <div class="row" style="justify-content:flex-end;margin-top:6px;"><button class="ghost" data-act="sound:removespeaker:${sp.id}">Delete</button></div></div>`;
   }).join("");
 
   // Setups: sets of wires, by name.
@@ -242,9 +236,6 @@ function viewSound() {
     <details class="card" style="margin-top:12px;"><summary class="title">Add or remove</summary>
       ${sources ? radioForm : ""}
       ${foundRows ? `<div class="sub" style="margin-top:8px;">Found on the network</div>${foundRows}` : ""}
-      <div class="sub" style="margin-top:8px;">A device that plays into Endora over AirPlay (blank: a guest one called Endora Mixer)</div>
-      <div class="form"><input id="sound-receiver-name" placeholder="e.g. iPad" maxlength="25" autocomplete="off" />
-        <button class="ghost" data-act="sound:addreceiver">Add</button></div>
       <div class="sub" style="margin-top:8px;">An AirPlay speaker, by the name it shows</div>
       <div class="form"><input id="sound-airplay-name" placeholder="e.g. Kitchen" maxlength="40" autocomplete="off" />
         <button class="ghost" data-act="sound:addairplay">Add</button></div>
@@ -278,20 +269,7 @@ async function soundDispatch(verb, noun, id, arg) {
       const name = val("sound-mine") || soundGuessName();
       const made = await api("POST", "/v1/sound/speakers", { name, kind: "stream", device: name.toLowerCase() });
       try { localStorage.setItem("endora.soundSpeaker", String(made.id)); } catch (_) {}
-      // And its way in: an AirPlay receiver of its own, unless it has one.
-      if (!soundHasReceiver(name.toLowerCase())) {
-        try { await api("POST", "/v1/sound/sources", { name: soundReceiverName(name), kind: "airplay", device: name.toLowerCase() }); } catch (_) {}
-      }
-      flash("This device is a speaker now, and can play into Endora over AirPlay.", "ok");
-    } else if (noun === "receiver") {
-      const sp = ((s.speakers) || []).find((x) => x.id === Number(id));
-      if (!sp || !sp.device) return true;
-      await api("POST", "/v1/sound/sources", { name: soundReceiverName(sp.name), kind: "airplay", device: sp.device });
-      flash(`Pick “${soundReceiverName(sp.name)}” in its AirPlay menu: it shows in a few seconds.`, "ok");
-    } else if (noun === "addreceiver") {
-      const name = val("sound-receiver-name");
-      if (name) await api("POST", "/v1/sound/sources", { name: soundReceiverName(name), kind: "airplay", device: name.toLowerCase() });
-      else await api("POST", "/v1/sound/sources", { name: "Endora Mixer", kind: "airplay" });
+      flash("This device is a speaker now. Cast into “Endora Mixer” from any device to play through it.", "ok");
     } else if (noun === "wire") {
       const [source, speaker] = String(id).split("-").map(Number);
       if (soundWire(source, speaker)) await api("DELETE", `/v1/sound/wires/${source}/${speaker}`);

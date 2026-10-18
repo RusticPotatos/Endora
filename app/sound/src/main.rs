@@ -76,6 +76,23 @@ fn spotify_source(hub: &Hub<FileStore>) -> Result<bool, endora_sound::applicatio
     })
 }
 
+/// Settles the AirPlay doors at start: the one general door made if it is missing, and any
+/// old per-device door merged into it. Says how many device doors it merged and whether it
+/// made the general one.
+fn settle_doors(
+    hub: &Hub<FileStore>,
+) -> Result<(usize, bool), endora_sound::application::hub::HubError> {
+    hub.change(|bay| {
+        let had = bay
+            .sources()
+            .iter()
+            .any(|s| s.kind == endora_sound::domain::SourceKind::AirPlay && s.device.is_none());
+        let merged = bay.merge_device_doors()?;
+        bay.ensure_general_door()?;
+        Ok((merged, !had))
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = match the_token(
@@ -110,6 +127,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(false) => {}
             Err(e) => eprintln!("sound: cannot make the Spotify source: {e}"),
         }
+    }
+    match settle_doors(&hub) {
+        Ok((removed, made)) => {
+            if removed > 0 {
+                println!("sound: merged {removed} per-device AirPlay doors into the general one");
+            }
+            if made {
+                println!("sound: the general AirPlay door is a source now");
+            }
+        }
+        Err(e) => eprintln!("sound: cannot settle the AirPlay doors: {e}"),
     }
     let listeners = Arc::new(listen::Listeners::new(ffmpeg.clone().into()));
     // The AirPlay senders, when there are any: SOUND_SENDERS lists their OwnTone APIs, in
@@ -213,6 +241,37 @@ mod tests {
         assert_eq!(the_token(Some(given.clone()), Some(file)).unwrap(), given);
         assert!(the_token(Some("short".to_owned()), None).is_err());
         assert!(the_token(None, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn starting_makes_the_general_door_once_and_merges_old_device_doors() {
+        use endora_sound::domain::{Level, SourceKind, SpeakerKind};
+        let dir = std::env::temp_dir().join(format!("endora-sound-doors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = super::Hub::open(super::FileStore::new(dir.join("sound.json"))).unwrap();
+        hub.change(|bay| {
+            let station = SourceKind::Radio("https://radio.example.com/test".to_owned());
+            let station = bay.add_source("Test station", station, None)?;
+            let door = bay.add_source("Endora Mixer (Pad)", SourceKind::AirPlay, Some("pad"))?;
+            let pad = bay.add_speaker("Pad", SpeakerKind::Stream, Some("pad"))?;
+            let kitchen = bay.add_speaker("Kitchen", SpeakerKind::AirPlay, None)?;
+            bay.wire(station, pad, Level::new(50).unwrap())?;
+            bay.wire(door, kitchen, Level::new(65).unwrap())?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(super::settle_doors(&hub), Ok((1, true)));
+        assert_eq!(super::settle_doors(&hub), Ok((0, false)), "done twice");
+        hub.read(|bay| {
+            let mut names: Vec<_> = bay.sources().iter().map(|s| s.name.clone()).collect();
+            names.sort();
+            assert_eq!(names, vec!["Endora Mixer", "Test station"]);
+            let levels: Vec<u8> = bay.wires().iter().map(|w| w.level.get()).collect();
+            assert_eq!(levels.len(), 2);
+            assert!(levels.contains(&50) && levels.contains(&65));
+        });
         let _ = std::fs::remove_dir_all(&dir);
     }
 

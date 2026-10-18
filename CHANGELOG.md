@@ -9,6 +9,11 @@ tagged release.
 
 ### Added
 
+- **One general AirPlay door, "Endora Mixer"** ([ADR 0104](docs/adr/0104-endora-sound.md)).
+  The sound hub makes it once at start; any device (an Apple TV, a phone) casts into it and
+  it can be wired to any speaker, phones included. Its card says so, and that a device wired
+  to it hears what it casts in. Speaker cards gained a **Delete** button.
+
 - **OpenBao, unlocked with a passkey** ([ADR 0127](docs/adr/0127-openbao-and-the-passkey-unlock.md)).
   The house's secrets manager runs beside the node from the `endora.homelab` collection's new
   **`openbao` role** (pinned by digest, raft storage and a file audit log in its own folder,
@@ -677,6 +682,12 @@ tagged release.
   starts; a table nothing reads is data nothing can export or delete.
 
 ### Fixed
+
+- **Sound: a phone no longer hears silence from its own door.** Apple TV casting to "Endora
+  Mixer (iPhone)" while listening on the iPhone played nothing, because a device's own door
+  never feeds that device. Per-device doors are gone: the hub merges existing ones into the
+  general "Endora Mixer" at start, keeping their wires and levels, and the console stops
+  making them.
 
 - **Every submitted commit carries its trailer.** `repo_submit` refused every branch with
   "lacks its trailer" because the commit hook that adds `Made-by: Endora HQ (...)` never ran:

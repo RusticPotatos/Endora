@@ -908,6 +908,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_a_speaker_takes_its_wires_and_nothing_else() {
+        let (state, _) = state();
+        let app = app(state);
+        let (_, station) = send(
+            &app,
+            "POST",
+            "/v1/sources",
+            &format!(
+                r#"{{"name":"Test station","kind":"radio","address":"{}"}}"#,
+                a_station()
+            ),
+        )
+        .await;
+        let (_, pad) = send(
+            &app,
+            "POST",
+            "/v1/speakers",
+            r#"{"name":"Pad","kind":"stream","device":"pad"}"#,
+        )
+        .await;
+        let (_, kitchen) = send(
+            &app,
+            "POST",
+            "/v1/speakers",
+            r#"{"name":"Kitchen","kind":"airplay"}"#,
+        )
+        .await;
+        for speaker in [&pad, &kitchen] {
+            let wire = format!(
+                r#"{{"source":{},"speaker":{},"level":60}}"#,
+                station["id"], speaker["id"]
+            );
+            send(&app, "PUT", "/v1/wires", &wire).await;
+        }
+        let uri = format!("/v1/speakers/{}", pad["id"]);
+        assert_eq!(
+            send(&app, "DELETE", &uri, "").await.0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            send(&app, "DELETE", &uri, "").await.0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, s) = send(&app, "GET", "/v1/state", "").await;
+        assert_eq!(s["sources"].as_array().unwrap().len(), 1);
+        assert_eq!(s["wires"].as_array().unwrap().len(), 1);
+        assert_eq!(s["wires"][0]["speaker"], kitchen["id"]);
+    }
+
+    #[tokio::test]
     async fn with_no_senders_there_is_nothing_found_and_it_says_why() {
         let (state, _) = state();
         let (status, said) = send(&app(state), "GET", "/v1/found", "").await;

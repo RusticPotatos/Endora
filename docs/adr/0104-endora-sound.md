@@ -67,6 +67,17 @@ Endora gets a sound hub, **endora-sound**: the owner's own program, not a fork.
   took it. The hub alone takes a speaker back, when the owner says.
 - **Every pipe is read with backpressure:** librespot decodes faster than real time and relies
   on its output to hold it back.
+- **One general AirPlay door (2026-10-18, by the owner).** A device's own door ("Endora Mixer
+  (iPhone)") could not play back on that device (the loop guard), so Apple TV casting to the
+  iPhone's door and the owner listening on the iPhone gave silence, and nothing said why. The
+  hub now has one door, "Endora Mixer", of no device, made once at start (idempotent). Any
+  device casts into it and it can be wired to any speaker, phones included. The console no
+  longer makes per-device doors; at start the hub merges existing ones into the general door:
+  each wire moves to the general door's same speaker (the higher level where two meet, also
+  in saved setups) and the device doors go. The loop guard stays for a device's own source;
+  the general door has no device, so a device wired to it hears what it casts in, which the
+  card says. Removing a speaker removes its wires and nothing else. The receivers list
+  changes, so the senders' container restarts its receivers (and senders) once.
 
 ## Consequences
 
