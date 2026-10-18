@@ -117,7 +117,7 @@ impl RemoteRunner {
         let why = why
             .map(str::trim)
             .filter(|w| !w.is_empty())
-            .map(|w| w.chars().take(LONGEST_REASON).collect());
+            .map(|w| crate::domain::cut::cut(w, LONGEST_REASON));
         state.ended.push_back((run, succeeded, why));
         if state.ended.len() > KEPT {
             state.ended.pop_front();
@@ -284,6 +284,10 @@ mod tests {
             runner.why_ended(RunId(4)).map(|w| w.chars().count()),
             Some(LONGEST_REASON),
             "a runner that says too much is cut"
+        );
+        assert!(
+            runner.why_ended(RunId(4)).unwrap().ends_with("…[cut]"),
+            "and the cut is shown"
         );
         assert_eq!(runner.why_ended(RunId(9)), None, "never had");
     }

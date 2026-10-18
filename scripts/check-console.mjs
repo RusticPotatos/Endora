@@ -733,6 +733,71 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  // "Try again" posts exactly the decision HQ takes for stuck work, and when HQ refuses it the
+  // card says why and keeps saying it: a press that seems to do nothing is the worst answer.
+  {
+    const sent = [];
+    const realFetch = context.fetch;
+    const snapshot = JSON.parse(runInContext("JSON.stringify(HQ.snap)", context));
+    context.fetch = (path, opts = {}) => {
+      sent.push([String(path), opts.method, opts.body]);
+      const refused = String(path).includes("/v1/hq/desk/");
+      return Promise.resolve({ ok: !refused, status: refused ? 400 : 200,
+        json: async () => (refused ? { error: "it was not tried again: the kill switch is on" } : snapshot) });
+    };
+    // The art is not loaded here (no images in Node): the reload after a decision skips it.
+    runInContext("HQ_ART_READY = Promise.resolve();", context);
+    await runInContext('dispatch("hq:decide:12:retry")', context);
+    context.fetch = realFetch;
+    const posted = sent.find(([path]) => path === "/v1/hq/desk/12");
+    if (!posted || posted[1] !== "POST" || JSON.parse(posted[2]).decision !== "retry") fail(`hq: "Try again" does not post the retry decision: ${JSON.stringify(sent)}`);
+    const refusedCard = runInContext("viewHQ()", context);
+    if (!refusedCard.includes("Couldn&#39;t decide: it was not tried again: the kill switch is on") && !refusedCard.includes("Couldn't decide: it was not tried again: the kill switch is on")) fail("hq: a refused desk decision is not said on its card");
+    runInContext("HQ.deskNote = {}; clearInterval(HQ.polling); HQ.polling = null; HQ_ART_READY = null;", context);
+  }
+  // The activity log: a post is told whole (long ones folded behind "more", opened in place),
+  // thirty lines show, and "Show older" first reveals what is kept, then asks HQ for earlier events.
+  {
+    runInContext(`HQ.log = []; HQ.logShown = 30; HQ.logOpen = {}; HQ.oldest = 0; HQ.logDone = false;
+      HQ.snap.tasks[0].thread.push({ author: "Bo", text: "start " + "word ".repeat(80) + "THE-END", at: 9 });`, context);
+    runInContext(`hqTell({ id: 70, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "start word word…", cut: true, post: HQ.snap.tasks[0].thread.length - 1 } }, false);`, context);
+    // Only the activity card: the selected task's card shows its own thread too.
+    const logOf = () => runInContext("viewHQ()", context).split('class="hq-log"')[1].split("</ul>")[0];
+    const folded = logOf();
+    if (folded.includes("THE-END")) fail("hq: a long post in the log is not folded");
+    if (!folded.includes('data-act="hq:logmore:70:toggle"') || !folded.includes("start word word word")) fail("hq: a long post in the log has no way to be opened");
+    await runInContext('dispatch("hq:logmore:70:toggle")', context);
+    const opened = logOf();
+    if (!opened.includes("Bo: start word") || !opened.includes("THE-END")) fail("hq: opening a long post does not show all of it");
+    // A post whose event the snapshot does not hold falls back to the preview, which says it was cut.
+    runInContext(`hqTell({ id: 71, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "a cut preview…", cut: true } }, false);`, context);
+    if (!runInContext("viewHQ()", context).includes("Bo: a cut preview…")) fail("hq: a post with no place in the thread loses its preview");
+    runInContext("HQ.snap.tasks[0].thread.pop();", context);
+
+    runInContext(`HQ.log = []; HQ.oldest = 0; HQ.logOpen = {};
+      for (let i = 100; i > 60; i--) hqTell({ id: i, at: 0, kind: "resumed", data: {} }, false);`, context);
+    const page = runInContext("viewHQ()", context);
+    const lines = (page.match(/<li><time>/g) || []).length;
+    if (lines !== 30) fail(`hq: the log shows ${lines} lines, not thirty`);
+    if (!page.includes('data-act="hq:logolder:0:more"') || !page.includes("Show older")) fail("hq: the log cannot show older lines");
+    // The kept ones first, with no request.
+    const asked = [];
+    const realFetch = context.fetch;
+    context.fetch = (path, opts = {}) => {
+      asked.push(String(path));
+      const events = [60, 59].map((id) => ({ id, at: 0, kind: "resumed", data: {} }));
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ events }) });
+    };
+    await runInContext('dispatch("hq:logolder:0:more")', context);
+    if (asked.length) fail(`hq: "Show older" asked HQ while it still had kept lines: ${asked}`);
+    if ((runInContext("viewHQ()", context).match(/<li><time>/g) || []).length !== 40) fail("hq: \"Show older\" did not reveal the kept lines");
+    // Then HQ: events before the oldest this screen has, added after the rest.
+    await runInContext('dispatch("hq:logolder:0:more")', context);
+    context.fetch = realFetch;
+    if (asked.length !== 1 || asked[0] !== "/v1/hq/events?before=61&limit=50") fail(`hq: "Show older" asked for ${asked}`);
+    if (runInContext("HQ.log.length", context) !== 42 || runInContext("HQ.oldest", context) !== 59) fail("hq: older events were not added after the newer ones");
+    runInContext("HQ.log = []; HQ.logShown = 30; HQ.oldest = 0; HQ.logDone = false;", context);
+  }
   // The bridge's approval (ADR 0108): the tool, its arguments in plain words, the why, and
   // Approve / Decline; none of what the member wrote becomes markup.
   for (const act of ["hq:decide:17:approve", "hq:decide:17:decline"]) {
@@ -1997,6 +2062,30 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
 // measure this is a narrow viewport in a real browser, which is a slower tier than this one
 // is allowed to be. Until that exists, this is caught by a person with a phone, and it is
 // better to say so here than to pretend otherwise.
+
+// The Activity screen opens with thirty rows and pages on by the count already shown, so a long
+// history is not cut off at the thirtieth.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const row = (n) => `{ at_ms: ${n}, kind: "action", summary: "did thing ${n}" }`;
+  // Let anything an earlier check left in flight finish before the requests are counted.
+  await new Promise((done) => setTimeout(done, 100));
+  runInContext(`NAV = { v: "audit" }; ACTIVITY = [${Array.from({ length: 30 }, (_, i) => row(100 - i)).join(",")}]; ACTIVITY_MORE = true; ACTIVITY_BUSY = false;`, context);
+  if (!runInContext("activityFeed()", context).includes('data-act="activity:more"')) fail("activity: a full page offers no way to see older rows");
+  const asked = [];
+  const realFetch = context.fetch;
+  context.fetch = (path) => {
+    asked.push(String(path));
+    return Promise.resolve({ ok: true, status: 200, json: async () => [{ at_ms: 5, kind: "decision", summary: "an old one" }] });
+  };
+  await runInContext('dispatch("activity:more")', context);
+  context.fetch = realFetch;
+  if (asked.length !== 1 || asked[0] !== "/v1/activity?limit=30&offset=30") fail(`activity: "Load more" asked for ${asked}`);
+  const after = runInContext("activityFeed()", context);
+  if (!after.includes("an old one") || after.includes('data-act="activity:more"') || !after.includes("That is everything")) fail("activity: a short page did not end the list");
+  runInContext('ACTIVITY = []; ACTIVITY_MORE = false; NAV = { v: "chat" };', context);
+  console.log("activity: pages on by what is shown, and says when it has everything");
+}
 
 // Every button leads somewhere, and every request has somewhere to land.
 //

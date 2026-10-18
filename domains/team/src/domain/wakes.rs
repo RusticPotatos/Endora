@@ -200,6 +200,22 @@ impl Refused {
         }
     }
 
+    /// The reason in plain words, for the owner.
+    #[must_use]
+    pub const fn plainly(self) -> &'static str {
+        match self {
+            Self::KillSwitch => "the kill switch is on; resume first",
+            Self::Paused => "the member is paused",
+            Self::OutOfBudget => "the budget for today is spent",
+            Self::Duplicate => "a wake for it is already waiting",
+            Self::NothingToDo => "there is nothing for it to do",
+            Self::InReview => "the work waits for its reviewer",
+            Self::NotForTheCeo => "the CEO is woken only for escalations",
+            Self::ProjectPaused => "its project is paused",
+            Self::Furloughed => "the member is on furlough",
+        }
+    }
+
     /// The reason with this [`name`](Self::name), if there is one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {

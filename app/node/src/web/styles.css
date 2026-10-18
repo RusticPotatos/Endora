@@ -418,10 +418,15 @@
   .hq-gauge.spent i { background: var(--hq-red); }
   .hq-need p { margin: 0 0 6px; }
   .hq-who { color: var(--hq-muted); font-size: 12px; }
+  .hq-who.hq-refused { color: var(--hq-red); font-size: 13px; }
   .hq-empty { color: var(--hq-muted); font-size: 12.5px; margin: 0; }
   .hq-log { max-height: 300px; overflow-y: auto; font-size: 12px; display: grid; gap: 3px; }
   .hq-log li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
   .hq-log time { color: var(--hq-muted); font-variant-numeric: tabular-nums; }
+  .hq-log span { overflow-wrap: anywhere; }
+  .hq-more { background: none; border: 0; box-shadow: none; padding: 0 2px; color: var(--hq-blue); font: inherit; text-decoration: underline; cursor: pointer; }
+  /* On a phone the log is part of the page, not a small window to scroll inside the page. */
+  @media (max-width: 560px) { .hq-log { max-height: none; overflow-y: visible; } }
   .hq-log .k-wake { color: var(--hq-blue); }
   .hq-log .k-done { color: var(--hq-green); }
   .hq-log .k-warn { color: var(--hq-amber); }
@@ -490,7 +495,8 @@
     background: none; border: 0; box-shadow: none; padding: 4px 2px; cursor: pointer;
     font-size: 13px; color: var(--muted);
   }
-  .now-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  /* Two lines on a narrow screen rather than one ellipsised: "Watching N things · checked X". */
+  .now-text { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; min-width: 0; }
   .now-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none;
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
   .now-pill {

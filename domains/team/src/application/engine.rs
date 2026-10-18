@@ -14,6 +14,7 @@ use super::ports::{
 };
 use super::scorecard;
 use crate::domain::chain::{self, Decision};
+use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
 use crate::domain::lessons;
 use crate::domain::money::{self, Micros};
@@ -53,6 +54,8 @@ pub const STRANDED_AFTER_MS: Millis = 10 * 60 * 1000;
 
 /// The most characters a goal's notes from the owner may run to.
 pub const GOAL_NOTE_MOST: usize = 2_000;
+/// The most events one read of the past returns.
+pub const MOST_EVENTS_BEFORE: usize = 200;
 
 /// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
 pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
@@ -1455,13 +1458,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<()> {
         self.task(task)?;
         let author = self.author_name(by)?;
+        let at = self.clock.now();
         self.store
-            .post_marked(task, &author, text, self.clock.now(), cited, unsupported)?;
-        let preview: String = text.chars().take(80).collect();
+            .post_marked(task, &author, text, at, cited, unsupported)?;
+        // A short line for a bubble. The feed shows the whole post: `post` is its place in the
+        // task's thread (posts are only ever added), and `cut` says the preview is not all of it.
+        let place = self.store.thread(task)?.len().saturating_sub(1);
+        let mut preview: String = text.chars().take(80).collect();
+        let cut = text.chars().count() > 80;
+        if cut {
+            preview.push('…');
+        }
         self.emit(
             EventKind::ThreadPosted,
-            json!({ "task": task.0, "author": author, "preview": preview,
-                    "unsupported": unsupported }),
+            json!({ "task": task.0, "author": author, "preview": preview, "cut": cut,
+                    "post": place, "unsupported": unsupported }),
         )?;
         if let Author::Member(member) = by {
             self.mark_turn(member, task, &|run| run.posted = true)?;
@@ -2985,7 +2996,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<Asked> {
         let _held = self.held();
         // Room for the question and the worker's line saying what the turn actually did.
-        let text: String = text.trim().chars().take(1200).collect();
+        let text = cut(text.trim(), 1200);
         let lab = self.lab_names();
         let turn = self.running(run)?;
         let task = self.task(
@@ -3324,7 +3335,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// As [`Self::ask_owner`].
     pub fn ask_approval(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
         let _held = self.held();
-        let text: String = text.trim().chars().take(1200).collect();
+        let text = cut(text.trim(), 1200);
         self.ask_held_lock(run, "approval", &|_| text.clone())
     }
 
@@ -3419,7 +3430,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let _asked = self.for_owner();
         let found = self.waiting_on_desk(item)?;
-        let words: String = words.trim().chars().take(4000).collect();
+        let words = cut(words.trim(), 4000);
         if found.kind == "decision" {
             return self.board_decides(&found, decision, &words);
         }
@@ -3500,12 +3511,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("stuck", "retry") => {
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
                 let to = task.owner.or(task.assignee);
+                // Tried again means someone is woken. If nobody can be, say so and change
+                // nothing: the item stays on the desk, rather than the button doing nothing
+                // with no word about it.
+                let member = to.ok_or(EngineError::Refused(Refusal::NobodyHasIt))?;
+                let who = self.member(member)?;
+                let asked = self.situation(&who, Some(task.id), WakeReason::ProposalDecided)?;
+                if let WakeDecision::Refuse(why) = wakes::decide(member, &asked) {
+                    return Err(EngineError::Refused(Refusal::NotWoken(why)));
+                }
                 self.store.release(task.id)?;
                 self.store.set_task_status(task.id, TaskStatus::Todo)?;
                 self.store.set_nudged(task.id, false)?;
-                if let Some(member) = to {
-                    self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
-                }
+                self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
             }
             ("stuck", "drop") => {
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
@@ -3716,7 +3734,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             _ => return Err(EngineError::Unknown("approved approval")),
         }
         self.store.set_desk_status(item, "ran")?;
-        let text: String = text.trim().chars().take(4000).collect();
+        let text = cut(text.trim(), 4000);
         if let Some(task) = found.task {
             self.post_held_lock(Author::Endora, task, &text)?;
             if let Some(member) = found.member {
@@ -3738,7 +3756,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Some(id) => self.store.run(id)?,
             None => None,
         };
-        let text: String = text.trim().chars().take(600).collect();
+        let text = cut(text.trim(), 600);
         let task = run.as_ref().and_then(|r| r.task);
         let desk = self.store.add_desk(
             "notice",
@@ -4346,6 +4364,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Store`] if the store fails.
     pub fn events_after(&self, id: i64) -> Done<Vec<crate::domain::Event>> {
         Ok(self.store.events_after(id)?)
+    }
+
+    /// The `limit` events just before an id (at most [`MOST_EVENTS_BEFORE`]), oldest first:
+    /// how the activity log goes further back than what it was opened with.
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if the store fails.
+    pub fn events_before(&self, id: i64, limit: usize) -> Done<Vec<crate::domain::Event>> {
+        Ok(self
+            .store
+            .events_before(id, limit.min(MOST_EVENTS_BEFORE))?)
     }
 
     /// Every wake, with its receipt.

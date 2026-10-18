@@ -1635,6 +1635,29 @@ impl TeamStore for SqliteTeamStore {
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
 
+    fn events_before(&self, id: i64, limit: usize) -> Stored<Vec<Event>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, at_ms, kind, data FROM events WHERE id < ?1 ORDER BY id DESC LIMIT ?2",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![id, i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
+                let data: String = r.get(3)?;
+                Ok(Event {
+                    id: r.get(0)?,
+                    at: r.get(1)?,
+                    kind: r.get(2)?,
+                    data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .map_err(backend)?;
+        let mut events: Vec<Event> = rows.collect::<rusqlite::Result<_>>().map_err(backend)?;
+        events.reverse();
+        Ok(events)
+    }
+
     fn add_desk(
         &self,
         kind: &str,

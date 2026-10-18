@@ -238,15 +238,26 @@ async fn snapshot(Extract(state): Extract<State>) -> Result<Json<serde_json::Val
 struct After {
     #[serde(default)]
     after: i64,
+    /// With `before`, the past instead: the events just below this id.
+    #[serde(default)]
+    before: Option<i64>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 /// The events after an id, at most 500 at a time: the stream, resumed from the last id seen.
+/// With `before` (and a `limit`, 50 by default), the events just below that id instead, oldest
+/// first: the activity log asking for what it did not open with.
 async fn events(
     Extract(state): Extract<State>,
     Query(q): Query<After>,
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
-    let events = blocking(move || hq.events_after(q.after)).await?;
+    let events = blocking(move || match q.before {
+        Some(before) => hq.events_before(before, q.limit.unwrap_or(50)),
+        None => hq.events_after(q.after),
+    })
+    .await?;
     let rows: Vec<serde_json::Value> = events
         .iter()
         .take(500)
@@ -1008,6 +1019,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK, "health needs no token");
+    }
+
+    #[tokio::test]
+    async fn the_events_before_an_id_are_the_past_the_log_scrolls_back_into() {
+        let app = app(state(true));
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let last = snap["last_event"].as_i64().unwrap();
+        assert!(last > 3, "the demo has a past");
+        let page = json_of(
+            app.clone()
+                .oneshot(call(
+                    "GET",
+                    &format!("/v1/events?before={last}&limit=2"),
+                    Some(TOKEN),
+                    "",
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let ids: Vec<i64> = page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [last - 2, last - 1],
+            "the two just before, oldest first"
+        );
+        let none = json_of(
+            app.oneshot(call("GET", "/v1/events?before=1&limit=50", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(none["events"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

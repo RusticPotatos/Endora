@@ -228,6 +228,21 @@ async function dispatch(act) {
       flash("Prices saved.", "ok");
       return reload();
     }
+    // The Activity screen opens with the newest thirty; this asks for the next page, by the
+    // number already on screen, and says so when there is nothing older.
+    if (verb === "activity" && noun === "more") {
+      if (ACTIVITY_BUSY) return;
+      ACTIVITY_BUSY = true;
+      render();
+      try {
+        const more = await api("GET", `/v1/activity?limit=${ACTIVITY_PAGE}&offset=${ACTIVITY.length}`);
+        ACTIVITY = ACTIVITY.concat(more);
+        ACTIVITY_MORE = more.length >= ACTIVITY_PAGE;
+      } finally {
+        ACTIVITY_BUSY = false;
+      }
+      return render();
+    }
     if (verb === "ctx" && noun === "reset") {
       await api("POST", "/v1/chat/context/reset");
       CTX_OPEN = false;

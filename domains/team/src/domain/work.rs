@@ -564,6 +564,11 @@ pub enum Refusal {
         /// The most it can be, in cents.
         most_cents: i64,
     },
+    /// Stuck work was to be tried again, but nobody can be woken for it now: nothing was
+    /// changed, and the item still waits.
+    NotWoken(super::wakes::Refused),
+    /// Stuck work was to be tried again, but no member has it to wake.
+    NobodyHasIt,
 }
 
 impl fmt::Display for Refusal {
@@ -722,6 +727,15 @@ impl fmt::Display for Refusal {
             Self::InDowntime => f.write_str(
                 "this is a downtime turn: it makes no work. React to a proposal, propose a small \
                  change to the office, or note an idea in your notebook",
+            ),
+            Self::NotWoken(why) => write!(
+                f,
+                "it was not tried again, and still waits here: nobody can be woken for it now \
+                 ({})",
+                why.plainly()
+            ),
+            Self::NobodyHasIt => f.write_str(
+                "it was not tried again, and still waits here: no member has this task to wake",
             ),
             Self::DowntimeOverPool { most_cents } => write!(
                 f,
