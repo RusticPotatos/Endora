@@ -20,6 +20,10 @@ the base principles every project shares. What follows is Endora's own.
   existing files, branches, and history.
 - Branch from `develop` (see the branching model in the README). Do not force-push
   or rewrite published history.
+- **Put new things where [docs/where-things-go.md](docs/where-things-go.md) says.**
+  Before adding a screen, card, setting, menu entry, file or crate, find its place on
+  that map. If nothing fits, add the place to the map in the same change; never
+  invent a spot.
 
 ## Architecture rules
 

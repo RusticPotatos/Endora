@@ -24,7 +24,6 @@ function render() {
     : v === "permissions" ? viewPermissions()
     : v === "toolserver" ? viewToolServer()
     : v === "data" ? viewData()
-    : v === "macbrain" ? viewMacbrain()
     : v === "spotify" ? viewSpotify()
     : v === "lab" ? viewLab()
     : v === "hq" ? viewHQ()

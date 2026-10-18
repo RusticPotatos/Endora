@@ -15,7 +15,7 @@
 // they were two, side by side, and nothing said which was which.
 const UNDER_SETTINGS = [
   { view: "display", icon: "speakerOn", label: "Notifications & voice", short: "Notifications", note: "your daily brief, check-ins, reading aloud and vibration" },
-  { view: "models", icon: "sparkle", label: "AI", note: "every model Endora uses, where it runs, and what it sees" },
+  { view: "models", icon: "sparkle", label: "AI", note: "every model Endora and its team use, where it runs (the NAS, your Mac, a cloud), and what it sees" },
   { view: "connections", icon: "gear", label: "Connections", note: "Home Assistant, your home lab's services, and tool servers" },
   { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do in chat, and skills you teach it" },
   { view: "permissions", icon: "scale", label: "Permissions", note: "how far Endora may act on its own" },
@@ -23,7 +23,6 @@ const UNDER_SETTINGS = [
   { view: "understanding", icon: "person", label: "About you", note: "what you've told it, and the pages of what it knows" },
   { view: "signin", icon: "lock", label: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
   { view: "vault", icon: "lock", label: "Vault", note: "the house's secrets, and the passkeys that unlock them" },
-  { view: "macbrain", icon: "gear", label: "The Mac's brain", short: "The Mac", note: "let the team think on your Mac when it is plugged in and idle: its address, key and helper token" },
   { view: "data", icon: "export", label: "Your data", note: "take a copy of what Endora knows, or delete it" },
 ];
 

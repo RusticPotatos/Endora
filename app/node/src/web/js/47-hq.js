@@ -1914,7 +1914,7 @@ function hqMacCard(s) {
     <p class="hq-note">${esc(facts)}heard ${esc(heard)}. A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes) || 10} min; one at a time.</p>
     <div class="hq-row"><button class="hq-btn ${m.busy ? "stop" : "ok"}" aria-pressed="${m.busy ? "true" : "false"}"
       data-act="hq:mac:busy:${m.busy ? "off" : "on"}">Mac busy: ${m.busy ? "on" : "off"}</button>
-      <button class="hq-link" data-act="go:macbrain">Set up in Settings</button></div></section>`;
+      <button class="hq-link" data-act="go:models">Set up in AI</button></div></section>`;
 }
 
 // The Mac's setup, on the Settings screen: the helper's token, the model's address, key and
