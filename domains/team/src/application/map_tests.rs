@@ -1045,3 +1045,79 @@ fn a_roles_page_is_decided_by_the_owner_and_canon_is_not_a_stewards_to_replace()
         "not now"
     );
 }
+
+#[test]
+fn the_world_card_shows_every_page_its_steward_and_what_waits_for_someone() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let page = area(t.ada);
+    let (ada, ada_task) = working(&hq, t.goal, t.ada, "Look at backups");
+    let cites = json!({ "page": page, "heading": "Restores", "headline": "Restores: see world:area/9999",
+                        "stage": "observation", "evidence": [format!("task {}", ada_task.0)] });
+    use_tool(&hq, &ada, "write_world", &cites).unwrap();
+    let (linus, task) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose(&page, "Backups", task),
+    )
+    .unwrap();
+    use_tool(
+        &hq,
+        &linus,
+        "report_gap",
+        &json!({ "what": "the desk notice", "where_looked": "world:lab" }),
+    )
+    .unwrap();
+    let shown = hq.world_shown().unwrap();
+    let map = &shown["map"];
+    let find = |slug: &str| {
+        map["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["slug"] == slug)
+            .unwrap_or_else(|| panic!("no page {slug} in {map}"))
+            .clone()
+    };
+    let ada_page = find(&page);
+    assert_eq!(
+        (
+            ada_page["title"].as_str(),
+            ada_page["steward"].as_str(),
+            ada_page["steward_kind"].as_str(),
+            ada_page["sections"].as_u64(),
+            ada_page["proposals"].as_u64()
+        ),
+        (
+            Some("Ada's area"),
+            Some("Ada"),
+            Some("lead"),
+            Some(1),
+            Some(1)
+        )
+    );
+    assert_eq!(find("role/developer")["steward_kind"], "owner");
+    assert_eq!(find("lab")["steward_kind"], "hq");
+    assert_eq!(find("house")["steward"], "Mara, the CEO");
+    assert!(map["pages"].as_array().unwrap().len() >= 10, "{map}");
+    assert_eq!(map["proposals"][0]["by"], "Linus");
+    assert_eq!(map["proposals"][0]["status"], "open");
+    assert_eq!(map["gaps"][0]["to"], "Ada");
+    assert_eq!(map["gaps"][0]["open"], true);
+    assert_eq!(map["roads"][0]["to"], "world:area/9999");
+    assert!(map["quiz"]["pages"].is_array());
+    // The Markdown export carries each page under its own heading, with its steward.
+    let md = hq.world_markdown().unwrap();
+    let heading = format!("## Ada's area (world:{page})\n\nKept by Ada.");
+    assert!(md.contains(&heading), "{md}");
+    assert!(md.contains("Restores"), "{md}");
+    assert_eq!(
+        md.matches("### Timeline (newest first)").count(),
+        2,
+        "the house's and Ada's, not every page's: {md}"
+    );
+}

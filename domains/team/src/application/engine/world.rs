@@ -1519,22 +1519,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "sections": sections,
             "stories": stories,
             "migrated": self.world_migrated()?,
+            "map": self.map_shown()?,
         }))
     }
 
-    /// The world as one Markdown document, for the owner to download and keep.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn world_markdown(&self) -> Done<String> {
+    /// A written page's sections and its timeline, newest first, as Markdown.
+    fn written_page_markdown(&self, slug: &str) -> Done<String> {
         let off = self.settings.offset_minutes;
-        let now = self.clock.now();
-        let mut md = format!(
-            "# The team's world\n\nExported from Endora HQ on {}.\n\n## {} (world:house)\n\n",
-            day_with_year(now, off),
-            HOUSE.title
-        );
-        let sections = self.store.sections()?;
+        let mut md = String::new();
+        let sections: Vec<Section> = self
+            .store
+            .sections()?
+            .into_iter()
+            .filter(|s| s.page == slug)
+            .collect();
         if sections.is_empty() {
             md.push_str("No sections yet.\n\n");
         }
@@ -1565,7 +1563,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         md.push_str("### Timeline (newest first)\n\n");
-        for l in self.store.timeline(HOUSE.slug)?.into_iter().rev() {
+        for l in self.store.timeline(slug)?.into_iter().rev() {
             md.push_str(&format!(
                 "- {}, {}: {}\n",
                 day_with_year(l.at, off),
@@ -1574,6 +1572,37 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         md.push('\n');
+        Ok(md)
+    }
+
+    /// The world as one Markdown document, for the owner to download and keep.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn world_markdown(&self) -> Done<String> {
+        let off = self.settings.offset_minutes;
+        let now = self.clock.now();
+        let mut md = format!(
+            "# The team's world\n\nExported from Endora HQ on {}.\n\n## {} (world:house)\n\n",
+            day_with_year(now, off),
+            HOUSE.title
+        );
+        md.push_str(&self.written_page_markdown(HOUSE.slug)?);
+        // The pages of areas, projects, goals and roles (ADR 0126), each with its steward.
+        for slug in self.store.world_pages()? {
+            let Some(key) = PageKey::parse(&slug) else {
+                continue;
+            };
+            let kept = self.written_page_markdown(&slug)?;
+            if kept.starts_with("No sections yet.\n\n### Timeline (newest first)\n\n\n") {
+                continue;
+            }
+            md.push_str(&format!(
+                "## {} (world:{slug})\n\nKept by {}.\n\n{kept}",
+                self.page_title(key)?,
+                self.steward_called(self.steward(key)?)?
+            ));
+        }
         // A derived page: its heading, then its lines (its first line is the heading).
         md.push_str(&format!(
             "## {} (world:{})\n\n",

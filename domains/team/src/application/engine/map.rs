@@ -369,6 +369,96 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(map::compose(entries, cap))
     }
 
+    /// The map as the World card shows it: every page with its steward and what is on it, the
+    /// proposals waiting (and the last few decided), the gaps, the broken roads, and the nightly
+    /// quiz with each page's score.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn map_shown(&self) -> Done<serde_json::Value> {
+        let members = self.store.members()?;
+        let projects = self.store.projects()?;
+        let off = self.settings.offset_minutes;
+        let sections = self.store.sections()?;
+        let proposals = self.store.proposals()?;
+        let quiz = self.quiz_shown()?;
+        let mut slugs: Vec<String> = vec![
+            PageKey::House.slug(),
+            PageKey::Lab.slug(),
+            PageKey::Team.slug(),
+        ];
+        slugs.extend(self.store.world_pages()?);
+        let mut pages = Vec::new();
+        for slug in slugs {
+            let Some(key) = PageKey::parse(&slug) else {
+                continue;
+            };
+            let steward = steward_of(key, &members, &projects);
+            let scored = quiz["pages"]
+                .as_array()
+                .and_then(|all| all.iter().find(|p| p["slug"] == slug.as_str()))
+                .cloned();
+            pages.push(json!({
+                "slug": slug, "address": format!("world:{slug}"), "kind": key.kind(),
+                "title": self.page_title(key)?, "derived": key.derived(),
+                "steward": steward.said(&members),
+                "steward_kind": match steward {
+                    Steward::Ceo => "ceo", Steward::Lead(_) => "lead",
+                    Steward::Owner => "owner", Steward::Hq => "hq",
+                },
+                "horizon_days": key.horizon_days(),
+                "sections": sections.iter().filter(|s| s.page == slug && s.stage.current()).count(),
+                "proposals": proposals.iter().filter(|p| p.page == slug
+                    && p.status == map::ProposalStatus::Open).count(),
+                "quiz": scored,
+            }));
+        }
+        let mut proposed = Vec::new();
+        for p in proposals.iter().rev().take(30) {
+            let by = members
+                .iter()
+                .find(|m| m.id == p.by)
+                .map_or_else(|| "a member".to_owned(), |m| m.name.clone());
+            let page_title = PageKey::parse(&p.page)
+                .map(|k| self.page_title(k))
+                .transpose()?
+                .unwrap_or_else(|| p.page.clone());
+            proposed.push(json!({
+                "id": p.id, "page": p.page, "page_title": page_title, "anchor": p.anchor,
+                "heading": p.heading, "headline": p.headline, "body": p.body, "by": by,
+                "status": p.status.name(), "decided_by": p.decided_by, "why": p.why,
+                "at": p.at, "day": super::world::day_with_year(p.at, off),
+                "evidence": p.evidence.iter().map(|e| json!({ "ref": e.cited.said(), "said": e.said })).collect::<Vec<_>>(),
+            }));
+        }
+        let mut gaps = Vec::new();
+        for g in self.store.gaps()?.iter().rev().take(30) {
+            let by = members
+                .iter()
+                .find(|m| m.id == g.by)
+                .map_or_else(|| "a member".to_owned(), |m| m.name.clone());
+            let to = match g.steward {
+                Some(lead) => Steward::Lead(lead),
+                None => Steward::Ceo,
+            }
+            .said(&members);
+            gaps.push(json!({
+                "id": g.id, "what": g.what, "where_looked": g.where_looked, "by": by, "to": to,
+                "count": g.count, "open": g.closed_at.is_none(), "how": g.how,
+                "closed_by": g.closed_by, "day": super::world::day_with_year(g.opened_at, off),
+            }));
+        }
+        let roads: Vec<serde_json::Value> = self
+            .broken_roads()?
+            .iter()
+            .map(|r| json!({ "from": r.from, "to": r.to, "why": r.why }))
+            .collect();
+        Ok(
+            json!({ "pages": pages, "proposals": proposed, "gaps": gaps, "roads": roads,
+                   "quiz": quiz }),
+        )
+    }
+
     /// Whether `who` may write the page directly: its steward may; anyone else proposes.
     pub(super) fn may_write_page(&self, who: &Member, key: PageKey) -> Done<()> {
         let steward = self.steward(key)?;
