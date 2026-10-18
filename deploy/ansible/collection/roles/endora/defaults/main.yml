@@ -101,10 +101,44 @@ endora_sound_airplay2_missing: >-
      + (['endora_sound_airplay2_gateway'] if not endora_sound_airplay2_gateway else [])
      + (['endora_sound_airplay2_ip'] if not endora_sound_airplay2_ip else [])
      + (['endora_sound'] if not (endora_sound | bool) else []) }}
+
+# Parity with `make deploy` and the owner's local.mk (docs/where-things-go.md): every other
+# setting docker-compose.yml reads. Empty = not rendered = the compose file's own default, so
+# a run with none of them set changes nothing. Secrets are folders or files here, never values.
+# The team's runner (the `workers` profile): holds Docker's socket, so off; it needs endora_hq.
+endora_workers: false
+# The router the node asks for device names (ADR 0130). Empty: 1.1.1.1.
+endora_lan_dns: ""
+# Seconds between ticks of HQ's engine. Empty: 30.
+endora_hq_tick_seconds: ""
+# Host folders for HQ's and the sound hub's data. Empty: Docker volumes.
+endora_hq_dir: ""
+endora_sound_dir: ""
+# A fixed offset from UTC in minutes (e.g. -300), the fallback when no time zone is set.
+endora_utc_offset_minutes: ""
+# Model names for the node's router and synthesis steps. Empty: the main model.
+endora_router_model: ""
+endora_synth_model: ""
+# The lab's ansible-nas (ADR 0112), which the team's homelab_map reads: owner/repo or an address.
+endora_ansible_nas_repo: ""
+# The branch of it to read. Empty: the fork's default.
+endora_ansible_nas_ref: ""
+# Containers you retired but kept, shown on the team's map: name=note;name=note
+endora_lab_retired: ""
+# A host folder holding one file `key`, an ed25519 deploy key (mode 0600) for the engineering
+# wing's pushes (ADR 0115). Empty: the node cannot push.
+endora_git_push_key_dir: ""
+# A host folder holding one file `token` (mode 0600), the bench's credential (ADR 0123). Empty:
+# no bench.
+endora_bench_token_dir: ""
+# What the bench may spend a day, in cents. Empty: 200.
+endora_bench_cap_cents: ""
+
 # The Compose profiles the node is started with.
 endora_profiles: >-
   {{ (['homelab'] if endora_docker_observer | bool else [])
      + (['hq'] if endora_hq | bool else [])
+     + (['workers'] if endora_workers | bool else [])
      + (['sound'] if endora_sound | bool else [])
      + (['senders'] if endora_sound_senders | bool else [])
      + (['airplay2'] if endora_sound_airplay2 | bool else []) }}

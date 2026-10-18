@@ -72,6 +72,9 @@ jobs:
       - name: Nothing personal in the tree
         run: node scripts/check-nothing-personal.mjs
 
+      - name: The collection declares every compose variable
+        run: sh scripts/check-collection-parity.sh && sh scripts/check-collection-parity.sh --self-test
+
       - name: Whitespace / conflict-marker check
         run: git diff --check
 

@@ -68,6 +68,29 @@
         endora_sound_airplay2_ip: 192.168.1.10
         endora_sound_airplay2_network: lan_macvlan
 
+    # Parity with `make deploy` and the owner's local.mk: every other setting the compose file
+    # reads. Set, each is rendered exactly; unset (the bare case), none is.
+    - name: With every remaining setting
+      ansible.builtin.template:
+        src: ../templates/endora.env.j2
+        dest: "{{ out }}/all.env"
+        mode: "0600"
+      vars:
+        endora_lan_dns: 192.0.2.1
+        endora_hq: true
+        endora_hq_tick_seconds: 15
+        endora_hq_dir: /srv/endora/hq
+        endora_sound_dir: /srv/endora/sound
+        endora_utc_offset_minutes: -300
+        endora_router_model: router-model
+        endora_synth_model: synth-model
+        endora_ansible_nas_repo: example/ansible-nas
+        endora_ansible_nas_ref: main
+        endora_lab_retired: "old-box=kept for parts"
+        endora_git_push_key_dir: /srv/endora/git-key
+        endora_bench_token_dir: /srv/endora/bench
+        endora_bench_cap_cents: 500
+
     - name: Override with an address
       ansible.builtin.template:
         src: ../templates/docker-compose.override.yml.j2
@@ -90,6 +113,7 @@
         bare: "{{ lookup('file', out ~ '/bare.env').splitlines() }}"
         door: "{{ lookup('file', out ~ '/door.env').splitlines() }}"
         shared: "{{ lookup('file', out ~ '/shared.env').splitlines() }}"
+        all: "{{ lookup('file', out ~ '/all.env').splitlines() }}"
         san: "{{ lookup('file', out ~ '/san.yml') | from_yaml }}"
         nosan: "{{ lookup('file', out ~ '/nosan.yml') | from_yaml }}"
 
@@ -136,6 +160,23 @@
           - "door | select('match', 'SOUND_AIRPLAY2_NETWORK|SOUND_AIRPLAY2_SHARED') | list | length == 0"
           - "'SOUND_AIRPLAY2_NETWORK=lan_macvlan' in shared"
           - "'SOUND_AIRPLAY2_SHARED=true' in shared"
+          # Parity: nothing set renders none of these (the compose defaults apply), none of
+          # them in the other cases either; all set renders each exactly.
+          - "bare | select('match', 'ENDORA_LAN_DNS|ENDORA_HQ_TICK_SECONDS|ENDORA_HQ_DIR|ENDORA_SOUND_DIR|ENDORA_UTC_OFFSET_MINUTES|ENDORA_ROUTER_MODEL|ENDORA_SYNTH_MODEL|ENDORA_ANSIBLE_NAS_|ENDORA_LAB_RETIRED|ENDORA_GIT_PUSH_KEY|ENDORA_BENCH_') | list | length == 0"
+          - "full | select('match', 'ENDORA_LAN_DNS|ENDORA_HQ_TICK_SECONDS|ENDORA_HQ_DIR|ENDORA_SOUND_DIR|ENDORA_UTC_OFFSET_MINUTES|ENDORA_ROUTER_MODEL|ENDORA_SYNTH_MODEL|ENDORA_ANSIBLE_NAS_|ENDORA_LAB_RETIRED|ENDORA_GIT_PUSH_KEY|ENDORA_BENCH_') | list | length == 0"
+          - "'ENDORA_LAN_DNS=192.0.2.1' in all"
+          - "'ENDORA_HQ_TICK_SECONDS=15' in all"
+          - "'ENDORA_HQ_DIR=/srv/endora/hq' in all"
+          - "'ENDORA_SOUND_DIR=/srv/endora/sound' in all"
+          - "'ENDORA_UTC_OFFSET_MINUTES=-300' in all"
+          - "'ENDORA_ROUTER_MODEL=router-model' in all"
+          - "'ENDORA_SYNTH_MODEL=synth-model' in all"
+          - "'ENDORA_ANSIBLE_NAS_REPO=example/ansible-nas' in all"
+          - "'ENDORA_ANSIBLE_NAS_REF=main' in all"
+          - "'ENDORA_LAB_RETIRED=old-box=kept for parts' in all"
+          - "'ENDORA_GIT_PUSH_KEY=/srv/endora/git-key' in all"
+          - "'ENDORA_BENCH_TOKEN=/srv/endora/bench' in all"
+          - "'ENDORA_BENCH_CAP_CENTS=500' in all"
 
     - name: No profiles and everything missing, with nothing set
       ansible.builtin.assert:
@@ -156,6 +197,15 @@
         endora_sound_airplay2_subnet: 192.168.1.0/24
         endora_sound_airplay2_gateway: 192.0.2.1
         endora_sound_airplay2_ip: 192.168.1.10
+
+    - name: The team's runner is the workers profile, and needs HQ
+      ansible.builtin.assert:
+        that:
+          - "endora_profiles == ['homelab', 'hq', 'workers']"
+      vars:
+        endora_docker_observer: true
+        endora_hq: true
+        endora_workers: true
 
     - name: The door without the hub is refused
       ansible.builtin.assert:
