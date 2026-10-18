@@ -249,6 +249,10 @@ services:
       # on 8788 for the Pi (ADR 0110).
       team:
         aliases: [node]
+      # The network the node shares with the house's vault (ADR 0127): OpenBao, which the
+      # owner's ansible-nas runs with the endora.homelab collection's `openbao` role, not this
+      # file. Internal; the two are its only members.
+      vault: {}
     # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
     # ENDORA_DB=/data/endora.db. Point the butler/proposer at an Ollama running
     # on the host (host.docker.internal → the host gateway). Without a reachable
@@ -282,6 +286,12 @@ services:
       # Containers the owner has retired but kept, with a note the team's map shows beside
       # each: name=note pairs, ";" between them (e.g. owntone=retired, kept for its settings).
       ENDORA_LAB_RETIRED: "${ENDORA_LAB_RETIRED-}"
+      # The house's vault (ADR 0127): ENDORA_VAULT_URL = http://openbao:8200 in local.mk once
+      # the `openbao` role runs it on the vault network below. Empty: no vault. Passkeys that
+      # unlock it are bound to a name, endora.home.arpa unless ENDORA_PASSKEY_RP_ID says
+      # otherwise, so the console must be opened at that name to use one.
+      ENDORA_VAULT_URL: "${ENDORA_VAULT_URL-}"
+      ENDORA_PASSKEY_RP_ID: "${ENDORA_PASSKEY_RP_ID-}"
       # endora-sound (ADR 0104), when its `sound` profile runs. Empty: no sound hub.
       ENDORA_SOUND_URL: "${ENDORA_SOUND_URL-}"
       ENDORA_SOUND_TOKEN_FILE: /sound-token/token
@@ -368,6 +378,15 @@ networks:
       # Without this, the bridge's own address on the host is a gateway a worker can reach,
       # and with it whatever the NAS serves on all addresses. Isolated: no address on the host
       # at all (Docker 28 and later).
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+  # The node and the house's vault (ADR 0127), and nothing else. Internal and isolated like
+  # `team`: the vault reaches no internet, no LAN and not the NAS, and is reached only by the
+  # node. Named outright, because the `openbao` role attaches the vault to it by that name; the
+  # node's start makes it, so the node is deployed before the vault.
+  vault:
+    name: endora_vault
+    internal: true
+    driver_opts:
       com.docker.network.bridge.gateway_mode_ipv4: isolated
 
 volumes:

@@ -1,0 +1,88 @@
+---
+- name: Start OpenBao
+  when: openbao_enabled | bool
+  block:
+    - name: Check the image is pinned by digest
+      ansible.builtin.assert:
+        that:
+          - openbao_image is search('@sha256:[0-9a-f]{64}$')
+        fail_msg: "openbao_image must be pinned by digest (…@sha256:<64 hex>); got '{{ openbao_image }}'"
+
+    - name: Check the data folder is an absolute path
+      ansible.builtin.assert:
+        that:
+          - openbao_data_dir is match('/')
+        fail_msg: "openbao_data_dir must be an absolute path on this host; got '{{ openbao_data_dir }}'"
+
+    # Its storage and audit log; only the vault's own user reads it.
+    - name: OpenBao data folder
+      ansible.builtin.file:
+        path: "{{ openbao_data_dir }}"
+        state: directory
+        owner: "{{ openbao_uid }}"
+        group: "{{ openbao_gid }}"
+        mode: "0700"
+
+    - name: Look for the network the node shares with the vault
+      community.docker.docker_network_info:
+        name: "{{ openbao_network }}"
+      register: openbao_network_info
+
+    - name: Refuse to start the vault where the node cannot reach it
+      ansible.builtin.assert:
+        that:
+          - openbao_network_info.exists
+        fail_msg: >-
+          There is no Docker network {{ openbao_network }}. Endora's docker-compose.yml makes it
+          when the node starts: deploy the node first (the endora role, or Endora's
+          `make deploy`), then run this role again.
+
+    - name: OpenBao
+      community.docker.docker_container:
+        name: "{{ openbao_container_name }}"
+        image: "{{ openbao_image }}"
+        # Pinned by digest: fetched once when missing (the module's default), never refreshed.
+        pull: false
+        command: [server]
+        restart_policy: unless-stopped
+        env:
+          BAO_LOCAL_CONFIG: "{{ openbao_config | to_json }}"
+          GOMEMLIMIT: "{{ openbao_go_memory_limit }}"
+          # The folders are already the vault's; the image's entrypoint need not chown them,
+          # which it could not do without capabilities anyway.
+          SKIP_CHOWN: "1"
+        volumes:
+          - "{{ openbao_data_dir }}:/openbao/file"
+        # The entrypoint writes BAO_LOCAL_CONFIG here; the rest of the filesystem is read-only.
+        tmpfs:
+          - /openbao/config:mode=1777,size=1m
+          - /tmp:size=8m
+        read_only: true
+        cap_drop: [ALL]
+        security_opts: [no-new-privileges:true]
+        memory: "{{ openbao_memory }}"
+        networks_cli_compatible: true
+        network_mode: "{{ openbao_network }}"
+        networks: >-
+          {{ [{'name': openbao_network, 'aliases': [openbao_alias]}]
+             + ([{'name': 'bridge'}] if openbao_host_port | length > 0 else []) }}
+        published_ports: "{{ [openbao_host_port ~ ':8200'] if openbao_host_port | length > 0 else [] }}"
+        # Healthy while it answers at all, sealed or not: `bao status` exits 2 when sealed,
+        # 1 only when it cannot reach the server.
+        healthcheck:
+          test: ["CMD-SHELL", "bao status -address=http://127.0.0.1:8200 >/dev/null 2>&1; test $? -ne 1"]
+          interval: 30s
+          timeout: 5s
+          retries: 3
+          start_period: 10s
+        labels:
+          # Never auto-updated: a new vault image is a decision, made by changing the digest.
+          com.centurylinklabs.watchtower.enable: "false"
+        state: started
+
+# Its data folder is never removed: it holds the vault.
+- name: Stop OpenBao
+  when: not (openbao_enabled | bool)
+  community.docker.docker_container:
+    name: "{{ openbao_container_name }}"
+    state: absent

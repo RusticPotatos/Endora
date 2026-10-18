@@ -103,6 +103,14 @@ export ENDORA_HQ_TICK_SECONDS
 export ENDORA_SOUND_URL
 export ENDORA_SOUND_DIR
 
+# The house's vault (ADR 0127): OpenBao, run by the owner's ansible-nas with the endora.homelab
+# collection's `openbao` role (not by this Makefile or the compose file), on the internal
+# endora_vault network the node's compose file makes. ENDORA_VAULT_URL = http://openbao:8200 in
+# local.mk gives the node its address; keep it in step with the endora role's endora_vault_url.
+# Passkeys bind to endora.home.arpa unless ENDORA_PASSKEY_RP_ID names another.
+export ENDORA_VAULT_URL
+export ENDORA_PASSKEY_RP_ID
+
 # The lab's ansible-nas (ADR 0112), which the team's homelab_map and ansible_nas_doc read: in
 # local.mk, ENDORA_ANSIBLE_NAS_REPO = owner/ansible-nas (your public fork on GitHub, or its address) and, to read
 # another branch than the fork's default, ENDORA_ANSIBLE_NAS_REF = <branch>. Only its role names and docs are read. Containers

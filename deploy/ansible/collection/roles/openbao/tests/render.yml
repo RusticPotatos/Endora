@@ -1,0 +1,60 @@
+---
+# What the vault is started with:
+#   ANSIBLE_ROLES_PATH=roles ansible-playbook roles/openbao/tests/render.yml
+- name: OpenBao renders its configuration and keeps its rules
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    docker_home: /tmp/openbao-render-test
+  # vars_files, not include_vars: included vars would outrank the per-task values below.
+  vars_files:
+    - ../defaults/main.yml
+    - ../vars/main.yml
+  tasks:
+    - name: Read the configuration as the container is given it, and the tasks
+      ansible.builtin.set_fact:
+        config: "{{ openbao_config | to_json | from_json }}"
+        tasks: "{{ lookup('file', '../tasks/main.yml') | from_yaml }}"
+
+    - name: The container task, by key (a dotted module name would read as nested attributes)
+      ansible.builtin.set_fact:
+        container: >-
+          {{ tasks | map(attribute='block') | select('defined') | flatten | map('dict2items') | flatten
+             | selectattr('key', 'equalto', 'community.docker.docker_container')
+             | map(attribute='value') | first }}
+
+    - name: Check the configuration
+      ansible.builtin.assert:
+        that:
+          # Raft in the data folder, the audit log beside it, in the one mounted volume.
+          - config.storage.raft.path == '/openbao/file'
+          - config.audit | length == 1
+          - config.audit[0].type == 'file'
+          - config.audit[0].options.file_path is match('/openbao/file/')
+          # No UI, and no mlock (it would need IPC_LOCK, and the container has no capabilities).
+          - config.ui == false
+          - config.disable_mlock == true
+          # Plain HTTP on the internal network only the node shares (ADR 0127 says why).
+          - config.listener[0].tcp.tls_disable == true
+          - config.api_addr == 'http://openbao:8200'
+
+    - name: Check the container's rules
+      ansible.builtin.assert:
+        that:
+          - openbao_image is search('@sha256:[0-9a-f]{64}$')
+          - container.read_only == true
+          - container.cap_drop == ['ALL']
+          - "'no-new-privileges:true' in container.security_opts"
+          # Read from the task file untemplated: the variable names, not their values.
+          - container.memory is search('openbao_memory')
+          - openbao_memory == '256m'
+          - container.env.BAO_LOCAL_CONFIG is search('openbao_config')
+          - container.healthcheck.test | length == 2
+          - container.labels['com.centurylinklabs.watchtower.enable'] == 'false'
+          - container.network_mode is search('openbao_network')
+          - openbao_network == 'endora_vault'
+          # Off by default: no port on the host.
+          - openbao_host_port == ''
+          - (container.published_ports | string) is search('openbao_host_port ~')
+          - openbao_enabled == false

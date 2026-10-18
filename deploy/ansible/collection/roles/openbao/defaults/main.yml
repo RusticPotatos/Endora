@@ -1,0 +1,34 @@
+---
+# OpenBao, the house's secrets manager, beside the Endora node (Endora ADR 0127). Endora
+# initialises it and unlocks it with the owner's passkey; this role only runs it. See README.md.
+openbao_enabled: false
+
+# Pinned by digest: the vault holds every secret, so the image it runs is chosen, never pulled
+# from a moving tag (and never auto-updated: see the watchtower label in tasks/main.yml).
+# OpenBao v2.7.1, the multi-architecture index.
+openbao_image: "openbao/openbao:2.7.1@sha256:6d2b93856e3fcf7b18ad855a0b51eaba474dc8b79cf554379ea32034797d2acf"
+openbao_container_name: endora-openbao
+
+# Its integrated (raft) storage and its audit log, in one folder your backups reach. Encrypted
+# by the vault's own barrier: a copy of it opens nothing without the unseal shares.
+openbao_data_dir: "{{ docker_home }}/openbao"
+# The image's own `openbao` user, which must own the folder.
+openbao_uid: 100
+openbao_gid: 1000
+
+# A hard cap on a NAS whose memory is tight: it idles near 20 MB. GOMEMLIMIT keeps Go's
+# collector working well inside the cap rather than meeting it.
+openbao_memory: 256m
+openbao_go_memory_limit: 200MiB
+
+# The network the node and the vault share, made by Endora's docker-compose.yml (its `vault`
+# network): internal, so the vault reaches nothing else and nothing else reaches it. Deploy
+# the node first (the `endora` role, or Endora's `make deploy`); this role refuses to start
+# the vault without it.
+openbao_network: endora_vault
+# The node reaches it by this name: ENDORA_VAULT_URL = http://openbao:8200.
+openbao_alias: openbao
+
+# A port on the NAS for the `bao` command line, e.g. "127.0.0.1:8200". Empty, the default: no
+# port at all, and only the node can reach the vault.
+openbao_host_port: ""
