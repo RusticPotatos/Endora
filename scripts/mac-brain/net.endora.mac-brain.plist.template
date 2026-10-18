@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Mac's brain helper (ADR 0130). Rendered by scripts/mac-brain/install.sh: each name
+     between two at-signs is filled from the owner's own settings, none of which are in the
+     repository. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>net.endora.mac-brain</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>@HELPER@</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ENDORA_MAC_CONFIG</key>
+    <string>@CONFIG@</string>
+    <!-- launchd's own PATH has no Homebrew: the settings name llama-server in full, and this
+         is for everything else the helper calls. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <!-- Looks every thirty seconds, and once when it is loaded. -->
+  <key>StartInterval</key>
+  <integer>30</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- The model the helper starts is meant to outlive the pass that started it. -->
+  <key>AbandonProcessGroup</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>@LOG@</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG@</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

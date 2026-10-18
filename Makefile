@@ -133,6 +133,28 @@ export SOUND_AIRPLAY2_MAC
 export SOUND_AIRPLAY2_HOSTNAME
 export SOUND_AIRPLAY2_LATENCY
 
+# The Mac's brain (ADR 0130): a helper on the owner's Mac that keeps a local model loaded only
+# while the Mac is plugged in and not marked busy, and tells the node how it is. Its values are
+# the owner's, in local.mk (docs/homelab.md, "The Mac's brain"): ENDORA_MAC_NODE_URL (the node,
+# as the Mac reaches it), ENDORA_MAC_TOKEN_FILE (a file for the helper's token, which the console
+# makes), ENDORA_MAC_MODEL (the .gguf file) and ENDORA_MAC_KEY_FILE (the key the model's server
+# asks for; made if absent). Optional: ENDORA_MAC_LLAMA_SERVER, ENDORA_MAC_LLAMA_ARGS,
+# ENDORA_MAC_PORT, ENDORA_MAC_NODE_CACERT (the node's certificate, if self-signed) and
+# ENDORA_MAC_NODE_INSECURE (1 to skip checking it).
+ENDORA_MAC_NODE_URL ?=
+ENDORA_MAC_TOKEN_FILE ?=
+ENDORA_MAC_MODEL ?=
+ENDORA_MAC_KEY_FILE ?=
+export ENDORA_MAC_NODE_URL
+export ENDORA_MAC_TOKEN_FILE
+export ENDORA_MAC_MODEL
+export ENDORA_MAC_KEY_FILE
+export ENDORA_MAC_LLAMA_SERVER
+export ENDORA_MAC_LLAMA_ARGS
+export ENDORA_MAC_PORT
+export ENDORA_MAC_NODE_CACERT
+export ENDORA_MAC_NODE_INSECURE
+
 # The house's vault (ADR 0127): OpenBao, run by the owner's ansible-nas with the endora.homelab
 # collection's `openbao` role (not by this Makefile or the compose file), on the internal
 # endora_vault network the node's compose file makes. ENDORA_VAULT_URL = http://openbao:8200 in
@@ -440,6 +462,18 @@ data-dir-test: ## Test the data-dir guard and migration against a fake docker (n
 .PHONY: sound-airplay2-test
 sound-airplay2-test: ## Test what the AirPlay 2 door writes for shairport-sync and avahi, and its pipe (no daemon needed)
 	sh scripts/test-sound-airplay2.sh
+
+.PHONY: mac-brain-test
+mac-brain-test: ## Test the Mac's brain helper and its install against stubs (no Mac, model or network needed)
+	sh scripts/test-mac-brain.sh
+
+.PHONY: mac-brain-install
+mac-brain-install: ## On the Mac: load the Mac's brain helper as a LaunchAgent, from local.mk's ENDORA_MAC_* (no sudo)
+	sh scripts/mac-brain/install.sh install
+
+.PHONY: mac-brain-uninstall
+mac-brain-uninstall: ## On the Mac: remove the helper's LaunchAgent and unload the model it loaded
+	sh scripts/mac-brain/install.sh uninstall
 
 .PHONY: watch
 watch: ## Re-run tests on file change (needs cargo-watch)

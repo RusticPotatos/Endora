@@ -12,7 +12,7 @@ use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::map::{self, PageKey, QUIZ_OPEN_MS};
 use crate::domain::quiz::{self, Quiz, Status};
 use crate::domain::world::{DAY_MS, WorldRefusal};
-use crate::domain::{EventKind, Member, Millis, Receipt, Refusal, Role, RunId, WakeReason};
+use crate::domain::{Brain, EventKind, Member, Millis, Receipt, Refusal, Role, RunId, WakeReason};
 
 /// The quiz is asked from this hour of the owner's night...
 const FROM_HOUR: i64 = 1;
@@ -126,7 +126,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .into_iter()
-            .filter(|m| m.role != Role::Ceo && m.at_work() && !m.brain.cloud())
+            .filter(|m| m.role != Role::Ceo && m.at_work() && m.brain == Brain::Local)
             .filter(|m| {
                 let busy = runs.iter().any(|r| r.member == m.id && r.status.live())
                     || wakes

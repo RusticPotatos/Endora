@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Sixty-one records stand, every one accepted, and forty-nine earlier ones are archived into them
+Eighty-one records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -285,6 +285,7 @@ of an existing record and take the next number.
 | [0127](0127-openbao-and-the-passkey-unlock.md) | OpenBao and the passkey unlock | — |
 | [0128](0128-an-airplay-2-door.md) | An AirPlay 2 door | — |
 | [0129](0129-the-teams-history-and-asking-the-past.md) | The team's history, and asking the past | — |
+| [0130](0130-the-macs-brain.md) | The Mac's brain | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

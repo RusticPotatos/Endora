@@ -18,6 +18,7 @@ use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
 use crate::domain::guards::Stopped;
 use crate::domain::lessons;
+use crate::domain::mac::{self, MacFacts};
 use crate::domain::money::{self, Micros};
 use crate::domain::review;
 use crate::domain::routines::{self, FireStep, MINUTE_MS};
@@ -269,6 +270,9 @@ pub struct Engine<S, W, C> {
     /// The containers in Endora's home lab, as the node last said: what a question to the
     /// owner is checked against. `None` until the node has said.
     lab: Mutex<Option<Vec<String>>>,
+    /// What the node last said about the owner's Mac (ADR 0130), and when. `None` until it has
+    /// said, and again after HQ restarts: a new HQ does not guess that the Mac is free.
+    mac: Mutex<Option<MacFacts>>,
     /// Endora's public records and plans, which the CEO may read.
     docs: Library,
     /// Set while the engine does what the owner asked (their task, reply, answer, decision or
@@ -300,6 +304,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             settings,
             lock: Mutex::new(()),
             lab: Mutex::new(None),
+            mac: Mutex::new(None),
             docs: &[],
             for_owner: AtomicBool::new(false),
             acting: Mutex::new(None),
@@ -340,6 +345,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .lab
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(names);
+    }
+
+    /// What the node says about the owner's Mac now (ADR 0130): whether it is free for a turn,
+    /// and why not if it is not. A turn of a member who thinks with the Mac starts only while
+    /// the last word is a recent `ready`; it waits otherwise, and is never given another brain.
+    pub fn tell_mac(&self, ready: bool, why: &str) {
+        let now = self.clock.now();
+        *self
+            .mac
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(MacFacts {
+            ready,
+            why: one_line(why, 60),
+            told_at: now,
+        });
+    }
+
+    /// What the node last said about the Mac, if it has.
+    fn mac_facts(&self) -> Option<MacFacts> {
+        self.mac
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The containers the node last said the home lab has, if it has said.
@@ -2171,6 +2199,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// A failed turn: tried again a minute later, at most twice; then failed for good.
     fn fail(&self, mut run: Run, why: &str) -> Done<bool> {
         let now = self.clock.now();
+        // A turn on the owner's Mac that failed because the Mac went away (the owner came back,
+        // the laptop left its charger) did nothing wrong: it is tried again when the Mac is
+        // free, and the failure is not counted against it (ADR 0130).
+        let on_the_mac = self.member(run.member)?.brain == Brain::Mac;
+        if on_the_mac && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some() {
+            run.attempts = run.attempts.saturating_sub(1);
+        }
         let Some(due) = runs::retry_after_failure(run.attempts, now) else {
             self.end(run, RunStatus::Failed, why)?;
             return Ok(false);
@@ -3050,6 +3085,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| r.status == RunStatus::Queued)
             .collect();
         queued.sort_by_key(|r| (priority(r), r.queued_at, r.id));
+        let on_the_mac: std::collections::HashSet<MemberId> = self
+            .store
+            .members()?
+            .into_iter()
+            .filter(|m| m.brain == Brain::Mac)
+            .map(|m| m.id)
+            .collect();
         let mut started = 0;
         for mut run in queued {
             // A turn queued for work that has since finished (dropped, or done) is ended, not
@@ -3098,6 +3140,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.held_by_owner(project)? {
                 continue;
             }
+            // A member on the owner's Mac (ADR 0130) takes a turn only while the Mac is free,
+            // and only one at a time. Otherwise its turn waits where it is, and says why: it is
+            // never given another brain.
+            if member.brain == Brain::Mac {
+                let another = running.iter().any(|r| on_the_mac.contains(&r.member));
+                if let Some(why) = mac::wait_for(self.mac_facts().as_ref(), now, another) {
+                    let said = mac::waiting_words(&why);
+                    if run.end_reason != said {
+                        run.end_reason = said;
+                        self.store.save_run(&run)?;
+                    }
+                    continue;
+                }
+            }
             // Whose share pays for it: a consulted turn of a cloud member counts against its
             // asker's share (ADR 0129).
             let mut payer = member.clone();
@@ -3134,6 +3190,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             run.attempts = run.attempts.saturating_add(1);
             run.started_at = Some(now);
             run.reserved = amount;
+            if mac::is_waiting_words(&run.end_reason) {
+                run.end_reason.clear();
+            }
             self.store.save_run(&run)?;
             let context = RunContext {
                 run: run.id,
@@ -4618,7 +4677,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "games": self.games_shown()?,
             // The guards (ADR 0124): their thresholds, precision, ceremony and findings.
             "guards": self.guards_shown()?,
+            // The owner's Mac as the team sees it (ADR 0130).
+            "mac": self.mac_shown(&runs, &all_members),
         }))
+    }
+
+    /// The owner's Mac as the team's screen reads it (ADR 0130): whether a turn may start on it
+    /// now and why not, how many turns wait for it, and whether one runs.
+    fn mac_shown(&self, live: &[Run], members: &[Member]) -> serde_json::Value {
+        let on_the_mac = |run: &Run| {
+            members
+                .iter()
+                .any(|m| m.id == run.member && m.brain == Brain::Mac)
+        };
+        let running = live
+            .iter()
+            .filter(|r| r.status == RunStatus::Running && on_the_mac(r))
+            .count();
+        let waiting = live
+            .iter()
+            .filter(|r| r.status == RunStatus::Queued && on_the_mac(r))
+            .count();
+        let why = mac::wait_for(self.mac_facts().as_ref(), self.clock.now(), false);
+        json!({ "ready": why.is_none(), "why": why.unwrap_or_else(|| "ready".to_owned()),
+                "running": running, "waiting": waiting })
     }
 
     /// The scorecard ("How the team is doing"), for today and the last seven days by the

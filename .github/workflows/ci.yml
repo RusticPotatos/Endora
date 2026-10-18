@@ -54,6 +54,9 @@ jobs:
       - name: The AirPlay 2 door's settings and pipe
         run: sh scripts/test-sound-airplay2.sh
 
+      - name: The Mac's brain helper and its install
+        run: sh scripts/test-mac-brain.sh
+
       - name: Handheld terminal checks
         working-directory: clients/terminal
         run: |

@@ -10,7 +10,7 @@ use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::map::{self, PageKey, Steward, steward_of};
 use crate::domain::situations::Weight;
 use crate::domain::world::{self, Section, WorldRefusal};
-use crate::domain::{Brain, EventKind, GoalStatus, Member, ProjectStatus, Refusal, Role, TaskId};
+use crate::domain::{EventKind, GoalStatus, Member, ProjectStatus, Refusal, Role, TaskId};
 
 fn refused(r: WorldRefusal) -> EngineError {
     EngineError::Refused(Refusal::World(r))
@@ -356,7 +356,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// A member's map, composed within its size: a short one for a member on the house's model.
     pub(super) fn map_for(&self, member: &Member, run: &Run) -> Done<map::MapText> {
-        let cap = if matches!(member.brain, Brain::Local) {
+        let cap = if member.brain.house() {
             map::MAP_CHARS_LOCAL
         } else {
             map::MAP_CHARS

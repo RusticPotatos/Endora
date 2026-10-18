@@ -9,6 +9,27 @@ tagged release.
 
 ### Added
 
+- **The Mac's brain** ([ADR 0130](docs/adr/0130-the-macs-brain.md)). A team member may think
+  with the owner's Mac: a strong local model on a laptop the owner also works on. A fifth brain,
+  `mac`, on the roster and the hire form: free, house-local (the same data rules as the house's
+  own model, and Claude is never reached), and it **waits for the Mac** rather than falling back
+  to another model. A turn on it runs only while the Mac is plugged in, "Mac busy" is off and
+  the owner has been idle (ten minutes unless set), and one at a time across the team; the
+  turn says *waiting for the Mac: owner active* (or on battery, busy, ...) until then, and a
+  turn the Mac left mid-way is not counted as a failure. The node decides from a heartbeat
+  (`POST /v1/mac/heartbeat`, under a token of its own that opens that route alone), tells HQ on
+  change (`POST /v1/mac` on HQ), sends a Mac turn's calls to the Mac's address with its key
+  (sealed at rest, never shown) and a clear 503 when it is not free; `GET /v1/mac` and a **The
+  Mac** card on the HQ screen show the state and reason and hold the **Mac busy** switch, the
+  address, key, model name and idle time, and make the helper's token. The helper
+  (`scripts/mac-brain/`, a shell script under a LaunchAgent every 30 s;
+  `make mac-brain-install` / `mac-brain-uninstall`, no sudo) reads `pmset` and `ioreg`, reports
+  to the node, and loads or unloads `llama-server` (touching no other process). Tests:
+  `scripts/test-mac-brain.sh` (in CI, with stubs) and the owner's scenarios in
+  `domains/team/features/the-macs-brain*.feature`. No schema change: the settings are rows of the
+  existing sealed settings table. Set-up: `docs/homelab.md`, "The Mac's brain". Not yet tried on a
+  real Mac.
+
 - **Live mode for the sound hub's phone and browser listeners** ([ADR 0104](docs/adr/0104-endora-sound.md)).
   The hub serves each stream speaker's mix as raw PCM in 20 ms frames (`/v1/live/{speaker}`;
   `/v1/sound/live/{id}?ticket=` through the node, under the listen ticket), and the console

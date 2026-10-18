@@ -131,6 +131,7 @@ pub fn app(state: State) -> Router {
         // The home lab's containers, as the node sees them: what a question to the owner is
         // checked against before it reaches the desk.
         .route("/v1/lab/names", post(lab_names))
+        .route("/v1/mac", post(mac_state))
         // The node's model relay: whose a turn's token is, and what each call cost.
         .route("/v1/team/turn", post(crate::team::turn))
         .route("/v1/team/usage", post(crate::team::usage))
@@ -985,6 +986,24 @@ async fn lab_names(
     let count = names.len();
     state.hq.set_lab_names(names);
     Json(json!({ "ok": true, "names": count }))
+}
+
+#[derive(Deserialize)]
+struct MacState {
+    ready: bool,
+    #[serde(default)]
+    why: String,
+}
+
+/// The node says whether the owner's Mac is free for a team turn now, and why not if it is not
+/// (ADR 0130). Kept in memory and trusted for a couple of minutes: the node says it every thirty
+/// seconds, so a restarted HQ learns it soon, and a node gone quiet counts as the Mac away.
+async fn mac_state(
+    Extract(state): Extract<State>,
+    Json(req): Json<MacState>,
+) -> Json<serde_json::Value> {
+    state.hq.tell_mac(req.ready, &req.why);
+    Json(json!({ "ok": true }))
 }
 
 #[cfg(test)]
@@ -2644,6 +2663,38 @@ mod tests {
             "{}",
             item.text
         );
+    }
+
+    #[tokio::test]
+    async fn the_node_tells_whether_the_mac_is_free_and_the_snapshot_shows_it() {
+        let st = state(false);
+        let app = app(st.clone());
+        let said = |token: Option<&str>, ready: bool, why: &str| {
+            call(
+                "POST",
+                "/v1/mac",
+                token,
+                &json!({ "ready": ready, "why": why }).to_string(),
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(said(None, true, "ready"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "only the node");
+        assert_eq!(st.hq.snapshot().unwrap()["mac"]["ready"], false);
+        let res = app
+            .clone()
+            .oneshot(said(Some(TOKEN), false, "owner active"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let shown = st.hq.snapshot().unwrap();
+        assert_eq!(shown["mac"]["ready"], false);
+        assert_eq!(shown["mac"]["why"], "owner active");
+        app.oneshot(said(Some(TOKEN), true, "ready")).await.unwrap();
+        assert_eq!(st.hq.snapshot().unwrap()["mac"]["ready"], true);
     }
 
     #[test]

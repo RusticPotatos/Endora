@@ -42,6 +42,10 @@ mod map;
 #[path = "scenarios/history.rs"]
 mod history;
 
+/// The Mac's brain (ADR 0130), in its own file.
+#[path = "scenarios/mac.rs"]
+mod mac;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 
@@ -88,6 +92,8 @@ struct Office {
     /// it was asked.
     answer: Option<String>,
     wakes_at_ask: usize,
+    /// The file HQ keeps its team in, when a scenario is about HQ restarting (ADR 0130).
+    file: Option<String>,
 }
 
 impl Default for Office {
@@ -113,6 +119,7 @@ impl Default for Office {
             retraction: None,
             answer: None,
             wakes_at_ask: 0,
+            file: None,
         }
     }
 }

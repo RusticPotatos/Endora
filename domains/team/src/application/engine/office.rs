@@ -12,7 +12,8 @@ use super::{Done, Engine, EngineError, one_line};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::office::{self, Change, Proposal, Status, Verdict, Vote};
 use crate::domain::{
-    EventKind, Member, MemberId, Micros, Millis, Refusal, Role, RunId, WakeId, WakeReason, money,
+    Brain, EventKind, Member, MemberId, Micros, Millis, Refusal, Role, RunId, WakeId, WakeReason,
+    money,
 };
 
 /// Set once HQ has put the default layout on the floor, so it never does again.
@@ -524,7 +525,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut waiting: Vec<&Member> = Vec::new();
         for member in members
             .iter()
-            .filter(|m| m.role != Role::Ceo && m.at_work())
+            .filter(|m| m.role != Role::Ceo && m.at_work() && m.brain != Brain::Mac)
         {
             if self.store.setting(&downtime_day(member.id))?.as_deref() != Some(today.as_str()) {
                 waiting.push(member);

@@ -152,6 +152,9 @@ pub struct AppState {
     /// The house's vault and the passkeys that unlock it (ADR 0127). Not configured until
     /// `ENDORA_VAULT_URL` is set ([`with_vault`](Self::with_vault)).
     pub vault: Arc<crate::vault::Vault>,
+    /// What the node last heard from the owner's Mac, and what HQ was last told of it
+    /// (ADR 0130). In memory: the Mac says it again every thirty seconds.
+    pub(crate) mac: Arc<mac::MacBrain>,
 }
 
 /// The house's calendar as the mail sees it: Home Assistant's, kept for an hour.
@@ -286,6 +289,7 @@ impl AppState {
         ));
         Self {
             vault,
+            mac: Arc::default(),
             console: Arc::new(endora_capabilities::infrastructure::terminal::Adapter::new(
                 config.clone(),
                 store.db(),
@@ -601,6 +605,12 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sound/listen/{id}", get(sound_listen))
         .route("/v1/sound/live/{id}", get(sound_live))
         .route("/v1/sound/speakers/{id}/probe", post(sound_probe))
+        // The owner's Mac as a brain for the team (ADR 0130). The heartbeat answers the
+        // Mac's helper alone, by a token of its own (`crate::auth::Scope::Mac`).
+        .route("/v1/mac", get(mac::status))
+        .route("/v1/mac/heartbeat", post(mac::heartbeat))
+        .route("/v1/mac/settings", post(mac::change))
+        .route("/v1/mac/token", post(mac::make_token))
         // What Endora knows about the person, page by page (ADR 0101).
         .route("/v1/brain", get(brain_overview))
         .route("/v1/brain/forget", post(forget_what_it_learned))
@@ -868,6 +878,7 @@ fn relay_routes() -> Router<AppState> {
 }
 mod auth;
 mod homelab;
+mod mac;
 mod vault;
 /// The agenda loop, for the composition root to start.
 pub fn spawn_agenda(state: AppState) {
@@ -876,6 +887,7 @@ pub fn spawn_agenda(state: AppState) {
 mod terminal;
 use auth::*;
 pub(crate) use homelab::spawn as spawn_homelab;
+pub(crate) use mac::spawn as spawn_mac;
 
 mod platform;
 use platform::*;

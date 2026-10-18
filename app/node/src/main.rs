@@ -292,6 +292,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // What it noted, organised: page summaries written again in quiet time (ADR 0101).
     api::spawn_brain_folding(state.clone());
     api::spawn_homelab(state.clone());
+    // Keeps HQ told whether the owner's Mac is free for the team's turns (ADR 0130).
+    api::spawn_mac(state.clone());
     // The mail (ADR 0097): a read-only copy mounted at /mail, read by the local model only.
     // Nothing happens without the copy.
     let state = match mail_copy("/mail") {
