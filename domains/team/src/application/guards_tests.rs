@@ -247,3 +247,65 @@ fn a_stuck_desk_item_is_put_up_once_and_closes_itself_when_the_work_moves() {
     assert_eq!(stuck("waiting"), 0, "closed itself");
     assert_eq!(stuck("cleared"), 1);
 }
+
+// ---- closure reasons ------------------------------------------------------------------------
+
+/// A task that waited on work that was dropped stays blocked (what it waited for will not
+/// happen), and its member is told at once why, and what carries the work on.
+#[test]
+fn work_waiting_on_a_dropped_task_stays_blocked_and_its_member_is_told_why() {
+    use crate::domain::closure::{Closure, DropWhy};
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, first) = team(&clock, true);
+    let goal = hq.store().task(first).unwrap().unwrap().goal;
+    let new = |title: &str, waits_on: Vec<TaskId>| {
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: title.to_owned(),
+                description: String::new(),
+                assignee: Some(dev),
+                priority: Priority::Normal,
+                waits_on,
+            },
+        )
+        .unwrap()
+    };
+    let after = new("Restore from the backup", vec![first]);
+    let successor = new("Clear the downloads another way", Vec::new());
+    hq.drop_task_because(first, Closure::Dropped(DropWhy::Obsolete), Some(successor))
+        .unwrap();
+    let closed = hq.store().closure(first).unwrap().expect("why it closed");
+    assert_eq!(
+        (closed.closure.name(), closed.successor, closed.by.as_str()),
+        ("obsolete", Some(successor), "owner")
+    );
+    let waiting = hq.store().task(after).unwrap().unwrap();
+    assert_eq!(
+        waiting.status,
+        TaskStatus::Blocked,
+        "the blocker is not resolved"
+    );
+    let told = hq.store().thread(after).unwrap();
+    assert!(
+        told.iter().any(|p| p.author == "endora"
+            && p.text.contains("was dropped: what it was for is gone")
+            && p.text.contains(&format!("#{successor}"))),
+        "{told:?}"
+    );
+    assert_eq!(wakes_for(&hq, after, WakeReason::WaitDropped), 1);
+    assert_eq!(wakes_for(&hq, after, WakeReason::WaitFinished), 0);
+    // The owner's plain drop, with no reason given, is work that will not be done.
+    hq.drop_task(successor).unwrap();
+    assert_eq!(
+        hq.store()
+            .closure(successor)
+            .unwrap()
+            .map(|c| c.closure.name()),
+        Some("wont_do"),
+        "the owner's plain drop"
+    );
+}

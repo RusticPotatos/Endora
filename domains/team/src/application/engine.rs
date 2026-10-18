@@ -1851,24 +1851,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// The owner drops a task.
+    /// The owner drops a task, giving no reason: work that will not be done (ADR 0124; see
+    /// [`Self::drop_task_because`] to say why).
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a task that does not exist.
     pub fn drop_task(&self, task: TaskId) -> Done<()> {
-        let _held = self.held();
-        let current = self.task(task)?;
-        self.store.set_task_status(task, TaskStatus::Dropped)?;
-        self.emit(
-            EventKind::TaskChanged,
-            json!({ "task": task.0, "goal": current.goal.0, "owner": current.owner.map(|o| o.0),
-                    "status": TaskStatus::Dropped.name(), "priority": current.priority.name() }),
-        )?;
-        self.after_finishing(&current)
+        use crate::domain::closure::{Closure, DropWhy};
+        self.drop_task_because(task, Closure::Dropped(DropWhy::WontDo), None)
     }
 
-    /// When the last sub-task of a task finishes, its owner is woken.
+    /// When work closes it carries a reason, and what waited on a dropped task is told (ADR
+    /// 0124); when the last sub-task of a task finishes, its owner is woken.
     fn after_finishing(&self, finished: &Task) -> Done<()> {
+        self.after_closing(finished.id)?;
         // Work done with a branch submitted: the push is the owner's to approve (ADR 0115).
         if self
             .store
@@ -3637,6 +3633,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("stuck", "drop") => {
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
                 self.store.set_task_status(task.id, TaskStatus::Dropped)?;
+                // Stuck work the owner lets go of cannot go on (ADR 0124).
+                self.closed(
+                    task.id,
+                    crate::domain::closure::Closure::Dropped(
+                        crate::domain::closure::DropWhy::BlockedForever,
+                    ),
+                    None,
+                    "owner",
+                )?;
                 self.after_finishing(&task)?;
             }
             ("question", "seen") => {
@@ -4375,6 +4380,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // The wing's documents and branches on it (ADR 0115).
                 "documents": self.documents_shown(t.id)?.0,
                 "branches": self.documents_shown(t.id)?.1,
+                // Why it closed, and what carries it on (ADR 0124).
+                "closure": self.store.closure(t.id)?.map(|c| json!({
+                    "why": c.closure.name(), "said": c.closure.plainly(),
+                    "duplicate_of": c.closure.duplicate_of().map(|d| d.0),
+                    "successor": c.successor.map(|s| s.0), "by": c.by, "at": c.at })),
             }));
         }
         // Spent is what turns reported using; held is what they have reserved and not yet

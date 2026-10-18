@@ -376,8 +376,8 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "set_status",
-            "Move your task on (todo, doing, in_review, blocked), with a reason. Submitting it (in_review) cites evidence for each of its criteria, and a live criterion a reading from this turn; the tester then re-checks it and its lead accepts it. Done is set only that way, except a routine's check: close that as done, with its evidence, once you have looked.",
-            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds.") }),
+            "Move your task on (todo, doing, in_review, blocked), with a reason. Submitting it (in_review) cites evidence for each of its criteria, and a live criterion a reading from this turn; the tester then re-checks it and its lead accepts it. Done is set only that way, except a routine's check: close that as done, with its evidence, once you have looked. Done met its criteria unless you say why otherwise: superseded (name the successor task) or not_needed.",
+            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on" } }),
             &["task", "status", "reason"]
         ),
         tool(
@@ -475,12 +475,15 @@ pub fn tools(role: Role) -> Value {
             ));
             list.push(tool(
                 "decide_stuck",
-                "Decide stuck work in your area, when HQ asks you (your turn says it is stuck): proceed (say with what), drop, hand_to a member of your team (`to`), needs_ceo (money, a new goal, another area), or needs_board (the owner alone: money beyond the caps, a hire, the owner's repos). On evidence. Dropping it or handing it on needs the handover note. Only a board matter reaches the owner, through the CEO.",
+                "Decide stuck work in your area, when HQ asks you (your turn says it is stuck): proceed (say with what), drop, hand_to a member of your team (`to`), needs_ceo (money, a new goal, another area), or needs_board (the owner alone: money beyond the caps, a hire, the owner's repos). On evidence. Dropping it or handing it on needs the handover note; dropping it says why (obsolete, duplicate with duplicate_of, wont_do, blocked_forever) and names the successor task if one carries the work on. Only a board matter reaches the owner, through the CEO.",
                 json!({
                     "task": { "type": "integer", "description": "the task's number" },
                     "decision": { "type": "string", "enum": ["proceed", "drop", "hand_to", "needs_ceo", "needs_board"] },
                     "detail": { "type": "string", "description": "what, and why, in a sentence or two" },
                     "to": { "type": "string", "description": "for hand_to: the member's name" },
+                    "why": { "type": "string", "enum": ["obsolete", "duplicate", "wont_do", "blocked_forever"], "description": "for drop: why it is dropped" },
+                    "duplicate_of": { "type": "integer", "description": "for a duplicate: the task it duplicates" },
+                    "successor": { "type": "integer", "description": "for drop: the task that carries the work on, if one does" },
                     "evidence": ids("What the decision rests on: at least one."),
                     "handover": super::protocol_world::handover_schema(),
                 }),
@@ -664,6 +667,19 @@ fn member_named<S: TeamStore, W: WorkerAdapter, C: Clock>(
         .ok_or_else(|| format!("no member called {name}"))
 }
 
+/// Why work closes as `status`, from `why` (one of the set's names), with `duplicate_of` for a
+/// duplicate and `successor` for what carries the work on (ADR 0124).
+fn closure_arg(
+    args: &Value,
+    status: TaskStatus,
+) -> Result<(crate::domain::closure::Closure, Option<TaskId>), String> {
+    let why = args["why"].as_str().unwrap_or("");
+    let duplicate_of = args["duplicate_of"].as_i64().map(TaskId);
+    let closure = crate::domain::closure::Closure::read(status, why, duplicate_of)
+        .map_err(|r| r.to_string())?;
+    Ok((closure, args["successor"].as_i64().map(TaskId)))
+}
+
 fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args[key]
         .as_str()
@@ -751,9 +767,22 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 })?;
             let reason = text_arg(args, "reason")?;
             let cited = evidence_lists(args)?;
+            // Done says why when it is not "met its criteria" (ADR 0124): checked first, so a
+            // reason not in the set changes nothing.
+            let why = match (to, args["why"].as_str()) {
+                (TaskStatus::Done, Some(w)) if w != "met_criteria" => {
+                    Some(closure_arg(args, TaskStatus::Done)?)
+                }
+                _ => None,
+            };
             engine
                 .set_status_citing(run.id, task, to, reason, &cited)
                 .map_err(|e| said(&e))?;
+            if let Some((closure, successor)) = why {
+                engine
+                    .done_because_in(run.id, task, closure, successor)
+                    .map_err(|e| said(&e))?;
+            }
             Ok(format!("Task {} is {}.", task.0, to.name()))
         }
         "create_task" => {
@@ -898,6 +927,14 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 None => None,
             };
             let handover = super::protocol_world::handover_arg(args)?;
+            // A drop's reason is the engine's to refuse, after whether the decision is the
+            // lead's to make at all.
+            let dropped = match decision {
+                crate::domain::ladder::Decision::Drop => {
+                    closure_arg(args, TaskStatus::Dropped).ok()
+                }
+                _ => None,
+            };
             engine
                 .decide_stuck_in(
                     run.id,
@@ -907,6 +944,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                     to,
                     &evidence_flat(args)?,
                     handover.as_ref(),
+                    dropped,
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!(

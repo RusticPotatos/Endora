@@ -4,6 +4,7 @@ pub mod areas;
 pub mod brain;
 pub mod chain;
 pub mod chess;
+pub mod closure;
 pub mod cut;
 pub mod docs;
 pub mod effort;

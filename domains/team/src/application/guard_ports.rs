@@ -3,6 +3,7 @@
 //! receipt is never changed or removed; a finding only gains its clearing and its verdict.
 
 use super::ports::Stored;
+use crate::domain::closure::Closed;
 use crate::domain::guards::{Finding, Verdict};
 use crate::domain::{MemberId, Millis, TaskId};
 
@@ -59,4 +60,17 @@ pub trait GuardStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn set_finding_desk(&self, id: i64, desk: i64) -> Stored<()>;
+
+    /// Records why a task closed, and what carries it on (its latest closing, if it closed
+    /// before).
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn record_closure(&self, closed: &Closed) -> Stored<()>;
+
+    /// Why a task closed, if it did and HQ was told.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn closure(&self, task: TaskId) -> Stored<Option<Closed>>;
 }

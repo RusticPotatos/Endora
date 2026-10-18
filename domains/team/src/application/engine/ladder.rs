@@ -390,7 +390,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// words, or `hand_to` with nobody; [`Refusal::NotBelow`] for a member outside the lead's
     /// team; what the evidence rule refuses;
     /// [`crate::domain::world::WorldRefusal::HandoverNeeded`] for work handed on or dropped
-    /// without its handover note (ADR 0122).
+    /// without its handover note (ADR 0122); a drop with no reason from the set (ADR 0124).
     #[allow(clippy::too_many_arguments)]
     pub fn decide_stuck_in(
         &self,
@@ -401,6 +401,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         to: Option<MemberId>,
         cited: &[Ref],
         handover: Option<&crate::domain::world::HandoverNote>,
+        dropped: Option<(crate::domain::closure::Closure, Option<TaskId>)>,
     ) -> Done<()> {
         let _held = self.held();
         let turn = self.running(run)?;
@@ -410,6 +411,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let on_it = matches!(self.rung_of(task)?, Some((Rung::Lead | Rung::Huddle, _)));
         if !ours || !on_it || current.status.finished() {
             return Err(EngineError::Refused(Refusal::NotStuckForYou));
+        }
+        // A drop says why, from the set, and may name what carries the work on (ADR 0124).
+        let dropping = dropped.filter(|(c, _)| c.status() == TaskStatus::Dropped);
+        if decision == Decision::Drop && dropping.is_none() {
+            return Err(EngineError::Refused(crate::domain::closure::not_a_closure(
+                TaskStatus::Dropped,
+            )));
         }
         let detail = one_line(detail, DECISION_MOST);
         if detail.is_empty() {
@@ -480,6 +488,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Decision::Drop => {
                 self.store.set_task_status(task, TaskStatus::Dropped)?;
                 self.emit_status(&current, TaskStatus::Dropped)?;
+                if let Some((closure, successor)) = dropping {
+                    self.closed(task, closure, successor, &lead.name)?;
+                }
                 self.after_finishing(&current)
             }
             Decision::NeedsCeo => self.to_the_ceo(&current, &lead, &detail),

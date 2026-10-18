@@ -172,17 +172,41 @@ fn a_lead_decides_its_own_plan_with_no_tester_and_nobodys_leave() {
         .unwrap_err()
         .contains("needs evidence")
     );
+    // Done says why when it did not meet its criteria (ADR 0124); a drop's reason is no
+    // done's, and refused before anything moves.
+    assert!(
+        use_tool(
+            &hq,
+            &kit,
+            "set_status",
+            &json!({ "task": plan.0, "status": "done", "reason": "three branches, one each",
+                     "why": "obsolete", "evidence": [format!("task {}", plan.0)] }),
+        )
+        .unwrap_err()
+        .contains("work done says why, one of: met_criteria, superseded, not_needed")
+    );
+    assert_ne!(
+        hq.store().task(plan).unwrap().unwrap().status,
+        TaskStatus::Done
+    );
     use_tool(
         &hq,
         &kit,
         "set_status",
         &json!({ "task": plan.0, "status": "done", "reason": "three branches, one each",
-                 "evidence": [format!("task {}", plan.0)] }),
+                 "why": "not_needed", "evidence": [format!("task {}", plan.0)] }),
     )
     .unwrap();
     assert_eq!(
         hq.store().task(plan).unwrap().unwrap().status,
         TaskStatus::Done
+    );
+    let closed = crate::application::guard_ports::GuardStore::closure(hq.store(), plan)
+        .unwrap()
+        .expect("why it closed");
+    assert_eq!(
+        (closed.closure.name(), closed.by.as_str()),
+        ("not_needed", "Kit")
     );
     assert!(wakes_of(&hq, w.dee, plan).is_empty(), "no tester's round");
     assert!(
@@ -275,17 +299,28 @@ fn a_lead_that_says_it_needs_the_ceo_or_the_board_sends_it_up_and_only_then() {
         let task = task_for(&hq, &w, w.devs[0], "Fix the lint");
         stuck(&hq, &clock);
         let kit = turn_on(&hq, w.kit, task);
-        use_tool(
-            &hq,
-            &kit,
-            "decide_stuck",
-            &json!({ "task": task.0, "decision": decision,
-                     "detail": "it needs a paid runner beyond the caps",
-                     "evidence": [format!("task {}", task.0)],
-                     "handover": { "done": "the lint is read", "not_done": "the fix",
-                                   "next": "nothing", "watch_out": "the caps" } }),
-        )
-        .unwrap();
+        let decide = |why: Option<&str>| {
+            use_tool(
+                &hq,
+                &kit,
+                "decide_stuck",
+                &json!({ "task": task.0, "decision": decision,
+                         "detail": "it needs a paid runner beyond the caps",
+                         "why": why,
+                         "evidence": [format!("task {}", task.0)],
+                         "handover": { "done": "the lint is read", "not_done": "the fix",
+                                       "next": "nothing", "watch_out": "the caps" } }),
+            )
+        };
+        // A drop says why, from the set (ADR 0124).
+        if decision == "drop" {
+            let refused = decide(None).unwrap_err();
+            assert!(
+                refused.contains("work dropped says why, one of: obsolete, duplicate"),
+                "{refused}"
+            );
+        }
+        decide(Some("blocked_forever")).unwrap();
         let ceo_woken = w
             .ceo
             .is_some_and(|ceo| wakes_of(&hq, ceo, task) == [WakeReason::Decide]);
@@ -304,6 +339,13 @@ fn a_lead_that_says_it_needs_the_ceo_or_the_board_sends_it_up_and_only_then() {
             assert_eq!(
                 hq.store().task(task).unwrap().unwrap().status,
                 TaskStatus::Dropped
+            );
+            let closed = crate::application::guard_ports::GuardStore::closure(hq.store(), task)
+                .unwrap()
+                .expect("why it closed");
+            assert_eq!(
+                (closed.closure.name(), closed.by.as_str()),
+                ("blocked_forever", "Kit")
             );
         }
         if decision == "needs_board" && with_ceo {

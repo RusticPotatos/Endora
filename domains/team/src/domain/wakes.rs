@@ -63,6 +63,8 @@ pub enum WakeReason {
     /// A guard asks the lead of the work's area to look (ADR 0124): at work HQ cannot tell is
     /// stopped by accident, or at a finding in its area.
     Guard,
+    /// A task its task waits on was dropped (ADR 0124): the wait will not end by itself.
+    WaitDropped,
 }
 
 impl WakeReason {
@@ -93,6 +95,7 @@ impl WakeReason {
             Self::Decide => "decide",
             Self::Huddle => "huddle",
             Self::Guard => "guard",
+            Self::WaitDropped => "wait_dropped",
         }
     }
 
@@ -178,6 +181,7 @@ impl WakeReason {
             Self::Decide,
             Self::Huddle,
             Self::Guard,
+            Self::WaitDropped,
         ]
         .into_iter()
         .find(|r| r.name() == name)

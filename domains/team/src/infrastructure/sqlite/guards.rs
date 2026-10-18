@@ -2,13 +2,14 @@
 //! gains them empty and no row of any other table changes. A nudge's receipt is append-only:
 //! a trigger refuses to change or remove one.
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteTeamStore, backend, corrupt};
 use crate::application::guard_ports::GuardStore;
 use crate::application::ports::Stored;
+use crate::domain::closure::{Closed, Closure};
 use crate::domain::guards::{Finding, Guard, Verdict};
-use crate::domain::{MemberId, Millis, TaskId};
+use crate::domain::{MemberId, Millis, TaskId, TaskStatus};
 
 pub(super) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nudges (
@@ -27,6 +28,11 @@ CREATE TABLE IF NOT EXISTS findings (
     desk INTEGER REFERENCES desk(id)
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS findings_open_by_key ON findings(key) WHERE cleared_at IS NULL;
+CREATE TABLE IF NOT EXISTS closures (
+    task INTEGER PRIMARY KEY REFERENCES tasks(id), status TEXT NOT NULL, why TEXT NOT NULL,
+    duplicate_of INTEGER REFERENCES tasks(id), successor INTEGER REFERENCES tasks(id),
+    by TEXT NOT NULL, at_ms INTEGER NOT NULL
+) STRICT;
 ";
 
 const FINDING_SELECT: &str = "SELECT id, guard, key, task, project, rule, evidence, opened_at, \
@@ -156,6 +162,59 @@ impl GuardStore for SqliteTeamStore {
             )
             .map_err(backend)?;
         Ok(())
+    }
+
+    fn record_closure(&self, c: &Closed) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "INSERT OR REPLACE INTO closures (task, status, why, duplicate_of, successor, by, at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    c.task.0,
+                    c.closure.status().name(),
+                    c.closure.name(),
+                    c.closure.duplicate_of().map(|t| t.0),
+                    c.successor.map(|t| t.0),
+                    c.by,
+                    c.at
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn closure(&self, task: TaskId) -> Stored<Option<Closed>> {
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT status, why, duplicate_of, successor, by, at_ms FROM closures WHERE task = ?1",
+                [task.0],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                        r.get::<_, Option<i64>>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((status, why, duplicate_of, successor, by, at)) = row else {
+            return Ok(None);
+        };
+        let status = TaskStatus::from_name(&status).ok_or_else(|| corrupt("a closure's status"))?;
+        let closure = Closure::read(status, &why, duplicate_of.map(TaskId))
+            .map_err(|_| corrupt("a closure's reason"))?;
+        Ok(Some(Closed {
+            task,
+            closure,
+            successor: successor.map(TaskId),
+            by,
+            at,
+        }))
     }
 }
 

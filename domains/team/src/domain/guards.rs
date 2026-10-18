@@ -73,6 +73,26 @@ pub const THRESHOLDS: Thresholds = Thresholds {
     look_every_ms: 5 * MINUTE,
 };
 
+/// What a guard refuses (ADR 0124), as the member or the owner reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuardRefusal {
+    /// A closing reason not in the set for the status it closes to.
+    NotAClosure(TaskStatus),
+}
+
+impl core::fmt::Display for GuardRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotAClosure(status) => write!(
+                f,
+                "work {} says why, one of: {} (a duplicate names the task it duplicates)",
+                status.name(),
+                super::closure::Closure::names(*status).join(", ")
+            ),
+        }
+    }
+}
+
 /// The two windows the process-health detectors look over: a day, and a week.
 pub const WINDOWS: [(Millis, &str); 2] = [(DAY, "24 h"), (7 * DAY, "7 d")];
 

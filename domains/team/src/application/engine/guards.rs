@@ -11,6 +11,7 @@ use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
+use crate::domain::closure::{Closed, Closure, DoneWhy, DropWhy, not_a_closure};
 use crate::domain::guards::{
     self, Diagnosis, Finding, Guard, Stopped, THRESHOLDS, TaskFacts, Verdict,
 };
@@ -326,6 +327,126 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self
             .diagnosis(task)?
             .is_none_or(|d| d.stopped == Stopped::Working))
+    }
+
+    // ---- why work closed -----------------------------------------------------------------------
+
+    /// Records why `task` closed, and what carries it on (ADR 0124).
+    pub(super) fn closed(
+        &self,
+        task: TaskId,
+        closure: Closure,
+        successor: Option<TaskId>,
+        by: &str,
+    ) -> Done<()> {
+        if let Some(next) = successor {
+            self.task(next)?;
+        }
+        self.store.record_closure(&Closed {
+            task,
+            closure,
+            successor,
+            by: by.to_owned(),
+            at: self.clock.now(),
+        })?;
+        Ok(())
+    }
+
+    /// Work that just closed: it carries a reason (its own if it was given one, else what its
+    /// path means: done on evidence met its criteria, a plain drop will not be done); and the
+    /// open work that waited on a dropped task is told at once, and stays blocked.
+    pub(super) fn after_closing(&self, task: TaskId) -> Done<()> {
+        let Some(now) = self.store.task(task)? else {
+            return Ok(());
+        };
+        if !now.status.finished() {
+            return Ok(());
+        }
+        if self.store.closure(task)?.is_none() {
+            let default = if now.status == TaskStatus::Done {
+                Closure::Done(DoneWhy::MetCriteria)
+            } else {
+                Closure::Dropped(DropWhy::WontDo)
+            };
+            self.closed(task, default, None, "endora")?;
+        }
+        if now.status != TaskStatus::Dropped {
+            return Ok(());
+        }
+        let Some(closed) = self.store.closure(task)? else {
+            return Ok(());
+        };
+        for waiting in self.store.tasks()? {
+            if waiting.status.finished() || !waiting.waits_on.contains(&task) {
+                continue;
+            }
+            self.post_held_lock(
+                Author::Endora,
+                waiting.id,
+                &closed.told_to_waiters(&now.title),
+            )?;
+            if matches!(waiting.status, TaskStatus::Todo | TaskStatus::Doing) {
+                self.store
+                    .set_task_status(waiting.id, TaskStatus::Blocked)?;
+                self.emit_status(&waiting, TaskStatus::Blocked)?;
+            }
+            if let Some(holder) = waiting.owner.or(waiting.assignee) {
+                self.wake_held_lock(holder, Some(waiting.id), WakeReason::WaitDropped)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The owner drops a task, saying why from the set, and what carries it on if anything.
+    ///
+    /// # Errors
+    /// [`crate::domain::closure::not_a_closure`] for a reason that is not a drop's;
+    /// [`EngineError::Unknown`] for a task, or a successor, that does not exist.
+    pub fn drop_task_because(
+        &self,
+        task: TaskId,
+        closure: Closure,
+        successor: Option<TaskId>,
+    ) -> Done<()> {
+        let _held = self.held();
+        if closure.status() != TaskStatus::Dropped {
+            return Err(EngineError::Refused(not_a_closure(TaskStatus::Dropped)));
+        }
+        let current = self.task(task)?;
+        if let Some(next) = successor {
+            self.task(next)?;
+        }
+        self.store.set_task_status(task, TaskStatus::Dropped)?;
+        self.emit_status(&current, TaskStatus::Dropped)?;
+        self.closed(task, closure, successor, "owner")?;
+        self.after_finishing(&current)
+    }
+
+    /// A member that closed its task as done says it was overtaken or not needed, rather than
+    /// that it met its criteria (ADR 0124): in the same turn, once it is done.
+    ///
+    /// # Errors
+    /// [`super::Refusal::TurnOver`]; [`super::Refusal::NotYours`] for work the turn did not
+    /// close; [`crate::domain::closure::not_a_closure`] for a reason that is not done's.
+    pub fn done_because_in(
+        &self,
+        run: crate::domain::RunId,
+        task: TaskId,
+        closure: Closure,
+        successor: Option<TaskId>,
+    ) -> Done<()> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        if closure.status() != TaskStatus::Done {
+            return Err(EngineError::Refused(not_a_closure(TaskStatus::Done)));
+        }
+        let current = self.task(task)?;
+        let mine = current.owner == Some(turn.member) || turn.task == Some(task);
+        if current.status != TaskStatus::Done || !mine {
+            return Err(EngineError::Refused(super::Refusal::NotYours));
+        }
+        let by = self.member(turn.member)?.name;
+        self.closed(task, closure, successor, &by)
     }
 
     /// Stuck work, as a finding (ADR 0124): opened when the tick marks it stuck.
