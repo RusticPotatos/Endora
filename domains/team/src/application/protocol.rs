@@ -163,6 +163,19 @@ fn request_hire_tool() -> Value {
     })
 }
 
+/// The tool a lead asks for staff with when its project has a backlog (ADR 0118).
+fn request_staff_tool() -> Value {
+    json!({
+        "name": "request_staff",
+        "description": "Ask the owner for more hands on one of your projects, when its work is piling up: the project, why, and the project's open tasks as evidence (task numbers; at least twice the developers the project has at work, each checked to be open and in the project). A developer on furlough is offered back first; with none, it becomes a hire request under the same seats. The owner approves either; the member reports to you. One request at a time.",
+        "inputSchema": { "type": "object", "properties": {
+            "project": { "type": "integer", "description": "the project's number" },
+            "why": { "type": "string" },
+            "evidence": ids("The project's open tasks that wait for hands, as task numbers."),
+        }, "required": ["project", "why", "evidence"] },
+    })
+}
+
 /// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
 /// input. Only the reviewer is offered `review`. The CEO (ADR 0111) is offered the team's
 /// tools but the gate and privileged actions, puts decisions to the board with `ask_owner`,
@@ -224,6 +237,30 @@ pub fn tools(role: Role) -> Value {
             &["minutes", "why"]
         ),
         tool(
+            "note",
+            "Add a note to YOUR notebook (nobody else's): something you learned that you or your next turn will need again, at most 300 characters, resting on evidence from HQ's record (at least one receipt, task or event; each is checked). Your notes are in your briefing, newest first. Keep them honest: a note you cannot back is a hunch.",
+            json!({ "text": { "type": "string", "maxLength": crate::domain::notebook::NOTE_MOST }, "evidence": ids("What the note rests on: at least one.") }),
+            &["text", "evidence"]
+        ),
+        tool(
+            "forget",
+            "Remove one of YOUR notes that is wrong or no longer true, saying why. Forgetting counts as tidying your notebook.",
+            json!({ "note": { "type": "integer", "description": "the note's number, 12 for n12" }, "reason": { "type": "string" } }),
+            &["note", "reason"]
+        ),
+        tool(
+            "read_notebook",
+            "Read all of YOUR notes, newest first, with the evidence each rests on (the briefing shows only the newest dozen).",
+            json!({}),
+            &[]
+        ),
+        tool(
+            "notebook_checked",
+            "Say you have looked over YOUR notebook and nothing needs changing. It counts as tidying it, which you are asked to do about once a week.",
+            json!({}),
+            &[]
+        ),
+        tool(
             "run_gate",
             "Run the task's tests and build on a runner and get the result.",
             json!({ "task": task }),
@@ -255,6 +292,7 @@ pub fn tools(role: Role) -> Value {
             list.push(accept_tool());
             list.push(hand_to_tool());
             list.push(request_hire_tool());
+            list.push(request_staff_tool());
         }
     }
     if let Some(list) = all.as_array_mut() {
@@ -283,6 +321,10 @@ fn ceos_tools() -> Value {
         "set_status",
         "create_task",
         "check_back",
+        "note",
+        "forget",
+        "read_notebook",
+        "notebook_checked",
     ];
     let mut list: Vec<Value> = all
         .as_array()
@@ -688,6 +730,46 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .map_err(|e| said(&e))?;
             Ok(format!(
                 "The request is on the owner's desk (item {}): they hire or decline, and you hear in this thread. Go on with your turn.",
+                item.0
+            ))
+        }
+        "note" => {
+            let text = text_arg(args, "text")?;
+            let cited = evidence_flat(args)?;
+            let id = engine.note_in(run.id, text, &cited).map_err(|e| said(&e))?;
+            Ok(format!("Noted as n{id} in your notebook."))
+        }
+        "forget" => {
+            let id = match &args["note"] {
+                Value::Number(n) => n.as_i64(),
+                Value::String(s) => super::engine::note_number(s),
+                _ => None,
+            }
+            .ok_or_else(|| "which note? Give its number as `note` (12 for n12)".to_owned())?;
+            let reason = args["reason"].as_str().unwrap_or("");
+            let gone = engine.forget_in(run.id, id, reason).map_err(|e| said(&e))?;
+            Ok(format!("n{id} is forgotten: {}", gone.text))
+        }
+        "read_notebook" => engine.read_notebook_in(run.id).map_err(|e| said(&e)),
+        "notebook_checked" => {
+            engine.notebook_checked_in(run.id).map_err(|e| said(&e))?;
+            Ok("Your notebook is checked: nothing to tidy for a week.".to_owned())
+        }
+        "request_staff" => {
+            let project = args["project"]
+                .as_i64()
+                .map(ProjectId)
+                .ok_or_else(|| "which project? Give its number as `project`".to_owned())?;
+            let item = engine
+                .request_staff(
+                    run.id,
+                    project,
+                    text_arg(args, "why")?,
+                    &evidence_flat(args)?,
+                )
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "The request is on the owner's desk (item {}): they bring a member back or hire, and you hear in this thread. Go on with your turn.",
                 item.0
             ))
         }

@@ -17,6 +17,7 @@ const HQ = {
   envelopes: [],       // wakes in flight
   lastWord: {},        // task id → the member who last wrote in its thread
   roster: {},          // member id → its controls are open on the Team card
+  notebooks: {},       // member id → its notes, read when its panel is opened (ADR 0118)
   allTurns: {},        // "task-N" / "member-N" → every turn shown, not only the last five
   t: 0,                // seconds of animation
   polling: null,
@@ -234,6 +235,12 @@ function hqTell(e, live) {
     // The engineering wing (ADR 0115): branches, their checks and the owner's pushes.
     "branch.submitted": ["run", `${name} submitted ${d.name} (${d.files} files) on ${key}: check c${d.check} queued`],
     "check.done": [d.ok ? "done" : "bad", `Check c${d.check} on ${d.branch}: ${d.summary || (d.ok ? "passed" : "failed")}`],
+    // Elastic staffing (ADR 0118): nobody is fired; they are put on furlough and recalled.
+    "member.furloughed": ["you", `${d.name} is on furlough`],
+    "member.recalled": ["you", `${d.name} is back from furlough`],
+    // Notebooks (ADR 0118): what a member wrote down, and what it let go.
+    "note.written": ["run", d.by === "owner" ? `You ${d.edited ? "edited a note of" : "added a note to"} ${d.name}'s notebook` : `${d.name} noted: ${d.text}`],
+    "note.forgotten": ["run", `${d.by === "owner" ? "You deleted" : d.name + " forgot"} a note${d.by === "owner" ? " of " + d.name + "'s" : ""}: ${d.text}${d.by === "owner" ? "" : " (" + d.reason + ")"}`],
     "branch.pushed": [d.ok ? "you" : "bad", d.ok ? `You pushed ${d.branch} to the fork` : `Pushing ${d.branch} failed`],
   }[e.kind];
   if (said) {
@@ -753,6 +760,10 @@ function viewHQ() {
       // fork. Without a deploy key on the node there is nothing to approve: the card offers
       // the branch's bundle to download instead.
       hire: [["approve", "Hire", "ok"], ["decline", "Decline", "no"]],
+      // Elastic staffing (ADR 0118): an idle member offered for furlough (never fired), and a
+      // lead's request to bring a furloughed member back.
+      furlough: [["approve", "Furlough", "ok"], ["decline", "Keep", "no"]],
+      recall: [["approve", "Bring back", "ok"], ["decline", "Decline", "no"]],
       push: hqCanPush(d) ? [["approve", "Push it", "ok"], ["decline", "Decline", "no"]] : [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
@@ -839,9 +850,41 @@ function hqRosterLine(m, members) {
   const controls = open ? `<div class="hq-controls">
       <p class="hq-who">${hqMemberMoney(m)}</p>${hqBrains(m)}${hqReports(m, members)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
-        <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button></div></div>` : "";
+        <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div>${hqNotebook(m)}</div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
-      <span>${esc(hqRole(m.role))} · <span class="hq-tag">${hqBrainTag(m.brain)}</span> · ${m.paused ? "paused · " : ""}${on ? "on " + esc(on) : "between turns"} · ${money}</span></button>${controls}</li>`;
+      <span>${esc(hqRole(m.role))} · <span class="hq-tag">${hqBrainTag(m.brain)}</span> · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : "between turns") + " · "}${money}</span></button>${controls}</li>`;
+}
+
+// A member's notebook (ADR 0118), in its panel: each note as text (a member wrote it, so it is
+// escaped), with the evidence it rests on or "from the owner", and Edit and Delete; and a box
+// to add one. The owner's notes need no evidence. Read from HQ when the panel is opened.
+function hqNotebook(m) {
+  const notes = HQ.notebooks[m.id];
+  if (!notes) return `<p class="hq-note">Reading ${esc(m.name)}'s notebook…</p>`;
+  const rows = notes.map((n) => `<li><span>${esc(n.text)}</span>
+      <small> ${n.from_owner ? "from the owner" : esc((n.evidence || []).join(", "))}${n.stale ? " · stale" : ""}</small>
+      <button class="hq-btn" data-act="hq:notebook:${m.id}:edit-${Number(n.id)}">Edit</button>
+      <button class="hq-btn no" data-act="hq:notebook:${m.id}:del-${Number(n.id)}">Delete</button></li>`).join("");
+  return `<div class="hq-notebook"><p class="hq-who">${esc(m.name)}'s notebook (${notes.length})</p>
+    ${rows ? `<ul class="hq-team">${rows}</ul>` : `<p class="hq-empty">No notes.</p>`}
+    <div class="hq-row"><input id="hq-note-new-${m.id}" maxlength="300" placeholder="A note from you, up to 300 characters" aria-label="A note for ${esc(m.name)}" />
+      <button class="hq-btn ok" data-act="hq:notebook:${m.id}:add">Add note</button></div></div>`;
+}
+
+// Reads one member's notebook from HQ and draws it.
+async function hqLoadNotebook(id) {
+  try { HQ.notebooks[id] = (await api("GET", `/v1/hq/members/${id}/notebook`)).notes || []; }
+  catch (e) { HQ.notebooks[id] = []; flash("Couldn't read the notebook: " + e.message, "err"); }
+  render();
+}
+
+// A member's furlough (ADR 0118), in its panel: put on furlough, or recalled. The CEO is never
+// furloughed; nobody is ever fired, so there is no button for that.
+function hqStaffing(m) {
+  if (m.role === "ceo") return "";
+  return m.furloughed
+    ? `<button class="hq-btn ok" data-act="hq:recall:${m.id}">Recall ${esc(m.name)}</button>`
+    : `<button class="hq-btn" data-act="hq:furlough:${m.id}">Furlough ${esc(m.name)}</button>`;
 }
 
 // The Team card as an org chart (the owner, on a phone: "super cluttered, can't tell the
@@ -1021,8 +1064,11 @@ function hqScorecard(s) {
   const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
   const since = [["today", card.today.since], ["the 7 days", card.week.since]].filter(([, at]) => at != null)
     .map(([w, at]) => `the record for ${w} starts ${esc(when(at))}`).join("; ");
+  // Each team's seats (ADR 0118): who is at work and who is on furlough. Never anyone gone.
+  const teams = (card.teams || []).map((t) => `<li>${esc(t.name || "A lead")}'s team: ${Number(t.seats)} seats · ${Number(t.active)} at work · ${Number(t.furloughed)} on furlough</li>`).join("");
   return `<section class="hq-card"><h2>How the team is doing</h2>
     <table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${rows}</tbody></table>
+    ${teams ? `<details><summary>Seats</summary><ul class="hq-team">${teams}</ul></details>` : ""}
     <details><summary>Per member</summary><div class="hq-score-members">
       <div><b>Today</b><ul class="hq-team">${members(card.today)}</ul></div>
       <div><b>7 days</b><ul class="hq-team">${members(card.week)}</ul></div></div></details>
@@ -1125,7 +1171,29 @@ function hqSelected() {
 async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
   if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; render(); return true; }
-  if (noun === "roster") { HQ.roster[id] = !HQ.roster[id]; render(); return true; }
+  if (noun === "roster") {
+    HQ.roster[id] = !HQ.roster[id]; render();
+    if (HQ.roster[id]) hqLoadNotebook(Number(id));
+    return true;
+  }
+  // The owner writes in a member's notebook (ADR 0118): add a note, or edit or delete one.
+  if (noun === "notebook") {
+    const member = Number(id), what = String(arg || "").split("-"), note = Number(what[1]);
+    try {
+      if (what[0] === "add") {
+        const text = val(`hq-note-new-${member}`); if (!text) return true;
+        await api("POST", `/v1/hq/members/${member}/notebook`, { text }); flash("Note added.", "ok");
+      } else if (what[0] === "edit") {
+        const old = ((HQ.notebooks[member] || []).find((n) => n.id === note) || {}).text || "";
+        const text = (prompt("Edit the note:", old) || "").trim(); if (!text || text === old) return true;
+        await api("POST", `/v1/hq/members/${member}/notebook/${note}`, { text }); flash("Note saved.", "ok");
+      } else if (what[0] === "del") {
+        if (!confirm("Delete this note?")) return true;
+        await api("DELETE", `/v1/hq/members/${member}/notebook/${note}`); flash("Note deleted.", "ok");
+      } else return true;
+    } catch (e) { flash("Couldn't change the notebook: " + e.message, "err"); }
+    await hqLoadNotebook(member); return true;
+  }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
   if (noun === "decide") {
     // A question's answer, if the owner wrote one, goes in the task's thread before the member
@@ -1192,6 +1260,18 @@ async function hqDispatch(verb, noun, id, arg) {
       flash("Bundle saved. In your clone: git fetch <the file> refs/submissions/hq/" + slug + ":hq/" + slug, "ok");
     } catch (e) { flash("Couldn't fetch the bundle: " + e.message, "err"); }
     return true;
+  }
+  // Furlough or recall a member (ADR 0118): HQ refuses the CEO, and a member with open work.
+  if (noun === "furlough" || noun === "recall") {
+    const m = hqMember(Number(id)); if (!m) return true;
+    if (noun === "furlough" && !confirm(`Put ${m.name} on furlough? Nobody is let go: ${m.name} is not woken, keeps the record and notebook, and you can recall them.`)) return true;
+    try {
+      if (noun === "furlough") await api("POST", `/v1/hq/members/${id}/furlough`, {});
+      else await api("POST", `/v1/hq/members/${id}/recall`, {});
+      flash(noun === "furlough" ? `${m.name} is on furlough.` : `${m.name} is back at work.`, "ok");
+    }
+    catch (e) { flash("Couldn't do it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
   }
   // Whom a member reports to.
   if (noun === "reports") {

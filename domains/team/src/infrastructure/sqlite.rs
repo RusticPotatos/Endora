@@ -11,8 +11,9 @@ use crate::application::ports::{
 use crate::application::ports::{LedgerRow, ThreadPost};
 use crate::domain::{
     Brain, CheckBack, CheckBackStatus, DeskId, Event, Evidence, Goal, GoalId, GoalStatus, Member,
-    MemberId, Micros, Millis, Pause, Priority, Project, ProjectId, ProjectStatus, Receipt, Refused,
-    Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
+    MemberId, Micros, Millis, Note, Pause, Priority, Project, ProjectId, ProjectStatus, Receipt,
+    Ref, Refused, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId, TaskStatus, WakeId,
+    WakeReason,
 };
 use crate::domain::{Branch, Check, Document};
 
@@ -21,7 +22,7 @@ CREATE TABLE IF NOT EXISTS members (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
     share_percent INTEGER NOT NULL, slots INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
     look INTEGER NOT NULL DEFAULT 0, brain TEXT NOT NULL DEFAULT 'local',
-    reports_to INTEGER REFERENCES members(id)
+    reports_to INTEGER REFERENCES members(id), furloughed_at INTEGER, recalled_at INTEGER
 ) STRICT;
 CREATE TABLE IF NOT EXISTS goals (
     id INTEGER PRIMARY KEY, title TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
@@ -154,6 +155,15 @@ CREATE TABLE IF NOT EXISTS branches (
     plus INTEGER NOT NULL, minus INTEGER NOT NULL, can_push INTEGER NOT NULL,
     status TEXT NOT NULL, at_ms INTEGER NOT NULL
 ) STRICT;
+-- Each member's notebook (ADR 0118): short notes that rest on evidence from HQ's record. A
+-- note is removed by the member that forgets it or by the owner; a member is never removed.
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
+    text TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '', from_owner INTEGER NOT NULL DEFAULT 0,
+    written_at INTEGER NOT NULL, written_in_run INTEGER REFERENCES runs(id),
+    last_used_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS notes_by_member ON notes(member);
 CREATE TABLE IF NOT EXISTS checks (
     id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
     branch INTEGER NOT NULL REFERENCES branches(id), run INTEGER NOT NULL REFERENCES runs(id),
@@ -191,6 +201,13 @@ const OWNER_COLUMNS: [(&str, &str); 3] = [
     ("wakes", "by_owner INTEGER NOT NULL DEFAULT 0"),
     ("runs", "asked_by_owner INTEGER NOT NULL DEFAULT 0"),
     ("ledger", "owner INTEGER NOT NULL DEFAULT 0"),
+];
+
+/// The columns a store made before elastic staffing (ADR 0118) gains, each empty: nobody was
+/// ever furloughed or recalled. Adding a column changes no row.
+const STAFFING_COLUMNS: [(&str, &str); 2] = [
+    ("members", "furloughed_at INTEGER"),
+    ("members", "recalled_at INTEGER"),
 ];
 
 /// Adds `column` (its name, then its type) to `table`, unless the table has it already.
@@ -297,6 +314,7 @@ impl SqliteTeamStore {
             .into_iter()
             .chain(EVIDENCE_COLUMNS)
             .chain(OWNER_COLUMNS)
+            .chain(STAFFING_COLUMNS)
         {
             add_column(&conn, table, column)?;
         }
@@ -499,7 +517,8 @@ impl TeamStore for SqliteTeamStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, role, share_percent, slots, paused, look, brain, reports_to FROM members ORDER BY id",
+                "SELECT id, name, role, share_percent, slots, paused, look, brain, reports_to, \
+                 furloughed_at, recalled_at FROM members ORDER BY id",
             )
             .map_err(backend)?;
         let rows = stmt
@@ -517,6 +536,8 @@ impl TeamStore for SqliteTeamStore {
                     // misreading.
                     brain: Brain::from_name(&r.get::<_, String>(7)?).unwrap_or(Brain::Local),
                     reports_to: r.get::<_, Option<i64>>(8)?.map(MemberId),
+                    furloughed_at: r.get(9)?,
+                    recalled_at: r.get(10)?,
                 })
             })
             .map_err(backend)?;
@@ -529,6 +550,104 @@ impl TeamStore for SqliteTeamStore {
                 "UPDATE members SET paused = ?2 WHERE id = ?1",
                 params![member.0, paused],
             )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn furlough_member(&self, member: MemberId, at: Millis) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET furloughed_at = ?2, recalled_at = NULL WHERE id = ?1",
+                params![member.0, at],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET recalled_at = ?2 WHERE id = ?1 AND furloughed_at IS NOT NULL",
+                params![member.0, at],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn add_note(
+        &self,
+        member: MemberId,
+        text: &str,
+        evidence: &[Ref],
+        from_owner: bool,
+        run: Option<RunId>,
+        at: Millis,
+    ) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO notes (member, text, evidence, from_owner, written_at, written_in_run, last_used_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5)",
+            params![
+                member.0,
+                text,
+                Ref::kept(evidence),
+                from_owner,
+                at,
+                run.map(|r| r.0)
+            ],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn notes(&self, member: MemberId) -> Stored<Vec<Note>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, member, text, evidence, from_owner, written_at, written_in_run, \
+                 last_used_at FROM notes WHERE member = ?1 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([member.0], |r| {
+                Ok(Note {
+                    id: r.get(0)?,
+                    member: MemberId(r.get(1)?),
+                    text: r.get(2)?,
+                    evidence: Ref::read(&r.get::<_, String>(3)?),
+                    from_owner: r.get::<_, i64>(4)? != 0,
+                    written_at: r.get(5)?,
+                    written_in_run: r.get::<_, Option<i64>>(6)?.map(RunId),
+                    last_used_at: r.get(7)?,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn set_note_text(&self, note: i64, text: &str) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE notes SET text = ?2 WHERE id = ?1",
+                params![note, text],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn touch_note(&self, note: i64, at: Millis) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE notes SET last_used_at = ?2 WHERE id = ?1",
+                params![note, at],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn delete_note(&self, note: i64) -> Stored<()> {
+        self.conn()?
+            .execute("DELETE FROM notes WHERE id = ?1", [note])
             .map_err(backend)?;
         Ok(())
     }
@@ -2237,6 +2356,104 @@ CREATE TABLE IF NOT EXISTS check_backs (
             )
             .unwrap();
         assert_eq!(indexed, 2, "a project's month reads the ledger by index");
+    }
+
+    /// The members table as it is on the live store before elastic staffing (ADR 0118).
+    const MEMBERS_BEFORE_STAFFING: &str = "
+CREATE TABLE members (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
+    share_percent INTEGER NOT NULL, slots INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
+    look INTEGER NOT NULL DEFAULT 0, brain TEXT NOT NULL DEFAULT 'local',
+    reports_to INTEGER REFERENCES members(id)
+) STRICT;
+INSERT INTO members (id, name, role, share_percent, slots, brain, reports_to) VALUES
+    (1, 'Mara', 'ceo', 35, 1, 'claude-opus-5-5', NULL),
+    (2, 'Kit', 'lead', 25, 2, 'claude-sonnet-5-5', 1),
+    (3, 'Rae', 'developer', 40, 2, 'claude-haiku-5-5', 2);
+";
+
+    #[test]
+    fn a_store_made_before_elastic_staffing_gains_its_columns_and_loses_no_member() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MEMBERS_BEFORE_STAFFING).unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        let before = store.members().unwrap();
+        assert_eq!(
+            before
+                .iter()
+                .map(|m| (m.name.as_str(), m.furloughed(), m.recalled_at))
+                .collect::<Vec<_>>(),
+            [
+                ("Mara", false, None),
+                ("Kit", false, None),
+                ("Rae", false, None)
+            ]
+        );
+        // Opening it again changes nothing, and a furlough is a column, never a deletion.
+        let store = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
+        store.furlough_member(MemberId(3), 77).unwrap();
+        let rae = store.members().unwrap().remove(2);
+        assert_eq!(
+            (rae.furloughed(), rae.furloughed_at, rae.name.as_str()),
+            (true, Some(77), "Rae")
+        );
+        store.recall_member(MemberId(3), 99).unwrap();
+        let rae = store.members().unwrap().remove(2);
+        assert_eq!(
+            (rae.furloughed(), rae.furloughed_at, rae.recalled_at),
+            (false, Some(77), Some(99))
+        );
+        // A second furlough starts afresh.
+        store.furlough_member(MemberId(3), 120).unwrap();
+        let rae = store.members().unwrap().remove(2);
+        assert_eq!(
+            (rae.furloughed(), rae.furloughed_at, rae.recalled_at),
+            (true, Some(120), None)
+        );
+        assert_eq!(store.members().unwrap().len(), 3);
+        // The notebook table came with the schema, and a furloughed member keeps its notes.
+        let note = store
+            .add_note(
+                MemberId(3),
+                "deluge needs the VPN up",
+                &[Ref::Task(TaskId(1)), Ref::Event(9)],
+                false,
+                None,
+                50,
+            )
+            .unwrap();
+        let owners = store
+            .add_note(MemberId(3), "never at night", &[], true, None, 60)
+            .unwrap();
+        let kept = store.notes(MemberId(3)).unwrap();
+        assert_eq!(
+            kept.iter().map(|n| n.id).collect::<Vec<_>>(),
+            [note, owners]
+        );
+        assert_eq!(
+            (
+                kept[0].evidence.clone(),
+                kept[0].written_in_run,
+                kept[0].last_used_at,
+                kept[1].from_owner
+            ),
+            (vec![Ref::Task(TaskId(1)), Ref::Event(9)], None, 50, true)
+        );
+        store.touch_note(note, 90).unwrap();
+        store.set_note_text(owners, "never at night, ever").unwrap();
+        let kept = store.notes(MemberId(3)).unwrap();
+        assert_eq!(
+            (kept[0].last_used_at, kept[1].text.as_str()),
+            (90, "never at night, ever")
+        );
+        assert!(store.notes(MemberId(2)).unwrap().is_empty());
+        store.delete_note(note).unwrap();
+        assert_eq!(store.notes(MemberId(3)).unwrap().len(), 1);
+        assert_eq!(
+            store.members().unwrap().len(),
+            3,
+            "a note goes, a member never does"
+        );
     }
 
     /// The schema as it was before evidence (ADR 0114): the live store was made with it.

@@ -266,6 +266,50 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_paused(&self, member: MemberId, paused: bool) -> Stored<()>;
+    /// Puts a member on furlough from `at` (ADR 0118). Nothing else about it changes: members
+    /// are never deleted.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn furlough_member(&self, member: MemberId, at: Millis) -> Stored<()>;
+    /// Ends a member's furlough at `at`.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()>;
+    /// Adds a note to a member's notebook (ADR 0118), written at `at` (and last used then).
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_note(
+        &self,
+        member: MemberId,
+        text: &str,
+        evidence: &[Ref],
+        from_owner: bool,
+        run: Option<RunId>,
+        at: Millis,
+    ) -> Stored<i64>;
+    /// A member's notes, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn notes(&self, member: MemberId) -> Stored<Vec<crate::domain::Note>>;
+    /// Rewrites a note's words.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_note_text(&self, note: i64, text: &str) -> Stored<()>;
+    /// Says a note was used at `at`.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn touch_note(&self, note: i64, at: Millis) -> Stored<()>;
+    /// Removes a note from its notebook.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn delete_note(&self, note: i64) -> Stored<()>;
     /// Sets what a member thinks with.
     ///
     /// # Errors

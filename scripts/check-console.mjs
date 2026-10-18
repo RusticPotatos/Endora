@@ -576,7 +576,11 @@ if (failures.length) {
 {
   const fail = (what) => { console.error(what); process.exit(1); };
   // The members whose controls the checks below read are opened, as tapping their lines does.
-  runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 }; HQ.roster = { 1: true, 2: true, 4: true, 5: true };
+  runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 }; HQ.roster = { 1: true, 2: true, 4: true, 5: true, 8: true };
+    // Two members' notebooks (ADR 0118), read when their panels opened: one note a member wrote
+    // (hostile on purpose), one the owner did.
+    HQ.notebooks = { 2: [{ id: 4, text: "<img src=n onerror=alert(9)> keep the VPN up", evidence: ["task 7", "r12"], from_owner: false, stale: true },
+                         { id: 5, text: "Never at night.", evidence: [], from_owner: true, stale: false }], 8: [] };
     HQ.snap = { demo: true, stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
@@ -589,7 +593,9 @@ if (failures.length) {
                   brain: "claude-opus-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-opus-5-5", label: "Claude Opus" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }] },
                 // The engineering wing (ADR 0115): its lead and a developer, who sit in the wing.
                 { id: 6, name: "Kit", role: "lead", look: 5, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], reports_to: 5, brain: "claude-sonnet-5-5", brains: [] },
-                { id: 7, name: "Rae", role: "developer", look: 2, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [{ run: 30, task: 9 }], reports_to: 6, brain: "claude-haiku-5-5", brains: [] }],
+                { id: 7, name: "Rae", role: "developer", look: 2, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [{ run: 30, task: 9 }], reports_to: 6, brain: "claude-haiku-5-5", brains: [] },
+                // Elastic staffing (ADR 0118): a developer on furlough, who keeps her place.
+                { id: 8, name: "Zed", role: "developer", look: 4, paused: false, furloughed: true, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], reports_to: 6, brain: "claude-haiku-5-5", brains: [] }],
       wing: { goal: "Improve the lab", leads: [6], members: [6, 7], developers: 1, most_developers: 5, most_leads: 1 },
       house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
       goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack" },
@@ -625,7 +631,10 @@ if (failures.length) {
              // The wing (ADR 0115): a lead's request to hire, a push the node can make, and one it cannot.
              { id: 22, kind: "hire", task: 9, text: "Hire Sam as developer on claude-haiku-5-5, reporting to member 6.\\nKit asks: two branches wait <b>with nobody free</b>\\nEvidence: task 9" },
              { id: 23, kind: "push", task: 9, text: "Push hq/task-9-tidy-the-deluge-role to your fork (1 file, checks passed). It is a1b2c3d4e5f6 on top of 0123456789ab." },
-             { id: 24, kind: "push", task: 9, text: "Branch hq/task-9-other is accepted (1 file, checks passed), but pushing is not set up on the node (ENDORA_GIT_PUSH_KEY_FILE names no deploy key). Download its bundle from the node at /v1/hq/bundles/9/task-9-other and push it yourself." }],
+             { id: 24, kind: "push", task: 9, text: "Branch hq/task-9-other is accepted (1 file, checks passed), but pushing is not set up on the node (ENDORA_GIT_PUSH_KEY_FILE names no deploy key). Download its bundle from the node at /v1/hq/bundles/9/task-9-other and push it yourself." },
+             // Elastic staffing (ADR 0118): an idle member offered for furlough, and a recall.
+             { id: 25, kind: "furlough", member: 3, text: "Cy has had nothing to do since 3 Oct: furlough, or keep? <b>Nobody is let go.</b>" },
+             { id: 26, kind: "recall", task: 9, member: 6, text: "Recall member 8 to report to member 6.\\nZed is on furlough; Kit asks: four branches wait\\nEvidence: task 9" }],
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
@@ -645,7 +654,8 @@ if (failures.length) {
           finished: { done: 0, done_spent: 0, per_done: null, dropped: 0, dropped_spent: 0 },
           alarms: { count: 0, tasks: 0, closed_median_ms: null, open: 0 },
           desk: { approvals: 0, questions: 0, stuck: 0, notices: 0, other: 0, waiting: 0 },
-          cache: { input: 0, read: 0, share: null } } },
+          cache: { input: 0, read: 0, share: null } },
+        teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }] },
       routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
                    on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false, project: 1 },
                  { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
@@ -734,6 +744,31 @@ if (failures.length) {
     if (!office.includes(`id="${id}"`)) fail(`hq: the hire form lacks ${id}`);
   }
   if (!office.includes("1 of 5 developer seats are taken")) fail("hq: the wing's seats are not said");
+  // Elastic staffing (ADR 0118): an idle member is offered for furlough (Furlough or Keep, never
+  // a way to let anyone go), a lead's recall is brought back or declined; each member's panel
+  // furloughs or recalls (never the CEO's), and the scorecard counts each team's seats.
+  for (const act of ["hq:decide:25:approve", "hq:decide:25:decline", "hq:decide:26:approve", "hq:decide:26:decline",
+    "hq:furlough:2", "hq:furlough:1", "hq:recall:8"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk or a member's panel does not offer ${act}`);
+  }
+  if (office.includes('data-act="hq:furlough:5"') || office.includes('data-act="hq:recall:5"')) fail("hq: the CEO was offered a furlough");
+  if (office.includes('data-act="hq:furlough:8"') || office.includes('data-act="hq:recall:2"')) fail("hq: a furloughed member was offered a furlough, or a member at work a recall");
+  if (!office.includes(">Keep</button>") || !office.includes(">Bring back</button>")) fail("hq: the furlough cards are not worded as keep and bring back");
+  if (office.includes("<b>Nobody is let go.</b>")) fail("hq: a furlough offer became markup");
+  if (!office.includes("on furlough · ")) fail("hq: the roster does not say who is on furlough");
+  if (!office.includes("3 seats · 2 at work · 1 on furlough") || !office.includes("&lt;u&gt;Kit&lt;/u&gt;")) fail("hq: the scorecard does not count a team's seats");
+  // A member's notebook (ADR 0118), in its panel: each note as text with its evidence, or marked
+  // as the owner's, Edit and Delete on each, and Add note; what a member wrote is never markup.
+  for (const act of ["hq:notebook:2:edit-4", "hq:notebook:2:del-4", "hq:notebook:2:edit-5", "hq:notebook:2:del-5",
+    "hq:notebook:2:add", "hq:notebook:8:add"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: a member's notebook does not offer ${act}`);
+  }
+  for (const said of ["&lt;img src=n onerror=alert(9)&gt; keep the VPN up", "task 7, r12 · stale", "from the owner",
+    "Bo&#39;s notebook (2)", "No notes.", 'id="hq-note-new-2"', "Reading Mara"]) {
+    if (!office.includes(said) && !office.includes(said.replace("&#39;", "'"))) fail(`hq: the notebook does not say ${said}`);
+  }
+  if (office.includes("<img src=n")) fail("hq: a note a member wrote became markup");
+  if (office.includes("<u>Kit</u>")) fail("hq: a lead's name became markup on the scorecard's seats");
   // A member's question can be answered on its card: the answer goes in the task's thread.
   if (!office.includes('id="hq-answer-15"')) fail("hq: a question cannot be answered from its card");
   if (office.includes('id="hq-answer-12"')) fail("hq: stuck work was offered an answer box");

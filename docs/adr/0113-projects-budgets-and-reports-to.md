@@ -19,7 +19,9 @@ home lab's work; the HQ screen's Projects card, desk items and "reports to". Ame
 2026-10-17 (evening) by the owner, below under **Amendment: soft shares, the owner's own
 requests, and claims by brain price**: a member's share is a first claim rather than a wall,
 work the owner asked for is the pool's alone, and a member's claim is weighted by its brain's
-price.
+price. Amended by [0118](0118-elastic-staffing-and-notebooks.md) (2026-10-17): a member on
+furlough takes no share (it is left out of the claims the day's pool is divided by), and the
+scorecard counts each team's seats, how many are at work and how many are on furlough.
 
 ## Context
 

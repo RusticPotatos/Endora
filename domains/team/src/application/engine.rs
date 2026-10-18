@@ -30,12 +30,15 @@ use crate::domain::{
 use crate::domain::{docs, house};
 
 mod evidence;
+mod notebook;
 mod planning;
 mod projects;
 mod replay;
+mod staffing;
 mod wing;
 
 pub use evidence::Called;
+pub use notebook::note_number;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
 pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
@@ -343,6 +346,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .iter()
+            .filter(|m| !m.furloughed())
             .map(|m| money::claim(m.share_percent, m.brain))
             .sum())
     }
@@ -350,6 +354,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// A member's budget for one day: its claim's part of the pool among the paid, and
     /// nothing for a member on the house's model, which costs nothing.
     fn per_day(&self, member: &Member, paid: i64) -> Micros {
+        // A member on furlough takes no share (ADR 0118).
+        if member.furloughed() {
+            return 0;
+        }
         money::member_a_day(
             self.settings.pool_per_month,
             money::claim(member.share_percent, member.brain),
@@ -391,7 +399,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let mut others = Vec::new();
         for other in self.store.members()? {
-            if other.id != member.id && other.brain.cloud() {
+            if other.id != member.id && other.brain.cloud() && !other.furloughed() {
                 others.push(share_left(&other)?);
             }
         }
@@ -722,7 +730,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         if let Some(to) = task.assignee {
-            self.member(to)?;
+            let to = self.member(to)?;
+            if to.furloughed() {
+                return Err(EngineError::Refused(Refusal::Furloughed(to.name)));
+            }
         }
         if let Author::Member(from) = by {
             self.not_covered(from, &task)?;
@@ -907,6 +918,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             project_paused: self.held_by_owner(project)?,
             stopped: self.store.stopped()?,
             paused: member.paused,
+            furloughed: member.furloughed(),
             can_afford_a_turn: self
                 .affordable(member, project, self.asked_by_owner())?
                 .is_some(),
@@ -2017,7 +2029,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .into_iter()
-            .filter(|m| m.id != lead.id && !m.paused)
+            .filter(|m| m.id != lead.id && !m.paused && !m.furloughed())
             .map(|m| format!("{} ({}, {})", m.name, m.role.name(), m.brain.label()))
             .collect();
         if others.is_empty() {
@@ -2044,6 +2056,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 role => role.name(),
             }
         );
+        // The member's own notebook, first: what it learned, newest first (ADR 0118).
+        told.push_str(&self.notebook_said(member, run)?);
         if member.role == Role::Ceo {
             told.push_str(&self.ceo_context(member, run)?);
         }
@@ -2214,7 +2228,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(
                 "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner (a \
                  decision for the board), check_back, note_house, rewrite_house, read_doc, \
-                 accept, hand_to, read_document. ",
+                 accept, hand_to, read_document, note, forget, read_notebook. ",
             );
             told.push_str(beside);
             return Ok(told);
@@ -2229,10 +2243,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         });
         told.push_str(match member.role {
             Role::Reviewer => ", review, read_document. ",
-            Role::Lead => ", propose_project, accept, hand_to, request_hire, read_document. ",
+            Role::Lead => {
+                ", propose_project, accept, hand_to, request_hire, request_staff, read_document. "
+            }
             _ => ", read_document. ",
         });
         told.push_str(beside);
+        told.push_str(notebook::TOOLS);
         Ok(told)
     }
 
@@ -2264,7 +2281,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let team: Vec<String> = members
             .iter()
-            .filter(|m| m.id != ceo.id)
+            .filter(|m| m.id != ceo.id && !m.furloughed())
             .map(|m| {
                 format!(
                     "{} ({}, {}{})",
@@ -2542,6 +2559,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.fire_held_lock(routine, &Firing::Schedule)?;
             report.routines += 1;
         }
+        // Once a day, on the day's first tick: members with nothing to do are offered to the
+        // owner for furlough (ADR 0118).
+        self.idle_look()?;
         // Check-backs whose time came wake their member, while the task is still open.
         for back in self.store.check_backs()? {
             if back.status != CheckBackStatus::Pending || back.due_at > now {
@@ -2773,6 +2793,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             let member = self.member(run.member)?;
             let busy = running.iter().filter(|r| r.member == member.id).count();
+            if member.furloughed() {
+                // Furloughed after its wake queued a turn: there is nothing for it to do.
+                self.end(run, RunStatus::Stopped, "its member is on furlough")?;
+                continue;
+            }
             if busy >= usize::from(member.slots) || member.paused {
                 continue;
             }
@@ -2962,7 +2987,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let evidence = self.evidence_said(cited)?;
         let reviewer = self
             .reviewer()?
-            .filter(|r| !r.paused && r.id != ceo.id && !task.status.finished());
+            .filter(|r| r.at_work() && r.id != ceo.id && !task.status.finished());
         if let Some(reviewer) = reviewer {
             let text = format!("{}\nEvidence: {evidence}", decision.text());
             return self.to_review(run, task, ceo, reviewer.id, &text);
@@ -3061,7 +3086,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let members = self.store.members()?;
         let ceo = members
             .iter()
-            .filter(|m| m.role == Role::Ceo && !m.paused && m.id != member.id)
+            .filter(|m| m.role == Role::Ceo && m.at_work() && m.id != member.id)
             .min_by_key(|m| m.id)
             .cloned();
         if member.role == Role::Ceo || ceo.is_none() {
@@ -3088,7 +3113,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .into_iter()
-            .find(|m| m.id == lead && !m.paused && m.id != member.id);
+            .find(|m| m.id == lead && m.at_work() && m.id != member.id);
         Ok(Some(lead.unwrap_or(above)))
     }
 
@@ -3438,6 +3463,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // The wing (ADR 0115): a lead's request to hire, and a branch to push.
             ("hire", "approve" | "decline") => self.decide_hire(found, decision == "approve")?,
             ("push", "approve" | "decline") => self.decide_push(found, decision == "approve")?,
+            // Elastic staffing (ADR 0118): furlough an idle member or keep it, and bring a
+            // furloughed one back for a lead with a backlog.
+            ("furlough", "approve" | "decline") => {
+                self.decide_furlough(found, decision == "approve")?;
+            }
+            ("recall", "approve" | "decline") => {
+                self.decide_recall(found, decision == "approve")?;
+            }
             ("push", "seen" | "dismiss")
             | ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
@@ -3487,7 +3520,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(member) = task.owner.or(task.assignee) else {
                 continue;
             };
-            if members.iter().any(|m| m.id == member && m.paused) {
+            if members.iter().any(|m| m.id == member && !m.at_work()) {
                 continue;
             }
             let on_the_desk = desk
@@ -3901,6 +3934,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if member.paused {
             return Ok(Some(format!("{} is paused", member.name)));
         }
+        if member.furloughed() {
+            return Ok(Some(format!("{} is on furlough", member.name)));
+        }
         if self.held_by_owner(routine.project)? {
             return Ok(Some("its project is paused".to_owned()));
         }
@@ -4035,6 +4071,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             members.push(json!({
                 "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
                 "paused": m.paused, "slots": m.slots,
+                // On furlough (ADR 0118): when it began, and when it ended if it has.
+                "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,
+                "recalled_at": m.recalled_at,
                 // Whom it reports to (ADR 0113): null for the CEO, who reports to the board.
                 "reports_to": chain::manager(&m, &all_members).map(|r| r.0),
                 // What it thinks with, and what the owner may choose for its role (ADR 0109).
@@ -4183,6 +4222,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(json!({
             "today": scorecard::score(&record, &scorecard::Window::day(day, offset)).json(),
             "week": scorecard::score(&record, &scorecard::Window::days_ending(day, 7, offset)).json(),
+            // Each team's seats, at work and on furlough (ADR 0118).
+            "teams": self.teams_shown()?,
         }))
     }
 

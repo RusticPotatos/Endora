@@ -359,7 +359,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .iter()
-            .filter(|m| m.role == Role::Reviewer && !m.paused && m.id != branch.member)
+            .filter(|m| m.role == Role::Reviewer && m.at_work() && m.id != branch.member)
         {
             self.wake_held_lock(tester.id, Some(task.id), WakeReason::CheckDone)?;
         }
@@ -675,6 +675,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if role.rank() <= asker.role.rank() {
             return Err(EngineError::Refused(Refusal::NotBelowAsker));
         }
+        self.hire_asked(&turn, &asker, name, role, brain, why, cited)
+    }
+
+    /// A hire a lead asks for, on the owner's desk (the lock held, the lead and the role
+    /// already checked): the brain the role may use, evidence from HQ's record, the wing's
+    /// seats, one request at a time. [`Self::request_hire`] and a request for staff with no
+    /// furloughed member to bring back (ADR 0118) both come here.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn hire_asked(
+        &self,
+        turn: &crate::application::ports::Run,
+        asker: &crate::domain::Member,
+        name: Option<&str>,
+        role: Role,
+        brain: &str,
+        why: &str,
+        cited: &[Ref],
+    ) -> Done<crate::domain::DeskId> {
         let brain = Brain::for_role(role, brain).map_err(EngineError::Refused)?;
         if cited.is_empty() {
             return Err(EngineError::Refused(Refusal::NoEvidence));
@@ -688,19 +706,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let members = self.store.members()?;
         let leads = self.wing_leads()?;
-        if wing::in_wing(&asker, &leads, &members) {
+        if wing::in_wing(asker, &leads, &members) {
             let wing: Vec<&crate::domain::Member> = members
                 .iter()
                 .filter(|m| wing::in_wing(m, &leads, &members))
                 .collect();
             wing::may_seat(role, brain, &wing).map_err(EngineError::Refused)?;
         }
-        if self
-            .store
-            .desk()?
-            .iter()
-            .any(|d| d.kind == "hire" && d.status == "waiting" && d.member == Some(asker.id))
-        {
+        if self.store.desk()?.iter().any(|d| {
+            matches!(d.kind.as_str(), "hire" | "recall")
+                && d.status == "waiting"
+                && d.member == Some(asker.id)
+        }) {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
         let name = match name

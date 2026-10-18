@@ -81,6 +81,21 @@ pub fn app(state: State) -> Router {
         .route("/v1/house", post(house_log))
         // Projects and whom members report to (ADR 0113): the owner's, through the node.
         .route("/v1/members/{id}/reports_to", post(reports_to))
+        // Elastic staffing (ADR 0118): the owner furloughs and recalls any member but the CEO.
+        // There is no route that removes a member: nobody is ever fired.
+        .route("/v1/members/{id}/furlough", post(furlough))
+        .route("/v1/members/{id}/recall", post(recall))
+        // A member's notebook (ADR 0118): the owner reads it, and writes, edits and deletes
+        // notes in it (the node maps its DELETE to the last route).
+        .route(
+            "/v1/members/{id}/notebook",
+            get(notebook).post(notebook_add),
+        )
+        .route("/v1/members/{id}/notebook/{note}", post(notebook_edit))
+        .route(
+            "/v1/members/{id}/notebook/{note}/delete",
+            post(notebook_delete),
+        )
         // The owner hires (ADR 0115): a name, a role, a brain, whom it reports to.
         .route("/v1/members", post(hire))
         .route("/v1/projects", post(add_project))
@@ -557,6 +572,74 @@ async fn reports_to(
     let hq = state.hq.clone();
     blocking(move || hq.set_reports_to(MemberId(id), MemberId(req.to))).await?;
     Ok(Json(json!({ "member": id, "reports_to": req.to })))
+}
+
+/// The owner puts a member on furlough: never woken, nothing held, nothing deleted.
+async fn furlough(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.furlough(MemberId(id))).await?;
+    Ok(Json(json!({ "member": id, "furloughed": true })))
+}
+
+/// The owner brings a furloughed member back to work.
+async fn recall(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.recall(MemberId(id))).await?;
+    Ok(Json(json!({ "member": id, "furloughed": false })))
+}
+
+#[derive(Deserialize)]
+struct NoteText {
+    text: String,
+}
+
+/// A member's notebook, for the owner to read.
+async fn notebook(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(
+        blocking(move || hq.notebook_shown(MemberId(id))).await?,
+    ))
+}
+
+/// The owner adds a note to a member's notebook: no evidence, and it says it is theirs.
+async fn notebook_add(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<NoteText>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let note = blocking(move || hq.owner_note(MemberId(id), &req.text)).await?;
+    Ok(Json(json!({ "member": id, "note": note })))
+}
+
+/// The owner rewrites a note in a member's notebook.
+async fn notebook_edit(
+    Extract(state): Extract<State>,
+    Path((id, note)): Path<(i64, i64)>,
+    Json(req): Json<NoteText>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.owner_edit_note(MemberId(id), note, &req.text)).await?;
+    Ok(Json(json!({ "member": id, "note": note })))
+}
+
+/// The owner deletes a note from a member's notebook.
+async fn notebook_delete(
+    Extract(state): Extract<State>,
+    Path((id, note)): Path<(i64, i64)>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.owner_delete_note(MemberId(id), note)).await?;
+    Ok(Json(json!({ "member": id, "note": note, "deleted": true })))
 }
 
 /// A monthly cap as the screen sends it: dollars, as a number or as text; nothing for none.
@@ -1099,9 +1182,11 @@ mod tests {
             .collect();
         // The demo's first turn is its lead's, who keeps the team's lessons and proposes
         // projects, accepts tested work, hands a subordinate's task on, asks the owner to hire
-        // and reads a task's documents, too.
-        assert_eq!(names.len(), 15, "{names:?}");
+        // and reads a task's documents, too, and asks for staff when a project has a backlog.
+        // Every member keeps a notebook of its own, too (ADR 0118): note, forget, read and check.
+        assert_eq!(names.len(), 20, "{names:?}");
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
+        assert!(names.contains(&"request_staff") && names.contains(&"note"));
         assert!(names.contains(&"accept") && names.contains(&"hand_to"));
         assert!(names.contains(&"request_hire") && names.contains(&"read_document"));
         assert!(
@@ -2342,6 +2427,154 @@ mod tests {
         );
         assert_eq!(snap["tasks"][0]["project"], id);
         assert_eq!(snap["members"][2]["reports_to"], other.0);
+    }
+
+    #[tokio::test]
+    async fn the_owner_furloughs_and_recalls_a_member_but_never_the_ceo_and_nobody_is_deleted() {
+        let st = state(false);
+        let ceo = st.hq.seat_ceo("Jane Doe").unwrap().unwrap();
+        let dev = st
+            .hq
+            .hire("Richard Roe", Role::Developer, 40, 2, 0)
+            .unwrap();
+        let app = app(st.clone());
+        let post = |uri: String, signed: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let res = app.oneshot(call("POST", &uri, signed, "{}")).await.unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let unsigned = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                &format!("/v1/members/{}/furlough", dev.0),
+                None,
+                "{}",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            unsigned.status(),
+            StatusCode::UNAUTHORIZED,
+            "the node signs"
+        );
+        let (status, said) = post(format!("/v1/members/{}/furlough", dev.0), Some(TOKEN)).await;
+        assert_eq!(
+            (status, said["furloughed"].clone()),
+            (StatusCode::OK, json!(true))
+        );
+        let (status, _) = post(format!("/v1/members/{}/furlough", dev.0), Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "already on furlough");
+        let (status, refused) = post(format!("/v1/members/{}/furlough", ceo.0), Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            refused["error"].as_str().unwrap().contains("CEO"),
+            "{refused}"
+        );
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(snap["members"][1]["furloughed"], true);
+        assert_eq!(snap["members"][1]["name"], "Richard Roe");
+        let (status, said) = post(format!("/v1/members/{}/recall", dev.0), Some(TOKEN)).await;
+        assert_eq!(
+            (status, said["furloughed"].clone()),
+            (StatusCode::OK, json!(false))
+        );
+        let (status, _) = post(format!("/v1/members/{}/recall", dev.0), Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "not on furlough");
+        assert_eq!(st.hq.store().members().unwrap().len(), 2);
+        // No route removes a member: the router names none that does.
+        let source = include_str!("api.rs");
+        let removes = ["delete(", "remove_member", "fire_member"].map(str::to_owned);
+        assert!(
+            !source
+                .lines()
+                .filter(|l| l.contains(".route(") && l.contains("members"))
+                .any(|l| removes.iter().any(|r| l.contains(r.as_str()))),
+            "a route that removes a member"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owner_reads_adds_edits_and_deletes_a_members_notes_through_the_node() {
+        let st = state(false);
+        let dev = st
+            .hq
+            .hire("Richard Roe", Role::Developer, 40, 2, 0)
+            .unwrap();
+        let other = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
+        let app = app(st.clone());
+        let send = |method: &'static str, uri: String, body: String| {
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(call(method, &uri, Some(TOKEN), &body))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let book = format!("/v1/members/{}/notebook", dev.0);
+        let (status, empty) = send("GET", book.clone(), String::new()).await;
+        assert_eq!(
+            (status, empty["notes"].clone()),
+            (StatusCode::OK, json!([]))
+        );
+        let (status, made) = send(
+            "POST",
+            book.clone(),
+            json!({ "text": "Never at night." }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let note = made["note"].as_i64().unwrap();
+        let (status, _) = send("POST", book.clone(), json!({ "text": "  " }).to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = send(
+            "POST",
+            format!("{book}/{note}"),
+            json!({ "text": "Never at night, ever." }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, shown) = send("GET", book.clone(), String::new()).await;
+        let first = &shown["notes"][0];
+        assert_eq!(
+            (
+                first["text"].clone(),
+                first["from_owner"].clone(),
+                first["stale"].clone(),
+                first["evidence"].clone()
+            ),
+            (
+                json!("Never at night, ever."),
+                json!(true),
+                json!(false),
+                json!([])
+            )
+        );
+        // A note is reached through its own member's notebook only.
+        let (status, _) = send(
+            "POST",
+            format!("/v1/members/{}/notebook/{note}/delete", other.0),
+            "{}".to_owned(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = send("POST", format!("{book}/{note}/delete"), "{}".to_owned()).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, gone) = send("GET", book, String::new()).await;
+        assert_eq!(gone["notes"], json!([]));
+        let (status, _) = send("GET", "/v1/members/999/notebook".to_owned(), String::new()).await;
+        assert_ne!(status, StatusCode::OK);
+        assert_eq!(st.hq.store().members().unwrap().len(), 2);
     }
 
     #[tokio::test]

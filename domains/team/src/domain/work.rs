@@ -149,6 +149,26 @@ pub struct Member {
     /// The member it reports to (ADR 0113); `None` for the CEO, who reports to the board,
     /// and for a member hired before anyone was there to report to.
     pub reports_to: Option<MemberId>,
+    /// When the member was furloughed (ADR 0118), if it ever was: set for the latest furlough.
+    /// A furloughed member is never woken, holds no task, and is left out of every briefing's
+    /// team and of the share arithmetic; it keeps its record, its name and its notebook.
+    pub furloughed_at: Option<Millis>,
+    /// When the latest furlough ended, if it has: the member is at work again.
+    pub recalled_at: Option<Millis>,
+}
+
+impl Member {
+    /// Whether the member is on furlough now (ADR 0118): furloughed and not yet recalled.
+    #[must_use]
+    pub const fn furloughed(&self) -> bool {
+        self.furloughed_at.is_some() && self.recalled_at.is_none()
+    }
+
+    /// Whether the member is available for work: neither paused by the owner nor on furlough.
+    #[must_use]
+    pub const fn at_work(&self) -> bool {
+        !self.paused && !self.furloughed()
+    }
 }
 
 /// Where a goal is.
@@ -476,6 +496,46 @@ pub enum Refusal {
     NotBelowAsker,
     /// Not a document on a task this turn may read.
     NotADocument,
+    /// The CEO is never furloughed: the owner's own line to the team (ADR 0118).
+    IsTheCeo,
+    /// The member is on furlough already.
+    AlreadyFurloughed,
+    /// The member is at work: there is nothing to recall it from.
+    NotFurloughed,
+    /// A member with open work is not furloughed: hand the work on first.
+    HoldsWork {
+        /// Its name.
+        name: String,
+        /// How many open tasks it holds.
+        count: usize,
+    },
+    /// Only a lead asks for staff (ADR 0118).
+    OnlyLeadsStaff,
+    /// Only a project's lead asks for its staff.
+    NotYourProject,
+    /// A request for staff cites too few of the project's open tasks.
+    NoBacklog {
+        /// How many open tasks of the project it cited.
+        cited: usize,
+        /// How many active developers the project has.
+        developers: usize,
+        /// How many it needed to cite.
+        needs: usize,
+    },
+    /// Evidence for staff is an open task of the project, and this is not one.
+    NotOpenInProject(String),
+    /// A note is evidence-backed: at least one reference from HQ's record.
+    NoteNeedsEvidence,
+    /// A note with no words.
+    EmptyNote,
+    /// No such note in the member's notebook.
+    NoSuchNote(i64),
+    /// Forgetting a note says why.
+    ForgetNeedsReason,
+    /// Work is not handed to a member on furlough.
+    Furloughed(String),
+    /// A notebook holds as many notes as it may.
+    NotebookFull,
 }
 
 impl fmt::Display for Refusal {
@@ -640,6 +700,48 @@ impl fmt::Display for Refusal {
             Self::NotADocument => f.write_str(
                 "read_document reads a document of your task, its sub-tasks or the task above: d12, as the thread names them",
             ),
+            Self::IsTheCeo => f.write_str("the CEO is never furloughed"),
+            Self::AlreadyFurloughed => f.write_str("that member is on furlough already"),
+            Self::NotFurloughed => f.write_str("that member is at work: there is nothing to recall"),
+            Self::HoldsWork { name, count } => write!(
+                f,
+                "{name} has {count} open task{}: hand {} on to someone else first",
+                if *count == 1 { "" } else { "s" },
+                if *count == 1 { "it" } else { "them" }
+            ),
+            Self::OnlyLeadsStaff => f.write_str(
+                "only a lead asks for staff; the CEO puts hiring to the board with ask_owner",
+            ),
+            Self::NotYourProject => {
+                f.write_str("only the project's lead asks for its staff: that project is not yours")
+            }
+            Self::NoBacklog { cited, developers, needs } => write!(
+                f,
+                "you cited {cited} open task{} of the project, but it has {developers} active developer{}: a request cites at least {needs}",
+                if *cited == 1 { "" } else { "s" },
+                if *developers == 1 { "" } else { "s" }
+            ),
+            Self::NotOpenInProject(what) => write!(
+                f,
+                "{what} is not an open task of this project: cite its open tasks (task 12)"
+            ),
+            Self::NoteNeedsEvidence => f.write_str(
+                "a note cites its evidence: at least one receipt (r12), task (task 12) or event (event 340) from HQ's record",
+            ),
+            Self::EmptyNote => f.write_str("a note needs words"),
+            Self::NoSuchNote(id) => write!(f, "n{id} is not in your notebook"),
+            Self::ForgetNeedsReason => {
+                f.write_str("say why you forget a note: it was wrong, or is no longer true")
+            }
+            Self::Furloughed(name) => write!(
+                f,
+                "{name} is on furlough and takes no work: hand it to a member at work, or ask for staff with request_staff"
+            ),
+            Self::NotebookFull => write!(
+                f,
+                "your notebook holds {} notes, the most it may: forget some that are wrong or no longer true first",
+                super::notebook::NOTES_MOST
+            ),
         }
     }
 }
@@ -752,6 +854,8 @@ mod tests {
             paused: false,
             brain: crate::domain::brain::Brain::Local,
             reports_to: None,
+            furloughed_at: None,
+            recalled_at: None,
         }
     }
 

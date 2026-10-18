@@ -50,3 +50,9 @@ mod wing_tests;
 
 #[cfg(test)]
 mod replay_tests;
+
+#[cfg(test)]
+mod staffing_tests;
+
+#[cfg(test)]
+mod notebook_tests;

@@ -170,6 +170,8 @@ pub enum Refused {
     /// The task's project is paused by the owner (ADR 0113): nobody takes a turn on it until
     /// the owner resumes it.
     ProjectPaused,
+    /// The member is on furlough (ADR 0118): it is woken again only when recalled.
+    Furloughed,
 }
 
 impl Refused {
@@ -185,6 +187,7 @@ impl Refused {
             Self::InReview => "in_review",
             Self::NotForTheCeo => "not_for_the_ceo",
             Self::ProjectPaused => "project_paused",
+            Self::Furloughed => "furloughed",
         }
     }
 
@@ -200,6 +203,7 @@ impl Refused {
             Self::InReview,
             Self::NotForTheCeo,
             Self::ProjectPaused,
+            Self::Furloughed,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -271,6 +275,8 @@ pub struct WakeSituation {
     pub not_for_the_ceo: bool,
     /// Whether the wake's task is in a project the owner paused (ADR 0113).
     pub project_paused: bool,
+    /// Whether the member is on furlough (ADR 0118): never woken.
+    pub furloughed: bool,
 }
 
 /// What to do with a wake.
@@ -296,6 +302,9 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     }
     if situation.paused {
         return WakeDecision::Refuse(Refused::Paused);
+    }
+    if situation.furloughed {
+        return WakeDecision::Refuse(Refused::Furloughed);
     }
     if situation.not_for_the_ceo {
         return WakeDecision::Refuse(Refused::NotForTheCeo);
@@ -339,6 +348,7 @@ mod tests {
             waits_for_review: false,
             not_for_the_ceo: false,
             project_paused: false,
+            furloughed: false,
         }
     }
 
@@ -491,6 +501,16 @@ mod tests {
             Refused::from_name("not_for_the_ceo"),
             Some(Refused::NotForTheCeo)
         );
+    }
+
+    #[test]
+    fn a_furloughed_member_is_never_woken_whatever_the_wake_is_for() {
+        let out = WakeSituation {
+            furloughed: true,
+            ..quiet()
+        };
+        assert_eq!(decide(ME, &out), WakeDecision::Refuse(Refused::Furloughed));
+        assert_eq!(Refused::from_name("furloughed"), Some(Refused::Furloughed));
     }
 
     #[test]

@@ -966,6 +966,33 @@ repository, and any push or merge by HQ.
 Section 7 above (pull requests on Forgejo and GitHub, opened by the gateway) is superseded for
 now by this flow: branches, not pull requests, and only the owner's push.
 
+### Elastic staffing and notebooks (owner's decisions of 2026-10-17, [ADR 0118](../adr/0118-elastic-staffing-and-notebooks.md))
+
+As built: the team grows and shrinks with its work, and nobody is fired.
+
+- **Furlough** is a member's state (two nullable `members` columns), not the owner's pause: a
+  member on furlough is never woken (`wake.refused: furloughed`), holds no task, is left out of
+  every briefing's team and of the share arithmetic, and keeps its record, name and notebook.
+  The owner furloughs or recalls any member but the CEO from the roster panel
+  (`POST /v1/members/{id}/furlough` and `/recall`, through the node); a member with open work
+  hands it on first. No route or method deletes a member.
+- **The idle look** runs on the first tick of each owner day: a member that is not the CEO or a
+  lead and has had no task, wake or turn for seven days (and no routine of its own on) is offered
+  on the owner's desk, "furlough, or keep?"; kept, it is not offered again for a week.
+- **`request_staff`** (a lead's tool, for its own project): the project's open tasks as evidence,
+  at least twice its active developers. A developer on furlough is offered back (`recall` on the
+  desk); with none it becomes the hire request of 0115 under the same seats. Approving reports
+  the member to the lead.
+- **The scorecard** shows each lead's team: seats, at work, on furlough.
+- **Notebooks**: a `notes` table; every role has `note` (on evidence from HQ's record),
+  `forget` (with a reason), `read_notebook` and `notebook_checked`. The briefing opens with
+  "Your notes (N):" newest first, at most twelve and about 1,200 characters, stale ones marked
+  after 30 days unused, and asks for a tidy a week after the last one (the CEO's briefing carries
+  only the count). A furloughed member's first briefing after a recall says to read its notes
+  first. The owner reads, adds, edits and deletes any member's notes from its panel (`GET` and
+  `POST /v1/hq/members/{id}/notebook`, `POST` and `DELETE` on a note).
+- Scenarios: `domains/team/features/staffing-and-notebooks.feature`.
+
 ### The evening's fixes (owner's decisions of 2026-10-17, as built)
 
 From that day's record, each recorded in its ADR:

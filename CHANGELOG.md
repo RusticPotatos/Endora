@@ -9,6 +9,21 @@ tagged release.
 
 ### Added
 
+- **Elastic staffing and notebooks** ([ADR 0118](docs/adr/0118-elastic-staffing-and-notebooks.md)).
+  The team grows and shrinks with its work, and nobody is fired. A member on **furlough** is
+  never woken, holds no task, is left out of every briefing's team and of the share arithmetic,
+  and keeps its record, name and notebook; the owner furloughs or recalls any member but the CEO
+  from its panel on the roster. Once a day HQ offers the owner a member with a week of nothing
+  to do (furlough or keep), and a lead with a backlog asks for staff with `request_staff` on
+  its project's open tasks: a furloughed developer is brought back first, else it becomes the
+  hire request, under the wing's seats. The scorecard counts each team's seats, at work and on
+  furlough. Each member also keeps a **notebook**: `note` (on evidence from HQ's record, at most
+  300 characters), `forget` (with a reason), `read_notebook` and `notebook_checked` for every
+  role; the notes lead its briefing (the newest twelve, stale ones marked after 30 days unused,
+  a tidy asked after a week; the CEO sees only the count), and the owner reads, adds, edits and
+  deletes any member's from its panel. New nullable columns on `members` and a `notes` table,
+  added when HQ opens its store. Scenarios in
+  `domains/team/features/staffing-and-notebooks.feature`.
 - **Replay, on the HQ screen**: tap a run line, or "Replay this task" on a task card, to read a
   turn back in full: why it was woken, what it was told (folded), every call with its receipt
   and excerpt (Confidential ones too, on the owner's screen), every post with what it cited and
