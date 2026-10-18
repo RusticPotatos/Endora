@@ -203,8 +203,9 @@ and `world_retell_asked:<member>`. No existing row changes; nothing is deleted.
 - Area, project and role pages; proposals to a page; the map and its quiz; "not on the map" gaps
   and broken roads: **built, [0126](0126-the-teams-map.md)**. Still deferred: `read_doc` by
   section, and relations between pieces beyond the addresses a section cites.
-- Transcripts, searching the record, consulting a member, and resuming a runtime's own
-  conversation (the `resumed` situation is named but never chosen).
+- Transcripts, searching the record and consulting a member: **built, [0129](0129-the-teams-history-and-asking-the-past.md)**.
+  Still deferred: resuming a runtime's own conversation (the `resumed` situation is named but
+  never chosen).
 - A second prompt-cache mark from the worker through the relay, for reuse across a member's
   turns close together.
 - Promoting a note from a notebook into a page; a stored stage on notes.
