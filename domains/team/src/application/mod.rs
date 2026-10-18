@@ -3,6 +3,7 @@
 mod chess_tool;
 pub mod engine;
 pub mod guard_ports;
+pub mod history_ports;
 pub mod map_ports;
 pub mod ports;
 pub mod protocol;
@@ -88,3 +89,6 @@ mod map_tests;
 
 #[cfg(test)]
 mod quiz_tests;
+
+#[cfg(test)]
+mod history_tests;

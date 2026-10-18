@@ -20,6 +20,7 @@ use crate::domain::{Branch, Check, Document};
 use crate::domain::{chess, games};
 
 mod guards;
+mod history;
 mod map;
 mod world;
 
@@ -337,6 +338,10 @@ impl SqliteTeamStore {
         conn.execute_batch(guards::SCHEMA).map_err(backend)?;
         // The team's map (ADR 0126): new tables only, made if missing.
         conn.execute_batch(map::SCHEMA).map_err(backend)?;
+        // The team's history (ADR 0129): new tables only, made if missing. The full-text index
+        // is made if this SQLite has FTS5; searching works without it.
+        conn.execute_batch(history::SCHEMA).map_err(backend)?;
+        let _ = conn.execute_batch(history::FULL_TEXT);
         Ok(Self {
             conn: Mutex::new(conn),
         })

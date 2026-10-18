@@ -456,13 +456,31 @@ fn turn_with_claude_code(setup: &Setup) -> Result<Taken, Stopped> {
     command.env("ENDORA_MAP_FILE", &map_file);
     let (stdout, code, stderr) = run_within(command, &briefing, TURN_WITHIN)?;
     let kept = read_kept(&ledger);
+    let done = finished(&stdout, code, &stderr);
+    // What the turn said is kept by HQ for a while (ADR 0129), however it ended: the briefing
+    // and the last word are all the worker has of a Claude Code turn.
+    let how_it_ended = match (&kept.over, kept.asked, &done) {
+        (Some(_), _, _) => "The relay or HQ ended the turn.".to_owned(),
+        (None, true, _) => "It ended in a question to the owner.".to_owned(),
+        (None, false, Ok(d)) if d.taken == Taken::OutOfRounds => "It ran out of rounds.".to_owned(),
+        (None, false, Ok(d)) => format!(
+            "It took {} rounds, about ${:.4} by its own reckoning.",
+            d.turns, d.cost
+        ),
+        (None, false, Err(_)) => "It failed.".to_owned(),
+    };
+    let last_word = done.as_ref().map_or("", |d| d.text.as_str());
+    node.tell_conversation(
+        "claude-code",
+        &crate::transcript::claude_code(&briefing, last_word, &how_it_ended),
+    );
     if let Some(why) = kept.over {
         return Err(Stopped::Over(why));
     }
     if kept.asked {
         return Ok(Taken::AskedTheOwner);
     }
-    let done = finished(&stdout, code, &stderr)?;
+    let done = done?;
     if done.taken != Taken::Answered {
         return Ok(done.taken);
     }

@@ -645,9 +645,20 @@ fn an_action_put_on_the_owners_desk_for_approval_ends_the_turn_as_a_question_doe
         1,
         "the model is not asked again"
     );
+    // The last thing it does is tell the node what it said (ADR 0129), after the action.
+    let paths: Vec<String> = to_node
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.path.clone())
+        .collect();
     assert_eq!(
-        to_node.lock().unwrap().last().map(|s| s.path.clone()),
-        Some("/team-relay/contracts/sonarr_remove_and_search".to_owned())
+        paths.iter().rev().nth(1),
+        Some(&"/team-relay/contracts/sonarr_remove_and_search".to_owned())
+    );
+    assert_eq!(
+        paths.last().map(String::as_str),
+        Some("/team-relay/transcript")
     );
     assert!(
         !methods(&to_hq).contains(&"tools/call post".to_owned()),
@@ -757,8 +768,27 @@ fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
             "/team-relay/contracts",
             "/team-relay/contracts/homelab_status",
             "/team-relay/contracts/restart_container",
+            "/team-relay/transcript",
         ]
     );
+    // What it sent is the whole conversation: the briefing, the calls and what they came to.
+    let said = to_node.last().unwrap();
+    assert_eq!(said.body["runtime"], "worker");
+    assert_eq!(
+        said.header("authorization"),
+        Some(format!("Bearer {TOKEN}").as_str())
+    );
+    let text = said.body["text"].as_str().unwrap();
+    for part in [
+        "--- user ---\nYou are Jane, the team's developer.",
+        "--- call: homelab_status ---",
+        "--- result ---\n{\"stale\":false,\"services\":[]}",
+        "--- call: restart_container ---",
+        "Refused: sonarr was not restarted",
+    ] {
+        assert!(text.contains(part), "{part:?} in\n{text}");
+    }
+    assert!(!text.contains(TOKEN), "the token is never in what it tells");
     assert_eq!(to_node[1].body, json!({}));
     assert_eq!(
         to_node[2].body,
@@ -860,6 +890,7 @@ fn the_same_call_again_with_nothing_new_is_answered_from_what_it_already_has() {
             "/team-relay/contracts/homelab_status",
             "/team-relay/contracts/restart_container",
             "/team-relay/contracts/homelab_status",
+            "/team-relay/transcript",
         ]
     );
 }
@@ -1383,6 +1414,7 @@ fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_sta
             "/team-relay/v1/messages",
             "/team-relay/contracts/homelab_status",
             "/team-relay/v1/messages",
+            "/team-relay/transcript",
         ]
     );
     let first = &to_node[1].body;
@@ -1459,7 +1491,7 @@ fn with_claude_code(
 #[test]
 fn a_claude_code_turn_is_hqs_bookkeeping_then_claude_code_headless_then_its_last_word() {
     let (hq_url, to_hq) = hq(None);
-    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let (node_url, to_node) = node(contracts_that_say_what_they_are(), None);
     let dir = folder("turn");
     let work = dir.join("work");
     std::fs::create_dir_all(&work).unwrap();
@@ -1499,6 +1531,30 @@ fn a_claude_code_turn_is_hqs_bookkeeping_then_claude_code_headless_then_its_last
         "{text}"
     );
     assert_eq!(last["last_word"], true);
+    // What the worker has of the session is told to the node, for HQ to keep (ADR 0129): the
+    // briefing it was given, its last word, and that the session itself is not kept.
+    let told: Vec<Sent> = to_node
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.path == "/team-relay/transcript")
+        .cloned()
+        .collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0].body["runtime"], "claude-code");
+    let talk = told[0].body["text"].as_str().unwrap();
+    assert!(
+        talk.starts_with("--- user ---\nYou are Jane, the team's developer."),
+        "{talk}"
+    );
+    assert!(
+        talk.contains("--- assistant ---\nListed what is watched;"),
+        "{talk}"
+    );
+    assert!(
+        talk.contains("keeps no session") && talk.contains("6 rounds"),
+        "{talk}"
+    );
 
     let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
     let args: Vec<String> = read("args").lines().map(str::to_owned).collect();

@@ -39,6 +39,7 @@ mod games;
 mod gaps;
 mod guards;
 mod health;
+mod history;
 mod ladder;
 mod map;
 mod memory;
@@ -59,6 +60,7 @@ mod world;
 pub use areas::{DAILY_REVIEW, PATTERNS_ASKS, REPORT_ASKS};
 pub use evidence::Called;
 pub use gaps::GapReported;
+pub use history::TranscriptKept;
 pub use map::MapMigrated;
 pub use notebook::note_number;
 pub use office::Standing;
@@ -2907,6 +2909,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
         // gets its page.
         self.migrate_map_held()?;
+        // The team's history (ADR 0129): what is past its thirty days, or beyond the last five
+        // of a member on a task, is let go; handover notes and posts are not touched.
+        self.history_tick(now)?;
         // The nightly quiz on the map (ADR 0126) takes a free member's downtime first.
         if self.settings.quiz {
             self.quiz_look(now)?;

@@ -259,6 +259,43 @@ pub(crate) async fn receipt(
 }
 
 #[derive(serde::Deserialize)]
+pub(crate) struct TranscriptTold {
+    /// The turn's own token, as its worker presented it to the node.
+    token: String,
+    /// What ran the turn: `worker` or `claude-code`.
+    #[serde(default)]
+    runtime: String,
+    /// The conversation as plain text, scrubbed of secrets by the node.
+    #[serde(default)]
+    text: String,
+}
+
+/// For the node's transcripts (ADR 0129): the conversation a turn had, told with the turn's own
+/// token while it runs, scrubbed by the node. HQ caps it, marks the tier of what the turn read,
+/// and keeps it for thirty days. Signed by the node; a token that opens no running turn keeps
+/// nothing.
+pub(crate) async fn transcript(
+    Extract(state): Extract<State>,
+    Json(req): Json<TranscriptTold>,
+) -> Response {
+    let hq = state.hq.clone();
+    let kept = tokio::task::spawn_blocking(move || {
+        hq.record_transcript(&req.token, &req.runtime, &req.text)
+    })
+    .await;
+    match kept {
+        Ok(Ok(Some(kept))) => Json(json!({
+            "kept": true, "cut": kept.cut, "est_tokens": kept.est_tokens,
+            "tier": endora_team::domain::history::tier_name(kept.tier),
+        }))
+        .into_response(),
+        Ok(Ok(None)) => Json(json!({ "kept": false })).into_response(),
+        Ok(Err(e)) => refused(&e),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub(crate) struct NoticeTold {
     /// The turn it is from, if any.
     #[serde(default)]

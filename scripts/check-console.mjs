@@ -1463,6 +1463,24 @@ if (failures.length) {
     '<span class="hq-unsupported">unsupported</span>', "EL-7 is in review", "&lt;u&gt;odd&lt;/u&gt;", "Look at &lt;b&gt;sonarr&lt;/b&gt;", 'data-act="go:hq"']) {
     if (!last.includes(said)) fail(`replay: a task's latest turn does not show ${said}`);
   }
+  if (last.includes("What was said")) fail("replay: a turn with no kept conversation shows one");
+  // A kept conversation (ADR 0129) is shown after what happened, every word of it as text.
+  const talked = { runtime: "worker", brain: "local", tier: "confidential", est_tokens: 321, cut: true, kept_until: 4102444800000,
+    text: "--- user ---\nYou are Bo. </pre><img src=t onerror=alert(12)>\n--- assistant ---\nI will cap it. <script>alert(13)</script>\n--- call: post ---\n{\"task\":7}\n--- result: refused ---\nno <u>way</u>\n--- result ---\nPosted.\n--- note ---\nHQ cut nothing." };
+  runInContext(`REPLAY.runs[1].transcript = ${JSON.stringify(talked)};`, context);
+  const talk = runInContext("viewReplay()", context);
+  for (const said of ["<h2>What was said</h2>", "worker · local · about 321 tokens", '<span class="hq-replay-conf">confidential</span>',
+    "its middle was cut", "The briefing it was given", "&lt;/pre&gt;&lt;img src=t onerror=alert(12)&gt;",
+    "I will cap it. &lt;script&gt;alert(13)&lt;/script&gt;", "<b>post</b>", "&lt;u&gt;way&lt;/u&gt;", "Posted.", "HQ cut nothing.",
+    "after that only the handover notes and last words remain"]) {
+    if (!talk.includes(said)) fail(`replay: a kept conversation does not show ${said}`);
+  }
+  for (const raw of ["<img src=t", "<script>alert(13)", "<u>way"]) {
+    if (talk.includes(raw)) fail(`replay: ${raw} in a conversation became markup`);
+  }
+  if (!/<span class="hq-replay-tag">refused<\/span>/.test(talk)) fail("replay: a refused call's result is not marked refused");
+  if (talk.indexOf("What happened") > talk.indexOf("What was said")) fail("replay: the conversation comes before what happened");
+  runInContext("delete REPLAY.runs[1].transcript;", context);
   if (/<details class="hq-replay-told" open/.test(last)) fail("replay: what the member was told is not folded");
   if (!/data-act="replay:step:next" disabled/.test(last)) fail("replay: the latest turn offers a next one");
   if (last.includes("matched by time")) fail("replay: a turn since events name theirs says it was matched by time");

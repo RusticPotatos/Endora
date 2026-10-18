@@ -423,6 +423,8 @@ pub enum Refusal {
     World(super::world::WorldRefusal),
     /// What the guards against how agent teams fail refuse (ADR 0124).
     Guard(super::guards::GuardRefusal),
+    /// What the team's history refuses (ADR 0129): transcripts, asking the record, consulting.
+    History(super::history::HistoryRefusal),
     /// Not in Endora's public library.
     NotADoc,
     /// A decision for the board says what is to be decided, what the CEO recommends, and why.
@@ -688,6 +690,7 @@ impl fmt::Display for Refusal {
             ),
             Self::World(refused) => refused.fmt(f),
             Self::Guard(refused) => refused.fmt(f),
+            Self::History(refused) => refused.fmt(f),
             Self::NotADoc => f.write_str(
                 "read_doc reads Endora's public library only: docs/standards.md, or a path like docs/adr/0111-the-ceo-and-the-chain-of-command.md, docs/plans/endora-hq.md or docs/drafts/ansible-nas-AGENTS.md",
             ),

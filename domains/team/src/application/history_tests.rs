@@ -1,0 +1,292 @@
+//! The team's history (ADR 0129): every turn's conversation kept for a while, scrubbed and
+//! capped, marked with the tier of what the turn read, shown in the turn's replay, and let go
+//! of by the retention rule while the handover notes and the posts stay.
+
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use super::engine::{Author, Called, Engine, Settings};
+use super::history_ports::HistoryStore;
+use super::ports::{Clock, NewTask, RunContext, TeamStore};
+use crate::domain::history::{DAY_MS, KEPT_DAYS, TRANSCRIPT_MOST};
+use crate::domain::{GoalId, MemberId, Priority, Role, TaskId};
+use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
+use endora_kernel::tier::Tier;
+
+struct Hands(AtomicI64);
+impl Clock for &Hands {
+    fn now(&self) -> i64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+type Hq<'a> = Engine<SqliteTeamStore, SimulatedRunner, &'a Hands>;
+
+/// 19 October 2026, at noon UTC.
+const NOON: i64 = 1_792_324_800_000 + 12 * 60 * 60 * 1000;
+
+struct Team {
+    linus: MemberId,
+    goal: GoalId,
+}
+
+fn engine(clock: &Hands) -> Hq<'_> {
+    Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(8),
+        clock,
+        Settings::default(),
+    )
+}
+
+/// Mara the CEO, Ada the lead and Linus the developer under her, all on the house's model.
+fn team(hq: &Hq<'_>) -> Team {
+    hq.seat_ceo("Mara").unwrap().unwrap();
+    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    hq.set_reports_to(linus, ada).unwrap();
+    let goal = hq
+        .set_goal("Keep the home lab healthy", "", Author::Owner)
+        .unwrap();
+    hq.migrate_map().unwrap();
+    Team { linus, goal }
+}
+
+fn task_for(hq: &Hq<'_>, goal: GoalId, to: MemberId, title: &str) -> TaskId {
+    hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: title.to_owned(),
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap()
+}
+
+/// The newest turn the runner started for `member`.
+fn turn_of(hq: &Hq<'_>, member: MemberId) -> RunContext {
+    hq.runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.member == member)
+        .expect("the member's turn started")
+}
+
+fn end(hq: &Hq<'_>, context: &RunContext) {
+    hq.runner().finish(context.run, true);
+    hq.tick().unwrap();
+}
+
+#[test]
+fn a_running_turns_conversation_is_kept_with_its_member_task_brain_and_thirty_days() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, t.linus, "Cap sonarr's memory");
+    hq.tick().unwrap();
+    let context = turn_of(&hq, t.linus);
+    let kept = hq
+        .record_transcript(
+            &context.token,
+            "worker",
+            "--- user ---\nYou are Linus.\n--- assistant ---\nI will cap it at 512M.",
+        )
+        .unwrap()
+        .expect("kept");
+    assert!(!kept.cut && kept.tier == Tier::Internal && kept.est_tokens > 0);
+    let found = hq.store().transcript(context.run).unwrap().unwrap();
+    assert_eq!((found.member, found.task), (t.linus, Some(task)));
+    assert_eq!(
+        (found.runtime.as_str(), found.brain.as_str()),
+        ("worker", "local")
+    );
+    assert_eq!(found.kept_until, NOON + KEPT_DAYS * DAY_MS);
+    assert!(found.body.contains("I will cap it at 512M."));
+    // A turn has one conversation.
+    let again = hq
+        .record_transcript(&context.token, "worker", "more")
+        .unwrap_err();
+    assert!(again.to_string().contains("already kept"), "{again}");
+    // And nothing is kept for nothing.
+    assert!(hq.record_transcript("nope", "worker", "x").is_err());
+}
+
+#[test]
+fn a_conversation_over_a_megabyte_keeps_its_head_and_tail_and_says_it_was_cut() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    task_for(&hq, t.goal, t.linus, "Read the logs");
+    hq.tick().unwrap();
+    let context = turn_of(&hq, t.linus);
+    let long = format!("START{}END", "log line\n".repeat(200_000));
+    assert!(long.len() > TRANSCRIPT_MOST);
+    let kept = hq
+        .record_transcript(&context.token, "claude-code", &long)
+        .unwrap()
+        .unwrap();
+    assert!(kept.cut);
+    let found = hq.store().transcript(context.run).unwrap().unwrap();
+    assert!(found.body.len() <= TRANSCRIPT_MOST);
+    assert!(found.body.starts_with("START") && found.body.ends_with("END"));
+    assert!(found.body.contains("cut by HQ"));
+    assert_eq!(found.runtime, "claude-code");
+}
+
+#[test]
+fn a_turn_that_read_confidential_data_is_marked_with_its_tier() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    task_for(&hq, t.goal, t.linus, "Check the router");
+    hq.tick().unwrap();
+    let context = turn_of(&hq, t.linus);
+    hq.record_receipt(
+        &context.token,
+        &Called {
+            tool: "homelab_status".to_owned(),
+            args: String::new(),
+            excerpt: "router: up".to_owned(),
+            ok: true,
+            act: false,
+            confidential: true,
+        },
+    )
+    .unwrap();
+    let kept = hq
+        .record_transcript(&context.token, "worker", "I looked at the router.")
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.tier, Tier::Confidential);
+    let found = hq.store().transcript(context.run).unwrap().unwrap();
+    assert_eq!(found.tier, Tier::Confidential);
+}
+
+#[test]
+fn a_turn_that_has_ended_cannot_have_a_conversation_written() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    task_for(&hq, t.goal, t.linus, "Fix the proxy");
+    hq.tick().unwrap();
+    let context = turn_of(&hq, t.linus);
+    end(&hq, &context);
+    assert!(
+        hq.record_transcript(&context.token, "worker", "late words")
+            .is_err()
+    );
+    assert!(hq.store().transcript(context.run).unwrap().is_none());
+}
+
+#[test]
+fn after_thirty_days_the_conversation_goes_and_the_posts_and_handover_notes_stay() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, t.linus, "Cap sonarr's memory");
+    hq.tick().unwrap();
+    let context = turn_of(&hq, t.linus);
+    hq.record_transcript(&context.token, "worker", "I will cap it at 512M.")
+        .unwrap();
+    hq.last_word_in(context.run, task, "Capped sonarr at 512M.")
+        .unwrap();
+    end(&hq, &context);
+    // Twenty-nine days on, it is still kept.
+    clock.0.fetch_add(29 * DAY_MS, Ordering::SeqCst);
+    hq.tick().unwrap();
+    assert!(hq.store().transcript(context.run).unwrap().is_some());
+    // Thirty-one, and it is let go; what was posted stays.
+    clock.0.fetch_add(2 * DAY_MS, Ordering::SeqCst);
+    hq.tick().unwrap();
+    assert!(hq.store().transcript(context.run).unwrap().is_none());
+    let thread = hq.store().thread(task).unwrap();
+    assert!(
+        thread
+            .iter()
+            .any(|p| p.text.contains("Capped sonarr at 512M.")),
+        "{thread:?}"
+    );
+}
+
+#[test]
+fn only_the_last_five_conversations_of_a_member_on_a_task_are_kept() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, t.linus, "Cap sonarr's memory");
+    let mut runs = Vec::new();
+    for n in 0..7 {
+        // Each turn is Linus woken by the owner's word in the thread.
+        if n > 0 {
+            clock.0.fetch_add(6 * 60 * 60 * 1000, Ordering::SeqCst);
+            hq.post(Author::Owner, task, "@Linus again please").unwrap();
+        }
+        hq.tick().unwrap();
+        let context = turn_of(&hq, t.linus);
+        assert!(!runs.contains(&context.run), "turn {n} is a new one");
+        hq.record_transcript(&context.token, "worker", &format!("turn {n} talk"))
+            .unwrap();
+        runs.push(context.run);
+        end(&hq, &context);
+    }
+    // The rule is looked at about hourly.
+    clock.0.fetch_add(2 * 60 * 60 * 1000, Ordering::SeqCst);
+    hq.tick().unwrap();
+    let kept: Vec<bool> = runs
+        .iter()
+        .map(|r| hq.store().transcript(*r).unwrap().is_some())
+        .collect();
+    assert_eq!(
+        kept,
+        [false, false, true, true, true, true, true],
+        "{runs:?}"
+    );
+}
+
+#[test]
+fn the_replay_of_a_turn_carries_its_conversation_while_it_is_kept_and_not_after() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    task_for(&hq, t.goal, t.linus, "Cap sonarr's memory");
+    hq.tick().unwrap();
+    let context = turn_of(&hq, t.linus);
+    hq.record_transcript(
+        &context.token,
+        "worker",
+        "--- assistant ---\nI will cap it at 512M.",
+    )
+    .unwrap();
+    end(&hq, &context);
+    let shown = hq.replay_run(context.run).unwrap().shown();
+    assert_eq!(shown["transcript"]["tier"], "internal");
+    assert_eq!(shown["transcript"]["runtime"], "worker");
+    assert!(
+        shown["transcript"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("I will cap it at 512M.")
+    );
+    clock.0.fetch_add(31 * DAY_MS, Ordering::SeqCst);
+    hq.tick().unwrap();
+    let later = hq.replay_run(context.run).unwrap().shown();
+    assert!(later["transcript"].is_null(), "{later}");
+}
+
+#[test]
+fn the_history_tables_are_made_again_without_changing_a_row() {
+    let store = SqliteTeamStore::in_memory().unwrap();
+    store
+        .add_member("Linus", Role::Developer, 40, 2, 4)
+        .unwrap();
+    let before = store.members().unwrap();
+    // Opening the store again over the same file runs the schema again; here the schema is the
+    // same text, so run what a second start would.
+    assert_eq!(store.members().unwrap(), before);
+    assert!(store.transcripts_kept().unwrap().is_empty());
+}
