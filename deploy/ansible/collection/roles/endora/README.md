@@ -60,6 +60,7 @@ endora_docker_observer: true     # a read-only view of this host's containers
   endora_sound_airplay2_gateway: <your router>
   endora_sound_airplay2_ip: <a free address outside the DHCP pool, reserved in the router>
   # endora_sound_airplay2_latency: 0.5      # seconds it hands its sound over early; tune by ear
+  # endora_sound_airplay2_network: <name>   # join a macvlan the LAN already has (one per subnet)
   ```
 
   The NAS cannot reach the door's address (macvlan), by design. Endora's `docs/homelab.md`,

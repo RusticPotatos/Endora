@@ -54,6 +54,20 @@
         endora_sound_airplay2_ip: 192.168.1.10
         endora_sound_airplay2_latency: 0.25
 
+    - name: With the door joining a macvlan network the LAN already has
+      ansible.builtin.template:
+        src: ../templates/endora.env.j2
+        dest: "{{ out }}/shared.env"
+        mode: "0600"
+      vars:
+        endora_sound: true
+        endora_sound_airplay2: true
+        endora_sound_airplay2_parent: eth0
+        endora_sound_airplay2_subnet: 192.168.1.0/24
+        endora_sound_airplay2_gateway: 192.0.2.1
+        endora_sound_airplay2_ip: 192.168.1.10
+        endora_sound_airplay2_network: lan_macvlan
+
     - name: Override with an address
       ansible.builtin.template:
         src: ../templates/docker-compose.override.yml.j2
@@ -75,6 +89,7 @@
         full: "{{ lookup('file', out ~ '/full.env').splitlines() }}"
         bare: "{{ lookup('file', out ~ '/bare.env').splitlines() }}"
         door: "{{ lookup('file', out ~ '/door.env').splitlines() }}"
+        shared: "{{ lookup('file', out ~ '/shared.env').splitlines() }}"
         san: "{{ lookup('file', out ~ '/san.yml') | from_yaml }}"
         nosan: "{{ lookup('file', out ~ '/nosan.yml') | from_yaml }}"
 
@@ -117,6 +132,10 @@
           - "'SOUND_AIRPLAY2_HOSTNAME=endora-mixer' in door"
           - "'SOUND_AIRPLAY2_LATENCY=0.25' in door"
           - "door | select('match', 'SOUND_AIRPLAY2_MAC') | list | length == 0"
+          # Its own network unless told to join one the LAN already has.
+          - "door | select('match', 'SOUND_AIRPLAY2_NETWORK|SOUND_AIRPLAY2_SHARED') | list | length == 0"
+          - "'SOUND_AIRPLAY2_NETWORK=lan_macvlan' in shared"
+          - "'SOUND_AIRPLAY2_SHARED=true' in shared"
 
     - name: No profiles and everything missing, with nothing set
       ansible.builtin.assert:

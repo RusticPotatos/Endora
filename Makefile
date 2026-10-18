@@ -111,12 +111,19 @@ export ENDORA_SOUND_DIR
 # SOUND_AIRPLAY2_SUBNET, SOUND_AIRPLAY2_GATEWAY and SOUND_AIRPLAY2_IP (a free address outside
 # the router's DHCP pool). Optional: SOUND_AIRPLAY2_MAC, SOUND_AIRPLAY2_HOSTNAME (endora-mixer)
 # and SOUND_AIRPLAY2_LATENCY (0.5, the seconds it hands its sound over early). Anything but 1:
-# the classic door, as before.
+# the classic door, as before. Docker allows one macvlan network per LAN subnet: when another
+# container already has one, SOUND_AIRPLAY2_NETWORK = its name joins it instead of making one
+# (`docker network ls --filter driver=macvlan` on the NAS).
 SOUND_AIRPLAY2 ?= 0
 comma := ,
 ifeq ($(SOUND_AIRPLAY2),1)
 override COMPOSE_PROFILES := $(if $(COMPOSE_PROFILES),$(COMPOSE_PROFILES)$(comma))airplay2
 endif
+ifneq ($(SOUND_AIRPLAY2_NETWORK),)
+SOUND_AIRPLAY2_SHARED := true
+endif
+export SOUND_AIRPLAY2_NETWORK
+export SOUND_AIRPLAY2_SHARED
 export SOUND_AIRPLAY2
 export SOUND_AIRPLAY2_PARENT
 export SOUND_AIRPLAY2_SUBNET
