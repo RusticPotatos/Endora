@@ -126,6 +126,10 @@ pub struct AppState {
     /// The turns with a call to Anthropic in flight through HQ's model relay: a turn's calls
     /// go one at a time, so each is capped by what is left once the one before was charged.
     pub(crate) relay_calls: Arc<relay::TurnCalls>,
+    /// The bench's credential (ADR 0123), when `ENDORA_BENCH_TOKEN_FILE` names one: a token
+    /// that opens the model relay alone, for measuring an external agent harness, metered as
+    /// `bench` and capped by the day. `None`: no bench.
+    pub(crate) bench: Option<Arc<bench::Bench>>,
     /// How the home lab is built (ADR 0112): the lab's ansible-nas docs, the owner's retired
     /// list, and the map the team reads, kept a minute. From the environment
     /// (`ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`, `ENDORA_LAB_RETIRED`).
@@ -309,6 +313,7 @@ impl AppState {
             relay_upstream: Arc::new(endora_infrastructure::relay::ANTHROPIC.to_owned()),
             // Read as `main` reads them, with its defaults.
             relay_calls: Arc::default(),
+            bench: None,
             lab: Arc::new(contracts::LabKnowledge::from_env()),
             installed_model: Arc::new((
                 std::env::var("ENDORA_MODEL_URL")
@@ -347,6 +352,26 @@ impl AppState {
     #[must_use]
     pub fn with_hq(mut self, hq: endora_infrastructure::HqClient) -> Self {
         self.hq = Some(Arc::new(hq));
+        self
+    }
+
+    /// Opens the bench (ADR 0123) from `ENDORA_BENCH_TOKEN_FILE` and `ENDORA_BENCH_CAP_CENTS`,
+    /// when a file is named; says so, never the token.
+    #[must_use]
+    pub fn with_bench_from_env(self) -> Self {
+        let Some(bench) = bench::Bench::from_env() else {
+            return self;
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let dollars = bench.cap_micros() as f64 / 1_000_000.0;
+        println!(
+            "bench: a credential for the model relay alone, Haiku or Sonnet, ${dollars:.2} a day"
+        );
+        self.with_bench(bench)
+    }
+
+    pub(crate) fn with_bench(mut self, bench: bench::Bench) -> Self {
+        self.bench = Some(Arc::new(bench));
         self
     }
 
@@ -722,19 +747,25 @@ pub fn app(state: AppState) -> Router {
 /// node's self-signed certificate, and a turn's own token is its credential, not the owner's
 /// sign-in. Every route here needs a token: a turn's, or the runner's for its routes.
 pub fn team_relay(state: AppState) -> Router {
-    relay_routes().with_state(state)
-}
-
-/// The most a contract call may carry: a submitted bundle (8 MB) as base64, and its words.
-const CONTRACT_CALL_MOST: usize = 12 * 1024 * 1024;
-
-fn relay_routes() -> Router<AppState> {
+    // The bench's token (ADR 0123) opens the model relay and nothing else here.
+    let fenced = relay_routes().route_layer(from_fn_with_state(state.clone(), bench::fenced));
     Router::new()
         .route("/team-relay/v1/messages", post(relay::messages))
         .route(
             "/team-relay/v1/messages/count_tokens",
             post(relay::count_tokens),
         )
+        .route("/team-relay/bench", get(bench::today_so_far))
+        .merge(fenced)
+        .with_state(state)
+}
+
+/// The most a contract call may carry: a submitted bundle (8 MB) as base64, and its words.
+const CONTRACT_CALL_MOST: usize = 12 * 1024 * 1024;
+
+/// The team listener's routes but the model relay's own two.
+fn relay_routes() -> Router<AppState> {
+    Router::new()
         .route(
             "/team-relay/local/v1/chat/completions",
             post(relay::chat_completions),
@@ -954,6 +985,8 @@ use brain::*;
 mod hq;
 // HQ's model relay: a team member's only way to a model (ADR 0102, phase 4).
 mod relay;
+// The bench's credential: the model relay alone, for an external agent harness (ADR 0123).
+mod bench;
 // The team's contracts: what Endora offers HQ's workers on the home lab (ADR 0106).
 mod contracts;
 // The bridge: Endora's capabilities as the team's tools (ADR 0108).

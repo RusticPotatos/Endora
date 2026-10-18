@@ -63,6 +63,39 @@ nothing is lost. To set it up:
 Then, when a card says "Push hq/… to your fork", Approve pushes that branch; you merge it on
 GitHub when you are ready. HQ never opens a pull request and never merges.
 
+## The bench's credential (ADR 0123)
+
+The bench measures an external agent harness against HQ's wing on one task, in the Pi's
+sandbox. Its seats reach Claude only through the node's relay, with a token of the bench's
+own that opens the relay alone (Haiku or Sonnet, never Opus), at most `ENDORA_BENCH_CAP_CENTS`
+a day ($2.00 unless set), metered in the node's usage log as `bench` and never charged to HQ.
+It is off until you create its file, and off again the moment you delete it. To turn it on:
+
+1. On the NAS, make a folder of its own and a random token in it, readable by the node alone:
+
+   ```sh
+   sudo install -d -m 0700 /srv/endora/bench-token
+   openssl rand -hex 32 | sudo tee /srv/endora/bench-token/token >/dev/null
+   sudo chmod 0600 /srv/endora/bench-token/token
+   ```
+
+   (Any folder works; `/srv/endora/bench-token` is only an example.)
+2. In `local.mk`, name the folder, and the day's cap in cents if not $2.00:
+
+   ```make
+   ENDORA_BENCH_TOKEN = /srv/endora/bench-token
+   # ENDORA_BENCH_CAP_CENTS = 200
+   ```
+
+3. `make deploy`. The node mounts the folder read-only at `/bench-token` and says
+   `bench: a credential for the model relay alone, Haiku or Sonnet, $2.00 a day` at start.
+   It never prints the token.
+
+The token is read from that file when the bench runs, passed into the bench's container and
+nowhere else; never paste it into a chat, a file in git or an image. What the bench has spent
+today: `GET http://<the NAS>:8788/team-relay/bench` with the token as `Authorization: Bearer`.
+To turn it off: delete the file (no restart needed), and remove the line from `local.mk`.
+
 ## Docker boundary
 
 For the supplied Compose deployment, enable the optional `homelab` profile after

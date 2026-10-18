@@ -138,21 +138,11 @@ VOLUME /data
 EXPOSE 8791
 ENTRYPOINT ["endora-sound-hub"]
 
-# The workbench (ring 1): a team member's disposable sandbox on the Pi, one container a turn,
-# where the worker gives the model a real shell. Built with `--target workbench` and tagged
-# endora-workbench:latest:
-#   docker buildx build --platform linux/arm64 --target workbench -t endora-workbench:latest --load .
-# It is not the node's image: the node keeps the last stage. Run with a read-only root and /work
-# as a tmpfs owned by the workbench user. The sandbox is offline (ADR 0110): it reaches the
-# node's team gateway and nothing else, so everything a turn may need is in this image; the
-# egress proxy is designed and deferred. The same image runs the wing's check jobs (ADR 0115,
-# ENDORA_CHECK=1): no model, a job token, the lab's own checks on a submitted branch.
-FROM debian:bookworm-slim AS workbench
+# The lab's checks, built once for the workbench and the bench (ADR 0115, 0123).
+FROM debian:bookworm-slim AS lab-checks
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        bash ca-certificates curl dnsutils git iputils-ping jq less procps python3 python3-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --uid 10001 --home-dir /work --no-create-home --shell /bin/bash workbench
+    && apt-get install -y --no-install-recommends ca-certificates python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/*
 # The lab's checks (ADR 0115), as the fork's CI runs them, in a venv of their own: ansible-core
 # (the engine alone; the `ansible` package is hundreds of collections the checks never load, and
 # minutes more of arm64 build), the fork's CI pins of ansible-lint and yamllint, and the
@@ -174,6 +164,12 @@ RUN python3 -m venv /opt/venv \
     && find /opt/venv -type d -name '__pycache__' -prune -exec rm -rf '{}' + \
     && rm -rf /root/.ansible /root/.cache /opt/venv/collections/ansible_collections/*/*/docs \
     && chmod -R a+rX /opt/venv
+
+# Claude Code, one pinned release, for the workbench and the bench (ADR 0117, 0123).
+FROM debian:bookworm-slim AS claude-code
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
 # Claude Code (ADR 0117), a developer's runtime when the owner chooses it: the native binary of
 # one pinned release, fetched at build time from Anthropic's release bucket and checked against
 # the digest pinned here (the release manifest's, per architecture); the sandbox never fetches it,
@@ -193,6 +189,25 @@ RUN set -eu; \
       "https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION}/${platform}/claude"; \
     echo "${sum#sha256:}  /usr/local/bin/claude" | sha256sum -c -; \
     chmod 755 /usr/local/bin/claude
+
+# The workbench (ring 1): a team member's disposable sandbox on the Pi, one container a turn,
+# where the worker gives the model a real shell. Built with `--target workbench` and tagged
+# endora-workbench:latest:
+#   docker buildx build --platform linux/arm64 --target workbench -t endora-workbench:latest --load .
+# It is not the node's image: the node keeps the last stage. Run with a read-only root and /work
+# as a tmpfs owned by the workbench user. The sandbox is offline (ADR 0110): it reaches the
+# node's team gateway and nothing else, so everything a turn may need is in this image; the
+# egress proxy is designed and deferred. The same image runs the wing's check jobs (ADR 0115,
+# ENDORA_CHECK=1): no model, a job token, the lab's own checks on a submitted branch.
+FROM debian:bookworm-slim AS workbench
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl dnsutils git iputils-ping jq less procps python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 10001 --home-dir /work --no-create-home --shell /bin/bash workbench
+# The lab's checks and Claude Code, from their stages above (ADR 0115, 0117).
+COPY --from=lab-checks /opt/venv /opt/venv
+COPY --from=claude-code /usr/local/bin/claude /usr/local/bin/claude
 # Its settings, read-only and above any other (managed): no updates, telemetry, error reports,
 # feedback or other traffic but the model's; no experimental betas; the five-minute cache the
 # relay meters; no attribution of its own (the wing's commits carry Endora's trailer); the web
@@ -219,6 +234,51 @@ ENV ANSIBLE_REMOTE_TEMP=/tmp/ansible
 WORKDIR /work
 USER workbench
 ENTRYPOINT ["endora-worker"]
+
+# The bench (ADR 0123): an external agent harness, fenced as a turn is, run once on one real task
+# to measure it against HQ's own wing. Built with `--target bench` and a named build context
+# `harness`, a folder holding `harness.tgz`, the harness's npm package packed from one pinned
+# commit (the Makefile's `bench-image`; the commit is kept as a label). Its packages are fetched
+# at build time; the bench itself, like the workbench, reaches only the node's team gateway, and
+# there only the model relay, with the bench's own token passed in at run time. The same lab
+# checks and the same Claude Code as the workbench, with settings of its own: no hook (the bench
+# is no turn of HQ's), the workbench's shell allowlist, and bypass mode refused.
+FROM node:22.22.1-bookworm-slim AS bench-install
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates g++ make python3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=harness harness.tgz /tmp/harness.tgz
+RUN npm install -g --prefix /opt/harness --no-audit --no-fund /tmp/harness.tgz \
+    && rm -rf /root/.npm /tmp/harness.tgz
+
+FROM node:22.22.1-bookworm-slim AS bench
+ARG BENCH_HARNESS_COMMIT=unknown
+LABEL org.endora.bench.harness-commit=$BENCH_HARNESS_COMMIT
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl git jq less procps python3 tini tmux \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 10001 --home-dir /work --no-create-home --shell /bin/bash bench
+COPY --from=lab-checks /opt/venv /opt/venv
+COPY --from=claude-code /usr/local/bin/claude /usr/local/bin/claude
+COPY --from=bench-install /opt/harness /opt/harness
+RUN install -d -m 755 /etc/claude-code
+COPY --chmod=444 deploy/bench/managed-settings.json /etc/claude-code/managed-settings.json
+ENV HOME=/work
+ENV CLAUDE_CONFIG_DIR=/work/.claude
+ENV DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 \
+    CLAUDE_CODE_PROMPT_CACHE_TTL=5m
+ENV PATH=/opt/harness/bin:/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV ANSIBLE_COLLECTIONS_PATH=/opt/venv/collections
+ENV ANSIBLE_ROLES_PATH=/opt/venv/roles
+ENV ANSIBLE_LOCAL_TEMP=/tmp/ansible
+ENV ANSIBLE_REMOTE_TEMP=/tmp/ansible
+WORKDIR /work
+USER bench
+# tini reaps what the harness's terminal sessions leave behind.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["sleep", "infinity"]
 
 # --- runtime stage ---------------------------------------------------------
 FROM debian:bookworm-slim

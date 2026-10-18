@@ -119,6 +119,18 @@ export ENDORA_LAB_RETIRED
 ENDORA_GIT_PUSH_KEY ?=
 export ENDORA_GIT_PUSH_KEY
 
+# The bench's credential (ADR 0123): ENDORA_BENCH_TOKEN = <a host folder> in local.mk, holding
+# one file `token` (32+ characters, mode 0600) that opens the node's model relay alone, for
+# measuring an external agent harness; ENDORA_BENCH_CAP_CENTS = what it may spend a day (200
+# unless set). Unset: no bench. See docs/homelab.md.
+ENDORA_BENCH_TOKEN ?=
+export ENDORA_BENCH_TOKEN
+ENDORA_BENCH_CAP_CENTS ?=
+export ENDORA_BENCH_CAP_CENTS
+# The bench image's harness: ENDORA_BENCH_HARNESS = <a folder> holding `harness.tgz` (the
+# harness's npm package, packed from one pinned commit) and `COMMIT` (that commit's id).
+ENDORA_BENCH_HARNESS ?=
+
 # The read-only mail copy on the NAS (ansible-nas `mail_mirror` role, ADR 0097), e.g.
 # ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read whenever the copy is there.
 export ENDORA_MAIL_DIR
@@ -279,6 +291,20 @@ deploy-pi: check-pi ## Build the node and workbench images for the Pi here (arm6
 	ssh $(ENDORA_PI_SSH) docker tag endora-workbench:for-pi endora-workbench:latest; \
 	echo "starting the runner"; \
 	ssh $(ENDORA_PI_SSH) sh -s -- "$(ENDORA_NAS_ADDR)" "$(ENDORA_PI_TOKEN_DIR)" < scripts/pi-runner.sh
+
+.PHONY: bench-image
+bench-image: check-pi ## Build the bench image (ADR 0123) here for the Pi (arm64) from ENDORA_BENCH_HARNESS, and copy it there
+	@test -s "$(ENDORA_BENCH_HARNESS)/harness.tgz" && test -s "$(ENDORA_BENCH_HARNESS)/COMMIT" \
+		|| { echo "Set ENDORA_BENCH_HARNESS in local.mk to a folder holding harness.tgz and COMMIT"; exit 1; }
+	@set -e; \
+	commit="$$(cat "$(ENDORA_BENCH_HARNESS)/COMMIT")"; \
+	echo "building the bench for linux/arm64 on $(ENDORA_PI_BUILD_CONTEXT), harness at $$commit"; \
+	docker --context $(ENDORA_PI_BUILD_CONTEXT) buildx build --platform linux/arm64 --target bench \
+		--build-context harness="$(ENDORA_BENCH_HARNESS)" --build-arg BENCH_HARNESS_COMMIT="$$commit" \
+		-t endora-bench:for-pi --load .; \
+	docker --context $(ENDORA_PI_BUILD_CONTEXT) save endora-bench:for-pi | gzip -1 | ssh $(ENDORA_PI_SSH) docker load; \
+	ssh $(ENDORA_PI_SSH) docker tag endora-bench:for-pi endora-bench:latest; \
+	echo "endora-bench:latest is on the Pi; nothing runs until a bench run starts it"
 
 .PHONY: pi-runner-token
 pi-runner-token: check-pi ## Once: copy the runner's token from HQ (where DOCKER_CONTEXT deploys) to the Pi
