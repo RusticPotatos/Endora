@@ -163,7 +163,13 @@ SOUND_AIRPLAY2_IP = <the free address>
 # SOUND_AIRPLAY2_MAC = 02:00:00:00:a2:01
 # SOUND_AIRPLAY2_HOSTNAME = endora-mixer
 # SOUND_AIRPLAY2_LATENCY = 0.5
+# SOUND_AIRPLAY2_NETWORK = <an existing macvlan network on the LAN>
 ```
+
+Docker allows one macvlan network per LAN subnet. If another container already has one (a
+Pi-hole on its own address, say), `make deploy` fails with "failed to allocate gateway …
+Address already in use": run `docker network ls --filter driver=macvlan` on the NAS and set
+`SOUND_AIRPLAY2_NETWORK` to that network's name, and the door joins it with its own address.
 
 Then `make deploy`. It adds the `airplay2` profile, builds the door's image on the Mac for the
 NAS, and the senders' container stops running the classic door (it restarts once, which

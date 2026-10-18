@@ -85,6 +85,10 @@ endora_sound_airplay2_gateway: ""
 endora_sound_airplay2_ip: ""
 # Optional: the door's MAC address (a locally administered one); empty is the compose default.
 endora_sound_airplay2_mac: ""
+# Optional: an existing macvlan network on the LAN to join instead of making one (Docker allows
+# one per subnet; a Pi-hole on its own address has one). `docker network ls --filter
+# driver=macvlan` on the NAS.
+endora_sound_airplay2_network: ""
 # The name it is announced under on the LAN (mDNS).
 endora_sound_airplay2_hostname: endora-mixer
 # Seconds the door hands its sound over early, for the mix and the speaker after it, so an

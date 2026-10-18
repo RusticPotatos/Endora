@@ -438,8 +438,12 @@ networks:
   # in local.mk (docs/homelab.md); these defaults are the documentation range and an interface
   # that does not exist, so a run without them fails loudly instead of joining a LAN. The NAS
   # cannot reach an address on this network (macvlan keeps the parent and its children apart),
-  # which nothing here needs.
+  # which nothing here needs. Docker allows one macvlan network per LAN subnet, so when another
+  # container already has one (a Pi-hole on its own address, say), SOUND_AIRPLAY2_NETWORK names
+  # it and the door joins it instead: the values below are then that network's, not used.
   airplay2-lan:
+    name: "${SOUND_AIRPLAY2_NETWORK:-endora_airplay2-lan}"
+    external: ${SOUND_AIRPLAY2_SHARED:-false}
     driver: macvlan
     driver_opts:
       parent: "${SOUND_AIRPLAY2_PARENT:-set-in-local.mk}"
