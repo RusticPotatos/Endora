@@ -94,8 +94,91 @@ fn token() -> String {
     std::env::var("ENDORA_TOKEN").unwrap_or_default()
 }
 
+/// How long the suite waits for a node that is still starting before it checks anything:
+/// `make smoke` straight after `make deploy` met a node that had been up for a second.
+const READY_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long it waits between two looks at the node's health.
+const READY_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Asks `up` until it says yes or `within` has passed, waiting `pause` between two asks.
+/// Whether it said yes. Asks at least once.
+fn wait_until(
+    mut up: impl FnMut() -> bool,
+    within: std::time::Duration,
+    pause: std::time::Duration,
+) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if up() {
+            return true;
+        }
+        if start.elapsed() + pause > within {
+            return false;
+        }
+        std::thread::sleep(pause);
+    }
+}
+
+/// Waits, once per run of the suite, for the node's health route to answer (it needs no
+/// credential), so the first check is not of a node still starting.
+fn ready() {
+    static READY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    READY.get_or_init(|| {
+        let url = format!("{}/health", base());
+        let probe: ureq::Agent = ureq::Agent::config_builder()
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .disable_verification(true)
+                    .build(),
+            )
+            .timeout_global(Some(std::time::Duration::from_secs(3)))
+            .build()
+            .into();
+        let up = wait_until(|| probe.get(&url).call().is_ok(), READY_WITHIN, READY_PAUSE);
+        assert!(
+            up,
+            "{url}: the node did not answer its health route within {}s",
+            READY_WITHIN.as_secs()
+        );
+    });
+}
+
+#[test]
+fn the_wait_for_the_node_asks_until_it_is_up_and_gives_up_in_time() {
+    use std::time::Duration;
+    let mut asked = 0;
+    let up = wait_until(
+        || {
+            asked += 1;
+            asked == 3
+        },
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+    );
+    assert!(up);
+    assert_eq!(asked, 3, "it stops asking once the node is up");
+    let mut asked = 0;
+    let started = std::time::Instant::now();
+    let up = wait_until(
+        || {
+            asked += 1;
+            false
+        },
+        Duration::from_millis(30),
+        Duration::from_millis(5),
+    );
+    assert!(!up);
+    assert!(asked >= 2, "it asked again: {asked}");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "it gave up in time"
+    );
+}
+
 /// Fetches one path, failing with the status and the path when it is not a success.
 fn get(path: &str) -> Value {
+    ready();
     let url = format!("{}{path}", base());
     let mut response = agent()
         .get(&url)
@@ -121,6 +204,7 @@ fn get(path: &str) -> Value {
 /// because on this suite's credential a refusal can be the correct answer (see
 /// [`the_verdict_channel_is_wired_and_scoped`]).
 fn post(path: &str, body: &Value) -> (u16, String) {
+    ready();
     let url = format!("{}{path}", base());
     let mut response = agent()
         .post(&url)
