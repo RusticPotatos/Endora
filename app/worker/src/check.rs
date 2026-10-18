@@ -22,6 +22,10 @@ const BUNDLE_MOST: u64 = 64 * 1024 * 1024;
 /// How long the node has to answer.
 const ANSWERS_WITHIN: Duration = Duration::from_secs(120);
 
+/// Where the image's lab checks live (the `lab-checks` stage's venv). The shell is a login
+/// shell, which rebuilds `PATH` from `/etc/profile` and so drops the image's own `ENV PATH`.
+const VENV_BIN: &str = "/opt/venv/bin";
+
 /// What a check job is given.
 pub struct Setup {
     /// The check's id, `c<id>`.
@@ -95,25 +99,34 @@ pub fn commands(repo: &Path) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// `command` with the lab venv first on `PATH`, set after the login shell has had its say, so
+/// the tools and the ones they run themselves (ansible-lint runs ansible-playbook and yamllint)
+/// are found.
+fn on_the_venv(command: &str) -> String {
+    format!("export PATH={VENV_BIN}:\"$PATH\"; {command}")
+}
+
 /// Runs each command in the shell, within [`EACH_WITHIN`], and keeps what each came to.
 #[must_use]
 pub fn run_checks(shell: &Shell, commands: &[(&'static str, String)]) -> Vec<Outcome> {
     commands
         .iter()
-        .map(|(name, command)| match shell.run(command, EACH_WITHIN) {
-            Ok(ran) => Outcome {
-                name,
-                code: ran.code,
-                timed_out: ran.timed_out,
-                output: ran.output,
+        .map(
+            |(name, command)| match shell.run(&on_the_venv(command), EACH_WITHIN) {
+                Ok(ran) => Outcome {
+                    name,
+                    code: ran.code,
+                    timed_out: ran.timed_out,
+                    output: ran.output,
+                },
+                Err(why) => Outcome {
+                    name,
+                    code: None,
+                    timed_out: false,
+                    output: format!("could not run: {why}"),
+                },
             },
-            Err(why) => Outcome {
-                name,
-                code: None,
-                timed_out: false,
-                output: format!("could not run: {why}"),
-            },
-        })
+        )
         .collect()
 }
 
@@ -415,6 +428,25 @@ mod tests {
         assert_eq!(findings("nothing here"), None);
         let long = "x".repeat(TAIL_MOST * 2);
         assert_eq!(tail(&long).len(), TAIL_MOST);
+    }
+
+    #[test]
+    fn the_checks_run_with_the_lab_venv_first_on_the_path_whatever_a_login_shell_resets() {
+        // The shell is `bash -lc`, and a login shell rebuilds PATH from /etc/profile, dropping
+        // the image's /opt/venv/bin: the checks exited 127 until it was put back in front.
+        let shell = Shell::new(std::env::temp_dir(), "a-jobs-token");
+        let commands = vec![("path", "echo \"$PATH\"".to_owned())];
+        let outcomes = run_checks(&shell, &commands);
+        let first = outcomes[0]
+            .output
+            .trim()
+            .split(':')
+            .next()
+            .unwrap()
+            .to_owned();
+        assert_eq!(first, VENV_BIN, "{}", outcomes[0].output);
+        // The report still shows the command as the fork's CI runs it.
+        assert!(report(&outcomes, &commands).contains("$ echo \"$PATH\"\n"));
     }
 
     #[test]
