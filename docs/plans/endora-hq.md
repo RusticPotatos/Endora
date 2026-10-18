@@ -966,6 +966,27 @@ repository, and any push or merge by HQ.
 Section 7 above (pull requests on Forgejo and GitHub, opened by the gateway) is superseded for
 now by this flow: branches, not pull requests, and only the owner's push.
 
+### The evening's fixes (owner's decisions of 2026-10-17, as built)
+
+From that day's record, each recorded in its ADR:
+
+- **Money** ([ADR 0113](../adr/0113-projects-budgets-and-reports-to.md), amended): a member's
+  share is a first claim, not a wall (past it, it draws on what the other paid members left
+  today; the pool's day is the ceiling); a turn the owner asked for is charged to the pool's day
+  only (`asked_by_owner` on the run, an `owner` flag on its ledger rows); and a member's claim
+  is its role's weight times its brain's price class. The out-for-the-day allowance was not
+  built (see the ADR).
+- **The chain** ([ADR 0111](../adr/0111-the-ceo-and-the-chain-of-command.md), amended): a
+  question on a project's task goes to the project's lead.
+- **The tester** ([ADR 0114](../adr/0114-evidence-acceptance-criteria-and-the-tester.md),
+  amended): she passes or sends back and never makes work (no `create_task`); a post in a turn
+  with any receipt, and the worker's last word, are never unsupported.
+- **The screen**: the Team card is an org chart (the board and the CEO, then one group per
+  lead; one line per member with its brain, what it is on and its money against its share, its
+  controls behind a tap); a task's turns read oldest first like its thread, the last five with a
+  toggle for all.
+- **The smoke**: `make smoke` waits up to 30 seconds for the node's `/health` before it checks.
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams;

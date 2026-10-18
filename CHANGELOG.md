@@ -360,6 +360,23 @@ tagged release.
 
 ### Changed
 
+- **A member's share is a first claim, not a wall; the owner's own requests are the pool's;
+  and shares are weighted by brain price** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md),
+  amended). Past its daily share a paid member draws on what the other paid members have not
+  used today, the pool's day staying the hard ceiling (before, one member at its share blocked
+  every task waiting on it until midnight). A turn that exists because the owner asked (their
+  task, reply, desk answer or decision, "Run now") is marked `asked_by_owner`, its ledger rows
+  flagged, and counted against the pool's day only. A member's claim on the pool is its role's
+  weight times its brain's price class (Opus 1000, Sonnet 500, Haiku 25 thousandths, from the
+  relay's prices, which a test holds them to), so Haiku hires no longer dilute a Sonnet lead.
+- **A question on a project's task goes to the project's lead** ([ADR 0111](docs/adr/0111-the-ceo-and-the-chain-of-command.md),
+  amended), when at work and not the asker; otherwise up the asker's chain as before.
+- **The tester passes or sends back, and never makes work** ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md),
+  amended): her briefing says so, and `create_task` is no longer in her tools.
+- **The Team card is an org chart**: the board and the CEO with whoever has no lead, then one
+  group per lead (Engineering for the wing's, Ops otherwise), one line per member (role, brain,
+  what it is on, today's spend against its share), its controls opened by tapping the line. A
+  task's turns read oldest first, as its thread does, the last five with a toggle for all.
 - **The CEO's effort follows the kind of turn** ([ADR 0109](docs/adr/0109-a-brain-per-member.md#cost-notes),
   [0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)): `low` for ordinary turns
   (a question up the chain, a post, a recovery), `medium` for its daily review and planning,
@@ -427,6 +444,12 @@ tagged release.
 
 ### Fixed
 
+- **A post in a turn with receipts is never "unsupported"**, nor the worker's automatic last
+  word ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md), amended): a
+  closing post in a turn with two receipts was tagged, because only receipts of calls that held
+  were counted.
+- **`make smoke` waits for the node**: up to 30 seconds for `/health` before its checks, so a
+  run straight after `make deploy` no longer fails on a node that has been up for a second.
 - **HQ's day is the owner's.** HQ counted its days from UTC midnight, so the scorecard's
   "today" emptied at eight in the evening and the ledger's days turned over then too. HQ now
   reads the same `ENDORA_TIME_ZONE` / `ENDORA_UTC_OFFSET_MINUTES` the node does.
