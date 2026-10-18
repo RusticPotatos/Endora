@@ -1010,7 +1010,7 @@ function hqProjects(s) {
       <div class="hq-row">${acts(p)}</div></li>`;
   const groups = goals.map((g) => {
     const mine = projects.filter((p) => p.goal === g.id);
-    return `<li><b>${esc(g.title)}</b><ul class="hq-team">${mine.map(row).join("") || `<li class="hq-empty">No project yet.</li>`}</ul></li>`;
+    return `<li><b>${esc(g.title)}</b><ul class="hq-team hq-projects">${mine.map(row).join("") || `<li class="hq-empty">No project yet.</li>`}</ul></li>`;
   }).join("");
   const goalOpts = (s.goals || []).filter((g) => g.status === "active").map((g) => `<option value="${g.id}">${esc(g.title)}</option>`).join("");
   const leadOpts = (s.members || []).filter((m) => m.role === "lead" || m.role === "ceo")
