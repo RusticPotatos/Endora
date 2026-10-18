@@ -1129,6 +1129,68 @@ if (failures.length) {
     if (opened.includes('data-act="hq:rename:6"')) fail("hq: tapping one member opened another's controls");
     runInContext("HQ.roster = { 1: true, 2: true, 4: true, 5: true }", context);
   }
+  // The owner's Mac as a brain (ADR 0130): the card on the HQ screen with its state and reason,
+  // the "Mac busy" switch, the address, model, key and idle fields; the Mac on the roster and
+  // the hire form; and what each button asks of the node.
+  {
+    runInContext(`HQ.mac = { ready: false, why: "owner active", busy: false, url: "http://192.168.1.10:8080/v1", model: "coder",
+      has_key: true, has_token: true, idle_minutes: 10, plugged: true, idle_s: 42, model_up: true, heard_s_ago: 12 };
+      HQ.snap.mac = { ready: false, why: "owner active", running: 0, waiting: 2 }; HQ.macToken = "";`, context);
+    const card = runInContext("hqMacCard(HQ.snap)", context);
+    for (const want of ["<h2>The Mac", ">away<", "You are using it", "2 turns wait for it", "plugged in · idle 0 min · model up", "heard 12 s ago",
+      'data-act="hq:mac:busy:on"', "Mac busy: off", 'aria-pressed="false"', 'id="hq-mac-url" value="http://192.168.1.10:8080/v1"', 'id="hq-mac-model" value="coder"',
+      'id="hq-mac-key" type="password"', "Key kept; type to replace it", 'id="hq-mac-idle"', 'data-act="hq:mac:save:go"', 'data-act="hq:mac:token:make"',
+      "Make a new token for the helper", "never fall back to another model"]) {
+      if (!card.includes(want)) fail(`mac: the card does not show ${want}`);
+    }
+    if (card.includes("the-macs-key")) fail("mac: the card shows the key");
+    if (!runInContext("viewHQ()", context).includes("<h2>The Mac")) fail("mac: the HQ screen has no Mac card");
+    const reasons = {
+      ready: "Free: the team may use it", "on battery": "On battery: the model is unloaded", busy: "Mac busy is on: the model is unloaded",
+      "model loading": "Plugged in; the model is loading", "not heard from": "Not heard from lately" };
+    for (const [why, said] of Object.entries(reasons)) {
+      const shown = runInContext(`HQ.mac.why = ${JSON.stringify(why)}; HQ.mac.ready = ${why === "ready"}; hqMacCard(HQ.snap)`, context);
+      if (!shown.includes(said)) fail(`mac: "${why}" is not said as "${said}"`);
+      if (why === "ready" && !shown.includes(">free<")) fail("mac: a free Mac is not tagged free");
+    }
+    const busy = runInContext(`HQ.mac.busy = true; hqMacCard(HQ.snap)`, context);
+    if (!busy.includes('data-act="hq:mac:busy:off"') || !busy.includes("Mac busy: on") || !busy.includes('aria-pressed="true"')) fail("mac: the busy switch does not show it is on");
+    const hostile = runInContext(`HQ.mac.url = '"><b>x</b>'; HQ.mac.model = "<i>m</i>"; const h = hqMacCard(HQ.snap); HQ.mac.url = "http://192.168.1.10:8080/v1"; HQ.mac.model = "coder"; HQ.mac.busy = false; h`, context);
+    if (hostile.includes("<b>x</b>") || hostile.includes("<i>m</i>")) fail("mac: an address or model name became markup");
+    if (runInContext("HQ.mac = null; hqMacCard(HQ.snap)", context) !== "") fail("mac: a node that cannot say shows a card");
+    runInContext(`HQ.mac = { ready: true, why: "ready", busy: false, url: "", model: "mac", has_key: false, has_token: false, idle_minutes: 10, heard_s_ago: null };`, context);
+    const fresh = runInContext("hqMacCard(HQ.snap)", context);
+    if (!fresh.includes("heard never") || !fresh.includes("Make a token for the helper") || !fresh.includes("Key (the server&#39;s --api-key)") && !fresh.includes("Key (the server's --api-key)")) fail("mac: a Mac never set up does not say so");
+    // The Mac is a brain on the roster and on the hire form, and costs nothing.
+    if (runInContext('hqBrainTag("mac")', context) !== "Mac") fail("mac: the roster does not tag the Mac brain");
+    if (!runInContext('hqMemberMoney({ brain: "mac" })', context).includes("costs nothing")) fail("mac: a Mac member is said to cost money");
+    if (!runInContext("hqHireForm(HQ.snap)", context).includes('<option value="mac">Mac</option>')) fail("mac: the hire form does not offer the Mac");
+    if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes('<span class="hq-tag">Mac</span> · between turns · costs nothing')) fail("mac: a Mac member's roster line is wrong");
+    // The buttons: the switch, the settings (the key only when typed), the token (asked first
+    // when it replaces one, shown once and forgotten with the next action).
+    runInContext(`var macCalls = [], macKeepApi = api, macKeepGet = document.getElementById, macKeepConfirm = confirm;
+      api = async (m, p, b) => { macCalls.push(m + " " + p + (b ? " " + JSON.stringify(b) : "")); return p === "/v1/mac/token" ? { token: "t0k3n" } : p === "/v1/mac" ? HQ.mac : {}; };
+      var macFields = { "hq-mac-url": "http://192.168.1.10:8080/v1", "hq-mac-model": "coder", "hq-mac-key": "", "hq-mac-idle": "5" };
+      document.getElementById = (id) => id in macFields ? { value: macFields[id] } : macKeepGet(id);`, context);
+    await runInContext(`hqDispatch("hq", "mac", "busy", "on")`, context);
+    await runInContext(`hqDispatch("hq", "mac", "save", "go")`, context);
+    runInContext(`macFields["hq-mac-key"] = "k";`, context);
+    await runInContext(`hqDispatch("hq", "mac", "save", "go")`, context);
+    await runInContext(`HQ.mac.has_token = true; confirm = () => false; hqDispatch("hq", "mac", "token", "make")`, context);
+    await runInContext(`confirm = () => true; hqDispatch("hq", "mac", "token", "make")`, context);
+    const shownOnce = runInContext("hqMacCard(HQ.snap)", context);
+    await runInContext(`hqDispatch("hq", "mac", "busy", "off")`, context);
+    const forgotten = runInContext("hqMacCard(HQ.snap)", context);
+    const calls = JSON.stringify(runInContext("macCalls", context));
+    runInContext(`api = macKeepApi; document.getElementById = macKeepGet; confirm = macKeepConfirm;`, context);
+    const want = ["POST /v1/mac/settings {\"busy\":true}", "GET /v1/mac",
+      "POST /v1/mac/settings {\"model\":\"coder\",\"idle_minutes\":5,\"url\":\"http://192.168.1.10:8080/v1\"}", "GET /v1/mac",
+      "POST /v1/mac/settings {\"model\":\"coder\",\"idle_minutes\":5,\"url\":\"http://192.168.1.10:8080/v1\",\"api_key\":\"k\"}", "GET /v1/mac",
+      "POST /v1/mac/token {}", "GET /v1/mac", "POST /v1/mac/settings {\"busy\":false}", "GET /v1/mac"];
+    if (calls !== JSON.stringify(want)) fail(`mac: the buttons asked the node ${calls}`);
+    if (!shownOnce.includes("t0k3n") || forgotten.includes("t0k3n")) fail("mac: the helper's token is not shown once and forgotten");
+    runInContext("HQ.mac = null; HQ.macToken = ''; delete HQ.snap.mac;", context);
+  }
   // The turns on a task read oldest first, as its thread does, the last five unless all are asked.
   {
     const card = runInContext("hqSelected()", context);

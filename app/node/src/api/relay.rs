@@ -763,9 +763,13 @@ pub(super) async fn chat_completions(
         );
     };
     // The token first, so a stranger cannot make the node read a body at all.
-    if let Err(refused) = turn_of(hq, token_of(&headers), refuse_openai).await {
-        return refused;
-    }
+    let turn = match turn_of(hq, token_of(&headers), refuse_openai).await {
+        Ok(turn) => turn,
+        Err(refused) => return refused,
+    };
+    // A member who thinks with the owner's Mac (ADR 0130) is answered by the Mac, only while it
+    // is free, and by nothing else: no other model, no Claude, not the house's own.
+    let on_the_mac = turn.brain == "mac";
     let Ok(body) = axum::body::to_bytes(body, LARGEST_LOCAL_CALL).await else {
         return refuse_openai(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -788,7 +792,23 @@ pub(super) async fn chat_completions(
         );
     }
     let done = tokio::task::spawn_blocking(move || {
-        let local = local_target(&state);
+        let local = if on_the_mac {
+            let now = state.clock.now().unix_millis();
+            match mac::target(&state, now) {
+                Ok(mac) => Local {
+                    url: mac.url,
+                    model: mac.model,
+                    key: mac.key,
+                },
+                // The turn ends with this, and is tried again when the Mac is free.
+                Err(why) => {
+                    let said = json!({ "error": { "message": why, "type": "api_error" } });
+                    return Ok::<_, String>((503, said.to_string().into_bytes()));
+                }
+            }
+        } else {
+            local_target(&state)
+        };
         call.insert("model".to_owned(), json!(local.model));
         if call
             .get("reasoning_effort")
@@ -804,7 +824,7 @@ pub(super) async fn chat_completions(
                 let used = |k: &str| v["usage"][k].as_u64().unwrap_or(0);
                 endora_application::UsageLog::record(
                     state.store.as_ref(),
-                    "team-local",
+                    if on_the_mac { "team-mac" } else { "team-local" },
                     &local.model,
                     endora_application::ModelUsage {
                         prompt_tokens: used("prompt_tokens"),
@@ -822,7 +842,10 @@ pub(super) async fn chat_completions(
         Ok(Err(why)) => refuse_openai(
             StatusCode::BAD_GATEWAY,
             "api_error",
-            &format!("the local model did not answer: {why}"),
+            &format!(
+                "the {} did not answer: {why}",
+                if on_the_mac { "Mac" } else { "local model" }
+            ),
         ),
         Err(_) => refuse_openai(StatusCode::BAD_GATEWAY, "api_error", "the relay failed"),
     }
@@ -1974,5 +1997,188 @@ pub(super) mod tests {
         assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert!(to_local.lock().unwrap().is_empty());
         assert!(to_installed.lock().unwrap().is_empty());
+    }
+
+    /// HQ, knowing two turns of a developer on the house's side: `mac-turn`, whose member thinks
+    /// with the owner's Mac (ADR 0130), and `home-turn`, whose member thinks with the house's
+    /// own model. Neither is cloud.
+    fn hq_with_a_mac_member() -> (String, Seen) {
+        fake(Arc::new(|path, body| match path {
+            "/v1/team/turn" if body.contains("\"mac-turn\"") => (
+                200,
+                "application/json",
+                json!({ "run": 8, "member": "Linus", "role": "developer", "left": 0,
+                        "cloud": false, "brain": "mac" })
+                .to_string(),
+            ),
+            "/v1/team/turn" if body.contains("\"home-turn\"") => (
+                200,
+                "application/json",
+                json!({ "run": 9, "member": "Rae", "role": "developer", "left": 0,
+                        "cloud": false, "brain": "local" })
+                .to_string(),
+            ),
+            _ => (
+                404,
+                "application/json",
+                r#"{"error":"no such turn"}"#.to_owned(),
+            ),
+        }))
+    }
+
+    /// A node whose Mac is set up at `mac` with a key and a model, and whose helper last said it
+    /// was plugged in with the owner away for `idle_s` seconds.
+    fn node_with_a_mac(hq_url: &str, installed: &str, mac: &str, idle_s: u64) -> AppState {
+        use endora_application::CapabilitySettingsRepository as _;
+        let state = local_node(hq_url, installed, &[]);
+        for (key, value) in [
+            ("url", mac),
+            ("api_key", "the-macs-key"),
+            ("model", "coder"),
+        ] {
+            state.config.set_setting("mac-brain", key, value).unwrap();
+        }
+        state.mac.hear(super::mac::Beat {
+            at: state.clock.now().unix_millis(),
+            plugged: true,
+            idle_s,
+            model_up: true,
+        });
+        state
+    }
+
+    #[tokio::test]
+    async fn a_mac_turn_is_answered_by_the_mac_with_its_key_and_model_and_by_nothing_else() {
+        let (hq_url, to_hq) = hq_with_a_mac_member();
+        let (installed, to_installed) = local_model();
+        let (mac, to_mac) = local_model();
+        let state = node_with_a_mac(&hq_url, &installed, &mac, 3_600);
+        let store = state.store.clone();
+        let res = super::super::team_relay(state)
+            .oneshot(ask_local("mac-turn", a_call("claude-sonnet-5-5")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("Hello."));
+        assert_eq!(models_asked(&to_mac), ["coder"], "the owner's model name");
+        let sent = to_mac.lock().unwrap().clone();
+        let (path, headers, _) = &sent[0];
+        assert_eq!(path, "/v1/chat/completions");
+        let auth = headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            auth,
+            Some("Bearer the-macs-key"),
+            "the Mac's key, not the turn's token"
+        );
+        assert!(
+            to_installed.lock().unwrap().is_empty(),
+            "not the house's model"
+        );
+        assert!(
+            to_hq
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(p, _, _)| p != "/v1/team/usage"),
+            "the Mac costs nothing"
+        );
+        let used = store.model_usage_totals("team-mac", 0).unwrap();
+        assert_eq!(
+            (used.calls, used.prompt_tokens, used.completion_tokens),
+            (1, 120, 30)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mac_turn_whose_mac_is_not_free_ends_with_a_clear_error_and_no_other_model_answers() {
+        use endora_application::CapabilitySettingsRepository as _;
+        let (hq_url, _) = hq_with_a_mac_member();
+        let (installed, to_installed) = local_model();
+        let (mac, to_mac) = local_model();
+        // The owner came back: seconds idle, not ten minutes.
+        let state = node_with_a_mac(&hq_url, &installed, &mac, 4);
+        let res = super::super::team_relay(state.clone())
+            .oneshot(ask_local("mac-turn", a_call("claude-sonnet-5-5")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let said = String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes())
+            .into_owned();
+        assert!(
+            said.contains("owner active") && said.contains("tried again"),
+            "{said}"
+        );
+        // The owner's switch holds it too, however long they have been away.
+        state.mac.hear(super::mac::Beat {
+            at: state.clock.now().unix_millis(),
+            plugged: true,
+            idle_s: 3_600,
+            model_up: true,
+        });
+        state
+            .config
+            .set_setting("mac-brain", "busy", "true")
+            .unwrap();
+        let res = super::super::team_relay(state)
+            .oneshot(ask_local("mac-turn", a_call("claude-sonnet-5-5")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(to_mac.lock().unwrap().is_empty(), "the Mac was not asked");
+        assert!(
+            to_installed.lock().unwrap().is_empty(),
+            "no fallback to the house's model"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mac_turn_with_no_mac_set_up_is_not_answered_by_the_houses_model() {
+        let (hq_url, _) = hq_with_a_mac_member();
+        let (installed, to_installed) = local_model();
+        let (local, to_local) = local_model();
+        let state = local_node(&hq_url, &installed, &[(&local, "qwen2.5:14b", "", true)]);
+        let res = super::super::team_relay(state)
+            .oneshot(ask_local("mac-turn", a_call("claude-sonnet-5-5")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(to_installed.lock().unwrap().is_empty());
+        assert!(to_local.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_house_turn_never_reaches_the_mac_and_a_mac_turn_never_reaches_claude() {
+        let (hq_url, _) = hq_with_a_mac_member();
+        let (installed, to_installed) = local_model();
+        let (mac, to_mac) = local_model();
+        let (anthropic, to_anthropic) = anthropic();
+        let mut state = node_with_a_mac(&hq_url, &installed, &mac, 3_600);
+        state.relay_upstream = Arc::new(anthropic);
+        let app = super::super::team_relay(state);
+        let res = app
+            .clone()
+            .oneshot(ask_local("home-turn", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            to_mac.lock().unwrap().is_empty(),
+            "the Mac is for its members alone"
+        );
+        assert_eq!(to_installed.lock().unwrap().len(), 1);
+        let res = app
+            .oneshot(ask(
+                "mac-turn",
+                json!({ "model": "claude-sonnet-5-5", "max_tokens": 100,
+                        "messages": [{ "role": "user", "content": "Hi." }] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "it stays in the house");
+        assert!(to_anthropic.lock().unwrap().is_empty());
     }
 }

@@ -35,6 +35,10 @@ pub enum Scope {
     Checks,
     /// Pocket-device overview only; no history, entities, logs or writes.
     Dashboard,
+    /// The owner's Mac helper (ADR 0130): its heartbeat, and nothing else. The token lives in a
+    /// file on a laptop, so it can say how the Mac is and read the owner's "busy" switch, and
+    /// it can do no other thing.
+    Mac,
     /// Unknown persisted scope grants no access.
     Denied,
 }
@@ -88,6 +92,9 @@ const WHERE_YOU_ASK_TO_BE_LET_IN: &str = "/v1/session";
 /// audited. The status says only which of five states the vault is in.
 const THE_VAULT_UNLOCK: [&str; 3] = ["/v1/vault", "/v1/vault/unlock/begin", "/v1/vault/unlock"];
 
+/// The one route the Mac's helper may call (ADR 0130).
+pub const THE_MACS_HEARTBEAT: &str = "/v1/mac/heartbeat";
+
 /// The one read that hands over everything at once.
 ///
 /// Every other read is a slice — this is the whole conversation, every belief and the audit
@@ -115,6 +122,7 @@ pub fn scope_permits(scope: Scope, path: &str, is_write: bool) -> bool {
             !is_write && path != THE_ONE_THAT_HANDS_OVER_EVERYTHING && !is_a_replay(path)
         }
         Scope::Dashboard => !is_write && path == "/v1/homelab/overview",
+        Scope::Mac => is_write && path == THE_MACS_HEARTBEAT,
         Scope::Denied => false,
     }
 }

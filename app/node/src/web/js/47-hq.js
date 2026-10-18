@@ -34,6 +34,9 @@ const HQ = {
   t: 0,                // seconds of animation
   polling: null,
   looping: false,
+  mac: null,           // the owner's Mac as the node knows it (ADR 0130): state, switch, settings
+  macToken: "",        // a helper token the owner just made, shown once and then forgotten
+  macTick: 0,          // polls since the Mac was last read
 };
 
 const HQ_T = 16, HQ_COLS = 32, HQ_ROWS = 20, HQ_W = HQ_COLS * HQ_T, HQ_H = HQ_ROWS * HQ_T;
@@ -124,6 +127,7 @@ async function loadHQ() {
     const snap = await api("GET", "/v1/hq");
     const first = !HQ.snap;
     HQ.snap = snap; HQ.error = "";
+    await hqLoadMac();
     if (first) {
       // The recent past, in words, without replaying it on screen.
       const from = Math.max(0, (snap.last_event || 0) - 60);
@@ -147,6 +151,14 @@ function hqStartPolling() {
   if (HQ.polling) return;
   HQ.polling = setInterval(async () => {
     if (NAV.v !== "hq") { clearInterval(HQ.polling); HQ.polling = null; return; }
+    // The Mac's state changes with the owner's keyboard, not with HQ's events: read it every
+    // twelve seconds, and redraw only when it moved.
+    HQ.macTick += 1;
+    if (HQ.macTick % 4 === 0) {
+      const before = JSON.stringify(HQ.mac);
+      await hqLoadMac();
+      if (JSON.stringify(HQ.mac) !== before && NAV.v === "hq" && !hqTyping()) render();
+    }
     try {
       const got = await api("GET", `/v1/hq/events?after=${HQ.last}`);
       const events = got.events || [];
@@ -177,7 +189,7 @@ function hqDollars(micros) { return "$" + ((micros || 0) / 1e6).toFixed(2); }
 // while it runs and spends none.
 function hqMoney(m, perDay) { return `${hqDollars(m.spent)} spent · ${hqDollars(m.held)} held ${perDay}`; }
 // A member on the house's model costs nothing and takes no share of the pool (ADR 0111).
-function hqMemberMoney(m) { return m.brain === "local" ? "the house's model: costs nothing" : hqMoney(m, `of ${hqDollars(m.per_day)} a day`); }
+function hqMemberMoney(m) { return m.brain === "mac" ? "the owner's Mac: costs nothing, runs only while the Mac is free" : m.brain === "local" ? "the house's model: costs nothing" : hqMoney(m, `of ${hqDollars(m.per_day)} a day`); }
 // A role as the owner reads it.
 // The reviewer's role is shown as the tester (ADR 0114).
 function hqRole(role) { return role === "ceo" ? "CEO" : role === "reviewer" ? "Tester" : String(role || ""); }
@@ -266,7 +278,7 @@ function hqTell(e, live, older) {
     "routine.posted": ["wake", `Alarm into ${key}: ${d.said}`],
     "checkback.set": ["run", `${name} will check back on ${key} in ${d.minutes} min`],
     "lesson.noted": ["you", `${name} noted a lesson: ${d.lesson || ""}`],
-    "member.brain": ["you", `${d.name || name} now thinks with ${d.brain === "local" ? "the house's model" : d.brain}`],
+    "member.brain": ["you", `${d.name || name} now thinks with ${d.brain === "local" ? "the house's model" : d.brain === "mac" ? "the owner's Mac" : d.brain}`],
     // The CEO and the chain of command (ADR 0111).
     "member.hired": ["you", `${d.name} joined the team as ${hqRole(d.role)}`],
     "member.renamed": ["you", `${d.was} is now ${d.name}`],
@@ -1270,6 +1282,7 @@ function viewHQ() {
         ${hqGuards(s)}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
+        ${hqMacCard(s)}
         ${hqOffice(s)}
         ${hqProjects(s)}
         ${hqWorldCard(s)}
@@ -1288,7 +1301,7 @@ function viewHQ() {
 // What a member thinks with, in a word for the roster line.
 function hqBrainTag(brain) {
   const b = String(brain || "local");
-  return b.includes("opus") ? "Opus" : b.includes("sonnet") ? "Sonnet" : b.includes("haiku") ? "Haiku" : "Local";
+  return b.includes("opus") ? "Opus" : b.includes("sonnet") ? "Sonnet" : b.includes("haiku") ? "Haiku" : b === "mac" ? "Mac" : "Local";
 }
 
 // The lead a member works under: the nearest lead up whom it reports to, or none when the
@@ -1309,7 +1322,7 @@ function hqLeadOf(m, members) {
 // it), closed until then.
 function hqRosterLine(m, members) {
   const on = (m.running || []).map((r) => r.task ? "#" + r.task : "a look round").join(", ");
-  const money = m.brain === "local" ? "costs nothing" : `${hqDollars(m.spent)} today of ${hqDollars(m.per_day)}`;
+  const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today of ${hqDollars(m.per_day)}`;
   const open = !!HQ.roster[m.id];
   const controls = open ? `<div class="hq-controls">
       <p class="hq-who">${hqMemberMoney(m)}</p>${hqBrains(m)}${hqReports(m, members)}
@@ -1494,7 +1507,7 @@ function hqBundleOf(d) {
 function hqHireForm(s) {
   const roles = [["developer", "Developer"], ["lead", "Lead"], ["researcher", "Researcher"], ["reviewer", "Tester"], ["ceo", "CEO"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  const brains = [["local", "Local"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus (the CEO's alone)"]]
+  const brains = [["local", "Local"], ["mac", "Mac"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus (the CEO's alone)"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
   const to = `<option value="">by role</option>` + (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(hqRole(m.role))})</option>`).join("");
   return `<details><summary>Hire</summary><div class="hq-row" style="margin-top:8px;">
@@ -1722,6 +1735,70 @@ function hqHouse(s) {
     <div class="hq-row"><button class="hq-btn ok" data-act="hq:house:save">Save the house log</button></div></section>`;
 }
 
+// ---- The owner's Mac as a brain (ADR 0130) ---------------------------------------------------
+// A member may think with the owner's Mac. Its helper tells the node every thirty seconds
+// whether it is plugged in, how long the owner has been idle and whether its model is up; the
+// node decides whether the Mac is free and tells HQ. The "Mac busy" switch is the owner's, and
+// works from the phone: on, the model is unloaded and the team's turns on the Mac wait.
+
+async function hqLoadMac() {
+  try { HQ.mac = await api("GET", "/v1/mac"); } catch (_) { HQ.mac = null; }
+}
+
+// What the node's few words mean to the owner.
+function hqMacWhy(why) {
+  return { ready: "Free: the team may use it", "owner active": "You are using it", "on battery": "On battery: the model is unloaded",
+    busy: "Mac busy is on: the model is unloaded", "model loading": "Plugged in; the model is loading", "not heard from": "Not heard from lately" }[why] || String(why || "");
+}
+
+function hqMacCard(s) {
+  const m = HQ.mac;
+  if (!m) return "";
+  const hq = s.mac || {};
+  const heard = m.heard_s_ago == null ? "never" : m.heard_s_ago < 90 ? `${m.heard_s_ago} s ago` : `${Math.round(m.heard_s_ago / 60)} min ago`;
+  const facts = m.plugged == null ? "" : `${m.plugged ? "plugged in" : "on battery"} · idle ${Math.floor((m.idle_s || 0) / 60)} min · model ${m.model_up ? "up" : "down"} · `;
+  const waiting = hq.waiting ? ` ${hq.waiting} ${hq.waiting === 1 ? "turn waits" : "turns wait"} for it.` : "";
+  const running = hq.running ? " A turn is running on it." : "";
+  const token = HQ.macToken ? `<p class="hq-who" role="status">The helper's token, shown this once: <code>${esc(HQ.macToken)}</code>
+      Save it in the file the install names (ENDORA_MAC_TOKEN_FILE).</p>` : "";
+  return `<section class="hq-card" aria-live="polite"><h2>The Mac <span class="hq-tag">${m.ready ? "free" : "away"}</span></h2>
+    <p class="hq-who">${esc(hqMacWhy(m.why))}.${esc(waiting)}${esc(running)}</p>
+    <p class="hq-note">${esc(facts)}heard ${esc(heard)}. A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes) || 10} min; one at a time.</p>
+    <div class="hq-row"><button class="hq-btn ${m.busy ? "stop" : "ok"}" aria-pressed="${m.busy ? "true" : "false"}"
+      data-act="hq:mac:busy:${m.busy ? "off" : "on"}">Mac busy: ${m.busy ? "on" : "off"}</button></div>
+    <details><summary>Set up the Mac</summary>
+      <div class="hq-row" style="margin-top:8px;">
+        <input id="hq-mac-url" value="${esc(m.url || "")}" placeholder="http://192.168.1.10:8080/v1" aria-label="The Mac's model address" />
+        <input id="hq-mac-model" value="${esc(m.model || "")}" placeholder="Model name" aria-label="The model's name" />
+        <input id="hq-mac-key" type="password" autocomplete="off" placeholder="${m.has_key ? "Key kept; type to replace it" : "Key (the server's --api-key)"}" aria-label="The server's key" />
+        <label>idle for <input id="hq-mac-idle" type="number" min="1" max="1440" value="${Number(m.idle_minutes) || 10}" aria-label="Minutes the owner must be idle" /> min</label>
+        <button class="hq-btn ok" data-act="hq:mac:save:go">Save</button></div>
+      <div class="hq-row"><button class="hq-btn" data-act="hq:mac:token:make">${m.has_token ? "Make a new token for the helper" : "Make a token for the helper"}</button></div>${token}
+      <p class="hq-note">Teams on the Mac brain wait for the Mac and never fall back to another model.</p></details></section>`;
+}
+
+async function hqMacAct(what, arg) {
+  if (what !== "token") HQ.macToken = "";
+  if (what === "busy") {
+    try { await api("POST", "/v1/mac/settings", { busy: arg === "on" }); flash(arg === "on" ? "Mac busy is on: the model will unload." : "Mac busy is off.", "ok"); }
+    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
+  } else if (what === "save") {
+    const body = { model: val("hq-mac-model"), idle_minutes: Number(val("hq-mac-idle")) || 10 };
+    const url = val("hq-mac-url");
+    if (url) body.url = url;
+    const key = val("hq-mac-key");
+    if (key) body.api_key = key;
+    try { await api("POST", "/v1/mac/settings", body); flash("The Mac's settings are saved.", "ok"); }
+    catch (e) { flash("Couldn't save them: " + e.message, "err"); }
+  } else if (what === "token") {
+    if (HQ.mac && HQ.mac.has_token && !confirm("This replaces the helper's token: the Mac's helper stops until you save the new one on it. Go ahead?")) return true;
+    try { HQ.macToken = (await api("POST", "/v1/mac/token", {})).token || ""; }
+    catch (e) { flash("Couldn't make it: " + e.message, "err"); }
+  }
+  await hqLoadMac(); render();
+  return true;
+}
+
 // What an approval will run, from what the node stored: the tool, its arguments one a line,
 // and the member's reason. Every word is the member's or a tool's, so all of it is escaped.
 function hqApproval(a) {
@@ -1835,6 +1912,8 @@ function hqSelected() {
 async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
   if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; render(); return true; }
+  // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
+  if (noun === "mac") return hqMacAct(id, arg);
   if (noun === "roster") {
     HQ.roster[id] = !HQ.roster[id]; render();
     if (HQ.roster[id]) hqLoadNotebook(Number(id));
@@ -1927,7 +2006,7 @@ async function hqDispatch(verb, noun, id, arg) {
   if (noun === "brain") {
     const m = hqMember(Number(id)), b = ((m && m.brains) || []).find((x) => x.name === arg);
     if (!m || !b || m.brain === arg) return true;
-    if (arg !== "local" && !confirm(`${m.name} will think with ${b.label}: each turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results stay home, but for what you allowed the lead). Go ahead?`)) return true;
+    if (arg !== "local" && arg !== "mac" && !confirm(`${m.name} will think with ${b.label}: each turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results stay home, but for what you allowed the lead). Go ahead?`)) return true;
     try { await api("POST", `/v1/hq/members/${id}/brain`, { brain: arg }); flash(`${m.name} thinks with ${b.label}.`, "ok"); }
     catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;

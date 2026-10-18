@@ -494,6 +494,13 @@ pub(super) async fn require_the_token(
         };
         accepted.push((candidate.to_owned(), scope));
     }
+    // The Mac's helper (ADR 0130) has a token of its own, which opens its heartbeat and nothing
+    // else; it is looked up only for that route.
+    if path == crate::auth::THE_MACS_HEARTBEAT {
+        if let Some(helper) = super::mac::token(&state.config) {
+            accepted.push((helper, crate::auth::Scope::Mac));
+        }
+    }
     // A node nobody has claimed yet may be claimed without the token, briefly after it comes
     // up. This is the one place the closed-by-default rule bends, and it bends only while
     // there is nothing to protect: no password, no owner, and a fifteen-minute window from
