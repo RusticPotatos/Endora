@@ -386,6 +386,48 @@ fn a_post_that_cites_nothing_in_a_turn_with_no_reading_is_marked_unsupported() {
 }
 
 #[test]
+fn a_post_in_a_turn_with_receipts_and_the_last_word_are_never_unsupported() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, false);
+    let task = owners_task(&hq, &t, t.dev, "Look at sonarr");
+    // The worker's own last word, in a turn with no receipt: it is not a claim of the turn's.
+    let linus = turn(&hq, t.dev);
+    hq.last_word_in(linus.run, task, "I looked at the task.")
+        .unwrap();
+    // A turn with a receipt (here one the node refused) is never unsupported: R1599 had two.
+    hq.record_receipt(
+        &linus.token,
+        &Called {
+            tool: "container_logs".to_owned(),
+            args: "sonarr".to_owned(),
+            excerpt: "no such container".to_owned(),
+            ok: false,
+            act: false,
+            confidential: false,
+        },
+    )
+    .unwrap();
+    use_tool(
+        &hq,
+        &linus,
+        "post",
+        &json!({ "task": task.0, "text": "The logs say nothing.", "evidence": [] }),
+    )
+    .unwrap();
+    hq.last_word_in(linus.run, task, "Closing: sonarr is fine.")
+        .unwrap();
+    let marks: Vec<bool> = hq
+        .store()
+        .thread(task)
+        .unwrap()
+        .iter()
+        .map(|p| p.unsupported)
+        .collect();
+    assert_eq!(marks, [false, false, false]);
+}
+
+#[test]
 fn each_turns_label_comes_from_what_it_did() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);

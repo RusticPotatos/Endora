@@ -1222,7 +1222,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             self.askers_of(&member, task)?
         };
-        let unsupported = cited.is_empty() && !self.took_readings(run.id)?;
+        // Unsupported only when it states something of the member's own, cites nothing, and
+        // its turn has no receipt (ADR 0114, amended). The worker's last word (`answers`
+        // false) is what the model said as it stopped, never tagged.
+        let unsupported = answers && cited.is_empty() && !self.has_receipts(run.id)?;
         self.post_held_lock_marked(Author::Member(member.id), task, text, cited, unsupported)?;
         let members = self.store.members()?;
         let named = mentions(text, &members);
