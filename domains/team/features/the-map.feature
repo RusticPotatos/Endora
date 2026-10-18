@@ -87,3 +87,32 @@ Feature: The team's map
     And Ada's briefing says "The NAS has 16 GB."
     And Ada's briefing keeps to its budget of 1800 tokens
     And nothing was left out of Ada's briefing unnamed
+
+  Scenario: Each morning the World shows last night's map check, scored by code
+    Given the nightly quiz is on
+    And it is 2:00 in the morning
+    When HQ looks at the night
+    Then a quiz is asked of a member on the house's model
+    When that member answers the quiz from its map
+    Then the World shows last night's quiz with every question right
+    And the World shows no page as failing the quiz
+
+  Scenario: With no member on the house's model free, the night is skipped and the World says so
+    Given the nightly quiz is on
+    And Ada thinks with Claude
+    And Bo thinks with Claude
+    And Linus thinks with Claude
+    And it is 6:30 in the morning
+    When HQ looks at the night
+    Then the World shows last night's quiz as skipped because "free"
+
+  Scenario: A page that fails the quiz three nights running is flagged to its steward
+    Given the nightly quiz is on
+    And Ada thinks with Claude
+    And Bo thinks with Claude
+    And it is 2:00 in the morning
+    When the night's quiz is answered wrongly three nights running
+    Then the World shows "area/Ada" as failing the quiz
+    When Ada is handed the task "Look at backups"
+    And Ada's turn starts
+    Then Ada's briefing says "failed the nightly quiz"

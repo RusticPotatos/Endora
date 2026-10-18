@@ -6,6 +6,7 @@
 //! the step turns that into the page's address.
 
 use cucumber::{given, then, when};
+use endora_team::application::TeamStore;
 use endora_team::application::map_ports::MapStore;
 use endora_team::application::world_ports::WorldStore;
 use endora_team::domain::world::Stage;
@@ -203,4 +204,143 @@ fn road_broken(w: &mut Office, from: String, to: String) {
         roads.iter().any(|r| r.from == from && r.to == to),
         "{roads:?}"
     );
+}
+
+// --- The nightly quiz ----------------------------------------------------------------------
+
+impl Office {
+    /// The name the scenario gave a member.
+    fn name_of(&self, id: endora_team::domain::MemberId) -> String {
+        self.members
+            .iter()
+            .find(|(_, m)| **m == id)
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| panic!("nobody has the id {id:?}"))
+    }
+
+    /// The newest quiz, as kept.
+    fn last_quiz(&self) -> endora_team::domain::quiz::Quiz {
+        self.hq
+            .store()
+            .quizzes()
+            .expect("the store answers")
+            .pop()
+            .expect("a quiz was kept")
+    }
+
+    /// The quizzed member answers the quiz in its downtime turn, from `answer` per question.
+    fn answers_the_quiz(
+        &mut self,
+        answer: impl Fn(&endora_team::domain::quiz::Question) -> String,
+    ) {
+        let quiz = self.last_quiz();
+        let name = self.name_of(quiz.member.expect("asked of a member"));
+        let answers: Vec<String> = quiz.questions.iter().map(answer).collect();
+        let done = self.use_tool(&name, "answer_quiz", &json!({ "answers": answers }));
+        assert!(done.is_some(), "refused: {:?}", self.refused);
+    }
+}
+
+#[given("the nightly quiz is on")]
+fn quiz_on(w: &mut Office) {
+    w.hq.set_quiz(true);
+}
+
+#[given(regex = r"^it is (\d+):(\d\d) in the morning$")]
+fn it_is_morning(w: &mut Office, hour: i64, minute: i64) {
+    let day = 24 * 60 * 60 * 1000;
+    let now = w.clock.0.load(std::sync::atomic::Ordering::SeqCst);
+    let today = now - now.rem_euclid(day) + hour * 60 * 60 * 1000 + minute * 60 * 1000;
+    let next = if today > now { today } else { today + day };
+    w.clock.0.store(next, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[when("HQ looks at the night")]
+fn looks_at_the_night(w: &mut Office) {
+    w.hq.tick().expect("the tick runs");
+}
+
+#[then("a quiz is asked of a member on the house's model")]
+fn quiz_asked(w: &mut Office) {
+    let quiz = w.last_quiz();
+    assert_eq!(quiz.status, endora_team::domain::quiz::Status::Asked);
+    let asked = quiz.member.expect("asked of a member");
+    let found =
+        w.hq.store()
+            .members()
+            .expect("the store answers")
+            .into_iter()
+            .find(|m| m.id == asked)
+            .expect("hired");
+    assert!(
+        !found.brain.cloud(),
+        "{} thinks with a paid brain",
+        found.name
+    );
+}
+
+#[when("that member answers the quiz from its map")]
+fn answers_from_map(w: &mut Office) {
+    w.answers_the_quiz(|q| q.expects[0].clone());
+}
+
+#[when("the night's quiz is answered wrongly three nights running")]
+fn answered_wrongly_three_nights(w: &mut Office) {
+    for _ in 0..3 {
+        w.hq.tick().expect("the tick runs");
+        w.answers_the_quiz(|_| "I do not know".to_owned());
+        let name = w.name_of(w.last_quiz().member.expect("asked of a member"));
+        let context = w.turns.get(&name).expect("its turn").clone();
+        w.hq.runner().finish(context.run, true);
+        w.hq.tick().expect("the tick runs");
+        w.clock
+            .0
+            .fetch_add(24 * 60 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[then("the World shows last night's quiz with every question right")]
+fn world_shows_all_right(w: &mut Office) {
+    let shown = w.hq.quiz_shown().expect("the store answers");
+    let last = &shown["nights"][0];
+    assert_eq!(last["status"], "answered", "{shown}");
+    assert!(last["asked"].as_u64() > Some(0), "{shown}");
+    assert_eq!(last["passed"], last["asked"], "{shown}");
+}
+
+#[then(expr = "the World shows last night's quiz as skipped because {string}")]
+fn world_shows_skipped(w: &mut Office, why: String) {
+    let shown = w.hq.quiz_shown().expect("the store answers");
+    let last = &shown["nights"][0];
+    assert_eq!(last["status"], "skipped", "{shown}");
+    assert!(
+        last["why"].as_str().unwrap_or_default().contains(&why),
+        "{shown}"
+    );
+}
+
+#[then("the World shows no page as failing the quiz")]
+fn world_shows_none_failing(w: &mut Office) {
+    let shown = w.hq.quiz_shown().expect("the store answers");
+    assert!(
+        shown["pages"]
+            .as_array()
+            .expect("pages")
+            .iter()
+            .all(|p| p["flagged"] == false),
+        "{shown}"
+    );
+}
+
+#[then(expr = "the World shows {string} as failing the quiz")]
+fn world_shows_failing(w: &mut Office, page: String) {
+    let page = w.addressed(&page);
+    let shown = w.hq.quiz_shown().expect("the store answers");
+    let found = shown["pages"]
+        .as_array()
+        .expect("pages")
+        .iter()
+        .find(|p| p["slug"] == page.as_str())
+        .unwrap_or_else(|| panic!("no score for {page}: {shown}"));
+    assert_eq!(found["flagged"], true, "{shown}");
 }

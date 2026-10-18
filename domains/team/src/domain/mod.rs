@@ -20,6 +20,7 @@ pub mod money;
 pub mod notebook;
 pub mod office;
 pub mod projects;
+pub mod quiz;
 pub mod retraction;
 pub mod review;
 pub mod routines;

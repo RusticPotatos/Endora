@@ -127,6 +127,12 @@ pub fn tools(role: Role) -> Vec<Value> {
         }),
         &["what", "where_looked"],
     ));
+    all.push(tool(
+        "answer_quiz",
+        "Answer the quiz on your map, when your downtime turn carries one (the briefing lists the questions): one answer each, in order, from your map and read_world. HQ scores it by code; nothing rides on it but whether the map carries.",
+        json!({ "answers": { "type": "array", "items": { "type": "string" }, "description": "one short answer per question: an address (world:...), a name, 'the CEO' or 'the owner'" } }),
+        &["answers"],
+    ));
     if matches!(role, Role::Ceo | Role::Lead) {
         all.push(tool(
             "close_gap",
@@ -274,6 +280,18 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 )
             })
             .map_err(said),
+        "answer_quiz" => (|| {
+            let answers: Vec<String> = args["answers"]
+                .as_array()
+                .ok_or_else(|| "`answers` is a list, one answer to each question".to_owned())?
+                .iter()
+                .map(|a| a.as_str().unwrap_or_default().to_owned())
+                .collect();
+            let (passed, asked) = engine.answer_quiz_in(run.id, &answers).map_err(said)?;
+            Ok(format!(
+                "You got {passed} of {asked}. HQ scored it against your map; nothing rides on it. Stop here."
+            ))
+        })(),
         "close_gap" => (|| {
             let id = args["id"]
                 .as_i64()

@@ -85,3 +85,6 @@ mod guards_tests;
 
 #[cfg(test)]
 mod map_tests;
+
+#[cfg(test)]
+mod quiz_tests;

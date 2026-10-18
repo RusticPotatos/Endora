@@ -4,6 +4,7 @@
 use super::ports::Stored;
 use crate::domain::Millis;
 use crate::domain::map::{Gap, PageProposal};
+use crate::domain::quiz::Quiz;
 
 /// The map's part of HQ's store.
 pub trait MapStore {
@@ -43,4 +44,17 @@ pub trait MapStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn save_gap(&self, gap: &Gap) -> Stored<i64>;
+
+    /// Every night's quiz, oldest first.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn quizzes(&self) -> Stored<Vec<Quiz>>;
+
+    /// Keeps a quiz: a new one when its id is 0 (its id is returned; one a night), else its new
+    /// standing, answers and grades.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails, or the night already has a quiz.
+    fn save_quiz(&self, quiz: &Quiz) -> Stored<i64>;
 }

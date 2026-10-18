@@ -10,7 +10,7 @@ use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::map::{self, PageKey, Steward, steward_of};
 use crate::domain::situations::Weight;
 use crate::domain::world::{self, Section, WorldRefusal};
-use crate::domain::{Brain, EventKind, GoalStatus, Member, ProjectStatus, Refusal, Role};
+use crate::domain::{Brain, EventKind, GoalStatus, Member, ProjectStatus, Refusal, Role, TaskId};
 
 fn refused(r: WorldRefusal) -> EngineError {
     EngineError::Refused(Refusal::World(r))
@@ -252,7 +252,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// What a member's map is made of: the pages that matter to its role and its task, then the
     /// others a line each, with the best of each page's sections after it. The facts are the
     /// map's and the nightly quiz's alike.
-    pub(super) fn map_facts(&self, member: &Member, run: &Run) -> Done<Vec<map::Fact>> {
+    pub(super) fn map_facts(&self, member: &Member, task: Option<TaskId>) -> Done<Vec<map::Fact>> {
         let members = self.store.members()?;
         let projects = self.store.projects()?;
         let mut facts: Vec<map::Fact> = Vec::new();
@@ -293,7 +293,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             Ok(())
         };
-        let task_project = self.project_of(run.task)?;
+        let task_project = self.project_of(task)?;
         let lead = crate::domain::staffing::lead_of(member, &members);
         add(self, PageKey::Role(member.role), Weight::Core, &mut facts)?;
         if let Some(lead) = lead {
@@ -322,7 +322,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &mut facts,
         )?;
         add(self, PageKey::Team, Weight::Recommended, &mut facts)?;
-        if let Some(task) = run.task {
+        if let Some(task) = task {
             let goal = self.task(task)?.goal;
             add(self, PageKey::Goal(goal), Weight::Recommended, &mut facts)?;
         }
@@ -362,7 +362,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             map::MAP_CHARS
         };
         let entries = self
-            .map_facts(member, run)?
+            .map_facts(member, run.task)?
             .iter()
             .map(map::Fact::entry)
             .collect();

@@ -185,6 +185,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.roads_to_mend(member)?,
             Weight::Core,
         ));
+        pieces.push(Piece::new(
+            "failing pages",
+            self.quiz_flags_for(member)?,
+            Weight::Core,
+        ));
         pieces.extend(self.house_pieces(member, situation, last)?);
         // How the lab is built, for those who read the house log it was seeded in: a lead on
         // every turn, the CEO (whose briefings are held short) when it starts afresh or comes

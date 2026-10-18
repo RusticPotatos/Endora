@@ -47,6 +47,7 @@ mod office;
 mod planning;
 mod projects;
 mod proposals;
+mod quiz;
 mod raci;
 mod replay;
 mod retract;
@@ -136,6 +137,9 @@ pub struct Settings {
     /// Whether free members play ping-pong and pool between themselves (ADR 0121): matches
     /// the engine plays in code, with no model asked. Off unless the service turns it on.
     pub games: bool,
+    /// Whether a free member on the house's model is quizzed on the map overnight (ADR 0126),
+    /// in a downtime turn, free. Off unless the service turns it on.
+    pub quiz: bool,
 }
 
 impl Default for Settings {
@@ -146,6 +150,7 @@ impl Default for Settings {
             grace: Duration::from_secs(10),
             downtime: false,
             games: false,
+            quiz: false,
         }
     }
 }
@@ -303,6 +308,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn with_docs(mut self, docs: Library) -> Self {
         self.docs = docs;
         self
+    }
+
+    /// Turns the nightly quiz on the map on or off (ADR 0126): whether a free member on the
+    /// house's model is asked a few questions made from its map, overnight, in a downtime turn.
+    /// The service turns it on at start; a scenario, when it is about the quiz.
+    pub fn set_quiz(&mut self, on: bool) {
+        self.settings.quiz = on;
     }
 
     /// Turns downtime on or off (ADR 0119): whether a member with nothing to do is given a turn
@@ -2224,7 +2236,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(&self.downtime_said(member)?);
             told.push_str(
                 "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc, \
-                 read_world.\n",
+                 read_world, answer_quiz.\n",
             );
             return Ok(told);
         }
@@ -2895,6 +2907,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
         // gets its page.
         self.migrate_map_held()?;
+        // The nightly quiz on the map (ADR 0126) takes a free member's downtime first.
+        if self.settings.quiz {
+            self.quiz_look(now)?;
+        }
         if self.settings.downtime {
             self.downtime_look(now)?;
         }
