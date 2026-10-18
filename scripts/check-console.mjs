@@ -1254,6 +1254,9 @@ if (failures.length) {
         for (const m of HQ.snap.members) m.running = [];
         hqPlacePeople();
         const bo = HQ.people[2], cy = HQ.people[3], keep = HQ.rand, out = [];
+        // The page opens with idle members already resting (hqArrive): free their spots, so the
+        // drift below is judged on an empty floor.
+        for (const q of Object.values(HQ.people)) if (q !== bo && q !== cy) { q.wander = null; q.spotKey = ""; }
         HQ.rand = () => 0; bo.idleT = 0; hqIdle(bo, 0.1); out.push(bo.wander.pong === "L", bo.path.length > 0);
         HQ.rand = () => 0; cy.idleT = 0; hqIdle(cy, 0.1); out.push(cy.wander.pong === "R");
         HQ.rand = () => 0.999; bo.idleT = 0; hqIdle(bo, 0.1); out.push(bo.wander.cx === 22 && bo.wander.cy === 16);

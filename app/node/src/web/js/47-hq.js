@@ -481,10 +481,11 @@ function hqPlacePeople() {
     const seat = HQ.seats[m.id];
     if (m.furloughed) { delete HQ.people[m.id]; continue; }
     let p = HQ.people[m.id];
+    const fresh = !p;
     if (!p) {
       const from = HQ.settled ? HQ_P.lobby : seat.work;
       p = HQ.people[m.id] = { id: m.id, x: from.x * HQ_T, y: from.y * HQ_T, path: [], frame: 0, bubble: "", bubbleT: 0,
-        working: false, errand: null, spotKey: "", at: from, wander: null, idleT: 2 + HQ.rand() * 6 };
+        working: false, errand: null, spotKey: "", at: from, wander: null, idleT: 8 + HQ.rand() * 12 };
     }
     p.look = m.look || 0; p.name = m.name; p.role = m.role; p.paused = m.paused; p.seat = seat;
     const run = (m.running || [])[0];
@@ -501,6 +502,10 @@ function hqPlacePeople() {
     p.meeting = !review ? null : m.role === "ceo" ? HQ_MEETING.head : m.role === "lead" && !p.working ? HQ_MEETING.chairs[0] : null;
     // One who went to ask the CEO and has since been woken goes back to work.
     if (p.working && p.errand && p.errand.kind === "ask") p.errand = null;
+    // On the page's first drawing everyone is simply where the record says they are: at work at
+    // their desk, or idle somewhere they might rest. Nobody walks out from one spot as the page
+    // opens, which looked as if they had been gathered, waiting to be watched.
+    if (fresh && !HQ.settled) hqArrive(p, Object.keys(HQ.people).length);
     hqGo(p);
   }
   for (const id of Object.keys(HQ.people)) if (!members.some((m) => String(m.id) === id)) delete HQ.people[id];
@@ -515,6 +520,20 @@ function hqSpot(p) {
   if (p.working) return p.visit || s.work;
   if (p.paused) return s.work;
   return p.wander || s.rest || s.work;
+}
+
+// Puts a member straight where they should be, without walking: an idle one at a resting spot
+// (the `nth` one free, so two never share), a working one at their desk or visit.
+function hqArrive(p, nth) {
+  if (!p.working && !p.paused && !p.meeting && !p.errand && !hqCalm()) {
+    const taken = new Set(Object.values(HQ.people).filter((q) => q !== p).map((q) => q.spotKey));
+    // Never at the ping-pong table: the page does not open on a game.
+    const spots = hqWanderSpots().filter((s) => !s.pong && !taken.has(s.cx + "," + s.cy));
+    if (spots.length) p.wander = spots[nth % spots.length];
+  }
+  const spot = hqSpot(p);
+  p.x = spot.x * HQ_T; p.y = spot.y * HQ_T; p.path = [];
+  p.at = spot; p.spotKey = spot.cx + "," + spot.cy;
 }
 
 // Sets a member walking to where they should be, if that is not where they are going already.
