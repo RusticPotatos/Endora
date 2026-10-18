@@ -857,3 +857,68 @@ fn the_ceos_planning_is_made_once_and_shows_the_patterns_to_propose_from() {
         assert!(!ceo.told.contains(gone), "lean: {gone}\n---\n{}", ceo.told);
     }
 }
+
+#[test]
+fn a_question_on_a_projects_task_goes_to_the_projects_lead() {
+    // The live shape: the tester reports to Ada, and asked about a task of Kit's project.
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let kit = hq.hire("Kit", Role::Lead, 25, 2, 0).unwrap();
+    let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 0).unwrap();
+    hq.set_reports_to(dee, t.lead).unwrap();
+    let wing = hq
+        .add_project(t.goal, "The wing", "the lab's code", kit, None)
+        .unwrap();
+    let ask = |member: MemberId, task: TaskId| {
+        let context = turn(&hq, member);
+        assert_eq!(context.task, Some(task));
+        use_tool(
+            &hq,
+            &context,
+            "ask_owner",
+            &json!({ "text": "Which branch is this on?", "evidence": [format!("task {}", task.0)] }),
+        )
+        .unwrap();
+        context
+    };
+    let in_wing = task_in(&hq, t.goal, Some(wing), dee, "Test the deluge role").unwrap();
+    let context = ask(dee, in_wing);
+    assert!(
+        context
+            .told
+            .contains("Your questions (ask_owner) go to Kit, the lead, in the task's thread"),
+        "{}",
+        context.told
+    );
+    assert_eq!(
+        last_wake(&hq),
+        (
+            kit,
+            Some(in_wing),
+            WakeReason::QuestionAsked,
+            Receipt::Queued
+        ),
+        "to the project's lead, not the one she reports to"
+    );
+    // Off any project, up her own chain as before.
+    let elsewhere = task_in(&hq, t.goal, None, dee, "Test the backups").unwrap();
+    ask(dee, elsewhere);
+    assert_eq!(
+        last_wake(&hq),
+        (
+            t.lead,
+            Some(elsewhere),
+            WakeReason::QuestionAsked,
+            Receipt::Queued
+        )
+    );
+    // The project's lead asking about its own work asks up its chain: the CEO.
+    let his = task_in(&hq, t.goal, Some(wing), kit, "Plan the wing").unwrap();
+    hq.tick().unwrap();
+    ask(kit, his);
+    assert_eq!(
+        last_wake(&hq),
+        (t.ceo, Some(his), WakeReason::QuestionAsked, Receipt::Queued)
+    );
+}

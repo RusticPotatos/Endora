@@ -2044,7 +2044,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 log.trim()
             ));
         }
-        if let Some(above) = self.above(member)? {
+        let on = match run.task {
+            Some(task) => Some(self.task(task)?),
+            None => None,
+        };
+        if let Some(above) = self.asked_of(member, on.as_ref())? {
             told.push_str(&format!(
                 "Your questions (ask_owner) go to {}, the {}, in the task's thread, and they \
                  answer there: the owner's desk is the CEO's to use.\n",
@@ -2885,7 +2889,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         // Up the chain, while the team has a CEO at work; otherwise as before there was one.
-        if let Some(above) = self.above(&member)? {
+        if let Some(above) = self.asked_of(&member, Some(&task))? {
             // The lead sends something up to the CEO only on evidence (ADR 0114).
             if member.role == Role::Lead && above.role == Role::Ceo {
                 self.judge_decision(cited, turn.id)?;
@@ -3053,6 +3057,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let up = chain::escalation(member, &members)
             .and_then(|id| members.iter().find(|m| m.id == id).cloned());
         Ok(up.or(ceo))
+    }
+
+    /// Whom `member` asks about `task` (ADR 0111, amended): the lead of the task's project,
+    /// when it is in one and that lead is at work and not the asker; otherwise up its own
+    /// chain ([`Self::above`]). Live, the tester asked the lead she reports to about a task of
+    /// another lead's project, who knew nothing of it. Nobody while the team has no CEO at work.
+    fn asked_of(&self, member: &Member, task: Option<&Task>) -> Done<Option<Member>> {
+        let Some(above) = self.above(member)? else {
+            return Ok(None);
+        };
+        let Some(project) = task.and_then(|t| t.project) else {
+            return Ok(Some(above));
+        };
+        let lead = self.project(project)?.lead;
+        let lead = self
+            .store
+            .members()?
+            .into_iter()
+            .find(|m| m.id == lead && !m.paused && m.id != member.id);
+        Ok(Some(lead.unwrap_or(above)))
     }
 
     /// A member's question, up the chain: posted in the task's thread for the one above, the
