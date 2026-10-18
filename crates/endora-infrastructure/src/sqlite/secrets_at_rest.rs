@@ -403,3 +403,47 @@ fn a_session_lasts_thirty_days_and_a_console_one_ends_after_a_week_unused() {
     assert_eq!(scope("idle", 7 * DAY_MS + 1), None);
     assert_eq!(scope("checks", 20 * DAY_MS).as_deref(), Some("checks"));
 }
+
+/// A node whose keys a sealed vault wraps (ADR 0127) still starts: the schema is applied, the
+/// stores answer what needs no secret, and every secret says the vault is locked until the
+/// keys are attached, after which the same values open.
+#[test]
+fn a_store_waiting_for_the_vault_starts_says_so_and_opens_when_its_keys_arrive() {
+    use std::sync::Arc;
+    let dir = std::env::temp_dir().join(format!("endora-waiting-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("endora.db").to_string_lossy().into_owned();
+    let key_file = dir.join("secrets.key");
+    {
+        let store = SqliteStore::open_sealed(&path, &key_file).unwrap();
+        ConfigStore::new(store.db())
+            .set_setting("home-assistant", "token", "placeholder-token-0009")
+            .unwrap();
+    }
+
+    let store = SqliteStore::open_waiting(Db::open(&path).unwrap()).unwrap();
+    let error = ConfigStore::new(store.db())
+        .all_settings()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("vault is locked"), "{error}");
+    assert!(
+        store
+            .session_scope("nobody", 0, LIFE_MS, IDLE_MS)
+            .unwrap()
+            .is_none(),
+        "what needs no secret still answers"
+    );
+
+    let keys = endora_persistence::secrets::KeyFile::open(&key_file, false).unwrap();
+    store.attach_keys(Arc::new(keys)).unwrap();
+    let settings = ConfigStore::new(store.db()).all_settings().unwrap();
+    assert!(settings.contains(&(
+        "home-assistant".to_owned(),
+        "token".to_owned(),
+        "placeholder-token-0009".to_owned()
+    )));
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -16,10 +16,12 @@ pub mod ids;
 pub mod model_layer;
 pub mod model_list;
 pub mod model_watch;
+pub mod openbao;
 pub mod relay;
 pub mod sound;
 pub mod sqlite;
 pub mod time_zone;
+pub mod vault_store;
 
 pub use butler::{
     ConfigurableButler, LlmButler, MixtureButler, ScriptedButler, ask_deep_model,

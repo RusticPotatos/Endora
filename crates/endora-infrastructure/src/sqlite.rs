@@ -855,6 +855,10 @@ impl SqliteStore {
     /// # Errors
     /// [`RepositoryError::Backend`] if the schema cannot be applied.
     pub fn from_db(db: Db) -> Result<Self, RepositoryError> {
+        Self::with_schema(db, false)
+    }
+
+    fn with_schema(db: Db, waiting: bool) -> Result<Self, RepositoryError> {
         {
             let mut conn = db.lock()?;
             // Drop the goal-tracker schema before creating anything, so an existing
@@ -1024,11 +1028,40 @@ impl SqliteStore {
         endora_understanding::migrate(&db)?;
         // Credentials an older node stored in plaintext are sealed now, once (ADR 0125). A
         // store with no key source is refused here rather than left holding them in the clear.
-        let sealed = db.seal_plaintext(SECRET_COLUMNS)?;
+        // A store waiting for the vault (ADR 0127) has no keys to seal with yet: that is done
+        // when the keys are attached ([`attach_keys`](Self::attach_keys)).
+        if db.has_key_source() || !waiting {
+            let sealed = db.seal_plaintext(SECRET_COLUMNS)?;
+            if sealed > 0 {
+                println!("secrets: sealed {sealed} stored credential(s) at rest");
+            }
+        }
+        Ok(Self { db })
+    }
+
+    /// Opens the store over `db` whose data keys a **sealed vault** wraps (ADR 0127): the
+    /// schema is applied and everything that needs no secret works; everything that does
+    /// fails saying the vault is locked, until [`attach_keys`](Self::attach_keys).
+    ///
+    /// # Errors
+    /// [`RepositoryError::Backend`] if the schema cannot be applied.
+    pub fn open_waiting(db: Db) -> Result<Self, RepositoryError> {
+        db.wait_for_the_vault();
+        Self::with_schema(db, true)
+    }
+
+    /// Opens the data keys of a store that was waiting for the vault, with `keys`, and seals
+    /// anything an older node left in plaintext.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the keys do not open or the database fails.
+    pub fn attach_keys(&self, keys: Arc<dyn KeySource>) -> Result<(), RepositoryError> {
+        self.db.attach_key_source(keys)?;
+        let sealed = self.db.seal_plaintext(SECRET_COLUMNS)?;
         if sealed > 0 {
             println!("secrets: sealed {sealed} stored credential(s) at rest");
         }
-        Ok(Self { db })
+        Ok(())
     }
 
     /// The shared connection handle, for building sibling context repositories

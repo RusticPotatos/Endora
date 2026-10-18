@@ -928,6 +928,7 @@ dependencies = [
 name = "endora-infrastructure"
 version = "0.12.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "endora-application",
@@ -943,6 +944,7 @@ dependencies = [
  "sha2",
  "ureq",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
