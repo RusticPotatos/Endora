@@ -733,6 +733,28 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  // "Try again" posts exactly the decision HQ takes for stuck work, and when HQ refuses it the
+  // card says why and keeps saying it: a press that seems to do nothing is the worst answer.
+  {
+    const sent = [];
+    const realFetch = context.fetch;
+    const snapshot = JSON.parse(runInContext("JSON.stringify(HQ.snap)", context));
+    context.fetch = (path, opts = {}) => {
+      sent.push([String(path), opts.method, opts.body]);
+      const refused = String(path).includes("/v1/hq/desk/");
+      return Promise.resolve({ ok: !refused, status: refused ? 400 : 200,
+        json: async () => (refused ? { error: "it was not tried again: the kill switch is on" } : snapshot) });
+    };
+    // The art is not loaded here (no images in Node): the reload after a decision skips it.
+    runInContext("HQ_ART_READY = Promise.resolve();", context);
+    await runInContext('dispatch("hq:decide:12:retry")', context);
+    context.fetch = realFetch;
+    const posted = sent.find(([path]) => path === "/v1/hq/desk/12");
+    if (!posted || posted[1] !== "POST" || JSON.parse(posted[2]).decision !== "retry") fail(`hq: "Try again" does not post the retry decision: ${JSON.stringify(sent)}`);
+    const refusedCard = runInContext("viewHQ()", context);
+    if (!refusedCard.includes("Couldn&#39;t decide: it was not tried again: the kill switch is on") && !refusedCard.includes("Couldn't decide: it was not tried again: the kill switch is on")) fail("hq: a refused desk decision is not said on its card");
+    runInContext("HQ.deskNote = {}; clearInterval(HQ.polling); HQ.polling = null; HQ_ART_READY = null;", context);
+  }
   // The bridge's approval (ADR 0108): the tool, its arguments in plain words, the why, and
   // Approve / Decline; none of what the member wrote becomes markup.
   for (const act of ["hq:decide:17:approve", "hq:decide:17:decline"]) {

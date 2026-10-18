@@ -1656,3 +1656,65 @@ fn declining_changes_nothing_and_the_owners_own_turns_ignore_the_cap() {
         run.reserved
     );
 }
+
+/// A task gone stuck onto the owner's desk, with the member who had it.
+fn stuck_task(hq: &Hq<'_>, t: &Team) -> (TaskId, crate::domain::DeskId) {
+    let task = task_for(hq, t.goal, None, "Pick a database");
+    hq.claim(t.dev, task).unwrap();
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    let stuck = hq.store().desk().unwrap().pop().unwrap();
+    assert_eq!(stuck.kind, "stuck");
+    (task, stuck.id)
+}
+
+#[test]
+fn trying_stuck_work_again_while_nobody_can_be_woken_says_so_and_changes_nothing() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    hq.runner().script(t.dev, Script::Succeeds);
+    let (task, item) = stuck_task(&hq, &t);
+    let wakes = hq.wakes().unwrap().len();
+
+    hq.stop_all("trying it").unwrap();
+    assert_eq!(
+        hq.decide(item, "retry"),
+        Err(EngineError::Refused(Refusal::NotWoken(Refused::KillSwitch)))
+    );
+    let still = hq.store().task(task).unwrap().unwrap();
+    assert_eq!(
+        (still.status, still.owner),
+        (TaskStatus::Blocked, Some(t.dev))
+    );
+    assert_eq!(hq.store().desk().unwrap().pop().unwrap().status, "waiting");
+    assert_eq!(hq.wakes().unwrap().len(), wakes, "no wake was even written");
+
+    // Resumed, the same button works.
+    hq.resume().unwrap();
+    hq.decide(item, "retry").unwrap();
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::Todo
+    );
+}
+
+#[test]
+fn trying_stuck_work_again_for_a_paused_member_is_refused_in_words() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    hq.runner().script(t.dev, Script::Succeeds);
+    let (_, item) = stuck_task(&hq, &t);
+    hq.pause(t.dev, true).unwrap();
+    let refused = hq.decide(item, "retry").unwrap_err();
+    assert_eq!(
+        refused,
+        EngineError::Refused(Refusal::NotWoken(Refused::Paused))
+    );
+    assert!(
+        refused.to_string().contains("paused"),
+        "the owner is told why: {refused}"
+    );
+}

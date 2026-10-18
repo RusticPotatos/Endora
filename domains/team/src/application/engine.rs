@@ -3500,12 +3500,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("stuck", "retry") => {
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
                 let to = task.owner.or(task.assignee);
+                // Tried again means someone is woken. If nobody can be, say so and change
+                // nothing: the item stays on the desk, rather than the button doing nothing
+                // with no word about it.
+                let member = to.ok_or(EngineError::Refused(Refusal::NobodyHasIt))?;
+                let who = self.member(member)?;
+                let asked = self.situation(&who, Some(task.id), WakeReason::ProposalDecided)?;
+                if let WakeDecision::Refuse(why) = wakes::decide(member, &asked) {
+                    return Err(EngineError::Refused(Refusal::NotWoken(why)));
+                }
                 self.store.release(task.id)?;
                 self.store.set_task_status(task.id, TaskStatus::Todo)?;
                 self.store.set_nudged(task.id, false)?;
-                if let Some(member) = to {
-                    self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
-                }
+                self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
             }
             ("stuck", "drop") => {
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;

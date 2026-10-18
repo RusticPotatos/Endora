@@ -18,6 +18,7 @@ const HQ = {
   lastWord: {},        // task id → the member who last wrote in its thread
   roster: {},          // member id → its controls are open on the Team card
   notebooks: {},       // member id → its notes, read when its panel is opened (ADR 0118)
+  deskNote: {},        // desk item id → why the owner's last decision on it was refused
   allTurns: {},        // "task-N" / "member-N" → every turn shown, not only the last five
   pods: [],            // one pod of desks per team, laid out from the snapshot (ADR 0119)
   seats: {},           // member id → its desk, where it works and where a visitor stands
@@ -1068,6 +1069,7 @@ function viewHQ() {
     const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
     return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(shown)}</p>
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
+      ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval) : ""}
       ${d.kind === "decision" ? hqDecision(d.decision) : ""}
       ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
@@ -1551,8 +1553,12 @@ async function hqDispatch(verb, noun, id, arg) {
     const answer = takesWords && box ? box.value.trim() : "";
     if (arg === "answer" && !answer) { flash("Write your answer first.", "warn"); return true; }
     if (arg === "raise" && !answer) { flash("Write the new cap first, in dollars a month.", "warn"); return true; }
+    // A refused decision is said on the card itself, and stays there until the next try: a
+    // toast that fades is easy to miss on a phone, and the card would look as if nothing
+    // had been pressed.
+    delete HQ.deskNote[id];
     try { await api("POST", `/v1/hq/desk/${id}`, { decision: arg, answer }); flash(answer ? "Answered." : "Decided.", "ok"); }
-    catch (e) { flash("Couldn't decide: " + e.message, "err"); }
+    catch (e) { HQ.deskNote[id] = "Couldn't decide: " + e.message; flash(HQ.deskNote[id], "err"); }
     await loadHQ(); render(); return true;
   }
   // The owner's reply on a task: whoever has it is woken to read it.
