@@ -18,6 +18,8 @@ mod signin;
 mod terminal_setup;
 mod tls;
 mod totp;
+mod vault;
+mod webauthn;
 
 use std::sync::Arc;
 
@@ -176,6 +178,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("brain: moved {moved} thing(s) you told Endora into memory");
     }
     println!("brain: {brain_dir}");
+    // The house's vault (ADR 0127), when ENDORA_VAULT_URL names one: its passkeys and unlock,
+    // and the key file the node's login to it is sealed under. Passkeys bind to a name, not
+    // an address: ENDORA_PASSKEY_RP_ID, `endora.home.arpa` unless set.
+    let vault_api = secrets::vault_from_env();
+    let rp_id = std::env::var("ENDORA_PASSKEY_RP_ID")
+        .ok()
+        .map(|r| r.trim().to_owned())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| vault::DEFAULT_RP_ID.to_owned());
+    let vault_key_file =
+        endora_persistence::secrets::KeyFile::open(&secrets::key_file_from_env(&db_path), false)
+            .ok()
+            .map(Arc::new);
+    if vault_api.is_some() {
+        println!("vault: OpenBao, unlocked with a passkey for {rp_id}");
+    }
+    if !store.db().has_key_source() {
+        println!("vault: locked — stored credentials wait for the unlock in the console");
+    }
+    let the_vault = vault::Vault::new(vault_api, store.clone(), vault_key_file, &rp_id);
     let state = AppState::new(
         store,
         Arc::new(RandomIdSource),
@@ -184,7 +206,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         knowledge,
     )
     .with_brain(brain)
-    .with_time_zone(time_zone);
+    .with_time_zone(time_zone)
+    .with_vault(the_vault);
     // Endora HQ (ADR 0102), when this node has one: signing with a token given here (32+
     // characters, or HQ is left off rather than reachable with a guessable one), or with the one
     // HQ made for itself in the volume the two share.

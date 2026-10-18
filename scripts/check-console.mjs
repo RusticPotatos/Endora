@@ -309,6 +309,13 @@ runInContext(
   LAST_ACTIVITY = ["Checked your home"];
   LAST_ACTIVITY_MSG = "2";
   STEP_LIST = [{ skill: "weather", status: "running", label: "Checking the weather" }];
+  // The vault (ADR 0127): set up and locked, one passkey that unlocks and one that cannot yet,
+  // and the break-glass shares on screen — the branches that exist only between two states.
+  VAULT = { vault: "locked", set_up: true, keys_in_vault: false, node_waiting: false,
+            passkeys: 2, can_unlock: 1, adopting: false, rp_id: "endora.home.arpa" };
+  VAULT_PASSKEYS = [{ id: "Y3JlZC1h", label: "Jane Doe's <b>phone</b>", created_ms: 1, last_used_ms: 2, can_unlock: true },
+                    { id: "Y3JlZC1i", label: "Security key", created_ms: 3, last_used_ms: 0, can_unlock: false }];
+  VAULT_SHARES = ["placeholder-share-one", "placeholder-share-two", "placeholder-share-three"];
   DEEP_MODEL = { configured: true, key_set: true, url: "https://api.deepseek.com/v1",
                  model: "deepseek-v4-flash", escalate: false };
   `,

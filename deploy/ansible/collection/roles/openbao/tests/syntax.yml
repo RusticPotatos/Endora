@@ -1,0 +1,7 @@
+---
+# Syntax check: ANSIBLE_ROLES_PATH=roles ansible-playbook --syntax-check roles/openbao/tests/syntax.yml
+- name: OpenBao syntax
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: openbao

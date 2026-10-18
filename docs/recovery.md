@@ -10,6 +10,8 @@ the steps assume a few things were put in place beforehand (below).
 |---|---|---|
 | Endora's settings, keys and memory | `endora.db` in the node's data folder (a Docker volume by default) | Endora's own nightly copy, `backups/daily-*.db` beside it, restored from the house's backup |
 | Endora's secrets key, which the credentials in `endora.db` are sealed under ([ADR 0125](adr/0125-secrets-at-rest-in-the-node.md)) | `secrets.key` in the node's data folder | your password manager — **never** only the house's backup beside the database |
+| OpenBao's data: its storage and audit log ([ADR 0127](adr/0127-openbao-and-the-passkey-unlock.md)), and — once moved there — the keys Endora's credentials are sealed under | `openbao_data_dir` on the NAS | the house's backup; it opens only with a passkey or two break-glass shares |
+| OpenBao's break-glass shares (any two open it) | your password manager, or paper | **never** beside the house's backup; `docs/homelab.md`, "The vault", for using them |
 | The rebuild kit: your ansible-nas checkout, with the vault encrypted | its checkout folder on the NAS | the house's backup, with the home folder |
 | The vault password | your password manager, and `vault_password.txt.enc` (encrypted under your recovery passphrase) in the backup | either one |
 | The house's backup repository password | your password manager | needed to read any backup |

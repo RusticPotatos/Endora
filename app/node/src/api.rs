@@ -149,6 +149,9 @@ pub struct AppState {
     /// The house's calendar, read at most once an hour and shared by the mail reader, the
     /// brief and the mail screen (ADR 0097).
     pub(crate) calendar: Arc<KeptHouseCalendar>,
+    /// The house's vault and the passkeys that unlock it (ADR 0127). Not configured until
+    /// `ENDORA_VAULT_URL` is set ([`with_vault`](Self::with_vault)).
+    pub vault: Arc<crate::vault::Vault>,
 }
 
 /// The house's calendar as the mail sees it: Home Assistant's, kept for an hour.
@@ -275,7 +278,14 @@ impl AppState {
             }) as Arc<dyn endora_capabilities::Capability>);
             all
         });
+        let vault = Arc::new(crate::vault::Vault::new(
+            None,
+            store.clone(),
+            None,
+            crate::vault::DEFAULT_RP_ID,
+        ));
         Self {
+            vault,
             console: Arc::new(endora_capabilities::infrastructure::terminal::Adapter::new(
                 config.clone(),
                 store.db(),
@@ -372,6 +382,13 @@ impl AppState {
 
     pub(crate) fn with_bench(mut self, bench: bench::Bench) -> Self {
         self.bench = Some(Arc::new(bench));
+        self
+    }
+
+    /// Gives the node its vault (ADR 0127).
+    #[must_use]
+    pub fn with_vault(mut self, vault: crate::vault::Vault) -> Self {
+        self.vault = Arc::new(vault);
         self
     }
 
@@ -610,6 +627,28 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/session", get(whether_sign_in_exists).post(sign_in))
         .route("/v1/session/setup", get(sign_in_setup).post(set_sign_in))
         // A read-only credential for `make smoke`, behind a full one.
+        // The vault and its passkey unlock (ADR 0127). Only the status and the unlock answer
+        // without a sign-in (`crate::auth::may_pass`); the passkey is the unlock's credential.
+        .route("/v1/vault", get(vault::status))
+        .route("/v1/vault/unlock/begin", post(vault::begin_unlock))
+        .route("/v1/vault/unlock", post(vault::unlock))
+        .route("/v1/vault/passkeys", get(vault::passkeys))
+        .route("/v1/vault/passkeys/begin", post(vault::begin_registration))
+        .route(
+            "/v1/vault/passkeys/finish",
+            post(vault::finish_registration),
+        )
+        .route(
+            "/v1/vault/passkeys/{id}/remove",
+            post(vault::remove_passkey),
+        )
+        .route("/v1/vault/ceremony", post(vault::begin_ceremony))
+        .route("/v1/vault/initialise", post(vault::initialise))
+        .route("/v1/vault/enrol", post(vault::enrol))
+        .route("/v1/vault/adopt", post(vault::adopt))
+        .route("/v1/vault/recover", post(vault::recover))
+        .route("/v1/vault/keys-into-vault", post(vault::keys_into_vault))
+        .route("/v1/vault/start-over", post(vault::start_over))
         .route("/v1/session/checks", post(mint_a_checking_token))
         .route("/v1/session/dashboard", post(mint_a_dashboard_token))
         .route("/v1/homelab/overview", get(homelab::overview))
@@ -814,6 +853,7 @@ fn relay_routes() -> Router<AppState> {
 }
 mod auth;
 mod homelab;
+mod vault;
 /// The agenda loop, for the composition root to start.
 pub fn spawn_agenda(state: AppState) {
     agenda::spawn(state);

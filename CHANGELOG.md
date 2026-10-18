@@ -9,6 +9,22 @@ tagged release.
 
 ### Added
 
+- **OpenBao, unlocked with a passkey** ([ADR 0127](docs/adr/0127-openbao-and-the-passkey-unlock.md)).
+  The house's secrets manager runs beside the node from the `endora.homelab` collection's new
+  **`openbao` role** (pinned by digest, raft storage and a file audit log in its own folder,
+  256 MB, read-only, no capabilities, on the internal `endora_vault` network it shares with the
+  node only, no host port); the `endora` role's `endora_vault_url` (`ENDORA_VAULT_URL`) gives
+  the node its address. **Settings › Vault**: register passkeys (WebAuthn with the PRF
+  extension, bound to `endora.home.arpa`; at most five), **Initialise** with one tap (three
+  Shamir shares, two to open, sealed under an unseal key wrapped for each passkey under a key
+  derived from its PRF output; setup with the root token, which is then revoked; the shares
+  shown **once** as the owner's break-glass copy), give another passkey its own copy, and
+  remove one. After a reboot, **Vault locked → Unlock**: one Face ID tap unseals it. The node's
+  own data keys can move into the vault's Transit key (a one-way switch); a node started while
+  the vault is sealed then **waits** — it serves the unlock, and every stored credential says
+  the vault is locked — rather than failing. Every passkey lost, two break-glass shares and a
+  new passkey set unlock up again and replace the shares. Opened by an address, the screen says
+  to open `https://endora.home.arpa:8787`.
 - **The team's map** ([ADR 0126](docs/adr/0126-the-teams-map.md)). The world gains a page for
   every lead's area, every project and goal not given up, and every role
   (`world:area/3`, `world:project/2`, `world:role/developer`), made once each from the team as it
@@ -801,6 +817,15 @@ tagged release.
 
 ### Security
 
+- **The vault's unlock and the node's keys** ([ADR 0127](docs/adr/0127-openbao-and-the-passkey-unlock.md)).
+  Only `GET /v1/vault` and the two unlock routes answer without a sign-in; the unlock is
+  authorised by a registered passkey (a signature over a single-use challenge, user verified,
+  and a PRF output that must open its wrapped key), throttled with the sign-in's ladder, and
+  every attempt is audited by passkey and time, never a value. Unseal shares, the unseal key and
+  the PRF-derived keys are wiped from memory after use; none is logged, stored in the clear, or
+  shown after initialisation. The node's AppRole may only use its own Transit key and KV corner.
+  Once the node's keys are in the vault, the key file and a copy of the database together no
+  longer open its credentials.
 - **Secrets at rest in the node** ([ADR 0125](docs/adr/0125-secrets-at-rest-in-the-node.md)).
   The node's database held every credential in plaintext and its sessions as the tokens
   themselves, so any copy of the file (a nightly snapshot, the house's backup) handed over

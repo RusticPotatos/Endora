@@ -138,6 +138,9 @@ value.
 
 ### The path to OpenBao Transit
 
+*Built by [0127](0127-openbao-and-the-passkey-unlock.md): the `openbao` key source, and the
+owner's switch that makes the move.*
+
 A Transit `KeySource` wraps a data key by asking Transit to encrypt it (`transit/encrypt/<key>`
 with the key id as context) and unwraps by asking it to decrypt; its `name()` is recorded with
 each wrapped key, so the node never offers one source's keys to another. Moving to it is one

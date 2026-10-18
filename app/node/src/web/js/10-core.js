@@ -308,6 +308,10 @@ async function reload() {
     const state = await api("GET", "/v1/session");
     SIGNIN_EXISTS = !!(state && state.set_up);
   } catch (_) { /* an older node has no such route; the sign-in screen is the safe fallback */ }
+  // Also without a credential: whether the vault is locked (ADR 0127). A node waiting for it
+  // can answer nothing else, so the unlock is all there is to draw.
+  await loadVault();
+  if (VAULT && VAULT.node_waiting) { render(); return; }
   // The export snapshot, the derived activity feed, and the everyday settings.
   // Whether the node is mid-turn, asked every reload — the answer that outlives this tab.
   try { NODE_BUSY = !!(await api("GET", "/health")).busy; } catch (_) { NODE_BUSY = false; }
@@ -412,12 +416,13 @@ async function loadView(v, id) {
   if (v === "needs") await loadAgenda();
   if (v === "watching") { try { AGENDA_RULES = await api("GET", "/v1/agenda/rules"); } catch (_) { AGENDA_RULES = null; } }
   if (v === "speakers") await loadSound();
+  if (v === "vault") { await loadVault(); await loadVaultPasskeys(); }
 }
 
 // The screens `loadView` fetches for.
 const FETCHES_ITS_OWN = ["mail", "models", "settings", "connections", "spotify",
   "understanding", "prefs", "brainpage",
-  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "replay", "watching", "needs", "speakers"];
+  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "replay", "watching", "needs", "speakers", "vault"];
 
 function go(v, id) {
   // One container's logs must never show under another's name while the new ones load.

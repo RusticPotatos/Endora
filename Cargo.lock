@@ -928,6 +928,7 @@ dependencies = [
 name = "endora-infrastructure"
 version = "0.12.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "endora-application",
@@ -943,6 +944,7 @@ dependencies = [
  "sha2",
  "ureq",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -967,6 +969,8 @@ dependencies = [
  "argon2",
  "axum",
  "axum-server",
+ "base64 0.22.1",
+ "chacha20poly1305",
  "endora-agenda",
  "endora-application",
  "endora-capabilities",
@@ -982,6 +986,7 @@ dependencies = [
  "http-body-util",
  "qrcode",
  "rcgen",
+ "ring",
  "rpassword",
  "rusqlite",
  "rustls",
@@ -990,6 +995,7 @@ dependencies = [
  "sha1",
  "tokio",
  "tower",
+ "zeroize",
 ]
 
 [[package]]

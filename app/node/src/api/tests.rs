@@ -2629,3 +2629,59 @@ async fn no_secret_reaches_the_logs_the_answers_or_the_database_in_the_clear() {
         );
     }
 }
+
+/// The vault (ADR 0127): its status and the unlock answer before anyone signs in, and nothing
+/// else of it does. A node with no vault configured says so.
+#[tokio::test]
+async fn the_vault_status_and_unlock_answer_unsigned_and_nothing_else_of_the_vault_does() {
+    let router = app(test_state());
+    let unsigned = |method: &str, path: &str| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap()
+    };
+    let status = router
+        .clone()
+        .oneshot(unsigned("GET", "/v1/vault"))
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::OK);
+    let status = json_body(status).await;
+    assert_eq!(status["vault"], "not configured");
+    assert_eq!(status["rp_id"], "endora.home.arpa");
+    assert_eq!(status["node_waiting"], false);
+
+    let begin = router
+        .clone()
+        .oneshot(unsigned("POST", "/v1/vault/unlock/begin"))
+        .await
+        .unwrap();
+    assert_eq!(
+        begin.status(),
+        StatusCode::BAD_REQUEST,
+        "let through, and refused for want of a passkey"
+    );
+    for path in [
+        "/v1/vault/passkeys/begin",
+        "/v1/vault/ceremony",
+        "/v1/vault/initialise",
+        "/v1/vault/keys-into-vault",
+        "/v1/vault/start-over",
+    ] {
+        let res = router
+            .clone()
+            .oneshot(unsigned("POST", path))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    let listed = router.oneshot(get("/v1/vault/passkeys")).await.unwrap();
+    assert_eq!(
+        listed.status(),
+        StatusCode::OK,
+        "signed, the owner may list"
+    );
+}

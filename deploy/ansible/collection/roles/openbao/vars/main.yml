@@ -1,0 +1,32 @@
+---
+# OpenBao's server configuration (Endora ADR 0127), handed over as JSON in BAO_LOCAL_CONFIG so
+# nothing has to be mounted into a read-only container; OpenBao reads JSON as HCL. Role vars,
+# not defaults: these are the decisions the ADR records, not settings.
+openbao_config:
+  ui: false
+  # mlock would need IPC_LOCK, and the container has no capabilities; swap is the host's.
+  disable_mlock: true
+  # Integrated storage, single node: no other service to run, and `bao operator raft
+  # snapshot save` makes a consistent backup.
+  storage:
+    raft:
+      path: /openbao/file
+      node_id: endora
+  # Plain HTTP, on the internal network only the node shares (ADR 0127 says why). Rekeying
+  # with unseal shares is how passkey unlock is set up again after every passkey is lost, from
+  # the break-glass copy; OpenBao turns those endpoints off by default because anyone who can
+  # reach them could start or cancel one (never finish one: that takes the shares). Only the
+  # node reaches this listener, so they are on.
+  listener:
+    - tcp:
+        address: "0.0.0.0:8200"
+        tls_disable: true
+        disable_unauthed_rekey_endpoints: false
+  api_addr: "http://{{ openbao_alias }}:8200"
+  cluster_addr: "http://127.0.0.1:8201"
+  # Every request and answer, with values HMAC'd, beside the storage in the one volume.
+  audit:
+    - type: file
+      path: endora-audit
+      options:
+        file_path: /openbao/file/audit.log

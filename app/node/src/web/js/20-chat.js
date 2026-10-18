@@ -22,6 +22,7 @@ const UNDER_SETTINGS = [
   { view: "watching", icon: "clock", label: "What Endora watches", short: "Watching", note: "what it does about each kind of thing, and what you told it to leave alone" },
   { view: "understanding", icon: "person", label: "About you", note: "what you've told it, and the pages of what it knows" },
   { view: "signin", icon: "lock", label: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
+  { view: "vault", icon: "lock", label: "Vault", note: "the house's secrets, and the passkeys that unlock them" },
   { view: "data", icon: "export", label: "Your data", note: "take a copy of what Endora knows, or delete it" },
 ];
 
@@ -319,6 +320,7 @@ function viewChat() {
     <div class="chat">
       ${AGENDA && AGENDA.now ? `<div class="chat-top"><div class="chat-col">${viewNowLine()}${viewPinned()}</div></div>` : ""}
       <div class="chat-scroll" id="chat-scroll"><div class="chat-col">
+        ${vaultBannerHtml()}
         ${dayBar}
         ${research}
         <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + streamingActivity}</div>

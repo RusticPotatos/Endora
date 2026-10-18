@@ -234,6 +234,74 @@ impl KeyFile {
     }
 }
 
+impl KeyFile {
+    /// Seals a short note under the key file itself, bound to `purpose`, outside the data
+    /// keys: what has to open *before* the data keys can (ADR 0127 — the vault's AppRole
+    /// credential, which the node needs to reach the Transit key that wraps them).
+    ///
+    /// `file:note:v1:<nonce>:<ciphertext and tag>`, with `endora-note:v1:<purpose>` as the
+    /// associated data, so a note sealed for one purpose does not open for another.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the cipher fails.
+    pub fn seal_note(&self, purpose: &str, plaintext: &str) -> Result<String, RepositoryError> {
+        let aad = format!("endora-note:v1:{purpose}");
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let sealed = XChaCha20Poly1305::new(self.0.0.as_bytes().into())
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: plaintext.as_bytes(),
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|_| backend(format!("could not seal the {purpose} note")))?;
+        Ok(format!(
+            "{NOTE}{}:{}",
+            URL_SAFE_NO_PAD.encode(nonce),
+            URL_SAFE_NO_PAD.encode(sealed)
+        ))
+    }
+
+    /// Opens what [`seal_note`](Self::seal_note) made for `purpose`. An error names the
+    /// purpose, never the note.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the note is damaged, for another purpose, or another key's.
+    pub fn open_note(
+        &self,
+        purpose: &str,
+        note: &str,
+    ) -> Result<Zeroizing<String>, RepositoryError> {
+        let damaged = || corrupt(format!("the {purpose} note is damaged"));
+        let rest = note.strip_prefix(NOTE).ok_or_else(damaged)?;
+        let (nonce, sealed) = rest.split_once(':').ok_or_else(damaged)?;
+        let nonce = decode_nonce(nonce).ok_or_else(damaged)?;
+        let sealed = URL_SAFE_NO_PAD.decode(sealed).map_err(|_| damaged())?;
+        let aad = format!("endora-note:v1:{purpose}");
+        let opened = Zeroizing::new(
+            XChaCha20Poly1305::new(self.0.0.as_bytes().into())
+                .decrypt(
+                    &nonce,
+                    Payload {
+                        msg: &sealed,
+                        aad: aad.as_bytes(),
+                    },
+                )
+                .map_err(|_| {
+                    corrupt(format!(
+                        "the {purpose} note does not open with this key file"
+                    ))
+                })?,
+        );
+        let text = std::str::from_utf8(&opened).map_err(|_| damaged())?;
+        Ok(Zeroizing::new(text.to_owned()))
+    }
+}
+
+/// What a note sealed by the key file starts with.
+const NOTE: &str = "file:note:v1:";
+
 impl KeySource for KeyFile {
     fn name(&self) -> &'static str {
         "file"

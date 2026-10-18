@@ -22,6 +22,11 @@ chrono = { version = "0.4", default-features = false }
 # Session tokens are kept as SHA-256 digests (ADR 0125). Already in the workspace at this
 # version (the capabilities context's PKCE uses it), so no new crate.
 sha2 = "0.10"
+# OpenBao (ADR 0127): Transit takes and gives base64, and the unseal shares, the root token and
+# the AppRole login are wiped from memory when dropped. Both already in the lock file at these
+# versions (the persistence crate's secrets at rest use them), so no new crate, only edges.
+base64 = "0.22"
+zeroize = "1"
 
 [dev-dependencies]
 endora-mail = { path = "../../domains/mail" }

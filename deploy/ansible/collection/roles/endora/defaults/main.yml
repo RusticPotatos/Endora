@@ -52,6 +52,14 @@ endora_tls_san: "{{ ansible_default_ipv4.address | default('') }}"
 # fixed GET routes over the Docker socket, nothing that starts, stops or execs.
 endora_docker_observer: false
 
+# The house's vault (Endora ADR 0127): OpenBao, run by this collection's `openbao` role on the
+# network the node shares with it. The node unlocks it with the owner's passkey. Empty: no
+# vault. With the openbao role: http://openbao:8200.
+endora_vault_url: ""
+# The name passkeys are bound to: the console must be opened at https://<this>:8787 to use
+# one. Empty: the node's default, endora.home.arpa.
+endora_passkey_rp_id: ""
+
 # Endora HQ (Endora ADR 0102): the team service, run beside the node from the same image, with a
 # scripted demo team until real workers exist. It makes its own token for the node.
 endora_hq: false

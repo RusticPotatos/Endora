@@ -375,3 +375,71 @@ fn forgetting_empties_the_sealed_values_and_lets_a_new_key_start_over() {
     let db = on_disk(&scratch);
     assert!(db.seal(PLACEHOLDER).is_ok(), "a new key, and secrets again");
 }
+
+// OpenBao and the passkey unlock (ADR 0127): a database whose data keys a sealed vault wraps
+// opens *waiting*, says so when a secret is asked of it, and opens fully once a source is
+// attached.
+
+#[test]
+fn the_sources_that_wrapped_the_keys_are_named_without_opening_them() {
+    let scratch = Scratch::new();
+    let fresh = Db::open(scratch.path("fresh.db").to_str().unwrap()).unwrap();
+    assert!(
+        fresh.key_sources_on_disk().unwrap().is_empty(),
+        "no keys yet"
+    );
+    drop(on_disk(&scratch));
+    let db = Db::open(scratch.path("node.db").to_str().unwrap()).unwrap();
+    assert_eq!(db.key_sources_on_disk().unwrap(), vec!["file".to_owned()]);
+}
+
+#[test]
+fn a_database_waiting_for_the_vault_says_so_and_opens_once_a_source_is_attached() {
+    let scratch = Scratch::new();
+    let db = on_disk(&scratch);
+    let sealed = db.seal(PLACEHOLDER).unwrap();
+    drop(db);
+
+    let db = Db::open(scratch.path("node.db").to_str().unwrap()).unwrap();
+    db.wait_for_the_vault();
+    assert!(!db.has_key_source());
+    let message = db.unseal("vault.api_key", &sealed).unwrap_err().to_string();
+    assert!(message.contains("vault is locked"), "{message}");
+    assert!(!message.contains(PLACEHOLDER));
+    assert!(
+        db.seal("x")
+            .unwrap_err()
+            .to_string()
+            .contains("vault is locked")
+    );
+
+    db.attach_key_source(Arc::new(
+        KeyFile::open(&scratch.path("secrets.key"), false).unwrap(),
+    ))
+    .unwrap();
+    assert!(db.has_key_source());
+    assert_eq!(db.unseal("vault.api_key", &sealed).unwrap(), PLACEHOLDER);
+}
+
+#[test]
+fn a_note_sealed_by_the_key_file_opens_only_for_its_purpose_and_that_key() {
+    let scratch = Scratch::new();
+    let key = KeyFile::open(&scratch.path("secrets.key"), true).unwrap();
+    let note = key.seal_note("vault-approle", PLACEHOLDER).unwrap();
+    assert!(note.starts_with("file:note:v1:"), "{note}");
+    assert!(!note.contains(PLACEHOLDER));
+    assert_eq!(
+        &*key.open_note("vault-approle", &note).unwrap(),
+        PLACEHOLDER
+    );
+    assert!(
+        key.open_note("something-else", &note).is_err(),
+        "bound to its purpose"
+    );
+    let other = KeyFile::open(&scratch.path("other.key"), true).unwrap();
+    let message = other
+        .open_note("vault-approle", &note)
+        .unwrap_err()
+        .to_string();
+    assert!(!message.contains(PLACEHOLDER), "{message}");
+}
