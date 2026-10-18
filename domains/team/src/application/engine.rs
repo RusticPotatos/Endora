@@ -31,6 +31,7 @@ use crate::domain::{docs, house};
 mod evidence;
 mod planning;
 mod projects;
+mod replay;
 mod wing;
 
 pub use evidence::Called;
@@ -219,6 +220,9 @@ pub struct Engine<S, W, C> {
     lab: Mutex<Option<Vec<String>>>,
     /// Endora's public records and plans, which the CEO may read.
     docs: Library,
+    /// The turn whose call the engine is taking now, if it is one's: every event it emits
+    /// names it, for Replay. Cleared each time the lock is taken.
+    acting: Mutex<Option<RunId>>,
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -232,6 +236,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             lock: Mutex::new(()),
             lab: Mutex::new(None),
             docs: &[],
+            acting: Mutex::new(None),
         }
     }
 
@@ -272,12 +277,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn held(&self) -> std::sync::MutexGuard<'_, ()> {
         // A panic while holding the lock leaves nothing half-written that the store has not
         // already refused, so the lock is taken back rather than poisoning the engine.
-        self.lock
+        let held = self
+            .lock
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.act_for(None);
+        held
     }
 
     fn emit(&self, kind: EventKind, data: serde_json::Value) -> Done<()> {
+        let data = self.name_the_turn(data)?;
         self.store.emit(self.clock.now(), kind.name(), &data)?;
         Ok(())
     }
@@ -1022,6 +1031,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if run.status != RunStatus::Running {
             return Err(EngineError::Refused(Refusal::TurnOver));
         }
+        self.act_for(Some(run.id));
         Ok(run)
     }
 
