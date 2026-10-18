@@ -957,3 +957,53 @@ fn the_world_exports_as_markdown_with_its_stages() {
         assert!(md.contains(said), "{said}\n---\n{md}");
     }
 }
+
+#[test]
+fn the_owner_edits_a_members_section_and_the_members_text_stays_in_its_revisions() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    task_for(&hq, t.goal, t.ceo, "Review");
+    let mara = turn(&hq, t.ceo);
+    let fresh = reading(&hq, &mara);
+    use_tool(
+        &hq,
+        &mara,
+        "write_world",
+        &json!({ "heading": "Backups", "headline": "Backups run at 03:00.",
+                 "body": "Nightly, to the second disk.", "stage": "insight",
+                 "warrant": "read", "evidence": [fresh] }),
+    )
+    .unwrap();
+    let theirs = hq.store().sections().unwrap().remove(0);
+    assert_eq!(theirs.written_by, "Mara");
+
+    // The owner opens it on a phone and saves it under the same page and key.
+    let address = hq
+        .write_as_owner(
+            &theirs.page,
+            &theirs.anchor,
+            "Backups",
+            "Backups run at 04:00.\nNightly, to the second disk.",
+        )
+        .unwrap();
+    assert_eq!(address, theirs.address());
+    let mine = hq.store().sections().unwrap().remove(0);
+    assert_eq!(mine.id, theirs.id, "the same section, not a second one");
+    assert_eq!(
+        (
+            mine.written_by.as_str(),
+            mine.headline.as_str(),
+            mine.revision
+        ),
+        ("the owner", "Backups run at 04:00.", 2)
+    );
+    assert_eq!(
+        hq.store().section_revisions(mine.id).unwrap(),
+        vec![
+            (1, "Backups run at 03:00.".to_owned()),
+            (2, "Backups run at 04:00.".to_owned())
+        ],
+        "the member's text is kept"
+    );
+}

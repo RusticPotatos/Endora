@@ -1237,6 +1237,7 @@ As built: the first of three builds of the team's memory; the map and asking the
 - **The owner**: the World card, `GET /v1/hq/world`, `GET /v1/hq/world/export.md`,
   `POST /v1/hq/world/promote`, `POST /v1/hq/world/demote`, through the node and its audit log.
 - Scenarios: `domains/team/features/the-world.feature`.
+- **On a phone**: the World card takes a pasted Markdown document (sections `## page / key — Title`, timeline bullets `- date: text`), previews the changes with a tick each, and applies them through the same two owner routes; each section has an Edit button opening a full-screen editor. The parser is a small pure function in the console, checked by `scripts/check-console.mjs`.
 
 ## 16. Later, and not at all
 
