@@ -17,6 +17,7 @@ use crate::domain::{
     WakeReason,
 };
 use crate::domain::{Branch, Check, Document};
+use crate::domain::{chess, games};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS members (
@@ -190,6 +191,22 @@ CREATE TABLE IF NOT EXISTS office_votes (
 ) STRICT;
 CREATE TABLE IF NOT EXISTS office_history (
     id INTEGER PRIMARY KEY, what TEXT NOT NULL, items_before TEXT NOT NULL, at_ms INTEGER NOT NULL
+) STRICT;
+-- Games in the office (ADR 0121): the ping-pong and pool matches HQ's engine has played, and
+-- the games of chess the members play in downtime (moves as standard notation, space between).
+-- Made only if missing, so a store from before the games gains them and keeps everything else.
+CREATE TABLE IF NOT EXISTS games (
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
+    player_a INTEGER NOT NULL REFERENCES members(id), player_b INTEGER NOT NULL REFERENCES members(id),
+    score_a INTEGER NOT NULL, score_b INTEGER NOT NULL,
+    winner INTEGER NOT NULL REFERENCES members(id), note TEXT NOT NULL DEFAULT '',
+    played_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS chess_games (
+    id INTEGER PRIMARY KEY,
+    white INTEGER NOT NULL REFERENCES members(id), black INTEGER NOT NULL REFERENCES members(id),
+    moves TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'in_progress',
+    reason TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL, last_move_at INTEGER NOT NULL
 ) STRICT;
 ";
 
@@ -2360,6 +2377,136 @@ impl TeamStore for SqliteTeamStore {
             .map_err(backend)
     }
 
+    fn add_game(&self, record: &games::Record) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO games (kind, player_a, player_b, score_a, score_b, winner, note, played_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                record.kind.name(),
+                record.a.0,
+                record.b.0,
+                record.score_a,
+                record.score_b,
+                record.winner.0,
+                record.note,
+                record.at
+            ],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn games(&self) -> Stored<Vec<games::Record>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, player_a, player_b, score_a, score_b, winner, note, played_at \
+                 FROM games ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, u32>(4)?,
+                    r.get::<_, u32>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, String>(7)?,
+                    r.get::<_, i64>(8)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut all = Vec::new();
+        for row in rows {
+            let (id, kind, a, b, score_a, score_b, winner, note, at) = row.map_err(backend)?;
+            all.push(games::Record {
+                id,
+                kind: games::Kind::from_name(&kind).ok_or_else(|| corrupt("a game's kind"))?,
+                a: MemberId(a),
+                b: MemberId(b),
+                score_a,
+                score_b,
+                winner: MemberId(winner),
+                note,
+                at,
+            });
+        }
+        Ok(all)
+    }
+
+    fn add_chess_game(&self, white: MemberId, black: MemberId, at: Millis) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO chess_games (white, black, started_at, last_move_at) \
+             VALUES (?1, ?2, ?3, ?3)",
+            params![white.0, black.0, at],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn chess_games(&self) -> Stored<Vec<chess::Game>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, white, black, moves, status, reason, started_at, last_move_at \
+                 FROM chess_games ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut all = Vec::new();
+        for row in rows {
+            let (id, white, black, moves, status, reason, started_at, last_move_at) =
+                row.map_err(backend)?;
+            all.push(chess::Game {
+                id,
+                white: MemberId(white),
+                black: MemberId(black),
+                moves: moves.split_whitespace().map(str::to_owned).collect(),
+                status: chess::Status::from_name(&status)
+                    .ok_or_else(|| corrupt("a chess game's status"))?,
+                reason,
+                started_at,
+                last_move_at,
+            });
+        }
+        Ok(all)
+    }
+
+    fn save_chess_game(&self, game: &chess::Game) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE chess_games SET moves = ?2, status = ?3, reason = ?4, last_move_at = ?5 \
+                 WHERE id = ?1",
+                params![
+                    game.id,
+                    game.moves.join(" "),
+                    game.status.name(),
+                    game.reason,
+                    game.last_move_at
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
     fn strategies(&self) -> Stored<Vec<crate::domain::areas::Strategy>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -2728,6 +2875,53 @@ CREATE TABLE IF NOT EXISTS check_backs (
             .add_office_item(office::Kind::Plant, 8, 3, "endora", 9)
             .unwrap();
         assert!(next > tank, "{next} reuses a number");
+    }
+
+    #[test]
+    fn a_store_made_before_the_games_gains_its_tables_and_keeps_everything_else() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA_BEFORE_PROJECTS).unwrap();
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
+                (1, 'Ada', 'developer', 40, 2), (2, 'Bo', 'developer', 40, 2);
+             INSERT INTO settings (key, value) VALUES ('house_log', 'kept');",
+        )
+        .unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        assert!(store.games().unwrap().is_empty());
+        assert!(store.chess_games().unwrap().is_empty());
+        assert_eq!(store.members().unwrap().len(), 2);
+        assert_eq!(store.setting("house_log").unwrap().as_deref(), Some("kept"));
+        // A match is kept and read back whole.
+        let record = games::Record {
+            id: 0,
+            kind: games::Kind::Pool,
+            a: MemberId(1),
+            b: MemberId(2),
+            score_a: 7,
+            score_b: 5,
+            winner: MemberId(2),
+            note: "Ada scratched on the 8".to_owned(),
+            at: 9,
+        };
+        let id = store.add_game(&record).unwrap();
+        assert_eq!(store.games().unwrap(), [games::Record { id, ..record }]);
+        // A game of chess is kept with its moves, and updated as it goes.
+        let game = store.add_chess_game(MemberId(1), MemberId(2), 10).unwrap();
+        let mut kept = store.chess_games().unwrap().remove(0);
+        assert_eq!(
+            (kept.id, kept.white, kept.black),
+            (game, MemberId(1), MemberId(2))
+        );
+        assert!(kept.moves.is_empty() && kept.live());
+        kept.play(MemberId(1), "e4", 11).unwrap();
+        kept.play(MemberId(2), "e5", 12).unwrap();
+        store.save_chess_game(&kept).unwrap();
+        let back = store.chess_games().unwrap().remove(0);
+        assert_eq!(back, kept);
+        assert_eq!(back.moves, ["e4", "e5"]);
+        assert_eq!((back.started_at, back.last_move_at), (10, 12));
     }
 
     #[test]

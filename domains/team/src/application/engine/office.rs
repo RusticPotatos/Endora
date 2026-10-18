@@ -610,6 +610,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
              carries after six hours. Then stop.\n",
             self.store.last_event()?
         ));
+        told.push_str(&self.chess_briefed(member)?);
         Ok(told)
     }
 

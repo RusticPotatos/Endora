@@ -14,6 +14,12 @@ authors.workspace = true
 endora-kernel = { path = "../../shared/kernel" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde_json = "1"
+# The rules of chess (ADR 0121): legal moves, check, mate, stalemate, repeated positions and
+# the notation moves are written in. Pure Rust with no IO, MIT licensed (the workspace is
+# Apache-2.0; `shakmaty`, the better-known crate, is GPL-3.0-or-later and cannot be linked
+# into it), so the domain stays free of IO and of vendors. Writing legal move generation by
+# hand is exactly the kind of work a library is for.
+cozy-chess = "0.3"
 
 [dev-dependencies]
 # The owner's scenarios (docs/testing.md): `features/*.feature` in plain words, run by

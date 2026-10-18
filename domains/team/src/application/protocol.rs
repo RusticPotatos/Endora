@@ -490,6 +490,7 @@ pub fn tools(role: Role) -> Value {
         list.push(read_document_tool());
         list.push(read_doc_tool());
         list.push(office_tool());
+        list.push(super::chess_tool::tool());
     }
     if crate::domain::lessons::keeps_lessons(role) {
         if let Some(list) = all.as_array_mut() {
@@ -703,6 +704,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     }
     match tool {
         "office" => office_call(engine, run, args),
+        "chess" => super::chess_tool::call(engine, run, args),
         "my_turn" => {
             let mut out = run.told.clone();
             if let Some(task) = run.task {

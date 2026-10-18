@@ -283,6 +283,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Downtime (ADR 0119): a member with nothing to do tidies the office or its notebook,
         // free on the house's model. The scripted demo has none.
         downtime: !demo_mode,
+        // Ping-pong and pool between free members (ADR 0121): played in code, free.
+        games: !demo_mode,
         ..Settings::default()
     };
     let hq: Arc<Hq> = Arc::new(

@@ -1340,9 +1340,10 @@ mod tests {
         // project has a backlog. Every member keeps a notebook of its own, too (ADR 0118):
         // note, forget, read and check. Every member shapes the office (ADR 0119). And it
         // reports on its area, decides its area's stuck work, and gives its view in a huddle
-        // (ADR 0120).
-        assert_eq!(names.len(), 25, "{names:?}");
+        // (ADR 0120). And it may play chess (ADR 0121).
+        assert_eq!(names.len(), 26, "{names:?}");
         assert!(names.contains(&"office"), "every member shapes the office");
+        assert!(names.contains(&"chess"), "every member may play chess");
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
         for added in ["report_area", "decide_stuck", "huddle_view"] {
             assert!(names.contains(&added), "{added}");

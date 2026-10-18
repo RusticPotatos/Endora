@@ -107,6 +107,14 @@ pub enum EventKind {
     OfficeDropped,
     /// The owner vetoed a proposal for the office.
     OfficeVetoed,
+    /// A ping-pong or pool match was played, and who won (ADR 0121).
+    GamePlayed,
+    /// A member challenged another to chess, and the game began.
+    ChessStarted,
+    /// A move was played in a game of chess.
+    ChessMoved,
+    /// A game of chess ended: won, drawn or adjourned.
+    ChessEnded,
     /// A goal's strategy was written, by the CEO or the owner (ADR 0120).
     StrategySet,
     /// A lead reported on its area (ADR 0120).
@@ -176,6 +184,10 @@ impl EventKind {
             Self::OfficeChanged => "office.changed",
             Self::OfficeDropped => "office.dropped",
             Self::OfficeVetoed => "office.vetoed",
+            Self::GamePlayed => "game.played",
+            Self::ChessStarted => "chess.started",
+            Self::ChessMoved => "chess.moved",
+            Self::ChessEnded => "chess.ended",
             Self::StrategySet => "goal.strategy",
             Self::AreaReported => "area.reported",
             Self::StuckClimbed => "stuck.climbed",
