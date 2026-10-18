@@ -313,6 +313,13 @@ pub fn way(tool: &Bridged, role: &str, marked: bool) -> Result<Way, String> {
     if tool.stance == Stance::Off {
         return Err(format!("the owner has switched {} off", tool.name));
     }
+    if role == "ceo" && tool.kind == Kind::Act {
+        return Err(
+            "the CEO reads the lab and never acts on it (ADR 0120): direct the lead of the \
+             task's area with direct, who decides; or hand it to the lead"
+                .to_owned(),
+        );
+    }
     if !may(role, tool.kind) {
         return Err(format!(
             "a {} may only use tools that read; ask the owner, or hand it to the lead",
@@ -336,15 +343,15 @@ pub const CLOUD_LEAD_MAY_SEE: [&str; 3] = ["container_logs", "sonarr_queue", "ra
 
 /// Whether a turn may be given what the tool `id` of `tier` returns, for a member in `role`:
 /// Restricted never (it is not offered at all); Confidential to a turn on a local model, and
-/// to a lead's turn on a cloud model only what [`CLOUD_LEAD_MAY_SEE`] names; the rest to all.
-/// The CEO on a cloud model is a cloud member like any but the lead: it is given nothing
-/// Confidential, and reads its members' findings in their threads (ADR 0111).
+/// to a lead's or the CEO's turn on a cloud model only what [`CLOUD_LEAD_MAY_SEE`] names; the
+/// rest to all. The owner's word of 2026-10-18 (ADR 0120): reading is open to the CEO, whose
+/// system it is, as to the lead; it loses acts on the lab, not sight of it.
 #[must_use]
 pub fn may_see(tier: Tier, id: &str, role: &str, on_a_cloud_model: bool) -> bool {
     match tier {
         Tier::Restricted => false,
         Tier::Confidential if !on_a_cloud_model => true,
-        Tier::Confidential => role == "lead" && CLOUD_LEAD_MAY_SEE.contains(&id),
+        Tier::Confidential => matches!(role, "lead" | "ceo") && CLOUD_LEAD_MAY_SEE.contains(&id),
         _ => true,
     }
 }
@@ -761,7 +768,11 @@ mod tests {
         for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
             assert_eq!(way(&read, role, false), Ok(Way::Read), "{role}");
         }
-        assert!(way(&on, "ceo", false).is_err(), "the CEO only reads");
+        assert!(
+            way(&on, "ceo", false).unwrap_err().contains("direct"),
+            "the CEO only reads, and directs the area's lead"
+        );
+        assert!(way(&ask, "ceo", false).is_err(), "nor asks to act");
         assert_eq!(way(&on, "developer", false), Ok(Way::Act));
         assert_eq!(way(&on, "lead", false), Ok(Way::Act));
         assert!(way(&on, "reviewer", false).is_err());
@@ -796,7 +807,7 @@ mod tests {
 
     #[test]
     fn confidential_is_given_to_a_local_turn_and_to_the_cloud_lead_only_as_the_owner_allowed() {
-        for role in ["lead", "developer", "reviewer", "researcher"] {
+        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
             assert!(may_see(Tier::Confidential, "home_assistant", role, false));
             assert!(may_see(Tier::Confidential, "container_logs", role, false));
             assert!(may_see(Tier::Internal, "homelab_status", role, true));
@@ -807,13 +818,16 @@ mod tests {
             );
         }
         // The owner's decision of 2026-10-17 (ADR 0109): the lead's cloud turns may read the
-        // scrubbed logs and the download queues, and nothing else Confidential.
+        // scrubbed logs and the download queues, and nothing else Confidential; and of
+        // 2026-10-18 (ADR 0120): so may the CEO's, whose system it is.
         for allowed in CLOUD_LEAD_MAY_SEE {
-            assert!(
-                may_see(Tier::Confidential, allowed, "lead", true),
-                "{allowed}"
-            );
-            for role in ["ceo", "developer", "reviewer", "researcher", ""] {
+            for role in ["lead", "ceo"] {
+                assert!(
+                    may_see(Tier::Confidential, allowed, role, true),
+                    "{allowed} to {role}"
+                );
+            }
+            for role in ["developer", "reviewer", "researcher", ""] {
                 assert!(
                     !may_see(Tier::Confidential, allowed, role, true),
                     "{allowed} to a cloud {role}"

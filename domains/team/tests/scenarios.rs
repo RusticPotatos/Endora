@@ -64,6 +64,8 @@ struct Office {
     push: Option<DeskId>,
     /// The clock the engine reads, for steps that let days pass.
     clock: Hands,
+    /// The receipt of the last reading of the lab a step took.
+    reading: Option<i64>,
 }
 
 impl Default for Office {
@@ -85,6 +87,7 @@ impl Default for Office {
             seeded: None,
             wing: None,
             push: None,
+            reading: None,
         }
     }
 }
@@ -1375,6 +1378,295 @@ fn options() -> cucumber::cli::Opts<
         kept.push(arg);
     }
     cucumber::cli::Opts::try_parse_from(kept).expect("cucumber's own options")
+}
+
+// --- Roles as an enforced RACI (ADR 0120) ------------------------------------------------------
+
+#[then(expr = "{word} has never been woken")]
+fn never_woken(w: &mut Office, name: String) {
+    let member = w.member(&name);
+    let wakes: Vec<_> =
+        w.hq.wakes()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|wake| wake.member == member)
+            .collect();
+    assert!(wakes.is_empty(), "{name} was woken: {wakes:?}");
+}
+
+#[when(expr = "{word} closes {string} as done")]
+fn closes_bare(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "done", "reason": "it held" }),
+    );
+}
+
+/// The CEO's direction, on the task as its evidence; her turn ends, so the lead's turn may
+/// start on the task.
+#[when(expr = "{word} directs {word} on {string}: {string}")]
+fn directs(w: &mut Office, name: String, _lead: String, title: String, direction: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "direct",
+        &json!({ "task": task.0, "direction": direction,
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .expect("the CEO directs the area's lead");
+    turn_ends(w, name);
+}
+
+#[then(regex = r#"^(\w+)'s turn is told "(.+)"$"#)]
+fn turn_is_told(w: &mut Office, name: String, text: String) {
+    let context = w.turn_of(&name);
+    assert!(
+        context.told.contains(&text),
+        "{name} was told:\n{}",
+        context.told
+    );
+}
+
+/// A reading of the lab in the member's turn, as the node records it.
+fn reads_the_lab(w: &mut Office, name: &str, tool: &str, act: bool) -> i64 {
+    let context = w.turn_of(name);
+    w.hq.record_receipt(
+        &context.token,
+        &Called {
+            tool: tool.to_owned(),
+            args: if act {
+                "container: deluge".to_owned()
+            } else {
+                String::new()
+            },
+            excerpt: "deluge: running".to_owned(),
+            ok: true,
+            act,
+            confidential: false,
+        },
+    )
+    .expect("the node records the call")
+}
+
+#[when(expr = "{word} restarts deluge and reads the lab")]
+fn restarts_and_reads(w: &mut Office, name: String) {
+    let task = w.turn_of(&name).task.expect("a turn on a task");
+    w.use_tool(&name, "claim", &json!({ "task": task.0 }))
+        .expect("the member takes its task");
+    reads_the_lab(w, &name, "restart_container", true);
+    w.clock.0.fetch_add(2 * 60_000, Ordering::SeqCst);
+    w.reading = Some(reads_the_lab(w, &name, "homelab_status", false));
+}
+
+#[when(expr = "{word} closes {string} as done on her reading")]
+fn closes_on_reading(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let r = format!("r{}", w.reading.expect("a reading was taken"));
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "done", "reason": "deluge is up",
+                 "evidence": [r.clone(), r] }),
+    );
+}
+
+#[when(expr = "{word} reads the lab again and closes {string} as done on her reading")]
+fn reads_again_and_closes(w: &mut Office, name: String, title: String) {
+    w.reading = Some(reads_the_lab(w, &name, "homelab_status", false));
+    closes_on_reading(w, name, title);
+}
+
+#[then(expr = "it is refused, saying {string}")]
+fn refused_containing(w: &mut Office, part: String) {
+    let said = w.refused.clone().expect("it was refused");
+    assert!(said.contains(&part), "{said}");
+}
+
+#[given(expr = "the home lab's work is {word}'s project")]
+fn lab_is_a_project(w: &mut Office, _lead: String) {
+    let id =
+        w.hq.migrate_projects()
+            .expect("the store answers")
+            .expect("the home lab's project is made");
+    w.projects.insert("Home lab upkeep".to_owned(), id);
+}
+
+/// The lead's weekly patterns routine, made once and run now; what it ran before is over.
+#[when(expr = "{word}'s weekly patterns turn comes")]
+fn patterns_turn(w: &mut Office, name: String) {
+    let lead = w.member(&name);
+    w.hq.seed_area_routines()
+        .expect("the leads' routines are made");
+    let patterns =
+        w.hq.store()
+            .routines()
+            .expect("the store answers")
+            .into_iter()
+            .find(|r| r.assignee == lead && r.title == "Patterns")
+            .expect("the lead has a patterns routine");
+    w.hq.tick().expect("the tick runs");
+    for started in w.hq.runner().started() {
+        w.hq.runner().finish(started.run, true);
+    }
+    w.hq.tick().expect("the tick runs");
+    w.hq.fire_routine(patterns.id).expect("the routine runs");
+}
+
+#[when(expr = "{word} proposes a project on the alarms that came back")]
+fn proposes_on_alarms(w: &mut Office, name: String) {
+    let alarms: Vec<i64> = w
+        .hq
+        .store()
+        .events_after(0)
+        .expect("the store answers")
+        .into_iter()
+        .filter(|e| {
+            (e.kind == "routine.fired" && e.data["firing"] == "alarm") || e.kind == "routine.posted"
+        })
+        .map(|e| e.id)
+        .collect();
+    w.use_tool(
+        &name,
+        "propose_project",
+        &json!({ "title": "Fix what keeps exiting",
+                 "reason": "the same containers exited twice in two hours", "events": alarms }),
+    )
+    .expect("a lead proposes");
+    let id =
+        w.hq.store()
+            .projects()
+            .expect("the store answers")
+            .into_iter()
+            .find(|p| p.title == "Fix what keeps exiting")
+            .expect("the proposal is a project")
+            .id;
+    w.projects.insert("Fix what keeps exiting".to_owned(), id);
+}
+
+/// The CEO's daily review, as HQ makes it, run now.
+#[when(expr = "{word}'s daily review comes")]
+fn daily_review(w: &mut Office, name: String) {
+    let ceo = w.member(&name);
+    let routine =
+        w.hq.add_routine(
+            Author::Endora,
+            NewRoutine {
+                title: "Daily review".to_owned(),
+                description: "Review the house.".to_owned(),
+                goal: w.goal(),
+                project: None,
+                assignee: ceo,
+                every_ms: DAY_MS,
+                on_lab_trouble: false,
+            },
+        )
+        .expect("HQ makes the review");
+    w.hq.fire_routine(routine).expect("the review runs");
+}
+
+/// Time passes on a task nobody comes back to, as the tick sees it: what is queued starts and
+/// ends, ten minutes go by, and again, until the ladder climbs a rung (at most four rounds).
+#[when(expr = "{string} sits with nobody coming back to it")]
+fn sits(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let climbed = |w: &Office| {
+        w.hq.store()
+            .events_after(0)
+            .expect("the store answers")
+            .iter()
+            .filter(|e| {
+                matches!(e.kind.as_str(), "stuck.climbed" | "huddle.called")
+                    && e.data["task"] == task.0
+            })
+            .count()
+    };
+    let before = climbed(w);
+    for _ in 0..4 {
+        w.hq.tick().expect("the tick runs");
+        w.hq.tick().expect("the tick runs");
+        for started in w.hq.runner().started() {
+            w.hq.runner().finish(started.run, true);
+        }
+        w.hq.tick().expect("the tick runs");
+        w.clock.0.fetch_add(
+            endora_team::application::engine::STRANDED_AFTER_MS + 1,
+            Ordering::SeqCst,
+        );
+        w.hq.tick().expect("the tick runs");
+        if climbed(w) > before {
+            return;
+        }
+    }
+    panic!("{title} never climbed the ladder");
+}
+
+#[then(expr = "{word} is asked to decide {string}")]
+fn asked_to_decide(w: &mut Office, name: String, title: String) {
+    let (member, task) = (w.member(&name), w.task(&title));
+    let wake = w.last_wake();
+    assert_eq!(
+        (wake.member, wake.task, wake.reason),
+        (member, Some(task), WakeReason::Decide),
+        "{wake:?}"
+    );
+}
+
+#[then(expr = "a huddle is called on {string}")]
+fn huddle_called(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    assert!(
+        w.hq.store()
+            .events_after(0)
+            .expect("the store answers")
+            .iter()
+            .any(|e| e.kind == "huddle.called" && e.data["task"] == task.0),
+        "no huddle on {title}"
+    );
+}
+
+/// A member's one short turn in a huddle: its view, on the task as evidence; then it ends.
+#[when(expr = "{word} gives the view {string} on {string}")]
+fn gives_view(w: &mut Office, name: String, view: String, title: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "huddle_view",
+        &json!({ "task": task.0, "view": view, "evidence": [format!("task {}", task.0)] }),
+    )
+    .expect("the member is heard");
+    turn_ends(w, name);
+}
+
+#[when(regex = r#"^(\w+) decides "(.+)": (\w+), "(.+)"$"#)]
+fn decides_stuck(w: &mut Office, name: String, title: String, decision: String, detail: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "decide_stuck",
+        &json!({ "task": task.0, "decision": decision, "detail": detail,
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .expect("the lead decides");
+}
+
+#[when(expr = "{word} checks back in an hour")]
+fn checks_back(w: &mut Office, name: String) {
+    w.use_tool(
+        &name,
+        "check_back",
+        &json!({ "minutes": 60, "why": "no new alarm since the restart" }),
+    )
+    .expect("the member says when it comes back");
+    turn_ends(w, name);
+}
+
+/// An hour and a minute on the clock, ticked: what was due comes.
+#[when("an hour passes")]
+fn an_hour_passes(w: &mut Office) {
+    w.clock.0.fetch_add(HOUR_MS + 60_000, Ordering::SeqCst);
+    w.hq.tick().expect("the tick runs");
 }
 
 fn main() {

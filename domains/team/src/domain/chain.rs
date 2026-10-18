@@ -21,12 +21,34 @@ pub const BOARD_ITEMS: &str = "The owner is the board: put to them only what the
     decide, each as a decision with your recommendation (ask_owner): money beyond the team's \
     pool; new goals, and what comes first; hiring or letting go a member; and anything only the \
     owner can know. Approvals for actions the owner set to ask reach their desk on their own. \
-    Nothing operational goes to the board: decide it, or hand it to the lead with create_task.";
+    Nothing operational goes to the board: the area's lead decides it.";
+
+/// The start of the CEO's direction to the lead of a task's area, in the task's thread
+/// (ADR 0120): `Direction for Ada: …`.
+pub const DIRECTION_FOR: &str = "Direction for ";
 
 /// A question as it is posted in the task's thread, for the member it is asked of.
 #[must_use]
 pub fn question(to: &str, text: &str) -> String {
     format!("{QUESTION_FOR}{to}: {}", text.trim())
+}
+
+/// The CEO's direction as it is posted in the task's thread, for the area's lead.
+#[must_use]
+pub fn direction(to: &str, text: &str, evidence: &str) -> String {
+    format!("{DIRECTION_FOR}{to}: {}\nEvidence: {evidence}", text.trim())
+}
+
+/// The newest direction in a thread (each post its author's name and its text, oldest first)
+/// for `to`: who gave it, and what it says, without its evidence line.
+#[must_use]
+pub fn latest_direction(thread: &[(&str, &str)], to: &str) -> Option<(String, String)> {
+    let asked = format!("{DIRECTION_FOR}{to}: ");
+    thread.iter().rev().find_map(|(author, text)| {
+        let said = text.strip_prefix(asked.as_str())?;
+        let said = said.split("\nEvidence: ").next().unwrap_or(said);
+        Some(((*author).to_owned(), said.to_owned()))
+    })
 }
 
 /// Who a member in `role` reports to when it joins (`members` being the team before it):

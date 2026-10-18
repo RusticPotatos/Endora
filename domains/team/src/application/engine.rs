@@ -31,21 +31,26 @@ use crate::domain::{
 use crate::domain::{docs, house};
 
 mod allowance;
+mod areas;
 mod evidence;
+mod ladder;
 mod notebook;
 mod office;
 mod planning;
 mod projects;
+mod raci;
 mod replay;
 mod runtime;
 mod staffing;
 mod wing;
 
+pub use areas::{DAILY_REVIEW, PATTERNS_ASKS, REPORT_ASKS};
 pub use evidence::Called;
 pub use notebook::note_number;
 pub use office::Standing;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
+pub use raci::DIRECTION_MOST;
 pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
@@ -1073,15 +1078,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .count())
     }
 
-    /// How long a wake that brings nothing new to `task` waits now (ADR 0107).
-    fn back_off(&self, task: Option<TaskId>, reason: WakeReason) -> Done<Millis> {
+    /// How long a wake that brings nothing new to `task` waits now (ADR 0107): its back-off,
+    /// and at least until [`wakes::AGAIN_AFTER_MS`] after `member`'s last turn on the task ended.
+    fn back_off(&self, member: MemberId, task: Option<TaskId>, reason: WakeReason) -> Done<Millis> {
         let Some(task) = task else {
             return Ok(0);
         };
         if reason.brings_news() {
             return Ok(0);
         }
-        Ok(routines::back_off(self.empty_turns(task)?))
+        let last_ended = self
+            .store
+            .runs()?
+            .iter()
+            .filter(|r| r.member == member && r.task == Some(task))
+            .filter_map(|r| r.ended_at)
+            .max();
+        let gap = last_ended.map_or(0, |at| {
+            (at + wakes::AGAIN_AFTER_MS - self.clock.now()).max(0)
+        });
+        Ok(routines::back_off(self.empty_turns(task)?).max(gap))
     }
 
     /// Queues a turn for a wake: at once, or, for a stale wake on a task whose turns keep
@@ -1102,13 +1118,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             run.asked_by_owner = true;
             self.store.save_run(&run)?;
         }
-        let wait = self.back_off(task, reason)?;
+        let wait = self.back_off(member, task, reason)?;
         if wait == 0 {
             return Ok((id, None));
         }
         run.status = RunStatus::RetryWaiting;
         run.retry_at = Some(now + wait);
-        run.end_reason = "backing off: its last turns moved nothing".to_owned();
+        run.end_reason =
+            "backing off: its last turns moved nothing, or it took one on this moments ago"
+                .to_owned();
         self.store.save_run(&run)?;
         Ok((id, Some(now + wait)))
     }
@@ -1237,6 +1255,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let run = self.running(run)?;
         self.reach(&run, task, false)?;
+        self.ceo_keeps_out(run.member, &self.task(task)?)?;
         self.claim_held_lock(run.member, task)
     }
 
@@ -1254,6 +1273,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let run = self.running(run)?;
         self.reach(&run, task, false)?;
+        self.ceo_keeps_out(run.member, &self.task(task)?)?;
         self.set_status_held_lock(run.member, task, to, reason)
     }
 
@@ -1586,8 +1606,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
     /// thread, as it stands.
     fn review_asked(&self, task: &Task) -> Done<()> {
-        // Sent back three times: this round is the owner's (ADR 0114).
-        if crate::domain::evidence::to_the_owner(self.sent_back(task.id)?) {
+        // Sent back three times: a huddle of its area decides it (ADR 0120, amending 0114's
+        // owner's round); the owner's only with no lead to call one.
+        let decided = matches!(
+            self.rung_of(task.id)?,
+            Some((crate::domain::ladder::Rung::Decided, _))
+        );
+        if !decided && crate::domain::evidence::to_the_owner(self.sent_back(task.id)?) {
+            if let Some(lead) = self.area_lead(task)? {
+                let rounds = self.sent_back(task.id)?;
+                return self.call_huddle(task, &lead, &format!("sent back {rounds} times"));
+            }
             return self.rounds_to_the_owner(task);
         }
         match self.checkers_of(task)? {
@@ -2036,10 +2065,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "input": tokens.map(|t| t.0), "output": tokens.map(|t| t.1) }),
         )?;
         if let Some(task) = run.task {
-            if label.is_some_and(crate::domain::Label::productive) {
+            // A turn that showed something earns its task a fresh recovery nudge; a reading the
+            // turn before had already taken shows nothing, so it earns none.
+            let repeated = self
+                .shown_nothing(run.member, task)?
+                .last()
+                .is_some_and(|(id, nothing)| *id == run.id && *nothing);
+            if label.is_some_and(crate::domain::Label::productive) && !repeated {
                 self.store.set_nudged(task, false)?;
             }
             self.release_held(task)?;
+            // A huddle hears each member once (ADR 0120).
+            self.after_huddle_turn(&run)?;
         }
         if status == RunStatus::Succeeded && label.is_some() {
             self.after_nothing_shown(&run)?;
@@ -2061,7 +2098,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(false);
         };
         // A retry is a stale continuation: it backs off like one.
-        let due = due.max(now + self.back_off(run.task, WakeReason::Retry)?);
+        let due = due.max(now + self.back_off(run.member, run.task, WakeReason::Retry)?);
         if run.started_at.is_some() {
             self.store.settle(run.id, run.member, self.today(), now)?;
         }
@@ -2168,14 +2205,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(told);
         };
         let task = self.task(task)?;
+        // The CEO's review and planning say what they ask as HQ asks it now, whatever their
+        // routine was made with (ADR 0120).
+        let description = match self.routine_of(task.id)? {
+            Some(_) if member.role == Role::Ceo && self.is_planning(task.id)? => {
+                planning::PLANNING.to_owned()
+            }
+            Some(r) if member.role == Role::Ceo && r.assignee == member.id => {
+                areas::DAILY_REVIEW.to_owned()
+            }
+            _ => task.description.clone(),
+        };
         told.push_str(&format!(
             "Your task: {} (#{}, {}, {})\n{}\n",
             task.title,
             task.id,
             task.status.name(),
             task.priority.name(),
-            task.description
+            description
         ));
+        if member.role == Role::Lead {
+            told.push_str(&self.area_picture(member, run)?);
+        }
         told.push_str(&self.criteria_said(&task));
         if let Some(nudge) = self.nudge_for(member.id, run)? {
             told.push_str(&format!("{nudge}\n"));
@@ -2247,9 +2298,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 told.push_str(&format!("{asker} asks you: {question}\n"));
             }
             told.push_str(if member.role == Role::Ceo {
-                "Answer in the thread with post: whoever asked is woken when you do. Decide it \
-                 yourself, or hand the work on with create_task; only what the board alone \
-                 decides goes to them, as a decision with ask_owner.\n"
+                "Answer in the thread with post: whoever asked is woken when you do. Give your \
+                 decision or your direction there; the lead acts on it in its area. Only what the \
+                 board alone decides goes to them, as a decision with ask_owner.\n"
             } else {
                 "Answer in the thread with post: whoever asked is woken when you do. Decide it, \
                  hand the work on with create_task, or, if it is beyond you, ask up the chain \
@@ -2293,17 +2344,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         told.push_str(&self.checking_said(member, run, &task)?);
+        if self.reason_for(run)? == WakeReason::Directed.name() {
+            told.push_str(&self.direction_said(member, task.id)?);
+        }
+        told.push_str(&self.ladder_said(member, run, &task)?);
+        if member.role == Role::Ceo {
+            if let Some(lead) = self.area_lead(&task)? {
+                told.push_str(&format!(
+                    "This task is in {}'s area: you read, talk and direct (direct); {} decides \
+                     its work.\n",
+                    lead.name, lead.name
+                ));
+            }
+        }
         // HQ's own tools, never as all a member has: live, a lead on Claude offered the home
         // lab's read took this line for its whole kit and said it could not read the lab.
         let beside = "Endora's own tools on the home lab (homelab_status and the like) come \
                       beside them: what your tool list offers, you have.\n";
         if member.role == Role::Ceo {
             told.push_str(
-                "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner (a \
-                 decision for the board), check_back, note_house, rewrite_house, read_doc, \
-                 accept, hand_to, read_document, note, forget, read_notebook, office. ",
+                "Your tools at HQ: my_turn, claim, post, set_status, create_task (to a lead), \
+                 direct, set_strategy, decide_project, propose_goal, ask_owner (for the board), \
+                 check_back, note_house, rewrite_house, read_doc, hand_to (to a lead), \
+                 read_document, note, forget, read_notebook, office.\n",
             );
-            told.push_str(beside);
             return Ok(told);
         }
         // The tester is not offered create_task: she passes or sends back (ADR 0114).
@@ -2317,7 +2381,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str(match member.role {
             Role::Reviewer => ", review, read_document, read_doc, office. ",
             Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, read_document, read_doc, office. "
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, read_document, read_doc, office. "
             }
             _ => ", read_document, read_doc, office. ",
         });
@@ -2366,7 +2430,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             })
             .collect();
         told.push_str(&format!(
-            "Your team: {}. The lead runs the work; you decide what it brings you.\n",
+            "Your team: {}. Each lead runs and decides its area; you set direction, decide \
+             what leads propose, and direct a lead (direct).\n",
             if team.is_empty() {
                 "nobody yet".to_owned()
             } else {
@@ -2375,9 +2440,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ));
         told.push_str(chain::BOARD_ITEMS);
         told.push_str(
-            "\nYou wake only for a question up the chain, the board's word, and your daily \
-             review. Members' findings are in their tasks' threads: read those, never the house's \
-             logs yourself. Endora's public records and plans are yours to read with read_doc.\n",
+            "\nYou wake only for a question up the chain, the board's word, your review and \
+             planning, never for the lab's alarms. Read what you choose (threads, the lab, \
+             read_doc); acting on the lab is the areas'.\n",
         );
         let last = self
             .store
@@ -2400,42 +2465,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(&self.planning_picture()?);
             return Ok(told);
         }
-        told.push_str("Goals:\n");
-        let goals = self.store.goals()?;
-        let open_goals: Vec<_> = goals
-            .iter()
-            .filter(|g| matches!(g.status, GoalStatus::Active | GoalStatus::Proposed))
-            .collect();
-        if open_goals.is_empty() {
-            told.push_str("- none\n");
-        }
-        for goal in open_goals {
-            told.push_str(&format!(
-                "- #{} {} ({})\n",
-                goal.id,
-                goal.title,
-                goal.status.name()
-            ));
-            let notes = self.store.goal_note(goal.id)?;
-            if whole && !notes.trim().is_empty() {
-                told.push_str("  Its notes and lessons:\n");
-                for line in notes.lines().filter(|l| !l.trim().is_empty()) {
-                    told.push_str(&format!("  {}\n", line.trim()));
-                }
-            }
-        }
         let day = |at: Millis| {
             let (d, m) = lessons::day_and_month(money::day_of(at, self.settings.offset_minutes));
             format!("{d} {m}")
         };
-        let waiting = self.proposals_waiting()?;
-        if waiting > 0 {
-            told.push_str(&format!(
-                "Project proposals waiting for your decision: {waiting} (decide_project; your \
-                 weekly planning lists them).\n"
-            ));
-        }
         if let (false, Some(last)) = (whole, last) {
+            told.push_str("Goals:\n");
+            let goals = self.store.goals()?;
+            let open_goals: Vec<_> = goals
+                .iter()
+                .filter(|g| matches!(g.status, GoalStatus::Active | GoalStatus::Proposed))
+                .collect();
+            if open_goals.is_empty() {
+                told.push_str("- none\n");
+            }
+            for goal in open_goals {
+                told.push_str(&format!(
+                    "- #{} {} ({})\n",
+                    goal.id,
+                    goal.title,
+                    goal.status.name()
+                ));
+            }
+            let waiting = self.proposals_waiting()?;
+            if waiting > 0 {
+                told.push_str(&format!(
+                    "Project proposals waiting for your decision: {waiting} (decide_project; \
+                     your daily review lists them).\n"
+                ));
+            }
             let news = self.ceo_news(last, &name_of, &day)?;
             if news.is_empty() {
                 told.push_str(
@@ -2450,55 +2508,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             return Ok(told);
         }
-        let open: Vec<Task> = self
-            .store
-            .tasks()?
-            .into_iter()
-            .filter(|t| !t.status.finished())
-            .collect();
-        told.push_str("Open tasks:\n");
-        if open.is_empty() {
-            told.push_str("- none\n");
-        }
-        for task in open.iter().take(30) {
-            told.push_str(&format!(
-                "- #{} {} ({}, {})\n",
-                task.id,
-                task.title,
-                task.status.name(),
-                name_of(task.owner.or(task.assignee))
-            ));
-        }
-        if open.len() > 30 {
-            told.push_str(&format!("- and {} more\n", open.len() - 30));
-        }
+        // The whole, on its first turn and its daily review (ADR 0120): what it steers by
+        // (each goal's strategy, the leads' reports, each area's measures, the proposals and
+        // the board's word), never the areas' work item by item; it reads that when it
+        // chooses to.
+        told.push_str(&self.strategies_said(last)?);
+        told.push_str(&self.reports_said()?);
+        told.push_str(&self.areas_said(7)?);
+        told.push_str(&self.proposals_said()?);
         let since = self.clock.now() - CEO_LOOKS_BACK_MS;
-        let alarms: Vec<String> = self
-            .store
-            .events_after(0)?
-            .into_iter()
-            .filter(|e| e.at >= since)
-            .filter_map(|e| Some(format!("- {}: {}", day(e.at), alarm_in(&e)?)))
-            .collect();
-        if alarms.is_empty() {
-            told.push_str("Home-lab trouble in the last 7 days: no alarms.\n");
-        } else {
-            told.push_str("Home-lab trouble in the last 7 days (Endora's alarms):\n");
-            for alarm in alarms.iter().rev().take(20).rev() {
-                told.push_str(&format!("{alarm}\n"));
-            }
-        }
         let desk: Vec<DeskItem> = self
             .store
             .desk()?
             .into_iter()
             .filter(|d| d.at >= since)
+            .filter(|d| {
+                !matches!(
+                    d.kind.as_str(),
+                    "notice" | "approval" | "stuck" | "question" | "push" | "rounds"
+                )
+            })
             .collect();
         if desk.is_empty() {
-            told.push_str("The board's desk in the last 7 days: nothing.\n");
+            told.push_str("The board's decisions in the last 7 days: none.\n");
             return Ok(told);
         }
-        told.push_str("The board's desk in the last 7 days, and how the board decided:\n");
+        told.push_str("The board's decisions in the last 7 days:\n");
         for item in desk.iter().rev().take(15).rev() {
             let from = item
                 .member
@@ -2585,7 +2620,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         e.data["title"].as_str().unwrap_or(""),
                         e.data["status"].as_str().unwrap_or("?")
                     ),
-                    _ => alarm_in(&e)?.to_owned(),
+                    // The lab's alarms are the areas' to answer (ADR 0120): the CEO hears of
+                    // its areas through their leads' reports and measures.
+                    "area.reported" => format!(
+                        "{} reported on their area (your review reads it)",
+                        name_of(e.data["lead"].as_i64().map(MemberId))
+                    ),
+                    "goal.strategy" => format!(
+                        "goal #{}'s strategy was written, by {}",
+                        e.data["goal"],
+                        e.data["by"].as_str().unwrap_or("?")
+                    ),
+                    _ => return None,
                 };
                 Some(format!("- {}: {said}", day(e.at)))
             })
@@ -2635,6 +2681,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Once a day, on the day's first tick: members with nothing to do are offered to the
         // owner for furlough (ADR 0118).
         self.idle_look()?;
+        // A huddle whose views are late goes to its lead to decide (ADR 0120).
+        self.huddles_due()?;
         // Check-backs whose time came wake their member, while the task is still open.
         for back in self.store.check_backs()? {
             if back.status != CheckBackStatus::Pending || back.due_at > now {
@@ -2775,34 +2823,36 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(owner) = task.owner else {
                 continue;
             };
+            // Its member said when it comes back: that is its plan, not a stall (live, #667
+            // was woken every ten seconds while its check-back waited).
+            let coming_back = self.store.check_backs()?.iter().any(|c| {
+                c.task == task.id && c.member == owner && c.status == CheckBackStatus::Pending
+            });
+            if coming_back {
+                continue;
+            }
             if !task.nudged {
                 self.store.set_nudged(task.id, true)?;
                 self.wake_held_lock(owner, Some(task.id), WakeReason::Recovery)?;
                 report.nudged += 1;
                 continue;
             }
+            // In a lead's area it climbs the ladder (ADR 0120), once it has sat as long as
+            // stranded work does: a lead woken to decide is a turn, never a reflex.
+            if self.area_lead(task)?.is_some() && !self.idle_for(task.id, STRANDED_AFTER_MS)? {
+                continue;
+            }
             self.store.set_task_status(task.id, TaskStatus::Blocked)?;
-            let desk = self.store.add_desk(
-                "stuck",
-                Some(task.id),
-                None,
-                None,
-                &format!(
-                    "Stuck: {}. It was nudged once and did not move.",
-                    task.title
-                ),
-                now,
-            )?;
             self.emit(
                 EventKind::TaskChanged,
                 json!({ "task": task.id.0, "goal": task.goal.0, "owner": owner.0,
                         "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
             )?;
-            self.emit(
-                EventKind::DeskAdded,
-                json!({ "item": desk.0, "kind": "stuck", "task": task.id.0 }),
-            )?;
             report.stuck += 1;
+            // Stuck work climbs the ladder (ADR 0120); the owner's desk only with no lead.
+            if !self.climb_stuck(task, "it was nudged once and did not move")? {
+                self.stuck_on_the_desk(task, "It was nudged once and did not move.")?;
+            }
         }
 
         // 5b. Open work handed to a member that nothing will bring it back to: no turn queued,
@@ -3675,28 +3725,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.wake_held_lock(member, Some(task.id), WakeReason::AssignmentRecovery)?;
                 continue;
             }
-            self.store.set_task_status(task.id, TaskStatus::Blocked)?;
-            let item = self.store.add_desk(
-                "stuck",
-                Some(task.id),
-                None,
-                None,
-                &format!(
-                    "Stuck: {}. It was handed on, woken once, and nobody came back to it.",
-                    task.title
-                ),
-                now,
-            )?;
-            self.emit(
-                EventKind::TaskChanged,
-                json!({ "task": task.id.0, "goal": task.goal.0, "owner": task.owner.map(|o| o.0),
-                        "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
-            )?;
-            self.emit(
-                EventKind::DeskAdded,
-                json!({ "item": item.0, "kind": "stuck", "task": task.id.0 }),
-            )?;
+            if task.status != TaskStatus::Blocked {
+                self.store.set_task_status(task.id, TaskStatus::Blocked)?;
+                self.emit(
+                    EventKind::TaskChanged,
+                    json!({ "task": task.id.0, "goal": task.goal.0, "owner": task.owner.map(|o| o.0),
+                            "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
+                )?;
+            }
             stuck += 1;
+            // Stuck work climbs the ladder (ADR 0120); the owner's desk only with no lead.
+            let why = "it was handed on, woken once, and nobody came back to it";
+            if !self.climb_stuck(task, why)? {
+                self.stuck_on_the_desk(
+                    task,
+                    "It was handed on, woken once, and nobody came back to it.",
+                )?;
+            }
         }
         Ok((nudged, stuck))
     }
@@ -3937,7 +3982,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(None);
         };
         self.post_held_lock(Author::Endora, task.id, &format!("Recovered: {said}"))?;
-        let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+        let to = self.alarm_to(&task, routine.assignee)?;
         self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
         self.emit(
             EventKind::RoutinePosted,
@@ -3978,7 +4023,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let (Some(task), Firing::Alarm(said)) = (open, firing) {
             let text = format!("Alarm: {said}");
             self.post_held_lock(Author::Endora, task.id, &text)?;
-            let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+            let to = self.alarm_to(&task, routine.assignee)?;
             self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
             routine.last_fired_at = Some(now);
             self.store.save_routine(&routine)?;
@@ -4015,6 +4060,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // The home lab's check says what done means: the lab as it is now (ADR 0114).
             self.store
                 .set_criteria(task, &crate::domain::Criterion::lab())?;
+        }
+        // A lead's report or patterns turn is not work on the board (ADR 0120).
+        if let Some(kind) = self.report_kind(routine.id, routine.assignee)? {
+            self.store.mark_report_task(task, routine.assignee, kind)?;
         }
         routine.last_task = Some(task);
         routine.last_fired_at = Some(now);
@@ -4163,7 +4212,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let day = self.today();
         let pool = self.settings.pool_per_month;
         let every_run = self.store.runs()?;
-        let tasks = self.store.tasks()?;
+        // A lead's report and patterns turns are not work on the board (ADR 0120).
+        let reports = self.report_task_ids()?;
+        let tasks: Vec<Task> = self
+            .store
+            .tasks()?
+            .into_iter()
+            .filter(|t| !reports.contains(&t.id))
+            .collect();
         // Downtime is not work: its turns are not on the scorecard (ADR 0119).
         let downtime = self.downtime_wakes()?;
         let worked: Vec<Run> = every_run
@@ -4175,8 +4231,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let runs: Vec<Run> = every_run.into_iter().filter(|r| r.status.live()).collect();
         let goals = self.store.goals()?;
         let mut notes = std::collections::HashMap::new();
+        let mut strategies = std::collections::HashMap::new();
         for g in &goals {
             notes.insert(g.id.0, self.store.goal_note(g.id)?);
+            let s = self.strategy_of(g.id)?;
+            strategies.insert(
+                g.id.0,
+                json!({ "purpose": s.purpose, "success": s.success, "measures": s.measures,
+                        "bets": s.bets, "not_now": s.not_now, "by": s.by,
+                        "updated_at": (s.updated_at > 0).then_some(s.updated_at) }),
+            );
         }
         let mut members = Vec::new();
         let paid = self.paid_weights()?;
@@ -4278,7 +4342,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "goals": goals.iter().map(|g| json!({
                 "id": g.id.0, "title": g.title, "reason": g.reason, "status": g.status.name(),
                 "parent": g.parent.map(|p| p.0), "note": notes.get(&g.id.0).cloned().unwrap_or_default(),
+                // The CEO's strategy for it (ADR 0120).
+                "strategy": strategies.get(&g.id.0).cloned().unwrap_or_default(),
             })).collect::<Vec<_>>(),
+            // Each lead's latest report on its area (ADR 0120).
+            "area_reports": self.reports_shown()?,
             "tasks": task_rows,
             "runs": runs.iter().map(|r| json!({
                 "id": r.id.0, "member": r.member.0, "task": r.task.map(|t| t.0),
@@ -4333,7 +4401,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// later than the window does.
     fn scorecard(&self, runs: &[Run], tasks: &[Task], day: i64) -> Done<serde_json::Value> {
         let desk = self.store.desk()?;
-        let events = self.store.events_after(0)?;
+        // A lead's report and patterns turns are not work on the scorecard (ADR 0120).
+        let reports = self.report_task_ids()?;
+        let events: Vec<crate::domain::Event> = self
+            .store
+            .events_after(0)?
+            .into_iter()
+            .filter(|e| {
+                !e.data["task"]
+                    .as_i64()
+                    .is_some_and(|t| reports.contains(&TaskId(t)))
+            })
+            .collect();
         let record = scorecard::Record {
             runs,
             tasks,
@@ -4346,6 +4425,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "week": scorecard::score(&record, &scorecard::Window::days_ending(day, 7, offset)).json(),
             // Each team's seats, at work and on furlough (ADR 0118).
             "teams": self.teams_shown()?,
+            // Each area's measures, today and the last seven days (ADR 0120).
+            "areas": self.areas_shown()?,
         }))
     }
 

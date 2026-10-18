@@ -122,6 +122,12 @@ pub fn short(text: &str, most: usize) -> String {
     super::cut::cut(&one_line, most)
 }
 
+/// How long the home lab's "no new alarm since" waits from the work's last change, in minutes.
+pub const LAB_WAIT_MINUTES: u32 = 60;
+
+/// The longest a criterion may wait, in minutes: a week.
+pub const LONGEST_WAIT_MINUTES: u32 = 7 * 24 * 60;
+
 /// What "done" means for a task, in one line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Criterion {
@@ -129,6 +135,9 @@ pub struct Criterion {
     pub text: String,
     /// Whether it is about the lab as it is now: shown only by a reading in the same turn.
     pub live: bool,
+    /// How long, in minutes, it waits from the work's last change before it can be shown
+    /// (ADR 0120): "no new alarm since" cannot hold minutes after a restart.
+    pub after: Option<u32>,
 }
 
 impl Criterion {
@@ -138,13 +147,26 @@ impl Criterion {
         Self {
             text: short(text, CRITERION_MOST),
             live,
+            after: None,
         }
     }
 
-    /// The home lab's standard criteria, both live.
+    /// The same, waiting `minutes` (1 to [`LONGEST_WAIT_MINUTES`]) from the work's last change.
+    #[must_use]
+    pub fn after(self, minutes: u32) -> Self {
+        Self {
+            after: Some(minutes.clamp(1, LONGEST_WAIT_MINUTES)),
+            ..self
+        }
+    }
+
+    /// The home lab's standard criteria, both live; the second waits [`LAB_WAIT_MINUTES`].
     #[must_use]
     pub fn lab() -> Vec<Self> {
-        LAB_CRITERIA.iter().map(|t| Self::new(t, true)).collect()
+        vec![
+            Self::new(LAB_CRITERIA[0], true),
+            Self::new(LAB_CRITERIA[1], true).after(LAB_WAIT_MINUTES),
+        ]
     }
 
     /// As they are kept: a JSON list.
@@ -155,7 +177,13 @@ impl Criterion {
         }
         let list: Vec<serde_json::Value> = all
             .iter()
-            .map(|c| serde_json::json!({ "text": c.text, "live": c.live }))
+            .map(|c| {
+                let mut kept = serde_json::json!({ "text": c.text, "live": c.live });
+                if let Some(after) = c.after {
+                    kept["after"] = serde_json::json!(after);
+                }
+                kept
+            })
             .collect();
         serde_json::Value::Array(list).to_string()
     }
@@ -169,7 +197,15 @@ impl Criterion {
         list.iter()
             .filter_map(|c| {
                 let text = c["text"].as_str()?.trim();
-                (!text.is_empty()).then(|| Self::new(text, c["live"].as_bool().unwrap_or(false)))
+                if text.is_empty() {
+                    return None;
+                }
+                let made = Self::new(text, c["live"].as_bool().unwrap_or(false));
+                let after = c["after"].as_u64().and_then(|a| u32::try_from(a).ok());
+                Some(match after {
+                    Some(minutes) => made.after(minutes),
+                    None => made,
+                })
             })
             .collect()
     }
@@ -359,6 +395,59 @@ pub fn judge(
         }
     }
     Ok(())
+}
+
+/// Whether every time-bound criterion has waited its time (ADR 0120): `after` minutes from
+/// `since`, the work's last change (its latest act, or the latest alarm about it), to `now`.
+/// With nothing to wait from, nothing waits. Work is closed (a check done, the tester's pass,
+/// the lead's acceptance) only once it has.
+///
+/// # Errors
+/// [`Refusal::TooSoon`] for the first criterion still waiting, with when it may be shown in
+/// the owner's time (`offset_minutes` from UTC).
+pub fn waited(
+    criteria: &[Criterion],
+    since: Option<Millis>,
+    now: Millis,
+    offset_minutes: i64,
+) -> Result<(), Refusal> {
+    let Some(since) = since else {
+        return Ok(());
+    };
+    for (i, criterion) in criteria.iter().enumerate() {
+        let Some(after) = criterion.after else {
+            continue;
+        };
+        let until = since + i64::from(after) * 60_000;
+        if now < until {
+            return Err(Refusal::TooSoon {
+                criterion: i + 1,
+                text: criterion.text.clone(),
+                until: clock_time(until, offset_minutes),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// A moment as the owner's clock reads it: `00:44`.
+#[must_use]
+pub fn clock_time(at: Millis, offset_minutes: i64) -> String {
+    let minutes = (at + offset_minutes * 60_000)
+        .div_euclid(60_000)
+        .rem_euclid(24 * 60);
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+/// A call's arguments as two readings are compared by: without spaces, and nothing for an
+/// empty object or `null`, so `{ }`, `{}` and no arguments are one reading.
+#[must_use]
+pub fn same_args(args: &str) -> String {
+    let squeezed: String = args.chars().filter(|c| !c.is_whitespace()).collect();
+    if matches!(squeezed.as_str(), "{}" | "null") {
+        return String::new();
+    }
+    squeezed
 }
 
 /// What a turn came to, worked out from what happened in it (ADR 0114).
@@ -584,6 +673,43 @@ mod tests {
         );
         assert!(Criterion::lab().iter().all(|c| c.live));
         assert_eq!(Criterion::lab().len(), 2);
+    }
+
+    /// Live, #667: closed two minutes after the restart on "no new alarm since", and the alarm
+    /// came back two hours later. A criterion may say how long it waits.
+    #[test]
+    fn a_time_bound_criterion_waits_its_time_from_the_works_last_change() {
+        let lab = Criterion::lab();
+        assert_eq!((lab[0].after, lab[1].after), (None, Some(LAB_WAIT_MINUTES)));
+        assert_eq!(LAB_WAIT_MINUTES, 60);
+        assert_eq!(Criterion::read(&Criterion::kept(&lab)), lab);
+        let mine = [Criterion::new("held for a day", false).after(24 * 60)];
+        assert_eq!(Criterion::read(&Criterion::kept(&mine)), mine);
+        // The restart at 23:44 EDT on 17 October 2026 (03:44 UTC the next day).
+        let restart: Millis = 1_792_295_040_000;
+        let edt = -4 * 60;
+        assert_eq!(
+            waited(&lab, Some(restart), restart + 2 * 60_000, edt),
+            Err(Refusal::TooSoon {
+                criterion: 2,
+                text: LAB_CRITERIA[1].to_owned(),
+                until: "00:44".to_owned(),
+            })
+        );
+        let said = waited(&lab, Some(restart), restart, edt)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("wait until 00:44 (owner's time)"), "{said}");
+        assert_eq!(
+            waited(&lab, Some(restart), restart + 60 * 60_000, edt),
+            Ok(())
+        );
+        assert_eq!(
+            waited(&lab, None, restart, edt),
+            Ok(()),
+            "nothing to wait from"
+        );
+        assert_eq!(waited(&[], Some(restart), restart, edt), Ok(()));
     }
 
     #[test]

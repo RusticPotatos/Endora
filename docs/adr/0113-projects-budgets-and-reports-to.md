@@ -3,6 +3,10 @@
 ## Status
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
+[0120](0120-roles-as-an-enforced-raci.md) (2026-10-18): only a lead proposes a project, and the
+CEO decides (yes, no, not now) and proposes none; the CEO's planning shows strategy, the week's
+measures, the proposals and the budget split, and the container patterns go to each lead's
+weekly patterns turn. Amended by
 [0114](0114-evidence-acceptance-criteria-and-the-tester.md) (2026-10-17): the CEO decides a
 project on evidence from HQ's record (`decide_project` takes `evidence`, at least one reference,
 each looked up), by the one rule proposals are checked by; the deferred "turn verdicts that

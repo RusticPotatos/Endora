@@ -74,6 +74,8 @@ pub fn app(state: State) -> Router {
         // The owner's reply on a task, and a goal's notes for the team.
         .route("/v1/tasks/{id}/post", post(reply))
         .route("/v1/goals/{id}/note", post(goal_note))
+        // A goal's strategy, the owner's edit of the CEO's (ADR 0120).
+        .route("/v1/goals/{id}/strategy", post(goal_strategy))
         // What a member thinks with (ADR 0109): the owner's, through the node.
         .route("/v1/members/{id}/brain", post(set_brain))
         // What runs a member's turns (ADR 0117): the worker, or Claude Code for a developer.
@@ -501,6 +503,38 @@ async fn goal_note(
     let hq = state.hq.clone();
     blocking(move || hq.set_goal_note(GoalId(id), &req.note)).await?;
     Ok(Json(json!({ "noted": true })))
+}
+
+#[derive(Deserialize)]
+struct StrategyAsked {
+    #[serde(default)]
+    purpose: Option<String>,
+    #[serde(default)]
+    success: Option<String>,
+    #[serde(default)]
+    measures: Option<String>,
+    #[serde(default)]
+    bets: Option<String>,
+    #[serde(default)]
+    not_now: Option<String>,
+}
+
+/// The owner writes a goal's strategy (ADR 0120): each part given replaces that part.
+async fn goal_strategy(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<StrategyAsked>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let edit = endora_team::domain::areas::StrategyEdit {
+        purpose: req.purpose,
+        success: req.success,
+        measures: req.measures,
+        bets: req.bets,
+        not_now: req.not_now,
+    };
+    let written = blocking(move || hq.set_strategy(GoalId(id), &edit)).await?;
+    Ok(Json(json!({ "goal": id, "by": written.by })))
 }
 
 #[derive(Deserialize)]
@@ -1304,10 +1338,15 @@ mod tests {
         // projects, accepts tested work, hands a subordinate's task on, asks the owner to hire
         // and reads a task's documents and the team's library, too, and asks for staff when a
         // project has a backlog. Every member keeps a notebook of its own, too (ADR 0118):
-        // note, forget, read and check.
-        assert_eq!(names.len(), 22, "{names:?}");
+        // note, forget, read and check. Every member shapes the office (ADR 0119). And it
+        // reports on its area, decides its area's stuck work, and gives its view in a huddle
+        // (ADR 0120).
+        assert_eq!(names.len(), 25, "{names:?}");
         assert!(names.contains(&"office"), "every member shapes the office");
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
+        for added in ["report_area", "decide_stuck", "huddle_view"] {
+            assert!(names.contains(&added), "{added}");
+        }
         assert!(names.contains(&"request_staff") && names.contains(&"note"));
         assert!(
             names.contains(&"read_doc"),
@@ -2567,6 +2606,62 @@ mod tests {
         assert_eq!(snap["members"][0]["name"], "Jane Doe");
         let unsigned = app
             .oneshot(call("POST", "/v1/house", None, r#"{"log":""}"#))
+            .await
+            .unwrap();
+        assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_owner_writes_a_goals_strategy_and_the_snapshot_shows_it() {
+        let st = state(false);
+        let goal = st
+            .hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        let app = app(st);
+        let res = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                &format!("/v1/goals/{}/strategy", goal.0),
+                Some(TOKEN),
+                r#"{"purpose":"The house runs itself.","not_now":"<b>No new containers</b>"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let strategy = &snap["goals"][0]["strategy"];
+        assert_eq!(strategy["purpose"], "The house runs itself.");
+        assert_eq!(
+            strategy["not_now"], "<b>No new containers</b>",
+            "kept as text"
+        );
+        assert_eq!(strategy["by"], "owner");
+        let empty = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                &format!("/v1/goals/{}/strategy", goal.0),
+                Some(TOKEN),
+                "{}",
+            ))
+            .await
+            .unwrap();
+        assert_ne!(empty.status(), StatusCode::OK, "an edit gives a part");
+        let unsigned = app
+            .oneshot(call(
+                "POST",
+                &format!("/v1/goals/{}/strategy", goal.0),
+                None,
+                r#"{"purpose":"x"}"#,
+            ))
             .await
             .unwrap();
         assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);

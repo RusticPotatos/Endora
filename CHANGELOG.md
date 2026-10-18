@@ -9,6 +9,25 @@ tagged release.
 
 ### Added
 
+- **Roles as an enforced RACI** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md)), the
+  owner's product-model org of 2026-10-18. The CEO sets direction and keeps out of the areas'
+  work: it reads anything (on a cloud brain the logs and queues the cloud lead reads), is
+  offered no act, is never woken by the lab's alarms or recoveries (they wake the area's lead),
+  and on a task in a lead's area cannot claim, move, close, accept or send back: it gives the
+  lead a direction with `direct`, and the lead decides. It hands work to leads only; leads
+  propose projects and the CEO decides them. Each goal has a **strategy** (purpose, success,
+  measures, bets, not now), the CEO's to write with `set_strategy` and the owner's on the goal
+  card (`POST /v1/hq/goals/{id}/strategy`). Each **area's measures** are on the scorecard
+  (outages over 10 minutes, median alarm to closed, repeats within 24 h; branch to push
+  approved, first-time tester passes). Each lead **reports up**: "State of my area" daily at
+  the owner's 18:00 (`report_area`, kept as a report and never work on the board) and
+  "Patterns" weekly. The CEO's review and planning are rebuilt on strategy, reports, measures,
+  proposals and the budget split. **Stuck work climbs a ladder** instead of landing on the
+  owner's desk: the area's lead decides (`decide_stuck`), then a **huddle** of the lead and up
+  to four who touched it gives one view each (`huddle_view`) and the lead decides, then the CEO
+  only when the lead says so; work sent back three times goes to a huddle. A project's lead
+  closes its own work on its own acceptance. New tables made if missing: `strategies`,
+  `area_reports`, `report_tasks`. Scenarios in `domains/team/features/roles.feature`.
 - **The open office** ([ADR 0119](docs/adr/0119-the-open-office.md)). HQ's office is an
   open-plan floor: one pod of desks per team, side by side with no walls and labelled as the
   roster labels them, laid out from the snapshot (a hire grows a pod, a third lead makes a third;
@@ -524,6 +543,17 @@ tagged release.
 
 ### Fixed
 
+- **Time-bound criteria** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md)): a
+  criterion may wait (`after`) from the work's last change; the lab's "no new alarm for the
+  same containers since" waits 60 minutes, and closing or passing it before then is refused,
+  "wait until HH:MM (owner's time)". Live, #667 was closed two minutes after a restart and the
+  alarm came back.
+- **Repeated readings**: a reading the turn before already took shows nothing and no longer
+  resets the recovery nudge; no recovery wake while the member's check-back waits; a stale wake
+  waits two minutes after the member's last turn on the task. Live, a lead took four turns ten
+  seconds apart re-reading one status.
+- **House log dates**: lines carry the year, and a date the writer put in the entry is taken
+  off ("17 Oct: 2025-10-18: …").
 - **Logs are no longer cut off.** The HQ feed shows a thread post whole (it was cut to 80
   characters with no sign of it; the event now names its post's place in the thread and says
   when its preview was cut), folds lines over 240 characters behind "more", and on a phone is a

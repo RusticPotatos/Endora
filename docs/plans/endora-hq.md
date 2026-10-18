@@ -1137,6 +1137,40 @@ item; events beyond decorating.
   that the draft [docs/drafts/ansible-nas-AGENTS.md](../drafts/ansible-nas-AGENTS.md) is the
   first branch to propose.
 
+### Roles as an enforced RACI (owner's decisions of 2026-10-18, [ADR 0120](../adr/0120-roles-as-an-enforced-raci.md))
+
+As built: a product-model org, held by code. The CEO sets direction and owns the outcome; each
+lead runs its area (itself, whoever reports to it, and the projects it leads, all from the
+record) and decides there; leads propose and the CEO decides.
+
+- **The CEO**: reads anything (on a cloud brain what the cloud lead reads), acts on nothing in
+  the lab, is never woken by its alarms or recoveries (they wake the area's lead), and on a task
+  in a lead's area never claims, moves, closes, accepts or sends back: `direct {task, direction,
+  evidence}` posts "Direction for Ada: …" and wakes the lead (`directed`), who decides. It
+  creates and hands work to leads only, proposes no project, and accepts only its own work.
+- **Strategy per goal**: purpose, success, measures, bets, not now; `set_strategy` (the CEO, on
+  evidence) and the goal card (the owner). Seeded empty; the daily review asks for it.
+- **Measures per area** on the scorecard: outages over 10 minutes, median alarm to closed and
+  repeats within 24 h where an area takes the lab's alarms; branch submitted to push approved
+  and first-time tester passes where it works in branches.
+- **Leads report up**: "State of my area" daily at the owner's 18:00 (`report_area`: moved,
+  stuck, need, proposals; not work on the board or the scorecard) and "Patterns" weekly (the
+  area's repeats; `propose_project`).
+- **The CEO's briefings**: the review is strategies, the leads' reports, the measures, the
+  proposals and the board's decisions; the planning is strategy, the week's measures, the
+  proposals and the budget split.
+- **The night's bugs**: time-bound criteria (`after`; the lab's "no new alarm since" waits 60
+  minutes; "wait until HH:MM"), repeated readings (a reading the turn before took shows nothing;
+  no recovery wake while a check-back waits; a stale wake waits two minutes), and the house
+  log's dated lines with the year.
+- **The ladder**: a project's lead closes its own work on its own acceptance; stuck work goes to
+  the area's lead (`decide_stuck`), then a huddle (the lead and up to four who touched it in
+  48 h, one `huddle_view` each, then the lead decides; written as a document), then the CEO only
+  when the lead says so or did not decide; the owner's desk only as a board matter or with no
+  rung left. Work sent back three times goes to a huddle. Events `stuck.climbed`,
+  `huddle.called`, `huddle.decided`.
+- Scenarios: `domains/team/features/roles.feature`.
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams;

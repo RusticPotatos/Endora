@@ -643,10 +643,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(all)
     }
 
-    /// A turn of a lead's or the CEO's proposes a project, with evidence from HQ's record. A
-    /// lead's waits for the CEO; the CEO's starts at once, since the CEO decides projects.
-    /// Either way a cap asked for is the owner's to grant: until then the project has none of
-    /// its own (the pool's and the members' limits still hold).
+    /// A turn of a lead's proposes a project, with evidence from HQ's record: it waits for the
+    /// CEO, who decides (ADR 0120: leads propose, the CEO decides and proposes none). A cap
+    /// asked for is the owner's to grant: until then the project has none of its own (the
+    /// pool's and the members' limits still hold).
     ///
     /// # Errors
     /// [`Refusal::TurnOver`]; [`Refusal::OnlyLeadsPropose`]; [`Refusal::NotAProjectLead`];
@@ -671,7 +671,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(cap) = proposal.cap {
             self.may_cap(cap, None)?;
         }
-        let by_ceo = member.role == Role::Ceo;
         let id = self.store.add_project(
             &NewProject {
                 goal: proposal.goal,
@@ -688,11 +687,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             },
             self.clock.now(),
         )?;
-        let mut project = self.project(id)?;
+        let project = self.project(id)?;
         self.emit_project(&project, &member.name, "proposed")?;
-        if by_ceo {
-            self.start_project(&mut project, &member, &proposal.reason)?;
-        }
         if let Some(task) = turn.task {
             self.mark_progress(member.id, task)?;
         }
@@ -952,7 +948,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         Ok(format!(
             "Your projects (you lead them; the sub-tasks of their tasks stay in them; \
-             propose_project for one more, with evidence):\n{lines}"
+             propose_project for one more, with evidence):\n{lines}\
+             Your projects' plans are yours to decide: hand their parts on with create_task, \
+             and close a task of your own in them as done yourself (set_status done, on \
+             evidence). Inside an approved project you need nobody's leave, the CEO's included.\n"
         ))
     }
 

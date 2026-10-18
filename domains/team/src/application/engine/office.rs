@@ -540,11 +540,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let tasks = self.store.tasks()?;
         let runs = self.store.runs()?;
         let routines = self.store.routines()?;
+        let wakes = self.store.wakes()?;
         waiting.sort_by_key(|m| (seen.last.get(&m.id).copied().unwrap_or(Millis::MIN), m.id));
         for member in waiting {
+            // A wake held behind another member's turn is work coming (a huddle's view, a
+            // lead's decision or direction, ADR 0120): the member is not idle.
             let busy = runs
                 .iter()
-                .any(|r| r.member == member.id && r.status.live());
+                .any(|r| r.member == member.id && r.status.live())
+                || wakes
+                    .iter()
+                    .any(|w| w.member == member.id && w.receipt == crate::domain::Receipt::Held);
             let holds = tasks.iter().any(|t| {
                 !t.status.finished()
                     && (t.owner == Some(member.id) || t.assignee == Some(member.id))

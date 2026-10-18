@@ -83,7 +83,17 @@ fn criteria_arg(args: &Value) -> Vec<Criterion> {
                             other["live"].as_bool() == Some(true),
                         ),
                     };
-                    (!text.trim().is_empty()).then(|| Criterion::new(text, live))
+                    if text.trim().is_empty() {
+                        return None;
+                    }
+                    let made = Criterion::new(text, live);
+                    // A wait, in minutes from the work's last change (ADR 0120).
+                    Some(
+                        match c["after"].as_u64().and_then(|m| u32::try_from(m).ok()) {
+                            Some(minutes) => made.after(minutes),
+                            None => made,
+                        },
+                    )
                 })
                 .collect()
         })
@@ -122,7 +132,7 @@ fn propose_project_tool() -> Value {
     let ids = |what: &str| json!({ "type": "array", "items": { "type": "integer" }, "description": what });
     json!({
         "name": "propose_project",
-        "description": "Propose a project: a piece of one goal with its own lead, for work that keeps coming back. Cite its evidence from HQ's record: task numbers and alarm event ids (at least one, each checked). A lead's proposal waits for the CEO; the CEO's starts at once. A monthly cap, if you ask one, is the owner's to grant.",
+        "description": "Propose a project: a piece of one goal with its own lead, for work that keeps coming back in your area. Cite its evidence from HQ's record: task numbers and alarm event ids (at least one, each checked). It waits for the CEO, who decides it (yes, no or not now). A monthly cap, if you ask one, is the owner's to grant.",
         "inputSchema": { "type": "object", "properties": {
             "goal": { "type": "integer", "description": "the goal it serves (default: your task's)" },
             "title": { "type": "string" },
@@ -328,9 +338,9 @@ const MAKES_WORK: [&str; 6] = [
 ];
 
 /// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
-/// input. Only the reviewer is offered `review`. The CEO (ADR 0111) is offered the team's
-/// tools but the gate and privileged actions, puts decisions to the board with `ask_owner`,
-/// and keeps the house log and reads Endora's public records.
+/// input. Only the reviewer is offered `review`. The CEO (ADR 0111, 0120) sets direction:
+/// it directs the leads (`direct`), decides their proposals, puts decisions to the board with
+/// `ask_owner`, keeps the house log and reads; it neither proposes projects nor accepts work.
 #[must_use]
 pub fn tools(role: Role) -> Value {
     if role == Role::Ceo {
@@ -372,7 +382,7 @@ pub fn tools(role: Role) -> Value {
         tool(
             "create_task",
             "Create a sub-task of your task for another member (by name), with the tasks it waits on and its acceptance criteria: what done means, a short list, required for work handed to someone else. Mark live any criterion about the lab as it is now.",
-            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" } }, "required": ["text"] } } }),
+            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
             &["title", "description"]
         ),
         tool(
@@ -412,6 +422,12 @@ pub fn tools(role: Role) -> Value {
             &[]
         ),
         tool(
+            "huddle_view",
+            "Give your view on stuck work, when a huddle asks you (your turn says so): three sentences at most, on evidence from HQ's record. One short turn: give it and stop; the area's lead then decides.",
+            json!({ "task": task, "view": { "type": "string", "maxLength": crate::domain::ladder::VIEW_MOST }, "evidence": ids("What your view rests on: at least one.") }),
+            &["task", "view", "evidence"]
+        ),
+        tool(
             "run_gate",
             "Run the task's tests and build on a runner and get the result.",
             json!({ "task": task }),
@@ -444,6 +460,30 @@ pub fn tools(role: Role) -> Value {
             list.push(hand_to_tool());
             list.push(request_hire_tool());
             list.push(request_staff_tool());
+            let report_part = |what: &str| json!({ "type": "string", "maxLength": crate::domain::areas::REPORT_PART_MOST, "description": what });
+            list.push(tool(
+                "report_area",
+                "Report on your area to the CEO, in your \"State of my area\" turn: four short parts, any of them \"nothing\". It is kept as your area's report, which the CEO's daily review reads, and closes the report's task.",
+                json!({
+                    "moved": report_part("what moved, with task numbers"),
+                    "stuck": report_part("what is stuck, and on what"),
+                    "need": report_part("what you need, and from whom"),
+                    "proposals": report_part("what you propose (make each with propose_project)"),
+                }),
+                &["moved", "stuck", "need", "proposals"],
+            ));
+            list.push(tool(
+                "decide_stuck",
+                "Decide stuck work in your area, when HQ asks you (your turn says it is stuck): proceed (say with what), drop, hand_to a member of your team (`to`), needs_ceo (money, a new goal, another area), or needs_board (the owner alone: money beyond the caps, a hire, the owner's repos). On evidence. Only a board matter reaches the owner, through the CEO.",
+                json!({
+                    "task": { "type": "integer", "description": "the task's number" },
+                    "decision": { "type": "string", "enum": ["proceed", "drop", "hand_to", "needs_ceo", "needs_board"] },
+                    "detail": { "type": "string", "description": "what, and why, in a sentence or two" },
+                    "to": { "type": "string", "description": "for hand_to: the member's name" },
+                    "evidence": ids("What the decision rests on: at least one."),
+                }),
+                &["task", "decision", "detail", "evidence"],
+            ));
         }
     }
     if let Some(list) = all.as_array_mut() {
@@ -487,6 +527,14 @@ fn ceos_tools() -> Value {
         .filter(|t| keep.iter().any(|k| t["name"] == *k))
         .cloned()
         .collect();
+    // The CEO delegates to leads from its own work (ADR 0120); in a lead's area it directs.
+    for listed in &mut list {
+        if listed["name"] == "create_task" {
+            listed["description"] = json!(
+                "Hand a lead new work from one of your own tasks (your review, your planning, a project you lead), with its acceptance criteria. Only to a lead: the lead plans it and hands its parts on in its area. On a task in a lead's area, use direct instead."
+            );
+        }
+    }
     let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
         json!({
             "name": name,
@@ -518,7 +566,31 @@ fn ceos_tools() -> Value {
         json!({ "log": { "type": "string", "maxLength": crate::domain::house::HOUSE_LOG_MOST } }),
         &["log"],
     ));
-    list.push(propose_project_tool());
+    list.push(tool(
+        "direct",
+        "Give the lead of a task's area a direction: what you want done, looked at or weighed, on evidence from HQ's record. It is posted in the task's thread and wakes the lead, who decides what to do with it. On a task in a lead's area you read and talk, and direct; you never claim, move, close, accept or send back its work.",
+        json!({
+            "task": { "type": "integer", "description": "the task's number" },
+            "direction": { "type": "string", "maxLength": super::engine::DIRECTION_MOST },
+            "evidence": ids("What it rests on: at least one."),
+        }),
+        &["task", "direction", "evidence"],
+    ));
+    let strategy_part = |what: &str| json!({ "type": "string", "maxLength": crate::domain::areas::STRATEGY_PART_MOST, "description": what });
+    list.push(tool(
+        "set_strategy",
+        "Write a goal's strategy, which you own: give only the parts you change. purpose is the goal of the goal; success is what success looks like; measures are the named numbers you steer by, one a line, from those HQ computes (unplanned outages over 10 min, median alarm to closed, repeat alarms within 24 h, median branch submitted to push approved, branches passing the tester first time); bets are the active projects and why; not_now is what you chose not to do. On evidence from HQ's record.",
+        json!({
+            "goal": { "type": "integer", "description": "the goal's number" },
+            "purpose": strategy_part("the goal of the goal"),
+            "success": strategy_part("what success looks like"),
+            "measures": strategy_part("the measures, one a line"),
+            "bets": strategy_part("the current bets: the active projects, and why"),
+            "not_now": strategy_part("what we chose not to do now"),
+            "evidence": ids("What it rests on: at least one."),
+        }),
+        &["goal", "evidence"],
+    ));
     list.push(tool(
         "decide_project",
         "Decide a project a lead proposed: accept it (it starts, and its lead is handed its first task) or send it back, saying why; your why is posted to whoever proposed it. A cap it asks, or one you give, goes to the owner with your why as the recommendation.",
@@ -542,8 +614,11 @@ fn ceos_tools() -> Value {
         }),
         &["title", "reason"],
     ));
-    list.push(accept_tool());
-    list.push(hand_to_tool());
+    let mut hand_to = hand_to_tool();
+    hand_to["description"] = json!(
+        "Hand a task of your own, or one held by someone below you, to a lead (never to anyone else: the lead hands it on in its area). Say why; it goes in the thread, and the lead is woken."
+    );
+    list.push(hand_to);
     list.push(read_document_tool());
     list.push(read_doc_tool());
     Value::Array(list)
@@ -780,17 +855,6 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let id = engine
                 .propose_project(run.id, &proposal)
                 .map_err(|e| said(&e))?;
-            if member.role == Role::Ceo {
-                return Ok(format!(
-                    "Project {} is started, and its lead handed its first task.{}",
-                    id.0,
-                    if proposal.cap.is_some() {
-                        " The cap is on the owner's desk with your reason."
-                    } else {
-                        ""
-                    }
-                ));
-            }
             Ok(format!(
                 "Project {} is proposed: it waits for the CEO, whose word comes back in this thread.",
                 id.0
@@ -818,6 +882,95 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!("Project {} is {}.", project.0, now.name()))
+        }
+        "huddle_view" => {
+            let task = task_arg(args)?;
+            engine
+                .huddle_view_in(run.id, task, text_arg(args, "view")?, &evidence_flat(args)?)
+                .map_err(|e| said(&e))?;
+            Ok("Your view is with the huddle: your turn may end now.".to_owned())
+        }
+        "decide_stuck" => {
+            let task = task_arg(args)?;
+            let decision = args["decision"]
+                .as_str()
+                .and_then(crate::domain::ladder::Decision::from_name)
+                .ok_or_else(|| Refusal::NotADecisionForStuck.to_string())?;
+            let to = match args["to"].as_str().filter(|t| !t.trim().is_empty()) {
+                Some(name) => Some(member_named(engine, name)?.id),
+                None => None,
+            };
+            engine
+                .decide_stuck_in(
+                    run.id,
+                    task,
+                    decision,
+                    text_arg(args, "detail")?,
+                    to,
+                    &evidence_flat(args)?,
+                )
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "Task {} is decided ({}): it is in its thread.",
+                task.0,
+                decision.name().replace('_', " ")
+            ))
+        }
+        "set_strategy" => {
+            let goal = args["goal"]
+                .as_i64()
+                .map(GoalId)
+                .ok_or_else(|| "which goal? Give its number as `goal`".to_owned())?;
+            let part = |key: &str| args[key].as_str().map(str::to_owned);
+            let edit = crate::domain::areas::StrategyEdit {
+                purpose: part("purpose"),
+                success: part("success"),
+                measures: part("measures"),
+                bets: part("bets"),
+                not_now: part("not_now"),
+            };
+            engine
+                .set_strategy_in(run.id, goal, &edit, &evidence_flat(args)?)
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "Goal {}'s strategy is written; the owner sees it on the goal's card.",
+                goal.0
+            ))
+        }
+        "report_area" => {
+            let part = |key: &str| args[key].as_str().unwrap_or("");
+            let id = engine
+                .report_area_in(
+                    run.id,
+                    [
+                        part("moved"),
+                        part("stuck"),
+                        part("need"),
+                        part("proposals"),
+                    ],
+                )
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "Your area report is kept (a{id}) and its task closed: the CEO reads it in the daily review. Your turn may end."
+            ))
+        }
+        "direct" => {
+            let task = task_arg(args)?;
+            let direction = text_arg(args, "direction")?;
+            let lead = engine
+                .direct_in(run.id, task, direction, &evidence_flat(args)?)
+                .map_err(|e| said(&e))?;
+            let name = engine
+                .store()
+                .members()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|m| m.id == lead)
+                .map_or_else(|| "the lead".to_owned(), |m| m.name);
+            Ok(format!(
+                "Your direction is in task {}'s thread, and {name} is woken: {name} decides.",
+                task.0
+            ))
         }
         "propose_goal" => {
             let tasks: Vec<TaskId> = numbers(args, "tasks").into_iter().map(TaskId).collect();
