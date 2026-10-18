@@ -342,7 +342,7 @@ fn a_vault_that_is_not_there_is_unreachable() {
 fn against_the_real_image() {
     let image = std::env::var("ENDORA_OPENBAO_IMAGE").expect("ENDORA_OPENBAO_IMAGE");
     let name = format!("endora-openbao-test-{}", std::process::id());
-    let config = r#"{"ui":false,"disable_mlock":true,"storage":{"raft":{"path":"/openbao/file","node_id":"test"}},"listener":[{"tcp":{"address":"0.0.0.0:8200","tls_disable":true}}],"api_addr":"http://127.0.0.1:8200","cluster_addr":"http://127.0.0.1:8201","audit":[{"type":"file","path":"endora-audit","options":{"file_path":"/openbao/file/audit.log"}}]}"#;
+    let config = r#"{"ui":false,"disable_mlock":true,"storage":{"raft":{"path":"/openbao/file","node_id":"test"}},"listener":[{"tcp":{"address":"0.0.0.0:8200","tls_disable":true,"disable_unauthed_rekey_endpoints":false}}],"api_addr":"http://127.0.0.1:8200","cluster_addr":"http://127.0.0.1:8201","audit":[{"type":"file","path":"endora-audit","options":{"file_path":"/openbao/file/audit.log"}}]}"#;
     let docker = |args: &[&str]| {
         std::process::Command::new("docker")
             .args(args)
@@ -436,10 +436,47 @@ fn against_the_real_image() {
                 .as_bytes(),
             key.as_bytes()
         );
+        // The break-glass recovery: new shares from two old ones; after a restart only the
+        // new ones open it.
+        let fresh = rekey(bao.as_ref(), &made.shares[..2]).unwrap();
+        assert_eq!(fresh.len(), 3);
+        assert!(docker(&["restart", &name]).status.success());
+        let port = docker(&["port", &name, "8200"]);
+        let port = String::from_utf8_lossy(&port.stdout)
+            .trim()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .to_owned();
+        let bao = Arc::new(HttpOpenBao::new(&format!("http://127.0.0.1:{port}")));
+        wait(&bao);
+        assert!(unseal_with(bao.as_ref(), &made.shares).is_err());
+        unseal_with(bao.as_ref(), &fresh[1..]).unwrap();
     });
     docker(&["rm", "-f", &name]);
     docker(&["volume", "rm", &format!("{name}-data")]);
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
+}
+
+#[test]
+fn rekeying_with_two_old_shares_makes_three_new_ones_and_the_old_no_longer_open_it() {
+    let bao = FakeOpenBao::new();
+    let made = initialise(&bao).unwrap();
+    unseal_with(&bao, &made.shares).unwrap();
+    assert!(
+        rekey(&bao, &made.shares[..1]).is_err(),
+        "one share is not enough"
+    );
+    let wrong = vec![Zeroizing::new("placeholder-wrong".to_owned()); 2];
+    assert!(rekey(&bao, &wrong).is_err(), "shares that are not its own");
+    let fresh = rekey(&bao, &made.shares[1..]).unwrap();
+    assert_eq!(fresh.len(), 3);
+    bao.seal();
+    assert!(
+        unseal_with(&bao, &made.shares).is_err(),
+        "the old ones are gone"
+    );
+    unseal_with(&bao, &fresh[..2]).unwrap();
 }

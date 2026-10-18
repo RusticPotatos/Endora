@@ -65,6 +65,7 @@ enum Purpose {
     Initialise,
     Enrol,
     Adopt,
+    Recover,
 }
 
 struct Ceremony {
@@ -551,10 +552,14 @@ impl Vault {
                 all.iter().filter(|p| !p.wrapped.is_empty()).collect(),
             ),
             "initialise" => (Purpose::Initialise, all.iter().collect()),
-            "adopt" => (
-                Purpose::Adopt,
+            "adopt" | "recover" => (
+                if purpose == "adopt" {
+                    Purpose::Adopt
+                } else {
+                    Purpose::Recover
+                },
                 all.iter()
-                    .filter(|p| Some(p.credential_id.as_str()) == credential)
+                    .filter(|p| credential.is_none_or(|c| c == p.credential_id))
                     .collect(),
             ),
             _ => return Err(refuse("not a passkey ceremony this node knows")),
@@ -783,6 +788,52 @@ impl Vault {
         )?;
         self.close_ticket();
         Ok(())
+    }
+
+    /// Sets passkey unlock up again from the owner's break-glass shares, after every passkey
+    /// that could unlock is lost (ADR 0127). The vault, unlocked on the NAS with two shares,
+    /// makes three new ones from `old` (which stop working); they are kept under a new unseal
+    /// key wrapped for the passkey that taps, and **every other passkey's copy is forgotten**.
+    /// Returns the new shares: the new break-glass copy, shown once.
+    ///
+    /// # Errors
+    /// [`AppError`] if the vault was not set up by Endora, is locked, refuses the shares, or
+    /// the passkey does not check out.
+    pub fn recover(
+        &self,
+        old: &[String],
+        a: &Assertion,
+        now_ms: i64,
+    ) -> Result<Vec<Zeroizing<String>>, AppError> {
+        let api = self.api()?.clone();
+        if self.store.state()?.shares.is_empty() {
+            return Err(refuse("Endora has not initialised this vault"));
+        }
+        let old: Vec<Zeroizing<String>> = old
+            .iter()
+            .map(|s| Zeroizing::new(s.trim().to_owned()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if old.len() < usize::from(openbao::THRESHOLD) {
+            return Err(refuse(format!(
+                "{} of the break-glass shares are needed",
+                openbao::THRESHOLD
+            )));
+        }
+        let (passkey, prf) = self.verified(a, &Purpose::Recover, now_ms)?;
+        let fresh = openbao::rekey(api.as_ref(), &old).map_err(|e| {
+            self.failed(now_ms);
+            from_vault(e)
+        })?;
+        let unseal_key = random::<32>();
+        self.store.reseal(
+            &seal_shares(&unseal_key, &fresh)?,
+            &passkey.credential_id,
+            &wrap_for(&passkey, &prf, &unseal_key)?,
+        )?;
+        self.close_ticket();
+        *self.attempts.lock().map_err(|_| refuse("unavailable"))? = after_success();
+        Ok(fresh)
     }
 
     fn approle(&self) -> Result<AppRole, AppError> {

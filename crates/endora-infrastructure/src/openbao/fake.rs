@@ -193,6 +193,43 @@ impl OpenBaoApi for FakeOpenBao {
         Ok(s.initialized && !s.sealed)
     }
 
+    fn rekey(
+        &self,
+        old: &[Zeroizing<String>],
+        shares: u8,
+        threshold: u8,
+    ) -> Result<Vec<Zeroizing<String>>, VaultError> {
+        let mut s = self.state();
+        if s.unreachable {
+            return Err(VaultError::Unreachable("connection refused".to_owned()));
+        }
+        s.calls.push("sys/rekey/update".to_owned());
+        if s.sealed {
+            return Err(VaultError::Sealed);
+        }
+        let mut valid: Vec<&str> = Vec::new();
+        for share in old {
+            if !s.shares.iter().any(|k| k == share.as_str()) {
+                return Err(no(400, "invalid key"));
+            }
+            if !valid.contains(&share.as_str()) {
+                valid.push(share.as_str());
+            }
+        }
+        if valid.len() < usize::from(s.threshold) {
+            return Err(VaultError::NotReady(
+                "those shares were not enough to make new ones".to_owned(),
+            ));
+        }
+        s.next += 1;
+        let round = s.next;
+        s.threshold = threshold;
+        s.shares = (0..shares)
+            .map(|i| format!("placeholder-share-rekeyed-{round}-{i}"))
+            .collect();
+        Ok(s.shares.iter().map(|k| Zeroizing::new(k.clone())).collect())
+    }
+
     #[allow(clippy::too_many_lines)]
     fn call(
         &self,

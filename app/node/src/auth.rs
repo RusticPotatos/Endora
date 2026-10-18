@@ -214,6 +214,7 @@ mod tests {
             "/v1/vault/initialise",
             "/v1/vault/enrol",
             "/v1/vault/adopt",
+            "/v1/vault/recover",
             "/v1/vault/keys-into-vault",
             "/v1/vault/start-over",
             "/v1/vault/unlock/other",

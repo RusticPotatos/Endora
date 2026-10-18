@@ -274,3 +274,43 @@ pub(super) async fn start_over(
     record(&state, "forgot its state for the vault, to start over");
     Ok(Json(json!({ "set_up": false })))
 }
+
+/// The break-glass recovery: two of the owner's shares, and a registered passkey's tap.
+#[derive(Deserialize)]
+pub(super) struct Recovery {
+    shares: Vec<String>,
+    #[serde(flatten)]
+    tap: Assertion,
+}
+
+/// `POST /v1/vault/recover`: passkey unlock set up again from the break-glass shares, after
+/// every passkey was lost. The answer carries the **new** shares, the only time they are shown;
+/// the old ones stop working.
+pub(super) async fn recover(
+    State(state): State<AppState>,
+    Json(recovery): Json<Recovery>,
+) -> Result<Json<Value>, ApiError> {
+    let vault = vault(&state);
+    let at = now(&state);
+    let label = state.vault.label_of(&recovery.tap.id).unwrap_or_default();
+    let outcome = blocking(move || vault.recover(&recovery.shares, &recovery.tap, at)).await;
+    let fresh = match outcome {
+        Ok(fresh) => fresh,
+        Err(ApiError(error)) => {
+            record(
+                &state,
+                &format!("a recovery with {label} was refused ({error})"),
+            );
+            return Err(ApiError(error));
+        }
+    };
+    record(
+        &state,
+        &format!("recovered from the break-glass shares: new shares made, only {label} can unlock"),
+    );
+    let fresh: Vec<&str> = fresh.iter().map(|s| s.as_str()).collect();
+    Ok(Json(json!({
+        "shares": fresh,
+        "threshold": endora_infrastructure::openbao::THRESHOLD,
+    })))
+}

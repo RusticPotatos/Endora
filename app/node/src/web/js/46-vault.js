@@ -188,6 +188,19 @@ function viewVault() {
         </div>
       </details>`
     : "";
+  const recover = v.set_up && v.vault === "unlocked" && !vaultWrongAddress()
+    ? `<details style="margin-top:8px;"><summary class="sub">Lost every passkey?</summary>
+        <div class="card" style="margin-top:8px;">
+          <div class="sub" style="margin-bottom:8px;">With two of the break-glass shares you saved, a new passkey can unlock again. The vault makes three new shares (shown once — save them; the old ones stop working) and every other passkey's copy is forgotten. If the vault is locked, unlock it on the NAS with two shares first: docs/homelab.md, "The vault", says how.</div>
+          <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
+            <input id="vault-share-1" type="password" autocomplete="off" placeholder="a break-glass share" />
+            <input id="vault-share-2" type="password" autocomplete="off" placeholder="another one" />
+            <input id="vault-recover-label" type="text" autocomplete="off" placeholder="what to call the new passkey" />
+            <button class="ghost" data-act="vault:recover">Set up a new passkey with them</button>
+          </div>
+        </div>
+      </details>`
+    : "";
   const over = v.set_up && !v.keys_in_vault
     ? `<details style="margin-top:8px;"><summary class="sub">Start over</summary>
         <div class="card" style="margin-top:8px;"><div class="sub" style="margin-bottom:8px;">Forgets this node's copy of the vault's shares and login, for a vault whose data you have wiped. The vault itself is not touched.</div>
@@ -210,6 +223,7 @@ function viewVault() {
       ${add}
     </div>
     ${keys}
+    ${recover}
     ${over}`;
 }
 
@@ -220,7 +234,7 @@ async function vaultDispatch(verb, noun, id) {
 
 async function vaultAct(noun, id) {
   if (noun === "saved") { VAULT_SHARES = null; render(); return true; }
-  if (["unlock", "register", "initialise", "adopt"].includes(noun) && vaultNoPasskeys()) {
+  if (["unlock", "register", "initialise", "adopt", "recover"].includes(noun) && vaultNoPasskeys()) {
     flash("This browser can't use passkeys here. Open " + vaultRightAddress() + " in Safari or Chrome.", "warn");
     return true;
   }
@@ -234,14 +248,14 @@ async function vaultAct(noun, id) {
     } else if (noun === "register") {
       const field = document.getElementById("vault-label");
       const label = field ? field.value.trim() : "";
-      if (VAULT && VAULT.set_up && !VAULT.adopting) {
+      if (VAULT && VAULT.set_up && VAULT.can_unlock > 0 && !VAULT.adopting) {
         VAULT_BUSY = "Your existing passkey first…"; render();
         await vaultCeremony("enrol", "/v1/vault/enrol");
       }
       VAULT_BUSY = "The new passkey…"; render();
       const added = await api("POST", "/v1/vault/passkeys/finish",
         await vaultCreate(await api("POST", "/v1/vault/passkeys/begin", { label })));
-      if (VAULT && VAULT.set_up && !added.can_unlock) {
+      if (VAULT && VAULT.set_up && VAULT.can_unlock > 0 && !added.can_unlock) {
         VAULT_BUSY = "Once more, with the new passkey…"; render();
         await vaultCeremony("adopt", "/v1/vault/adopt", added.id);
       }
@@ -257,6 +271,20 @@ async function vaultAct(noun, id) {
     } else if (noun === "initialise") {
       VAULT_BUSY = "Initialising…"; render();
       const made = await vaultCeremony("initialise", "/v1/vault/initialise");
+      VAULT_SHARES = made.shares || [];
+    } else if (noun === "recover") {
+      const shares = ["vault-share-1", "vault-share-2"].map((f) => {
+        const el = document.getElementById(f);
+        return el ? el.value.trim() : "";
+      }).filter(Boolean);
+      if (shares.length < 2) { flash("Two of the break-glass shares are needed.", "warn"); return true; }
+      const field = document.getElementById("vault-recover-label");
+      VAULT_BUSY = "Your new passkey…"; render();
+      const added = await api("POST", "/v1/vault/passkeys/finish",
+        await vaultCreate(await api("POST", "/v1/vault/passkeys/begin", { label: field ? field.value.trim() : "" })));
+      VAULT_BUSY = "Once more, with the new passkey…"; render();
+      const options = await api("POST", "/v1/vault/ceremony", { purpose: "recover", credential: added.id });
+      const made = await api("POST", "/v1/vault/recover", { shares, ...(await vaultTap(options)) });
       VAULT_SHARES = made.shares || [];
     } else if (noun === "remove") {
       if (!confirm("Remove this passkey? It will no longer unlock the vault.")) return true;

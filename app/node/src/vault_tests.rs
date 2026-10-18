@@ -469,3 +469,58 @@ fn against_a_real_openbao() {
             .any(|(_, _, v)| v == "placeholder-token-0077")
     );
 }
+
+#[test]
+fn every_passkey_lost_the_break_glass_shares_set_passkey_unlock_up_again() {
+    let (vault, bao, _store, _scratch) = rig();
+    let mut lost = Device::new(b"lost-phone");
+    register(&vault, &lost, T0);
+    let old = vault
+        .initialise(&tap(&vault, &mut lost, "initialise", T0), T0)
+        .unwrap();
+    let old: Vec<String> = old.iter().map(|s| s.to_string()).collect();
+
+    // A new phone is registered; it cannot unlock, and nothing that can is left to vouch.
+    let later = T0 + 10 * 60 * 1_000;
+    let mut new_phone = Device::new(b"new-phone");
+    register(&vault, &new_phone, later);
+    let refused = vault.recover(
+        &old[..1],
+        &tap(&vault, &mut new_phone, "recover", later),
+        later,
+    );
+    assert!(refused.is_err(), "one share is not enough");
+
+    let fresh = vault
+        .recover(
+            &old[1..],
+            &tap(&vault, &mut new_phone, "recover", later),
+            later,
+        )
+        .unwrap();
+    assert_eq!(fresh.len(), 3, "a new break-glass copy, shown once");
+    assert!(
+        fresh.iter().all(|s| !old.iter().any(|o| o == s.as_str())),
+        "the old ones are retired"
+    );
+    let status = vault.status(later).unwrap();
+    assert_eq!(status.can_unlock, 1, "only the passkey that tapped");
+
+    bao.seal();
+    let offered = vault.begin_assertion("unlock", None, later).unwrap();
+    let ids: Vec<&str> = offered["allowCredentials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["id"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![new_phone.id()],
+        "the lost phone's copy is forgotten"
+    );
+    vault
+        .unlock(&tap(&vault, &mut new_phone, "unlock", later), later)
+        .unwrap();
+    assert!(!bao.is_sealed());
+}

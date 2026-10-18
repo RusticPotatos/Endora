@@ -167,6 +167,8 @@ pub enum Verb {
     Post,
     /// Write (the `sys/` endpoints that take PUT).
     Put,
+    /// Cancel.
+    Delete,
 }
 
 /// What the node asks of OpenBao. One implementation speaks HTTP ([`HttpOpenBao`]); tests
@@ -195,6 +197,19 @@ pub trait OpenBaoApi: Send + Sync {
     /// # Errors
     /// [`VaultError::Unreachable`] if it does not answer.
     fn active(&self) -> Result<bool, VaultError>;
+
+    /// `sys/rekey/init`, then `sys/rekey/update` with each of `old`: new Shamir shares, made by
+    /// the vault from enough of the old ones, which stop working. Needs no token: the shares
+    /// are the authority.
+    ///
+    /// # Errors
+    /// [`VaultError`] if a share is refused, there are too few, or it is sealed.
+    fn rekey(
+        &self,
+        old: &[Zeroizing<String>],
+        shares: u8,
+        threshold: u8,
+    ) -> Result<Vec<Zeroizing<String>>, VaultError>;
 
     /// Any other call, with `token` (empty: none, as for a login).
     ///
@@ -238,6 +253,13 @@ impl HttpOpenBao {
     ) -> Result<(u16, Value), VaultError> {
         let url = format!("{}/v1/{}", self.url, path.trim_start_matches('/'));
         let response = match verb {
+            Verb::Delete => {
+                let mut request = self.agent.delete(&url);
+                if !token.is_empty() {
+                    request = request.header("x-vault-token", token);
+                }
+                request.call()
+            }
             Verb::Get => {
                 let mut request = self.agent.get(&url);
                 if !token.is_empty() {
@@ -354,6 +376,54 @@ impl OpenBaoApi for HttpOpenBao {
         Ok(status == 200)
     }
 
+    fn rekey(
+        &self,
+        old: &[Zeroizing<String>],
+        shares: u8,
+        threshold: u8,
+    ) -> Result<Vec<Zeroizing<String>>, VaultError> {
+        let request = json!({ "secret_shares": shares, "secret_threshold": threshold });
+        let (status, body) = self.send("", Verb::Put, "sys/rekey/init", Some(&request))?;
+        if status != 200 {
+            return Err(refusal(status, &body));
+        }
+        let nonce = body["nonce"].as_str().unwrap_or("").to_owned();
+        let outcome = (|| {
+            for share in old {
+                let update = json!({ "key": &**share, "nonce": nonce });
+                let (status, mut answer) =
+                    self.send("", Verb::Put, "sys/rekey/update", Some(&update))?;
+                if status != 200 {
+                    return Err(refusal(status, &answer));
+                }
+                if answer["complete"].as_bool() != Some(true) {
+                    continue;
+                }
+                let fresh: Vec<Zeroizing<String>> = answer["keys_base64"]
+                    .as_array()
+                    .map(|keys| {
+                        keys.iter()
+                            .filter_map(Value::as_str)
+                            .map(|k| Zeroizing::new(k.to_owned()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(object) = answer.as_object_mut() {
+                    object.clear();
+                }
+                return Ok(fresh);
+            }
+            Err(VaultError::NotReady(
+                "those shares were not enough to make new ones".to_owned(),
+            ))
+        })();
+        if outcome.is_err() {
+            // An unfinished rekey would block the next one: cancel it, best effort.
+            let _ = self.send("", Verb::Delete, "sys/rekey/init", None);
+        }
+        outcome
+    }
+
     fn call(
         &self,
         token: &str,
@@ -418,6 +488,30 @@ pub fn unseal_with(
     Err(VaultError::NotReady(
         "the vault opened but did not become active".to_owned(),
     ))
+}
+
+/// New shares for the vault from enough of its current ones ([`SHARES`], [`THRESHOLD`]):
+/// how passkey unlock is set up again after every passkey was lost, from the owner's
+/// break-glass copy, which this also replaces. The vault must be unsealed.
+///
+/// # Errors
+/// [`VaultError`] if it is sealed or refuses the shares.
+pub fn rekey(
+    api: &dyn OpenBaoApi,
+    old: &[Zeroizing<String>],
+) -> Result<Vec<Zeroizing<String>>, VaultError> {
+    if api.seal_status()?.sealed {
+        return Err(VaultError::NotReady(
+            "the vault must be unlocked first (with two shares, on the NAS)".to_owned(),
+        ));
+    }
+    let fresh = api.rekey(old, SHARES, THRESHOLD)?;
+    if fresh.is_empty() {
+        return Err(VaultError::NotReady(
+            "the vault's answer to rekeying held no shares".to_owned(),
+        ));
+    }
+    Ok(fresh)
 }
 
 /// A mount or an auth method that is already there is not a failure: a setup that is run

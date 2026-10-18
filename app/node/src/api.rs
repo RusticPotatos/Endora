@@ -646,6 +646,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/vault/initialise", post(vault::initialise))
         .route("/v1/vault/enrol", post(vault::enrol))
         .route("/v1/vault/adopt", post(vault::adopt))
+        .route("/v1/vault/recover", post(vault::recover))
         .route("/v1/vault/keys-into-vault", post(vault::keys_into_vault))
         .route("/v1/vault/start-over", post(vault::start_over))
         .route("/v1/session/checks", post(mint_a_checking_token))

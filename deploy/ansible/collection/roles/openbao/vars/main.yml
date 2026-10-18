@@ -12,11 +12,16 @@ openbao_config:
     raft:
       path: /openbao/file
       node_id: endora
-  # Plain HTTP, on the internal network only the node shares (ADR 0127 says why).
+  # Plain HTTP, on the internal network only the node shares (ADR 0127 says why). Rekeying
+  # with unseal shares is how passkey unlock is set up again after every passkey is lost, from
+  # the break-glass copy; OpenBao turns those endpoints off by default because anyone who can
+  # reach them could start or cancel one (never finish one: that takes the shares). Only the
+  # node reaches this listener, so they are on.
   listener:
     - tcp:
         address: "0.0.0.0:8200"
         tls_disable: true
+        disable_unauthed_rekey_endpoints: false
   api_addr: "http://{{ openbao_alias }}:8200"
   cluster_addr: "http://127.0.0.1:8201"
   # Every request and answer, with values HMAC'd, beside the storage in the one volume.

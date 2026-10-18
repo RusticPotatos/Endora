@@ -37,6 +37,8 @@
           - config.disable_mlock == true
           # Plain HTTP on the internal network only the node shares (ADR 0127 says why).
           - config.listener[0].tcp.tls_disable == true
+          # The break-glass recovery rekeys with the shares (ADR 0127).
+          - config.listener[0].tcp.disable_unauthed_rekey_endpoints == false
           - config.api_addr == 'http://openbao:8200'
 
     - name: Check the container's rules

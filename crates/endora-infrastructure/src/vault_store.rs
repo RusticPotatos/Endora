@@ -289,6 +289,35 @@ impl VaultStore {
         Ok(())
     }
 
+    /// Keeps new sealed shares and the one passkey that can open them, forgetting every other
+    /// passkey's copy, in one transaction: the break-glass recovery (ADR 0127), whose new
+    /// shares only the passkey that tapped can open.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database fails; nothing changes then.
+    pub fn reseal(
+        &self,
+        shares: &str,
+        credential_id: &str,
+        wrapped: &str,
+    ) -> Result<(), RepositoryError> {
+        let mut conn = self.db.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        tx.execute(
+            "UPDATE vault_state SET shares = ?1 WHERE id = 1",
+            params![shares],
+        )
+        .map_err(backend)?;
+        tx.execute("UPDATE vault_passkeys SET wrapped = ''", [])
+            .map_err(backend)?;
+        tx.execute(
+            "UPDATE vault_passkeys SET wrapped = ?1 WHERE credential_id = ?2",
+            params![wrapped, credential_id],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)
+    }
+
     /// Forgets the vault's state and every passkey's wrapped copy, to set up a vault from
     /// scratch. Refused once the node's data keys are in the vault: forgetting then would
     /// lose them.
