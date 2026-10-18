@@ -200,8 +200,9 @@ and `world_retell_asked:<member>`. No existing row changes; nothing is deleted.
 
 ## Deferred
 
-- Area, project and role pages; proposals to a page; links between pieces; the trailhead map
-  and its probes; `read_doc` by section; "not on the map" gaps and broken roads (the map, next).
+- Area, project and role pages; proposals to a page; the map and its quiz; "not on the map" gaps
+  and broken roads: **built, [0126](0126-the-teams-map.md)**. Still deferred: `read_doc` by
+  section, and relations between pieces beyond the addresses a section cites.
 - Transcripts, searching the record, consulting a member, and resuming a runtime's own
   conversation (the `resumed` situation is named but never chosen).
 - A second prompt-cache mark from the worker through the relay, for reuse across a member's
@@ -235,3 +236,10 @@ and `world_retell_asked:<member>`. No existing row changes; nothing is deleted.
   corrected and recorded. The owner may write a section or a timeline entry directly
   (`POST /v1/hq/world/section`, `/timeline`); such a section is an insight at least and a
   member cannot overwrite it.
+- 2026-10-18, by [0126](0126-the-teams-map.md): the world has a page for every area, project, goal
+  and role beside the house, and an address is a page's slug and a section's anchor
+  (`world:area/3#backups`). `write_world`, `verify_world` and `retire_world` act on any page the
+  caller stewards, so the leads write their areas' and projects' pages, not only the CEO the
+  house's; anyone else proposes (`propose_world`) and the steward decides. Every briefing opens
+  with the member's map, a core piece of its memory budget. The decisions above about the house
+  page are unchanged.

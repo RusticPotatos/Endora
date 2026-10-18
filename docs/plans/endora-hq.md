@@ -43,6 +43,8 @@ with the engine, and the owner's desk where everything that needs them lands.
 | Chain of command | Where a member's question goes: the developer's, researcher's and reviewer's to the lead, the lead's to the CEO, the CEO's to the board. |
 | House log | The CEO's own document of the house, per team, which the CEO and the lead read every turn and the owner edits. Since ADR 0122, the house page's timeline; kept read-only for a release. |
 | World | What the team knows (ADR 0122): the house page's sections and timeline, the derived lab and team pages, and stories, each piece with a stage; canon is the owner's word. |
+| Map | The short list of pages that matter to a member, by address, that opens every briefing (ADR 0126); what it left off is named, and a thing not on it is reported as a gap. |
+| Steward | Whoever keeps a page (ADR 0126), worked out from the record: a lead its area and projects, the CEO the house and goals, the owner a role. Only the steward (or the owner) writes it; anyone else proposes. |
 | Situation | What a turn starts from (ADR 0122): fresh, continuing, after a gap, handover or recalled; it decides what of the world the briefing carries, within the member's budget. |
 | Desk | The owner's queue in HQ: everything waiting for them to approve, adjust or decline. |
 | Team | A group of members with a goal, a budget and a name. One to start. |
@@ -323,10 +325,15 @@ container:
 | `note_lesson` | No longer offered (ADR 0122): a worker that still calls it gets a story marked to retell, in its writer's area, under a handle from the lesson's first words; a `lesson.noted` event and a notice on the owner's desk ("Ada noted: …") as before. The goal's notes are not changed |
 | `note_house` | The CEO's only: `{ "entry" }`, at most 500 characters, a dated line on the house page's timeline (ADR 0122; before it, the house log). A `house.noted` event |
 | `rewrite_house` | Refused for a release (ADR 0122), saying to use `write_world` and `note_house`; then removed |
-| `read_world` | Every member's (ADR 0122): `{ "address" }`, `world:house`, `world:house#<anchor>`, `world:lab`, `world:team` or `story:<handle>`; each piece says its stage, or "unconfirmed since <date>" |
+| `read_world` | Every member's (ADR 0122, 0126): `{ "address" }`, a page or a section of it (`world:house`, `world:area/3#backups`, `world:project/<n>`, `world:goal/<n>`, `world:role/<role>`), `world:lab`, `world:team` or `story:<handle>`; each piece says its stage, or "unconfirmed since <date>"; a section shows its routes out |
 | `tell_story` | Every member's (ADR 0122): `{ handle, moment, reflex, instead, because, evidence, stage?, warrant?, taught? }`, in the member's scope by role; retells a story marked to retell under its own handle; an insight is the scope's steward's |
-| `write_world` | The CEO's (ADR 0122): a section of the house page, `{ heading, headline, body?, stage, warrant?, evidence, anchor? }`, an observation or an insight on its evidence; never canon |
-| `verify_world`, `retire_world` | The CEO's and the leads', for what they steward (ADR 0122): confirm on fresh evidence; retire with a reason, or supersede naming the successor; canon is the owner's |
+| `write_world` | The CEO's and the leads' (ADR 0122, 0126): a section of a page the caller keeps (`page`: `house`, `area/<n>`, `project/<n>`, `goal/<n>`), `{ page?, heading, headline, body?, stage, warrant?, evidence, anchor? }`, an observation or an insight on its evidence; never canon; anyone else is told to propose |
+| `propose_world` | Every member's (ADR 0126): `{ page, anchor?, heading, headline, body?, evidence }`, a section proposed to a page the caller does not keep; its steward decides; five open at once |
+| `decide_proposal` | The CEO's and the leads', for pages they keep (ADR 0126): `{ id, accept, reason?, stage?, warrant? }`; a decline says why; the proposer is told in its next briefing |
+| `report_gap` | Every member's (ADR 0126): `{ what, where_looked }`, what a member looked for on its map and did not find; one item for its lead (the CEO's for a lead), never the owner's desk |
+| `close_gap` | The CEO's and the leads' (ADR 0126): `{ id, how }`, for a gap reported to them |
+| `answer_quiz` | Every member's, in a downtime turn that carries the nightly quiz (ADR 0126): `{ answers }`, one per question, scored by code |
+| `verify_world`, `retire_world` | The CEO's and the leads', for what they steward (ADR 0122, 0126): confirm on fresh evidence; retire with a reason, or supersede naming the successor; canon is the owner's |
 | `propose_canon` | The CEO's and the leads' (ADR 0122): a trusted insight and a warrant, to the owner's desk |
 | `read_doc` | Every member's (ADR 0116; the CEO's only before): `{ "path", "part"? }`, one of Endora's public library (`docs/standards.md`, `docs/adr/*.md`, `docs/plans/*.md`, `docs/drafts/*.md`, embedded in HQ at build time), 20,000 characters a part; a folder alone lists them; any other path is refused |
 | `review` | The reviewer's only: its verdict on work in review, `approve` or `send_back`, with notes. `send_back` posts the notes, sets the task to `doing` and wakes its owner. `approve` closes work that needs no gate (a routine's task, or work under a goal the home lab's routine serves) as `done`; work that needs the gate stays in review until the gate passes, and the reviewer is told so |
@@ -1270,6 +1277,41 @@ showing it, every number in `domain::guards::THRESHOLDS`, every finding judged.
 - The owner: `POST /v1/hq/retractions`, `GET /v1/hq/retractions/{id}/sweep`,
   `POST /v1/hq/retractions/{id}/forget`, through the node and its audit log.
 - Scenarios: `domains/team/features/guards.feature`.
+
+### The team's map (as built 2026-10-18, [ADR 0126](../adr/0126-the-teams-map.md))
+
+As built: the second of three builds of the team's memory; asking the past follows.
+
+- **Pages**: `world:area/<n>` (a lead's), `world:project/<n>`, `world:goal/<n>`,
+  `world:role/<role>` beside the house, lab and team pages; made once each at start and on every
+  tick from the team as it stands (`world_pages`, `Engine::migrate_map`; a project or goal given up
+  gets none). **Steward from the data** (`domain::map::steward_of`): an area its lead, a project
+  its lead (the CEO when the CEO leads it), the house and goals the CEO, a role the owner, the
+  derived pages nobody. A role's page shows what the role is for until the owner writes it.
+- **Writing**: `write_world` (the CEO's and the leads') on a page the caller keeps, refused for
+  anyone else with the steward named; `verify_world` and `retire_world` likewise. **Proposals**:
+  `propose_world` (any member) and `decide_proposal` (the steward; the owner from the World card,
+  `POST /v1/hq/world/proposals/decide`); a decline says why; five open a member; the proposer is
+  told once in its next briefing (`world_proposals`).
+- **The map**: the first piece of every briefing, core, within 1,400 characters (the house's
+  model) or 2,400; its role's page, area, task's project and the house first, then the lab, team
+  and goal, then a line each for the rest, with the best three sections of each page that matters;
+  what it left off is named, and how to say a thing is missing. Closed by `(End of your map.)`.
+- **Gaps and broken roads**: `report_gap {what, where_looked}` is one item for the member's lead
+  (the CEO's for a lead) however many report it, never on the desk; `close_gap {id, how}`
+  (`world_gaps`). A broken road is an address a section cites, or a superseded one names, that
+  does not resolve, found by `Engine::broken_roads` each time; both are listed in the steward's
+  next briefing and on the World card.
+- **The nightly quiz** (`Settings::quiz`; `world_quizzes`): 1 to 6 in the morning, one free member
+  on the house's model is woken for a downtime turn carrying up to six questions made by
+  `domain::quiz::questions` from its own map (which page, who keeps, address of, section address);
+  `answer_quiz` is scored by `domain::quiz::grade`; a night with nobody free is recorded as skipped;
+  a page failing three nights running is flagged to its steward and the World card.
+- **Claude Code**: the worker keeps the map block in the turn's folder; the workbench's managed
+  settings run `endora-worker --map` on `SessionStart` with the `compact` matcher.
+- **The owner**: the World card's pages, proposals (Accept, Decline), gaps, broken roads and last
+  night's check; `GET /v1/hq/world` carries `map`.
+- Scenarios: `domains/team/features/the-map.feature`.
 
 ## 16. Later, and not at all
 
