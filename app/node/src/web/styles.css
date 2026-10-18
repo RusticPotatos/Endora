@@ -429,6 +429,11 @@
   .hq-log .k-you { color: var(--hq-violet); }
   .hq-team { display: grid; gap: 4px; }
   .hq-team span { color: var(--hq-muted); }
+  /* A project's lines (who leads, its money, why, its evidence) each on a line of their own. */
+  .hq-projects > li > span { display: block; }
+  /* A roster line is a button, and buttons never wrap: on a phone it must, or the page scrolls
+     sideways. */
+  .hq .hq-line { white-space: normal; }
   /* The Team card's org chart: one group per team, one tappable line per member. */
   .hq-group + .hq-group { margin-top: 10px; }
   .hq-group h3 { font-size: 12px; margin: 0 0 4px; color: var(--hq-fg); }
