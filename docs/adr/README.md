@@ -274,6 +274,7 @@ of an existing record and take the next number.
 | [0116](0116-the-teams-standards.md) | The team's standards | — |
 | [0117](0117-claude-code-as-a-developer-runtime.md) | Claude Code as a developer runtime | — |
 | [0118](0118-elastic-staffing-and-notebooks.md) | Elastic staffing and notebooks | — |
+| [0119](0119-the-open-office.md) | The open office | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

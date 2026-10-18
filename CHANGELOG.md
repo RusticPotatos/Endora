@@ -9,6 +9,24 @@ tagged release.
 
 ### Added
 
+- **The open office** ([ADR 0119](docs/adr/0119-the-open-office.md)). HQ's office is an
+  open-plan floor: one pod of desks per team, side by side with no walls and labelled as the
+  roster labels them, laid out from the snapshot (a hire grows a pod, a third lead makes a third;
+  a member on furlough keeps an empty desk with an "away" card); Mara keeps her own office with
+  the door open; a kitchen and lounge replace the engineering wing's walled room. People walk
+  round desks and furniture and through the doors, visit another team's pod for its work (the
+  tester goes to whose task it is), and drift about the office when idle. What stands on the
+  floor is **data**: an `office_items` table of plants, lamps, couches and the rest, seeded once,
+  drawn by the screen from the snapshot, and moved by the team. Every role has a team tool,
+  `office`, to propose up to five changes, vote and look; the placement rules (inside the floor,
+  never on a wall, door, desk, walking lane, room or another item; 40 things, 2 fish tanks) are
+  pure and checked when a proposal is made and again when it carries (two yes, or six quiet
+  hours; dropped on more no, or after 48 hours). The owner can undo the last change, reset the
+  office or veto any open proposal from a new Office card. **Downtime**: a member with nothing to
+  do is given a turn about no task, once a day, one at a time, to tidy the office or its notebook
+  — free on the house's model, and never on Claude unless the owner sets
+  `downtime_paid_cents_per_day`, which the pool pays, never a member's share. A downtime turn
+  makes no work. The owner's scenarios are in `domains/team/features/the-office.feature`.
 - **Claude Code as a developer runtime** ([ADR 0117](docs/adr/0117-claude-code-as-a-developer-runtime.md)).
   A member setting, `runtime`: `worker` (the default) or `claude-code`, offered only to a
   developer on Claude and refused otherwise; the owner sets it with

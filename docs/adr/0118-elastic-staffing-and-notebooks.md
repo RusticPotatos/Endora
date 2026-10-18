@@ -132,6 +132,15 @@ only the owner writes without evidence. No member is ever removed.
 - New data on the live store: two nullable columns on `members`, a `notes` table and its
   index, added when HQ opens the store; no row changes.
 
+## Amendment, 2026-10-18 ([0119](0119-the-open-office.md))
+
+- **Downtime notes.** A member with nothing to do may be given a downtime turn (a turn about no
+  task, once a day, free on the house's model). Its briefing suggests a team idea for its
+  notebook, and names the latest event to cite, since a note still rests on evidence from HQ's
+  record. The notebook tools are unchanged, and a downtime turn has them beside `office`.
+- **Downtime is not activity.** Its wakes and turns do not count as a task, wake or turn in the
+  idle look: a member whose only turns in a week were downtime is still offered for furlough.
+
 ## Deferred
 
 - Members proposing their own furlough, or the lead proposing another member's.
