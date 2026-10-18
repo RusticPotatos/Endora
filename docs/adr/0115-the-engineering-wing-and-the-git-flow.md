@@ -100,7 +100,15 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    sandbox cannot fetch `requirements.yml`, so the image bakes the fork's collections and roles
    in), `yamllint .` (1.30.0) — and reports pass or fail, a line ("syntax ok, ansible-lint 2
    findings, yamllint ok") and each command's last 4 KB to HQ through the gateway
-   (`POST /v1/runner/check/{id}/done`, the job token as the bearer; taken once). HQ keeps the
+   (`POST /v1/runner/check/{id}/done`, the job token as the bearer; taken once). **A branch is
+   judged against its base** ("no worse than develop"): the fork's own develop already carries
+   findings, so a branch with any failure has the same checks run on the commit it was cut from
+   (the node names it, from the branch HQ recorded, in an `x-endora-base` header on the bundle),
+   and passes when no check is worse there: ansible-lint findings and yamllint errors no more
+   than on the base, syntax failing only where the base's did, a timeout always a fail. The line
+   then says both ("ansible-lint 25 findings (develop 25), …: no worse than develop") and the
+   report holds the base's outcomes; a clean branch costs no second run, and a base that cannot
+   be found leaves the plain pass or fail, said in the line. HQ keeps the
    result as a **receipt** on the task and a document with the report, and as the task's
    **gate** (0114: code work closes only once it passed); a pass wakes the submitter and the
    tester, and **a branch that fails its checks is sent back** by HQ itself, the tester

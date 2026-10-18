@@ -3290,7 +3290,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(named.status(), StatusCode::OK);
-        assert_eq!(json_of(named).await["head"], "a1b2c3d4e5f60718");
+        let named = json_of(named).await;
+        assert_eq!(named["head"], "a1b2c3d4e5f60718");
+        assert_eq!(named["base"], "0123456789abcdef", "the base it sits on");
         let unknown = app
             .clone()
             .oneshot(call(

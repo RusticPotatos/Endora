@@ -29,7 +29,9 @@ pub const WING_NOTE: &str = "The wing's job is the owner's public ansible-nas fo
     base, commit in small steps, then repo_submit sends the branch to Endora, which keeps it, \
     writes its diff as a \
     document on the task and runs the checks (ansible syntax, ansible-lint, yamllint) on the \
-    dev node; the result comes back as a receipt. Then submit the task for review (set_status \
+    dev node; the result comes back as a receipt. The fork's develop already has findings, so \
+    the check judges your branch against develop: it passes when no check is worse than it \
+    is on develop, and the receipt says both. Then submit the task for review (set_status \
     in_review, citing the receipts): Dee, the tester, reads the diff and the check; the lead \
     accepts. The owner alone pushes an accepted branch to the fork and merges it there: HQ \
     never pushes on its own, never opens a pull request, never merges. The lead plans the \
@@ -242,7 +244,9 @@ pub struct Check {
     pub status: String,
     /// Whether every check passed, once done.
     pub ok: Option<bool>,
-    /// The result in a line, once done: "syntax ok, ansible-lint 2 findings, yamllint ok".
+    /// The result in a line, once done: "syntax ok, ansible-lint 2 findings, yamllint ok", or,
+    /// when the branch failed something its base failed too, both counts and the verdict:
+    /// "syntax ok, ansible-lint 25 findings (develop 25), yamllint ok: no worse than develop".
     pub summary: String,
     /// When it was queued.
     pub queued_at: Millis,
