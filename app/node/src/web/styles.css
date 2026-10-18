@@ -429,6 +429,10 @@
   .hq-log .k-you { color: var(--hq-violet); }
   .hq-team { display: grid; gap: 4px; }
   .hq-team span { color: var(--hq-muted); }
+  /* The Office card (ADR 0119): a proposal's words are the team's, and long. */
+  .hq-office-card li { overflow-wrap: anywhere; }
+  .hq-office-card small { display: block; color: var(--hq-muted); margin: 2px 0 4px; }
+  .hq-office-card .hq-btn[disabled] { opacity: .5; cursor: default; }
   /* A project's lines (who leads, its money, why, its evidence) each on a line of their own. */
   .hq-projects > li > span { display: block; }
   /* A roster line is a button, and buttons never wrap: on a phone it must, or the page scrolls
