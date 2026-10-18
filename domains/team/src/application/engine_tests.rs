@@ -1,5 +1,6 @@
 //! The engine, end to end over HQ's real SQLite store and the simulated runner.
 
+use serde_json::json;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::engine::{Author, Engine, EngineError, Settings};
@@ -1688,6 +1689,129 @@ fn declining_changes_nothing_and_the_owners_own_turns_ignore_the_cap() {
         "{}",
         run.reserved
     );
+}
+
+/// A member's share for the day, and the pool's, as the snapshot shows them.
+fn shares(hq: &Hq<'_>, t: &Team) -> (i64, i64, serde_json::Value) {
+    let snap = hq.snapshot().unwrap();
+    let share = |id: MemberId| {
+        snap["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id.0)
+            .unwrap()["per_day"]
+            .as_i64()
+            .unwrap()
+    };
+    (share(t.dev), share(t.lead), snap["pool"].clone())
+}
+
+#[test]
+fn a_top_up_grows_the_pool_and_every_share_in_proportion_for_today_only() {
+    let clock = hands();
+    let hq = dollar_a_day(&clock);
+    let t = team(&hq);
+    all_paid(&hq);
+    let (dev, lead, pool) = shares(&hq, &t);
+    assert_eq!((dev, pool["per_day"].as_i64()), (470_588, Some(1_000_000)));
+    assert_eq!(hq.top_up_pool(1_000_000).unwrap(), 1_000_000);
+    let (dev2, lead2, pool2) = shares(&hq, &t);
+    assert_eq!(pool2["per_day"], 2_000_000, "the pool's day is the ceiling");
+    assert_eq!(
+        (pool2["base_per_day"].clone(), pool2["topped_up"].clone()),
+        (json!(1_000_000), json!(1_000_000))
+    );
+    // Each share doubles, to the micro the division rounds away.
+    assert_eq!(dev2, dev * 2);
+    assert!((lead2 - lead * 2).abs() <= 1, "{lead2} against {lead}");
+    assert_eq!(
+        hq.snapshot().unwrap()["scorecard"]["pool"],
+        json!({ "base": 1_000_000, "topped_up": 1_000_000 })
+    );
+    // Tomorrow it is gone.
+    clock.forward(24 * 60 * 60 * 1000);
+    let (dev3, _, pool3) = shares(&hq, &t);
+    assert_eq!((dev3, pool3["per_day"].clone()), (dev, json!(1_000_000)));
+    assert_eq!(pool3["topped_up"], 0);
+}
+
+#[test]
+fn a_top_up_raises_the_borrowing_cap_with_the_share() {
+    let clock = hands();
+    let hq = dollar_a_day(&clock);
+    let t = team(&hq);
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    hq.top_up_pool(1_000_000).unwrap();
+    // Twice his doubled share is $1.88: four full turns fit, a fifth gets what is left.
+    for _ in 0..4 {
+        own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    }
+    let last = own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    assert_eq!(hq.store().run(last).unwrap().unwrap().spent, 282_352);
+    let day = crate::domain::money::day_of(NOON, 0);
+    assert_eq!(hq.store().share_committed(t.dev, day).unwrap(), 1_882_352);
+    assert_eq!(
+        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
+        Receipt::Refused(Refused::OutOfBudget),
+        "twice the doubled share, and no further"
+    );
+}
+
+#[test]
+fn a_member_out_for_the_day_takes_a_turn_after_a_top_up() {
+    let clock = hands();
+    let hq = dollar_a_day(&clock);
+    let t = team(&hq);
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    linus_spends_twice_his_share(&hq, &t, work);
+    assert_eq!(
+        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
+        Receipt::Refused(Refused::OutOfBudget)
+    );
+    hq.top_up_pool(1_000_000).unwrap();
+    let run = own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    assert_eq!(hq.store().run(run).unwrap().unwrap().spent, MOST_A_TURN);
+}
+
+#[test]
+fn a_top_up_is_above_nothing_and_at_most_three_pool_days_in_all_and_is_recorded() {
+    let clock = hands();
+    let hq = dollar_a_day(&clock);
+    for bad in [0, -5, 3_000_001] {
+        assert!(
+            matches!(
+                hq.top_up_pool(bad),
+                Err(EngineError::Refused(Refusal::TopUpOutOfRange {
+                    room: 3_000_000
+                }))
+            ),
+            "{bad}"
+        );
+    }
+    assert_eq!(hq.top_up_pool(2_000_000).unwrap(), 2_000_000);
+    assert_eq!(hq.top_up_pool(500_000).unwrap(), 2_500_000, "two add up");
+    let Err(EngineError::Refused(refusal)) = hq.top_up_pool(600_000) else {
+        panic!("over the limit");
+    };
+    assert_eq!(refusal, Refusal::TopUpOutOfRange { room: 500_000 });
+    assert!(refusal.to_string().contains("$0.50"), "{refusal}");
+    let events: Vec<_> = hq
+        .store()
+        .events_after(0)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "pool.topped_up")
+        .collect();
+    assert_eq!(events.len(), 2, "only the allowed ones");
+    assert_eq!(events[0].data["amount"], 2_000_000);
+    assert_eq!(events[0].data["by"], "owner");
+    assert_eq!(events[0].data["day"], crate::domain::money::day_of(NOON, 0));
+    // Tomorrow the day's limit starts over.
+    clock.forward(24 * 60 * 60 * 1000);
+    assert_eq!(hq.top_up_pool(3_000_000).unwrap(), 3_000_000);
 }
 
 /// A task gone stuck onto the owner's desk, with the member who had it. With its lead at

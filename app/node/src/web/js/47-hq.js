@@ -1208,6 +1208,7 @@ function viewHQ() {
       ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
       ${d.kind === "project_cap" || d.kind === "project_budget" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="${d.kind === "project_cap" ? "Dollars a month (empty: as asked)" : "The new cap, in dollars a month"}" aria-label="The cap, in dollars a month" />` : ""}
       ${d.kind === "out_for_day" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="Dollars for today (empty: as offered)" aria-label="The allowance, in dollars for today" />` : ""}
+      ${d.kind === "out_for_day" && hqPoolSpent(s) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up the pool first</button></div>` : ""}
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
   }).join("");
   // The latest thirty, newest first, and "Show older" for the rest: first what is kept here,
@@ -1580,6 +1581,9 @@ function hqSpan(ms) {
   return `${(s / 86400).toFixed(1).replace(/\.0$/, "")} d`;
 }
 
+// Whether today's pool (the base day and the owner's top-up) has nothing left (ADR 0113 rule 6).
+function hqPoolSpent(s) { const p = s.pool; return !!p && p.per_day != null && (p.per_day - (p.committed || 0)) <= 0; }
+
 // How the team is doing: the numbers HQ computed from its own record for today and the last
 // seven days, by the owner's days (the engine's `scorecard`). This only renders them: every
 // share, median and cost arrives computed; nothing a model wrote is in it, but every name goes
@@ -1628,8 +1632,13 @@ function hqScorecard(s) {
       ${said}</div>`;
   };
   const areas = (card.areas || []).map(area).join("");
+  // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
+  const pl = card.pool;
+  const poolRow = pl ? `<tr><th>Pool</th><td>${esc(`pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`)}</td><td></td></tr>` : "";
+  const topUp = pl ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button></div>` : "";
   return `<section class="hq-card"><h2>How the team is doing</h2>
-    <table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${rows}</tbody></table>
+    <table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${rows}${poolRow}</tbody></table>
+    ${topUp}
     ${areas ? `<details open><summary>Each area</summary>${areas}</details>` : ""}
     ${teams ? `<details><summary>Seats</summary><ul class="hq-team">${teams}</ul></details>` : ""}
     <details><summary>Per member</summary><div class="hq-score-members">
@@ -1888,6 +1897,18 @@ async function hqDispatch(verb, noun, id, arg) {
       flash(noun === "furlough" ? `${m.name} is on furlough.` : `${m.name} is back at work.`, "ok");
     }
     catch (e) { flash("Couldn't do it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner adds to today's pool, for today only (ADR 0113 rule 6). HQ holds the limit.
+  if (noun === "pool") {
+    const base = ((((HQ.snap || {}).scorecard || {}).pool || {}).base) || 0;
+    const said = prompt("Dollars to add to today's pool (gone tomorrow; at most three pool days in all):", (base / 1e6).toFixed(2));
+    if (said === null) return true;
+    const micros = Math.round(parseFloat(said) * 1e6);
+    if (!Number.isFinite(micros) || micros <= 0) { flash("That is not an amount in dollars.", "err"); return true; }
+    if (!confirm(`Add ${hqDollars(micros)} to today's pool? It is gone tomorrow.`)) return true;
+    try { await api("POST", "/v1/hq/pool/top-up", { amount_micros: micros }); flash(`Today's pool is up by ${hqDollars(micros)}.`, "ok"); }
+    catch (e) { flash("Couldn't top the pool up: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // The owner as the office's landlord (ADR 0119): undo the last change, reset the office to how

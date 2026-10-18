@@ -635,6 +635,33 @@ pub(super) async fn hq_office_downtime(
     Ok(answer)
 }
 
+#[derive(Deserialize)]
+pub(super) struct HqPoolTopUp {
+    amount_micros: i64,
+}
+
+/// The owner tops today's pool up (ADR 0113 rule 6): audited, with the amount.
+pub(super) async fn hq_pool_top_up(
+    State(state): State<AppState>,
+    Json(req): Json<HqPoolTopUp>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/pool/top-up".to_owned(),
+        Some(json!({ "amount_micros": req.amount_micros })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!(
+            "you topped the pool up by ${}.{:02} for today",
+            req.amount_micros / 1_000_000,
+            req.amount_micros % 1_000_000 / 10_000
+        ),
+    );
+    Ok(answer)
+}
+
 /// A member's notebook, for the owner to read (ADR 0118).
 pub(super) async fn hq_notebook(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
     ask(&state, format!("/v1/members/{id}/notebook"), None).await
@@ -1123,6 +1150,44 @@ mod tests {
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_owner_tops_the_pool_up_through_the_node_and_it_is_recorded() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            (200, "application/json", json!({}).to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let _ = hq_pool_top_up(
+            State(state.clone()),
+            Json(HqPoolTopUp {
+                amount_micros: 2_333_333,
+            }),
+        )
+        .await
+        .unwrap();
+        let sent: Vec<(String, String)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), b.clone()))
+            .collect();
+        assert_eq!(sent[0].0, "/v1/pool/top-up");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&sent[0].1).unwrap(),
+            json!({ "amount_micros": 2_333_333 })
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a == "HQ: you topped the pool up by $2.33 for today"),
+            "{audit:?}"
+        );
     }
 
     #[tokio::test]

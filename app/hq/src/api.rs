@@ -98,6 +98,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/office/reset", post(office_reset))
         .route("/v1/office/proposals/{id}/veto", post(office_veto))
         .route("/v1/office/downtime", post(office_downtime))
+        // The owner tops the money pool up for one day (ADR 0113 rule 6).
+        .route("/v1/pool/top-up", post(pool_top_up))
         // A member's notebook (ADR 0118): the owner reads it, and writes, edits and deletes
         // notes in it (the node maps its DELETE to the last route).
         .route(
@@ -707,6 +709,22 @@ async fn office_downtime(
     let hq = state.hq.clone();
     blocking(move || hq.set_downtime_paid_cents(req.cents)).await?;
     Ok(Json(json!({ "downtime_paid_cents_per_day": req.cents })))
+}
+
+#[derive(Deserialize)]
+struct PoolTopUp {
+    amount_micros: i64,
+}
+
+/// The owner adds to today's pool, and only today's (ADR 0113 rule 6): above nothing, and at
+/// most three pool days a day in all.
+async fn pool_top_up(
+    Extract(state): Extract<State>,
+    Json(req): Json<PoolTopUp>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let total = blocking(move || hq.top_up_pool(req.amount_micros)).await?;
+    Ok(Json(json!({ "topped_up_today": total })))
 }
 
 #[derive(Deserialize)]
@@ -2880,6 +2898,37 @@ mod tests {
         let (status, said) = send("/v1/office/undo".to_owned(), "{}".to_owned(), Some(TOKEN)).await;
         assert_eq!(status, StatusCode::OK);
         assert!(said["undone"].as_str().unwrap().contains("reset"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn only_the_node_tops_the_pool_up_and_the_limit_is_told() {
+        let st = state(false);
+        let app = app(st.clone());
+        let send = |body: serde_json::Value, signed: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(call("POST", "/v1/pool/top-up", signed, &body.to_string()))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let ask = json!({ "amount_micros": 1_000_000 });
+        let (status, _) = send(ask.clone(), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "no token");
+        let (status, _) = send(ask.clone(), Some("wrong")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "the wrong token");
+        assert_eq!(st.hq.snapshot().unwrap()["pool"]["topped_up"], 0);
+        let (status, said) = send(ask, Some(TOKEN)).await;
+        assert_eq!(
+            (status, said["topped_up_today"].clone()),
+            (StatusCode::OK, json!(1_000_000))
+        );
+        let (status, said) = send(json!({ "amount_micros": 99_000_000 }), Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(said.to_string().contains("three"), "{said}");
+        assert_eq!(st.hq.snapshot().unwrap()["pool"]["topped_up"], 1_000_000);
     }
 
     #[tokio::test]

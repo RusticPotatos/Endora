@@ -15,6 +15,12 @@ fn allowance_key(member: MemberId, day: i64) -> String {
     format!("allowance:{}:{day}", member.0)
 }
 
+/// What the owner topped the pool up by for one day. The day is in the key, so it ends with
+/// the day, as an allowance does.
+fn topup_key(day: i64) -> String {
+    format!("pool_topup:{day}")
+}
+
 /// That a member has already asked the owner for one day.
 fn asked_key(member: MemberId, day: i64) -> String {
     format!("out_for_day_asked:{}:{day}", member.0)
@@ -28,6 +34,46 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .setting(&allowance_key(member, day))?
             .and_then(|said| said.parse().ok())
             .unwrap_or(0))
+    }
+
+    /// What the owner has added to the pool for the owner's day `day`, if anything.
+    pub(super) fn topup_of(&self, day: i64) -> Done<Micros> {
+        Ok(self
+            .store
+            .setting(&topup_key(day))?
+            .and_then(|said| said.parse().ok())
+            .unwrap_or(0))
+    }
+
+    /// Today's pool: the base day and the owner's top-up for today (ADR 0113 rule 6). Every
+    /// member's share is its claim's part of this, so a top-up grows each share, and the
+    /// borrowing cap with it, in proportion.
+    pub(super) fn pool_day_today(&self) -> Done<Micros> {
+        Ok(money::pool_a_day(self.settings.pool_per_month) + self.topup_of(self.today())?)
+    }
+
+    /// The owner adds `amount` to today's pool, and only today's: the setting is keyed by the
+    /// owner's day. Two top-ups in a day add up, and together they are at most three times the
+    /// base pool day.
+    ///
+    /// # Errors
+    /// [`Refusal::TopUpOutOfRange`]; a store failure.
+    pub fn top_up_pool(&self, amount: Micros) -> Done<Micros> {
+        let _held = self.held();
+        let day = self.today();
+        let so_far = self.topup_of(day)?;
+        let room = (money::most_top_up(self.settings.pool_per_month) - so_far).max(0);
+        if amount <= 0 || amount > room {
+            return Err(EngineError::Refused(Refusal::TopUpOutOfRange { room }));
+        }
+        let total = so_far + amount;
+        self.store
+            .set_setting(&topup_key(day), &total.to_string())?;
+        self.emit(
+            EventKind::PoolToppedUp,
+            json!({ "amount": amount, "total": total, "by": "owner", "day": day }),
+        )?;
+        Ok(total)
     }
 
     /// A paid member was turned away at twice its share with the pool's day not spent: one
