@@ -19,7 +19,7 @@ use serde_json::json;
 use endora_team::application::engine::{Author, EngineError, Fired};
 use endora_team::application::ports::{Clock, NewRoutine, NewTask};
 use endora_team::domain::{
-    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, Role, RoutineId, TaskId,
+    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, Role, RoutineId, RunId, TaskId,
 };
 use endora_team::infrastructure::demo;
 
@@ -65,6 +65,9 @@ pub fn app(state: State) -> Router {
     let signed = Router::new()
         .route("/v1/snapshot", get(snapshot))
         .route("/v1/events", get(events))
+        // Replay: a turn, or a task's turns, read back in full for the owner's screen.
+        .route("/v1/runs/{id}/replay", get(run_replay))
+        .route("/v1/tasks/{id}/replay", get(task_replay))
         .route("/v1/goals", post(set_goal))
         .route("/v1/tasks", post(add_task))
         .route("/v1/desk/{id}", post(decide))
@@ -226,6 +229,28 @@ async fn events(
         .map(|e| json!({ "id": e.id, "at": e.at, "kind": e.kind, "data": e.data }))
         .collect();
     Ok(Json(json!({ "events": rows })))
+}
+
+/// A turn read back: everything that happened in it, in order. Confidential excerpts are in
+/// it: this route is the owner's, through the node, as every signed one is.
+async fn run_replay(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let replay = blocking(move || hq.replay_run(RunId(id))).await?;
+    Ok(Json(json!({ "replay": replay.shown() })))
+}
+
+/// A task's turns read back, oldest first.
+async fn task_replay(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let runs = blocking(move || hq.replay_task(TaskId(id))).await?;
+    let shown: Vec<serde_json::Value> = runs.iter().map(|r| r.shown()).collect();
+    Ok(Json(json!({ "task": id, "runs": shown })))
 }
 
 #[derive(Deserialize)]
@@ -1181,6 +1206,77 @@ mod tests {
         st.hq.tick().unwrap();
         let late = app.oneshot(tell(Some(TOKEN), &turn.token)).await.unwrap();
         assert_eq!(late.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_owner_replays_a_turn_and_a_tasks_turns_through_the_node_only() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let app = app(st.clone());
+        let receipt = json!({ "token": turn.token, "tool": "container_logs",
+                              "args": "container: sonarr", "excerpt": "<b>500</b>",
+                              "ok": true, "confidential": true })
+        .to_string();
+        app.clone()
+            .oneshot(call("POST", "/v1/team/receipt", Some(TOKEN), &receipt))
+            .await
+            .unwrap();
+        let run = format!("/v1/runs/{}/replay", turn.run.0);
+        for token in [None, Some("wrong"), Some(turn.token.as_str()), Some(RUNNER)] {
+            let res = app
+                .clone()
+                .oneshot(call("GET", &run, token, ""))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{token:?}");
+        }
+        let res = app
+            .clone()
+            .oneshot(call("GET", &run, Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let replay = json_of(res).await["replay"].clone();
+        assert_eq!(replay["run"], turn.run.0);
+        let call_made = replay["moments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["kind"] == "call")
+            .cloned()
+            .expect("the call it made");
+        assert_eq!(
+            (
+                call_made["tool"].clone(),
+                call_made["excerpt"].clone(),
+                call_made["confidential"].clone()
+            ),
+            (json!("container_logs"), json!("<b>500</b>"), json!(true)),
+            "the owner's screen is given the Confidential excerpt, and escapes it"
+        );
+        let task = turn.task.expect("a turn on a task").0;
+        let all = json_of(
+            app.clone()
+                .oneshot(call(
+                    "GET",
+                    &format!("/v1/tasks/{task}/replay"),
+                    Some(TOKEN),
+                    "",
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(all["runs"][0]["run"], turn.run.0);
+        for missing in ["/v1/runs/999999/replay", "/v1/tasks/999999/replay"] {
+            let res = app
+                .clone()
+                .oneshot(call("GET", missing, Some(TOKEN), ""))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{missing}");
+        }
     }
 
     #[tokio::test]

@@ -92,6 +92,18 @@ pub(super) async fn hq_events(State(state): State<AppState>, Query(q): Query<HqA
     ask(&state, format!("/v1/events?after={}", q.after), None).await
 }
 
+/// Replay: one turn read back in full, for the owner's screen. Read only, so nothing is
+/// recorded; a checking credential never reaches it (`crate::auth`), as it carries what the
+/// member was told and Confidential excerpts.
+pub(super) async fn hq_run_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    ask(&state, format!("/v1/runs/{id}/replay"), None).await
+}
+
+/// Replay: a task's turns read back, oldest first.
+pub(super) async fn hq_task_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    ask(&state, format!("/v1/tasks/{id}/replay"), None).await
+}
+
 #[derive(Deserialize)]
 pub(super) struct HqGoal {
     title: String,
@@ -486,6 +498,33 @@ pub(super) async fn hq_reports_to(
 mod tests {
     use super::super::relay::tests::{fake, node};
     use super::*;
+
+    #[tokio::test]
+    async fn a_replay_is_read_from_hq_as_it_answers_and_records_nothing() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            (
+                200,
+                "application/json",
+                json!({ "asked": path }).to_string(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let run = hq_run_replay(State(state.clone()), Path(1599))
+            .await
+            .unwrap();
+        let task = hq_task_replay(State(state.clone()), Path(7)).await.unwrap();
+        assert_eq!(run.0, json!({ "asked": "/v1/runs/1599/replay" }));
+        assert_eq!(task.0, json!({ "asked": "/v1/tasks/7/replay" }));
+        let paths: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(paths, ["/v1/runs/1599/replay", "/v1/tasks/7/replay"]);
+        let audit = endora_application::AuditLog::recent(state.audit.as_ref(), 10).unwrap();
+        assert!(audit.is_empty(), "reading is not an action");
+    }
 
     #[tokio::test]
     async fn the_owners_reply_and_a_goals_notes_pass_through_signed_and_are_recorded() {
