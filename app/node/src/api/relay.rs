@@ -18,8 +18,9 @@ use super::*;
 use axum::body::{Body, Bytes};
 use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
-    Call, StreamedUsage, Used, affordable_output, asks_to_cache, betas_passed, cost, counted,
-    may_use, most_a_turn, price_of, prompt_cost, send, send_local, unmetered,
+    Call, StreamedUsage, Used, affordable_output, asks_to_cache, betas_for_claude_code,
+    betas_passed, cost, counted, for_claude_code, may_use, most_a_turn, price_of, prompt_cost,
+    send, send_local, unmetered,
 };
 
 /// The most of a whole reply the relay holds at once.
@@ -92,6 +93,9 @@ pub(super) struct Turn {
     /// the check point for Confidential results (ADR 0105, 0108), and the only turns the
     /// Anthropic relay passes on. A turn HQ says nothing of counts as local.
     pub(super) cloud: bool,
+    /// The member's brain, as HQ names it (`claude-haiku-5-5`, or `local`): a Claude Code
+    /// turn's calls must name it.
+    pub(super) brain: String,
     /// Whether Claude Code runs the turn (ADR 0117): its calls pass in Claude Code's own
     /// shape, held to the brain, and its sandbox may report its own tools. An older HQ says
     /// nothing: Endora's worker.
@@ -236,6 +240,7 @@ pub(super) async fn turn_of(
             task: v["task"].as_i64(),
             token: presented,
             cloud: v["cloud"].as_bool().unwrap_or(false),
+            brain: v["brain"].as_str().unwrap_or("local").to_owned(),
             claude_code: v["runtime"] == "claude-code",
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
@@ -351,6 +356,25 @@ fn stays_home() -> Response {
     )
 }
 
+/// Whether `call` may pass on for `turn`, made fit to: Endora's worker's calls by the strict
+/// metering rule ([`unmetered`]); a Claude Code turn's in Claude Code's own shape, held to the
+/// member's brain and the fence ([`for_claude_code`], ADR 0117).
+fn passable(turn: &Turn, call: &mut serde_json::Value) -> Result<(), String> {
+    if turn.claude_code {
+        return for_claude_code(call, &turn.brain);
+    }
+    unmetered(call).map_or(Ok(()), Err)
+}
+
+/// The betas passed on for `turn`: Endora's worker's known few, or Claude Code's own but
+/// those that cost or reach out (ADR 0117).
+fn betas_for(turn: &Turn, header: Option<&str>) -> Option<String> {
+    if turn.claude_code {
+        return betas_for_claude_code(header);
+    }
+    betas_passed(header)
+}
+
 /// `POST /team-relay/v1/messages`: a model call of a team member's turn.
 pub(super) async fn messages(
     State(state): State<AppState>,
@@ -381,7 +405,7 @@ pub(super) async fn messages(
             "the body is not JSON",
         );
     };
-    if let Some(why) = unmetered(&call) {
+    if let Err(why) = passable(&turn, &mut call) {
         return refuse(StatusCode::BAD_REQUEST, "invalid_request_error", &why);
     }
     let model = call["model"].as_str().unwrap_or("").to_owned();
@@ -415,7 +439,7 @@ pub(super) async fn messages(
         );
     };
     let version = header(&headers, "anthropic-version");
-    let beta = betas_passed(header(&headers, "anthropic-beta").as_deref());
+    let beta = betas_for(&turn, header(&headers, "anthropic-beta").as_deref());
     let upstream = state.relay_upstream.clone();
     // The prompt is paid for whatever the reply, so its cost comes off first, and the reply
     // may spend only what is left after it.
@@ -581,12 +605,12 @@ pub(super) async fn count_tokens(
             "HQ is not set up on this node",
         );
     };
-    match turn_of(hq, token_of(&headers), refuse).await {
+    let turn = match turn_of(hq, token_of(&headers), refuse).await {
         Ok(turn) if !turn.cloud => return stays_home(),
-        Ok(_) => {}
+        Ok(turn) => turn,
         Err(refused) => return refused,
-    }
-    let Ok(asked) = serde_json::from_slice::<serde_json::Value>(&body) else {
+    };
+    let Ok(mut asked) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return refuse(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
@@ -594,9 +618,11 @@ pub(super) async fn count_tokens(
         );
     };
     // Free to count, but what reaches past the fence is refused here too.
-    if let Some(why) = unmetered(&asked) {
+    if let Err(why) = passable(&turn, &mut asked) {
         return refuse(StatusCode::BAD_REQUEST, "invalid_request_error", &why);
     }
+    // Counted as it will be sent: a Claude Code call's hours made five minutes.
+    let body = asked.to_string().into_bytes();
     let Some(key) = anthropic_key(state.config.as_ref()) else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -605,7 +631,7 @@ pub(super) async fn count_tokens(
         );
     };
     let version = header(&headers, "anthropic-version");
-    let beta = betas_passed(header(&headers, "anthropic-beta").as_deref());
+    let beta = betas_for(&turn, header(&headers, "anthropic-beta").as_deref());
     let upstream = state.relay_upstream.clone();
     let done = tokio::task::spawn_blocking(move || {
         let reply = send(
@@ -1474,6 +1500,120 @@ pub(super) mod tests {
             let sent = messages_sent(&to_anthropic);
             assert_eq!(sent.last().unwrap()["max_tokens"], cap, "{why}");
         }
+    }
+
+    /// HQ, knowing one Claude Code turn (ADR 0117): token `cc`, Rae's, a developer on Haiku;
+    /// and one of Endora's worker's (`good`), the same but for its runtime.
+    fn hq_claude_code(left: i64) -> (String, Seen) {
+        fake(Arc::new(move |path, body| match path {
+            "/v1/team/turn" if body.contains("\"cc\"") || body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Rae", "role": "developer", "left": left,
+                        "cloud": true, "brain": "claude-haiku-5-5",
+                        "runtime": if body.contains("\"cc\"") { "claude-code" } else { "worker" } })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            _ => (200, "application/json", "{}".to_owned()),
+        }))
+    }
+
+    #[tokio::test]
+    async fn a_claude_code_turns_call_passes_in_its_own_shape_held_to_the_brain_and_the_cap() {
+        let (hq_url, to_hq) = hq_claude_code(20_000);
+        let (upstream, to_anthropic) = anthropic();
+        let state = node(&hq_url, &upstream);
+        // As Claude Code 2.1.296 sends a round (recorded, cut down): Bearer, its betas, its
+        // own fields, an hour's cache mark, and `max_tokens` far past what the turn can pay.
+        let round = json!({
+            "model": "claude-haiku-5-5", "max_tokens": 128_000, "stream": true,
+            "system": [
+                { "type": "text", "text": "You are Claude Code." },
+                { "type": "text", "text": "Endora's rules.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }],
+            "tools": [{ "name": "Bash", "description": "Run a command", "input_schema": { "type": "object" } },
+                      { "name": "mcp__endora__post", "description": "Post", "input_schema": { "type": "object" } }],
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "Your task: tidy a role", "cache_control": { "type": "ephemeral" } }] }],
+            "metadata": { "user_id": "{\"session_id\":\"s\"}" },
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": "low" },
+        });
+        let send = |token: &str, body: &serde_json::Value| {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/team-relay/v1/messages?beta=true")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("anthropic-version", "2023-06-01")
+                .header(
+                    "anthropic-beta",
+                    "interleaved-thinking-2025-05-14,claude-code-20250219,effort-2025-11-24,fast-mode-2026-02-01",
+                )
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        let res = super::super::team_relay(state.clone())
+            .oneshot(send("cc", &round))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let _ = res.into_body().collect().await.unwrap();
+        let sent = messages_sent(&to_anthropic);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0]["system"][1]["cache_control"],
+            json!({ "type": "ephemeral", "ttl": "5m" }),
+            "an hour's cache is asked for five minutes"
+        );
+        assert_eq!(
+            sent[0]["metadata"], round["metadata"],
+            "its own fields as sent"
+        );
+        assert_eq!(sent[0]["thinking"], round["thinking"]);
+        // 2¢ left, less 1k tokens written to the cache at 12.5¢ a million, at 50¢ a million
+        // out: the reply is capped far below Claude Code's 128k.
+        assert_eq!(sent[0]["max_tokens"], 39_750);
+        let betas: Vec<String> = to_anthropic
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(_, h, _)| {
+                h.iter()
+                    .find(|(k, _)| k == "anthropic-beta")
+                    .map(|(_, v)| v.clone())
+            })
+            .collect();
+        assert!(!betas.is_empty());
+        for beta in &betas {
+            assert_eq!(
+                beta, "interleaved-thinking-2025-05-14,claude-code-20250219,effort-2025-11-24",
+                "Claude Code's betas pass, fast mode does not"
+            );
+        }
+        assert!(!charged(&to_hq).is_empty(), "charged when the stream ends");
+        // Another model than the member's brain is refused, and so is a server-side tool.
+        for change in [
+            json!({ "model": "claude-sonnet-5-5" }),
+            json!({ "tools": [{ "type": "web_search_20260209", "name": "web_search" }] }),
+            json!({ "mcp_servers": [] }),
+        ] {
+            let mut odd = round.clone();
+            for (k, v) in change.as_object().unwrap() {
+                odd[k] = v.clone();
+            }
+            let res = super::super::team_relay(state.clone())
+                .oneshot(send("cc", &odd))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{change}");
+        }
+        // Endora's worker's turn is held to its strict rule: the same call is refused.
+        let res = super::super::team_relay(state)
+            .oneshot(send("good", &round))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

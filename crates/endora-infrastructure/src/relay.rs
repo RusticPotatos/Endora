@@ -595,10 +595,291 @@ pub fn counted(call: &Value) -> Value {
     Value::Object(asked)
 }
 
+/// The fields a Claude Code turn's call (ADR 0117) may not carry, though its other fields pass
+/// as Claude Code sent them: each is billed in a way the reply's usage does not report, or
+/// reaches past the fence (fast mode, fallbacks to another model, MCP servers run by
+/// Anthropic, a container, a service tier).
+const NOT_FOR_CLAUDE_CODE: [&str; 5] = [
+    "speed",
+    "fallbacks",
+    "mcp_servers",
+    "service_tier",
+    "container",
+];
+
+/// A Claude Code turn's call (ADR 0117), made fit to pass on, or why it may not. Claude Code
+/// sends a shape of its own (a `system` list, its tools, `metadata`, adaptive `thinking`,
+/// cache marks, fields of its own betas), and it passes as sent, except that: the model must be
+/// the member's `brain`; nothing in [`NOT_FOR_CLAUDE_CODE`] and no tool run on Anthropic's side
+/// (web search and fetch, code execution, MCP) may be in it; no content may be fetched from a
+/// URL or a file; a cache mark's hour is rewritten to the five minutes the relay meters, and
+/// any other mark refused; and the effort is one of the five. `max_tokens` is the caller's to
+/// cap, as for any call.
+///
+/// # Errors
+/// Why the call is refused, said to Claude Code.
+pub fn for_claude_code(call: &mut Value, brain: &str) -> Result<(), String> {
+    let Some(fields) = call.as_object_mut() else {
+        return Err("the call is not a JSON object".to_owned());
+    };
+    let model = fields.get("model").and_then(Value::as_str).unwrap_or("");
+    if model != brain {
+        return Err(format!(
+            "this member thinks with {brain}, not {model:?}: the relay passes on only that"
+        ));
+    }
+    if let Some(field) = NOT_FOR_CLAUDE_CODE
+        .iter()
+        .find(|f| fields.contains_key(**f))
+    {
+        return Err(format!("the relay does not pass on `{field}`"));
+    }
+    if let Some(tools) = fields.get("tools") {
+        let Some(tools) = tools.as_array() else {
+            return Err("`tools` is not a list".to_owned());
+        };
+        let server_side = tools.iter().find(|t| {
+            t.get("type")
+                .is_some_and(|kind| kind.as_str() != Some("custom"))
+        });
+        if let Some(tool) = server_side {
+            return Err(format!(
+                "the relay passes on only Claude Code's own tools, not `{}`",
+                tool["type"].as_str().unwrap_or("?")
+            ));
+        }
+    }
+    for part in ["system", "messages"] {
+        if let Some(kind) = fields.get(part).and_then(fetched_source) {
+            return Err(format!(
+                "content from a `{kind}` source is not passed on: send it inline"
+            ));
+        }
+    }
+    if let Some(mark) = fields.get_mut("cache_control") {
+        five_minutes(mark);
+    }
+    for mark in cache_marks_mut(fields) {
+        five_minutes(mark);
+    }
+    if let Some(why) = fields.get("cache_control").and_then(uncached) {
+        return Err(why);
+    }
+    if let Some(why) = cache_marks(fields).into_iter().find_map(uncached) {
+        return Err(why);
+    }
+    match fields.get("output_config").and_then(unknown_effort) {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
+/// A cache mark asking for an hour, asked for five minutes instead: the relay meters only
+/// that, and the work of one turn is done within it.
+fn five_minutes(mark: &mut Value) {
+    if mark.get("ttl").and_then(Value::as_str) == Some("1h") {
+        mark["ttl"] = Value::from("5m");
+    }
+}
+
+/// The `cache_control` marks on a call's blocks, as [`cache_marks`] finds them, to change.
+fn cache_marks_mut(call: &mut serde_json::Map<String, Value>) -> Vec<&mut Value> {
+    let mut marks: Vec<&mut Value> = Vec::new();
+    for (part, value) in call.iter_mut() {
+        let Some(items) = value.as_array_mut() else {
+            continue;
+        };
+        match part.as_str() {
+            "system" | "tools" => {
+                marks.extend(items.iter_mut().filter_map(|b| b.get_mut("cache_control")));
+            }
+            "messages" => {
+                for message in items {
+                    let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut)
+                    else {
+                        continue;
+                    };
+                    // A block's own mark, and a tool result's blocks' marks.
+                    for (key, value) in blocks.iter_mut().filter_map(Value::as_object_mut).flatten()
+                    {
+                        if key == "cache_control" {
+                            marks.push(value);
+                            continue;
+                        }
+                        if let ("content", Some(inner)) = (key.as_str(), value.as_array_mut()) {
+                            marks.extend(
+                                inner.iter_mut().filter_map(|b| b.get_mut("cache_control")),
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    marks
+}
+
+/// The betas a Claude Code turn may not name (ADR 0117), by their start: each changes what a
+/// call costs beyond its usage, or reaches past the fence. Claude Code's other betas pass as
+/// it sent them, since its request shape depends on them.
+const BETAS_NOT_FOR_CLAUDE_CODE: [&str; 8] = [
+    "fast-mode",
+    "server-side-fallback",
+    "mcp-client",
+    "code-execution",
+    "web-fetch",
+    "web-search",
+    "files-api",
+    "context-1m",
+];
+
+/// A Claude Code turn's `anthropic-beta` header without the [`BETAS_NOT_FOR_CLAUDE_CODE`],
+/// or `None` when nothing is left.
+#[must_use]
+pub fn betas_for_claude_code(header: Option<&str>) -> Option<String> {
+    let kept: Vec<&str> = header?
+        .split(',')
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .filter(|b| !BETAS_NOT_FOR_CLAUDE_CODE.iter().any(|no| b.starts_with(no)))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    Some(kept.join(","))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A call shaped as Claude Code 2.1.296 sent one, headless (`claude -p`), recorded against
+    /// a fake relay with its contents cut down: a `system` list with cache marks, its own tools
+    /// and the turn's MCP tools, `metadata`, adaptive thinking, an effort, streamed, with
+    /// `max_tokens` far above what a turn can pay for.
+    fn claude_code_call() -> Value {
+        json!({
+            "model": "claude-haiku-5-5",
+            "max_tokens": 128_000,
+            "stream": true,
+            "system": [
+                { "type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.296;" },
+                { "type": "text", "text": "You are Claude Code.", "cache_control": { "type": "ephemeral" } },
+                { "type": "text", "text": "Endora's rules.", "cache_control": { "type": "ephemeral", "ttl": "1h" } },
+            ],
+            "tools": [
+                { "name": "Bash", "description": "Run a command", "input_schema": { "type": "object" } },
+                { "name": "Read", "description": "Read a file", "input_schema": { "type": "object" } },
+                { "name": "mcp__endora__post", "description": "Post in a thread", "input_schema": { "type": "object" },
+                  "cache_control": { "type": "ephemeral", "ttl": "1h" } },
+            ],
+            "messages": [
+                { "role": "user", "content": [
+                    { "type": "text", "text": "<system-reminder>context</system-reminder>" },
+                    { "type": "text", "text": "Your task: tidy a role (#3, doing, normal)",
+                      "cache_control": { "type": "ephemeral" } },
+                ] },
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_1", "name": "Bash", "input": { "command": "git status" } },
+                ] },
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_1",
+                      "content": [{ "type": "text", "text": "clean", "cache_control": { "type": "ephemeral", "ttl": "1h" } }] },
+                ] },
+            ],
+            "metadata": { "user_id": "{\"device_id\":\"0000\",\"account_uuid\":\"\",\"session_id\":\"s\"}" },
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": "medium" },
+        })
+    }
+
+    #[test]
+    fn a_claude_code_call_passes_as_sent_with_its_hours_cached_for_five_minutes() {
+        let sent = claude_code_call();
+        assert!(
+            unmetered(&sent).is_some(),
+            "Endora's worker's strict rule would refuse it (an hour's cache)"
+        );
+        let mut call = sent.clone();
+        for_claude_code(&mut call, "claude-haiku-5-5").unwrap();
+        assert_eq!(
+            call["system"][2]["cache_control"],
+            json!({ "type": "ephemeral", "ttl": "5m" })
+        );
+        assert_eq!(call["tools"][2]["cache_control"]["ttl"], "5m");
+        assert_eq!(
+            call["messages"][2]["content"][0]["content"][0]["cache_control"]["ttl"],
+            "5m"
+        );
+        // Everything else is as Claude Code sent it, and now meets the metering rule.
+        let mut back = call.clone();
+        back["system"][2]["cache_control"]["ttl"] = json!("1h");
+        back["tools"][2]["cache_control"]["ttl"] = json!("1h");
+        back["messages"][2]["content"][0]["content"][0]["cache_control"]["ttl"] = json!("1h");
+        assert_eq!(back, sent);
+        assert_eq!(unmetered(&call), None);
+        assert!(asks_to_cache(&call));
+        // A field of a beta of Claude Code's own passes too.
+        let mut managed = sent.clone();
+        managed["context_management"] = json!({ "edits": [] });
+        assert!(for_claude_code(&mut managed, "claude-haiku-5-5").is_ok());
+    }
+
+    #[test]
+    fn a_claude_code_call_is_held_to_the_brain_the_fence_and_what_the_reply_meters() {
+        let refused = |change: Value| {
+            let mut call = claude_code_call();
+            for (k, v) in change.as_object().unwrap() {
+                call[k] = v.clone();
+            }
+            for_claude_code(&mut call, "claude-haiku-5-5")
+        };
+        for change in [
+            json!({ "model": "claude-sonnet-5-5" }),
+            json!({ "model": "claude-haiku-5-5-20261001" }),
+            json!({ "speed": "fast" }),
+            json!({ "fallbacks": "default" }),
+            json!({ "service_tier": "auto" }),
+            json!({ "container": "c" }),
+            json!({ "mcp_servers": [{ "type": "url", "url": "https://example.com/mcp", "name": "x" }] }),
+            json!({ "tools": [{ "type": "web_search_20260209", "name": "web_search" }] }),
+            json!({ "tools": [{ "type": "web_fetch_20260209", "name": "web_fetch" }] }),
+            json!({ "tools": [{ "type": "code_execution_20250825", "name": "code_execution" }] }),
+            json!({ "messages": [{ "role": "user", "content": [{ "type": "image", "source": { "type": "url", "url": "https://example.com/a.png" } }] }] }),
+            json!({ "cache_control": { "type": "ephemeral", "ttl": "1d" } }),
+            json!({ "system": [{ "type": "text", "text": "x", "cache_control": { "type": "ephemeral", "scope": "global" } }] }),
+            json!({ "output_config": { "effort": "extreme" } }),
+        ] {
+            assert!(refused(change.clone()).is_err(), "{change}");
+        }
+        let said = refused(json!({ "model": "claude-sonnet-5-5" })).unwrap_err();
+        assert!(said.contains("claude-haiku-5-5"), "{said}");
+        assert!(for_claude_code(&mut json!([]), "claude-haiku-5-5").is_err());
+    }
+
+    #[test]
+    fn a_claude_code_turns_betas_pass_but_those_that_cost_or_reach_out() {
+        assert_eq!(
+            betas_for_claude_code(Some(
+                "interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,claude-code-20250219,effort-2025-11-24"
+            )),
+            Some(
+                "interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,claude-code-20250219,effort-2025-11-24"
+                    .to_owned()
+            ),
+            "Claude Code 2.1.296's own, as recorded"
+        );
+        assert_eq!(
+            betas_for_claude_code(Some(
+                "fast-mode-2026-02-01, claude-code-20250219,mcp-client-2025-11-20,context-1m-2025-08-07,web-fetch-2025-09-10"
+            )),
+            Some("claude-code-20250219".to_owned())
+        );
+        assert_eq!(betas_for_claude_code(Some("files-api-2025-04-14")), None);
+        assert_eq!(betas_for_claude_code(None), None);
+    }
 
     #[test]
     fn a_call_costs_what_anthropic_charges_and_an_unpriced_model_is_not_relayed() {
