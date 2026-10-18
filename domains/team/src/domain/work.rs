@@ -565,6 +565,12 @@ pub enum Refusal {
     CeoToLeads,
     /// The task is in no lead's area: there is nobody to direct.
     NoAreaLead,
+    /// A strategy change that gives no part.
+    NotAStrategy,
+    /// An area report that says nothing.
+    EmptyReport,
+    /// Only a lead reports on its area, in its report's own turn.
+    NotAReport,
 }
 
 impl fmt::Display for Refusal {
@@ -806,6 +812,15 @@ impl fmt::Display for Refusal {
             ),
             Self::NoAreaLead => f.write_str(
                 "that task is in no lead's area: there is no lead at work to direct",
+            ),
+            Self::NotAStrategy => f.write_str(
+                "a strategy change gives at least one of purpose, success, measures, bets or not_now",
+            ),
+            Self::EmptyReport => f.write_str(
+                "a report says at least one of moved, stuck, need or proposals",
+            ),
+            Self::NotAReport => f.write_str(
+                "report_area is a lead's, in the turn of its own \"State of my area\" task",
             ),
         }
     }

@@ -316,6 +316,18 @@ pub fn tools(role: Role) -> Value {
             list.push(hand_to_tool());
             list.push(request_hire_tool());
             list.push(request_staff_tool());
+            let report_part = |what: &str| json!({ "type": "string", "maxLength": crate::domain::areas::REPORT_PART_MOST, "description": what });
+            list.push(tool(
+                "report_area",
+                "Report on your area to the CEO, in your \"State of my area\" turn: four short parts, any of them \"nothing\". It is kept as your area's report, which the CEO's daily review reads, and closes the report's task.",
+                json!({
+                    "moved": report_part("what moved, with task numbers"),
+                    "stuck": report_part("what is stuck, and on what"),
+                    "need": report_part("what you need, and from whom"),
+                    "proposals": report_part("what you propose (make each with propose_project)"),
+                }),
+                &["moved", "stuck", "need", "proposals"],
+            ));
         }
     }
     if let Some(list) = all.as_array_mut() {
@@ -405,6 +417,21 @@ fn ceos_tools() -> Value {
             "evidence": ids("What it rests on: at least one."),
         }),
         &["task", "direction", "evidence"],
+    ));
+    let strategy_part = |what: &str| json!({ "type": "string", "maxLength": crate::domain::areas::STRATEGY_PART_MOST, "description": what });
+    list.push(tool(
+        "set_strategy",
+        "Write a goal's strategy, which you own: give only the parts you change. purpose is the goal of the goal; success is what success looks like; measures are the named numbers you steer by, one a line, from those HQ computes (unplanned outages over 10 min, median alarm to closed, repeat alarms within 24 h, median branch submitted to push approved, branches passing the tester first time); bets are the active projects and why; not_now is what you chose not to do. On evidence from HQ's record.",
+        json!({
+            "goal": { "type": "integer", "description": "the goal's number" },
+            "purpose": strategy_part("the goal of the goal"),
+            "success": strategy_part("what success looks like"),
+            "measures": strategy_part("the measures, one a line"),
+            "bets": strategy_part("the current bets: the active projects, and why"),
+            "not_now": strategy_part("what we chose not to do now"),
+            "evidence": ids("What it rests on: at least one."),
+        }),
+        &["goal", "evidence"],
     ));
     list.push(tool(
         "decide_project",
@@ -692,6 +719,44 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!("Project {} is {}.", project.0, now.name()))
+        }
+        "set_strategy" => {
+            let goal = args["goal"]
+                .as_i64()
+                .map(GoalId)
+                .ok_or_else(|| "which goal? Give its number as `goal`".to_owned())?;
+            let part = |key: &str| args[key].as_str().map(str::to_owned);
+            let edit = crate::domain::areas::StrategyEdit {
+                purpose: part("purpose"),
+                success: part("success"),
+                measures: part("measures"),
+                bets: part("bets"),
+                not_now: part("not_now"),
+            };
+            engine
+                .set_strategy_in(run.id, goal, &edit, &evidence_flat(args)?)
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "Goal {}'s strategy is written; the owner sees it on the goal's card.",
+                goal.0
+            ))
+        }
+        "report_area" => {
+            let part = |key: &str| args[key].as_str().unwrap_or("");
+            let id = engine
+                .report_area_in(
+                    run.id,
+                    [
+                        part("moved"),
+                        part("stuck"),
+                        part("need"),
+                        part("proposals"),
+                    ],
+                )
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "Your area report is kept (a{id}) and its task closed: the CEO reads it in the daily review. Your turn may end."
+            ))
         }
         "direct" => {
             let task = task_arg(args)?;

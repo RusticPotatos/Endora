@@ -598,7 +598,9 @@ if (failures.length) {
                 { id: 8, name: "Zed", role: "developer", look: 4, paused: false, furloughed: true, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], reports_to: 6, brain: "claude-haiku-5-5", brains: [] }],
       wing: { goal: "Improve the lab", leads: [6], members: [6, 7], developers: 1, most_developers: 5, most_leads: 1 },
       house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
-      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack" },
+      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack",
+                strategy: { purpose: "</textarea><img src=s onerror=alert(12)> the house runs itself", success: "", measures: "unplanned outages over 10 min",
+                            bets: "", not_now: "", by: "Mara", updated_at: 5 } },
               { id: 3, title: "Improve the lab", status: "active", note: "" }],
       tasks: [{ id: 7, goal: 1, parent: null, title: "<img src=x onerror=alert(1)>", status: "doing", owner: 2, priority: "normal",
                 gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"],
@@ -657,7 +659,12 @@ if (failures.length) {
           alarms: { count: 0, tasks: 0, closed_median_ms: null, open: 0 },
           desk: { approvals: 0, questions: 0, stuck: 0, notices: 0, other: 0, waiting: 0 },
           cache: { input: 0, read: 0, share: null } },
-        teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }] },
+        teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }],
+        // Each area's measures (ADR 0120).
+        areas: [{ lead: 1, name: "Ada", members: [1, 2],
+                  today: { lab: { alarms: 2, outages: 1, closed_median_ms: 960000, repeats: 1 }, branches: null },
+                  week: { lab: { alarms: 5, outages: 2, closed_median_ms: 1200000, repeats: 3 }, branches: null } }] },
+      area_reports: [{ lead: 1, at: 7, moved: "#667 closed", stuck: "<img src=r onerror=alert(13)> gluetun", need: "", proposals: "pin gluetun" }],
       routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
                    on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false, project: 1 },
                  { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
@@ -732,6 +739,15 @@ if (failures.length) {
   if (!office.includes('id="hq-reply-7"') || !office.includes('data-act="hq:reply:7:send"')) fail("hq: the task looked at has no reply box");
   if (!office.includes('id="hq-note-1"') || !office.includes('data-act="hq:note:1:save"')) fail("hq: a goal's notes cannot be written");
   if (office.includes("<img src=z") || !office.includes("&lt;/textarea&gt;&lt;img src=z")) fail("hq: a goal's notes became markup");
+  // Each goal's strategy (ADR 0120): shown, editable by the owner, and its words stay text.
+  if (!office.includes('id="hq-strategy-1-purpose"') || !office.includes('data-act="hq:strategy:1:save"')) fail("hq: a goal's strategy cannot be written");
+  if (office.includes("<img src=s") || !office.includes("&lt;/textarea&gt;&lt;img src=s")) fail("hq: a goal's strategy became markup");
+  if (!office.includes("No strategy yet")) fail("hq: a goal with no strategy does not say so");
+  // Each area's measures and its lead's latest report, the report's words text.
+  for (const said of ["Ada's area", "2 alarms · 1 outages over 10 min · closed in 16 min · 1 repeats within 24 h", "pin gluetun"]) {
+    if (!office.includes(said)) fail(`hq: the scorecard's areas do not say ${said}`);
+  }
+  if (office.includes("<img src=r") || !office.includes("&lt;img src=r")) fail("hq: a lead's report became markup");
   if (office.includes("hq:decide:16:approve") || office.includes('id="hq-answer-16"')) fail("hq: a notice was offered a decision");
   // The wing (ADR 0115): a hire request hires or declines; a push the node can make is approved
   // or declined; one it cannot is only seen, and offers the bundle; the hire form is there.

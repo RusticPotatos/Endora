@@ -24,6 +24,21 @@ Feature: Roles as an enforced RACI
     Then Ada is woken about it
     And Ada's turn is told "Mara, the CEO, directs you: Propose the gluetun change, with its evidence."
 
+  Scenario: Ops spots the pattern and proposes the fix
+    Given the home lab has the containers "deluge, prowlarr, sonarr"
+    And the home lab's work is Ada's project
+    When Endora raises the alarm "deluge, prowlarr exited at 23:43"
+    And Endora raises the alarm "deluge, prowlarr exited at 01:44"
+    And Ada's weekly patterns turn comes
+    Then Ada's turn is told "deluge, prowlarr: 2 alarms"
+    When Ada proposes a project on the alarms that came back
+    Then the project "Fix what keeps exiting" is proposed
+    And Mara has never been woken
+    When Mara's daily review comes
+    Then Mara's turn is told "- #2 Fix what keeps exiting (by Ada"
+    When Mara accepts the project "Fix what keeps exiting" because "the same containers exited twice"
+    Then the project "Fix what keeps exiting" is active
+
   Scenario: A time-bound check waits its time
     When Endora raises the alarm "deluge exited at 23:43"
     And Ada restarts deluge and reads the lab

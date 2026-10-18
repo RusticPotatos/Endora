@@ -419,6 +419,172 @@ fn a_leads_stalled_task_stays_in_its_area_and_never_goes_up_to_the_ceo() {
 }
 
 #[test]
+fn the_ceo_writes_each_goals_strategy_on_evidence_and_the_owner_edits_it() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let o = org(&hq);
+    let review = task_for(&hq, &o, o.ceo, "Daily review", None);
+    let mara = turn(&hq, o.ceo);
+    assert!(
+        mara.told
+            .contains("No strategy yet: write it with set_strategy"),
+        "{}",
+        mara.told
+    );
+    let write = |args: Value| use_tool(&hq, &mara, "set_strategy", &args);
+    assert!(
+        write(json!({ "goal": o.goal.0, "purpose": "The house runs itself." }))
+            .unwrap_err()
+            .contains("needs evidence")
+    );
+    write(
+        json!({ "goal": o.goal.0, "purpose": "The house runs itself.",
+                  "measures": "unplanned outages over 10 min",
+                  "evidence": [format!("task {}", review.0)] }),
+    )
+    .unwrap();
+    let written = hq.strategy_of(o.goal).unwrap();
+    assert_eq!(
+        (written.purpose.as_str(), written.by.as_str()),
+        ("The house runs itself.", "Mara")
+    );
+    // Only the CEO's turn writes it; the owner writes it from the goal card.
+    end(&hq, &clock, &mara);
+    let lead_task = task_for(&hq, &o, o.ops, "Plan", Some(o.upkeep));
+    let ada = turn(&hq, o.ops);
+    assert_eq!(ada.task, Some(lead_task));
+    assert_eq!(
+        use_tool(
+            &hq,
+            &ada,
+            "set_strategy",
+            &json!({ "goal": o.goal.0, "bets": "mine", "evidence": [format!("task {}", lead_task.0)] })
+        ),
+        Err(Refusal::OnlyTheCeo.to_string())
+    );
+    hq.set_strategy(
+        o.goal,
+        &crate::domain::areas::StrategyEdit {
+            not_now: Some("No new containers this month.".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let snap = hq.snapshot().unwrap();
+    let goal = &snap["goals"][0]["strategy"];
+    assert_eq!(goal["purpose"], "The house runs itself.");
+    assert_eq!(goal["not_now"], "No new containers this month.");
+    assert_eq!(goal["by"], "owner");
+}
+
+#[test]
+fn a_leads_daily_report_is_its_areas_report_and_never_work_on_the_board() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let o = org(&hq);
+    let made = hq.seed_area_routines().unwrap();
+    assert_eq!(made.len(), 2);
+    let report = hq
+        .store()
+        .routines()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == made[0])
+        .unwrap();
+    assert_eq!(report.title, "State of my area");
+    assert_eq!(report.assignee, o.ops);
+    assert_eq!(
+        report.next_due_at,
+        OCT_17 + 6 * HOUR_MS,
+        "due at the owner's 18:00 (UTC here)"
+    );
+    hq.alarm("deluge exited at 11:00").unwrap();
+    hq.fire_routine(report.id).unwrap();
+    let task = hq
+        .store()
+        .routines()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == report.id)
+        .and_then(|r| r.last_task)
+        .unwrap();
+    for c in hq.runner().started() {
+        hq.runner().finish(c.run, true);
+    }
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    let ada = hq
+        .runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.task == Some(task))
+        .expect("Ada's report turn");
+    for said in [
+        "Report on your area to the CEO",
+        "Your area's open work (1):",
+        "Alarms in your area in the last 24 hours: 1.",
+        "Your area's measures, the last 7 days: the lab: 1 alarms;",
+    ] {
+        assert!(ada.told.contains(said), "{said}\n---\n{}", ada.told);
+    }
+    use_tool(
+        &hq,
+        &ada,
+        "report_area",
+        &json!({ "moved": "#1 deluge restarted", "stuck": "nothing",
+                 "need": "a gluetun change from the wing", "proposals": "pin gluetun" }),
+    )
+    .unwrap();
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::Done
+    );
+    let snap = hq.snapshot().unwrap();
+    assert!(
+        !snap["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == task.0),
+        "a report is not work on the board"
+    );
+    assert_eq!(snap["scorecard"]["today"]["finished"]["done"], 0);
+    assert_eq!(
+        snap["area_reports"][0]["need"],
+        "a gluetun change from the wing"
+    );
+    let area = &snap["scorecard"]["areas"][0];
+    assert_eq!(
+        (
+            area["name"].as_str(),
+            area["week"]["lab"]["alarms"].as_i64()
+        ),
+        (Some("Ada"), Some(1))
+    );
+    // The CEO's review reads it.
+    end(&hq, &clock, &ada);
+    task_for(&hq, &o, o.ceo, "Daily review", None);
+    let mara = turn(&hq, o.ceo);
+    assert!(
+        mara.told.contains(
+            "- Ada, 17 Oct:\n  Moved: #1 deluge restarted\n  Stuck: nothing\n  Needs: a gluetun change from the wing\n  Proposes: pin gluetun\n"
+        ),
+        "{}",
+        mara.told
+    );
+    // A report is a lead's, in its own report's turn.
+    assert_eq!(
+        use_tool(
+            &hq,
+            &mara,
+            "report_area",
+            &json!({ "moved": "x", "stuck": "", "need": "", "proposals": "" })
+        ),
+        Err(Refusal::NotAReport.to_string())
+    );
+}
+
+#[test]
 fn a_lead_still_acts_on_its_own_members_work() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);

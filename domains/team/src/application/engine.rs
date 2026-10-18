@@ -30,6 +30,7 @@ use crate::domain::{
 use crate::domain::{docs, house};
 
 mod allowance;
+mod areas;
 mod evidence;
 mod notebook;
 mod planning;
@@ -40,6 +41,7 @@ mod runtime;
 mod staffing;
 mod wing;
 
+pub use areas::{DAILY_REVIEW, PATTERNS_ASKS, REPORT_ASKS};
 pub use evidence::Called;
 pub use notebook::note_number;
 pub use planning::PLANNING;
@@ -2150,14 +2152,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(told);
         };
         let task = self.task(task)?;
+        // The CEO's review and planning say what they ask as HQ asks it now, whatever their
+        // routine was made with (ADR 0120).
+        let description = match self.routine_of(task.id)? {
+            Some(_) if member.role == Role::Ceo && self.is_planning(task.id)? => {
+                planning::PLANNING.to_owned()
+            }
+            Some(r) if member.role == Role::Ceo && r.assignee == member.id => {
+                areas::DAILY_REVIEW.to_owned()
+            }
+            _ => task.description.clone(),
+        };
         told.push_str(&format!(
             "Your task: {} (#{}, {}, {})\n{}\n",
             task.title,
             task.id,
             task.status.name(),
             task.priority.name(),
-            task.description
+            description
         ));
+        if member.role == Role::Lead {
+            told.push_str(&self.area_picture(member, run)?);
+        }
         told.push_str(&self.criteria_said(&task));
         if let Some(nudge) = self.nudge_for(member.id, run)? {
             told.push_str(&format!("{nudge}\n"));
@@ -2294,7 +2310,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if member.role == Role::Ceo {
             told.push_str(
                 "Your tools at HQ: my_turn, claim, post, set_status, create_task (to a lead), \
-                 direct, decide_project, propose_goal, ask_owner (a decision for the board), \
+                 direct, set_strategy, decide_project, propose_goal, ask_owner (for the board), \
                  check_back, note_house, rewrite_house, read_doc, hand_to (to a lead), \
                  read_document, note, forget, read_notebook.\n",
             );
@@ -2311,7 +2327,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str(match member.role {
             Role::Reviewer => ", review, read_document, read_doc. ",
             Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, read_document, read_doc. "
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, read_document, read_doc. "
             }
             _ => ", read_document, read_doc. ",
         });
@@ -2395,42 +2411,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(&self.planning_picture()?);
             return Ok(told);
         }
-        told.push_str("Goals:\n");
-        let goals = self.store.goals()?;
-        let open_goals: Vec<_> = goals
-            .iter()
-            .filter(|g| matches!(g.status, GoalStatus::Active | GoalStatus::Proposed))
-            .collect();
-        if open_goals.is_empty() {
-            told.push_str("- none\n");
-        }
-        for goal in open_goals {
-            told.push_str(&format!(
-                "- #{} {} ({})\n",
-                goal.id,
-                goal.title,
-                goal.status.name()
-            ));
-            let notes = self.store.goal_note(goal.id)?;
-            if whole && !notes.trim().is_empty() {
-                told.push_str("  Its notes and lessons:\n");
-                for line in notes.lines().filter(|l| !l.trim().is_empty()) {
-                    told.push_str(&format!("  {}\n", line.trim()));
-                }
-            }
-        }
         let day = |at: Millis| {
             let (d, m) = lessons::day_and_month(money::day_of(at, self.settings.offset_minutes));
             format!("{d} {m}")
         };
-        let waiting = self.proposals_waiting()?;
-        if waiting > 0 {
-            told.push_str(&format!(
-                "Project proposals waiting for your decision: {waiting} (decide_project; your \
-                 weekly planning lists them).\n"
-            ));
-        }
         if let (false, Some(last)) = (whole, last) {
+            told.push_str("Goals:\n");
+            let goals = self.store.goals()?;
+            let open_goals: Vec<_> = goals
+                .iter()
+                .filter(|g| matches!(g.status, GoalStatus::Active | GoalStatus::Proposed))
+                .collect();
+            if open_goals.is_empty() {
+                told.push_str("- none\n");
+            }
+            for goal in open_goals {
+                told.push_str(&format!(
+                    "- #{} {} ({})\n",
+                    goal.id,
+                    goal.title,
+                    goal.status.name()
+                ));
+            }
+            let waiting = self.proposals_waiting()?;
+            if waiting > 0 {
+                told.push_str(&format!(
+                    "Project proposals waiting for your decision: {waiting} (decide_project; \
+                     your daily review lists them).\n"
+                ));
+            }
             let news = self.ceo_news(last, &name_of, &day)?;
             if news.is_empty() {
                 told.push_str(
@@ -2445,55 +2454,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             return Ok(told);
         }
-        let open: Vec<Task> = self
-            .store
-            .tasks()?
-            .into_iter()
-            .filter(|t| !t.status.finished())
-            .collect();
-        told.push_str("Open tasks:\n");
-        if open.is_empty() {
-            told.push_str("- none\n");
-        }
-        for task in open.iter().take(30) {
-            told.push_str(&format!(
-                "- #{} {} ({}, {})\n",
-                task.id,
-                task.title,
-                task.status.name(),
-                name_of(task.owner.or(task.assignee))
-            ));
-        }
-        if open.len() > 30 {
-            told.push_str(&format!("- and {} more\n", open.len() - 30));
-        }
+        // The whole, on its first turn and its daily review (ADR 0120): what it steers by
+        // (each goal's strategy, the leads' reports, each area's measures, the proposals and
+        // the board's word), never the areas' work item by item; it reads that when it
+        // chooses to.
+        told.push_str(&self.strategies_said(last)?);
+        told.push_str(&self.reports_said()?);
+        told.push_str(&self.areas_said(7)?);
+        told.push_str(&self.proposals_said()?);
         let since = self.clock.now() - CEO_LOOKS_BACK_MS;
-        let alarms: Vec<String> = self
-            .store
-            .events_after(0)?
-            .into_iter()
-            .filter(|e| e.at >= since)
-            .filter_map(|e| Some(format!("- {}: {}", day(e.at), alarm_in(&e)?)))
-            .collect();
-        if alarms.is_empty() {
-            told.push_str("Home-lab trouble in the last 7 days: no alarms.\n");
-        } else {
-            told.push_str("Home-lab trouble in the last 7 days (Endora's alarms):\n");
-            for alarm in alarms.iter().rev().take(20).rev() {
-                told.push_str(&format!("{alarm}\n"));
-            }
-        }
         let desk: Vec<DeskItem> = self
             .store
             .desk()?
             .into_iter()
             .filter(|d| d.at >= since)
+            .filter(|d| {
+                !matches!(
+                    d.kind.as_str(),
+                    "notice" | "approval" | "stuck" | "question" | "push" | "rounds"
+                )
+            })
             .collect();
         if desk.is_empty() {
-            told.push_str("The board's desk in the last 7 days: nothing.\n");
+            told.push_str("The board's decisions in the last 7 days: none.\n");
             return Ok(told);
         }
-        told.push_str("The board's desk in the last 7 days, and how the board decided:\n");
+        told.push_str("The board's decisions in the last 7 days:\n");
         for item in desk.iter().rev().take(15).rev() {
             let from = item
                 .member
@@ -2580,7 +2566,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         e.data["title"].as_str().unwrap_or(""),
                         e.data["status"].as_str().unwrap_or("?")
                     ),
-                    _ => alarm_in(&e)?.to_owned(),
+                    // The lab's alarms are the areas' to answer (ADR 0120): the CEO hears of
+                    // its areas through their leads' reports and measures.
+                    "area.reported" => format!(
+                        "{} reported on their area (your review reads it)",
+                        name_of(e.data["lead"].as_i64().map(MemberId))
+                    ),
+                    "goal.strategy" => format!(
+                        "goal #{}'s strategy was written, by {}",
+                        e.data["goal"],
+                        e.data["by"].as_str().unwrap_or("?")
+                    ),
+                    _ => return None,
                 };
                 Some(format!("- {}: {said}", day(e.at)))
             })
@@ -3989,6 +3986,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store
                 .set_criteria(task, &crate::domain::Criterion::lab())?;
         }
+        // A lead's report or patterns turn is not work on the board (ADR 0120).
+        if let Some(kind) = self.report_kind(routine.id, routine.assignee)? {
+            self.store.mark_report_task(task, routine.assignee, kind)?;
+        }
         routine.last_task = Some(task);
         routine.last_fired_at = Some(now);
         self.store.save_routine(&routine)?;
@@ -4136,13 +4137,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let day = self.today();
         let pool = self.settings.pool_per_month;
         let every_run = self.store.runs()?;
-        let tasks = self.store.tasks()?;
+        // A lead's report and patterns turns are not work on the board (ADR 0120).
+        let reports = self.report_task_ids()?;
+        let tasks: Vec<Task> = self
+            .store
+            .tasks()?
+            .into_iter()
+            .filter(|t| !reports.contains(&t.id))
+            .collect();
         let scorecard = self.scorecard(&every_run, &tasks, day)?;
         let runs: Vec<Run> = every_run.into_iter().filter(|r| r.status.live()).collect();
         let goals = self.store.goals()?;
         let mut notes = std::collections::HashMap::new();
+        let mut strategies = std::collections::HashMap::new();
         for g in &goals {
             notes.insert(g.id.0, self.store.goal_note(g.id)?);
+            let s = self.strategy_of(g.id)?;
+            strategies.insert(
+                g.id.0,
+                json!({ "purpose": s.purpose, "success": s.success, "measures": s.measures,
+                        "bets": s.bets, "not_now": s.not_now, "by": s.by,
+                        "updated_at": (s.updated_at > 0).then_some(s.updated_at) }),
+            );
         }
         let mut members = Vec::new();
         let paid = self.paid_weights()?;
@@ -4244,7 +4260,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "goals": goals.iter().map(|g| json!({
                 "id": g.id.0, "title": g.title, "reason": g.reason, "status": g.status.name(),
                 "parent": g.parent.map(|p| p.0), "note": notes.get(&g.id.0).cloned().unwrap_or_default(),
+                // The CEO's strategy for it (ADR 0120).
+                "strategy": strategies.get(&g.id.0).cloned().unwrap_or_default(),
             })).collect::<Vec<_>>(),
+            // Each lead's latest report on its area (ADR 0120).
+            "area_reports": self.reports_shown()?,
             "tasks": task_rows,
             "runs": runs.iter().map(|r| json!({
                 "id": r.id.0, "member": r.member.0, "task": r.task.map(|t| t.0),
@@ -4296,7 +4316,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// later than the window does.
     fn scorecard(&self, runs: &[Run], tasks: &[Task], day: i64) -> Done<serde_json::Value> {
         let desk = self.store.desk()?;
-        let events = self.store.events_after(0)?;
+        // A lead's report and patterns turns are not work on the scorecard (ADR 0120).
+        let reports = self.report_task_ids()?;
+        let events: Vec<crate::domain::Event> = self
+            .store
+            .events_after(0)?
+            .into_iter()
+            .filter(|e| {
+                !e.data["task"]
+                    .as_i64()
+                    .is_some_and(|t| reports.contains(&TaskId(t)))
+            })
+            .collect();
         let record = scorecard::Record {
             runs,
             tasks,
@@ -4309,6 +4340,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "week": scorecard::score(&record, &scorecard::Window::days_ending(day, 7, offset)).json(),
             // Each team's seats, at work and on furlough (ADR 0118).
             "teams": self.teams_shown()?,
+            // Each area's measures, today and the last seven days (ADR 0120).
+            "areas": self.areas_shown()?,
         }))
     }
 

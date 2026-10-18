@@ -1484,6 +1484,88 @@ fn refused_containing(w: &mut Office, part: String) {
     assert!(said.contains(&part), "{said}");
 }
 
+#[given(expr = "the home lab's work is {word}'s project")]
+fn lab_is_a_project(w: &mut Office, _lead: String) {
+    let id =
+        w.hq.migrate_projects()
+            .expect("the store answers")
+            .expect("the home lab's project is made");
+    w.projects.insert("Home lab upkeep".to_owned(), id);
+}
+
+/// The lead's weekly patterns routine, made once and run now; what it ran before is over.
+#[when(expr = "{word}'s weekly patterns turn comes")]
+fn patterns_turn(w: &mut Office, name: String) {
+    let lead = w.member(&name);
+    w.hq.seed_area_routines()
+        .expect("the leads' routines are made");
+    let patterns =
+        w.hq.store()
+            .routines()
+            .expect("the store answers")
+            .into_iter()
+            .find(|r| r.assignee == lead && r.title == "Patterns")
+            .expect("the lead has a patterns routine");
+    w.hq.tick().expect("the tick runs");
+    for started in w.hq.runner().started() {
+        w.hq.runner().finish(started.run, true);
+    }
+    w.hq.tick().expect("the tick runs");
+    w.hq.fire_routine(patterns.id).expect("the routine runs");
+}
+
+#[when(expr = "{word} proposes a project on the alarms that came back")]
+fn proposes_on_alarms(w: &mut Office, name: String) {
+    let alarms: Vec<i64> = w
+        .hq
+        .store()
+        .events_after(0)
+        .expect("the store answers")
+        .into_iter()
+        .filter(|e| {
+            (e.kind == "routine.fired" && e.data["firing"] == "alarm") || e.kind == "routine.posted"
+        })
+        .map(|e| e.id)
+        .collect();
+    w.use_tool(
+        &name,
+        "propose_project",
+        &json!({ "title": "Fix what keeps exiting",
+                 "reason": "the same containers exited twice in two hours", "events": alarms }),
+    )
+    .expect("a lead proposes");
+    let id =
+        w.hq.store()
+            .projects()
+            .expect("the store answers")
+            .into_iter()
+            .find(|p| p.title == "Fix what keeps exiting")
+            .expect("the proposal is a project")
+            .id;
+    w.projects.insert("Fix what keeps exiting".to_owned(), id);
+}
+
+/// The CEO's daily review, as HQ makes it, run now.
+#[when(expr = "{word}'s daily review comes")]
+fn daily_review(w: &mut Office, name: String) {
+    let ceo = w.member(&name);
+    let routine =
+        w.hq.add_routine(
+            Author::Endora,
+            NewRoutine {
+                title: "Daily review".to_owned(),
+                description: "Review the house.".to_owned(),
+                goal: w.goal(),
+                project: None,
+                assignee: ceo,
+                every_ms: DAY_MS,
+                on_lab_trouble: false,
+            },
+        )
+        .expect("HQ makes the review");
+    w.hq.fire_routine(routine).expect("the review runs");
+}
+
 #[when(expr = "{word} checks back in an hour")]
 fn checks_back(w: &mut Office, name: String) {
     w.use_tool(

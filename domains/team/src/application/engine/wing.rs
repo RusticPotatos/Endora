@@ -652,7 +652,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(wing::FORK_RULES)
     }
 
-    fn wing_leads(&self) -> Done<Vec<MemberId>> {
+    pub(super) fn wing_leads(&self) -> Done<Vec<MemberId>> {
         let goals: Vec<GoalId> = self
             .store
             .goals()?

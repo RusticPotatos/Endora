@@ -97,6 +97,10 @@ pub enum EventKind {
     NoteWritten,
     /// A note was forgotten, edited or deleted (ADR 0118).
     NoteForgotten,
+    /// A goal's strategy was written, by the CEO or the owner (ADR 0120).
+    StrategySet,
+    /// A lead reported on its area (ADR 0120).
+    AreaReported,
 }
 
 impl EventKind {
@@ -151,6 +155,8 @@ impl EventKind {
             Self::MemberRecalled => "member.recalled",
             Self::NoteWritten => "note.written",
             Self::NoteForgotten => "note.forgotten",
+            Self::StrategySet => "goal.strategy",
+            Self::AreaReported => "area.reported",
         }
     }
 }

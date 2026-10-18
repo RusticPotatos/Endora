@@ -647,12 +647,12 @@ fn the_ceo_accepts_or_sends_back_a_proposal_and_its_proposer_hears_why() {
     let asked = task_in(&hq, t.goal, None, t.ceo, "Weigh the proposals").unwrap();
     let ceo = turn(&hq, t.ceo);
     assert_eq!(ceo.task, Some(asked));
-    assert!(
-        ceo.told
-            .contains("Project proposals waiting for your decision: 2"),
-        "{}",
-        ceo.told
-    );
+    for waiting in [
+        "Project proposals waiting for your decision:\n- #1 Media stack (by Ada",
+        "- #2 Backups (by Ada, for goal #1, led by Ada, asks $5.00 a month)",
+    ] {
+        assert!(ceo.told.contains(waiting), "{waiting}\n{}", ceo.told);
+    }
     // The CEO decides on evidence from HQ's record, as the proposal was made (ADR 0114).
     assert!(
         use_tool(
@@ -776,7 +776,7 @@ fn the_ceo_proposes_a_goal_to_the_board_with_its_evidence() {
 }
 
 #[test]
-fn the_ceos_planning_is_made_once_and_shows_the_patterns_to_propose_from() {
+fn the_ceos_planning_steers_by_strategy_and_the_leads_patterns_turn_shows_the_repeats() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq);
@@ -841,20 +841,63 @@ fn the_ceos_planning_is_made_once_and_shows_the_patterns_to_propose_from() {
         })
         .map(|e| e.id)
         .collect();
+    // The CEO plans from the strategy, the week's measures, the proposals and the budget.
     for said in [
         "This is your weekly planning",
-        "- #1 Keep the home lab healthy (active)\n  - #1 Home lab upkeep (active, led by Ada): $0.00 this month, no cap\n",
-        "- deluge, nzbget: 2 tasks (#2, #3), 2 alarms\n",
-        "- prowlarr: 1 task (#4), 0 alarms\n",
-        &format!("- deluge: 2 alarms (events {}, {})\n", alarms[0], alarms[1]),
+        "Goals and their strategy:\n- #1 Keep the home lab healthy (active)\n",
+        "How each area is doing, the last 7 days:\n- Ada's area: the lab: 2 alarms;",
         "Project proposals waiting for your decision:\n- none\n",
+        "- goal #1: #1 Home lab upkeep (active, led by Ada): $0.00 this month, no cap\n",
+        "Caps together: $0.00 of the pool's $70.00 a month.",
         &format!("Goals with no project: #{} Ship the tracker.", other.0),
     ] {
         assert!(ceo.told.contains(said), "{said}\n---\n{}", ceo.told);
     }
-    for gone in ["Open tasks:", "The board's desk in the last 7 days"] {
+    for gone in [
+        "Open tasks:",
+        "deluge, nzbget: 2 tasks",
+        "by the containers",
+    ] {
         assert!(!ceo.told.contains(gone), "lean: {gone}\n---\n{}", ceo.told);
     }
+    // The repeats are the area's lead's to find, in its weekly patterns turn (ADR 0120).
+    let seeded = hq.seed_area_routines().unwrap();
+    assert_eq!(seeded.len(), 2, "a report and a patterns routine for Ada");
+    assert!(hq.seed_area_routines().unwrap().is_empty(), "once");
+    hq.fire_routine(seeded[1]).unwrap();
+    let patterns = hq
+        .store()
+        .routines()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == seeded[1])
+        .and_then(|r| r.last_task)
+        .unwrap();
+    // Her alarm turn may hold her slots: finish what runs, then her patterns turn starts.
+    for c in hq.runner().started() {
+        hq.runner().finish(c.run, true);
+    }
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    let ada = hq
+        .runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.task == Some(patterns))
+        .expect("Ada's patterns turn");
+    for said in [
+        "Your area's repeats:",
+        "- deluge, nzbget: 2 tasks (#2, #3), 2 alarms\n",
+        &format!("- deluge: 2 alarms (events {}, {})\n", alarms[0], alarms[1]),
+        "propose a project with propose_project",
+    ] {
+        assert!(ada.told.contains(said), "{said}\n---\n{}", ada.told);
+    }
+    assert!(
+        !ada.told.contains("prowlarr: 1 task"),
+        "another area's work is not hers: {}",
+        ada.told
+    );
 }
 
 #[test]

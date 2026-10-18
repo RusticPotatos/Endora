@@ -792,7 +792,7 @@ fn the_pool_is_split_between_the_paid_and_a_local_member_is_never_turned_away_fo
 }
 
 #[test]
-fn the_ceos_briefing_holds_the_house_the_team_the_work_the_trouble_and_the_board() {
+fn the_ceos_briefing_holds_the_house_the_team_the_strategy_the_areas_and_the_board() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq, false);
@@ -817,7 +817,6 @@ fn the_ceos_briefing_holds_the_house_the_team_the_work_the_trouble_and_the_board
     hq.alarm("sonarr became unhealthy at 11:58").unwrap();
     hq.notice(None, "Ada restarted sonarr: it was unhealthy.")
         .unwrap();
-    let lab_task = hq.store().tasks().unwrap()[0].id;
     let lead = turn(&hq, t.lead);
     use_tool(
         &hq,
@@ -827,23 +826,30 @@ fn the_ceos_briefing_holds_the_house_the_team_the_work_the_trouble_and_the_board
     )
     .unwrap();
     let ceo = turn(&hq, t.ceo);
+    // She steers by the strategy, the leads' reports and the areas' measures (ADR 0120),
+    // and reads the areas' work and the lab when she chooses to.
     for said in [
         "You are Mara, the team's CEO.",
         "The house log, yours to keep",
         "(empty)",
         "Your team: Ada (lead, Claude Sonnet), Linus (developer, Local).",
+        "Goals and their strategy:",
         "- #1 Keep the home lab healthy (active)",
+        "  No strategy yet: write it with set_strategy",
         "  - An RSS sync that grabs nothing is normal. (Ada, 16 Oct)",
-        &format!("- #{} Check the home lab (todo, Ada)", lab_task.0),
-        "Home-lab trouble in the last 7 days (Endora's alarms):",
-        "- 17 Oct: Endora raised an alarm: sonarr became unhealthy at 11:58.",
-        "- 17 Oct, notice: Ada restarted sonarr: it was unhealthy. (waiting for the board)",
+        "The leads' latest reports:\n- Ada: no report yet",
+        "How each area is doing, the last 7 days:",
+        "Project proposals waiting for your decision:\n- none",
+        "The board's decisions in the last 7 days: none.",
         "money beyond the team's pool",
         "hiring or letting go a member",
         "Ada asks you: Sonarr again: what now?",
         "read_doc",
     ] {
         assert!(ceo.told.contains(said), "{said}\n---\n{}", ceo.told);
+    }
+    for gone in ["Open tasks:", "Home-lab trouble", "Ada restarted sonarr"] {
+        assert!(!ceo.told.contains(gone), "{gone}\n---\n{}", ceo.told);
     }
     // The CEO's briefing is held short; its read_doc names the team's standards.
     let read_doc = tools(Role::Ceo)
@@ -939,7 +945,7 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
         "- An RSS sync that grabs nothing is normal. (Ada, 16 Oct)",
     )
     .unwrap();
-    // A house with work on: twenty open tasks and a few notices on the board's desk.
+    // A house with work on, and a strategy written for its goal (ADR 0120).
     for n in 1..=20 {
         task_for(
             &hq,
@@ -948,13 +954,23 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
             &format!("Look into container number {n}"),
         );
     }
-    for n in 1..=5 {
-        hq.notice(
-            None,
-            &format!("Ada restarted container number {n}: it was unhealthy."),
-        )
-        .unwrap();
-    }
+    let part = |what: &str| {
+        Some(format!(
+            "{what}: {}",
+            "the house keeps itself running. ".repeat(14)
+        ))
+    };
+    hq.set_strategy(
+        t.goal,
+        &crate::domain::areas::StrategyEdit {
+            purpose: part("purpose"),
+            success: part("success"),
+            measures: Some("unplanned outages over 10 min\nmedian alarm to closed".to_owned()),
+            bets: part("bets"),
+            not_now: part("not now"),
+        },
+    )
+    .unwrap();
     let task = task_for(&hq, t.goal, t.lead, "Plan the week");
     let lead = turn(&hq, t.lead);
     use_tool(
@@ -967,7 +983,14 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
 
     // Its first turn: everything, as there is no last turn to go from.
     let first = turn(&hq, t.ceo);
-    for said in ["Open tasks:", "Its notes and lessons:", "Home-lab trouble"] {
+    for said in [
+        "Goals and their strategy:",
+        "  Purpose: purpose: the house keeps itself running.",
+        "  Measures: unplanned outages over 10 min; median alarm to closed",
+        "Its notes and lessons:",
+        "The leads' latest reports:",
+        "How each area is doing",
+    ] {
         assert!(first.told.contains(said), "{said}\n---\n{}", first.told);
     }
     use_tool(
@@ -995,10 +1018,10 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
         assert!(quiet.told.contains(said), "{said}\n---\n{}", quiet.told);
     }
     for gone in [
-        "Open tasks:",
+        "Goals and their strategy:",
         "Its notes and lessons:",
-        "Home-lab trouble",
-        "The board's desk in the last 7 days",
+        "The leads' latest reports:",
+        "The board's decisions in the last 7 days",
     ] {
         assert!(!quiet.told.contains(gone), "{gone}\n---\n{}", quiet.told);
     }
@@ -1038,7 +1061,11 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
     ] {
         assert!(moved.told.contains(said), "{said}\n---\n{}", moved.told);
     }
-    assert!(!moved.told.contains("Open tasks:"), "{}", moved.told);
+    assert!(
+        !moved.told.contains("Goals and their strategy:"),
+        "{}",
+        moved.told
+    );
     hq.runner().finish(moved.run, true);
     hq.tick().unwrap();
 
@@ -1061,11 +1088,19 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
     let review = turn(&hq, t.ceo);
     assert_ne!(review.run, moved.run);
     for said in [
-        "Open tasks:",
-        &format!("#{} Plan the week", task.0),
+        "Goals and their strategy:",
         "Its notes and lessons:",
-        "Home-lab trouble",
+        "The leads' latest reports:",
+        "How each area is doing",
+        // Its review says what it asks as HQ asks it now, whatever the routine was made with.
+        "Where a goal has no strategy, write it with set_strategy",
     ] {
         assert!(review.told.contains(said), "{said}\n---\n{}", review.told);
     }
+    assert!(
+        !review.told.contains("Review the house."),
+        "{}",
+        review.told
+    );
+    let _ = task;
 }
