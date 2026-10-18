@@ -24,6 +24,13 @@ tagged release.
 
 ### Added
 
+- **The collection can declare every NAS-side setting** (`endora.homelab`, `endora` role).
+  New variables, all empty by default (nothing rendered, nothing changed): `endora_workers`
+  (the `workers` profile), `endora_lan_dns`, `endora_hq_tick_seconds`, `endora_hq_dir`,
+  `endora_sound_dir`, `endora_utc_offset_minutes`, `endora_router_model`, `endora_synth_model`,
+  `endora_ansible_nas_repo`/`_ref`, `endora_lab_retired`, `endora_git_push_key_dir` and
+  `endora_bench_token_dir`/`endora_bench_cap_cents`. `scripts/check-collection-parity.sh` (in CI)
+  fails when `docker-compose.yml` reads a variable or profile the role does not declare.
 - **The Mac's brain** ([ADR 0130](docs/adr/0130-the-macs-brain.md)). A team member may think
   with the owner's Mac: a strong local model on a laptop the owner also works on. A fifth brain,
   `mac`, on the roster and the hire form: free, house-local (the same data rules as the house's

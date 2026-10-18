@@ -96,6 +96,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 node scripts/check-console.mjs
 node scripts/check-nothing-personal.mjs
+sh scripts/check-collection-parity.sh
 git diff --check
 ```
 

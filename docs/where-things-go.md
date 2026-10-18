@@ -57,7 +57,8 @@ The menu holds the everyday destinations; everything that configures lives in Se
 | `crates/` | The orchestration layer and infrastructure adapters shared by several contexts |
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
 | `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-chat.js` (`UNDER_SETTINGS`), AI in `30-settings.js` |
-| `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared |
+| `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change |
+| `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
 | `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`) |
 | `docs/adr/` | One decision each; a new architectural choice needs one |
 | `docs/homelab.md` | How to set up and run each part in the house |
