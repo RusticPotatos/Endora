@@ -279,6 +279,7 @@ of an existing record and take the next number.
 | [0121](0121-games-in-the-office.md) | Games in the office | — |
 | [0123](0123-a-bench-for-an-external-agent-harness.md) | A bench for an external agent harness | — |
 | [0122](0122-the-teams-world-stages-stories-and-situations.md) | The team's world: stages, stories and situations | — |
+| [0125](0125-secrets-at-rest-in-the-node.md) | Secrets at rest in the node | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

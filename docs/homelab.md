@@ -19,8 +19,46 @@ endora-node homelab-setup
 
 Enter origins interactively. API keys are masked. Blank preserves the current
 setting; `-` disables a source and clears its key. Settings remain in the node's
-private SQLite database. Keep the database and backups private; they are not
-encrypted by this feature. No keys are accepted through command arguments.
+private SQLite database, sealed under the node's secrets key (below); run setup with
+the same `ENDORA_SECRETS_KEY_FILE` as the node, if you set one. No keys are accepted
+through command arguments.
+
+## Secrets at rest (ADR 0125)
+
+Every credential the node stores (provider API keys, MCP bearer tokens and environments,
+the Home Assistant token and every other capability setting, the authenticator secret and
+the bootstrap token) is sealed in the database with a data key, and that key is wrapped by
+the **secrets key**: `secrets.key` beside the database (`/data/secrets.key` in the
+container), or wherever `ENDORA_SECRETS_KEY_FILE` names. The node makes it, owner-only, on
+its first start; on that start it also seals what an older node stored in plaintext and
+says `secrets: sealed N stored credential(s) at rest`. Sign-in sessions are kept only as a
+digest; a console session ends after thirty days, or after seven unused.
+
+**Back it up apart from the database.** Either one alone opens nothing; the two together
+open everything. So:
+
+1. Keep a copy in your password manager, as text:
+
+   ```sh
+   docker compose exec node base64 /data/secrets.key
+   ```
+
+2. Exclude `secrets.key` from the house's backup of the data folder (the nightly
+   `backups/daily-*.db` copies are beside it and stay included), the way the vault
+   password is kept out of the checkout's backup.
+3. On a restore, put it back beside the database before the node starts (as `0600`):
+   `base64 -d > secrets.key` from the copy.
+
+A node whose database holds sealed secrets and whose key file is missing will not start,
+and says so: restore the file. If no copy survives, `endora-node secrets forget
+--i-have-lost-the-key` empties every sealed credential and the password so the node can
+start with a new key; sign in again with the bootstrap token from the log and enter every
+key and password again. `endora-node secrets rekey` seals everything again under a new
+data key (the key file stays the same).
+
+This protects copies of the database: backups, snapshots, a disk that leaves the house. It
+does not protect a running host — anything with root on the NAS, which includes any
+container holding the Docker socket, can read the key and the database together.
 
 Sonarr and Radarr use `/api/v3/queue`; give their origin without a path or query.
 Their keys permit broader operations, but this adapter only sends fixed GETs.
