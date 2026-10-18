@@ -167,9 +167,22 @@ impl SoundClient {
     /// # Errors
     /// [`SoundError`] if the hub cannot be reached or will not stream that speaker.
     pub fn listen(&self, speaker: u32) -> Result<Box<dyn std::io::Read + Send>, SoundError> {
+        self.stream(&format!("/v1/listen/{speaker}"))
+    }
+
+    /// Opens a stream speaker's live stream: raw PCM in small frames, for a page that wants
+    /// the least delay it can have.
+    ///
+    /// # Errors
+    /// [`SoundError`] if the hub cannot be reached or will not stream that speaker.
+    pub fn live(&self, speaker: u32) -> Result<Box<dyn std::io::Read + Send>, SoundError> {
+        self.stream(&format!("/v1/live/{speaker}"))
+    }
+
+    fn stream(&self, path: &str) -> Result<Box<dyn std::io::Read + Send>, SoundError> {
         let response = self
             .streaming
-            .get(&format!("{}/v1/listen/{speaker}", self.url))
+            .get(&format!("{}{path}", self.url))
             .header("authorization", &format!("Bearer {}", self.token()?))
             .call()
             .map_err(|e| SoundError::Unreachable(e.to_string()))?;

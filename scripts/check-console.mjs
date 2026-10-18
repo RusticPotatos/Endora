@@ -77,6 +77,7 @@ const stubs = {
   AbortController,
   Blob,
   TextDecoder,
+  btoa: (binary) => Buffer.from(binary, "binary").toString("base64"),
   requestAnimationFrame: (fn) => setTimeout(fn, 0),
   // Nothing may reach the network from a build check.
   fetch: () => Promise.reject(new Error("no network in the console check")),
@@ -1585,6 +1586,270 @@ if (failures.length) {
   if (!runInContext("viewSound()", context).includes("not set up")) fail("speakers: a node without the hub does not say so");
   runInContext('SOUND.error = "";', context);
   console.log("speakers: every source offers its speakers but never its own device, wires carry their levels, and text stays text");
+}
+
+// Live mode (ADR 0104): raw sound in 20 ms frames, an adaptive buffer on the audio thread, the
+// way to hear chosen by the wires and the page's visibility, and the delay probe's arithmetic.
+// The worklet runs here for real, driven block by block with a clock of its own.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const ev = (code) => runInContext(code, context);
+
+  // The frame format, as the hub writes it (app/sound/src/live.rs), cut at awkward places.
+  ev(`function testFrame(seq, flags, ints, at) {
+    const b = new Uint8Array(24 + ints.length * 2), v = new DataView(b.buffer);
+    b[0] = 0x45; b[1] = 0x4c; b[2] = flags; b[3] = 2;
+    v.setUint32(4, seq, true); v.setUint32(8, at % 4294967296, true); v.setUint32(12, Math.floor(at / 4294967296), true);
+    v.setUint32(16, 44100, true); v.setUint32(20, ints.length * 2, true);
+    ints.forEach((x, i) => v.setInt16(24 + i * 2, x, true));
+    return b;
+  }`);
+  const frames = JSON.parse(ev(`(() => {
+    const p = liveParser();
+    const a = testFrame(7, 0, [16384, -16384, 8192, 0], 1700000000123456), b = testFrame(8, 1, [1, 2], 1700000000143456);
+    const all = new Uint8Array(a.length + 3 + b.length); all.set(a, 0); all.set([9, 9, 9], a.length); all.set(b, a.length + 3);
+    const got = [];
+    for (let i = 0; i < all.length; i += 5) for (const f of p.push(all.slice(i, i + 5))) got.push({ seq: f.seq, flags: f.flags, at: f.atUs, rate: f.rate, l: Array.from(f.left), r: Array.from(f.right) });
+    return JSON.stringify({ got, skipped: p.skipped });
+  })()`));
+  if (frames.got.length !== 2 || frames.skipped !== 3) fail("live: frames cut every five bytes did not come back whole, or the stray bytes were not skipped: " + JSON.stringify(frames));
+  const [f1, f2] = frames.got;
+  if (f1.seq !== 7 || f1.at !== 1700000000123456 || f1.rate !== 44100 || f1.l.join() !== "0.5,0.25" || f1.r.join() !== "-0.5,0" || f2.flags !== 1 || f2.seq !== 8) {
+    fail("live: a frame was read wrongly: " + JSON.stringify(frames));
+  }
+  const gaps = JSON.parse(ev(`JSON.stringify([liveSeqStep(null, 5), liveSeqStep(5, 5), liveSeqStep(5, 8), liveSeqStep(5, 3), liveSeqStep(4294967295, 1), liveSeqStep(1, 4294967295)])`));
+  if (JSON.stringify(gaps.map((g) => [g.missing, g.stale])) !== JSON.stringify([[0, false], [0, false], [3, false], [0, true], [2, false], [0, true]])) {
+    fail("live: sequence gaps, late frames or the wrap at 2^32 are misread: " + JSON.stringify(gaps));
+  }
+
+  // The buffer: starts at 300, grows when it runs dry or frames go missing, stops at 1000,
+  // shrinks by 25 ms for each 5 s of calm, stops at 300, and never changes the state it was given.
+  const jitter = JSON.parse(ev(`(() => {
+    const s0 = { target: 300, min: 300, max: 1000, calm: 0 };
+    const dry = liveJitter(s0, { kind: "underrun" }), gap = liveJitter(s0, { kind: "gap" });
+    let s = s0; const grown = [];
+    for (let i = 0; i < 6; i++) { s = liveJitter(s, { kind: "underrun" }); grown.push(s.target); }
+    const calm = liveJitter(liveJitter(liveJitter(liveJitter(s, { kind: "tick", ms: 1000 }), { kind: "tick", ms: 1000 }), { kind: "tick", ms: 1000 }), { kind: "tick", ms: 1000 });
+    const shrunk = liveJitter(calm, { kind: "tick", ms: 1000 });
+    let t = { target: 330, min: 300, max: 1000, calm: 0 };
+    for (let i = 0; i < 30; i++) t = liveJitter(t, { kind: "tick", ms: 1000 });
+    const troubled = liveJitter({ target: 600, min: 300, max: 1000, calm: 4500 }, { kind: "gap" });
+    return JSON.stringify({ dry: dry.target, gap: gap.target, grown, calm: calm.target, shrunk: shrunk.target, floor: t.target, kept: s0.target, troubled });
+  })()`));
+  if (jitter.dry !== 450 || jitter.gap !== 375 || jitter.grown.join() !== "450,675,1000,1000,1000,1000") fail("live: the buffer does not grow as it should: " + JSON.stringify(jitter));
+  if (jitter.calm !== 1000 || jitter.shrunk !== 975 || jitter.floor !== 300 || jitter.kept !== 300) fail("live: the buffer does not shrink slowly, or not to its floor: " + JSON.stringify(jitter));
+  if (jitter.troubled.target !== 750 || jitter.troubled.calm !== 0) fail("live: trouble did not start the calm over");
+  const servo = JSON.parse(ev(`JSON.stringify([liveServo(300, 300), liveServo(330, 300), liveServo(350, 300), liveServo(240, 300)])`));
+  if (servo.join() !== "1,1,1.005,0.995") fail("live: the buffer is not nudged toward its target: " + servo);
+
+  // Mode: the wires and the owner's choice decide; the background always listens.
+  const modes = JSON.parse(ev(`(() => {
+    const sources = [{ id: 1, name: "Classical", kind: "radio" }, { id: 6, name: "Endora Mixer", kind: "airplay" }, { id: 7, name: "Spotify", kind: "spotify" }];
+    const wires = [{ source: 1, speaker: 4, level: 50 }, { source: 6, speaker: 5, level: 80 }, { source: 7, speaker: 4, level: 50 }];
+    return JSON.stringify([liveModeFor("auto", sources, wires, 4), liveModeFor("auto", sources, wires, 5), liveModeFor("auto", sources, wires, 9),
+      liveModeFor("live", sources, wires, 4), liveModeFor("listening", sources, wires, 5), liveModeFor("auto", null, null, 4),
+      liveEffectiveMode("live", false), liveEffectiveMode("live", true), liveEffectiveMode("listening", false)]);
+  })()`));
+  if (modes.join() !== "listening,live,listening,live,listening,listening,live,listening,listening") fail("live: the way to hear is not chosen by the wires and the owner: " + modes);
+
+  // The probe: the hub's clock never meets the page's. 20 ms each way, 3 ms in the hub, the tone
+  // mixed 8 ms after the request arrived, heard 420 ms after it was mixed.
+  const probe = JSON.parse(ev(`JSON.stringify(liveProbeDelay({ tSend: 1000, tRecv: 1043, received: 5000000, injected: 5008000, replied: 5003000,
+    tDetect: 1000 + 20 + 8 + 420, tFlag: 1000 + 20 + 8 + 15 }))`));
+  if (Math.abs(probe.ms - 420) > 0.01 || Math.abs(probe.oneWay - 20) > 0.01 || Math.abs(probe.transport - 15) > 0.01 || Math.abs(probe.buffer - 405) > 0.01) fail("live: the delay probe's arithmetic is wrong: " + JSON.stringify(probe));
+  if (ev(`liveProbeDelay({ tSend: 0, tRecv: 10, received: 0, injected: 0, replied: 0, tDetect: 900, tFlag: null }).transport`) !== null) fail("live: listening has no frame to split its delay at");
+  if (ev(`liveDelayLabel(400)`) !== "0.4 s" || ev(`liveDelayLabel(4960)`) !== "5.0 s") fail("live: the delay label is wrong");
+
+  // The tone finder: a 2 kHz tone is found at its size, music and silence are not.
+  const tone = JSON.parse(ev(`(() => {
+    const n = 441, make = (f) => { const w = new Float32Array(n); for (let i = 0; i < n; i++) w[i] = f(i); return w; };
+    const pure = liveTone(make((i) => 0.1 * Math.sin(2 * Math.PI * 2000 * i / 44100)), 44100);
+    const half = liveTone(make((i) => i < 220 ? 0.1 * Math.sin(2 * Math.PI * 2000 * i / 44100) : 0), 44100);
+    const music = liveTone(make((i) => 0.3 * Math.sin(2 * Math.PI * 440 * i / 44100) + 0.2 * Math.sin(2 * Math.PI * 3100 * i / 44100)), 44100);
+    return JSON.stringify({ pure, half, music, silence: liveTone(new Float32Array(n), 44100) });
+  })()`));
+  if (Math.abs(tone.pure.amp - 0.1) > 0.002 || tone.pure.fraction < 0.99 || Math.abs(tone.half.amp - 0.05) > 0.01 || tone.music.amp > 0.01 || tone.silence.amp !== 0) fail("live: the tone finder is wrong: " + JSON.stringify(tone));
+
+  // The worklet itself: built from the same functions, driven block by block with a clock.
+  const source = ev("liveWorkletSource()");
+  const RATE = 44100, BLOCK = 128;
+  const run = (seconds, options, script) => {
+    const out = [];
+    const w = createContext({ sampleRate: RATE, currentTime: 0, Math, Float32Array, Number, Array, Object, JSON });
+    runInContext(`class AudioWorkletProcessor { constructor() { this.port = { postMessage: (m) => globalThis.__out.push(m), onmessage: null }; } }
+      var __out = [], __cls = null; function registerProcessor(name, cls) { __cls = cls; }`, w);
+    runInContext(source, w);
+    w.__out = out;
+    const proc = new w.__cls({ processorOptions: options });
+    const L = new Float32Array(BLOCK), R = new Float32Array(BLOCK), left = [], at = [];
+    for (let b = 0; b * BLOCK < seconds * RATE; b++) {
+      w.currentTime = b * BLOCK / RATE;
+      script(proc, w.currentTime, b);
+      proc.process([], [[L, R]]);
+      for (let i = 0; i < BLOCK; i++) left.push(L[i]);
+    }
+    return { out, left, proc };
+  };
+  // 20 ms frames of a 200 Hz sine, one per 20 ms, numbered from 0; `skip` frames never come.
+  const sine = (hz, amp) => (n) => amp * Math.sin(2 * Math.PI * hz * n / RATE);
+  const frameAt = (k, wave) => {
+    const l = new Float32Array(882);
+    for (let i = 0; i < 882; i++) l[i] = wave(k * 882 + i);
+    return { t: "frame", seq: k, rate: RATE, l, r: l };
+  };
+  const feeding = (wave, skip, stopAt, resumeAt) => {
+    let next = 0;
+    return (proc, now) => {
+      // A stall holds frames back and delivers them in a burst when it ends; a skipped frame
+      // never comes at all.
+      if (stopAt !== undefined && now >= stopAt && now < (resumeAt || Infinity)) return;
+      while (next * 0.02 <= now) {
+        const k = next++;
+        if ((skip || []).includes(k)) continue;
+        proc.heard(frameAt(k, wave));
+      }
+    };
+  };
+  const steepest = (xs, from) => { let m = 0; for (let i = Math.max(1, from); i < xs.length; i++) m = Math.max(m, Math.abs(xs[i] - xs[i - 1])); return m; };
+  // The most a 200 Hz sine of 0.5 moves between two samples is about 0.0143.
+  const SMOOTH = 0.02;
+  const start = (left) => left.findIndex((x) => x !== 0) / RATE;
+
+  // Steady: nothing sounds until 300 ms are in hand, then the sound is a clean sine.
+  const steady = run(3, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5)));
+  const began = start(steady.left);
+  if (began < 0.27 || began > 0.37) fail(`live: it began to play after ${began} s, not once 300 ms were in hand`);
+  if (steepest(steady.left, 0) > SMOOTH) fail("live: steady playing has a click in it");
+  const stat = steady.out.filter((m) => m.t === "stat").pop();
+  if (Math.abs(stat.depthMs - 300) > 25 || stat.under !== 0 || stat.gaps !== 0 || stat.target !== 300) fail("live: steady playing did not hold its buffer: " + JSON.stringify(stat));
+
+  // A burst of sound arriving at once is skipped down to the target, not played late for ever.
+  const burst = run(2, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, (() => { let done = false; return (proc, now) => { if (!done) { done = true; for (let k = 0; k < 75; k++) proc.heard(frameAt(k, sine(200, 0.5))); } else { const k = 75 + Math.floor((now - 0.0001) / 0.02); if (k >= proc.expected && now > 0) proc.heard(frameAt(proc.expected, sine(200, 0.5))); } }; })());
+  const burstStat = burst.out.filter((m) => m.t === "stat").pop();
+  if (burstStat.depthMs > 700) fail("live: a burst of 1.5 s was played late instead of skipped: " + JSON.stringify(burstStat));
+
+  // Running dry (a stall that ends in a burst): it fades to nothing without a click, waits for
+  // 450 ms, grows its target, and, nothing being lost, counts no gap.
+  const dry = run(4, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5), [], 1.2, 1.8));
+  const dryStat = dry.out.filter((m) => m.t === "stat").pop();
+  if (dryStat.under !== 1 || dryStat.target !== 450 || dryStat.gaps !== 0) fail("live: running dry was not noticed, or did not grow the buffer: " + JSON.stringify(dryStat));
+  if (steepest(dry.left, 0) > SMOOTH) fail("live: running dry clicked");
+  const playing = dry.out.filter((m) => m.t === "playing").map((m) => m.on);
+  if (playing.join() !== "true,false,true") fail("live: it did not stop and start again around the dry spell: " + playing);
+  // It is quiet through the dry spell (the buffer of 300 ms emptied at about 1.5 s) and plays
+  // again when the burst has brought it past the new target of 450 ms.
+  const quiet = dry.left.slice(Math.round(1.55 * RATE), Math.round(1.79 * RATE));
+  if (Math.max(...quiet.map(Math.abs)) !== 0) fail("live: it made sound with nothing to play");
+  const again = dry.left.slice(Math.round(1.8 * RATE)).findIndex((x) => x !== 0) / RATE + 1.8;
+  if (again > 1.85) fail(`live: it began again after ${again} s, not as the burst brought 450 ms`);
+  // A slow trickle (half the sound in time) keeps running dry, and keeps growing: to the top.
+  const starved = run(8, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, (() => { let next = 0; return (proc, now) => { while (next * 0.04 <= now) proc.heard(frameAt(next++, sine(200, 0.5))); }; })());
+  const starvedStat = starved.out.filter((m) => m.t === "stat").pop();
+  if (starvedStat.target !== 1000 || starvedStat.under < 3) fail("live: a starved stream did not grow the buffer to its top: " + JSON.stringify(starvedStat));
+  if (steepest(starved.left, 0) > SMOOTH) fail("live: a starved stream clicked");
+
+  // Missing frames: a dip, no click, counted, and the buffer grows by a quarter.
+  const lossy = run(3, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5), [70, 71, 72]));
+  const lossyStat = lossy.out.filter((m) => m.t === "stat").pop();
+  if (lossyStat.gaps !== 1 || lossyStat.lost !== 3 || lossyStat.target !== 375) fail("live: lost frames were not counted, or did not grow the buffer: " + JSON.stringify(lossyStat));
+  if (steepest(lossy.left, 0) > SMOOTH) fail("live: a gap clicked");
+  const gapAt = Math.round((0.28 + 70 * 0.02 + 0.02) * RATE);
+  const dip = lossy.left.slice(gapAt - 3000, gapAt + 3000).reduce((m, x, i, a) => i > 100 && i < a.length - 100 && Math.abs(x) < 0.001 ? m + 1 : m, 0);
+  if (dip < 3) fail("live: a gap did not fade to silence and back");
+
+  // Calm: a target that grew comes back down, slowly: 25 ms for each 5 s.
+  const calm = run(12, { rate: RATE, jitter: { target: 450, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5)));
+  const calmStat = calm.out.filter((m) => m.t === "stat").pop();
+  if (calmStat.target !== 400) fail("live: after 12 s of calm the target should have come back by 50 ms: " + JSON.stringify(calmStat));
+  if (steepest(calm.left, 0) > SMOOTH) fail("live: shrinking the buffer clicked");
+
+  // The probe: a 2 kHz burst of 80 ms in the stream (silence before it) is found, and the time it
+  // began to come out is told to within a few ms, which is what a delay measurement stands on.
+  const burstWave = (n) => (n >= 0.8 * RATE && n < 0.88 * RATE ? 0.1 * Math.sin(2 * Math.PI * 2000 * n / RATE) : 0);
+  const heardTone = run(2.5, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, (() => {
+    const feed = feeding(burstWave);
+    return (proc, now, b) => { if (b === 0) proc.heard({ t: "probe", on: true, ref: 0.1 }); feed(proc, now); };
+  })());
+  const tones = heardTone.out.filter((m) => m.t === "tone");
+  if (tones.length !== 1) fail("live: the probe's tone was heard " + tones.length + " times");
+  // The stream is silent until the tone, so the first sound out of the worklet is the tone's.
+  const truly = heardTone.left.findIndex((x) => x !== 0) / RATE;
+  if (Math.abs(tones[0].at - truly) > 0.006) fail(`live: the tone came out at ${truly} s and was told at ${tones[0].at} s`);
+  // And with the owner's volume low it is found all the same.
+  const quietTone = run(2.5, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, (() => {
+    const feed = feeding(burstWave);
+    return (proc, now, b) => { if (b === 0) { proc.heard({ t: "probe", on: true, ref: 0.1 }); proc.heard({ t: "level", v: 0.05 }); } feed(proc, now); };
+  })());
+  if (quietTone.out.filter((m) => m.t === "tone").length !== 1) fail("live: a low volume hid the probe's tone");
+  const playsOn = run(2.5, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5)));
+  if (playsOn.out.some((m) => m.t === "tone")) fail("live: a probe nobody asked for was heard in music");
+  console.log(`live: frames read whole, buffer 300 to 1000 ms, no clicks across a gap or a dry spell, the probe's tone found to ${(Math.abs(tones[0].at - truly) * 1000).toFixed(1)} ms`);
+
+  // Modes in the page: the background hands over to the MP3 and the front takes live back; a
+  // live stream that cannot start falls back to listening and asks for a tap.
+  ev(`var keepOpen = liveOpen, keepClose = liveClose, keepSupported = liveSupported, keepCtx = liveContext;
+    var opened = [], closed = [], audioSrc = [], played = [];
+    liveSupported = () => true;
+    liveContext = () => ({ state: "running", resume: () => Promise.resolve() });
+    liveOpen = async (url, muted, on) => { opened.push(url); return { url, on, closed: false, lastAt: 0 }; };
+    liveClose = (s) => { if (s) closed.push(s.url); };
+    var fakeAudio = { set src(v) { audioSrc.push(v); }, get src() { return audioSrc[audioSrc.length - 1]; }, play: () => { played.push(audioSrc[audioSrc.length - 1]); return Promise.resolve(); }, pause() {}, removeAttribute() {}, load() {}, addEventListener() {}, volume: 1 };
+    var keepAudioEl = document.getElementById;
+    document.getElementById = (id) => id === "sound-player" ? fakeAudio : keepAudioEl(id);
+    var keepLS = localStorage.getItem;
+    localStorage.getItem = (k) => (k === "endora.soundSpeaker" ? "5" : k === "endora.soundMode" ? "auto" : null);
+    var mixer = { id: 6, name: "Endora Mixer", kind: "airplay", device: null }, radio = { id: 1, name: "Test station", kind: "radio" };
+    var phone = { id: 5, name: "Test phone", kind: "stream", device: "test-phone", volume: 100, borrowed: false };
+    SOUND.state = { sources: [mixer, radio], speakers: [phone], groups: [], setups: [],
+      wires: [{ source: 6, speaker: 5, level: 80 }] };
+    SOUND.listening = true; SOUND.mode = null; SOUND.liveBlocked = false;
+    SOUND.ticket = { url: "/v1/sound/listen/5?ticket=aa", live: "/v1/sound/live/5?ticket=aa", at: Date.now() };`);
+  const wait = () => new Promise((r) => setTimeout(r, 5));
+  // Tapped with the door wired: live, with the MP3's element given a moment of silence to unlock.
+  ev(`soundPlay(SOUND.ticket)`); await wait();
+  if (ev("SOUND.mode") !== "live" || ev("opened.join()") !== "/v1/sound/live/5?ticket=aa" || !ev("audioSrc[0]").startsWith("data:audio/wav")) fail("live: a door wired to this speaker did not play live");
+  // The page goes to the background: the MP3 from the ticket kept ready, live let go.
+  ev(`LIVE.session = { url: "live-now", closed: false, lastAt: 0 }; document.hidden = true;`);
+  await ev("soundApplyMode()");
+  if (ev("SOUND.mode") !== "listening" || ev("played[played.length - 1]") !== "/v1/sound/listen/5?ticket=aa" || ev("closed.join()") !== "live-now") fail("live: the background did not hand over to the MP3: " + ev("JSON.stringify({ m: SOUND.mode, played, closed })"));
+  // And back: live again, from a ticket still good.
+  ev(`document.hidden = false; opened.length = 0;`);
+  await ev("soundApplyMode()"); await wait();
+  if (ev("SOUND.mode") !== "live" || ev("opened.length") !== 1) fail("live: coming back to the page did not take live back");
+  // The owner picks Listening: it stays on the MP3 in the front too.
+  ev(`localStorage.getItem = (k) => (k === "endora.soundSpeaker" ? "5" : k === "endora.soundMode" ? "listening" : null);`);
+  await ev("soundApplyMode()");
+  if (ev("SOUND.mode") !== "listening") fail("live: Listening chosen by the owner did not stay on the MP3");
+  // And Auto with radio only: listening; a door wired in: live.
+  ev(`localStorage.getItem = (k) => (k === "endora.soundSpeaker" ? "5" : k === "endora.soundMode" ? "auto" : null);
+    SOUND.state = Object.assign({}, SOUND.state, { wires: [{ source: 1, speaker: 5, level: 80 }] });`);
+  await ev("soundApplyMode()");
+  if (ev("SOUND.mode") !== "listening") fail("live: music alone should be heard by listening");
+  ev(`SOUND.state = Object.assign({}, SOUND.state, { wires: [{ source: 6, speaker: 5, level: 80 }] });`);
+  await ev("soundApplyMode()"); await wait();
+  if (ev("SOUND.mode") !== "live") fail("live: wiring the AirPlay door here did not switch to live by itself");
+  // Live that will not start (no tap since the screen was off): listening, with a way to tap.
+  ev(`SOUND.mode = "listening"; liveOpen = async () => { throw new Error("no tap"); }; SOUND.ticket = { url: "/v1/sound/listen/5?ticket=bb", live: "/v1/sound/live/5?ticket=bb", at: Date.now() };`);
+  await ev("soundApplyMode()"); await wait(); await wait();
+  if (ev("SOUND.mode") !== "listening" || ev("SOUND.liveBlocked") !== true || ev("soundWantedMode()") !== "listening") fail("live: live that would not start did not fall back to listening");
+  // Stopped: nothing left running.
+  ev(`liveClose = (s) => { if (s) closed.push(s.url); }; LIVE.session = { url: "last", closed: false, lastAt: 0 }; SOUND.listening = true;`);
+  await ev(`soundDispatch("sound", "stop", "", "")`);
+  if (ev("SOUND.listening") !== false || ev("SOUND.mode") !== null || ev("LIVE.session") !== null || !ev("closed").includes("last")) fail("live: Stop left live running");
+  // The card: the three choices, the measure button (off until listening), and what the mode is.
+  ev(`liveOpen = keepOpen; liveClose = keepClose; liveSupported = keepSupported; liveContext = keepCtx;
+    SOUND.mode = "live"; SOUND.stat = { playing: true, depthMs: 410, under: 0 }; SOUND.listening = true; LIVE.session = null;
+    SOUND.measure = { live: { ms: 430, transport: 12, buffer: 418, intake: [{ source: "Endora Mixer", ms: 160 }] }, listening: { ms: 4960, transport: null, buffer: null, intake: [] } };`);
+  const card = ev("viewSound()");
+  for (const want of ['data-act="sound:mode:auto"', 'data-act="sound:mode:live"', 'data-act="sound:mode:listening"', 'data-act="sound:measure"', 'id="sound-live-label"', "live · 0.4 s",
+    "Live: 0.4 s (12 ms to this page, 418 ms in its buffer)", "Listening: 5.0 s", "Endora Mixer waits 160 ms in the hub"]) {
+    if (!card.includes(want)) fail(`live: the speaker card does not show ${want}`);
+  }
+  if (card.includes('data-act="sound:measure" disabled')) fail("live: Measure delay was off while listening");
+  ev(`SOUND.listening = false; SOUND.mode = null;`);
+  if (!ev("viewSound()").includes('data-act="sound:measure" disabled')) fail("live: Measure delay was on with nothing playing");
+  ev(`document.getElementById = keepAudioEl; localStorage.getItem = keepLS; SOUND.state = keepSound0; SOUND.measure = null; SOUND.liveBlocked = false; SOUND.ticket = null;`.replace("keepSound0", "null"));
+  console.log("live: the front plays live when a door is wired or when asked, the background and a refused start fall back to the MP3, and the card says which");
 }
 
 // Music (ADR 0104): Spotify plays on the hub's speakers through its Endora receiver, listed

@@ -78,6 +78,44 @@ Endora gets a sound hub, **endora-sound**: the owner's own program, not a fork.
   the general door has no device, so a device wired to it hears what it casts in, which the
   card says. Removing a speaker removes its wires and nothing else. The receivers list
   changes, so the senders' container restarts its receivers (and senders) once.
+- **Live mode for phones and browsers (2026-10-18, by the owner).** A phone listening to
+  its speaker through the MP3 stream is about seven seconds behind a television: the
+  browser buffers the MP3 for seconds (4.7 s measured in a desktop Chromium), and classic
+  AirPlay adds about two more. The owner chose to keep that stream, for music and for playing
+  with the screen locked, and to add a **live** one beside it.
+  - *The stream.* `GET /v1/live/{speaker}` on the hub (and `/v1/sound/live/{id}?ticket=` on
+    the node, under the same one-minute ticket as listening, which now also returns a `live`
+    URL) sends the speaker's mix as raw PCM in 20 ms frames: a 24-byte header (`EL`, flags,
+    channels, a wrapping sequence number, the hub's clock in microseconds at the frame's
+    first sample, the sample rate, the byte count) and 16-bit little-endian stereo. No
+    encoder, no decoder in the browser, one chunk per frame, `TCP_NODELAY` on the hub and
+    on the node's plain-HTTP listener. It is 44.1 kHz (what the mixer runs at), 1.4 Mbit/s,
+    not 48 kHz: resampling in the hub for nothing was not worth it. A listener that falls
+    more than about a second behind skips ahead, and the sequence numbers say what it missed.
+    A fetch stream was chosen over a WebSocket: it passes through the node's existing
+    streaming proxy and ticket gate unchanged, and needs no new dependency.
+  - *The player.* An AudioWorklet built from the same pure functions the console check tests.
+    Its buffer starts at 300 ms, grows by half when it runs dry and by a quarter when frames
+    go missing (up to 1 s), and shrinks 25 ms for each 5 s without trouble; a half-percent
+    nudge to the playing speed brings the buffer to its target, and a big surplus is skipped
+    after a 5 ms fade. At every jump, and before every dry spell, the gain fades over 5 ms.
+  - *The mode.* **Auto** is live when an AirPlay source (the door) is wired to this speaker,
+    listening otherwise; the owner may pin **Live** or **Listening** on the speaker's card
+    (kept in the browser). When the page goes to the background the page plays the MP3 in its
+    `<audio>` element, which is what plays on with the screen locked, and takes live back when
+    the page returns. The element is unlocked by playing a moment of silence in the tap.
+  - *Measuring.* **Measure delay** asks the hub to replace the speaker's mix for 80 ms with a
+    2 kHz tone (a short gap and a beep; replaced, not added, so music cannot hide it). The
+    answer carries the hub's clock at request, at the tone and at reply, so the page takes the
+    round trip out and never compares clocks. The page finds the tone with a Goertzel filter at
+    the worklet's output (live) and, for listening, at a second `<audio>` element's analyser.
+    The hub also reports how long sound waits in each source's buffer before it is mixed. The
+    probe does not touch the patchbay.
+  - *Limits.* The hub cannot see inside the AirPlay receiver (shairport's own latency, which
+    the sender sets); it can see only how much sound waits in the pipe's buffer, which the
+    probe's answer and the hub's log give. A device's own speaker or Bluetooth delay is not
+    measured. Live needs AudioWorklet and a streaming `fetch`; without them the card stays on
+    Listening.
 
 ## Consequences
 

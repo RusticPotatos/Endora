@@ -52,6 +52,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/setups/{name}", delete(remove_setup))
         .route("/v1/setups/{name}/apply", post(apply_setup))
         .route("/v1/listen/{speaker}", get(listen))
+        .route("/v1/live/{speaker}", get(live))
+        .route("/v1/speakers/{id}/probe", post(probe))
         .route("/v1/found", get(found))
         .route("/v1/speakers/{id}/free", post(free))
         .route_layer(middleware::from_fn_with_state(
@@ -196,19 +198,7 @@ async fn free(Extract(state): Extract<State>, Path(id): Path<u32>) -> Result<Sta
 /// A stream speaker's live stream, as MP3, for as long as the listener stays. The phone, the
 /// tablet and the handheld play this; the node passes it on to them.
 async fn listen(Extract(state): Extract<State>, Path(id): Path<u32>) -> Result<Response, Failed> {
-    let kind = state
-        .hub
-        .read(|bay| bay.speaker(SpeakerId(id)).map(|s| s.kind));
-    match kind {
-        None => return Err(not_there("speaker")),
-        Some(SpeakerKind::AirPlay) => {
-            return Err(Failed(
-                StatusCode::BAD_REQUEST,
-                "an AirPlay speaker is played by a sender, not listened to".to_owned(),
-            ));
-        }
-        Some(SpeakerKind::Stream) => {}
-    }
+    stream_speaker(&state, id)?;
     let receiver = state.listeners.listen(SpeakerId(id)).map_err(|e| {
         Failed(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -233,6 +223,107 @@ async fn listen(Extract(state): Extract<State>, Path(id): Path<u32>) -> Result<R
         axum::body::Body::from_stream(body),
     )
         .into_response())
+}
+
+/// Whether `id` is a stream speaker, which is what can be listened to.
+fn stream_speaker(state: &State, id: u32) -> Result<(), Failed> {
+    let kind = state
+        .hub
+        .read(|bay| bay.speaker(SpeakerId(id)).map(|s| s.kind));
+    match kind {
+        None => Err(not_there("speaker")),
+        Some(SpeakerKind::AirPlay) => Err(Failed(
+            StatusCode::BAD_REQUEST,
+            "an AirPlay speaker is played by a sender, not listened to".to_owned(),
+        )),
+        Some(SpeakerKind::Stream) => Ok(()),
+    }
+}
+
+/// A stream speaker's live stream: raw PCM in 20 ms frames (see [`crate::live`]), for a page
+/// that wants the least delay. Each frame goes out as soon as it is mixed, as one chunk, and a
+/// listener that falls behind skips ahead rather than carrying a growing delay.
+async fn live(Extract(state): Extract<State>, Path(id): Path<u32>) -> Result<Response, Failed> {
+    stream_speaker(&state, id)?;
+    let receiver = state.listeners.listen_live(SpeakerId(id));
+    let body = futures_util::stream::unfold(receiver, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(frame) => return Some((Ok::<_, std::convert::Infallible>(frame), rx)),
+                // The sequence numbers tell the page what it missed.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/vnd.endora.live",
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+            // Said plainly, so a proxy in front does not hold the frames back.
+            (
+                axum::http::HeaderName::from_static("x-accel-buffering"),
+                "no",
+            ),
+        ],
+        axum::body::Body::from_stream(body),
+    )
+        .into_response())
+}
+
+/// The owner asks to measure a speaker's delay: for a moment its mix is replaced by a tone the
+/// page listens for. The answer says, by the hub's clock, when the request arrived, when the
+/// tone went into the mix and when this answer was made (so the page can take the network out
+/// of what it measures), and how long each source's sound waits in the hub before it is mixed.
+async fn probe(Extract(state): Extract<State>, Path(id): Path<u32>) -> Result<Json<Value>, Failed> {
+    stream_speaker(&state, id)?;
+    let received = crate::listen::now_us();
+    let told = state.listeners.probe(SpeakerId(id)).map_err(|_| {
+        Failed(
+            StatusCode::CONFLICT,
+            "nobody is listening to that speaker".to_owned(),
+        )
+    })?;
+    let injected = tokio::task::spawn_blocking(move || {
+        told.recv_timeout(std::time::Duration::from_secs(2)).ok()
+    })
+    .await
+    .ok()
+    .flatten()
+    .ok_or_else(|| {
+        Failed(
+            StatusCode::GATEWAY_TIMEOUT,
+            "the tone did not get into the mix".to_owned(),
+        )
+    })?;
+    let replied = crate::listen::now_us();
+    let intake = state.listeners.intake();
+    println!(
+        "sound: delay probe on speaker {id}: mixed {} us after it arrived; sound waits in the hub before the mix: {}",
+        injected.saturating_sub(received),
+        if intake.is_empty() {
+            "nothing is playing".to_owned()
+        } else {
+            intake
+                .iter()
+                .map(|(name, ms)| format!("{name} {ms} ms"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    );
+    Ok(Json(json!({
+        "received_at_us": received,
+        "injected_at_us": injected,
+        "replied_at_us": replied,
+        "rate": endora_sound::domain::mix::RATE,
+        "tone_hz": crate::live::PROBE_HZ,
+        "tone_ms": crate::live::PROBE_MS,
+        "tone_amplitude": crate::live::PROBE_AMPLITUDE,
+        "intake": intake.iter().map(|(name, ms)| json!({ "source": name, "ms": ms })).collect::<Vec<_>>(),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -877,6 +968,168 @@ mod tests {
         );
         let (_, s) = send(&app, "GET", "/v1/state", "").await;
         assert_eq!(s["listening"], json!([phone]));
+    }
+
+    async fn a_phone(app: &Router) -> u64 {
+        let (_, phone) = send(
+            app,
+            "POST",
+            "/v1/speakers",
+            r#"{"name":"Test phone","kind":"stream","device":"test-phone"}"#,
+        )
+        .await;
+        phone["id"].as_u64().unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_a_signed_request_for_a_stream_speaker_gets_the_live_stream() {
+        let (state, _) = state();
+        let app = app(state);
+        let (_, kitchen) = send(
+            &app,
+            "POST",
+            "/v1/speakers",
+            r#"{"name":"Kitchen","kind":"airplay"}"#,
+        )
+        .await;
+        let kitchen = &kitchen["id"];
+        assert_eq!(
+            send(&app, "GET", &format!("/v1/live/{kitchen}"), "")
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(&app, "GET", "/v1/live/99", "").await.0,
+            StatusCode::NOT_FOUND
+        );
+        for uri in ["/v1/live/99", "/v1/speakers/99/probe"] {
+            let method = if uri.ends_with("probe") {
+                "POST"
+            } else {
+                "GET"
+            };
+            let res = app
+                .clone()
+                .oneshot(call(method, uri, None, ""))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{uri} is signed");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_live_stream_is_pcm_frames_that_arrive_as_they_are_mixed() {
+        use futures_util::StreamExt as _;
+        let (state, _) = state();
+        let listeners = state.listeners.clone();
+        let app = app(state);
+        let phone = a_phone(&app).await;
+        let res = app
+            .clone()
+            .oneshot(call("GET", &format!("/v1/live/{phone}"), Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["content-type"], "application/vnd.endora.live");
+        assert_eq!(res.headers()["cache-control"], "no-store");
+        let (_, s) = send(&app, "GET", "/v1/state", "").await;
+        assert_eq!(
+            s["listening"],
+            json!([phone]),
+            "a live listener is a listener"
+        );
+        // The mixer feeds a block every tick; each frame reaches the listener as a chunk of
+        // its own, not held back to fill a buffer.
+        let speaker = SpeakerId(u32::try_from(phone).unwrap());
+        let feeder = std::thread::spawn(move || {
+            for n in 0..10i16 {
+                listeners.feed(speaker, &vec![n + 1; crate::live::FRAME_FRAMES * 2]);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+        let mut body = res.into_body().into_data_stream();
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+                .await
+                .expect("a frame in five seconds")
+                .expect("the stream goes on")
+                .unwrap();
+            let (frame, rest) = crate::live::parse(&chunk).expect("one whole frame per chunk");
+            assert!(rest.is_empty());
+            seen.push((frame.seq, frame.samples[0]));
+        }
+        feeder.join().unwrap();
+        assert_eq!(seen, (0..10u32).zip(1..=10i16).collect::<Vec<_>>());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_delay_probe_is_refused_without_a_listener_and_answers_with_the_hubs_clock() {
+        use futures_util::StreamExt as _;
+        let (state, _) = state();
+        let listeners = state.listeners.clone();
+        let app = app(state);
+        let phone = a_phone(&app).await;
+        let (status, _) = send(&app, "POST", &format!("/v1/speakers/{phone}/probe"), "").await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "nobody listens, nobody would hear it"
+        );
+        let res = app
+            .clone()
+            .oneshot(call("GET", &format!("/v1/live/{phone}"), Some(TOKEN), ""))
+            .await
+            .unwrap();
+        let speaker = SpeakerId(u32::try_from(phone).unwrap());
+        listeners.note_intake(vec![("Endora Mixer".to_owned(), 160)]);
+        let feeder = std::thread::spawn(move || {
+            for _ in 0..30 {
+                listeners.feed(speaker, &vec![5i16; crate::live::FRAME_FRAMES * 2]);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+        let (_, before) = send(&app, "GET", "/v1/state", "").await;
+        let (status, answer) = send(&app, "POST", &format!("/v1/speakers/{phone}/probe"), "").await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        // A measurement touches the sound, never the patchbay: no source, wire or level moves.
+        let (_, after) = send(&app, "GET", "/v1/state", "").await;
+        for key in ["sources", "speakers", "wires", "setups", "groups"] {
+            assert_eq!(before[key], after[key], "a delay probe changed the {key}");
+        }
+        let (got, injected, replied) = (
+            answer["received_at_us"].as_u64().unwrap(),
+            answer["injected_at_us"].as_u64().unwrap(),
+            answer["replied_at_us"].as_u64().unwrap(),
+        );
+        assert!(got <= replied && replied - got < 1_000_000, "{answer}");
+        assert!(
+            injected + 25_000 >= got,
+            "the tone is mixed after the request: {answer}"
+        );
+        assert_eq!(answer["rate"], 44_100);
+        assert_eq!(answer["tone_hz"], 2000.0);
+        assert_eq!(
+            answer["intake"],
+            json!([{ "source": "Endora Mixer", "ms": 160 }])
+        );
+        // The frame the tone began in carries the clock the answer gave.
+        let mut body = res.into_body().into_data_stream();
+        let mut flagged = None;
+        while let Some(Ok(chunk)) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+                .await
+                .unwrap()
+        {
+            let (frame, _) = crate::live::parse(&chunk).unwrap();
+            if frame.flags & crate::live::FLAG_PROBE != 0 {
+                flagged = Some(frame.at_us);
+                break;
+            }
+        }
+        feeder.join().unwrap();
+        assert_eq!(flagged, Some(injected));
     }
 
     #[tokio::test]
