@@ -131,9 +131,17 @@ pub(crate) struct TokenAsked {
 /// spend. Signed by the node; nothing else may ask.
 pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAsked>) -> Response {
     let hq = state.hq.clone();
-    let found = tokio::task::spawn_blocking(move || hq.turn_of(&req.token)).await;
+    let found = tokio::task::spawn_blocking(move || {
+        let Some((run, member)) = hq.turn_of(&req.token)? else {
+            return Ok(None);
+        };
+        // What runs the turn (ADR 0117): the relay passes a Claude Code turn's own shape.
+        let runtime = hq.runtime_of(member.id).unwrap_or_default();
+        Ok::<_, endora_team::application::EngineError>(Some((run, member, runtime)))
+    })
+    .await;
     match found {
-        Ok(Ok(Some((run, member)))) => Json(json!({
+        Ok(Ok(Some((run, member, runtime)))) => Json(json!({
             "run": run.id.0,
             "member": member.name,
             "role": member.role.name(),
@@ -143,6 +151,7 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             // and only such a turn reaches Anthropic.
             "cloud": member.brain.cloud(),
             "brain": member.brain.name(),
+            "runtime": runtime.name(),
             // The task the turn is on (ADR 0115): the node names the wing's branches by it.
             "task": run.task.map(|t| t.0),
         }))

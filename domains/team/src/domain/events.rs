@@ -67,6 +67,8 @@ pub enum EventKind {
     LessonNoted,
     /// The owner set what a member thinks with.
     BrainSet,
+    /// The owner set what runs a member's turns (ADR 0117).
+    RuntimeSet,
     /// A member joined the team.
     MemberHired,
     /// The owner renamed a member.
@@ -126,6 +128,7 @@ impl EventKind {
             Self::CheckBackDropped => "checkback.dropped",
             Self::LessonNoted => "lesson.noted",
             Self::BrainSet => "member.brain",
+            Self::RuntimeSet => "member.runtime",
             Self::MemberHired => "member.hired",
             Self::MemberRenamed => "member.renamed",
             Self::HouseNoted => "house.noted",

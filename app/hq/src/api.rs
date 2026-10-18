@@ -73,6 +73,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/goals/{id}/note", post(goal_note))
         // What a member thinks with (ADR 0109): the owner's, through the node.
         .route("/v1/members/{id}/brain", post(set_brain))
+        // What runs a member's turns (ADR 0117): the worker, or Claude Code for a developer.
+        .route("/v1/members/{id}/runtime", post(set_runtime))
         // The owner renames a member, and reads and edits the CEO's house log (ADR 0111).
         .route("/v1/members/{id}/name", post(rename))
         .route("/v1/house", post(house_log))
@@ -457,6 +459,23 @@ async fn set_brain(
     let hq = state.hq.clone();
     let brain = blocking(move || hq.set_brain(MemberId(id), &req.brain)).await?;
     Ok(Json(json!({ "member": id, "brain": brain.name() })))
+}
+
+#[derive(Deserialize)]
+struct RuntimeAsked {
+    runtime: String,
+}
+
+/// The owner sets what runs a member's turns: `worker`, or `claude-code` for a developer on
+/// Claude (ADR 0117).
+async fn set_runtime(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<RuntimeAsked>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let runtime = blocking(move || hq.set_runtime(MemberId(id), &req.runtime)).await?;
+    Ok(Json(json!({ "member": id, "runtime": runtime.name() })))
 }
 
 #[derive(Deserialize)]
@@ -1769,6 +1788,108 @@ mod tests {
         assert_eq!(found["cloud"], true, "the node's check point is told");
         assert_eq!(found["brain"], "claude-sonnet-5-5");
         assert_eq!(found["role"], "lead");
+    }
+
+    #[tokio::test]
+    async fn the_owner_puts_a_developer_on_claude_code_and_the_runner_and_the_relay_hear_it() {
+        let st = state(false);
+        let dev = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
+        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 1).unwrap();
+        st.hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
+        let app = app(st.clone());
+        let set = |token: Option<&str>, member: i64, runtime: &str| {
+            call(
+                "POST",
+                &format!("/v1/members/{member}/runtime"),
+                token,
+                &json!({ "runtime": runtime }).to_string(),
+            )
+        };
+        let stranger = app
+            .clone()
+            .oneshot(set(Some(RUNNER), dev.0, "claude-code"))
+            .await
+            .unwrap();
+        assert_eq!(
+            stranger.status(),
+            StatusCode::UNAUTHORIZED,
+            "the node's alone"
+        );
+        for (member, why) in [(dev, "a developer at home"), (lead, "a lead")] {
+            let refused = app
+                .clone()
+                .oneshot(set(Some(TOKEN), member.0, "claude-code"))
+                .await
+                .unwrap();
+            assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{why}");
+        }
+        st.hq.set_brain(dev, "claude-haiku-5-5").unwrap();
+        let res = app
+            .clone()
+            .oneshot(set(Some(TOKEN), dev.0, "claude-code"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_of(res).await["runtime"], "claude-code");
+        let shown = st.hq.snapshot().unwrap();
+        let card = shown["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == dev.0)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (card["runtime"].clone(), card["claude_code"].clone()),
+            (json!("claude-code"), json!(true))
+        );
+
+        let goal = st
+            .hq
+            .set_goal("Tidy the fork", "a test", Author::Owner)
+            .unwrap();
+        st.hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: None,
+                    parent: None,
+                    title: "Tidy a role".to_owned(),
+                    description: String::new(),
+                    assignee: Some(dev),
+                    priority: Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+        st.hq.tick().unwrap();
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    &json!({ "free": 1 }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(handed["runtime"], "claude-code");
+        assert_eq!(handed["brain"], "claude-haiku-5-5");
+        let found = json_of(
+            app.oneshot(call(
+                "POST",
+                "/v1/team/turn",
+                Some(TOKEN),
+                &json!({ "token": handed["token"] }).to_string(),
+            ))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(found["runtime"], "claude-code", "the relay is told");
     }
 
     #[tokio::test]

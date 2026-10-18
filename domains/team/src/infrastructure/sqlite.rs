@@ -181,6 +181,10 @@ const PROJECT_COLUMNS: [(&str, &str); 5] = [
     ("ledger", "project INTEGER REFERENCES projects(id)"),
 ];
 
+/// The columns a store made before Claude Code ran turns (ADR 0117) gains: every member on
+/// Endora's worker.
+const RUNTIME_COLUMNS: [(&str, &str); 1] = [("members", "runtime TEXT NOT NULL DEFAULT 'worker'")];
+
 /// Adds `column` (its name, then its type) to `table`, unless the table has it already.
 fn add_column(conn: &Connection, table: &str, column: &str) -> Stored<()> {
     let name = column.split_whitespace().next().unwrap_or(column);
@@ -281,7 +285,11 @@ impl SqliteTeamStore {
                 .map_err(backend)?;
             }
         }
-        for (table, column) in PROJECT_COLUMNS.into_iter().chain(EVIDENCE_COLUMNS) {
+        for (table, column) in PROJECT_COLUMNS
+            .into_iter()
+            .chain(EVIDENCE_COLUMNS)
+            .chain(RUNTIME_COLUMNS)
+        {
             add_column(&conn, table, column)?;
         }
         // A project's month is read on every wake and turn about its work, each row with its
@@ -517,6 +525,33 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET brain = ?2 WHERE id = ?1",
                 params![member.0, brain.name()],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn runtime_of(&self, member: MemberId) -> Stored<crate::domain::Runtime> {
+        let name: Option<String> = self
+            .conn()?
+            .query_row(
+                "SELECT runtime FROM members WHERE id = ?1",
+                [member.0],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        // A runtime the store does not know runs on the worker: nothing leaves on a misreading.
+        Ok(name
+            .as_deref()
+            .and_then(crate::domain::Runtime::from_name)
+            .unwrap_or_default())
+    }
+
+    fn set_runtime(&self, member: MemberId, runtime: crate::domain::Runtime) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET runtime = ?2 WHERE id = ?1",
+                params![member.0, runtime.name()],
             )
             .map_err(backend)?;
         Ok(())
@@ -2379,6 +2414,41 @@ CREATE TABLE IF NOT EXISTS projects (
         b.status = "pushed".to_owned();
         store.save_branch(&b).unwrap();
         assert_eq!(store.branches().unwrap()[0].status, "pushed");
+    }
+
+    #[test]
+    fn a_store_made_before_claude_code_runs_every_member_on_the_worker() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA_BEFORE_EVIDENCE).unwrap();
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots, brain) VALUES
+                (1, 'Jane Doe', 'developer', 40, 2, 'claude-haiku-5-5');",
+        )
+        .unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        use crate::domain::Runtime;
+        assert_eq!(store.runtime_of(MemberId(1)).unwrap(), Runtime::Worker);
+        store.set_runtime(MemberId(1), Runtime::ClaudeCode).unwrap();
+        assert_eq!(store.runtime_of(MemberId(1)).unwrap(), Runtime::ClaudeCode);
+        assert_eq!(
+            store.runtime_of(MemberId(9)).unwrap(),
+            Runtime::Worker,
+            "nobody runs on the worker"
+        );
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE members SET runtime = 'odd' WHERE id = 1", [])
+            .unwrap();
+        assert_eq!(
+            store.runtime_of(MemberId(1)).unwrap(),
+            Runtime::Worker,
+            "a runtime the store does not know is the worker"
+        );
+        // Opened again, the column is there already and nothing changes.
+        let again = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
+        assert_eq!(again.members().unwrap().len(), 1);
     }
 
     #[test]

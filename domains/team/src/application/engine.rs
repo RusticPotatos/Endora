@@ -31,6 +31,7 @@ use crate::domain::{docs, house};
 mod evidence;
 mod planning;
 mod projects;
+mod runtime;
 mod wing;
 
 pub use evidence::Called;
@@ -3899,6 +3900,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "brains": Brain::choices(m.role).into_iter()
                     .map(|b| json!({ "name": b.name(), "label": b.label() }))
                     .collect::<Vec<_>>(),
+                // What runs its turns (ADR 0117), and whether Claude Code may.
+                "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
+                "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
                 // A member on the house's model costs nothing; the paid share the pool.
                 "per_day": self.per_day(&m, paid),
                 "committed": committed, "spent": spent, "held": (committed - spent).max(0),
