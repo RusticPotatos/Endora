@@ -84,6 +84,10 @@ pub(super) struct Turn {
     pub(super) member: String,
     pub(super) role: String,
     pub(super) left: i64,
+    /// The task the turn is on, as HQ says (ADR 0115): what the wing's branches are named by.
+    pub(super) task: Option<i64>,
+    /// The turn's own token, as it presented it: what the node names the turn by to HQ.
+    pub(super) token: String,
     /// Whether the member thinks on a cloud model, as HQ says (`"cloud": true`, ADR 0109):
     /// the check point for Confidential results (ADR 0105, 0108), and the only turns the
     /// Anthropic relay passes on. A turn HQ says nothing of counts as local.
@@ -208,6 +212,7 @@ pub(super) async fn turn_of(
             "no turn token",
         ));
     }
+    let presented = token.clone();
     let asked =
         tokio::task::spawn_blocking(move || hq.post("/v1/team/turn", &json!({ "token": token })))
             .await
@@ -224,6 +229,8 @@ pub(super) async fn turn_of(
             member: v["member"].as_str().unwrap_or("").to_owned(),
             role: v["role"].as_str().unwrap_or("").to_owned(),
             left: v["left"].as_i64().unwrap_or(0),
+            task: v["task"].as_i64(),
+            token: presented,
             cloud: v["cloud"].as_bool().unwrap_or(false),
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(

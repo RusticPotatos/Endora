@@ -142,19 +142,46 @@ ENTRYPOINT ["endora-sound-hub"]
 # where the worker gives the model a real shell. Built with `--target workbench` and tagged
 # endora-workbench:latest:
 #   docker buildx build --platform linux/arm64 --target workbench -t endora-workbench:latest --load .
-# It is not the node's image: the node keeps the last stage. Run with a read-only root, /work as
-# a tmpfs owned by the workbench user, and HTTPS_PROXY (and https_proxy, which curl and git read
-# for plain HTTP) naming Endora's egress proxy, its only way out. The proxy does not decrypt TLS,
-# so the system's own certificates are all the sandbox trusts.
+# It is not the node's image: the node keeps the last stage. Run with a read-only root and /work
+# as a tmpfs owned by the workbench user. The sandbox is offline (ADR 0110): it reaches the
+# node's team gateway and nothing else, so everything a turn may need is in this image; the
+# egress proxy is designed and deferred. The same image runs the wing's check jobs (ADR 0115,
+# ENDORA_CHECK=1): no model, a job token, the lab's own checks on a submitted branch.
 FROM debian:bookworm-slim AS workbench
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash ca-certificates curl dnsutils git iputils-ping jq less procps python3 \
+        bash ca-certificates curl dnsutils git iputils-ping jq less procps python3 python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --home-dir /work --no-create-home --shell /bin/bash workbench
+# The lab's checks (ADR 0115), as the fork's CI runs them, in a venv of their own: ansible-core
+# (the engine alone; the `ansible` package is hundreds of collections the checks never load, and
+# minutes more of arm64 build), the fork's CI pins of ansible-lint and yamllint, and the
+# collections and roles the fork's requirements.yml names, baked in because the sandbox cannot
+# fetch them: `--syntax-check` resolves every module, and ansible-lint runs `--offline`. No docs,
+# no byte-code, no caches: the image stays small.
+ARG ANSIBLE_CORE_VERSION=2.15.13
+ARG ANSIBLE_LINT_VERSION=6.14.6
+ARG YAMLLINT_VERSION=1.30.0
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --no-compile \
+        "ansible-core==${ANSIBLE_CORE_VERSION}" \
+        "ansible-lint==${ANSIBLE_LINT_VERSION}" \
+        "yamllint==${YAMLLINT_VERSION}" \
+    && /opt/venv/bin/ansible-galaxy collection install -p /opt/venv/collections \
+        ansible.posix community.docker community.general vladgh.samba \
+    && /opt/venv/bin/ansible-galaxy role install -p /opt/venv/roles \
+        geerlingguy.docker,7.1.0 geerlingguy.nfs,2.0.0 \
+    && find /opt/venv -type d -name '__pycache__' -prune -exec rm -rf '{}' + \
+    && rm -rf /root/.ansible /root/.cache /opt/venv/collections/ansible_collections/*/*/docs \
+    && chmod -R a+rX /opt/venv
 COPY --from=builder /endora-worker /usr/local/bin/endora-worker
 ENV HOME=/work
 ENV ENDORA_WORKBENCH=1
+ENV PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV ANSIBLE_COLLECTIONS_PATH=/opt/venv/collections
+ENV ANSIBLE_ROLES_PATH=/opt/venv/roles
+ENV ANSIBLE_LOCAL_TEMP=/tmp/ansible
+ENV ANSIBLE_REMOTE_TEMP=/tmp/ansible
 WORKDIR /work
 USER workbench
 ENTRYPOINT ["endora-worker"]
@@ -168,9 +195,11 @@ FROM debian:bookworm-slim
 # unconnected. Node's `npx` fetches a package on first run, so a freshly registered
 # npx server may need one retry while it downloads; a globally pre-installed server
 # (or one already cached) connects immediately.
+# openssh-client: the wing's approved branches are pushed to the owner's fork over SSH with a
+# deploy key (ADR 0115); git clones the fork's mirror over plain HTTPS.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates git nodejs npm python3 \
+        ca-certificates git nodejs npm openssh-client python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /endora-node /usr/local/bin/endora-node

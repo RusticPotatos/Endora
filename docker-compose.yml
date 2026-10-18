@@ -231,6 +231,12 @@ services:
       # Read-only here; only HQ writes it.
       - endora-hq-token:/hq-token:ro
       - endora-sound-token:/sound-token:ro
+      # The deploy key the node pushes the wing's approved branches with (ADR 0115): a host
+      # folder holding one file, `key` (an ed25519 private key, mode 0600, added to the fork on
+      # GitHub as a deploy key with write access). Set ENDORA_GIT_PUSH_KEY in local.mk to that
+      # folder; unset, an empty volume is mounted, the node cannot push, and the owner's desk
+      # offers the branch's bundle to download instead. Read-only: the node never writes it.
+      - ${ENDORA_GIT_PUSH_KEY:-endora-no-git-key}:/git-push-key:ro
     networks:
       default: {}
       # Also on the team's fenced network (ADR 0102), where a worker reaches the model relay
@@ -255,12 +261,15 @@ services:
       ENDORA_HQ_URL: "${ENDORA_HQ_URL-}"
       ENDORA_HQ_TOKEN_FILE: /hq-token/token
       # The lab's ansible-nas (ADR 0112): the owner's public fork on GitHub, as owner/name, and
-      # its branch (master unless set), in local.mk. The node reads only its role names and its
-      # docs (docs/, website/docs/, role READMEs) for the team's homelab_map and
-      # ansible_nas_doc, never an inventory or group_vars. Empty: not configured, and who
-      # manages a container is unknown.
+      # its branch (unset: the fork's own default branch, asked of GitHub once, ADR 0115), in
+      # local.mk. The node reads only its role names and its docs (docs/, website/docs/, role
+      # READMEs) for the team's homelab_map and ansible_nas_doc, never an inventory or
+      # group_vars; the engineering wing (ADR 0115) also keeps a bare mirror of it under /data
+      # for the team's branches. Empty: not configured, and who manages a container is unknown.
       ENDORA_ANSIBLE_NAS_REPO: "${ENDORA_ANSIBLE_NAS_REPO-}"
-      ENDORA_ANSIBLE_NAS_REF: "${ENDORA_ANSIBLE_NAS_REF:-master}"
+      ENDORA_ANSIBLE_NAS_REF: "${ENDORA_ANSIBLE_NAS_REF-}"
+      # Where the deploy key is inside the container (the mount above); absent, no push.
+      ENDORA_GIT_PUSH_KEY_FILE: /git-push-key/key
       # Containers the owner has retired but kept, with a note the team's map shows beside
       # each: name=note pairs, ";" between them (e.g. owntone=retired, kept for its settings).
       ENDORA_LAB_RETIRED: "${ENDORA_LAB_RETIRED-}"
@@ -374,4 +383,6 @@ volumes:
   endora-spotify-login:
   # Empty on purpose: what /mail is when no mail copy is configured.
   endora-no-mail:
+  # Empty on purpose: what /git-push-key is when no deploy key is configured (ADR 0115).
+  endora-no-git-key:
   endora-models:

@@ -452,6 +452,30 @@ pub enum Refusal {
         /// What was asked.
         asked: String,
     },
+    /// The team has one CEO (ADR 0115).
+    OnlyOneCeo,
+    /// The wing has no seat left for that role (ADR 0115).
+    NoSeat {
+        /// The role asked for.
+        role: Role,
+        /// How many the wing seats in it now.
+        count: usize,
+        /// How many it may.
+        most: usize,
+    },
+    /// The wing's members think with what the owner agreed for their role (ADR 0115).
+    WingBrain {
+        /// The role asked for.
+        role: Role,
+        /// What it may think with.
+        allowed: &'static str,
+    },
+    /// Only a lead asks the owner to hire; the CEO puts it to the board (ADR 0115).
+    OnlyLeadsHire,
+    /// A hire is asked for a role below the asker's.
+    NotBelowAsker,
+    /// Not a document on a task this turn may read.
+    NotADocument,
 }
 
 impl fmt::Display for Refusal {
@@ -592,6 +616,29 @@ impl fmt::Display for Refusal {
             Self::NotAManager => f.write_str(
                 "a member reports to another member, never itself and never in a circle; the \
                  CEO reports to the board",
+            ),
+            Self::OnlyOneCeo => f.write_str("the team has one CEO already"),
+            Self::NoSeat { role, count, most: 0 } => {
+                let _ = count;
+                write!(f, "the wing has no seat for a {}", role.name())
+            }
+            Self::NoSeat { role, count, most } => write!(
+                f,
+                "the wing seats {count} of its {most} {}{}: no seat is free; the owner may hire beyond that on the HQ screen",
+                role.name(),
+                if *most == 1 { "" } else { "s" }
+            ),
+            Self::WingBrain { role, allowed } => write!(
+                f,
+                "a {} in the wing thinks with {allowed}",
+                role.name()
+            ),
+            Self::OnlyLeadsHire => f.write_str(
+                "only a lead asks the owner to hire; the CEO puts hiring to the board with ask_owner",
+            ),
+            Self::NotBelowAsker => f.write_str("a hire is asked for a role below your own"),
+            Self::NotADocument => f.write_str(
+                "read_document reads a document of your task, its sub-tasks or the task above: d12, as the thread names them",
             ),
         }
     }

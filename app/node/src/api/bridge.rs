@@ -724,6 +724,8 @@ mod tests {
             member: "Linus".to_owned(),
             role: "developer".to_owned(),
             left: 0,
+            task: None,
+            token: "good".to_owned(),
             cloud: true,
         };
         let tool = catalog(&state)

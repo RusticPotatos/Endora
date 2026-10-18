@@ -19,7 +19,7 @@ use serde_json::json;
 use endora_team::application::engine::{Author, EngineError, Fired};
 use endora_team::application::ports::{Clock, NewRoutine, NewTask};
 use endora_team::domain::{
-    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, RoutineId, TaskId,
+    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, Role, RoutineId, TaskId,
 };
 use endora_team::infrastructure::demo;
 
@@ -78,6 +78,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/house", post(house_log))
         // Projects and whom members report to (ADR 0113): the owner's, through the node.
         .route("/v1/members/{id}/reports_to", post(reports_to))
+        // The owner hires (ADR 0115): a name, a role, a brain, whom it reports to.
+        .route("/v1/members", post(hire))
         .route("/v1/projects", post(add_project))
         .route("/v1/projects/{id}", post(change_project))
         .route("/v1/projects/{id}/cap", post(project_cap))
@@ -106,6 +108,14 @@ pub fn app(state: State) -> Router {
             "/v1/team/approval/{id}/outcome",
             post(crate::team::approval_outcome),
         )
+        // The wing's git flow (ADR 0115): a branch the node took, the check a job token names,
+        // and what came of a push the owner approved.
+        .route("/v1/team/branch", post(crate::team::branch))
+        .route("/v1/team/check", post(crate::team::check))
+        .route(
+            "/v1/team/push/{id}/outcome",
+            post(crate::team::push_outcome),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             signed_by_the_node,
@@ -116,6 +126,11 @@ pub fn app(state: State) -> Router {
         .route("/v1/team/mcp", post(crate::team::mcp))
         // A runner's door: the runner's token, not the node's.
         .merge(crate::runner::routes(state.clone()))
+        // A check job's report (ADR 0115): the job's own token, which HQ made for it.
+        .route(
+            "/v1/runner/check/{id}/done",
+            post(crate::runner::check_done),
+        )
         .merge(signed)
         .with_state(state)
 }
@@ -308,8 +323,43 @@ async fn decide(
     Json(req): Json<Decision>,
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
-    blocking(move || hq.decide_saying(DeskId(id), &req.decision, &req.answer)).await?;
-    Ok(Json(json!({ "decided": true })))
+    let push = blocking(move || {
+        hq.decide_saying(DeskId(id), &req.decision, &req.answer)?;
+        // A push the owner approved (ADR 0115): the node is told which branch to push.
+        hq.push_asked(DeskId(id))
+    })
+    .await?;
+    let mut answer = json!({ "decided": true });
+    if let Some(branch) = push {
+        answer["push"] = json!({
+            "item": id, "task": branch.task.0, "branch": branch.name, "head": branch.head,
+        });
+    }
+    Ok(Json(answer))
+}
+
+#[derive(Deserialize)]
+struct HireRequest {
+    name: String,
+    role: String,
+    #[serde(default)]
+    brain: Option<String>,
+    #[serde(default)]
+    reports_to: Option<i64>,
+}
+
+/// The owner hires a member (ADR 0115).
+async fn hire(
+    Extract(state): Extract<State>,
+    Json(req): Json<HireRequest>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let role = Role::from_name(req.role.trim()).ok_or(Failed(EngineError::Unknown("role")))?;
+    let hq = state.hq.clone();
+    let brain = req.brain.unwrap_or_else(|| "local".to_owned());
+    let id =
+        blocking(move || hq.hire_by_owner(&req.name, role, &brain, req.reports_to.map(MemberId)))
+            .await?;
+    Ok(Json(json!({ "member": id.0 })))
 }
 
 #[derive(Deserialize)]
@@ -1023,10 +1073,12 @@ mod tests {
             .filter_map(|t| t["name"].as_str())
             .collect();
         // The demo's first turn is its lead's, who keeps the team's lessons and proposes
-        // projects, accepts tested work and hands a subordinate's task on, too.
-        assert_eq!(names.len(), 13);
+        // projects, accepts tested work, hands a subordinate's task on, asks the owner to hire
+        // and reads a task's documents, too.
+        assert_eq!(names.len(), 15, "{names:?}");
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
         assert!(names.contains(&"accept") && names.contains(&"hand_to"));
+        assert!(names.contains(&"request_hire") && names.contains(&"read_document"));
         assert!(
             !names.contains(&"report_usage"),
             "the relay charges for model use, not the worker"
@@ -2194,6 +2246,331 @@ mod tests {
         );
         assert_eq!(snap["tasks"][0]["project"], id);
         assert_eq!(snap["members"][2]["reports_to"], other.0);
+    }
+
+    #[tokio::test]
+    async fn the_owner_hires_through_the_node_and_one_ceo_is_enough() {
+        let st = state(false);
+        let app = app(st.clone());
+        let hire = |signed: Option<&str>, body: serde_json::Value| {
+            call("POST", "/v1/members", signed, &body.to_string())
+        };
+        let res = app
+            .clone()
+            .oneshot(hire(None, json!({ "name": "Kit", "role": "lead" })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "the node signs");
+        let res = app
+            .clone()
+            .oneshot(hire(
+                Some(TOKEN),
+                json!({ "name": "Kit", "role": "lead", "brain": "claude-sonnet-5-5" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let kit = json_of(res).await["member"].as_i64().unwrap();
+        let res = app
+            .clone()
+            .oneshot(hire(
+                Some(TOKEN),
+                json!({ "name": "Rae", "role": "developer", "brain": "claude-haiku-5-5", "reports_to": kit }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let members = st.hq.store().members().unwrap();
+        let rae = members.iter().find(|m| m.name == "Rae").unwrap();
+        assert_eq!(
+            (rae.role, rae.brain.name(), rae.reports_to),
+            (Role::Developer, "claude-haiku-5-5", Some(MemberId(kit)))
+        );
+        st.hq.seat_ceo("Mara").unwrap();
+        let res = app
+            .clone()
+            .oneshot(hire(
+                Some(TOKEN),
+                json!({ "name": "Second", "role": "ceo", "brain": "claude-opus-5-5" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            json_of(res).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("one CEO"),
+        );
+        let res = app
+            .oneshot(hire(Some(TOKEN), json!({ "name": "X", "role": "wizard" })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_branch_the_node_took_is_checked_on_the_runner_and_reported_with_the_jobs_token() {
+        let st = state(false);
+        let (run, task) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    r#"{"free":2}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(handed["run"], run.0, "a turn, not a check: none waits");
+        let token = handed["token"].as_str().unwrap().to_owned();
+        // The relay learns the turn's task too (ADR 0115).
+        let whose = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/team/turn",
+                    Some(TOKEN),
+                    &json!({ "token": token }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(whose["task"], task.0);
+        let branch = |signed: Option<&str>, token: &str| {
+            call(
+                "POST",
+                "/v1/team/branch",
+                signed,
+                &json!({ "token": token, "branch": "hq/task-1-sort-the-cables",
+                         "head": "a1b2c3d4e5f60718", "base": "0123456789abcdef", "files": 1,
+                         "plus": 2, "minus": 0, "stat": " a | 2 ++", "diff": "+x\n+y",
+                         "can_push": true })
+                .to_string(),
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(branch(Some(&token), &token))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "the node tells it, never a worker"
+        );
+        let res = app
+            .clone()
+            .oneshot(branch(Some(TOKEN), "forged"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let recorded = json_of(
+            app.clone()
+                .oneshot(branch(Some(TOKEN), &token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let check = recorded["check"].as_i64().expect("a check is queued");
+        assert!(recorded["document"].as_i64().is_some());
+        assert_eq!(st.hq.store().documents_of(task).unwrap().len(), 1);
+        // The runner is handed the check before any turn, with the job's own token.
+        let job = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    r#"{"free":1}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (job["kind"].as_str(), job["check"].as_i64()),
+            (Some("check"), Some(check))
+        );
+        assert_eq!(job["branch"], "hq/task-1-sort-the-cables");
+        let job_token = job["token"].as_str().unwrap().to_owned();
+        assert_ne!(job_token, token);
+        // The node asks whose a job token is before it hands out the bundle.
+        let named = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                "/v1/team/check",
+                Some(TOKEN),
+                &json!({ "token": job_token }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(named.status(), StatusCode::OK);
+        assert_eq!(json_of(named).await["head"], "a1b2c3d4e5f60718");
+        let unknown = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                "/v1/team/check",
+                Some(TOKEN),
+                &json!({ "token": token }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            unknown.status(),
+            StatusCode::NOT_FOUND,
+            "a turn's token names no check"
+        );
+        // The report comes with the job's token: once; the runner's or a turn's token opens nothing.
+        let done = |bearer: Option<&str>, body: serde_json::Value| {
+            call(
+                "POST",
+                &format!("/v1/runner/check/{check}/done"),
+                bearer,
+                &body.to_string(),
+            )
+        };
+        let report = json!({ "ok": true, "summary": "syntax ok, ansible-lint ok, yamllint ok", "report": "all good" });
+        for wrong in [Some(RUNNER), Some(TOKEN), Some(token.as_str())] {
+            let res = app
+                .clone()
+                .oneshot(done(wrong, report.clone()))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{wrong:?}");
+        }
+        let res = app
+            .clone()
+            .oneshot(done(None, report.clone()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no token at all");
+        let res = app
+            .clone()
+            .oneshot(done(Some(&job_token), report.clone()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let res = app
+            .clone()
+            .oneshot(done(Some(&job_token), report))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT, "reported once");
+        let receipt = st.hq.store().call_receipts_of(run).unwrap().pop().unwrap();
+        assert_eq!((receipt.tool.as_str(), receipt.ok), ("check", true));
+        assert_eq!(
+            st.hq.store().gate(task).unwrap(),
+            Some(true),
+            "the check is the gate"
+        );
+        // Nothing more waits for the runner.
+        let res = app
+            .oneshot(call(
+                "POST",
+                "/v1/runner/next",
+                Some(RUNNER),
+                r#"{"free":1}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn an_approved_push_names_its_branch_for_the_node_and_its_outcome_is_told_once() {
+        let st = state(false);
+        let (run, task) = a_turn_starts(&st);
+        let token = st.hq.store().runs().unwrap()[0].id;
+        assert_eq!(token, run);
+        let context = {
+            let remote = st.hq.runner().remote().unwrap();
+            endora_team::infrastructure::RemoteRunner::next(remote).expect("a turn waits")
+        };
+        st.hq
+            .record_branch(
+                &context.turn.token,
+                &endora_team::application::Submission {
+                    branch: "hq/task-1-sort-the-cables".to_owned(),
+                    head: "a1b2c3d4e5f60718".to_owned(),
+                    base: "0123456789abcdef".to_owned(),
+                    files: 1,
+                    plus: 2,
+                    minus: 0,
+                    stat: String::new(),
+                    diff: String::new(),
+                    can_push: true,
+                },
+            )
+            .unwrap();
+        st.hq
+            .store()
+            .set_task_status(task, endora_team::domain::TaskStatus::Done)
+            .unwrap();
+        st.hq.offer_push(task).unwrap();
+        let item = st
+            .hq
+            .store()
+            .desk()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.kind == "push")
+            .unwrap();
+        let app = app(st.clone());
+        let decided = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    &format!("/v1/desk/{}", item.id.0),
+                    Some(TOKEN),
+                    r#"{"decision":"approve"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(decided["push"]["branch"], "hq/task-1-sort-the-cables");
+        assert_eq!(decided["push"]["head"], "a1b2c3d4e5f60718");
+        assert_eq!(decided["push"]["task"], task.0);
+        let outcome = |body: &str| {
+            call(
+                "POST",
+                &format!("/v1/team/push/{}/outcome", item.id.0),
+                Some(TOKEN),
+                body,
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(outcome(
+                r#"{"ok":true,"text":"Pushed hq/task-1-sort-the-cables to the fork."}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = app
+            .oneshot(outcome(r#"{"ok":true,"text":"again"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT, "told once");
+        assert_eq!(st.hq.store().branches().unwrap()[0].status, "pushed");
+        assert!(
+            st.hq
+                .store()
+                .thread(task)
+                .unwrap()
+                .pop()
+                .unwrap()
+                .text
+                .contains("Pushed hq/task-1")
+        );
     }
 
     #[tokio::test]

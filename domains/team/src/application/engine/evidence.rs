@@ -139,7 +139,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Each list of references, looked up: about `task`'s work, or (`None`) about anything.
-    fn look_up(&self, task: Option<&Task>, cited: &[Vec<Ref>]) -> Done<Vec<Vec<(Ref, Found)>>> {
+    pub(super) fn look_up(
+        &self,
+        task: Option<&Task>,
+        cited: &[Vec<Ref>],
+    ) -> Done<Vec<Vec<(Ref, Found)>>> {
         let work = match task {
             Some(task) => Some(self.work_of(task.id)?),
             None => None,

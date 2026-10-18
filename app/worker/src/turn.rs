@@ -11,10 +11,12 @@
 //! exception is the workbench's shell (ring 1), which runs in the sandbox the worker is in:
 //! nothing outside it, since the sandbox is offline but for the team gateway.
 
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::repo;
 use crate::shell::Shell;
 
 /// The MCP version the worker speaks.
@@ -45,6 +47,11 @@ const MOST_A_REPLY: u32 = 4096;
 
 /// The workbench's shell, as the model names it.
 const SHELL: &str = "shell";
+
+/// The wing's git (ADR 0115), as the node offers it: the worker unpacks and makes the bundles,
+/// in the workbench alone.
+const REPO_CHECKOUT: &str = "repo_checkout";
+const REPO_SUBMIT: &str = "repo_submit";
 
 /// The most of a command the line saying what a turn did shows.
 const COMMAND_AT_MOST: usize = 60;
@@ -129,10 +136,13 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     let mut offered: Vec<Value> = listed["tools"].as_array().cloned().unwrap_or_default();
     let node = Node::new(&setup.contracts, &setup.token);
     // A contract named like a team tool is left out: the name goes to HQ, as it always did.
+    // The wing's git (ADR 0115) is offered only in the workbench, where there is a git and a
+    // /work to unpack the fork into: the bundles are the worker's to carry, never the model's.
     let contracts: Vec<Value> = node
         .list()?
         .into_iter()
         .filter(|c| !offered.iter().any(|t| t["name"] == c["name"]))
+        .filter(|c| setup.workbench.is_some() || !is_repo_tool(c["name"].as_str().unwrap_or("")))
         .collect();
     let on_the_node: Vec<String> = contracts
         .iter()
@@ -166,6 +176,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         return Err(Stopped::Failed(format!("HQ refused my_turn: {briefing}")));
     }
     let task = task_of(&briefing);
+    let who = member_of(&briefing).unwrap_or_else(|| "a member".to_owned());
     // Claiming is the first step of every turn with a task, and a small model skips it: the
     // worker takes that step itself and tells the model what HQ said. A refusal (another
     // member has it) is news for the model, not a failure of the turn.
@@ -198,8 +209,11 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         talk.said(&said);
         let mut replies = Vec::new();
         for call in &said.calls {
-            let reply = match &shell {
-                Some(shell) if call.name == SHELL => in_the_shell(shell, &mut did, call),
+            let reply = match (&shell, setup.workbench.as_deref()) {
+                (Some(shell), _) if call.name == SHELL => in_the_shell(shell, &mut did, call),
+                (_, Some(dir)) if is_repo_tool(&call.name) => {
+                    in_the_repo(&node, dir, &who, task, &mut did, call)?
+                }
                 _ => run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?,
             };
             if reply.asked {
@@ -304,6 +318,19 @@ fn instructions(posted: bool, on_the_node: &[String], lessons: bool, shell: bool
             "."
         });
     }
+    if on_the_node.iter().any(|n| n == REPO_CHECKOUT) {
+        told.push_str(
+            "\n\nThe wing's git: repo_checkout brings the lab's ansible-nas fork into /work/repo \
+             with git set up (your commits are authored Endora HQ and carry the trailer for \
+             you). Work on a branch named hq/task-N-<slug> for your task, commit in small steps \
+             with the shell, then repo_submit that branch: Endora keeps it, writes its diff as \
+             a document on the task and runs the lab's checks; the result comes back as a \
+             receipt. Then submit the task for review, citing that receipt. You never push: \
+             the owner pushes an accepted branch to the fork and merges it there. Never edit, \
+             cite or copy from group_vars/*.yml, host_vars or any inventory: they hold the \
+             owner's own values, and a branch touching them is refused.",
+        );
+    }
     if lessons {
         told.push_str(
             "\n\nWhen the owner corrects you, or you learn something about this house that the \
@@ -325,6 +352,129 @@ fn instructions(posted: bool, on_the_node: &[String], lessons: bool, shell: bool
         told.push_str(" That reply goes in your task's thread.");
     }
     told
+}
+
+/// Whether a tool is the wing's git, which the worker carries out in the sandbox (ADR 0115).
+fn is_repo_tool(name: &str) -> bool {
+    name == REPO_CHECKOUT || name == REPO_SUBMIT
+}
+
+/// The member a turn is of, from HQ's briefing: its first line, "You are Kit, the team's lead."
+fn member_of(briefing: &str) -> Option<String> {
+    let first = briefing.lines().next()?.strip_prefix("You are ")?;
+    let (name, _) = first.split_once(',')?;
+    let name = name.trim();
+    (!name.is_empty() && name.chars().count() <= 40).then(|| name.to_owned())
+}
+
+/// Runs one call of the wing's git (ADR 0115) in the sandbox: a checkout asks the node for the
+/// fork's bundle and unpacks it into /work/repo; a submission bundles the member's branch and
+/// sends it to the node, which decides it. The model reads where the checkout is, or what the
+/// node said; it never sees a bundle.
+fn in_the_repo(
+    node: &Node<'_>,
+    dir: &Path,
+    member: &str,
+    task: Option<i64>,
+    did: &mut Ledger,
+    call: &Call,
+) -> Result<Reply, Stopped> {
+    let refused = |text: String| Reply {
+        text: format!("Refused: {text}"),
+        refused: true,
+        asked: false,
+    };
+    let args = match arguments(&call.arguments) {
+        Ok(args) => args,
+        Err(why) => {
+            did.unreadable(&call.name);
+            return Ok(refused(why));
+        }
+    };
+    if args["why"].as_str().is_none_or(|why| why.trim().is_empty()) {
+        did.note(&call.name, &args, Outcome::Refused);
+        return Ok(refused("say why, in `why`".to_owned()));
+    }
+    if call.name == REPO_SUBMIT {
+        let branch = args["branch"].as_str().unwrap_or("").trim().to_owned();
+        let (bytes, head) = match repo::bundle(dir, &branch) {
+            Ok(bundled) => bundled,
+            Err(why) => {
+                did.note(&call.name, &args, Outcome::Refused);
+                return Ok(refused(why));
+            }
+        };
+        use base64::Engine as _;
+        let sent = json!({
+            "branch": branch, "head": head, "why": args["why"],
+            "bundle": base64::engine::general_purpose::STANDARD.encode(&bytes),
+        });
+        let (said, outcome, _) = node.call(REPO_SUBMIT, &sent)?;
+        did.note(&call.name, &args, outcome);
+        if outcome != Outcome::Done {
+            return Ok(refused(said));
+        }
+        return Ok(Reply {
+            text: said,
+            refused: false,
+            asked: false,
+        });
+    }
+    let sent = json!({ "branch": args["branch"], "why": args["why"] });
+    let (said, outcome, _) = node.call(REPO_CHECKOUT, &sent)?;
+    if outcome != Outcome::Done {
+        did.note(&call.name, &args, outcome);
+        return Ok(refused(said));
+    }
+    // The node's text is the bundle as JSON, with the receipt after it.
+    let (payload, receipt) = said
+        .rsplit_once(" (receipt ")
+        .map_or((said.as_str(), String::new()), |(p, r)| {
+            (p, format!(" (receipt {r}"))
+        });
+    let handed: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
+    use base64::Engine as _;
+    let bundle = handed["bundle"]
+        .as_str()
+        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok());
+    let Some(bundle) = bundle else {
+        did.note(&call.name, &args, Outcome::Failed);
+        return Ok(refused(
+            "the node's checkout could not be read as a bundle".to_owned(),
+        ));
+    };
+    let branch = handed["branch"].as_str().unwrap_or("main");
+    let base = handed["base"].as_str().unwrap_or(branch);
+    match repo::checkout(dir, &bundle, branch, base, member, task) {
+        Ok(out) => {
+            did.note(&call.name, &args, Outcome::Done);
+            let slug = task.map_or_else(|| "N-<slug>".to_owned(), |t| format!("{t}-<slug>"));
+            Ok(Reply {
+                text: format!(
+                    "Checked out {} at {} into {} ({} files){receipt}. Your base is {base}: \
+                     branch from it and your submission must sit on top of it. Git is set up: \
+                     your commits are authored Endora HQ and the trailer is added for you. Work \
+                     on a branch of your own: `cd /work/repo && git checkout -b hq/task-{slug} \
+                     {base}`, edit, `git add -A && git commit -m \"what and why\"`, then \
+                     repo_submit with that branch. Never edit, cite or copy from \
+                     group_vars/*.yml, host_vars or any inventory: they hold the owner's own \
+                     values, and a branch touching them is refused.",
+                    out.branch,
+                    &out.head[..12.min(out.head.len())],
+                    out.path.display(),
+                    out.files
+                ),
+                refused: false,
+                asked: false,
+            })
+        }
+        Err(why) => {
+            did.note(&call.name, &args, Outcome::Failed);
+            Ok(refused(format!(
+                "the checkout could not be unpacked: {why}"
+            )))
+        }
+    }
 }
 
 /// The task a turn is about, from HQ's briefing (what `my_turn` starts with): the number in
@@ -861,6 +1011,11 @@ fn what_a_call_is(tool: &str, args: &Value) -> (String, String) {
         "check_back" => (
             format!("set a check-back in {} minutes", arg("minutes")),
             format!("set a check-back in {} minutes", arg("minutes")),
+        ),
+        "repo_checkout" => both("checked out the fork".to_owned()),
+        "repo_submit" => (
+            format!("submitted branch {}", arg("branch")),
+            format!("submit branch {}", arg("branch")),
         ),
         _ => {
             let main = ["container", "item", "name", "id", "task", "query"]

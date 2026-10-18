@@ -137,9 +137,21 @@ impl Hq {
         Ok(token)
     }
 
-    /// One call to HQ, signed. A failure on HQ's side is worth asking again, like no answer.
+    /// One call to HQ, signed with the runner's token. A failure on HQ's side is worth asking
+    /// again, like no answer.
     fn call(&self, method: &str, route: &str, body: Option<&Value>) -> Result<Answer, HqError> {
         let token = self.token()?;
+        self.call_as(&token, method, route, body)
+    }
+
+    /// One call to HQ, signed with `token`: the runner's, or a check job's own.
+    fn call_as(
+        &self,
+        token: &str,
+        method: &str,
+        route: &str,
+        body: Option<&Value>,
+    ) -> Result<Answer, HqError> {
         let unreachable =
             |e: &dyn std::fmt::Display| HqError::Unreachable(format!("HQ cannot be reached: {e}"));
         let address = self
@@ -155,15 +167,8 @@ impl Hq {
             .and_then(|()| stream.set_write_timeout(Some(ANSWERS_WITHIN)))
             .map_err(|e| unreachable(&e))?;
         let path = format!("{}{route}", self.prefix);
-        let answer = http::send(
-            &mut stream,
-            method,
-            &self.address,
-            &path,
-            Some(&token),
-            body,
-        )
-        .map_err(|e| unreachable(&e))?;
+        let answer = http::send(&mut stream, method, &self.address, &path, Some(token), body)
+            .map_err(|e| unreachable(&e))?;
         if answer.status >= 500 {
             return Err(HqError::Unreachable(format!(
                 "HQ failed ({})",
@@ -206,6 +211,29 @@ impl Hq {
             return Err(HqError::Answered(answer.status));
         }
         Ok(())
+    }
+
+    /// Where a check job reports (ADR 0115), up to its id: the worker in the job's container
+    /// posts to `<this><id>/done` with the job's token, through the gateway when the runner
+    /// goes through it.
+    pub fn check_done_prefix(&self) -> String {
+        format!("{}{}", self.url(), self.route("/check/"))
+    }
+
+    /// Reports a check job that never ran, or ended without reporting, with the job's own
+    /// token (ADR 0115): HQ takes a check's report once, so one the worker made first is
+    /// refused (409), which is no failure here.
+    ///
+    /// # Errors
+    /// [`HqError`] if HQ was not heard.
+    pub fn check_failed(&self, check: u64, token: &str, why: &str) -> Result<(), HqError> {
+        let route = self.route(&format!("/check/{check}/done"));
+        let body = json!({ "ok": false, "summary": why, "report": "" });
+        let answer = self.call_as(token, "POST", &route, Some(&body))?;
+        if (200..300).contains(&answer.status) || answer.status == 409 {
+            return Ok(());
+        }
+        Err(HqError::Answered(answer.status))
     }
 
     /// The runs HQ asks to stop.
@@ -263,6 +291,14 @@ mod tests {
         let hq = Hq::new("http://192.168.1.10:8788/team-gateway/", "/t").unwrap();
         assert!(hq.through_the_gateway());
         assert_eq!(hq.origin(), "http://192.168.1.10:8788");
+        assert_eq!(
+            hq.check_done_prefix(),
+            "http://192.168.1.10:8788/team-gateway/runner/check/"
+        );
+        assert_eq!(
+            Hq::new("http://hq:8790", "/t").unwrap().check_done_prefix(),
+            "http://hq:8790/v1/runner/check/"
+        );
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/team-gateway", listener.local_addr().unwrap());

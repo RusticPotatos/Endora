@@ -3,6 +3,7 @@
 use core::fmt;
 use std::time::Duration;
 
+use crate::domain::{Branch, Check, Document};
 use crate::domain::{CallReceipt, Criterion, Label, Ref};
 use crate::domain::{CheckBack, CheckBackStatus, Goal, Liveness, Project, Routine, RoutineId};
 use crate::domain::{
@@ -737,6 +738,53 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_check_back(&self, id: i64, status: CheckBackStatus, at: Millis) -> Stored<()>;
+
+    /// Adds a document to a task (ADR 0115; its `id` is ignored) and returns its id.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_document(&self, document: &Document) -> Stored<i64>;
+    /// A document, by its id.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn document(&self, id: i64) -> Stored<Option<Document>>;
+    /// A task's documents, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn documents_of(&self, task: TaskId) -> Stored<Vec<Document>>;
+    /// Records a submitted branch (its `id` is ignored) and returns its id.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_branch(&self, branch: &Branch) -> Stored<i64>;
+    /// Every submitted branch, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn branches(&self) -> Stored<Vec<Branch>>;
+    /// Saves a branch's status.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn save_branch(&self, branch: &Branch) -> Stored<()>;
+    /// Queues a check of a branch (its `id` and `token` are ignored): returns its id and the
+    /// job's own token, made by the store.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_check(&self, check: &Check) -> Stored<(i64, String)>;
+    /// Every check, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn checks(&self) -> Stored<Vec<Check>>;
+    /// Saves a check's status, result and times.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn save_check(&self, check: &Check) -> Stored<()>;
 }
 
 /// What a member's turn is started with: the run, the member, the task and what it is told.

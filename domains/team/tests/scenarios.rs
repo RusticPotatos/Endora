@@ -11,15 +11,17 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use cucumber::cli::Parser as _;
 use cucumber::{World, given, then, when};
+use endora_team::application::engine::Called;
 use endora_team::application::protocol::call;
 use endora_team::application::{
-    Author, Clock, Engine, NewRoutine, NewTask, RunContext, Settings, TeamStore,
+    Author, Clock, Engine, NewRoutine, NewTask, RunContext, Settings, Submission, TeamStore,
+    WingSeeded,
 };
 use endora_team::domain::money::DOLLAR;
 use endora_team::domain::routines::HOUR_MS;
 use endora_team::domain::{
-    GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus, Receipt, Role, TaskId,
-    WakeReason,
+    Criterion, DeskId, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus,
+    Receipt, Role, TaskId, WakeReason,
 };
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 use serde_json::json;
@@ -56,6 +58,10 @@ struct Office {
     refused: Option<String>,
     /// Whether HQ seeded its house log the last time it started.
     seeded: Option<bool>,
+    /// The engineering wing, once seeded (ADR 0115).
+    wing: Option<WingSeeded>,
+    /// The push the owner last decided on.
+    push: Option<DeskId>,
 }
 
 impl Default for Office {
@@ -73,6 +79,8 @@ impl Default for Office {
             turns: HashMap::new(),
             refused: None,
             seeded: None,
+            wing: None,
+            push: None,
         }
     }
 }
@@ -787,6 +795,268 @@ fn house_log_says(w: &mut Office, text: String) {
 fn house_log_empty(w: &mut Office) {
     assert_eq!(w.seeded, Some(false), "HQ seeded the log again");
     assert_eq!(w.hq.house_log().expect("the store answers"), "");
+}
+
+// --- The engineering wing (ADR 0115) --------------------------------------------------------
+
+/// HQ seeds the wing as it does on start: Kit the lead, Rae and Zed the developers, the goal
+/// "Improve the lab" and the project "ansible-nas clean-up", with Kit's first task.
+#[given("the engineering wing")]
+fn the_wing(w: &mut Office) {
+    let seeded =
+        w.hq.seed_wing()
+            .expect("HQ seeds the wing")
+            .expect("not seeded yet");
+    for m in w.hq.store().members().expect("the store answers") {
+        w.members.entry(m.name.clone()).or_insert(m.id);
+    }
+    w.projects
+        .insert("ansible-nas clean-up".to_owned(), seeded.project);
+    w.wing = Some(seeded);
+}
+
+fn wing(w: &Office) -> &WingSeeded {
+    w.wing.as_ref().expect("the scenario has the wing")
+}
+
+#[given(expr = "{word} hands {word} the task {string} in the wing")]
+fn wing_hands(w: &mut Office, by: String, to: String, title: String) {
+    let by = w.member(&by);
+    let to = w.member(&to);
+    let (goal, project, plan) = (wing(w).goal, wing(w).project, wing(w).task);
+    w.hq.add_task_with(
+        Author::Member(by),
+        NewTask {
+            goal,
+            project: Some(project),
+            parent: Some(plan),
+            title,
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+        &[Criterion::new("The branch passes its checks", false)],
+    )
+    .expect("the lead hands work on");
+}
+
+/// The node took the member's branch (`repo_submit`) and tells HQ, with the turn's token.
+#[when(expr = "{word} submits the branch {string}")]
+fn submits_branch(w: &mut Office, name: String, branch: String) {
+    let context = w.turn_of(&name);
+    w.hq.record_branch(
+        &context.token,
+        &Submission {
+            branch,
+            head: "a1b2c3d4e5f60718293a4b5c".to_owned(),
+            base: "0123456789abcdef01234567".to_owned(),
+            files: 1,
+            plus: 4,
+            minus: 1,
+            stat: " roles/deluge/tasks/main.yml | 5 ++--".to_owned(),
+            diff: "-old\n+new".to_owned(),
+            can_push: true,
+        },
+    )
+    .expect("the node's record is taken");
+}
+
+/// The dev node's runner takes the check and reports with the job's own token.
+#[when(expr = "the check of {string} passes")]
+fn check_passes(w: &mut Office, branch: String) {
+    check_reports(w, &branch, true, "syntax ok, ansible-lint ok, yamllint ok");
+}
+
+#[when(expr = "the check of {string} fails: {string}")]
+fn check_fails(w: &mut Office, branch: String, summary: String) {
+    check_reports(w, &branch, false, &summary);
+}
+
+fn check_reports(w: &mut Office, branch: &str, ok: bool, summary: &str) {
+    let check =
+        w.hq.next_check()
+            .expect("the store answers")
+            .expect("a check waits");
+    let (_, named) =
+        w.hq.check_by_token(&check.token)
+            .expect("the store answers")
+            .expect("the job's token names it");
+    assert_eq!(named.name, branch);
+    w.hq.check_done(
+        check.id,
+        &check.token,
+        ok,
+        summary,
+        "the commands' last words",
+    )
+    .expect("reported once");
+}
+
+#[then("the owner's desk holds no push")]
+fn no_push(w: &mut Office) {
+    assert!(w.waiting_on_desk("push").is_empty());
+}
+
+#[then(expr = "the owner's desk holds a push of {string}")]
+fn push_offered(w: &mut Office, branch: String) {
+    let items = w.waiting_on_desk("push");
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(
+        items[0]
+            .text
+            .starts_with(&format!("Push {branch} to your fork (")),
+        "{}",
+        items[0].text
+    );
+    w.push = Some(items[0].id);
+}
+
+/// The tester re-checks: she reads the document herself (a receipt of her own) and cites the
+/// check's receipt.
+#[when(expr = "{word} passes {string} on the check and her own reading")]
+fn tester_passes(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let context = w.turn_of(&name);
+    let own =
+        w.hq.record_receipt(
+            &context.token,
+            &Called {
+                tool: "read_document".to_owned(),
+                args: "d1".to_owned(),
+                excerpt: "the diff".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .expect("her own reading");
+    let check =
+        w.hq.store()
+            .runs()
+            .expect("the store answers")
+            .into_iter()
+            .filter_map(|r| w.hq.store().call_receipts_of(r.id).ok())
+            .flatten()
+            .find(|r| r.tool == "check" && r.task == Some(task))
+            .expect("the check's receipt");
+    w.use_tool(
+        &name,
+        "review",
+        &json!({ "task": task.0, "verdict": "approve", "notes": "the diff is what it says",
+                 "evidence": [[format!("r{}", check.id), format!("r{own}")]] }),
+    )
+    .expect("the tester passes it");
+    turn_ends(w, name);
+}
+
+#[when(expr = "{word} accepts {string}")]
+fn lead_accepts(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.turn_of(&name);
+    w.use_tool(
+        &name,
+        "accept",
+        &json!({ "task": task.0, "verdict": "accept", "notes": "good",
+                 "evidence": [[format!("task {}", task.0)]] }),
+    )
+    .expect("the lead accepts");
+}
+
+#[then(expr = "the task {string} is {word}")]
+fn task_is(w: &mut Office, title: String, status: String) {
+    let task = w.task(&title);
+    let found =
+        w.hq.store()
+            .task(task)
+            .expect("the store answers")
+            .expect("a task");
+    assert_eq!(found.status.name(), status);
+}
+
+#[when("the owner approves the push")]
+fn approve_push(w: &mut Office) {
+    let item = w.push.expect("a push is offered");
+    w.hq.decide(item, "approve").expect("the owner decides");
+}
+
+#[then(expr = "Endora is asked to push {string}")]
+fn node_asked_to_push(w: &mut Office, branch: String) {
+    let item = w.push.expect("a push is offered");
+    let asked =
+        w.hq.push_asked(item)
+            .expect("the store answers")
+            .expect("the node is asked");
+    assert_eq!(asked.name, branch);
+}
+
+#[when(expr = "the node says it pushed: {string}")]
+fn node_pushed(w: &mut Office, text: String) {
+    let item = w.push.expect("a push is offered");
+    w.hq.push_outcome(item, true, &text).expect("told once");
+}
+
+#[when(expr = "{word} asks to hire a {word} on {string}")]
+fn asks_to_hire(w: &mut Office, name: String, role: String, brain: String) {
+    let plan = wing(w).task;
+    w.turn_of(&name);
+    let said = w.use_tool(
+        &name,
+        "request_hire",
+        &json!({ "role": role, "brain": brain, "why": "two branches wait with nobody free",
+                 "evidence": [format!("task {}", plan.0)] }),
+    );
+    let _ = said;
+}
+
+#[then(regex = r"^the owner's desk holds (\d+) hire requests?$")]
+fn desk_hires(w: &mut Office, count: usize) {
+    assert_eq!(w.waiting_on_desk("hire").len(), count);
+}
+
+#[when("the owner approves the hire")]
+fn approve_hire(w: &mut Office) {
+    let item = w.waiting_on_desk("hire").pop().expect("a request waits");
+    w.hq.decide(item.id, "approve").expect("the owner decides");
+    for m in w.hq.store().members().expect("the store answers") {
+        w.members.entry(m.name.clone()).or_insert(m.id);
+    }
+}
+
+#[then(regex = r"^the wing has (\d+) members$")]
+fn wing_size(w: &mut Office, count: usize) {
+    assert_eq!(w.hq.wing_members().expect("the store answers").len(), count);
+}
+
+#[given(expr = "the owner hires {word} as a {word} under {word}")]
+#[when(expr = "the owner hires {word} as a {word} under {word}")]
+fn owner_hires(w: &mut Office, name: String, role: String, under: String) {
+    let role = Role::from_name(&role).unwrap_or_else(|| panic!("no role {role}"));
+    let manager = w.member(&under);
+    let hired = w.hq.hire_by_owner(&name, role, "local", Some(manager));
+    if let Some(id) = w.note(hired) {
+        w.members.insert(name, id);
+    }
+}
+
+#[then(expr = "{word} reports to {word}")]
+fn reports_to(w: &mut Office, name: String, manager: String) {
+    let id = w.member(&name);
+    let manager = w.member(&manager);
+    let found =
+        w.hq.store()
+            .members()
+            .expect("the store answers")
+            .into_iter()
+            .find(|m| m.id == id)
+            .expect("hired");
+    assert_eq!(found.reports_to, Some(manager));
+}
+
+#[then(expr = "it is refused for {string}")]
+fn refused_for(w: &mut Office, why: String) {
+    let said = w.refused.as_deref().expect("it was done");
+    assert!(said.contains(&why), "refused for: {said}");
 }
 
 /// cucumber's command line, less what `cargo test` passes every test binary (`--test-threads`,

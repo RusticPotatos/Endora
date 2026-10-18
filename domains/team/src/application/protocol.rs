@@ -135,6 +135,34 @@ fn propose_project_tool() -> Value {
     })
 }
 
+/// The tool every member reads a task's documents with (ADR 0115): a branch's diff, a
+/// check's report.
+fn read_document_tool() -> Value {
+    json!({
+        "name": "read_document",
+        "description": "Read a document on your task (or one under or above it), as the thread names them (d12): a submitted branch's diff and stat, or a check's report. 16,000 characters a part.",
+        "inputSchema": { "type": "object", "properties": {
+            "document": { "type": "integer", "description": "the document's number, 12 for d12" },
+            "part": { "type": "integer", "minimum": 1 },
+        }, "required": ["document"] },
+    })
+}
+
+/// The tool a lead asks the owner to hire with (ADR 0115).
+fn request_hire_tool() -> Value {
+    json!({
+        "name": "request_hire",
+        "description": "Ask the owner to hire a member who will report to you: a role below yours, a brain that role may think with, why, and evidence from HQ's record. In the engineering wing the seats are fixed: one lead and at most five developers on Claude Haiku or the house's model; a request beyond them is refused with the count. The request waits on the owner's desk; approving hires. One request at a time.",
+        "inputSchema": { "type": "object", "properties": {
+            "name": { "type": "string", "description": "a name for the new member (optional)" },
+            "role": { "type": "string", "enum": ["developer", "researcher", "reviewer"] },
+            "brain": { "type": "string", "description": "local, claude-haiku-5-5 or claude-sonnet-5-5, as the role allows" },
+            "why": { "type": "string" },
+            "evidence": ids("What shows the need: at least one."),
+        }, "required": ["role", "brain", "why", "evidence"] },
+    })
+}
+
 /// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
 /// input. Only the reviewer is offered `review`. The CEO (ADR 0111) is offered the team's
 /// tools but the gate and privileged actions, puts decisions to the board with `ask_owner`,
@@ -223,7 +251,11 @@ pub fn tools(role: Role) -> Value {
             list.push(propose_project_tool());
             list.push(accept_tool());
             list.push(hand_to_tool());
+            list.push(request_hire_tool());
         }
+    }
+    if let Some(list) = all.as_array_mut() {
+        list.push(read_document_tool());
     }
     if crate::domain::lessons::keeps_lessons(role) {
         if let Some(list) = all.as_array_mut() {
@@ -313,6 +345,7 @@ fn ceos_tools() -> Value {
     ));
     list.push(accept_tool());
     list.push(hand_to_tool());
+    list.push(read_document_tool());
     list.push(tool(
         "read_doc",
         "Read one of Endora's public decision records or plans: a path in docs/adr or docs/plans (that folder alone lists them), 20,000 characters a part.",
@@ -620,6 +653,40 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .and_then(|p| usize::try_from(p).ok())
                 .unwrap_or(1);
             engine.read_doc(run.id, path, part).map_err(|e| said(&e))
+        }
+        "read_document" => {
+            let id = match &args["document"] {
+                Value::Number(n) => n.as_i64(),
+                Value::String(s) => s.trim().trim_start_matches('d').parse().ok(),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                "which document? Give its number as `document` (12 for d12)".to_owned()
+            })?;
+            let part = args["part"]
+                .as_u64()
+                .and_then(|p| usize::try_from(p).ok())
+                .unwrap_or(1);
+            engine.read_document(run.id, id, part).map_err(|e| said(&e))
+        }
+        "request_hire" => {
+            let role = Role::from_name(text_arg(args, "role")?)
+                .filter(|r| *r != Role::Ceo)
+                .ok_or_else(|| "`role` is developer, researcher or reviewer".to_owned())?;
+            let item = engine
+                .request_hire(
+                    run.id,
+                    args["name"].as_str().filter(|n| !n.trim().is_empty()),
+                    role,
+                    text_arg(args, "brain")?,
+                    text_arg(args, "why")?,
+                    &evidence_flat(args)?,
+                )
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "The request is on the owner's desk (item {}): they hire or decline, and you hear in this thread. Go on with your turn.",
+                item.0
+            ))
         }
         "ask_owner" => {
             let text = text_arg(args, "text")?;

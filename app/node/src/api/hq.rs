@@ -153,7 +153,7 @@ pub(super) async fn hq_decide(
         .map(Json)
         .map_err(|(status, why)| (status, Json(json!({ "error": why }))));
     }
-    let answer = ask(
+    let mut answer = ask(
         &state,
         format!("/v1/desk/{id}"),
         Some(json!({ "decision": req.decision, "answer": req.answer })),
@@ -162,6 +162,49 @@ pub(super) async fn hq_decide(
     record(
         &state,
         &format!("you decided desk item {id}: {}", req.decision),
+    );
+    // A push the owner approved (ADR 0115): the node pushes the branch HQ named, now, and
+    // tells HQ what came of it.
+    if answer.0["push"].is_object() {
+        let pushing = state.clone();
+        let push = answer.0["push"].clone();
+        let came =
+            tokio::task::spawn_blocking(move || super::contracts::push_approved(&pushing, &push))
+                .await
+                .unwrap_or_else(|_| Err("the push failed".to_owned()));
+        answer.0["pushed"] = json!(came.is_ok());
+        answer.0["said"] = json!(came.unwrap_or_else(|why| why));
+    }
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqHire {
+    name: String,
+    role: String,
+    #[serde(default)]
+    brain: Option<String>,
+    #[serde(default)]
+    reports_to: Option<i64>,
+}
+
+/// The owner hires a member (ADR 0115): HQ decides the rules (one CEO, a brain the role may
+/// use); the node records who joined.
+pub(super) async fn hq_hire(State(state): State<AppState>, Json(req): Json<HqHire>) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/members".to_owned(),
+        Some(json!({ "name": req.name, "role": req.role, "brain": req.brain, "reports_to": req.reports_to })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!(
+            "you hired {} as {} (member {})",
+            req.name.trim(),
+            req.role.trim(),
+            answer.0["member"]
+        ),
     );
     Ok(answer)
 }

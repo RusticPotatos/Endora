@@ -104,12 +104,20 @@ export ENDORA_SOUND_URL
 export ENDORA_SOUND_DIR
 
 # The lab's ansible-nas (ADR 0112), which the team's homelab_map and ansible_nas_doc read: in
-# local.mk, ENDORA_ANSIBLE_NAS_REPO = owner/ansible-nas (your public fork on GitHub, or its address) and, if not
-# master, ENDORA_ANSIBLE_NAS_REF = <branch>. Only its role names and docs are read. Containers
+# local.mk, ENDORA_ANSIBLE_NAS_REPO = owner/ansible-nas (your public fork on GitHub, or its address) and, to read
+# another branch than the fork's default, ENDORA_ANSIBLE_NAS_REF = <branch>. Only its role names and docs are read. Containers
 # you have retired but kept: ENDORA_LAB_RETIRED = name=note;name=note, shown on the team's map.
 export ENDORA_ANSIBLE_NAS_REPO
 export ENDORA_ANSIBLE_NAS_REF
 export ENDORA_LAB_RETIRED
+
+# The engineering wing's deploy key (ADR 0115): ENDORA_GIT_PUSH_KEY = <a host folder> in
+# local.mk, holding one file `key` (ed25519, mode 0600) that is a deploy key with write access
+# on your ansible-nas fork. The node pushes the branches you approve on the HQ screen with it,
+# as hq/* branches only, never main, never with force. Unset: the node cannot push, and your
+# desk offers each accepted branch's bundle to download instead. See docs/homelab.md.
+ENDORA_GIT_PUSH_KEY ?=
+export ENDORA_GIT_PUSH_KEY
 
 # The read-only mail copy on the NAS (ansible-nas `mail_mirror` role, ADR 0097), e.g.
 # ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read whenever the copy is there.

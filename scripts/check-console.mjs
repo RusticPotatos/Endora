@@ -584,15 +584,27 @@ if (failures.length) {
                 { id: 3, name: "Cy", role: "researcher", look: 1, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
                 { id: 4, name: "<i>Dee</i>", role: "reviewer", look: 2, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
                 { id: 5, name: "Mara", role: "ceo", look: 3, paused: false, slots: 1, per_day: 1361110, committed: 0, spent: 0, held: 0, running: [],
-                  brain: "claude-opus-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-opus-5-5", label: "Claude Opus" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }] }],
+                  brain: "claude-opus-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-opus-5-5", label: "Claude Opus" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }] },
+                // The engineering wing (ADR 0115): its lead and a developer, who sit in the wing.
+                { id: 6, name: "Kit", role: "lead", look: 5, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], reports_to: 5, brain: "claude-sonnet-5-5", brains: [] },
+                { id: 7, name: "Rae", role: "developer", look: 2, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [{ run: 30, task: 9 }], reports_to: 6, brain: "claude-haiku-5-5", brains: [] }],
+      wing: { goal: "Improve the lab", leads: [6], members: [6, 7], developers: 1, most_developers: 5, most_leads: 1 },
       house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
-      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack" }],
+      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack" },
+              { id: 3, title: "Improve the lab", status: "active", note: "" }],
       tasks: [{ id: 7, goal: 1, parent: null, title: "<img src=x onerror=alert(1)>", status: "doing", owner: 2, priority: "normal",
                 gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"],
                 thread: [{ author: "Bo", text: "On it", at: 1 }, { author: "Bo", text: "Probably fine.", at: 2, unsupported: true }],
                 evidence: { criteria: [{ text: "<b>sonarr</b> is running", live: true }, { text: "the cause is written up", live: false }],
                   cited: [{ stage: "submitted", member: 2, criterion: 1, at: 3, refs: [{ ref: "r12", tool: "homelab_status", at: 3, ok: true, excerpt: "<img src=e onerror=alert(7)> sonarr: running" }] },
-                          { stage: "tested", member: 4, criterion: 1, at: 4, refs: [{ ref: "r13", tool: "homelab_status", at: 4, ok: true, excerpt: "sonarr: running, healthy" }] }] } }],
+                          { stage: "tested", member: 4, criterion: 1, at: 4, refs: [{ ref: "r13", tool: "homelab_status", at: 4, ok: true, excerpt: "sonarr: running, healthy" }] }] } },
+              // A wing task (ADR 0115) with a submitted branch, its document and its check.
+              { id: 9, goal: 3, parent: null, title: "Tidy the deluge role", status: "in_review", owner: 7, priority: "normal", gate: true,
+                why: ["Tidy the deluge role", "Goal: Improve the lab"], thread: [], evidence: { criteria: [], cited: [] },
+                documents: [{ id: 3, title: "branch hq/task-9-tidy-the-deluge-role (1 file, +1 −0)", text: "<script>alert(8)</script>\\n+new line", at: 5 },
+                            { id: 4, title: "check c7: syntax ok, ansible-lint ok, yamllint ok", text: "## syntax (exit 0)", at: 6 }],
+                branches: [{ id: 1, name: "hq/task-9-tidy-the-deluge-role", head: "a1b2c3d4e5f60718", files: 1, plus: 1, minus: 0, status: "offered", at: 5, can_push: true,
+                             check: { id: 7, status: "done", ok: true, summary: "syntax ok, ansible-lint ok, yamllint ok" } }] }],
       runs: [{ id: 3, member: 2, task: 7, status: "running" }],
       recent_runs: [{ id: 2, member: 2, task: 7, status: "succeeded", label: "talk only" }, { id: 1, member: 2, task: 7, status: "succeeded", label: "checked" }],
       desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
@@ -607,7 +619,11 @@ if (failures.length) {
                decision: { decision: "Give sonarr 2 GB?", recommendation: "Yes, <i>until the upgrade</i>.", why: "It was killed for memory three times." } },
              { id: 19, kind: "project_cap", project: 2, goal: 1, text: "A cap for project #2 Backups: $5.00 a month.\\nThe CEO recommends: <u>they fail</u>" },
              { id: 20, kind: "project_budget", project: 1, goal: 1, text: "Project #1 Upkeep spent its $0.50 cap for the month ($0.46): its Claude turns wait" },
-             { id: 21, kind: "rounds", task: 7, text: "Sent back 3 times: fix it. Its next round is yours.\\n- <i>Dee</i>: no reading" }],
+             { id: 21, kind: "rounds", task: 7, text: "Sent back 3 times: fix it. Its next round is yours.\\n- <i>Dee</i>: no reading" },
+             // The wing (ADR 0115): a lead's request to hire, a push the node can make, and one it cannot.
+             { id: 22, kind: "hire", task: 9, text: "Hire Sam as developer on claude-haiku-5-5, reporting to member 6.\\nKit asks: two branches wait <b>with nobody free</b>\\nEvidence: task 9" },
+             { id: 23, kind: "push", task: 9, text: "Push hq/task-9-tidy-the-deluge-role to your fork (1 file, checks passed). It is a1b2c3d4e5f6 on top of 0123456789ab." },
+             { id: 24, kind: "push", task: 9, text: "Branch hq/task-9-other is accepted (1 file, checks passed), but pushing is not set up on the node (ENDORA_GIT_PUSH_KEY_FILE names no deploy key). Download its bundle from the node at /v1/hq/bundles/9/task-9-other and push it yourself." }],
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
@@ -703,6 +719,19 @@ if (failures.length) {
   if (!office.includes('id="hq-note-1"') || !office.includes('data-act="hq:note:1:save"')) fail("hq: a goal's notes cannot be written");
   if (office.includes("<img src=z") || !office.includes("&lt;/textarea&gt;&lt;img src=z")) fail("hq: a goal's notes became markup");
   if (office.includes("hq:decide:16:approve") || office.includes('id="hq-answer-16"')) fail("hq: a notice was offered a decision");
+  // The wing (ADR 0115): a hire request hires or declines; a push the node can make is approved
+  // or declined; one it cannot is only seen, and offers the bundle; the hire form is there.
+  for (const act of ["hq:decide:22:approve", "hq:decide:22:decline", "hq:decide:23:approve", "hq:decide:23:decline",
+    "hq:decide:24:seen", "hq:decide:24:dismiss", "hq:bundle:9:task-9-other", "hq:hire:new:add"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk or the team card does not offer ${act}`);
+  }
+  if (office.includes("hq:decide:24:approve")) fail("hq: a push the node cannot make was offered Approve");
+  if (office.includes("hq:bundle:9:task-9-tidy")) fail("hq: a push the node can make offers a download instead");
+  if (office.includes("<b>with nobody free</b>")) fail("hq: a lead's hire request became markup");
+  for (const id of ["hq-hire-name", "hq-hire-role", "hq-hire-brain", "hq-hire-to"]) {
+    if (!office.includes(`id="${id}"`)) fail(`hq: the hire form lacks ${id}`);
+  }
+  if (!office.includes("1 of 5 developer seats are taken")) fail("hq: the wing's seats are not said");
   // A member's question can be answered on its card: the answer goes in the task's thread.
   if (!office.includes('id="hq-answer-15"')) fail("hq: a question cannot be answered from its card");
   if (office.includes('id="hq-answer-12"')) fail("hq: stuck work was offered an answer box");
@@ -711,6 +740,14 @@ if (failures.length) {
   }
   if (!office.includes("nothing is spent")) fail("hq: the demo's spend line reads as real money");
   if (office.includes("<img src=x") || office.includes("<b>Fix</b>")) fail("hq: a task's text became markup");
+  // A wing task looked at: its branch with its check, and its documents, as text.
+  const wingTask = runInContext('HQ.selected = { type: "task", id: 9 }; viewHQ()', context);
+  for (const said of ["hq/task-9-tidy-the-deluge-role at a1b2c3d4e5f6", "1 files, +1 −0", "offered", "check c7: passed, syntax ok",
+    "d3 branch hq/task-9-tidy-the-deluge-role (1 file, +1 −0)", "d4 check c7: syntax ok", "&lt;script&gt;alert(8)&lt;/script&gt;"]) {
+    if (!wingTask.includes(said)) fail(`hq: the wing task's card does not show ${said}`);
+  }
+  if (wingTask.includes("<script>alert(8)")) fail("hq: a document's text became markup");
+  runInContext('HQ.selected = { type: "task", id: 7 };', context);
   if (!office.includes("Goal: Keep the home lab healthy")) fail("hq: a task's chain of why is missing");
   for (const said of ["every 6 hours", "not run yet", "takes home-lab alarms", 'id="hq-routine-title"', 'id="hq-routine-hours"', 'id="hq-routine-who"']) {
     if (!office.includes(said)) fail(`hq: the routines card does not show ${said}`);
@@ -783,7 +820,9 @@ if (failures.length) {
   // that keeps what was written on it. No art is loaded here, so this draws the room's own shapes.
   {
     const seats = runInContext("hqSeats(HQ.snap.members)", context);
-    const desks = Object.values(seats).map((s) => `${s.desk.x},${s.desk.y}`);
+    // The five of the first team (four on the floor, the CEO in its office) have five desks of
+    // their own; the wing's two sit in the wing (checked below).
+    const desks = Object.entries(seats).filter(([id]) => Number(id) <= 5).map(([, s]) => `${s.desk.x},${s.desk.y}`);
     if (desks.length !== 5 || new Set(desks).size !== 5) fail(`hq: five members do not have five desks: ${desks}`);
     if (seats[5].desk.room !== "ceo") fail("hq: the CEO's desk is not in the CEO's office");
     const inside = runInContext(`(() => {
@@ -807,9 +846,31 @@ if (failures.length) {
     const saved = runInContext("JSON.stringify(HQ.snap)", context);
     try {
       runInContext(`HQ.people = {}; HQ_BG = hqPaintRoom(); HQ_FURN = hqFurniture(); hqPlacePeople(); hqDraw();`, context);
-      for (const label of ["BOARD ROOM", "CEO", "MEETING", "SERVERS"]) {
+      for (const label of ["BOARD ROOM", "CEO", "MEETING", "SERVERS", "WING"]) {
         if (!written.includes(label)) fail(`hq: the office does not say ${label}`);
       }
+      // The wing (ADR 0115): its members sit in its room, at six desks, and walk in through its
+      // door from the lane; the floor's members keep their desks.
+      const wing = runInContext(`(() => {
+        const seats = hqSeats(HQ.snap.members);
+        const rae = HQ.people[7], kit = HQ.people[6];
+        const floor = hqWalk({ x: HQ_RESTS[0].x * HQ_T, y: HQ_RESTS[0].y * HQ_T, path: [] }, hqSpot(rae));
+        return [seats[6].desk.room === "wing", seats[7].desk.room === "wing", seats[6].desk !== seats[7].desk,
+          seats[1].desk === HQ_DESKS[0], seats[2].desk === HQ_DESKS[1], HQ_WING_DESKS.length === 6,
+          rae.at.desk === true && rae.at.room === "wing", kit.at.room === "wing" && !kit.working,
+          hqRoomAt(HQ_ROOMS.wing.in.x, HQ_ROOMS.wing.in.y) === HQ_ROOMS.wing,
+          hqRoomAt(HQ_P.door.x, HQ_P.door.y) === null, !hqPong()];
+      })()`, context);
+      if (wing.some((ok) => !ok)) fail(`hq: the wing does not seat its members or stand where it should: ${wing}`);
+      const through = runInContext(`(() => {
+        const p = { x: HQ_RESTS[0].x * HQ_T, y: HQ_RESTS[0].y * HQ_T, path: [] };
+        hqWalk(p, { x: HQ_WING_DESKS[0].x + 1.6, y: HQ_WING_DESKS[0].y - 0.5, room: "wing", dir: "down", desk: true });
+        const steps = p.path.map((s) => [s.x / HQ_T, s.y / HQ_T]);
+        const door = steps.findIndex((s) => s[0] === HQ_ROOMS.wing.out.x && s[1] === HQ_ROOMS.wing.out.y);
+        const inside = steps.findIndex((s) => s[0] === HQ_ROOMS.wing.in.x && s[1] === HQ_ROOMS.wing.in.y);
+        return door >= 0 && inside === door + 1;
+      })()`, context);
+      if (!through) fail("hq: a walk into the wing does not go through its door");
       if (!written.includes("<I>DEE</I>")) fail("hq: a member's name is not written on the canvas");
       // The CEO's daily review: the CEO at the head of the meeting table, the lead on a chair.
       const review = runInContext(`HQ.snap.routines.push({ id: 9, title: "Daily review", assignee: 5 });
@@ -839,14 +900,14 @@ if (failures.length) {
   const cards = runInContext(`HQ.snap.goals.push({ id: 2, title: "The demo's goal", status: "dropped" });
     for (let i = 0; i < 40; i++) HQ.snap.tasks.unshift({ id: 100 + i, goal: 2, title: "demo", status: "done" });
     hqCards().map((c) => c.t.id)`, context);
-  if (cards.length !== 1 || cards[0] !== 7) fail(`hq: a dropped goal's tasks are still on the board: ${cards}`);
+  if (cards.length !== 2 || cards[0] !== 7 || cards[1] !== 9) fail(`hq: a dropped goal's tasks are still on the board: ${cards}`);
   runInContext("HQ.snap.stopped = true;", context);
   if (!runInContext("viewHQ()", context).includes('data-act="hq:resume"')) fail("hq: a stopped team cannot be resumed");
   runInContext('HQ.snap = null; HQ.error = "HQ is not set up on this node yet."; HQ.selected = null;', context);
   if (!runInContext("viewHQ()", context).includes("not set up")) fail("hq: a node without HQ does not say so");
   runInContext('HQ.error = "";', context);
   console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
-  console.log("hq: the office draws five desks, the CEO's office and the meeting room, and walks people to them");
+  console.log("hq: the office draws five desks, the CEO's office, the meeting room and the wing's six desks, and walks people to them");
 }
 
 // The agenda (ADR 0103): the Now line says it is working and opens Activity; only what needs the

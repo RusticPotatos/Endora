@@ -939,6 +939,33 @@ labels is **unlabelled**, counted and shown as such, never guessed. The node pru
 its newest 20,000 events, so each window says where its record starts when that is later than
 the window; nothing older is counted. Scenarios: `features/how-the-team-is-doing.feature`.
 
+### The engineering wing and the git flow (owner's decisions of 2026-10-17, [ADR 0115](../adr/0115-the-engineering-wing-and-the-git-flow.md))
+
+Built, as the record says. In short: a second team, the **wing** (Kit the lead on Sonnet, Rae
+and Zed the developers on Haiku, under the owner's goal "Improve the lab" and its project
+"ansible-nas clean-up"; Dee tests for both teams), works on the owner's public ansible-nas fork.
+The node keeps a **mirror** of the fork and hands a sandbox a **bundle** of the fork's base
+branch (`ENDORA_ANSIBLE_NAS_REF`, the fork's `develop`; else its default branch, asked of GitHub
+once); the worker unpacks it into `/work/repo` with git set up (Endora HQ as the author, the
+trailer by a hook, no remote). A member commits on `hq/task-N-<slug>` and **submits** the
+branch as a bundle; the node takes it only on top of the base, within 200 files and 1 MB, every
+commit HQ's, nothing of `group_vars`, `host_vars` or an inventory touched, and keeps it under
+the task. HQ writes the diff as a **document** on the task and queues a **check job**, the lab's
+first piece: the Pi's runner runs the workbench image model-free with a job token, which fetches
+the branch from the node and runs the fork's own checks (syntax against the integration
+inventory, `ansible-lint --offline`, `yamllint`), five minutes each, reporting a **receipt**
+that is the task's gate; a failing check sends the work back. The tester reads the diff and the
+report, the lead accepts, and **the owner's desk offers the push**: Approve has the node push
+the stored branch to the fork over SSH with a deploy key (`hq/*` only, never force, never main);
+without a key, the bundle is offered to download. **HQ opens no pull request and merges nothing**
+during the audit period; the owner merges on GitHub. Hiring acts: the owner's form (one CEO),
+and a lead's request within the wing's seats (one Sonnet lead, five Haiku developers). The
+office gains the wing's room with six desks. Deferred: the full lab (ring 2), Endora's own
+repository, and any push or merge by HQ.
+
+Section 7 above (pull requests on Forgejo and GitHub, opened by the gateway) is superseded for
+now by this flow: branches, not pull requests, and only the owner's push.
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams;
