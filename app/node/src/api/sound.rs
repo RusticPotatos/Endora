@@ -19,7 +19,7 @@ use endora_infrastructure::{SoundClient, SoundError, SoundMethod};
 /// How long a listen ticket is good for.
 const TICKET_LIFE: Duration = Duration::from_secs(60);
 
-use crate::auth::LISTEN_PREFIX;
+use crate::auth::{LISTEN_PREFIX, LIVE_PREFIX};
 
 /// The hub, and the tickets handed out for listening to it.
 pub struct SoundRemote {
@@ -322,9 +322,12 @@ pub(super) async fn sound_listen_ticket(
 ) -> Answer {
     let sound = remote(&state)?;
     let ticket = sound.ticket(id, state.ids.new_id());
-    Ok(Json(
-        json!({ "ticket": ticket, "url": format!("{LISTEN_PREFIX}{id}?ticket={ticket}") }),
-    ))
+    Ok(Json(json!({
+        "ticket": ticket,
+        "url": format!("{LISTEN_PREFIX}{id}?ticket={ticket}"),
+        // The same ticket plays the live stream (raw PCM, for the least delay).
+        "live": format!("{LIVE_PREFIX}{id}?ticket={ticket}"),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -340,21 +343,70 @@ pub(super) async fn sound_listen(
     Path(id): Path<u32>,
     Query(q): Query<ListenQuery>,
 ) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
-    let sound = remote(&state)?;
-    if !sound.admits(&q.ticket, id) {
+    relay(&state, id, &q.ticket, Stream::Mp3).await
+}
+
+/// A stream speaker's live frames (raw PCM), passed on from the hub as they are mixed. Reached
+/// without a header, so it answers only a good ticket, like the MP3.
+pub(super) async fn sound_live(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+    Query(q): Query<ListenQuery>,
+) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
+    relay(&state, id, &q.ticket, Stream::Live).await
+}
+
+/// The owner measures a speaker's delay: the hub puts a tone in its mix and says when.
+pub(super) async fn sound_probe(State(state): State<AppState>, Path(id): Path<u32>) -> Answer {
+    ask(
+        &state,
+        SoundMethod::Post,
+        format!("/v1/speakers/{id}/probe"),
+        None,
+    )
+    .await
+}
+
+/// Which of the hub's streams to pass on.
+#[derive(Clone, Copy)]
+enum Stream {
+    /// MP3, buffered by the browser: it plays with the screen locked.
+    Mp3,
+    /// PCM frames: the least delay.
+    Live,
+}
+
+/// Opens the hub's stream for a speaker, if the ticket is good, and hands it on as it comes.
+async fn relay(
+    state: &AppState,
+    id: u32,
+    ticket: &str,
+    which: Stream,
+) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
+    let sound = remote(state)?;
+    if !sound.admits(ticket, id) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "that listen ticket is not good" })),
         ));
     }
     let opening = sound.clone();
-    let reader = tokio::task::spawn_blocking(move || opening.client.listen(id))
-        .await
-        .map_err(|_| failed(SoundError::Unreachable("a worker thread failed".to_owned())))?
-        .map_err(failed)?;
+    let reader = tokio::task::spawn_blocking(move || match which {
+        Stream::Mp3 => opening.client.listen(id),
+        Stream::Live => opening.client.live(id),
+    })
+    .await
+    .map_err(|_| failed(SoundError::Unreachable("a worker thread failed".to_owned())))?
+    .map_err(failed)?;
     // The hub's stream is read on a thread of its own and handed on as it comes; when the
     // listener goes, the next send fails and the thread lets the hub's stream go.
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(64);
+    // Short for the live stream: a frame that waits here is delay, and a listener this far
+    // behind would rather skip than carry it.
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(match which {
+            Stream::Mp3 => 64,
+            Stream::Live => 16,
+        });
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 8192];
@@ -375,12 +427,21 @@ pub(super) async fn sound_listen(
     let body = futures_util::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|chunk| (chunk, rx))
     });
+    let kind = match which {
+        Stream::Mp3 => "audio/mpeg",
+        Stream::Live => "application/vnd.endora.live",
+    };
     Ok((
         [
-            (axum::http::header::CONTENT_TYPE, "audio/mpeg"),
+            (axum::http::header::CONTENT_TYPE, kind),
             (axum::http::header::CACHE_CONTROL, "no-store"),
             // A live stream has no ranges: said plainly, so a browser does not probe for them.
             (axum::http::header::ACCEPT_RANGES, "none"),
+            // And no buffering by a proxy in front, which would hold frames back.
+            (
+                axum::http::HeaderName::from_static("x-accel-buffering"),
+                "no",
+            ),
         ],
         axum::body::Body::from_stream(body),
     )
@@ -610,6 +671,141 @@ mod tests {
                 .unwrap()
                 .status(),
             StatusCode::OK
+        );
+    }
+
+    /// A hub that streams: it answers a request with a chunked head and `first`, and holds the
+    /// rest back until it is told to send it. A node that buffered the stream would never show
+    /// the first frame.
+    fn a_streaming_hub(
+        first: Vec<u8>,
+        rest: Vec<u8>,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<String>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (seen, requests) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let Ok((mut socket, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let n = socket.read(&mut buf).unwrap_or(0);
+            let _ = seen.send(String::from_utf8_lossy(&buf[..n]).into_owned());
+            let chunk = |b: &[u8]| {
+                let mut c = format!("{:x}\r\n", b.len()).into_bytes();
+                c.extend_from_slice(b);
+                c.extend_from_slice(b"\r\n");
+                c
+            };
+            let _ = socket.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/vnd.endora.live\r\ntransfer-encoding: chunked\r\n\r\n",
+            );
+            let _ = socket.write_all(&chunk(&first));
+            let _ = socket.flush();
+            // Held until the test has seen the first frame come through.
+            let _ = released.recv();
+            let _ = socket.write_all(&chunk(&rest));
+            let _ = socket.write_all(b"0\r\n\r\n");
+        });
+        (url, requests, release)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_live_stream_is_passed_on_frame_by_frame_with_the_same_ticket_as_listening() {
+        use futures_util::StreamExt as _;
+        let (url, requests, release) =
+            a_streaming_hub(b"EL-first-frame".to_vec(), b"EL-second".to_vec());
+        let state = with_hub(&url);
+        // Refused without a ticket, with a made-up one and with the owner's own token.
+        for uri in [
+            "/v1/sound/live/2".to_owned(),
+            "/v1/sound/live/2?ticket=made-up".to_owned(),
+            format!("/v1/sound/live/2?ticket={}", crate::api::tests::TEST_TOKEN),
+        ] {
+            let res = app(state.clone()).oneshot(unsigned(&uri)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        }
+        let ticket = json_body(
+            app(state.clone())
+                .oneshot(post("/v1/sound/listen/2/ticket", "{}"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let live = ticket["live"].as_str().unwrap().to_owned();
+        assert!(live.starts_with("/v1/sound/live/2?ticket="), "{live}");
+        // Not for another speaker.
+        let elsewhere = live.replacen("/live/2?", "/live/3?", 1);
+        assert_eq!(
+            app(state.clone())
+                .oneshot(unsigned(&elsewhere))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let ticket = json_body(
+            app(state.clone())
+                .oneshot(post("/v1/sound/listen/2/ticket", "{}"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let live = ticket["live"].as_str().unwrap().to_owned();
+        let res = app(state).oneshot(unsigned(&live)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["content-type"], "application/vnd.endora.live");
+        assert_eq!(res.headers()["cache-control"], "no-store");
+        let mut body = res.into_body().into_data_stream();
+        // The first frame arrives while the hub is still holding the rest back.
+        let first = tokio::time::timeout(Duration::from_secs(5), body.next())
+            .await
+            .expect("the first frame was held back until the stream ended")
+            .unwrap()
+            .unwrap();
+        assert_eq!(&first[..], b"EL-first-frame");
+        release.send(()).unwrap();
+        let mut rest = Vec::new();
+        while let Some(Ok(chunk)) = body.next().await {
+            rest.extend_from_slice(&chunk);
+        }
+        assert_eq!(rest, b"EL-second");
+        let request = requests.recv().unwrap();
+        assert!(request.starts_with("GET /v1/live/2 "), "{request}");
+        assert!(
+            request.to_lowercase().contains("bearer the-hubs-own-token"),
+            "{request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delay_probe_goes_to_the_hub_signed_and_only_for_the_owner() {
+        let (url, requests) = a_hub(
+            "200 OK",
+            "application/json",
+            br#"{"received_at_us":1,"injected_at_us":2,"replied_at_us":3}"#,
+        );
+        let state = with_hub(&url);
+        let res = app(state.clone())
+            .oneshot(unsigned_post("/v1/sound/speakers/2/probe"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let res = app(state)
+            .oneshot(post("/v1/sound/speakers/2/probe", "{}"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["injected_at_us"], 2);
+        let request = requests.recv().unwrap();
+        assert!(
+            request.starts_with("POST /v1/speakers/2/probe "),
+            "{request}"
         );
     }
 

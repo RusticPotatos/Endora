@@ -24,6 +24,7 @@ mod webauthn;
 use std::sync::Arc;
 
 use api::AppState;
+use axum::serve::ListenerExt as _;
 use endora_application::Butler;
 use endora_capabilities::ConfigStore;
 use endora_infrastructure::{
@@ -358,7 +359,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("node listening on http://{addr}  (db: {db_path})");
         let listener = tokio::net::TcpListener::bind(&addr).await?;
-        axum::serve(listener, app).await?;
+        // No Nagle: the sound hub's live frames are 20 ms each and must not wait for company.
+        // (The TLS server above sets this itself.)
+        axum::serve(
+            listener.tap_io(|tcp| {
+                let _ = tcp.set_nodelay(true);
+            }),
+            app,
+        )
+        .await?;
     }
     Ok(())
 }

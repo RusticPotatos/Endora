@@ -409,3 +409,19 @@ fn a_fast_writer_loses_nothing_when_taken_in_small_bites() {
     pumping.join().unwrap();
     assert!(taken > MOST, "too little went through to tell: {taken}");
 }
+
+#[test]
+fn the_sound_waiting_in_a_sources_buffer_is_told_in_milliseconds() {
+    let mut feeds = FeedSet::new(Places {
+        ffmpeg: "ffmpeg".into(),
+        pipes: std::env::temp_dir(),
+    });
+    let buffer: Shared = Arc::new(Mutex::new(Buffer::live()));
+    // A fifth of a second, stereo.
+    buffer
+        .lock()
+        .unwrap()
+        .push(&vec![1; RATE as usize / 5 * CHANNELS]);
+    feeds.open.insert(SourceId(3), (buffer, Running::Voice));
+    assert_eq!(feeds.waiting(), vec![(SourceId(3), 200)]);
+}

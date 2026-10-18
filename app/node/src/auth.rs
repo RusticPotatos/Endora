@@ -56,11 +56,19 @@ const THE_ROUTE_A_BROWSER_CANNOT_SIGN: &str = "/v1/activity/stream";
 /// anything without a good ticket.
 pub const LISTEN_PREFIX: &str = "/v1/sound/listen/";
 
-/// Whether `path` is the listen route: the prefix and a speaker id, nothing else.
+/// Where a page fetches the live stream: raw PCM for the least delay. A `fetch` could sign its
+/// request, but the stream is the same sound as the listen route's, so it is let in the same
+/// way and no other: by the same ticket, for the same speaker.
+pub const LIVE_PREFIX: &str = "/v1/sound/live/";
+
+/// Whether `path` is the listen route or the live route: the prefix and a speaker id, nothing
+/// else.
 #[must_use]
 pub fn is_listen_route(path: &str) -> bool {
-    path.strip_prefix(LISTEN_PREFIX).is_some_and(|id| {
-        !id.is_empty() && id.len() <= 10 && id.bytes().all(|b| b.is_ascii_digit())
+    [LISTEN_PREFIX, LIVE_PREFIX].iter().any(|prefix| {
+        path.strip_prefix(prefix).is_some_and(|id| {
+            !id.is_empty() && id.len() <= 10 && id.bytes().all(|b| b.is_ascii_digit())
+        })
     })
 }
 
@@ -248,6 +256,24 @@ mod tests {
             "/v1/sound/listen/12345678901",
             "/v1/sound",
             "/v1/sound/wires",
+        ] {
+            assert!(
+                !may_pass(path, None, None, &good(), false),
+                "{path} opened unsigned"
+            );
+        }
+    }
+
+    #[test]
+    fn the_live_route_is_let_through_the_same_way_and_no_other() {
+        assert!(may_pass("/v1/sound/live/7", None, None, &good(), false));
+        for path in [
+            "/v1/sound/live/",
+            "/v1/sound/live/7/ticket",
+            "/v1/sound/live/7/../../export",
+            "/v1/sound/live/x",
+            "/v1/sound/live/12345678901",
+            "/v1/sound/speakers/7/probe",
         ] {
             assert!(
                 !may_pass(path, None, None, &good(), false),

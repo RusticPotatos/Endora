@@ -473,6 +473,20 @@ impl FeedSet {
         }
     }
 
+    /// How much sound waits in each open source's buffer, in milliseconds: the time it spends
+    /// between arriving from its receiver or station and being mixed.
+    #[must_use]
+    pub fn waiting(&self) -> Vec<(SourceId, u32)> {
+        self.open
+            .iter()
+            .map(|(id, (buffer, _))| {
+                let samples = lock(buffer).len();
+                let ms = samples * 1000 / (RATE as usize * CHANNELS);
+                (*id, u32::try_from(ms).unwrap_or(u32::MAX))
+            })
+            .collect()
+    }
+
     /// The sources open now.
     #[must_use]
     pub fn open(&self) -> Vec<SourceId> {

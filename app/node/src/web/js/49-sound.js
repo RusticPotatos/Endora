@@ -5,7 +5,9 @@
 // can be a speaker too: it listens to the hub's stream.
 //
 // The console talks to the node only. Listening uses a ticket the node hands out, good for a
-// minute for this speaker, because an <audio> element cannot sign its request.
+// minute for this speaker, because an <audio> element cannot sign its request. The same ticket
+// plays the live stream (49b-sound-live.js): Listening is the MP3 in an <audio> element, which
+// plays on with the screen locked; Live is raw sound in a worklet, a fraction of a second behind.
 
 const SOUND = {
   state: null,        // what the hub says: sources, speakers, wires, groups, setups, listening
@@ -13,6 +15,12 @@ const SOUND = {
   found: [],          // AirPlay speakers the senders can see, by name
   ticket: null,       // { url, at } a fresh ticket for this device's stream, ready for a tap
   listening: false,   // whether this device is playing its stream
+  mode: null,         // how it plays now: "live" or "listening" (null when it does not)
+  liveBlocked: false, // live would not start without a tap: listening until the next one
+  stat: null,         // the live buffer's last report: { depthMs, target, under, ... }
+  measure: null,      // the last delay measurement: { live, listening }
+  measuring: false,
+  gen: 0,             // counts the streams started, so a slow start cannot outlive a stop
 };
 
 // The <audio> element lives outside the screen, so a re-render never stops the sound.
@@ -54,7 +62,7 @@ async function soundTicket() {
   if (!mine) { SOUND.ticket = null; return; }
   try {
     const t = await api("POST", `/v1/sound/listen/${mine.id}/ticket`, {});
-    SOUND.ticket = { url: t.url, at: Date.now() };
+    SOUND.ticket = { url: t.url, live: t.live, at: Date.now() };
   } catch (_) { SOUND.ticket = null; }
 }
 
@@ -64,12 +72,136 @@ async function soundTicket() {
 function soundStartHere(speaker) {
   const mine = soundMine();
   if (!mine || mine.id !== speaker || SOUND.listening || !SOUND.ticket) return false;
-  const a = soundAudio();
-  a.src = SOUND.ticket.url; SOUND.ticket = null;
-  SOUND.listening = true;
+  const ticket = SOUND.ticket; SOUND.ticket = null;
+  SOUND.listening = true; SOUND.liveBlocked = false;
   soundRemember(true); soundBanner("");
-  a.play().catch(() => { SOUND.listening = false; });
+  soundPlay(ticket).catch(() => { SOUND.listening = false; });
   return true;
+}
+
+// How this device is asked to hear: the owner's choice, kept in this browser only.
+function soundPref() {
+  try { const v = localStorage.getItem("endora.soundMode"); if (v === "live" || v === "listening") return v; } catch (_) {}
+  return "auto";
+}
+
+// The way to hear right now: the owner's choice, or what the wires say; listening where live
+// cannot play (no worklet, no tap since the screen was off) and in the background.
+function soundWantedMode() {
+  const mine = soundMine(), st = SOUND.state || {};
+  let mode = mine ? liveModeFor(soundPref(), st.sources, st.wires, mine.id) : "listening";
+  if (SOUND.liveBlocked || !liveSupported()) mode = "listening";
+  return liveEffectiveMode(mode, typeof document !== "undefined" && document.hidden === true);
+}
+
+// Starts hearing `ticket`'s stream, in the way wanted. Called straight from a tap: whatever has
+// to be started by a tap is started here, before anything is waited for. The audio context is
+// made (so later switches need no tap), and in live mode the <audio> element plays a moment of
+// silence, so it may start the MP3 by itself later, when the screen locks.
+function soundPlay(ticket) {
+  const a = soundAudio();
+  const mode = soundWantedMode();
+  if (liveSupported()) {
+    const ctx = liveContext();
+    if (ctx && ctx.state !== "running") ctx.resume().catch(() => {});
+  }
+  SOUND.mode = mode;
+  if (mode === "live") {
+    a.src = liveSilence();
+    a.play().catch(() => {});
+    soundLiveStart(ticket.live);
+    return Promise.resolve();
+  }
+  a.src = ticket.url;
+  return a.play();
+}
+
+// Opens the live stream and plays it. When live sound is coming, the MP3 (if it was playing)
+// is let go. If it cannot start, the MP3 plays instead and live waits for the next tap.
+async function soundLiveStart(url) {
+  const gen = ++SOUND.gen;
+  liveClose(LIVE.session); LIVE.session = null;
+  try {
+    const s = await liveOpen(url, false, {
+      stat: soundLiveStat,
+      playing: (on) => { if (on && gen === SOUND.gen) soundAudioQuiet(); },
+      ended: () => { if (gen === SOUND.gen && SOUND.listening && SOUND.mode === "live") setTimeout(soundReconnect, 1500); },
+    });
+    if (gen !== SOUND.gen) { liveClose(s); return; }
+    LIVE.session = s;
+  } catch (_) {
+    if (gen !== SOUND.gen || !SOUND.listening) return;
+    SOUND.liveBlocked = true; SOUND.mode = "listening";
+    soundBanner(`<div class="grow">Live sound needs a tap to start again.</div><button class="primary" data-act="sound:golive">Go live</button>`);
+    await soundReconnect();
+  }
+}
+
+// The MP3 stops once the live stream has taken over.
+function soundAudioQuiet() {
+  if (SOUND.mode !== "live") return;
+  const a = soundAudio();
+  a.pause(); a.removeAttribute("src"); a.load();
+}
+
+// The live buffer's report: the delay shown on the card follows it.
+function soundLiveStat(m) {
+  SOUND.stat = m;
+  const el = document.getElementById("sound-live-label");
+  if (el) el.textContent = soundModeSaid();
+}
+
+// What the card says about how this device hears.
+function soundModeSaid() {
+  const pref = soundPref();
+  if (!SOUND.listening) {
+    return pref === "live" ? "Live: a fraction of a second behind the hub. Stops if the screen locks."
+      : pref === "listening" ? "Listening: a few seconds behind, plays on with the screen locked."
+      : "Auto: live when something is cast in from an AirPlay door, listening for music and radio.";
+  }
+  if (SOUND.mode === "live") {
+    const m = SOUND.stat;
+    const out = (LIVE.ctx && LIVE.ctx.outputLatency) || 0;
+    if (!m || !m.playing) return "live · filling its buffer…";
+    return `live · ${liveDelayLabel(m.depthMs + out * 1000)}${m.under ? " · the network was rough, so it keeps more in hand" : ""}`;
+  }
+  return SOUND.liveBlocked ? "listening · a few seconds behind; live needs a tap"
+    : "listening · a few seconds behind; plays on with the screen locked";
+}
+
+// The way to hear changed (the owner picked one, the wires changed, the page went to the
+// background or came back): switches the stream that plays, if it must.
+async function soundApplyMode() {
+  if (!SOUND.listening) return;
+  const want = soundWantedMode();
+  if (want === SOUND.mode) return;
+  if (SOUND.switching) { SOUND.again = true; return; }
+  SOUND.switching = true;
+  try {
+    // A ticket kept ready, so a page going to the background need not ask for one first.
+    let t = SOUND.ticket && Date.now() - SOUND.ticket.at < 50000 ? SOUND.ticket : null;
+    if (!t) { await soundTicket(); t = SOUND.ticket; }
+    if (!t) return;
+    if (want === "listening") {
+      SOUND.gen++;
+      SOUND.mode = "listening";
+      liveClose(LIVE.session); LIVE.session = null;
+      const a = soundAudio();
+      a.src = t.url;
+      a.play().catch(() => {});
+    } else {
+      SOUND.mode = "live";
+      await soundLiveStart(t.live);
+    }
+    render();
+  } finally {
+    SOUND.switching = false;
+    if (SOUND.again) { SOUND.again = false; soundApplyMode(); }
+  }
+}
+
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+  document.addEventListener("visibilitychange", () => { soundApplyMode(); });
 }
 
 async function loadSound() {
@@ -90,8 +222,10 @@ async function soundReconnect() {
   if (!SOUND.listening) return;
   await soundTicket();
   if (!SOUND.ticket) return;
+  const t = SOUND.ticket; SOUND.ticket = null;
+  if (SOUND.mode === "live") { await soundLiveStart(t.live); return; }
   const a = soundAudio();
-  a.src = SOUND.ticket.url; SOUND.ticket = null;
+  a.src = t.url;
   try { await a.play(); } catch (_) {}
 }
 
@@ -132,9 +266,12 @@ function viewSound() {
   // This device, as a speaker.
   // Listening with nothing wired is silence; it says so, and where to wire something.
   const wiredHere = mine && (s.wires || []).some((w) => w.speaker === mine.id);
-  const hearing = !SOUND.listening ? "Not listening · a stream, a few seconds behind the speakers"
-    : wiredHere ? "Listening to its wires · a stream, a few seconds behind the speakers"
+  const hearing = !SOUND.listening ? "Not listening · a stream, behind the speakers"
+    : wiredHere ? "Listening to its wires · a stream, behind the speakers"
     : `Listening, but nothing is wired to this ${mine ? mine.name : "device"} yet: tap ${mine ? mine.name : "it"} under a source below`;
+  const pref = soundPref();
+  const modeButton = (m, label) => `<button class="pill pick${pref === m ? " active" : ""}" data-act="sound:mode:${m}" aria-pressed="${pref === m ? "true" : "false"}">${label}</button>`;
+  const measured = SOUND.measuring ? "Measuring: you will hear a short beep, and a moment of quiet." : soundMeasured(SOUND.measure);
   const here = mine
     ? `<div class="card"><div class="row" style="align-items:center;gap:10px;">
         <div class="grow"><div class="title">This ${esc(mine.name)}</div>
@@ -142,7 +279,12 @@ function viewSound() {
         ${SOUND.listening
           ? `<button class="ghost" data-act="sound:stop">Stop</button>`
           : `<button class="primary" data-act="sound:listen">Listen here</button>`}
-      </div></div>`
+      </div>
+      <div class="model-picker" style="margin-top:8px;">${modeButton("auto", "Auto")}${modeButton("live", "Live")}${modeButton("listening", "Listening")}</div>
+      <div class="sub" id="sound-live-label" style="margin-top:4px;">${esc(soundModeSaid())}</div>
+      <div class="row" style="gap:8px;align-items:center;margin-top:6px;">
+        <button class="ghost" data-act="sound:measure"${SOUND.measuring || !SOUND.listening ? " disabled" : ""}>Measure delay</button>
+        <span class="sub grow">${esc(measured || (SOUND.listening ? "" : "Listen first, then measure."))}</span></div></div>`
     : `<div class="card"><div class="title">Listen on this device</div>
         <div class="sub">It becomes a speaker you can wire sound to.</div>
         <div class="form" style="margin-top:8px;"><input id="sound-mine" value="${esc(soundGuessName())}" maxlength="40" autocomplete="off" />
@@ -248,19 +390,33 @@ async function soundDispatch(verb, noun, id, arg) {
   const s = SOUND.state || {};
   // Playing starts straight from the tap, with the ticket already in hand.
   if (noun === "listen") {
-    const a = soundAudio();
     if (!SOUND.ticket) { await soundTicket(); }
     if (!SOUND.ticket) { flash("Couldn't start listening.", "err"); return true; }
-    a.src = SOUND.ticket.url; SOUND.ticket = null;
-    SOUND.listening = true;
+    const ticket = SOUND.ticket; SOUND.ticket = null;
+    SOUND.listening = true; SOUND.liveBlocked = false;
     soundRemember(true); soundBanner("");
-    try { await a.play(); } catch (e) { SOUND.listening = false; flash("Couldn't play: " + e.message, "err"); }
+    try { await soundPlay(ticket); } catch (e) { SOUND.listening = false; SOUND.mode = null; flash("Couldn't play: " + e.message, "err"); }
     render(); await soundTicket(); return true;
   }
+  if (noun === "mode") {
+    try { localStorage.setItem("endora.soundMode", id === "live" || id === "listening" ? id : "auto"); } catch (_) {}
+    await soundApplyMode();
+    render(); return true;
+  }
+  // The tap that lets live sound start again after the screen was off.
+  if (noun === "golive") {
+    const ctx = liveContext();
+    if (ctx) ctx.resume().catch(() => {});
+    SOUND.liveBlocked = false; soundBanner("");
+    await soundApplyMode();
+    render(); return true;
+  }
+  if (noun === "measure") { await soundMeasure(); return true; }
   if (noun === "forgetlisten") { soundRemember(false); soundBanner(""); return true; }
   if (noun === "stop") {
-    SOUND.listening = false;
+    SOUND.listening = false; SOUND.mode = null; SOUND.gen++; SOUND.stat = null;
     soundRemember(false);
+    liveClose(LIVE.session); LIVE.session = null;
     const a = soundAudio(); a.pause(); a.removeAttribute("src"); a.load();
     render(); return true;
   }
@@ -363,12 +519,19 @@ async function soundKeepUp() {
     }
   } catch (_) { /* the node is restarting: try again next time */ }
   // A stream that stopped moving while this device listens: join it again.
-  if (SOUND.listening) {
+  if (SOUND.listening && SOUND.mode === "live") {
+    // Live frames come every 20 ms: none for five seconds is a stream that is gone. And a
+    // ticket is kept ready, for the hand-over to the MP3 when the page goes to the background.
+    const s = LIVE.session;
+    if (s && performance.now() - s.lastAt > 5000) soundReconnect();
+    else soundTicket();
+  } else if (SOUND.listening) {
     const a = soundAudio();
     const now = a.currentTime;
     SOUND_KEEP.still = now === SOUND_KEEP.last ? SOUND_KEEP.still + 1 : 0;
     SOUND_KEEP.last = now;
     if (SOUND_KEEP.still >= 1) { SOUND_KEEP.still = 0; soundReconnect(); }
+    else soundTicket();
   }
 }
 

@@ -157,6 +157,14 @@ pub fn start(
                 }
             }
             if tidied.elapsed() > Duration::from_secs(1) {
+                // For a delay probe to report: how long sound waits here before it is mixed.
+                let waiting = feeds.waiting();
+                listeners.note_intake(hub.read(|bay| {
+                    waiting
+                        .iter()
+                        .filter_map(|(id, ms)| bay.source(*id).map(|s| (s.name.clone(), *ms)))
+                        .collect()
+                }));
                 listeners.tidy();
                 tidied = Instant::now();
             }

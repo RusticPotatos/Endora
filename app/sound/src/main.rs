@@ -7,9 +7,11 @@ use std::sync::Arc;
 
 mod api;
 mod listen;
+mod live;
 mod player;
 mod senders;
 
+use axum::serve::ListenerExt as _;
 use endora_sound::application::hub::Hub;
 use endora_sound::infrastructure::{FileStore, Places};
 
@@ -216,7 +218,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("sound: listening on {addr}, keeping its state in {state}");
-    axum::serve(listener, app).await?;
+    // No Nagle: a live frame is 20 ms of sound and must not wait for a bigger one.
+    axum::serve(
+        listener.tap_io(|tcp| {
+            let _ = tcp.set_nodelay(true);
+        }),
+        app,
+    )
+    .await?;
     Ok(())
 }
 

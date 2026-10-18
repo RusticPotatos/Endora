@@ -598,6 +598,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sound/setups/{name}/apply", post(sound_apply_setup))
         .route("/v1/sound/listen/{id}/ticket", post(sound_listen_ticket))
         .route("/v1/sound/listen/{id}", get(sound_listen))
+        .route("/v1/sound/live/{id}", get(sound_live))
+        .route("/v1/sound/speakers/{id}/probe", post(sound_probe))
         // What Endora knows about the person, page by page (ADR 0101).
         .route("/v1/brain", get(brain_overview))
         .route("/v1/brain/forget", post(forget_what_it_learned))
