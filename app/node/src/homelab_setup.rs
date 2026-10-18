@@ -1,10 +1,10 @@
 use endora_capabilities::{CapabilitySettingsRepository, ConfigStore};
-use endora_infrastructure::SqliteStore;
 use std::io::{self, Write};
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let db = std::env::var("ENDORA_DB").unwrap_or_else(|_| "endora.db".into());
-    let store = SqliteStore::open(&db)?;
+    // The same key file as the node, or the keys entered here could not be read by it.
+    let store = crate::secrets::open_store(&db)?;
     let config = ConfigStore::new(store.db());
     println!("Host-only dashboard setup. Use the same ENDORA_DB and OS user as the running node.");
     println!("Docker must point at the restricted dashboard proxy, never the raw daemon.");

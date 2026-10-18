@@ -34,7 +34,8 @@ fn run(database: &str, destination: &str) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::metadata(destination)?.len();
     println!("Snapshot written to {destination} ({bytes} bytes) and integrity-checked.");
     println!(
-        "It contains the node's credentials (API keys, tokens, sign-in secrets): keep it private."
+        "Its credentials are sealed under the secrets key (ADR 0125), which is not in it: keep \
+         the snapshot private, and keep the key's copy apart from it."
     );
     Ok(())
 }

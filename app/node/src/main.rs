@@ -13,6 +13,7 @@ mod auth;
 mod backup;
 mod homelab_setup;
 mod mcp_catalog;
+mod secrets;
 mod signin;
 mod terminal_setup;
 mod tls;
@@ -24,7 +25,7 @@ use api::AppState;
 use endora_application::Butler;
 use endora_capabilities::ConfigStore;
 use endora_infrastructure::{
-    ConfigurableButler, LlmButler, MixtureButler, RandomIdSource, SqliteStore, SystemClock,
+    ConfigurableButler, LlmButler, MixtureButler, RandomIdSource, SystemClock,
 };
 
 #[tokio::main]
@@ -42,6 +43,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // live database.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(done) = backup::dispatch(&args, &db_path) {
+        return done;
+    }
+    // `endora-node secrets rekey | forget`: looking after the secrets key (ADR 0125), then exit.
+    if let Some(done) = secrets::dispatch(&args, &db_path) {
         return done;
     }
     let addr = std::env::var("ENDORA_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
@@ -81,7 +86,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A model configuration saved from the console overrides the environment at
     // runtime (ADR 0055): the butler reads it each turn and rebuilds when it
     // changes, falling back to the environment brain above when nothing is stored.
-    let store = Arc::new(SqliteStore::open(&db_path)?);
+    // Credentials are sealed at rest under the key in ENDORA_SECRETS_KEY_FILE (ADR 0125),
+    // made beside the database on the first start; a database whose key is missing stops
+    // the node here rather than starting with a new key that opens none of it.
+    let store = Arc::new(secrets::open_store(&db_path)?);
     let model_config = Arc::new(ConfigStore::new(store.db()));
     // Say which brain is actually IN EFFECT, not merely which one the environment
     // would supply. The stored configuration wins, so announcing the environment's

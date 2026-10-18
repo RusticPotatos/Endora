@@ -40,5 +40,5 @@ pub use endora_capabilities::{
 pub use hq::{HqClient, HqError, Passed, Passing};
 pub use ids::RandomIdSource;
 pub use sound::{Method as SoundMethod, SoundClient, SoundError};
-pub use sqlite::SqliteStore;
+pub use sqlite::{SECRET_COLUMNS, SqliteStore, forget_sealed_secrets};
 pub use time_zone::TimeZone;

@@ -2483,3 +2483,149 @@ async fn the_old_model_settings_are_never_read_once_the_lists_decide() {
         "{shown}"
     );
 }
+
+/// The body of a response as text, whatever its status.
+async fn text_body(res: axum::response::Response) -> String {
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Every text cell in the node's database: the audit trail, the event log, the usage log
+/// and everything else a copy of the file would carry.
+fn every_cell(store: &SqliteStore) -> Vec<String> {
+    let db = store.db();
+    let conn = db.lock().unwrap();
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let mut cells = Vec::new();
+    for table in tables {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+        let width = stmt.column_count();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            for i in 0..width {
+                if let Ok(text) = row.get::<_, String>(i) {
+                    cells.push(format!("{table}: {text}"));
+                }
+            }
+        }
+    }
+    cells
+}
+
+#[tokio::test]
+async fn no_secret_reaches_the_logs_the_answers_or_the_database_in_the_clear() {
+    // ADR 0125. Each placeholder goes in through the way a real credential would, and is
+    // then looked for everywhere the node writes or says anything.
+    use endora_capabilities::CapabilitySettingsRepository as _;
+    let (state, secret) = signed_in_state();
+    let store = state.store.clone();
+    let config = state.config.clone();
+    let router = app(state);
+    let provider_key = "placeholder-provider-secret-61";
+    let refused_key = "placeholder-refused-secret-62";
+    let ha_token = "placeholder-ha-secret-63";
+    let wrong_password = "placeholder-wrong-password-64";
+    let planted = "placeholder-planted-secret-65";
+
+    let added = router
+        .clone()
+        .oneshot(post(
+            "/v1/model-lists/providers",
+            &format!(r#"{{"url":"https://models.example.com/v1","api_key":"{provider_key}"}}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(added.status(), StatusCode::OK);
+    let mut said = text_body(added).await;
+    let refused = router
+        .clone()
+        .oneshot(post(
+            "/v1/model-lists/providers",
+            &format!(r#"{{"url":"not-a-url","api_key":"{refused_key}"}}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    said.push_str(&text_body(refused).await);
+    config
+        .set_setting("home-assistant", "token", ha_token)
+        .unwrap();
+
+    // A failed sign-in, then a good one: neither answer, nor the throttle's record of the
+    // failure, carries the password, and the session token is kept only as a digest.
+    let failed = router
+        .clone()
+        .oneshot(post(
+            "/v1/session",
+            &format!(r#"{{"password":"{wrong_password}","code":"000000"}}"#),
+        ))
+        .await
+        .unwrap();
+    said.push_str(&text_body(failed).await);
+    let good = router
+        .clone()
+        .oneshot(post(
+            "/v1/session",
+            &format!(
+                r#"{{"password":"the-current-password","code":"{}"}}"#,
+                code_now(&secret)
+            ),
+        ))
+        .await
+        .unwrap();
+    let session = json_body(good).await["token"].as_str().unwrap().to_owned();
+
+    for path in [
+        "/v1/audit",
+        "/v1/activity",
+        "/v1/export",
+        "/v1/model-lists",
+        "/v1/capabilities",
+    ] {
+        said.push_str(&text_body(router.clone().oneshot(get(path)).await.unwrap()).await);
+    }
+    // And a value planted around the store is refused without being repeated.
+    store
+        .db()
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE model_providers SET api_key = ?1",
+            rusqlite::params![planted],
+        )
+        .unwrap();
+    said.push_str(
+        &text_body(
+            router
+                .clone()
+                .oneshot(get("/v1/model-lists"))
+                .await
+                .unwrap(),
+        )
+        .await,
+    );
+
+    for secret in [provider_key, refused_key, ha_token, wrong_password, planted] {
+        assert!(!said.contains(secret), "{secret} was said in an answer");
+    }
+    let cells = every_cell(&store);
+    for secret in [
+        provider_key,
+        refused_key,
+        ha_token,
+        wrong_password,
+        session.as_str(),
+        secret.as_str(),
+    ] {
+        assert!(
+            !cells.iter().any(|cell| cell.contains(secret)),
+            "a secret is in the database in the clear"
+        );
+    }
+}

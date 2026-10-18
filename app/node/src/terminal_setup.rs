@@ -1,6 +1,5 @@
 //! Interactive private setup for the explicit handheld console.
 use endora_capabilities::{CapabilitySettingsRepository, ConfigStore};
-use endora_infrastructure::SqliteStore;
 use std::io::{self, Write};
 
 fn prompt(label: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -14,7 +13,8 @@ fn prompt(label: &str) -> Result<String, Box<dyn std::error::Error>> {
 }
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let db = std::env::var("ENDORA_DB").unwrap_or_else(|_| "endora.db".into());
-    let store = SqliteStore::open(&db)?;
+    // The same key file as the node, or the keys entered here could not be read by it.
+    let store = crate::secrets::open_store(&db)?;
     let config = ConfigStore::new(store.db());
     println!("Private handheld setup. Run on the node host with its ENDORA_DB.");
     println!("Blank preserves existing values; '-' disables a source. API keys are masked.");
