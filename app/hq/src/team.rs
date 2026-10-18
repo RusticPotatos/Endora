@@ -143,6 +143,8 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             // and only such a turn reaches Anthropic.
             "cloud": member.brain.cloud(),
             "brain": member.brain.name(),
+            // The task the turn is on (ADR 0115): the node names the wing's branches by it.
+            "task": run.task.map(|t| t.0),
         }))
         .into_response(),
         Ok(Ok(None)) => (
@@ -327,6 +329,106 @@ pub(crate) async fn approval_outcome(
     let hq = state.hq.clone();
     let told = tokio::task::spawn_blocking(move || {
         hq.approval_outcome(endora_team::domain::DeskId(id), &req.text)
+    })
+    .await;
+    match told {
+        Ok(Ok(())) => Json(json!({ "told": true })).into_response(),
+        Ok(Err(e)) => refused(&e),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct BranchTold {
+    /// The turn's own token.
+    token: String,
+    branch: String,
+    head: String,
+    #[serde(default)]
+    base: String,
+    #[serde(default)]
+    files: usize,
+    #[serde(default)]
+    plus: i64,
+    #[serde(default)]
+    minus: i64,
+    #[serde(default)]
+    stat: String,
+    #[serde(default)]
+    diff: String,
+    #[serde(default)]
+    can_push: bool,
+}
+
+/// For the node's `repo_submit` (ADR 0115): a branch it took from a turn, recorded with its
+/// document and a check job queued. Signed by the node, naming the turn by its own token.
+pub(crate) async fn branch(
+    Extract(state): Extract<State>,
+    Json(req): Json<BranchTold>,
+) -> Response {
+    let hq = state.hq.clone();
+    let recorded = tokio::task::spawn_blocking(move || {
+        hq.record_branch(
+            &req.token,
+            &endora_team::application::Submission {
+                branch: req.branch,
+                head: req.head,
+                base: req.base,
+                files: req.files,
+                plus: req.plus,
+                minus: req.minus,
+                stat: req.stat,
+                diff: req.diff,
+                can_push: req.can_push,
+            },
+        )
+    })
+    .await;
+    match recorded {
+        Ok(Ok(r)) => Json(json!({
+            "branch": r.branch, "document": r.document, "check": r.check,
+        }))
+        .into_response(),
+        Ok(Err(e)) => refused(&e),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// For the node's team listener (ADR 0115): the check a job token names, so the node hands
+/// that job's sandbox the right bundle and nothing else. 404 for a token that names none.
+pub(crate) async fn check(Extract(state): Extract<State>, Json(req): Json<TokenAsked>) -> Response {
+    let hq = state.hq.clone();
+    let found = tokio::task::spawn_blocking(move || hq.check_by_token(&req.token)).await;
+    match found {
+        Ok(Ok(Some((check, branch)))) => Json(json!({
+            "check": check.id, "task": check.task.0, "branch": branch.name, "head": branch.head,
+        }))
+        .into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no check has that token" })),
+        )
+            .into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct PushOutcome {
+    ok: bool,
+    text: String,
+}
+
+/// For the node (ADR 0115): what came of a push the owner approved, written in the task's
+/// thread as a receipt, which wakes the branch's member. Told once.
+pub(crate) async fn push_outcome(
+    Extract(state): Extract<State>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(req): Json<PushOutcome>,
+) -> Response {
+    let hq = state.hq.clone();
+    let told = tokio::task::spawn_blocking(move || {
+        hq.push_outcome(endora_team::domain::DeskId(id), req.ok, &req.text)
     })
     .await;
     match told {

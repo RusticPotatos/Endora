@@ -66,13 +66,40 @@ struct Room {
 
 /// The oldest turn waiting to start, handed out now: its run, this attempt's lease, its token,
 /// its member's name, role and brain, its task, and how hard its Claude tries (`null` for the
-/// house's model, or the model's own). 204 when none waits, or the runner has no room.
+/// house's model, or the model's own). Before any turn, a check job waiting for the dev node
+/// (ADR 0115): `kind: "check"`, its id, the job's own token, the branch and its head. 204 when
+/// none waits, or the runner has no room.
 async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Response {
     if state.hq.runner().remote().is_none() {
         return no_runner();
     }
     if room.free == 0 {
         return StatusCode::NO_CONTENT.into_response();
+    }
+    let checking = state.hq.clone();
+    let check = tokio::task::spawn_blocking(move || {
+        let check = checking.next_check()?;
+        let branch = match &check {
+            Some(c) => checking
+                .store()
+                .branches()?
+                .into_iter()
+                .find(|b| b.id == c.branch),
+            None => None,
+        };
+        Ok::<_, endora_team::application::EngineError>(check.zip(branch))
+    })
+    .await;
+    match check {
+        Ok(Ok(Some((check, branch)))) => {
+            return Json(json!({
+                "kind": "check", "check": check.id, "token": check.token,
+                "task": check.task.0, "branch": branch.name, "head": branch.head,
+            }))
+            .into_response();
+        }
+        Ok(Ok(None)) => {}
+        _ => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
     let hq = state.hq.clone();
     let handed = tokio::task::spawn_blocking(move || {
@@ -151,6 +178,72 @@ async fn ended(
             .into_response();
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CheckReport {
+    /// The job's token, when not in the `Authorization` header.
+    #[serde(default)]
+    token: String,
+    ok: bool,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    report: String,
+}
+
+/// A check job's report (ADR 0115), with the job's own token (as the bearer, or in the body):
+/// pass or fail, a line, and the commands' last words. Taken once; a token that names no
+/// check is 404, a check reported already 409.
+pub(crate) async fn check_done(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    request: Request,
+) -> Response {
+    let bearer = bearer(&request).to_owned();
+    let Ok(body) = axum::body::to_bytes(request.into_body(), 1 << 20).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    let Ok(report) = serde_json::from_slice::<CheckReport>(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "a report says ok, summary and report" })),
+        )
+            .into_response();
+    };
+    let token = if bearer.is_empty() {
+        report.token.clone()
+    } else {
+        bearer
+    };
+    if token.len() < 32 {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "not signed with a check's token" })),
+        )
+            .into_response();
+    }
+    let hq = state.hq.clone();
+    let taken = tokio::task::spawn_blocking(move || {
+        hq.check_done(id, &token, report.ok, &report.summary, &report.report)
+    })
+    .await;
+    match taken {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(endora_team::application::EngineError::Refused(
+            endora_team::domain::Refusal::Finished,
+        ))) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "that check was reported already" })),
+        )
+            .into_response(),
+        Ok(Err(_)) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no check has that token" })),
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// The turns to stop, each given once.

@@ -5,7 +5,10 @@ pub mod ports;
 pub mod protocol;
 pub mod scorecard;
 
-pub use engine::{Asked, Author, Engine, EngineError, Fired, Proposal, Settings, TickReport};
+pub use engine::{
+    Asked, Author, Engine, EngineError, Fired, Proposal, Recorded, Settings, Submission,
+    TickReport, WingSeeded,
+};
 pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
 
 #[cfg(test)]
@@ -40,3 +43,6 @@ mod evidence_tests;
 
 #[cfg(test)]
 mod scorecard_tests;
+
+#[cfg(test)]
+mod wing_tests;

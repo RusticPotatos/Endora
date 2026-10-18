@@ -42,6 +42,9 @@ pub enum WakeReason {
     /// Work the tester passed (or that nobody else tests) waits for its lead to accept it
     /// against its criteria, or send it back (ADR 0114).
     AcceptanceAsked,
+    /// A check of the member's submitted branch reported, pass or fail (ADR 0115): the
+    /// submitter reads it, and so does the tester.
+    CheckDone,
 }
 
 impl WakeReason {
@@ -66,6 +69,7 @@ impl WakeReason {
             Self::QuestionAsked => "question_asked",
             Self::QuestionAnswered => "question_answered",
             Self::AcceptanceAsked => "acceptance_asked",
+            Self::CheckDone => "check_done",
         }
     }
 
@@ -100,6 +104,7 @@ impl WakeReason {
                 | Self::SentBack
                 | Self::QuestionAsked
                 | Self::QuestionAnswered
+                | Self::CheckDone
         )
     }
 
@@ -135,6 +140,7 @@ impl WakeReason {
             Self::QuestionAsked,
             Self::QuestionAnswered,
             Self::AcceptanceAsked,
+            Self::CheckDone,
         ]
         .into_iter()
         .find(|r| r.name() == name)

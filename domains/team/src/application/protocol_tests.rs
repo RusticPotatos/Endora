@@ -169,7 +169,8 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(names.len(), 9);
+    assert_eq!(names.len(), 10, "{names:?}");
+    assert!(names.contains(&"read_document".to_owned()));
     assert!(
         !names.contains(&"review".to_owned()),
         "only the reviewer gives a verdict"
@@ -180,7 +181,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(reviewers.len(), 11);
+    assert_eq!(reviewers.len(), 12, "{reviewers:?}");
     assert!(reviewers.contains(&"note_lesson".to_owned()));
     assert!(
         !names.contains(&"note_lesson".to_owned()),

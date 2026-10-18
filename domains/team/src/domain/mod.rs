@@ -14,6 +14,7 @@ pub mod review;
 pub mod routines;
 pub mod runs;
 pub mod wakes;
+pub mod wing;
 pub mod work;
 
 pub use brain::Brain;
@@ -25,6 +26,7 @@ pub use projects::{Evidence, Pause, Project, ProjectStatus};
 pub use routines::{CheckBack, CheckBackStatus, Firing, Routine};
 pub use runs::{Liveness, RunStatus};
 pub use wakes::{Receipt, Refused, WakeDecision, WakeReason, WakeSituation};
+pub use wing::{Branch, Check, Document, HireRequest};
 pub use work::{
     DeskId, Goal, GoalId, GoalStatus, Member, MemberId, Millis, Priority, ProjectId, Refusal, Role,
     RoutineId, RunId, Task, TaskId, TaskStatus, WakeId,

@@ -320,6 +320,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not seed the house log: {e}"),
         }
+        // The engineering wing (ADR 0115), once: its goal, project, lead, developers and first task.
+        match hq.seed_wing() {
+            Ok(Some(wing)) => println!(
+                "hq: seeded the engineering wing: goal {}, project {}, lead {} with {} developers, task {}",
+                wing.goal,
+                wing.project,
+                wing.lead,
+                wing.developers.len(),
+                wing.task
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!("hq: could not seed the wing: {e}"),
+        }
     }
 
     // The tick: every `tick_every` seconds; a late one runs once.

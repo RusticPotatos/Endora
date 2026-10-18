@@ -31,10 +31,12 @@ use crate::domain::{docs, house};
 mod evidence;
 mod planning;
 mod projects;
+mod wing;
 
 pub use evidence::Called;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
+pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
 /// member is woken once, and again before it goes on the owner's desk as stuck.
@@ -1642,6 +1644,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// When the last sub-task of a task finishes, its owner is woken.
     fn after_finishing(&self, finished: &Task) -> Done<()> {
+        // Work done with a branch submitted: the push is the owner's to approve (ADR 0115).
+        if self
+            .store
+            .task(finished.id)?
+            .is_some_and(|t| t.status == TaskStatus::Done)
+        {
+            self.offer_push(finished.id)?;
+        }
         let Some(parent) = finished.parent else {
             return Ok(());
         };
@@ -1989,6 +1999,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             why.push(format!("goal: {}", goal.title));
         }
         told.push_str(&format!("Why it exists: {}\n", why.join(" ← ")));
+        told.push_str(&self.documents_said(task.id)?);
         if !task.waits_on.is_empty() {
             let waits: Vec<String> = task.waits_on.iter().map(|t| format!("#{t}")).collect();
             told.push_str(&format!("It waits on: {}\n", waits.join(", ")));
@@ -2091,7 +2102,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(
                 "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner (a \
                  decision for the board), check_back, note_house, rewrite_house, read_doc, \
-                 accept, hand_to. ",
+                 accept, hand_to, read_document. ",
             );
             told.push_str(beside);
             return Ok(told);
@@ -2101,9 +2112,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
              check_back, run_gate, request_action",
         );
         told.push_str(match member.role {
-            Role::Reviewer => ", review. ",
-            Role::Lead => ", propose_project, accept, hand_to. ",
-            _ => ". ",
+            Role::Reviewer => ", review, read_document. ",
+            Role::Lead => ", propose_project, accept, hand_to, request_hire, read_document. ",
+            _ => ", read_document. ",
         });
         told.push_str(beside);
         Ok(told)
@@ -3285,7 +3296,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     }
                 }
             }
-            ("ready_to_merge", "merged" | "not_now")
+            // The wing (ADR 0115): a lead's request to hire, and a branch to push.
+            ("hire", "approve" | "decline") => self.decide_hire(found, decision == "approve")?,
+            ("push", "approve" | "decline") => self.decide_push(found, decision == "approve")?,
+            ("push", "seen" | "dismiss")
+            | ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
             | ("question", "dismiss")
             | ("notice", "seen" | "dismiss") => {}
@@ -3925,6 +3940,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .collect::<Vec<_>>(),
                 // What done means, and what was cited for it at each stage (ADR 0114).
                 "evidence": self.evidence_shown(t)?,
+                // The wing's documents and branches on it (ADR 0115).
+                "documents": self.documents_shown(t.id)?.0,
+                "branches": self.documents_shown(t.id)?.1,
             }));
         }
         // Spent is what turns reported using; held is what they have reserved and not yet
@@ -4000,6 +4018,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "recent_runs": self.recent_runs(30)?,
             // How the team is doing: today and the last seven days, from the record alone.
             "scorecard": scorecard,
+            // The engineering wing (ADR 0115): who sits in it, and its seats.
+            "wing": self.wing_shown()?,
         }))
     }
 

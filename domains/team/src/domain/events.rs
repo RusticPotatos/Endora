@@ -81,6 +81,12 @@ pub enum EventKind {
     ReportsTo,
     /// The node recorded a call a turn made of Endora's tools (ADR 0114).
     ReceiptRecorded,
+    /// The wing submitted a branch, kept on the node (ADR 0115).
+    BranchSubmitted,
+    /// A check of a submitted branch reported (ADR 0115).
+    CheckDone,
+    /// The owner had a branch pushed to the fork, or it failed (ADR 0115).
+    BranchPushed,
 }
 
 impl EventKind {
@@ -127,6 +133,9 @@ impl EventKind {
             Self::ProjectBudget => "project.budget",
             Self::ReportsTo => "member.reports_to",
             Self::ReceiptRecorded => "receipt.recorded",
+            Self::BranchSubmitted => "branch.submitted",
+            Self::CheckDone => "check.done",
+            Self::BranchPushed => "branch.pushed",
         }
     }
 }
