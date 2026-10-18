@@ -9,6 +9,21 @@ tagged release.
 
 ### Added
 
+- **Games in the office** ([ADR 0121](docs/adr/0121-games-in-the-office.md)). Ping-pong and
+  pool keep score, for nothing: when two members are free HQ's engine plays the match itself,
+  point by point or shot by shot, from a seeded generator and each member's hidden, practised
+  skill (ping-pong to 11 and two clear; simplified eight-ball, where scratching on the eight
+  loses), at most three matches an hour a game and never a model turn. Every match is kept in
+  a new `games` table, said in the activity feed ("Bo beat Dee 11–8 at ping-pong"), and counted
+  in leaderboards with wins, losses and the run each player is on. The office gains a pool
+  table and a chess table, and the two players of a match walk to theirs. **Chess is real**: a
+  `chess_games` table, a team tool `chess` for every role (`board`, `move`, `challenge`), legal
+  moves and endings by the rules (mate, stalemate, insufficient material, threefold repetition,
+  the fifty-move rule), played one move a downtime turn, one game each, and adjourned as a draw
+  after a week; a downtime briefing says "Your move against Dee in chess". The Office card has
+  a Games section (leaderboards, the last five results, the games in play) and tapping the
+  chess table opens its board. New dependency: `cozy-chess` (MIT) in `endora-team` for chess
+  rules; `shakmaty` was refused because it is GPL-3.0-or-later and Endora is Apache-2.0.
 - **The open office** ([ADR 0119](docs/adr/0119-the-open-office.md)). HQ's office is an
   open-plan floor: one pod of desks per team, side by side with no walls and labelled as the
   roster labels them, laid out from the snapshot (a hire grows a pod, a third lead makes a third;

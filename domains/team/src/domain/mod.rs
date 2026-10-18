@@ -2,11 +2,13 @@
 
 pub mod brain;
 pub mod chain;
+pub mod chess;
 pub mod cut;
 pub mod docs;
 pub mod effort;
 pub mod events;
 pub mod evidence;
+pub mod games;
 pub mod house;
 pub mod lessons;
 pub mod money;

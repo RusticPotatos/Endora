@@ -1646,3 +1646,131 @@ fn has_a_pooled_downtime_turn(w: &mut Office, name: String) {
     let id = w.member(&name);
     assert_eq!(w.hq.store().share_committed(id, day).expect("answers"), 0);
 }
+
+// --- Games in the office (ADR 0121) ---------------------------------------------------------------
+
+#[given("the games are on")]
+fn games_on(w: &mut Office) {
+    w.hq.set_games(true);
+}
+
+#[given(regex = r"^(\d+) minutes pass$")]
+#[when(regex = r"^(\d+) minutes pass$")]
+fn minutes_pass(w: &mut Office, minutes: i64) {
+    w.clock.0.fetch_add(minutes * 60 * 1000, Ordering::SeqCst);
+    w.hq.tick().expect("the tick runs");
+}
+
+impl Office {
+    fn matches_of(
+        &self,
+        kind: endora_team::domain::games::Kind,
+    ) -> Vec<endora_team::domain::games::Record> {
+        self.hq
+            .store()
+            .games()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|g| g.kind == kind)
+            .collect()
+    }
+}
+
+#[then("ping-pong has been played")]
+fn ping_pong_played(w: &mut Office) {
+    let played = w.matches_of(endora_team::domain::games::Kind::PingPong);
+    assert!(played.len() >= 2, "ping-pong matches: {played:?}");
+}
+
+#[then("every ping-pong match was first to 11, two clear")]
+fn ping_pong_by_the_rules(w: &mut Office) {
+    for m in w.matches_of(endora_team::domain::games::Kind::PingPong) {
+        let (won, lost) = m.scores();
+        assert!(won >= 11 && won - lost >= 2, "{m:?}");
+    }
+}
+
+#[then("the ping-pong leaderboard names the players")]
+fn ping_pong_board(w: &mut Office) {
+    let snap = w.hq.snapshot().expect("the snapshot is built");
+    let board = snap["games"]["ping_pong"]["leaderboard"]
+        .as_array()
+        .expect("a leaderboard")
+        .clone();
+    assert!(!board.is_empty());
+    for row in &board {
+        let name = row["name"].as_str().expect("a name");
+        assert!(["Ada", "Bo", "Cy"].contains(&name), "{row}");
+    }
+    let wins: i64 = board.iter().filter_map(|r| r["wins"].as_i64()).sum();
+    assert_eq!(
+        wins as usize,
+        w.matches_of(endora_team::domain::games::Kind::PingPong)
+            .len()
+    );
+}
+
+#[then("nobody was woken and no turn was run")]
+fn nobody_woken(w: &mut Office) {
+    assert!(w.hq.wakes().expect("the store answers").is_empty());
+    assert!(w.hq.store().runs().expect("the store answers").is_empty());
+}
+
+#[when(regex = r"^(\w+) challenges (\w+) to chess$")]
+fn challenges_to_chess(w: &mut Office, name: String, other: String) {
+    w.use_tool(
+        &name,
+        "chess",
+        &json!({ "action": "challenge", "member": other }),
+    );
+}
+
+#[when(regex = r#"^(\w+) plays "(.+)" at chess$"#)]
+fn plays_at_chess(w: &mut Office, name: String, san: String) {
+    w.use_tool(&name, "chess", &json!({ "action": "move", "san": san }));
+}
+
+#[given(regex = r#"^(\w+) and (\w+) are in a game of chess after "(.+)"$"#)]
+fn in_a_game_of_chess(w: &mut Office, white: String, black: String, moves: String) {
+    let (white, black) = (w.member(&white), w.member(&black));
+    let id =
+        w.hq.store()
+            .add_chess_game(white, black, w.clock.now())
+            .expect("the store answers");
+    let mut game =
+        w.hq.store()
+            .chess_games()
+            .expect("the store answers")
+            .into_iter()
+            .find(|g| g.id == id)
+            .expect("the game");
+    for (i, san) in moves.split_whitespace().enumerate() {
+        let mover = if i % 2 == 0 { white } else { black };
+        game.play(mover, san, w.clock.now()).expect("a legal move");
+    }
+    w.hq.store()
+        .save_chess_game(&game)
+        .expect("the store answers");
+}
+
+#[then(regex = r#"^the chess moves are "(.*)"$"#)]
+fn chess_moves_are(w: &mut Office, moves: String) {
+    let game =
+        w.hq.store()
+            .chess_games()
+            .expect("the store answers")
+            .pop()
+            .expect("a game of chess");
+    assert_eq!(game.moves.join(" "), moves);
+}
+
+#[then("the chess game is over")]
+fn chess_game_over(w: &mut Office) {
+    let game =
+        w.hq.store()
+            .chess_games()
+            .expect("the store answers")
+            .pop()
+            .expect("a game of chess");
+    assert!(!game.live(), "{game:?}");
+}

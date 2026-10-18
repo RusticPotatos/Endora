@@ -551,6 +551,8 @@ pub enum Refusal {
     NotebookFull,
     /// The rules of the office refuse a change (ADR 0119).
     Office(super::office::Refused),
+    /// A game of chess refuses a move or a challenge (ADR 0121).
+    Chess(super::chess::Refused),
     /// There is no such proposal for the office.
     NoSuchProposal(i64),
     /// The proposal is decided already.
@@ -719,6 +721,7 @@ impl fmt::Display for Refusal {
                 write!(f, "a project that is {from} does not {asked}")
             }
             Self::Office(refused) => refused.fmt(f),
+            Self::Chess(refused) => refused.fmt(f),
             Self::NoSuchProposal(id) => write!(f, "there is no proposal {id} for the office"),
             Self::ProposalClosed(id) => write!(f, "proposal {id} is closed: it is decided"),
             Self::AlreadyVoted => f.write_str(

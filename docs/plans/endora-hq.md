@@ -1117,6 +1117,36 @@ in their downtime. Built:
 Not built: pictures for the kinds that have only a pixel shape; the owner placing or pinning an
 item; events beyond decorating.
 
+### Games in the office (as built 2026-10-18, [ADR 0121](../adr/0121-games-in-the-office.md))
+
+The owner: "make the ping pong games actually keep track of points ... a pool table with an
+actual game. Or chess with actual games." Built:
+
+- **Ping-pong and pool, for nothing**: `domain/games.rs` (a splitmix64 generator, hidden skill
+  per member and game from its number plus a point per ten games to ten, first to 11 win by 2,
+  simplified eight-ball, the leaderboards, the schedule) and `engine/games.rs` (`games_tick`:
+  at most one match per game every 20 minutes, between two free members who have not played
+  in 10 minutes; no wake, run or model). The `games` table; event `game.played` ("Bo beat Dee
+  11–8 at ping-pong"); the engine setting `games` (on in the service, off in the demo).
+- **Chess**: `domain/chess.rs` over `cozy-chess` (MIT; `shakmaty` is GPL and was refused),
+  `chess_games` (moves as notation, status and reason), the team tool `chess` (`board`, `move`,
+  `challenge`; `application/chess_tool.rs`), moves and challenges only in downtime turns, one
+  game each, a downtime briefing line ("Your move against Dee in chess"), adjournment as a draw
+  after seven days. Events `chess.started`, `chess.moved`, `chess.ended`.
+- **The floor**: a pool table (29,15, 3×2, its players at 29,17 and 31,17) and a chess table
+  (23,17, its players at 23,16 and 23,18) reserved in `office::BLOCKED` and in `hqWorld`, with a
+  test on each side; the ping-pong scoreboard, the pool scoreboard and the live chess position
+  drawn on the canvas; the two players of a match walk to its table.
+- **The screen**: the snapshot's `games` (leaderboards with `last`, `recent` five, the chess
+  games being played and the last three finished); the Games section of the Office card; tapping
+  a table opens its panel (the chess board with unicode pieces, the moves and the result, or the
+  leaderboard).
+- Scenarios: "Ping-pong keeps score, and costs nothing", "Chess is played by the rules" and
+  "Chess ends when the rules say so" in `domains/team/features/the-office.feature`.
+
+Not built: chess clocks, offering a draw, resigning; fouls in pool beyond the scratch on the
+eight; a tournament.
+
 ### Logs and the retry (as built 2026-10-18)
 
 - The feed tells a thread post whole, read from the snapshot's task thread by the place the

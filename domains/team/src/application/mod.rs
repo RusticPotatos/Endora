@@ -1,5 +1,6 @@
 //! The team's application layer: the engine and the ports it needs.
 
+mod chess_tool;
 pub mod engine;
 pub mod ports;
 pub mod protocol;
@@ -62,3 +63,6 @@ mod runtime_tests;
 
 #[cfg(test)]
 mod office_tests;
+
+#[cfg(test)]
+mod games_tests;

@@ -32,6 +32,7 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod evidence;
+mod games;
 mod notebook;
 mod office;
 mod planning;
@@ -113,6 +114,9 @@ pub struct Settings {
     /// Whether a member with nothing to do is given a downtime turn (ADR 0119). Off unless
     /// the service turns it on: a scripted demo, and the engine's older tests, have none.
     pub downtime: bool,
+    /// Whether free members play ping-pong and pool between themselves (ADR 0121): matches
+    /// the engine plays in code, with no model asked. Off unless the service turns it on.
+    pub games: bool,
 }
 
 impl Default for Settings {
@@ -122,6 +126,7 @@ impl Default for Settings {
             offset_minutes: 0,
             grace: Duration::from_secs(10),
             downtime: false,
+            games: false,
         }
     }
 }
@@ -286,6 +291,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// is about downtime.
     pub fn set_downtime(&mut self, on: bool) {
         self.settings.downtime = on;
+    }
+
+    /// Turns the simulated games on or off (ADR 0121): whether free members play ping-pong and
+    /// pool, which costs nothing. The service turns it on at start.
+    pub fn set_games(&mut self, on: bool) {
+        self.settings.games = on;
     }
 
     /// The containers Endora's home lab has now, as the node says them: what each question to
@@ -2121,7 +2132,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.reason_for(run)? == WakeReason::Downtime.name() {
             told.push_str(&self.downtime_said(member)?);
             told.push_str(
-                "Your tools at HQ: my_turn, office, note, forget, read_notebook, read_doc.\n",
+                "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc.\n",
             );
             return Ok(told);
         }
@@ -2751,6 +2762,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.settings.downtime {
             self.downtime_look(now)?;
         }
+        // Games (ADR 0121): free members play a match in code, and a game of chess nobody
+        // has moved in a week is adjourned. No model is asked.
+        self.games_tick(now)?;
 
         // 4. Queued turns start where a member has a free slot, budget can be reserved, and a
         //    runner has room: urgent work first, then the oldest.
@@ -4324,6 +4338,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // The office as data (ADR 0119): what stands on the floor, and what the team is
             // deciding about it.
             "office": self.office_shown()?,
+            // Ping-pong, pool and chess in the office (ADR 0121).
+            "games": self.games_shown()?,
         }))
     }
 

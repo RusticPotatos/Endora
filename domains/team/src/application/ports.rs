@@ -12,6 +12,7 @@ use crate::domain::{
     RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
 use crate::domain::{Evidence, ProjectId, ProjectStatus};
+use crate::domain::{chess, games};
 
 /// A store that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -958,6 +959,35 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn office_history_len(&self) -> Stored<i64>;
+
+    // ---- games in the office (ADR 0121) ---------------------------------------------------
+
+    /// Keeps a ping-pong or pool match that was played (the record's own number is ignored);
+    /// returns the number it was given.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_game(&self, record: &games::Record) -> Stored<i64>;
+    /// Every match played, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn games(&self) -> Stored<Vec<games::Record>>;
+    /// Starts a game of chess, white to move; returns its number.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_chess_game(&self, white: MemberId, black: MemberId, at: Millis) -> Stored<i64>;
+    /// Every game of chess, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn chess_games(&self) -> Stored<Vec<chess::Game>>;
+    /// Keeps a game of chess as it now stands: its moves, status and last move.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn save_chess_game(&self, game: &chess::Game) -> Stored<()>;
 }
 
 /// A post in a task's thread with what it cited, as Replay reads it back.

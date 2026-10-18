@@ -282,7 +282,7 @@ enum Block {
 
 /// The patches of floor that are not the team's to fill, as `(left, top, right, bottom,
 /// why)` with the right and bottom edges excluded; the first that holds is the reason.
-const BLOCKED: [(i64, i64, i64, i64, Block); 13] = [
+const BLOCKED: [(i64, i64, i64, i64, Block); 15] = [
     // The front door, and the step before it.
     (30, 10, 32, 14, Block::Door),
     (28, 9, 30, 15, Block::Door),
@@ -294,6 +294,10 @@ const BLOCKED: [(i64, i64, i64, i64, Block); 13] = [
     (1, 16, 8, 19, Block::Room),
     (16, 15, 20, 17, Block::Room),
     (24, 16, 29, 19, Block::Room),
+    // The games (ADR 0121): the pool table and the row below it where its players stand, and
+    // the chess table with a player above it and one below.
+    (29, 15, 32, 18, Block::Room),
+    (23, 16, 24, 19, Block::Room),
     // The lanes people walk along, under the rooms, above the lower ones, and between them.
     (0, 7, 32, 8, Block::Lane),
     (0, 14, 32, 15, Block::Lane),
@@ -834,6 +838,36 @@ mod tests {
                 "{x},{y}"
             );
         }
+    }
+
+    #[test]
+    fn the_pool_table_and_the_chess_table_are_fixtures_with_their_players_places() {
+        // The pool table stands at x 29 to 31, y 15 to 16, its players below it; the chess
+        // table at 23,17, its players above and below. None of it is the team's to fill.
+        for (x, y) in [
+            (29, 15),
+            (31, 15),
+            (30, 16),
+            (29, 17),
+            (31, 17),
+            (23, 16),
+            (23, 17),
+            (23, 18),
+        ] {
+            assert_eq!(
+                refused(&[], place(Kind::Lamp, x, y)),
+                Refused::InARoom,
+                "{x},{y}"
+            );
+        }
+        // What stands around them is still open floor: the coffee machine's place, the plant
+        // beside the chess table, the bean bag below the pool table, the kitchen's bin.
+        for (x, y) in [(22, 15), (22, 18), (30, 18), (28, 15), (22, 17)] {
+            assert!(apply(&[], &[place(Kind::Plant, x, y)]).is_ok(), "{x},{y}");
+        }
+        // A thing that was already standing there does not stop the rules from judging the rest.
+        let rug = [item(1, Kind::Rug, 29, 15)];
+        assert!(apply(&rug, &[place(Kind::Plant, 22, 18)]).is_ok());
     }
 
     #[test]

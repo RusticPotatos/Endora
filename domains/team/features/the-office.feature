@@ -70,3 +70,40 @@ Feature: The open office
     When Bo proposes to add a "plant" at 22, 3
     Then it is refused for "room"
     And the activity feed does not say "Bo proposes: add a plant"
+
+  Scenario: Ping-pong keeps score, and costs nothing
+    Given the games are on
+    When 25 minutes pass
+    And 25 minutes pass
+    Then ping-pong has been played
+    And every ping-pong match was first to 11, two clear
+    And the activity feed says " at ping-pong"
+    And the ping-pong leaderboard names the players
+    And nobody was woken and no turn was run
+
+  Scenario: Chess is played by the rules
+    Given downtime is on
+    When a tick passes
+    And Ada challenges Bo to chess
+    Then the activity feed says "Ada challenges Bo to chess"
+    When Ada plays "e5" at chess
+    Then it is refused for "legal moves are"
+    When Ada plays "e4" at chess
+    Then the chess moves are "e4"
+    When Ada plays "d4" at chess
+    Then it is refused for "not your move"
+    When Ada's turn ends
+    And a tick passes
+    And Bo plays "e5" at chess
+    Then the chess moves are "e4 e5"
+    And the activity feed says "Bo played e5 against Ada at chess"
+
+  Scenario: Chess ends when the rules say so
+    Given downtime is on
+    And Ada and Bo are in a game of chess after "e4 e5 Bc4 Nc6 Qh5 Nf6"
+    When a tick passes
+    And Ada plays "Qxf7" at chess
+    Then the activity feed says "Ada beat Bo at chess by checkmate"
+    And the chess game is over
+    When Ada plays "a3" at chess
+    Then it is refused for "no game of chess"

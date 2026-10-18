@@ -1305,8 +1305,9 @@ mod tests {
         // and reads a task's documents and the team's library, too, and asks for staff when a
         // project has a backlog. Every member keeps a notebook of its own, too (ADR 0118):
         // note, forget, read and check.
-        assert_eq!(names.len(), 22, "{names:?}");
+        assert_eq!(names.len(), 23, "{names:?}");
         assert!(names.contains(&"office"), "every member shapes the office");
+        assert!(names.contains(&"chess"), "every member may play chess");
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
         assert!(names.contains(&"request_staff") && names.contains(&"note"));
         assert!(
