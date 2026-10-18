@@ -371,7 +371,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// [`Refusal::TurnOver`]; [`Refusal::NotStuckForYou`]; [`EngineError::Unknown`] for no
     /// words, or `hand_to` with nobody; [`Refusal::NotBelow`] for a member outside the lead's
-    /// team; what the evidence rule refuses.
+    /// team; what the evidence rule refuses;
+    /// [`crate::domain::world::WorldRefusal::HandoverNeeded`] for work handed on or dropped
+    /// without its handover note (ADR 0122).
+    #[allow(clippy::too_many_arguments)]
     pub fn decide_stuck_in(
         &self,
         run: RunId,
@@ -380,6 +383,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         detail: &str,
         to: Option<MemberId>,
         cited: &[Ref],
+        handover: Option<&crate::domain::world::HandoverNote>,
     ) -> Done<()> {
         let _held = self.held();
         let turn = self.running(run)?;
@@ -394,6 +398,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if detail.is_empty() {
             return Err(EngineError::Unknown("words for the decision"));
         }
+        let hands_on = matches!(decision, Decision::HandTo | Decision::Drop);
+        let handover = match handover {
+            Some(note) => Some(note),
+            None if hands_on => {
+                return Err(EngineError::Refused(Refusal::World(
+                    crate::domain::world::WorldRefusal::HandoverNeeded,
+                )));
+            }
+            None => None,
+        };
         self.judge_decision(cited, turn.id)?;
         let evidence = self.evidence_said(cited)?;
         let members = self.store.members()?;
@@ -434,6 +448,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "task": task.0, "lead": lead.id.0, "decision": decision.name(),
                     "members": heard, "huddle": huddle.is_some() }),
         )?;
+        if let (true, Some(note)) = (hands_on, handover) {
+            self.keep_handover(
+                &turn,
+                task,
+                current.owner.or(current.assignee),
+                target.as_ref().map(|t| t.id),
+                note,
+            )?;
+        }
         match decision {
             Decision::Proceed => self.back_to_work(&current, current.assignee, &lead),
             Decision::HandTo => self.back_to_work(&current, target.map(|t| t.id), &lead),

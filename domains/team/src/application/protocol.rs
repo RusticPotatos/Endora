@@ -104,12 +104,13 @@ fn criteria_arg(args: &Value) -> Vec<Criterion> {
 fn hand_to_tool() -> Value {
     json!({
         "name": "hand_to",
-        "description": "Hand a task held by someone below you in the chain (who reports to you, or to someone who does) to another member: yourself, or one below you. Say why; it goes in the thread, and they are woken.",
+        "description": "Hand a task held by someone below you in the chain (who reports to you, or to someone who does) to another member: yourself, or one below you. Say why, and give the handover note (done, not done, next, watch out): the why goes in the thread, the note starts their first turn on it, and they are woken.",
         "inputSchema": { "type": "object", "properties": {
             "task": { "type": "integer", "description": "the task's number" },
             "to": { "type": "string", "description": "the member's name" },
             "why": { "type": "string" },
-        }, "required": ["task", "to", "why"] },
+            "handover": super::protocol_world::handover_schema(),
+        }, "required": ["task", "to", "why", "handover"] },
     })
 }
 
@@ -474,13 +475,14 @@ pub fn tools(role: Role) -> Value {
             ));
             list.push(tool(
                 "decide_stuck",
-                "Decide stuck work in your area, when HQ asks you (your turn says it is stuck): proceed (say with what), drop, hand_to a member of your team (`to`), needs_ceo (money, a new goal, another area), or needs_board (the owner alone: money beyond the caps, a hire, the owner's repos). On evidence. Only a board matter reaches the owner, through the CEO.",
+                "Decide stuck work in your area, when HQ asks you (your turn says it is stuck): proceed (say with what), drop, hand_to a member of your team (`to`), needs_ceo (money, a new goal, another area), or needs_board (the owner alone: money beyond the caps, a hire, the owner's repos). On evidence. Dropping it or handing it on needs the handover note. Only a board matter reaches the owner, through the CEO.",
                 json!({
                     "task": { "type": "integer", "description": "the task's number" },
                     "decision": { "type": "string", "enum": ["proceed", "drop", "hand_to", "needs_ceo", "needs_board"] },
                     "detail": { "type": "string", "description": "what, and why, in a sentence or two" },
                     "to": { "type": "string", "description": "for hand_to: the member's name" },
                     "evidence": ids("What the decision rests on: at least one."),
+                    "handover": super::protocol_world::handover_schema(),
                 }),
                 &["task", "decision", "detail", "evidence"],
             ));
@@ -491,16 +493,9 @@ pub fn tools(role: Role) -> Value {
         list.push(read_doc_tool());
         list.push(office_tool());
         list.push(super::chess_tool::tool());
-    }
-    if crate::domain::lessons::keeps_lessons(role) {
-        if let Some(list) = all.as_array_mut() {
-            list.push(tool(
-                "note_lesson",
-                "Keep a lesson for the whole team: one line, at most 300 characters, added to your task's goal's notes, which every member reads every turn. Use it when the owner corrects you, or you learn something about this house the team will need again. The owner sees and can edit it.",
-                json!({ "lesson": { "type": "string", "maxLength": 300 } }),
-                &["lesson"],
-            ));
-        }
+        // The team's world (ADR 0122): a lesson is a story now, which tell_story keeps;
+        // note_lesson is no longer offered.
+        list.extend(super::protocol_world::tools(role));
     }
     all
 }
@@ -557,16 +552,12 @@ fn ceos_tools() -> Value {
     ));
     list.push(tool(
         "note_house",
-        "Add one dated line to the house log, yours to keep, which you and the lead read every turn: what you learned about the house or decided, at most 500 characters.",
+        "Add one dated line to the house page's timeline (world:house), yours to keep: what you learned about the house or decided, at most 500 characters. What the house treats as true now goes in a section, with write_world.",
         json!({ "entry": { "type": "string", "maxLength": crate::domain::house::HOUSE_ENTRY_MOST } }),
         &["entry"],
     ));
-    list.push(tool(
-        "rewrite_house",
-        "Rewrite the house log whole, compactly, keeping what still matters: at most 6,000 characters. Use it when note_house says the log is full.",
-        json!({ "log": { "type": "string", "maxLength": crate::domain::house::HOUSE_LOG_MOST } }),
-        &["log"],
-    ));
+    // The team's world (ADR 0122): the CEO keeps the house page.
+    list.extend(super::protocol_world::tools(Role::Ceo));
     list.push(tool(
         "direct",
         "Give the lead of a task's area a direction: what you want done, looked at or weighed, on evidence from HQ's record. It is posted in the task's thread and wakes the lead, who decides what to do with it. On a task in a lead's area you read and talk, and direct; you never claim, move, close, accept or send back its work.",
@@ -701,6 +692,10 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // Downtime makes no work (ADR 0119): the tools that would are refused in its turns.
     if MAKES_WORK.contains(&tool) && engine.in_downtime(run.id).map_err(|e| said(&e))? {
         return Err(Refusal::InDowntime.to_string());
+    }
+    // The team's world (ADR 0122).
+    if let Some(answer) = super::protocol_world::call(engine, run, member, tool, args) {
+        return answer;
     }
     match tool {
         "office" => office_call(engine, run, args),
@@ -902,6 +897,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 Some(name) => Some(member_named(engine, name)?.id),
                 None => None,
             };
+            let handover = super::protocol_world::handover_arg(args)?;
             engine
                 .decide_stuck_in(
                     run.id,
@@ -910,6 +906,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                     text_arg(args, "detail")?,
                     to,
                     &evidence_flat(args)?,
+                    handover.as_ref(),
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!(
@@ -993,7 +990,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         "note_house" => {
             let entry = text_arg(args, "entry")?;
             let line = engine.note_house(run.id, entry).map_err(|e| said(&e))?;
-            Ok(format!("Noted in the house log: {line}"))
+            Ok(format!("Noted on the house page's timeline: {line}"))
         }
         "rewrite_house" => {
             let log = args["log"].as_str().unwrap_or("");
@@ -1132,8 +1129,9 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let task = task_arg(args)?;
             let to = member_named(engine, text_arg(args, "to")?)?;
             let why = text_arg(args, "why")?;
+            let handover = super::protocol_world::handover_needed(args)?;
             engine
-                .hand_to_in(run.id, task, to.id, why)
+                .hand_to_in(run.id, task, to.id, why, &handover)
                 .map_err(|e| said(&e))?;
             Ok(format!(
                 "Task {} is {}'s now; they are woken.",
@@ -1177,9 +1175,11 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         }
         "note_lesson" => {
             let lesson = text_arg(args, "lesson")?;
-            let line = engine.note_lesson(run.id, lesson).map_err(|e| said(&e))?;
+            let handle = engine.note_lesson(run.id, lesson).map_err(|e| said(&e))?;
             Ok(format!(
-                "Noted in the goal's notes for the team, which every member reads: {line}"
+                "Kept as story:{handle}, marked to retell: lessons are stories now. Tell it whole \
+                 with tell_story under the same handle (when it matters, the tempting move, what \
+                 to do instead, and why)."
             ))
         }
         // The node's model relay charges every call a turn makes, as it makes it; a worker that

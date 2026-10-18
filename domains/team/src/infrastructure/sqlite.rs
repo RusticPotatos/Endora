@@ -19,6 +19,8 @@ use crate::domain::{
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{chess, games};
 
+mod world;
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS members (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
@@ -326,6 +328,16 @@ impl SqliteTeamStore {
     }
 
     fn over(conn: Connection) -> Stored<Self> {
+        let conn = Self::before_the_world(conn)?;
+        // The team's world (ADR 0122): new tables only, made if missing.
+        conn.execute_batch(world::SCHEMA).map_err(backend)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// The schema as it was before the team's world: what a live store already has.
+    fn before_the_world(conn: Connection) -> Stored<Connection> {
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(backend)?;
         conn.execute_batch(SCHEMA).map_err(backend)?;
@@ -397,9 +409,7 @@ impl SqliteTeamStore {
         // Roles as an enforced RACI (ADR 0120): new tables only, made if missing, so a live
         // store gains them empty and no existing row changes.
         conn.execute_batch(RACI_SCHEMA).map_err(backend)?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+        Ok(conn)
     }
 
     fn conn(&self) -> Stored<std::sync::MutexGuard<'_, Connection>> {

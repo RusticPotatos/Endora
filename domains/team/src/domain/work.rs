@@ -407,6 +407,8 @@ pub enum Refusal {
     OnlyTheCeo,
     /// The house log has no room for one more line.
     HouseLogFull,
+    /// What the team's world refuses (ADR 0122): its pages, stages, stories and handovers.
+    World(super::world::WorldRefusal),
     /// Not in Endora's public library.
     NotADoc,
     /// A decision for the board says what is to be decided, what the CEO recommends, and why.
@@ -664,6 +666,7 @@ impl fmt::Display for Refusal {
             Self::HouseLogFull => f.write_str(
                 "the house log is full: rewrite it shorter with rewrite_house, keeping what still matters",
             ),
+            Self::World(refused) => refused.fmt(f),
             Self::NotADoc => f.write_str(
                 "read_doc reads Endora's public library only: docs/standards.md, or a path like docs/adr/0111-the-ceo-and-the-chain-of-command.md, docs/plans/endora-hq.md or docs/drafts/ansible-nas-AGENTS.md",
             ),

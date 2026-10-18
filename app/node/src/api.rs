@@ -504,6 +504,12 @@ pub fn app(state: AppState) -> Router {
         // The owner renames a member, and keeps the CEO's house log with it (ADR 0111).
         .route("/v1/hq/members/{id}/name", post(hq_rename))
         .route("/v1/hq/house", post(hq_house_log))
+        // The team's world (ADR 0122): the owner reads it, downloads it, and alone makes
+        // something canon or demotes it.
+        .route("/v1/hq/world", get(hq_world))
+        .route("/v1/hq/world/export.md", get(hq_world_export))
+        .route("/v1/hq/world/promote", post(hq_world_promote))
+        .route("/v1/hq/world/demote", post(hq_world_demote))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
         // The owner's routines (ADR 0107).

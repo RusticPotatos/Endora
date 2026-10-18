@@ -944,8 +944,8 @@ fn the_shell_is_offered_only_in_the_workbench() {
         "{system}"
     );
     assert!(
-        !system.contains("note_lesson"),
-        "a member without note_lesson is not told to use it: {system}"
+        !system.contains("tell_story"),
+        "a member without tell_story is not told to use it: {system}"
     );
 }
 

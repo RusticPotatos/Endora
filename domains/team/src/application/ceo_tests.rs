@@ -560,10 +560,12 @@ fn the_house_log_is_the_ceos_to_keep_and_starts_the_ceos_and_the_leads_turns() {
     .unwrap();
     let ceo = turn(&hq, t.ceo);
     assert!(
-        ceo.told.contains("The house log, yours to keep"),
+        ceo.told
+            .contains("The house page (world:house), yours to keep"),
         "{}",
         ceo.told
     );
+    // Since the world (ADR 0122) a dated line goes on the house page's timeline.
     let said = use_tool(
         &hq,
         &ceo,
@@ -575,22 +577,25 @@ fn the_house_log_is_the_ceos_to_keep_and_starts_the_ceos_and_the_leads_turns() {
         said.ends_with("- 17 Oct 2026: The NAS has 16 GB; sonarr needs 2."),
         "{said}"
     );
-    assert_eq!(
-        hq.house_log().unwrap(),
-        "- 17 Oct 2026: The NAS has 16 GB; sonarr needs 2."
-    );
+    {
+        use crate::application::world_ports::WorldStore;
+        let timeline = hq.store().timeline("house").unwrap();
+        assert_eq!(
+            (timeline[0].by.as_str(), timeline[0].line.as_str()),
+            ("Mara", "The NAS has 16 GB; sonarr needs 2.")
+        );
+    }
     let long = "x".repeat(501);
     assert!(use_tool(&hq, &ceo, "note_house", &json!({ "entry": long })).is_err());
-    use_tool(
+    let retired = use_tool(
         &hq,
         &ceo,
         "rewrite_house",
         &json!({ "log": "x".repeat(5_990) }),
     )
-    .unwrap();
-    let full = use_tool(&hq, &ceo, "note_house", &json!({ "entry": "one more" })).unwrap_err();
-    assert!(full.contains("rewrite_house"), "{full}");
-    // The owner edits it on the screen; the lead's next turn starts with it, read-only.
+    .unwrap_err();
+    assert!(retired.contains("write_world"), "{retired}");
+    // The owner's old log is still theirs until it is moved into the world.
     hq.set_house_log("- 17 Oct: Sonarr may have 2 GB.").unwrap();
     assert_eq!(
         hq.snapshot().unwrap()["house_log"],
@@ -608,8 +613,9 @@ fn the_house_log_is_the_ceos_to_keep_and_starts_the_ceos_and_the_leads_turns() {
     let lead = turn(&hq, t.lead);
     assert!(
         lead.told.contains(
-            "The house log, kept by the CEO (read it; it is not yours to change):\n- 17 Oct: \
-             Sonarr may have 2 GB."
+            "The house page (world:house), kept by the CEO (read it; it is not yours to \
+             change):\nNo sections yet. Its timeline, newest last:\n- 17 Oct 2026, Mara: The \
+             NAS has 16 GB; sonarr needs 2."
         ),
         "{}",
         lead.told
@@ -830,8 +836,8 @@ fn the_ceos_briefing_holds_the_house_the_team_the_strategy_the_areas_and_the_boa
     // and reads the areas' work and the lab when she chooses to.
     for said in [
         "You are Mara, the team's CEO.",
-        "The house log, yours to keep",
-        "(empty)",
+        "The house page (world:house), yours to keep",
+        "No sections yet.",
         "Your team: Ada (lead, Claude Sonnet), Linus (developer, Local).",
         "Goals and their strategy:",
         "- #1 Keep the home lab healthy (active)",
@@ -1008,7 +1014,7 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
     let quiet = turn(&hq, t.ceo);
     assert_ne!(quiet.run, first.run);
     for said in [
-        "The house log, yours to keep",
+        "The house page (world:house), yours to keep",
         "Your team: Ada (lead, Claude Sonnet), Linus (developer, Local).",
         "- #1 Keep the home lab healthy (active)",
         "money beyond the team's pool",
@@ -1033,7 +1039,7 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
         quiet.told
     );
     // The house and the team open every briefing, in one order.
-    let house = quiet.told.find("The house log").unwrap();
+    let house = quiet.told.find("The house page").unwrap();
     let team = quiet.told.find("Your team:").unwrap();
     let news = quiet.told.find("Nothing changed").unwrap();
     assert!(house < team && team < news, "{}", quiet.told);

@@ -249,27 +249,37 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .ok_or(EngineError::Refused(Refusal::NoSuchNote(note)))
     }
 
-    /// What a briefing says first about a member's notebook: that it was furloughed and should
-    /// read its notes first, if this is its first turn since it came back; its notes, newest
-    /// first and capped (the CEO's only counted); and, a week after the last tidy, the ask to
-    /// tidy them.
-    pub(super) fn notebook_said(&self, member: &Member, run: &Run) -> Done<String> {
+    /// The furlough a member is back from, `(from, to)`, if this is its first turn since its
+    /// recall.
+    pub(super) fn back_from_furlough(
+        &self,
+        member: &Member,
+        run: &Run,
+    ) -> Done<Option<(Millis, Millis)>> {
+        let (Some(from), Some(to)) = (member.furloughed_at, member.recalled_at) else {
+            return Ok(None);
+        };
+        let since_back = self.store.runs()?.iter().any(|r| {
+            r.member == member.id && r.id != run.id && r.started_at.is_some_and(|s| s >= to)
+        });
+        Ok((!since_back).then_some((from, to)))
+    }
+
+    /// The line a briefing opens with for a member back from a furlough: read its notes first.
+    pub(super) fn furlough_said(&self, from: Millis, to: Millis) -> String {
+        format!(
+            "You were furloughed from {} to {}; read your notes first.\n",
+            self.said_day(from),
+            self.said_day(to)
+        )
+    }
+
+    /// What a briefing says of a member's notebook: its notes, newest first and capped (the
+    /// CEO's only counted); and the ask to tidy them, when it is due (empty otherwise).
+    pub(super) fn notebook_said(&self, member: &Member) -> Done<(String, String)> {
         let now = self.clock.now();
-        let mut said = String::new();
-        if let (Some(from), Some(to)) = (member.furloughed_at, member.recalled_at) {
-            let since_back = self.store.runs()?.iter().any(|r| {
-                r.member == member.id && r.id != run.id && r.started_at.is_some_and(|s| s >= to)
-            });
-            if !since_back {
-                said.push_str(&format!(
-                    "You were furloughed from {} to {}; read your notes first.\n",
-                    self.said_day(from),
-                    self.said_day(to)
-                ));
-            }
-        }
         let notes = self.store.notes(member.id)?;
-        said.push_str(&notebook::briefing(&notes, now, member.role == Role::Ceo));
+        let said = notebook::briefing(&notes, now, member.role == Role::Ceo);
         let read = |key: String| -> Done<Option<Millis>> {
             Ok(self
                 .store
@@ -277,12 +287,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .and_then(|said| said.parse::<Millis>().ok()))
         };
         let (tidied, asked) = (read(tidied_key(member.id))?, read(asked_key(member.id))?);
-        if notebook::tidy_due(&notes, tidied, asked, now) {
-            said.push_str(notebook::TIDY_UP);
-            said.push('\n');
-            self.store
-                .set_setting(&asked_key(member.id), &now.to_string())?;
+        if !notebook::tidy_due(&notes, tidied, asked, now) {
+            return Ok((said, String::new()));
         }
-        Ok(said)
+        Ok((said, format!("{}\n", notebook::TIDY_UP)))
+    }
+
+    /// The ask to tidy reached the member's briefing: it is not asked again for a day.
+    pub(super) fn tidy_asked(&self, member: MemberId) -> Done<()> {
+        Ok(self
+            .store
+            .set_setting(&asked_key(member), &self.clock.now().to_string())?)
     }
 }

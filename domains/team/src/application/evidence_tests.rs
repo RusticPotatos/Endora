@@ -1175,7 +1175,9 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
         &hq,
         &ada,
         "hand_to",
-        &json!({ "task": mine.0, "to": "Ada", "why": "I will take it" }),
+        &json!({ "task": mine.0, "to": "Ada", "why": "I will take it",
+                 "handover": { "done": "nothing yet", "not_done": "the look", "next": "look",
+                               "watch_out": "radarr restarts slowly" } }),
     )
     .unwrap();
     let moved = hq.store().task(mine).unwrap().unwrap();
@@ -1185,7 +1187,13 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
             .contains(&"Handed from Linus to Ada by Ada, above them: I will take it".to_owned())
     );
     assert_eq!(
-        hq.hand_to_in(ada.run, lead_task, t.dev, "yours"),
+        hq.hand_to_in(
+            ada.run,
+            lead_task,
+            t.dev,
+            "yours",
+            &crate::domain::world::HandoverNote::new("a", "b", "c", "d").unwrap()
+        ),
         Err(super::engine::EngineError::Refused(Refusal::NotYours)),
         "her own task is nobody's below her"
     );

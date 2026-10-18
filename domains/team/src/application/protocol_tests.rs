@@ -169,9 +169,10 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    // A huddle on stuck work asks every member's view (ADR 0120), every member shapes the
-    // office (ADR 0119), and may play chess (ADR 0121).
-    assert_eq!(names.len(), 18, "{names:?}");
+    // A huddle on stuck work asks every member's view (ADR 0120), and every member shapes the
+    // office (ADR 0119), and may play chess (ADR 0121); every member reads the world and tells stories (ADR 0122).
+    assert_eq!(names.len(), 20, "{names:?}");
+    assert!(names.contains(&"read_world".to_owned()) && names.contains(&"tell_story".to_owned()));
     assert!(names.contains(&"huddle_view".to_owned()));
     assert!(names.contains(&"office".to_owned()));
     assert!(names.contains(&"chess".to_owned()));
@@ -196,17 +197,19 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    // With the office (ADR 0119), a huddle's view (ADR 0120) and chess (ADR 0121).
-    assert_eq!(reviewers.len(), 19, "{reviewers:?}");
+    // With the office (ADR 0119), a huddle's view (ADR 0120), chess (ADR 0121) and the world
+    // (ADR 0122).
+    assert_eq!(reviewers.len(), 20, "{reviewers:?}");
     assert!(
         !reviewers.contains(&"create_task".to_owned()),
         "the tester passes or sends back, and never makes work"
     );
-    assert!(reviewers.contains(&"note_lesson".to_owned()));
     assert!(
-        !names.contains(&"note_lesson".to_owned()),
-        "only the lead and the reviewer keep the team's lessons"
+        !reviewers.contains(&"note_lesson".to_owned())
+            && !names.contains(&"note_lesson".to_owned()),
+        "a lesson is a story now: tell_story"
     );
+    assert!(reviewers.contains(&"tell_story".to_owned()));
     assert!(reviewers.contains(&"review".to_owned()));
     assert!(names.contains(&"check_back".to_owned()));
     assert!(
@@ -629,7 +632,8 @@ fn a_turn_asks_to_check_back_on_its_own_task_and_is_told_when() {
 }
 
 #[test]
-fn the_lead_notes_a_lesson_in_the_goals_notes_and_the_owner_is_told() {
+fn a_lesson_noted_the_old_way_is_a_story_to_retell_and_the_owner_is_told() {
+    use crate::application::world_ports::WorldStore;
     // 17 October 2026, at noon UTC.
     let clock = Hands(AtomicI64::new(1_792_238_400_000));
     let (hq, s, dev_turn) = started(&clock);
@@ -653,12 +657,16 @@ fn the_lead_notes_a_lesson_in_the_goals_notes_and_the_owner_is_told() {
     let lead = next_turn(&hq, ada);
     let (run, me) = turn(&hq, &lead.token);
     let lesson = "An RSS sync that finds releases and grabs none is normal.";
+    // A worker told of note_lesson before stories (ADR 0122): kept as a story to retell, in
+    // the lead's area, and the goal's notes are left as the owner wrote them.
     let said = call(&hq, &run, &me, "note_lesson", &json!({ "lesson": lesson })).unwrap();
-    assert!(said.contains(lesson), "{said}");
-    assert_eq!(
-        hq.goal_note(s.goal).unwrap(),
-        format!("Owntone is being retired.\n- {lesson} (Ada, 17 Oct)")
-    );
+    assert!(said.contains("story:an-rss-sync"), "{said}");
+    assert_eq!(hq.goal_note(s.goal).unwrap(), "Owntone is being retired.");
+    let stories = hq.store().stories().unwrap();
+    assert_eq!(stories.len(), 1);
+    assert!(stories[0].to_retell);
+    assert_eq!(stories[0].instead, lesson);
+    assert_eq!(stories[0].scope, crate::domain::world::Scope::Area(ada));
     let desk = hq.store().desk().unwrap();
     let told = desk.last().unwrap();
     assert_eq!(told.kind, "notice");
@@ -679,15 +687,9 @@ fn the_lead_notes_a_lesson_in_the_goals_notes_and_the_owner_is_told() {
         .contains("300")
     );
     assert!(call(&hq, &run, &me, "note_lesson", &json!({ "lesson": "  " })).is_err());
-    // The notes stay within their limit: a lesson that would overflow them is refused.
-    hq.set_goal_note(s.goal, &"n".repeat(1_950)).unwrap();
-    let full = call(&hq, &run, &me, "note_lesson", &json!({ "lesson": lesson })).unwrap_err();
-    assert_eq!(full, "the notes are full; ask the owner to tidy them");
-    assert_eq!(
-        hq.goal_note(s.goal).unwrap(),
-        "n".repeat(1_950),
-        "unchanged"
-    );
+    // The same lesson again is a second story, under its own handle.
+    let again = call(&hq, &run, &me, "note_lesson", &json!({ "lesson": lesson })).unwrap();
+    assert!(again.contains("story:an-rss-sync-2"), "{again}");
 
     // A developer keeps none.
     let (run, me) = turn(&hq, &dev_turn.token);
@@ -696,14 +698,14 @@ fn the_lead_notes_a_lesson_in_the_goals_notes_and_the_owner_is_told() {
         refused.contains("only the lead and the reviewer"),
         "{refused}"
     );
-    let schema = tools(Role::Lead)
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["name"] == "note_lesson")
-        .cloned()
-        .unwrap();
-    assert_eq!(schema["inputSchema"]["required"], json!(["lesson"]));
+    assert!(
+        !tools(Role::Lead)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "note_lesson"),
+        "tell_story is offered instead"
+    );
 }
 
 /// The lead is told who is on the team and to split the work: the developer fixes, the

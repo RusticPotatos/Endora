@@ -144,6 +144,7 @@ function replayHead(r) {
     <div class="hq-who">${r.task ? hqKey(r.task) + " · " : ""}${esc(String(r.status || "").replace(/_/g, " "))}${r.label ? ` · <b>${esc(r.label)}</b>` : ""}${r.attempts > 1 ? ` · ${Number(r.attempts)} attempts` : ""}</div></div></div>
     <dl class="hq-kv">
       <dt>Woken</dt><dd>${esc(String(r.reason || "?").replace(/_/g, " "))}</dd>
+      ${r.briefed ? `<dt>Started from</dt><dd>${esc(String(r.briefed.situation || "").replace(/_/g, " "))} · about ${Number(r.briefed.tokens) || 0} of ${Number(r.briefed.budget) || 0} tokens of the world${r.briefed.over_budget ? " · over its budget" : ""}${(r.briefed.dropped || []).length ? ` · left out: ${(r.briefed.dropped || []).map((d) => esc(d)).join(", ")}` : ""}</dd>` : ""}
       <dt>Brain</dt><dd>${brain || "?"} <span class="hq-who">(as set now)</span></dd>
       <dt>Ran</dt><dd>${ran ? esc(ran) : "not started"}${r.started_at ? ` from ${esc(replayClock(r.started_at))}` : ""}</dd>
       <dt>Money</dt><dd>${cost}</dd>

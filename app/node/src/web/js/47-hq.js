@@ -267,7 +267,15 @@ function hqTell(e, live, older) {
     // The CEO and the chain of command (ADR 0111).
     "member.hired": ["you", `${d.name} joined the team as ${hqRole(d.role)}`],
     "member.renamed": ["you", `${d.was} is now ${d.name}`],
-    "house.noted": ["you", d.entry ? `${d.by} noted in the house log: ${d.entry}` : `The house log was rewritten by ${d.by === "owner" ? "you" : d.by}`],
+    "house.noted": ["you", d.entry ? `${d.by} noted ${d.page ? "on the house page" : "in the house log"}: ${d.entry}` : `The house log was rewritten by ${d.by === "owner" ? "you" : d.by}`],
+    // The team's world (ADR 0122): sections, canon, stories and handovers.
+    "world.changed": [d.what === "demoted" ? "warn" : "you", d.what === "promoted" ? `${d.address} is canon${d.why ? ": " + d.why : ""}`
+      : d.what === "demoted" ? `You demoted ${d.address} from canon: ${d.why || ""}`
+      : d.what === "proposed" ? `${d.by} proposes ${d.address} for canon: ${d.warrant || ""}`
+      : d.what === "migrated" ? `The house log and ${d.stories || 0} lessons moved into the team's world`
+      : `${d.by || "Someone"} ${String(d.what || "changed").replace(/_/g, " ")} ${d.address || ""}`],
+    "story.told": ["run", `${d.by} ${d.retold ? "retold" : "told"} the story ${d.handle}`],
+    "task.handed_over": ["run", `${hqName(d.by)} handed ${key} on: ${d.note || ""}`],
     "checkback.fired": ["wake", `${name} checks back on ${key}`],
     "checkback.dropped": ["run", `Check-back on ${key} dropped: it is over`],
     // Projects, their budgets, and whom members report to (ADR 0113).
@@ -1181,6 +1189,8 @@ function viewHQ() {
       // lead's request to bring a furloughed member back.
       furlough: [["approve", "Furlough", "ok"], ["decline", "Keep", "no"]],
       recall: [["approve", "Bring back", "ok"], ["decline", "Decline", "no"]],
+      // A piece of the world proposed for canon (ADR 0122): only the owner makes it so.
+      canon: [["approve", "Make it canon", "ok"], ["decline", "Not canon", "no"]],
       // A member at twice its share with the pool's day not spent (ADR 0113): an allowance for
       // the rest of today, at the amount written on the card, or wait for tomorrow.
       out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
@@ -1235,6 +1245,7 @@ function viewHQ() {
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
         ${hqOffice(s)}
         ${hqProjects(s)}
+        ${hqWorldCard(s)}
         ${hqHouse(s)}
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
@@ -1631,6 +1642,13 @@ function hqScorecard(s) {
 // every turn. The owner reads it here and may rewrite it.
 function hqHouse(s) {
   const log = s.house_log || "";
+  // Once its lines are on the house page's timeline (ADR 0122), the old log is read-only.
+  if (s.world && s.world.migrated) {
+    if (!log.trim()) return "";
+    return `<details class="hq-card"><summary>The old house log (read-only)</summary>
+      <p class="hq-note">Its lines are on the house page's timeline, in the World card.</p>
+      <pre class="hq-doc">${esc(log)}</pre></details>`;
+  }
   return `<section class="hq-card"><h2>House log</h2>
     <p class="hq-note">Kept by the CEO; the CEO and the lead read it every turn.</p>
     <textarea id="hq-house" rows="6" maxlength="6000" aria-label="The house log"
@@ -1929,6 +1947,8 @@ async function hqDispatch(verb, noun, id, arg) {
     } catch (e) { flash("Couldn't do it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
+  // The team's world (ADR 0122): make a piece canon, demote canon, or download it all.
+  if (noun === "world") return hqWorldAct(id, arg);
   // The owner rewrites the CEO's house log; empty clears it.
   if (noun === "house") {
     const box = document.getElementById("hq-house"), log = box ? box.value.trim() : "";

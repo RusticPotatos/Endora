@@ -237,7 +237,9 @@ fn stuck_work_goes_to_its_lead_first_and_the_lead_decides_it() {
             &kit,
             "decide_stuck",
             &json!({ "task": task.0, "decision": decision, "detail": "Zed knows the role",
-                     "to": to, "evidence": [format!("task {}", task.0)] }),
+                     "to": to, "evidence": [format!("task {}", task.0)],
+                     "handover": { "done": "the role is read", "not_done": "the lint fix",
+                                   "next": "fix the lint", "watch_out": "the CI's version" } }),
         )
     };
     assert_eq!(
@@ -279,7 +281,9 @@ fn a_lead_that_says_it_needs_the_ceo_or_the_board_sends_it_up_and_only_then() {
             "decide_stuck",
             &json!({ "task": task.0, "decision": decision,
                      "detail": "it needs a paid runner beyond the caps",
-                     "evidence": [format!("task {}", task.0)] }),
+                     "evidence": [format!("task {}", task.0)],
+                     "handover": { "done": "the lint is read", "not_done": "the fix",
+                                   "next": "nothing", "watch_out": "the caps" } }),
         )
         .unwrap();
         let ceo_woken = w

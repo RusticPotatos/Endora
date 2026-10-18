@@ -102,6 +102,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             tagged_from,
             now: self.clock.now(),
         };
-        Ok(replay::replay_all(&record, runs))
+        let mut all = replay::replay_all(&record, runs);
+        for turn in &mut all {
+            turn.briefed = self.store.briefed(turn.run.id)?;
+        }
+        Ok(all)
     }
 }

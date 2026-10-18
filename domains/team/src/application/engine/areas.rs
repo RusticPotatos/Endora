@@ -549,7 +549,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
                 told.push_str(&strategy.said());
             }
-            let notes = self.store.goal_note(goal.id)?;
+            let notes = self.goal_note_briefed(goal.id)?;
             if !notes.trim().is_empty() {
                 told.push_str("  Its notes and lessons:\n");
                 for line in notes.lines().filter(|l| !l.trim().is_empty()) {

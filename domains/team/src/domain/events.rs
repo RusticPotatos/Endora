@@ -73,8 +73,16 @@ pub enum EventKind {
     MemberHired,
     /// The owner renamed a member.
     MemberRenamed,
-    /// The house log was added to or rewritten (ADR 0111).
+    /// The house log was added to or rewritten (ADR 0111); since ADR 0122, a line was added to
+    /// the house page's timeline.
     HouseNoted,
+    /// The team's world changed (ADR 0122): a section written, confirmed or retired, a piece
+    /// proposed for canon, made canon or demoted, or the old record moved in.
+    WorldChanged,
+    /// A story was told, or a lesson retold as one (ADR 0122).
+    StoryTold,
+    /// Work was handed on, with its handover note (ADR 0122).
+    HandedOver,
     /// A project was proposed, decided, capped, paused, resumed or put away (ADR 0113).
     ProjectChanged,
     /// A project reached 80% of its cap, or spent it (ADR 0113).
@@ -168,6 +176,9 @@ impl EventKind {
             Self::MemberHired => "member.hired",
             Self::MemberRenamed => "member.renamed",
             Self::HouseNoted => "house.noted",
+            Self::WorldChanged => "world.changed",
+            Self::StoryTold => "story.told",
+            Self::HandedOver => "task.handed_over",
             Self::ProjectChanged => "project.changed",
             Self::ProjectBudget => "project.budget",
             Self::ReportsTo => "member.reports_to",

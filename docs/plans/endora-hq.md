@@ -41,7 +41,9 @@ with the engine, and the owner's desk where everything that needs them lands.
 | Owner | The person Endora works for. In HQ they are also the board: the last word on everything. |
 | CEO | The member above the lead (ADR 0111): answers the lead's questions, reviews the house daily, keeps the house log, and puts to the board only what the owner alone decides, as a decision with its recommendation. |
 | Chain of command | Where a member's question goes: the developer's, researcher's and reviewer's to the lead, the lead's to the CEO, the CEO's to the board. |
-| House log | The CEO's own document of the house, per team, which the CEO and the lead read every turn and the owner edits. |
+| House log | The CEO's own document of the house, per team, which the CEO and the lead read every turn and the owner edits. Since ADR 0122, the house page's timeline; kept read-only for a release. |
+| World | What the team knows (ADR 0122): the house page's sections and timeline, the derived lab and team pages, and stories, each piece with a stage; canon is the owner's word. |
+| Situation | What a turn starts from (ADR 0122): fresh, continuing, after a gap, handover or recalled; it decides what of the world the briefing carries, within the member's budget. |
 | Desk | The owner's queue in HQ: everything waiting for them to approve, adjust or decline. |
 | Team | A group of members with a goal, a budget and a name. One to start. |
 | Member | One worker on a team, with a role, a model, a look and a daily budget. |
@@ -318,9 +320,14 @@ container:
 | `check_back` | Wakes the member on its task again after 5–720 minutes, once, if it is still open: after a fix, to confirm it held |
 | `run_gate` | Runs the tests and build on a runner and returns the result |
 | `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
-| `note_lesson` | The lead's and the reviewer's: `{ "lesson" }`, at most 300 characters, appended as "- <lesson> (Ada, 17 Oct)" to the task's goal's notes for the team (which every briefing carries). A lesson that would overflow the notes' 2,000 characters is refused: "the notes are full; ask the owner to tidy them". Each is a `lesson.noted` event and a notice on the owner's desk ("Ada noted: …"), so the owner sees and can edit it |
-| `note_house` | The CEO's only: `{ "entry" }`, at most 500 characters, appended to the house log as "- 17 Oct: …"; refused when the log would pass 6,000 characters ("rewrite it shorter with rewrite_house"). A `house.noted` event |
-| `rewrite_house` | The CEO's only: `{ "log" }`, the whole house log, at most 6,000 characters |
+| `note_lesson` | No longer offered (ADR 0122): a worker that still calls it gets a story marked to retell, in its writer's area, under a handle from the lesson's first words; a `lesson.noted` event and a notice on the owner's desk ("Ada noted: …") as before. The goal's notes are not changed |
+| `note_house` | The CEO's only: `{ "entry" }`, at most 500 characters, a dated line on the house page's timeline (ADR 0122; before it, the house log). A `house.noted` event |
+| `rewrite_house` | Refused for a release (ADR 0122), saying to use `write_world` and `note_house`; then removed |
+| `read_world` | Every member's (ADR 0122): `{ "address" }`, `world:house`, `world:house#<anchor>`, `world:lab`, `world:team` or `story:<handle>`; each piece says its stage, or "unconfirmed since <date>" |
+| `tell_story` | Every member's (ADR 0122): `{ handle, moment, reflex, instead, because, evidence, stage?, warrant?, taught? }`, in the member's scope by role; retells a story marked to retell under its own handle; an insight is the scope's steward's |
+| `write_world` | The CEO's (ADR 0122): a section of the house page, `{ heading, headline, body?, stage, warrant?, evidence, anchor? }`, an observation or an insight on its evidence; never canon |
+| `verify_world`, `retire_world` | The CEO's and the leads', for what they steward (ADR 0122): confirm on fresh evidence; retire with a reason, or supersede naming the successor; canon is the owner's |
+| `propose_canon` | The CEO's and the leads' (ADR 0122): a trusted insight and a warrant, to the owner's desk |
 | `read_doc` | Every member's (ADR 0116; the CEO's only before): `{ "path", "part"? }`, one of Endora's public library (`docs/standards.md`, `docs/adr/*.md`, `docs/plans/*.md`, `docs/drafts/*.md`, embedded in HQ at build time), 20,000 characters a part; a folder alone lists them; any other path is refused |
 | `review` | The reviewer's only: its verdict on work in review, `approve` or `send_back`, with notes. `send_back` posts the notes, sets the task to `doing` and wakes its owner. `approve` closes work that needs no gate (a routine's task, or work under a goal the home lab's routine serves) as `done`; work that needs the gate stays in review until the gate passes, and the reviewer is told so |
 
@@ -1200,6 +1207,36 @@ record) and decides there; leads propose and the CEO decides.
   rung left. Work sent back three times goes to a huddle. Events `stuck.climbed`,
   `huddle.called`, `huddle.decided`.
 - Scenarios: `domains/team/features/roles.feature`.
+
+### The team's world: stages, stories and situations (as built 2026-10-18, [ADR 0122](../adr/0122-the-teams-world-stages-stories-and-situations.md))
+
+As built: the first of three builds of the team's memory; the map and asking the past follow.
+
+- **Pages**: the house page (`world:house`, the CEO's to write) with current-truth sections and a
+  dated, append-only timeline; the derived `world:lab` and `world:team`, written by HQ from code
+  and the record each time they are read. A section's address never changes; every revision is
+  kept.
+- **Stages**: observation, field note, insight, canon, superseded, retired. An insight needs a
+  warrant and evidence from two turns or a reading the node witnessed this turn. **Only the owner
+  makes something canon** (World card, or a `propose_canon` card on the desk), and demotes it with
+  a reason that the feed and the timeline say. Trust is read when read: an insight or canon past
+  its horizon (house 90 days, an area's stories 30) or whose evidence has left the record reads
+  "unconfirmed since <date>" and counts as an observation; `verify_world` confirms it again.
+- **Stories**: lessons in four parts under a handle, by role's scope, told whole in the
+  situations they are taught in, cited by handle. `tell_story` replaces `note_lesson`.
+- **Situations and budgets**: recalled, handover, fresh, after a gap, continuing (and resumed,
+  named for later), decided from the record; the world's pieces composed within 2,500 (CEO),
+  4,000 (lead), 3,000 (others) or 1,800 (the house's model) tokens, 1,200 more after a gap, on a
+  handover or a recall; what is left out is named on the last line; the run records it, and the
+  replay shows it.
+- **Handover notes**: `hand_to` and a stuck task's hand-on or drop need `{done, not_done, next,
+  watch_out}`; the next holder's first turn starts with it.
+- **The move, once**: the house log's lines into the timeline at their dates (the seeded lab
+  lines are the lab page), lessons into stories to retell, notebooks read as field notes (the
+  owner's as insights); nothing deleted, the old log read-only. Mark `world_migrated`.
+- **The owner**: the World card, `GET /v1/hq/world`, `GET /v1/hq/world/export.md`,
+  `POST /v1/hq/world/promote`, `POST /v1/hq/world/demote`, through the node and its audit log.
+- Scenarios: `domains/team/features/the-world.feature`.
 
 ## 16. Later, and not at all
 

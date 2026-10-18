@@ -4,8 +4,10 @@ mod chess_tool;
 pub mod engine;
 pub mod ports;
 pub mod protocol;
+pub mod protocol_world;
 pub mod replay;
 pub mod scorecard;
+pub mod world_ports;
 
 pub use engine::{
     Asked, Author, Engine, EngineError, Fired, Proposal, Recorded, Settings, Standing, Submission,
@@ -72,3 +74,6 @@ mod raci_tests;
 
 #[cfg(test)]
 mod ladder_tests;
+
+#[cfg(test)]
+mod world_tests;
