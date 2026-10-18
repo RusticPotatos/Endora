@@ -27,6 +27,17 @@ finished task. The worker checks the fork out into `/work/repo` before Claude Co
 `repo_submit` reaches it through the worker's MCP bridge, so the bundles are still the worker's
 to carry.
 
+Amended 2026-10-18: the check job has every collection and role the fork needs, offline. The
+image builds `endora.homelab` from the Endora source it was built from, into the same path as
+the other baked collections, because the fork pins it to a git commit the sandbox cannot fetch;
+the image build fails if the collection or its roles are absent.
+
+Amended 2026-10-18: the trailer no longer depends on a hook running. The sandbox's `/work` is
+a Docker tmpfs, mounted `noexec`, where git ignores the `prepare-commit-msg` hook, so every
+submission was refused for lacking its trailer. The worker now stamps the trailer onto any
+commit of the member's `hq/` branch that lacks it, with git plumbing, when it bundles the
+branch (the node's check is unchanged); the hook stays for where it can run.
+
 ## Context
 
 The team could keep the home lab healthy (0106, 0108) and plan (0113), but could not change
