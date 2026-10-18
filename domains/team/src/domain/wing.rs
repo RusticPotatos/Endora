@@ -36,6 +36,15 @@ pub const WING_NOTE: &str = "The wing's job is the owner's public ansible-nas fo
     clean-up, hands developers one branch each, and reviews; a developer reads the fork's docs \
     (ansible_nas_doc) before changing a role.";
 
+/// What every member of the wing is told about the fork's own rules (ADR 0116).
+pub const FORK_RULES: &str = "The fork's own AGENTS.md, when it exists, is the repo's rules; \
+    propose one if missing.\n";
+
+/// What the wing's lead is told: the same, and that the draft is the first branch (ADR 0116).
+pub const FORK_RULES_LEAD: &str = "The fork's own AGENTS.md, when it exists, is the repo's \
+    rules; propose one if missing. Until it exists it is the first branch to propose: the draft \
+    is docs/drafts/ansible-nas-AGENTS.md in Endora's library (read_doc).\n";
+
 /// Whether a member is in the wing: it leads one of the wing's projects (`leads`), or reports,
 /// however far up, to one who does. The CEO is never in the wing.
 #[must_use]

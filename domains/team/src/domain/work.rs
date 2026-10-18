@@ -380,7 +380,7 @@ pub enum Refusal {
     OnlyTheCeo,
     /// The house log has no room for one more line.
     HouseLogFull,
-    /// Not one of Endora's public records and plans.
+    /// Not in Endora's public library.
     NotADoc,
     /// A decision for the board says what is to be decided, what the CEO recommends, and why.
     NotADecision,
@@ -534,7 +534,7 @@ impl fmt::Display for Refusal {
                 "the house log is full: rewrite it shorter with rewrite_house, keeping what still matters",
             ),
             Self::NotADoc => f.write_str(
-                "read_doc reads Endora's public records and plans only: a path like docs/adr/0111-the-ceo-and-the-chain-of-command.md or docs/plans/endora-hq.md",
+                "read_doc reads Endora's public library only: docs/standards.md, or a path like docs/adr/0111-the-ceo-and-the-chain-of-command.md, docs/plans/endora-hq.md or docs/drafts/ansible-nas-AGENTS.md",
             ),
             Self::NotAName => f.write_str(
                 "a member's name is one to 40 characters, and no other member's",

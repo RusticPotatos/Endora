@@ -1,14 +1,18 @@
-//! Endora's public records and plans, which the CEO may read (ADR 0111): the decision records
-//! in `docs/adr/` and the plans in `docs/plans/`, as they are published. Only those two
-//! folders, only Markdown, only a plain file name: never a path that climbs out of them.
+//! Endora's public library, which every member may read (ADR 0111, 0116): the decision records
+//! in `docs/adr/`, the plans in `docs/plans/`, the drafts the team proposes in `docs/drafts/`,
+//! and the team's standards, `docs/standards.md`, as they are published. Only those folders and
+//! that file, only Markdown, only a plain file name: never a path that climbs out of them.
 
 use super::work::Refusal;
 
 /// The most characters one read returns: a longer document is read in parts.
 pub const DOC_PART: usize = 20_000;
 
-/// The folders the CEO may read.
-pub const FOLDERS: [&str; 2] = ["docs/adr", "docs/plans"];
+/// The folders a member may read.
+pub const FOLDERS: [&str; 3] = ["docs/adr", "docs/plans", "docs/drafts"];
+
+/// The documents a member may read outside those folders: the team's standards.
+pub const FILES: [&str; 1] = ["docs/standards.md"];
 
 /// What a path to read asks for: one document, or the list of a folder's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,9 +23,9 @@ pub enum Asked<'a> {
     Folder(&'static str),
 }
 
-/// What `path` asks for, if it is one of Endora's public records or plans or their folders:
-/// `docs/adr/<name>.md` or `docs/plans/<name>.md`, the name of letters, digits, `.`, `_` and
-/// `-` and not starting with a dot.
+/// What `path` asks for, if it is in Endora's public library or one of its folders:
+/// [`FILES`], or `<folder>/<name>.md` for a folder of [`FOLDERS`], the name of letters, digits,
+/// `.`, `_` and `-` and not starting with a dot.
 ///
 /// # Errors
 /// [`Refusal::NotADoc`] for anything else.
@@ -29,6 +33,9 @@ pub fn asked(path: &str) -> Result<Asked<'_>, Refusal> {
     let path = path.trim();
     if let Some(folder) = FOLDERS.iter().find(|f| path.trim_end_matches('/') == **f) {
         return Ok(Asked::Folder(folder));
+    }
+    if let Some(file) = FILES.iter().find(|f| path == **f) {
+        return Ok(Asked::Doc(file));
     }
     for folder in FOLDERS {
         let Some(name) = path
@@ -64,7 +71,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_plain_markdown_name_in_the_two_public_folders_is_read() {
+    fn only_a_plain_markdown_name_in_the_public_library_is_read() {
         assert_eq!(
             asked("docs/adr/0111-the-ceo-and-the-chain-of-command.md"),
             Ok(Asked::Doc(
@@ -77,6 +84,15 @@ mod tests {
         );
         assert_eq!(asked("docs/adr/"), Ok(Asked::Folder("docs/adr")));
         assert_eq!(asked("docs/plans"), Ok(Asked::Folder("docs/plans")));
+        assert_eq!(
+            asked("docs/standards.md"),
+            Ok(Asked::Doc("docs/standards.md"))
+        );
+        assert_eq!(
+            asked("docs/drafts/ansible-nas-AGENTS.md"),
+            Ok(Asked::Doc("docs/drafts/ansible-nas-AGENTS.md"))
+        );
+        assert_eq!(asked("docs/drafts"), Ok(Asked::Folder("docs/drafts")));
         for refused in [
             "docs/adr/../../local.mk",
             "docs/adr/..md",
@@ -86,6 +102,8 @@ mod tests {
             "docs/adr/.md",
             "/etc/passwd",
             "docs/homelab.md",
+            "docs/standards.md/x.md",
+            "docs/drafts/../standards.md",
             "docs/plans/endora-hq/notes.md",
             "docs/adr%2F..%2Fx.md",
             "README.md",

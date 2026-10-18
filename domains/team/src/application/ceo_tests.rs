@@ -29,13 +29,14 @@ const OCT_17: i64 = 1_792_238_400_000;
 
 type Hq<'a> = Engine<SqliteTeamStore, SimulatedRunner, &'a Hands>;
 
-/// A public record and a plan, as HQ embeds them.
+/// A public record, a plan and the team's standards, as HQ embeds them.
 const LIBRARY: &[(&str, &str)] = &[
     (
         "docs/adr/0111-the-ceo-and-the-chain-of-command.md",
         "# 0111 — The CEO",
     ),
     ("docs/plans/endora-hq.md", "# Endora HQ: the design"),
+    ("docs/standards.md", "# The team's standards"),
 ];
 
 struct Team {
@@ -547,8 +548,8 @@ fn the_house_log_is_the_ceos_to_keep_and_starts_the_ceos_and_the_leads_turns() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t["name"] == "note_house" || t["name"] == "read_doc"),
-        "the lead is offered neither"
+            .any(|t| t["name"] == "note_house"),
+        "the lead is not offered the house log"
     );
     use_tool(
         &hq,
@@ -624,21 +625,28 @@ fn the_house_log_is_the_ceos_to_keep_and_starts_the_ceos_and_the_leads_turns() {
 }
 
 #[test]
-fn the_ceo_reads_endoras_public_records_and_nothing_else() {
+fn every_member_reads_endoras_public_library_and_nothing_else() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq, false);
     let task = task_for(&hq, t.goal, t.lead, "Plan the week");
     let lead = turn(&hq, t.lead);
-    assert_eq!(
-        use_tool(
-            &hq,
-            &lead,
-            "read_doc",
-            &json!({ "path": "docs/plans/endora-hq.md" })
-        )
-        .unwrap_err(),
-        Refusal::OnlyTheCeo.to_string()
+    assert!(
+        lead.told
+            .contains("The team's standards: read_doc docs/standards.md"),
+        "{}",
+        lead.told
+    );
+    let standards = use_tool(
+        &hq,
+        &lead,
+        "read_doc",
+        &json!({ "path": "docs/standards.md" }),
+    )
+    .unwrap();
+    assert!(
+        standards.ends_with("# The team's standards"),
+        "the lead reads the standards: {standards}"
     );
     use_tool(
         &hq,
@@ -837,6 +845,21 @@ fn the_ceos_briefing_holds_the_house_the_team_the_work_the_trouble_and_the_board
     ] {
         assert!(ceo.told.contains(said), "{said}\n---\n{}", ceo.told);
     }
+    // The CEO's briefing is held short; its read_doc names the team's standards.
+    let read_doc = tools(Role::Ceo)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "read_doc")
+        .cloned()
+        .unwrap();
+    assert!(
+        read_doc["description"]
+            .as_str()
+            .unwrap()
+            .contains("the team's standards (docs/standards.md)"),
+        "{read_doc}"
+    );
     assert!(!ceo.told.contains("run_gate"), "{}", ceo.told);
 }
 

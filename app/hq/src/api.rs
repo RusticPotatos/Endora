@@ -1074,9 +1074,13 @@ mod tests {
             .collect();
         // The demo's first turn is its lead's, who keeps the team's lessons and proposes
         // projects, accepts tested work, hands a subordinate's task on, asks the owner to hire
-        // and reads a task's documents, too.
-        assert_eq!(names.len(), 15, "{names:?}");
+        // and reads a task's documents and the team's library, too.
+        assert_eq!(names.len(), 16, "{names:?}");
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
+        assert!(
+            names.contains(&"read_doc"),
+            "every member reads the library"
+        );
         assert!(names.contains(&"accept") && names.contains(&"hand_to"));
         assert!(names.contains(&"request_hire") && names.contains(&"read_document"));
         assert!(

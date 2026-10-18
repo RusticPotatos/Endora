@@ -271,6 +271,7 @@ of an existing record and take the next number.
 | [0113](0113-projects-budgets-and-reports-to.md) | Projects, budgets and reports_to | — |
 | [0114](0114-evidence-acceptance-criteria-and-the-tester.md) | Evidence, acceptance criteria and the tester | — |
 | [0115](0115-the-engineering-wing-and-the-git-flow.md) | The engineering wing and the git flow | — |
+| [0116](0116-the-teams-standards.md) | The team's standards | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

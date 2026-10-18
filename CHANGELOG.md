@@ -9,6 +9,17 @@ tagged release.
 
 ### Added
 
+- **The team's standards** ([ADR 0116](docs/adr/0116-the-teams-standards.md), proposed).
+  [docs/standards.md](docs/standards.md) holds the owner's global engineering standards: the
+  base principles (test first, behaviour in the owner's words, SOLID, abstract only when
+  needed, domain first, small slices, and the rules Endora already lived by), how the root and
+  nested `AGENTS.md` layer on them, and each project at a glance. Endora's and the terminal's
+  `AGENTS.md` point to it. HQ embeds it, and the drafts in `docs/drafts/`, in its library, and
+  `read_doc` is now every member's; every briefing names the standards once (the CEO's
+  `read_doc` description does, its quiet briefing being held short). The wing is told the
+  fork's own `AGENTS.md` is the repo's rules, and its lead that the draft
+  [docs/drafts/ansible-nas-AGENTS.md](docs/drafts/ansible-nas-AGENTS.md) is the first branch
+  to propose.
 - **The engineering wing and the git flow** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)).
   A second team works on the owner's public ansible-nas fork through branches. The node keeps
   a bare mirror of the fork and offers a lead or a developer two contracts: `repo_checkout`
