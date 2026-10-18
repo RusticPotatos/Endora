@@ -189,6 +189,144 @@ fn request_staff_tool() -> Value {
     })
 }
 
+/// The tool every member decorates and plans the office with, together (ADR 0119).
+fn office_tool() -> Value {
+    let kinds: Vec<&str> = crate::domain::office::CATALOG
+        .iter()
+        .map(|s| s.name)
+        .collect();
+    json!({
+        "name": "office",
+        "description": format!("The office is yours to shape, with the team. propose: one to {} changes (place a thing, move one by its number, remove one) and why; it is posted for the team, your yes is counted, and it carries on a second yes, or after six hours if nobody objects, and is dropped if more say no than yes. react: vote yes or no, once, on an open proposal. look: the things on the floor with their numbers, and the open proposals. Kinds: {}. The rules refuse a change off the floor or on a wall, a door, the desks, a walking lane, a room or another thing; the floor holds {} things.",
+            crate::domain::office::MOST_CHANGES, kinds.join(", "), crate::domain::office::MOST_ITEMS),
+        "inputSchema": { "type": "object", "properties": {
+            "action": { "type": "string", "enum": ["propose", "react", "look"] },
+            "changes": { "type": "array", "maxItems": crate::domain::office::MOST_CHANGES, "items": { "type": "object", "properties": {
+                "op": { "type": "string", "enum": ["place", "move", "remove"] },
+                "kind": { "type": "string", "enum": kinds, "description": "for place" },
+                "item": { "type": "integer", "description": "for move and remove: the thing's number from look" },
+                "x": { "type": "integer", "description": "the left tile, 0 to 31" },
+                "y": { "type": "integer", "description": "the top tile, 0 to 19; wall things at y 1" },
+            }, "required": ["op"] }, "description": "for propose" },
+            "why": { "type": "string", "maxLength": crate::domain::office::WHY_MOST, "description": "for propose, and optionally react: why" },
+            "proposal": { "type": "integer", "description": "for react: the proposal's number" },
+            "vote": { "type": "string", "enum": ["yes", "no"], "description": "for react" },
+        }, "required": ["action"] },
+    })
+}
+
+/// One change as a member wrote it: `{ op, kind, item, x, y }`.
+fn change_arg(v: &Value) -> Result<crate::domain::office::Change, String> {
+    use crate::domain::office::{CATALOG, Change, Kind};
+    let tile = |key: &str| {
+        v[key].as_i64().ok_or_else(|| {
+            "a place or a move gives `x` and `y`, the tile, as whole numbers".to_owned()
+        })
+    };
+    let item = || {
+        v["item"].as_i64().ok_or_else(|| {
+            "a move or a remove gives `item`, the thing's number (see look)".to_owned()
+        })
+    };
+    match v["op"].as_str().map(str::to_lowercase).as_deref() {
+        Some("place") => {
+            let said = v["kind"].as_str().unwrap_or_default();
+            let kind = Kind::from_name(said).ok_or_else(|| {
+                let kinds: Vec<&str> = CATALOG.iter().map(|s| s.name).collect();
+                format!(
+                    "there is no kind of thing called `{said}` to place: the kinds are {}",
+                    kinds.join(", ")
+                )
+            })?;
+            Ok(Change::Place {
+                kind,
+                x: tile("x")?,
+                y: tile("y")?,
+            })
+        }
+        Some("move") => Ok(Change::Move {
+            item: item()?,
+            x: tile("x")?,
+            y: tile("y")?,
+        }),
+        Some("remove") => Ok(Change::Remove { item: item()? }),
+        _ => Err("each change has `op`: place, move or remove".to_owned()),
+    }
+}
+
+/// The `office` tool: propose, react or look.
+fn office_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    use crate::domain::office;
+    match args["action"].as_str() {
+        Some("propose") => {
+            let changes: Vec<office::Change> = args["changes"]
+                .as_array()
+                .map(|all| all.iter().map(change_arg).collect::<Result<_, _>>())
+                .unwrap_or_else(|| Ok(Vec::new()))?;
+            let why = args["why"].as_str().unwrap_or("");
+            let id = engine
+                .propose_office_in(run.id, &changes, why)
+                .map_err(|e| said(&e))?;
+            let items = engine.store().office_items().map_err(|e| e.to_string())?;
+            let words: Vec<String> = changes
+                .iter()
+                .map(|c| office::describe(&items, c))
+                .collect();
+            Ok(format!(
+                "Proposal {id} is made and posted for the team: {}. Your yes is counted. It carries \
+                 when one more member says yes, or after six hours if nobody objects; the owner \
+                 may veto it.",
+                words.join("; ")
+            ))
+        }
+        Some("react") => {
+            let proposal = match &args["proposal"] {
+                Value::Number(n) => n.as_i64(),
+                Value::String(s) => s.trim().trim_start_matches(['p', 'P']).parse().ok(),
+                _ => None,
+            }
+            .ok_or_else(|| "which proposal? Give its number as `proposal`".to_owned())?;
+            let yes = match args["vote"].as_str() {
+                Some("yes") => true,
+                Some("no") => false,
+                _ => return Err("`vote` is yes or no".to_owned()),
+            };
+            let why = args["why"].as_str().unwrap_or("");
+            let standing = engine
+                .react_office_in(run.id, proposal, yes, why)
+                .map_err(|e| said(&e))?;
+            Ok(match standing {
+                super::engine::Standing::Open => format!(
+                    "Your {} is counted on proposal {proposal}. It stays open.",
+                    if yes { "yes" } else { "no" }
+                ),
+                super::engine::Standing::Applied => {
+                    format!("Your yes carried proposal {proposal}: the office has changed.")
+                }
+                super::engine::Standing::Dropped(why) => {
+                    format!("Proposal {proposal} is dropped: {why}.")
+                }
+            })
+        }
+        Some("look") => engine.look_office_in(run.id).map_err(|e| said(&e)),
+        _ => Err("`action` is propose, react or look".to_owned()),
+    }
+}
+
+/// What a downtime turn may not do: it makes no work.
+const MAKES_WORK: [&str; 6] = [
+    "create_task",
+    "hand_to",
+    "propose_project",
+    "propose_goal",
+    "request_hire",
+    "request_staff",
+];
+
 /// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
 /// input. Only the reviewer is offered `review`. The CEO (ADR 0111) is offered the team's
 /// tools but the gate and privileged actions, puts decisions to the board with `ask_owner`,
@@ -311,6 +449,7 @@ pub fn tools(role: Role) -> Value {
     if let Some(list) = all.as_array_mut() {
         list.push(read_document_tool());
         list.push(read_doc_tool());
+        list.push(office_tool());
     }
     if crate::domain::lessons::keeps_lessons(role) {
         if let Some(list) = all.as_array_mut() {
@@ -339,6 +478,7 @@ fn ceos_tools() -> Value {
         "forget",
         "read_notebook",
         "notebook_checked",
+        "office",
     ];
     let mut list: Vec<Value> = all
         .as_array()
@@ -482,7 +622,12 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if still.is_none_or(|r| r.status != RunStatus::Running) {
         return Err(Refusal::TurnOver.to_string());
     }
+    // Downtime makes no work (ADR 0119): the tools that would are refused in its turns.
+    if MAKES_WORK.contains(&tool) && engine.in_downtime(run.id).map_err(|e| said(&e))? {
+        return Err(Refusal::InDowntime.to_string());
+    }
     match tool {
+        "office" => office_call(engine, run, args),
         "my_turn" => {
             let mut out = run.told.clone();
             if let Some(task) = run.task {

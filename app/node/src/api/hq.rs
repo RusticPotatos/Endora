@@ -540,6 +540,58 @@ pub(super) async fn hq_recall(State(state): State<AppState>, Path(id): Path<i64>
     Ok(answer)
 }
 
+/// The owner undoes the last change to the office (ADR 0119).
+pub(super) async fn hq_office_undo(State(state): State<AppState>) -> Answer {
+    let answer = ask(&state, "/v1/office/undo".to_owned(), Some(json!({}))).await?;
+    record(&state, "you undid the last change to the office");
+    Ok(answer)
+}
+
+/// The owner puts the office back as it began.
+pub(super) async fn hq_office_reset(State(state): State<AppState>) -> Answer {
+    let answer = ask(&state, "/v1/office/reset".to_owned(), Some(json!({}))).await?;
+    record(&state, "you reset the office");
+    Ok(answer)
+}
+
+/// The owner vetoes an open proposal for the office.
+pub(super) async fn hq_office_veto(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/office/proposals/{id}/veto"),
+        Some(json!({})),
+    )
+    .await?;
+    record(&state, &format!("you vetoed office proposal {id}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqDowntime {
+    cents: i64,
+}
+
+/// The owner says what paid members' downtime turns may spend together in a day, in cents.
+pub(super) async fn hq_office_downtime(
+    State(state): State<AppState>,
+    Json(req): Json<HqDowntime>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/office/downtime".to_owned(),
+        Some(json!({ "cents": req.cents })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!(
+            "you set paid members' downtime to {} cents a day",
+            req.cents
+        ),
+    );
+    Ok(answer)
+}
+
 /// A member's notebook, for the owner to read (ADR 0118).
 pub(super) async fn hq_notebook(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
     ask(&state, format!("/v1/members/{id}/notebook"), None).await
@@ -965,6 +1017,53 @@ mod tests {
         for line in [
             "HQ: you put member 5 on furlough",
             "HQ: you brought member 5 back from furlough",
+        ] {
+            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owner_undoes_resets_vetoes_and_sets_downtime_through_the_node_and_it_is_recorded()
+    {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            (200, "application/json", json!({}).to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let _ = hq_office_undo(State(state.clone())).await.unwrap();
+        let _ = hq_office_reset(State(state.clone())).await.unwrap();
+        let _ = hq_office_veto(State(state.clone()), Path(4)).await.unwrap();
+        let _ = hq_office_downtime(State(state.clone()), Json(HqDowntime { cents: 25 }))
+            .await
+            .unwrap();
+        let sent: Vec<(String, String)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), b.clone()))
+            .collect();
+        assert_eq!(
+            sent.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+            [
+                "/v1/office/undo",
+                "/v1/office/reset",
+                "/v1/office/proposals/4/veto",
+                "/v1/office/downtime"
+            ]
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&sent[3].1).unwrap(),
+            json!({ "cents": 25 })
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        for line in [
+            "HQ: you undid the last change to the office",
+            "HQ: you reset the office",
+            "HQ: you vetoed office proposal 4",
+            "HQ: you set paid members' downtime to 25 cents a day",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
