@@ -14,6 +14,7 @@ use super::ports::{
 };
 use super::scorecard;
 use crate::domain::chain::{self, Decision};
+use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
 use crate::domain::lessons;
 use crate::domain::money::{self, Micros};
@@ -2985,7 +2986,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<Asked> {
         let _held = self.held();
         // Room for the question and the worker's line saying what the turn actually did.
-        let text: String = text.trim().chars().take(1200).collect();
+        let text = cut(text.trim(), 1200);
         let lab = self.lab_names();
         let turn = self.running(run)?;
         let task = self.task(
@@ -3324,7 +3325,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// As [`Self::ask_owner`].
     pub fn ask_approval(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
         let _held = self.held();
-        let text: String = text.trim().chars().take(1200).collect();
+        let text = cut(text.trim(), 1200);
         self.ask_held_lock(run, "approval", &|_| text.clone())
     }
 
@@ -3419,7 +3420,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let _asked = self.for_owner();
         let found = self.waiting_on_desk(item)?;
-        let words: String = words.trim().chars().take(4000).collect();
+        let words = cut(words.trim(), 4000);
         if found.kind == "decision" {
             return self.board_decides(&found, decision, &words);
         }
@@ -3723,7 +3724,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             _ => return Err(EngineError::Unknown("approved approval")),
         }
         self.store.set_desk_status(item, "ran")?;
-        let text: String = text.trim().chars().take(4000).collect();
+        let text = cut(text.trim(), 4000);
         if let Some(task) = found.task {
             self.post_held_lock(Author::Endora, task, &text)?;
             if let Some(member) = found.member {
@@ -3745,7 +3746,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Some(id) => self.store.run(id)?,
             None => None,
         };
-        let text: String = text.trim().chars().take(600).collect();
+        let text = cut(text.trim(), 600);
         let task = run.as_ref().and_then(|r| r.task);
         let desk = self.store.add_desk(
             "notice",

@@ -1701,6 +1701,32 @@ fn trying_stuck_work_again_while_nobody_can_be_woken_says_so_and_changes_nothing
 }
 
 #[test]
+fn what_the_desk_keeps_of_a_long_text_shows_where_it_was_cut() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let _ = team(&hq);
+    let item = hq.notice(None, &"a long notice ".repeat(100)).unwrap();
+    let kept = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.id == item)
+        .unwrap();
+    assert_eq!(kept.text.chars().count(), 600);
+    assert!(kept.text.ends_with("…[cut]"), "{}", kept.text);
+    let short = hq.notice(None, "  fits  ").unwrap();
+    let fits = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.id == short)
+        .unwrap();
+    assert_eq!(fits.text, "fits");
+}
+
+#[test]
 fn trying_stuck_work_again_for_a_paused_member_is_refused_in_words() {
     let clock = hands();
     let hq = hq(&clock, 4);
