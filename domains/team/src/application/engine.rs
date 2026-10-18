@@ -39,6 +39,7 @@ mod games;
 mod guards;
 mod health;
 mod ladder;
+mod map;
 mod memory;
 mod notebook;
 mod office;
@@ -54,6 +55,7 @@ mod world;
 
 pub use areas::{DAILY_REVIEW, PATTERNS_ASKS, REPORT_ASKS};
 pub use evidence::Called;
+pub use map::MapMigrated;
 pub use notebook::note_number;
 pub use office::Standing;
 pub use planning::PLANNING;
@@ -2883,6 +2885,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // 3b. The office (ADR 0119): proposals whose time came carry or are dropped, and one
         //     member with nothing to do is given a downtime turn.
         self.office_tick()?;
+        // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
+        // gets its page.
+        self.migrate_map_held()?;
         if self.settings.downtime {
             self.downtime_look(now)?;
         }

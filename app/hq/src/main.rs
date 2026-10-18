@@ -357,6 +357,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not move the house log into the team's world: {e}"),
         }
+        // The team's map (ADR 0126): a page for every area, project, goal and role, made once
+        // each from the team as it stands. Nothing is changed or deleted.
+        match hq.migrate_map() {
+            Ok(made) if made.total() == 0 => {}
+            Ok(made) => println!(
+                "hq: made the map's pages: {} areas, {} projects, {} goals, {} roles",
+                made.areas, made.projects, made.goals, made.roles
+            ),
+            Err(e) => eprintln!("hq: could not make the map's pages: {e}"),
+        }
         // What the move dated wrongly, mended once (ADR 0122).
         match hq.repair_world_dates() {
             Ok(0) => {}

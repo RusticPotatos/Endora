@@ -15,6 +15,7 @@ pub mod guards;
 pub mod house;
 pub mod ladder;
 pub mod lessons;
+pub mod map;
 pub mod money;
 pub mod notebook;
 pub mod office;

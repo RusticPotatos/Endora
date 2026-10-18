@@ -76,12 +76,12 @@ pub fn handover_needed(args: &Value) -> Result<HandoverNote, String> {
 /// propose canon.
 #[must_use]
 pub fn tools(role: Role) -> Vec<Value> {
-    let address = json!({ "type": "string", "description": "world:house, world:house#<section>, world:lab, world:team, or story:<handle>" });
+    let address = json!({ "type": "string", "description": "world:house, world:lab, world:team, world:area/<n>, world:project/<n>, world:goal/<n>, world:role/<role>, any of them with #<section>, or story:<handle>" });
     let part = |what: &str| json!({ "type": "string", "maxLength": world::STORY_PART_MOST, "description": what });
     let mut all = vec![
         tool(
             "read_world",
-            "Read the team's world: the house page (world:house) or one of its sections (world:house#backups), how the lab is built (world:lab), the team (world:team), or a story (story:<handle>). Each piece says its stage: an observation, an insight, canon (the owner's), or unconfirmed since a date. Your briefing names what it left out; read it here.",
+            "Read the team's world, by address: a page (world:house, world:area/<n>, world:project/<n>, world:goal/<n>, world:role/<role>) or one of its sections (world:area/3#backups), how the lab is built (world:lab), the team (world:team), or a story (story:<handle>). Your briefing opens with your map of the pages that matter to you. Each piece says its stage: an observation, an insight, canon (the owner's), or unconfirmed since a date. Your briefing names what it left out; read it here.",
             json!({ "address": address }),
             &["address"],
         ),
@@ -106,6 +106,21 @@ pub fn tools(role: Role) -> Vec<Value> {
     ];
     if matches!(role, Role::Ceo | Role::Lead) {
         all.push(tool(
+            "write_world",
+            "Write or revise a section of a page you keep (the CEO the house and goal pages, a lead its area and its projects'): a heading (its address comes from it once, and never changes), a one-line headline the briefings show, a short body, at a stage your evidence warrants: an observation on one reference, an insight on references from two turns or a reading the node witnessed this turn, with a warrant. Only the owner makes a section canon, and changes it once it is. A page someone else keeps, you propose to (propose_world).",
+            json!({
+                "page": { "type": "string", "description": "the page: house, area/<n>, project/<n>, goal/<n>; default house" },
+                "anchor": { "type": "string", "description": "the section to revise, as in world:house#<anchor>; a new one takes its anchor from its heading" },
+                "heading": { "type": "string", "maxLength": world::HEADING_MOST },
+                "headline": { "type": "string", "maxLength": world::HEADLINE_MOST },
+                "body": { "type": "string", "maxLength": world::BODY_MOST, "description": "Markdown, without # or ## headings" },
+                "stage": { "type": "string", "enum": ["observation", "insight"] },
+                "warrant": { "type": "string", "maxLength": world::WARRANT_MOST },
+                "evidence": evidence("What it rests on: at least one."),
+            }),
+            &["heading", "headline", "stage", "evidence"],
+        ));
+        all.push(tool(
             "verify_world",
             "Confirm a section or story you steward on fresh evidence (a reading the node witnessed this turn, or references from two turns): it is trusted again from now. An insight or canon not confirmed within its horizon (the house page 90 days, an area's stories 30) reads as unconfirmed.",
             json!({ "address": address, "evidence": evidence("The fresh evidence.") }),
@@ -122,23 +137,6 @@ pub fn tools(role: Role) -> Vec<Value> {
             "Propose a trusted insight (a section or a story) for canon, with its warrant: it goes on the owner's desk, who alone makes something canon.",
             json!({ "address": address, "warrant": { "type": "string", "maxLength": world::WARRANT_MOST, "description": "why it should be what the house treats as established" } }),
             &["address", "warrant"],
-        ));
-    }
-    if role == Role::Ceo {
-        all.push(tool(
-            "write_world",
-            "Write or revise a section of the house page, yours to keep: a heading (its address comes from it once, and never changes), a one-line headline the briefings show, a short body, at a stage your evidence warrants: an observation on one reference, an insight on references from two turns or a reading the node witnessed this turn, with a warrant. Only the owner makes a section canon, and changes it once it is.",
-            json!({
-                "page": { "type": "string", "enum": ["house"] },
-                "anchor": { "type": "string", "description": "the section to revise, as in world:house#<anchor>; a new one takes its anchor from its heading" },
-                "heading": { "type": "string", "maxLength": world::HEADING_MOST },
-                "headline": { "type": "string", "maxLength": world::HEADLINE_MOST },
-                "body": { "type": "string", "maxLength": world::BODY_MOST, "description": "Markdown, without # or ## headings" },
-                "stage": { "type": "string", "enum": ["observation", "insight"] },
-                "warrant": { "type": "string", "maxLength": world::WARRANT_MOST },
-                "evidence": evidence("What it rests on: at least one."),
-            }),
-            &["heading", "headline", "stage", "evidence"],
         ));
     }
     all

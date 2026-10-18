@@ -8,10 +8,10 @@ use serde_json::{Value, json};
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::evidence::Found;
+use crate::domain::map::PageKey;
 use crate::domain::situations::Situation;
 use crate::domain::world::{
-    self, Address, HOUSE, HandoverNote, Page, Scope, Section, Snapshot, Stage, Story, Trust,
-    WorldRefusal,
+    self, Address, HOUSE, HandoverNote, Scope, Section, Snapshot, Stage, Story, Trust, WorldRefusal,
 };
 use crate::domain::world_migration::{self, TimelineLine};
 use crate::domain::{EventKind, Member, MemberId, Millis, Ref, Refusal, Role, RunId};
@@ -320,7 +320,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// How far a section is trusted now.
     pub(super) fn section_trust(&self, s: &Section) -> Done<Trust> {
-        let horizon = world::page(&s.page).map_or(HOUSE.horizon_days, |p| p.horizon_days);
+        let horizon = PageKey::parse(&s.page).map_or(HOUSE.horizon_days, PageKey::horizon_days);
         Ok(world::trust(
             s.stage,
             s.verified_at.unwrap_or(s.updated_at),
@@ -350,6 +350,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     // ---- finding things -------------------------------------------------------------------
+
+    /// A page as a member names it, as a slug: `world:Area/3` is `area/3`.
+    pub(super) fn slug_said(said: &str) -> String {
+        let said = said.trim().to_ascii_lowercase();
+        said.strip_prefix("world:").unwrap_or(&said).to_owned()
+    }
 
     pub(super) fn address(said: &str) -> Done<Address> {
         Address::parse(said).ok_or_else(|| refused(WorldRefusal::NotAnAddress(said.to_owned())))
@@ -442,6 +448,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         match &at {
             Address::Page(page) => self.page_said(page),
             Address::Section { page, anchor } => {
+                self.page_there(page)?;
                 let s = self
                     .section_at(page, anchor)?
                     .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
@@ -542,7 +549,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if page == world::TEAM.slug {
             return self.team_said();
         }
-        let mut said = format!("{} (world:{page}):\n", HOUSE.title);
+        let key = self.page_there(page)?;
+        let mut said = format!(
+            "{} (world:{page}):\nKept by {}.\n",
+            self.page_title(key)?,
+            self.steward_called(self.steward(key)?)?
+        );
         let sections: Vec<Section> = self
             .store
             .sections()?
@@ -625,22 +637,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let turn = self.running(run)?;
         let writer = self.member(turn.member)?;
-        let page: Page = world::page(write.page.trim())
-            .ok_or_else(|| refused(WorldRefusal::NotAnAddress(write.page.clone())))?;
-        if page.derived {
-            return Err(refused(WorldRefusal::Derived(format!(
-                "world:{}",
-                page.slug
-            ))));
-        }
-        if !Self::stewards(&writer, Scope::House) {
-            return Err(refused(WorldRefusal::NotYours {
-                what: "the house page".to_owned(),
-                steward: self.steward_named(Scope::House)?,
-            }));
-        }
-        let said =
-            |text: &str| self.dated_true(&writer.name, &format!("world:{}", page.slug), text);
+        let key = self.written_page(&Self::slug_said(&write.page))?;
+        let slug = key.slug();
+        self.may_write_page(&writer, key)?;
+        let said = |text: &str| self.dated_true(&writer.name, &format!("world:{slug}"), text);
         let (heading_in, headline_in, body_in) = (
             said(&write.heading)?,
             said(&write.headline)?,
@@ -666,7 +666,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             turn.id,
         )
         .map_err(EngineError::Refused)?;
-        let old = self.section_at(page.slug, &anchor)?;
+        let old = self.section_at(&slug, &anchor)?;
         if old
             .as_ref()
             .is_some_and(|s| s.stage == Stage::Canon || s.written_by == "the owner")
@@ -684,7 +684,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let now = self.clock.now();
         let section = Section {
             id: old.as_ref().map_or(0, |s| s.id),
-            page: page.slug.to_owned(),
+            page: slug.clone(),
             anchor: anchor.clone(),
             heading: heading.clone(),
             headline,
@@ -706,7 +706,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let what = if old.is_some() { "revised" } else { "wrote" };
         self.store.save_section(&section, what)?;
         self.timeline_line(
-            page.slug,
+            &slug,
             &writer.name,
             Some(turn.id),
             &format!(
@@ -745,7 +745,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 let mut s = self
                     .section_at(page, anchor)?
                     .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
-                self.may_steward(&who, Scope::House, "the house page")?;
+                self.may_steward_page(&who, self.page_there(page)?)?;
                 world::warranted(Stage::Insight, &found, turns, "confirmed", turn.id)
                     .map_err(EngineError::Refused)?;
                 s.verified_at = Some(now);
@@ -836,7 +836,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 let mut s = self
                     .section_at(page, anchor)?
                     .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
-                self.may_steward(&who, Scope::House, "the house page")?;
+                self.may_steward_page(&who, self.page_there(page)?)?;
                 if s.stage == Stage::Canon {
                     return Err(refused(WorldRefusal::CanonIsTheOwners));
                 }
@@ -1062,16 +1062,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// for no title or no text; [`WorldRefusal::TooLong`].
     pub fn write_as_owner(&self, page: &str, key: &str, title: &str, text: &str) -> Done<String> {
         let _held = self.held();
-        let page: Page = world::page(page.trim())
-            .ok_or_else(|| refused(WorldRefusal::NotAnAddress(page.to_owned())))?;
-        if page.derived {
-            return Err(refused(WorldRefusal::Derived(format!(
-                "world:{}",
-                page.slug
-            ))));
-        }
+        let slug = self.written_page(&Self::slug_said(page))?.slug();
         let owner = "the owner";
-        let text = self.dated_true(owner, &format!("world:{}", page.slug), text)?;
+        let text = self.dated_true(owner, &format!("world:{slug}"), text)?;
         let heading = world::one_line(title, world::HEADING_MOST).map_err(refused)?;
         let anchor = world::anchor_of(if key.trim().is_empty() { &heading } else { key })
             .ok_or_else(|| refused(WorldRefusal::NeedsHeading))?;
@@ -1088,11 +1081,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             rest.trim().to_owned()
         };
-        let old = self.section_at(page.slug, &anchor)?;
+        let old = self.section_at(&slug, &anchor)?;
         let now = self.clock.now();
         let section = Section {
             id: old.as_ref().map_or(0, |s| s.id),
-            page: page.slug.to_owned(),
+            page: slug.clone(),
             anchor,
             heading,
             headline,
@@ -1119,7 +1112,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store
             .save_section(&section, &format!("the owner {what} it"))?;
         self.timeline_line(
-            page.slug,
+            &slug,
             owner,
             None,
             &format!("The owner {what} \"{}\" ({address}).", section.heading),
@@ -1141,16 +1134,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// for no text.
     pub fn add_to_timeline_as_owner(&self, page: &str, at: Option<Millis>, text: &str) -> Done<()> {
         let _held = self.held();
-        let page: Page = world::page(page.trim())
-            .ok_or_else(|| refused(WorldRefusal::NotAnAddress(page.to_owned())))?;
-        if page.derived {
-            return Err(refused(WorldRefusal::Derived(format!(
-                "world:{}",
-                page.slug
-            ))));
-        }
+        let slug = self.written_page(&Self::slug_said(page))?.slug();
         let owner = "the owner";
-        let text = self.dated_true(owner, &format!("world:{}", page.slug), text)?;
+        let text = self.dated_true(owner, &format!("world:{slug}"), text)?;
         let line = world::one_line(
             crate::domain::house::without_dates(&text),
             world::TIMELINE_LINE_MOST,
@@ -1161,7 +1147,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         self.store.add_timeline(
             &TimelineLine {
-                page: page.slug.to_owned(),
+                page: slug.clone(),
                 at: at.unwrap_or_else(|| self.clock.now()),
                 by: owner.to_owned(),
                 line: line.clone(),
@@ -1170,7 +1156,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )?;
         self.emit(
             EventKind::WorldChanged,
-            json!({ "what": "owner noted", "page": page.slug, "entry": line, "by": "owner" }),
+            json!({ "what": "owner noted", "page": slug, "entry": line, "by": "owner" }),
         )?;
         Ok(())
     }
