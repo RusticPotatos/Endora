@@ -24,6 +24,7 @@ function render() {
     : v === "spotify" ? viewSpotify()
     : v === "lab" ? viewLab()
     : v === "hq" ? viewHQ()
+    : v === "replay" ? viewReplay()
     : v === "watching" ? viewWatching()
     : v === "needs" ? viewNeeds()
     : v === "containers" ? viewContainers()
@@ -90,6 +91,7 @@ async function dispatch(act) {
     // The home lab, media, smart home and music.
     if (await labDispatch(verb, noun, id, arg)) return;
     if (await hqDispatch(verb, noun, id, arg)) return;
+    if (await replayDispatch(verb, noun, id)) return;
     // The agenda's pinned cards and what Endora watches (ADR 0103).
     if (await agendaDispatch(verb, noun, id, arg)) return;
     if (await soundDispatch(verb, noun, id, arg)) return;

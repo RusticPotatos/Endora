@@ -177,7 +177,7 @@ function hqEvidence(t) {
 function hqTurns(match) {
   const runs = ((HQ.snap && HQ.snap.recent_runs) || []).filter(match).slice(0, 5);
   if (!runs.length) return "";
-  return `<ul class="hq-thread">${runs.map((r) => `<li>R${r.id} ${esc(hqName(r.member))}${r.task ? " · " + hqKey(r.task) : ""} · ${esc(r.label || String(r.status || "").replace(/_/g, " "))}</li>`).join("")}</ul>`;
+  return `<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `R${r.id} ${esc(hqName(r.member))}${r.task ? " · " + hqKey(r.task) : ""} · ${esc(r.label || String(r.status || "").replace(/_/g, " "))}`)}</li>`).join("")}</ul>`;
 }
 
 // One event, in words for the activity log, and on screen if it is live.
@@ -1063,6 +1063,7 @@ function hqSelected() {
     <dt>Lock</dt><dd>${runner ? "held by R" + runner.id : "free"}</dd>
     <dt>Blocked by</dt><dd>${(t.waits_on || []).length ? t.waits_on.map(hqKey).join(", ") : "nothing"}</dd>
     <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${hqEvidence(t)}${hqDocuments(t)}${hqTurns((r) => r.task === t.id)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}
+    ${replayTaskLink(t.id)}
     <textarea id="hq-reply-${t.id}" rows="2" placeholder="Reply in the thread: whoever has it reads it now" aria-label="Your reply"></textarea>
     <div class="hq-row"><button class="hq-btn ok" data-act="hq:reply:${t.id}:send">Send</button></div>`;
 }

@@ -407,6 +407,7 @@ async function loadView(v, id) {
   if ((v === "models" || v === "settings") && DEEP_MODEL.configured) { await loadDeepSpend(); }
   await loadLab(v, id);
   if (v === "hq") await loadHQ();
+  if (v === "replay") await loadReplay(id);
   if (v === "needs") await loadAgenda();
   if (v === "watching") { try { AGENDA_RULES = await api("GET", "/v1/agenda/rules"); } catch (_) { AGENDA_RULES = null; } }
   if (v === "speakers") await loadSound();
@@ -415,7 +416,7 @@ async function loadView(v, id) {
 // The screens `loadView` fetches for.
 const FETCHES_ITS_OWN = ["mail", "models", "settings", "connections", "spotify",
   "understanding", "prefs", "brainpage",
-  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "watching", "needs", "speakers"];
+  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "replay", "watching", "needs", "speakers"];
 
 function go(v, id) {
   // One container's logs must never show under another's name while the new ones load.

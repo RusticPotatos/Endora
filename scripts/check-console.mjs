@@ -93,6 +93,7 @@ const stubs = {
   speechSynthesis: { speak() {}, cancel() {}, getVoices: () => [] },
   alert() {},
   confirm: () => false,
+  scrollTo() {},
   document: {
     getElementById: () => element(),
     querySelector: () => element(),
@@ -908,6 +909,79 @@ if (failures.length) {
   runInContext('HQ.error = "";', context);
   console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
   console.log("hq: the office draws five desks, the CEO's office, the meeting room and the wing's six desks, and walks people to them");
+}
+
+// Replay: a turn read back in full, and a task's turns stepped through in order. Opened from a
+// run line and from a task card; what the member was told is folded; a long excerpt is folded;
+// every word a model or a tool wrote stays text, Confidential excerpts included (the owner's).
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`HQ.error = ""; HQ.selected = { type: "task", id: 7 };
+    HQ.snap = { demo: false, stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
+      members: [{ id: 2, name: "Bo", role: "developer", look: 4, running: [], brains: [] }],
+      tasks: [{ id: 7, goal: 1, title: "Look at <b>sonarr</b>", status: "doing", owner: 2, why: [], thread: [] }],
+      runs: [], recent_runs: [{ id: 2, member: 2, task: 7, status: "succeeded", label: "advanced" }] };`, context);
+  const office = runInContext("viewHQ()", context);
+  if (!office.includes('data-act="replay:run:2"')) fail("replay: a run line does not open its replay");
+  if (!office.includes('data-act="replay:task:7"') || !office.includes("Replay this task")) fail("replay: a task card does not open its replay");
+  // Opening it goes to its own screen and asks the node for the task's turns.
+  const asked = [];
+  const realFetch = context.fetch;
+  context.fetch = (path, opts = {}) => { asked.push(String(path)); return Promise.reject(new Error("no network in the console check")); };
+  await runInContext('dispatch("replay:task:7")', context);
+  await new Promise((done) => setTimeout(done, 0));
+  context.fetch = realFetch;
+  if (runInContext("NAV.v + ' ' + NAV.id", context) !== "replay task-7") fail("replay: a task card's link does not open the task's replay");
+  if (!asked.some((p) => p.endsWith("/v1/hq/tasks/7/replay"))) fail(`replay: opening a task's replay asks the node nothing: ${asked}`);
+  if (!runInContext("viewReplay()", context).includes("HQ did not answer")) fail("replay: a replay HQ did not answer does not say so");
+  const long = "x".repeat(400);
+  runInContext(`REPLAY.kind = "task"; REPLAY.id = 7; REPLAY.error = ""; REPLAY.at = 1;
+    const turn = (run, by) => ({ run, task: 7, status: "succeeded", live: false, attempts: 1, queued_at: 1, started_at: 1000, ended_at: 66000,
+      reason: "assigned", end_reason: "finished", label: "advanced", by_time: by,
+      member: { id: 2, name: "Bo", role: "developer", look: 4, brain: "local", brain_label: "Local" },
+      money: { reserved: 400000, used: 120000, charged: 120000, released: 400000, spent: 120000, held: 0 },
+      tokens: { input: 1200, output: 300, cache_read: 9000, cache_write: 0 },
+      moments: [
+        { kind: "woken", at: 1, by_time: false, reason: "assigned" },
+        { kind: "event", at: 1000, by_time: false, event: 1, name: "run.started", data: { run, reserved: 400000 } },
+        { kind: "briefing", at: 1000, by_time: false, text: "You are Bo. </pre><img src=b onerror=alert(11)>" },
+        { kind: "call", at: 2000, by_time: false, receipt: "r12", tool: "container_logs", args: "container: <i>sonarr</i>", excerpt: "<script>alert(10)</script> 500s", ok: true, act: false, confidential: true },
+        { kind: "call", at: 2500, by_time: false, receipt: "r13", tool: "restart_container", args: "", excerpt: "${long}", ok: false, act: true, confidential: false },
+        { kind: "post", at: 3000, by_time: by, task: 7, author: "Bo", text: "<img src=x onerror=alert(9)> fixed", evidence: ["r12"], unsupported: false },
+        { kind: "post", at: 3500, by_time: false, task: 7, author: "Bo", text: "Probably fine.", evidence: [], unsupported: true },
+        { kind: "event", at: 4000, by_time: by, event: 2, name: "task.changed", data: { task: 7, status: "in_review", run } },
+        { kind: "event", at: 4100, by_time: false, event: 3, name: "mystery.kind", data: { said: "<u>odd</u>" } },
+        { kind: "ended", at: 66000, by_time: false, status: "succeeded", reason: "finished", label: "advanced" }] });
+    REPLAY.runs = [turn(1, true), turn(2, false)];`, context);
+  const last = runInContext("viewReplay()", context);
+  for (const said of ["run 2 of 2", 'data-act="replay:step:prev"', "R2 · Bo · developer", "advanced", "$0.12 spent",
+    "in 10200 (9000 from the cache) · out 300", "1m 05s", "assigned", '<details class="hq-replay-told"><summary>What Bo was told</summary>',
+    "&lt;/pre&gt;&lt;img src=b onerror=alert(11)&gt;", "r12 container_logs", "&lt;i&gt;sonarr&lt;/i&gt;", "&lt;script&gt;alert(10)&lt;/script&gt; 500s",
+    "Confidential", "refused", '<details class="hq-replay-fold">', "&lt;img src=x onerror=alert(9)&gt; fixed", "cites r12",
+    '<span class="hq-unsupported">unsupported</span>', "EL-7 is in review", "&lt;u&gt;odd&lt;/u&gt;", "Look at &lt;b&gt;sonarr&lt;/b&gt;", 'data-act="go:hq"']) {
+    if (!last.includes(said)) fail(`replay: a task's latest turn does not show ${said}`);
+  }
+  if (/<details class="hq-replay-told" open/.test(last)) fail("replay: what the member was told is not folded");
+  if (!/data-act="replay:step:next" disabled/.test(last)) fail("replay: the latest turn offers a next one");
+  if (last.includes("matched by time")) fail("replay: a turn since events name theirs says it was matched by time");
+  for (const raw of ["<img src=x", "<img src=b", "<script>alert(10)", "<i>sonarr", "<u>odd", "<b>sonarr"]) {
+    if (last.includes(raw)) fail(`replay: ${raw} became markup`);
+  }
+  await runInContext('dispatch("replay:step:prev")', context);
+  const first = runInContext("viewReplay()", context);
+  if (!first.includes("run 1 of 2") || !first.includes("R1 · Bo")) fail("replay: stepping back does not show the earlier turn");
+  if (!/data-act="replay:step:prev" disabled/.test(first)) fail("replay: the first turn offers a previous one");
+  if (!first.includes("matched by time") || !first.includes("ran before HQ named each event")) fail("replay: an older turn does not say what was matched by time");
+  await runInContext('dispatch("replay:step:prev")', context);
+  if (runInContext("REPLAY.at", context) !== 0) fail("replay: stepping went before the first turn");
+  await runInContext('dispatch("replay:step:next")', context);
+  if (runInContext("REPLAY.at", context) !== 1) fail("replay: stepping forward does not move on");
+  // A single run: no stepping.
+  runInContext('REPLAY.kind = "run"; REPLAY.id = 2; REPLAY.runs = [REPLAY.runs[1]]; REPLAY.at = 0;', context);
+  const one = runInContext("viewReplay()", context);
+  if (one.includes("replay:step:") || !one.includes("Replay R2")) fail("replay: a single run's replay offers stepping or lacks its title");
+  runInContext('REPLAY.kind = ""; REPLAY.id = 0; REPLAY.runs = null; REPLAY.error = ""; HQ.snap = null; HQ.selected = null; NAV = { v: "home" };', context);
+  console.log("replay: a run and a task's turns read back, stepped in order, the briefing folded, and every word stays text");
 }
 
 // The agenda (ADR 0103): the Now line says it is working and opens Activity; only what needs the

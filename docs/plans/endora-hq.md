@@ -966,6 +966,39 @@ repository, and any push or merge by HQ.
 Section 7 above (pull requests on Forgejo and GitHub, opened by the gateway) is superseded for
 now by this flow: branches, not pull requests, and only the owner's push.
 
+### Replay (as built 2026-10-17)
+
+The owner reads any turn back in full, and steps through a task's turns in order: tap a run
+line on the HQ screen ("R12 Kit · EL-7 · advanced") or "Replay this task" on a task card. The
+screen (phone first) shows the turn's header (member and role with their office character,
+brain as set now, why it was woken, its label and status, how long it ran, money from the
+ledger: spent, held, released; tokens in, from the cache, out; why it ended) and then what
+happened, oldest first, each with its time and a tag: woken, and any wake folded into it; what
+it was told (its latest attempt's briefing, folded behind "What Kit was told"); each call with
+its receipt id, tool, arguments, ok or refused, read or act, and the excerpt (Confidential ones
+included, marked: this is the owner's screen; long ones folded); each post with what it cited
+and the unsupported mark; the evidence it cited; its claims, status changes, desk items, the
+wakes it raised; each start and end. A task shows "run 3 of 6" with previous and next.
+Everything a model or a tool wrote is escaped.
+
+It is a read model (`application::replay`, pure over the store's rows) behind
+`GET /v1/runs/{id}/replay` and `GET /v1/tasks/{id}/replay` on HQ (signed by the node), proxied
+as `GET /v1/hq/runs/{id}/replay` and `/v1/hq/tasks/{id}/replay`; the node lets only a full
+credential read them (a checking credential, which may read the rest of HQ, may not). How a
+turn's moments are found: by run id wherever the record keeps one (the wakes, receipts,
+evidence cited, ledger rows, and the events that already named a run: starts, ends, receipts,
+spend). Since this was built, **every event a turn's call emits names its turn** (`"run"` in
+what it carries; the engine knows which turn's call it is taking), and HQ keeps when that began
+(the setting `events_name_their_turn_from`); a turn queued since takes its events by run id
+only, and a post is the one its turn's `thread.posted` event names. A turn from before is
+matched by time: the events of the kinds a turn causes (claims, releases, status changes, tasks
+made, desk items, check-backs, lessons, gate results, branches, projects, house notes) about
+its member, or naming no member about its task, between when it was queued and when it ended,
+and its member's posts in its task's thread then; each moment matched so says "matched by time".
+Not shown: what the model thought between calls (HQ never sees it), calls made in the
+workbench's own shell (they never pass the node), and anything the feed pruned (the newest
+20,000 events are kept; a turn's end is then said from its row).
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams;
