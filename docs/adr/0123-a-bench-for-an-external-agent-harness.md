@@ -44,14 +44,14 @@ Endora's fence, with its money capped and metered, and compared with the wing do
    tool, no content fetched from a URL or a file, a cache mark's hour made five minutes, the
    effort one of five, the betas that cost or reach out dropped), with the owner's Anthropic key
    added upstream. The model must be **`claude-haiku-5-5` or `claude-sonnet-5-5`**; anything
-   else, Opus included, is refused with 403.
+   else, Opus included, is refused.
 3. **Its money.** A hard cap a day (UTC), `ENDORA_BENCH_CAP_CENTS`, **200 ($2.00) unless set**.
    Every call is counted first (free), then its prompt and as much output as it asks for are
    **set aside** from what is left of the day: the day's cap, less what the node's record says
    was spent (`bench_spend`, a table made if missing, so the cap holds across a restart), less
    what calls in flight have set aside, and never more than a developer's turn (40¢, 0111).
-   `max_tokens` is clamped to that; a day that cannot pay for one token out is refused with 402
-   before anything is sent. When the reply ends, what it used is charged at the relay's prices
+   `max_tokens` is clamped to that; a day that cannot pay for one token out is refused before
+   anything is sent. When the reply ends, what it used is charged at the relay's prices
    and the rest comes back; a stream cut short is charged all it may have sent. The bench's
    calls share one token, so a cached prompt is never counted on for another seat's call: the
    whole prompt is set aside at the cache-write price, and the usage the reply reports is what
@@ -60,7 +60,17 @@ Endora's fence, with its money capped and metered, and compared with the wing do
 4. **Its record.** Each call is noted in the node's usage log as **`bench`**, never `team`, and
    its cost in `bench_spend`. HQ is never asked about a bench call and never charged for one:
    the bench is not in HQ's pool, its ledger or its scorecard.
-5. **The bench image** (`Dockerfile`, `--target bench`, linux/arm64). Node 22, tmux, git, tini,
+5. **Refusals say whose they are** (amended 2026-10-18, after the first run). Claude Code shows
+   a 402 or a `billing_error` as "Credit balance too low", whoever sent it. So the bench's own
+   refusals are a **400 `invalid_request_error`** whose words start `bench: ` (a model or a
+   shape it does not pass, a spent day: "today's cap of $2.00 is spent; it starts again at
+   00:00 UTC"), and calls in flight holding the rest of the day are a **429** with
+   `retry-after: 10` (a wait, not a spent day). Anthropic's own refusals keep their status,
+   kind and request id, and their words say so: "bench: Anthropic refused counting the prompt
+   (or the call) on <model> (<status> <kind>): <Anthropic's words>". Each is kept, with its
+   step, model and request id, in `GET /team-relay/bench` (`upstream_refusals`,
+   `last_refusal`) and in the node's log.
+6. **The bench image** (`Dockerfile`, `--target bench`, linux/arm64). Node 22, tmux, git, tini,
    the harness installed from its npm package **packed from one pinned commit** (a named build
    context `harness` holding `harness.tgz`; the commit is the image's label
    `org.endora.bench.harness-commit`), and, shared with the workbench through two new stages,
@@ -72,7 +82,7 @@ Endora's fence, with its money capped and metered, and compared with the wing do
    **bypass mode refused**, and the workbench developer's shell allowlist (git, the linters,
    `ls`, `cat`). A non-root user (uid 10001), no credential in the image. `make bench-image`
    builds it on the Mac and copies it to the Pi.
-6. **How it runs.** One container on the Pi's `endora_sandbox` network (the NAS's team gateway
+7. **How it runs.** One container on the Pi's `endora_sandbox` network (the NAS's team gateway
    on 8788 and nothing else; DNS `192.0.2.1`), read-only root, `/work` and `/tmp` in memory, no
    capabilities, 4 GB and three CPUs, a wall-clock limit of 45 minutes. The token is read from
    the NAS file at run time and passed in the container's environment, never printed and never
@@ -80,7 +90,7 @@ Endora's fence, with its money capped and metered, and compared with the wing do
    fork arrives as a git bundle of `develop` in `/work`, never in the image. The run's driver,
    the team's spec and the brief are the owner's private notes, not this repository: they name
    the harness.
-7. **The task** is the wing's first branch: the fork's root `AGENTS.md`, from the draft in
+8. **The task** is the wing's first branch: the fork's root `AGENTS.md`, from the draft in
    Endora's library (`docs/drafts/ansible-nas-AGENTS.md`, given as the brief), on
    `hq/bench-agents-md`, with the criteria: the file exists and is committed; it follows the
    draft's sections; it keeps the link to the global standards; the branch passes the fork's

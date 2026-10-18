@@ -26,6 +26,24 @@ pub(crate) struct Bench {
     file: std::path::PathBuf,
     cap: i64,
     held: std::sync::Mutex<Held>,
+    refusals: std::sync::Mutex<Refusals>,
+}
+
+/// Anthropic's refusals of the bench's calls since the node started: how many, and the last,
+/// in its own words, so a run that reached nothing says why without a shell on the NAS.
+#[derive(Default)]
+struct Refusals {
+    count: u64,
+    last: Option<serde_json::Value>,
+}
+
+/// Why a call cannot be held: the day is spent, or calls in flight hold what is left of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Short {
+    /// What the store says was spent leaves nothing for one token out.
+    DaySpent,
+    /// Something is left, but calls in flight hold it until they end.
+    HeldInFlight,
 }
 
 /// What calls in flight have set aside, on one day.
@@ -50,6 +68,7 @@ impl Bench {
             file: file.into(),
             cap: cap_cents.max(0).saturating_mul(10_000),
             held: std::sync::Mutex::default(),
+            refusals: std::sync::Mutex::default(),
         }
     }
 
@@ -93,8 +112,8 @@ impl Bench {
 
     /// Sets aside the cost of a call on `day`: its `input` (micros) and as many tokens of
     /// output at `price` as it `asked` for, capped by what is left of the day (and never more
-    /// than a developer's turn, ADR 0111). The output it may write, and the hold, or `None`
-    /// when the day cannot pay for a single token out. What is left is the day's cap, less what
+    /// than a developer's turn, ADR 0111). The output it may write, and the hold, or why not
+    /// ([`Short`]) when the day cannot pay for a single token out. What is left is the day's cap, less what
     /// the store says was spent and what calls in flight have set aside, so the cap holds
     /// across a restart and for calls side by side.
     pub(crate) fn hold(
@@ -104,7 +123,7 @@ impl Bench {
         price: endora_infrastructure::relay::Price,
         input: i64,
         asked: Option<u64>,
-    ) -> Option<(u64, Hold)> {
+    ) -> Result<(u64, Hold), Short> {
         let mut held = self
             .held
             .lock()
@@ -117,7 +136,11 @@ impl Bench {
         let left = (self.cap - spent - held.micros).min(most_a_turn("developer"));
         let affordable = affordable_output(price, left - input);
         if affordable == 0 {
-            return None;
+            let unheld = (self.cap - spent).min(most_a_turn("developer"));
+            if affordable_output(price, unheld - input) == 0 {
+                return Err(Short::DaySpent);
+            }
+            return Err(Short::HeldInFlight);
         }
         let out = asked.unwrap_or(affordable).min(affordable);
         let micros = input
@@ -129,7 +152,7 @@ impl Bench {
                 },
             );
         held.micros += micros;
-        Some((out, Hold { day, micros }))
+        Ok((out, Hold { day, micros }))
     }
 
     /// Lets `hold` go, and keeps what its call `spent` (micros) on its day.
@@ -147,6 +170,95 @@ impl Bench {
             held.micros = (held.micros - hold.micros).max(0);
         }
     }
+
+    /// Keeps `refusal` as the last of Anthropic's refusals, and counts it.
+    fn note_refusal(&self, refusal: serde_json::Value) {
+        let mut refusals = self
+            .refusals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        refusals.count += 1;
+        refusals.last = Some(refusal);
+    }
+
+    /// How many of the bench's calls Anthropic refused since the node started, and the last.
+    fn refusals(&self) -> (u64, serde_json::Value) {
+        let refusals = self
+            .refusals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            refusals.count,
+            refusals.last.clone().unwrap_or(serde_json::Value::Null),
+        )
+    }
+}
+
+/// The most of a refusal's body read back: an error is a few hundred bytes.
+const LARGEST_REFUSAL: usize = 64 * 1024;
+
+/// A refusal of the bench's own, as Claude Code shows it truthfully: a 400 (never a 402 or a
+/// `billing_error`, which Claude Code shows as "Credit balance too low", blaming the owner's
+/// Anthropic account), its words starting `bench: `.
+fn gate(why: &str) -> Response {
+    refuse(
+        StatusCode::BAD_REQUEST,
+        "invalid_request_error",
+        &format!("bench: {why}"),
+    )
+}
+
+/// What came back for a call at `step` passed on, as it is: a success untouched; a refusal
+/// read whole, kept on the bench's record and in the node's log, and passed on with its status,
+/// its kind and Anthropic's request id, its words saying it was Anthropic's, at which step, on
+/// which model. A failure of the relay's own (no request id) says so instead.
+async fn as_said(bench: &Bench, step: &str, model: &str, answer: Response) -> Response {
+    let status = answer.status();
+    if status.is_success() {
+        return answer;
+    }
+    let bytes = axum::body::to_bytes(answer.into_body(), LARGEST_REFUSAL)
+        .await
+        .unwrap_or_default();
+    let said: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+    let kind = said["error"]["type"]
+        .as_str()
+        .unwrap_or("api_error")
+        .to_owned();
+    let message = said["error"]["message"]
+        .as_str()
+        .unwrap_or("(no message)")
+        .to_owned();
+    let request_id = said["request_id"].clone();
+    let Some(id) = request_id.as_str() else {
+        return refuse(
+            status,
+            &kind,
+            &format!("bench: the relay got no answer from Anthropic for {step}: {message}"),
+        );
+    };
+    eprintln!(
+        "bench: Anthropic refused {step} on {model}: {} {kind}: {message} ({id})",
+        status.as_u16()
+    );
+    bench.note_refusal(json!({
+        "at_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+        "step": step, "model": model, "status": status.as_u16(), "type": kind,
+        "message": message, "request_id": id,
+    }));
+    let words = format!(
+        "bench: Anthropic refused {step} on {model} ({} {kind}): {message}",
+        status.as_u16()
+    );
+    (
+        status,
+        Json(
+            json!({ "type": "error", "error": { "type": kind, "message": words },
+                     "request_id": request_id }),
+        ),
+    )
+        .into_response()
 }
 
 /// Days since the epoch, UTC: the bench's day.
@@ -175,31 +287,15 @@ pub(super) fn opened_by(state: &AppState, token: &str) -> Option<Arc<Bench>> {
 
 /// A call with the bench's token, parsed and made fit to pass on in Claude Code's shape, held
 /// to its own model (ADR 0117's rules, with the bench's two models as the brain), or the
-/// refusal, as [`refused`] words it.
-fn fit(body: &[u8]) -> Result<(serde_json::Value, String), Refusal> {
+/// refusal's words, which [`gate`] says.
+fn fit(body: &[u8]) -> Result<(serde_json::Value, String), String> {
     let Ok(mut call) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            "the body is not JSON".to_owned(),
-        ));
+        return Err("the body is not JSON".to_owned());
     };
     let model = call["model"].as_str().unwrap_or("").to_owned();
-    if let Err(why) = may_bench(&model) {
-        return Err((StatusCode::FORBIDDEN, "permission_error", why));
-    }
-    if let Err(why) = for_claude_code(&mut call, &model) {
-        return Err((StatusCode::BAD_REQUEST, "invalid_request_error", why));
-    }
+    may_bench(&model)?;
+    for_claude_code(&mut call, &model)?;
     Ok((call, model))
-}
-
-/// Why a call is refused: its status, Anthropic's kind of error, and the words.
-type Refusal = (StatusCode, &'static str, String);
-
-/// A [`Refusal`] as Anthropic words one.
-fn refused((status, kind, why): Refusal) -> Response {
-    refuse(status, kind, &why)
 }
 
 /// `POST /team-relay/v1/messages` with the bench's token: counted, held to what is left of
@@ -213,7 +309,7 @@ pub(super) async fn messages(
 ) -> Response {
     let (mut call, model) = match fit(&body) {
         Ok(fit) => fit,
-        Err(why) => return refused(why),
+        Err(why) => return gate(&why),
     };
     let Some(key) = super::relay::anthropic_key(state.config.as_ref()) else {
         return refuse(
@@ -235,27 +331,40 @@ pub(super) async fn messages(
     .await
     {
         Ok(prompt) => prompt,
-        Err(refused) => return refused,
+        Err(refused) => return as_said(&bench, "counting the prompt", &model, refused).await,
     };
-    let spent = || {
-        refuse(
-            StatusCode::PAYMENT_REQUIRED,
-            "billing_error",
-            "the bench's day is spent",
-        )
-    };
+    #[allow(clippy::cast_precision_loss)]
+    let dollars = bench.cap_micros() as f64 / 1_000_000.0;
     let Some(price) = price_of(&model, prompt) else {
-        return spent();
+        return gate(&format!("{model} has no price the relay knows"));
     };
     // Its calls share one token, so what one cached is never counted on for another: the
     // whole prompt is set aside at the dearer price, and the reply's usage is what is kept.
     let input = prompt_cost(price, prompt, 0, asks_to_cache(&call));
     let store = state.store.clone();
-    let Some((cap, hold)) = bench.hold(&store, today(), price, input, call["max_tokens"].as_u64())
-    else {
-        return spent();
+    let (cap, hold) = match bench.hold(&store, today(), price, input, call["max_tokens"].as_u64()) {
+        Ok(held) => held,
+        Err(Short::DaySpent) => {
+            return gate(&format!(
+                "today's cap of ${dollars:.2} is spent; it starts again at 00:00 UTC"
+            ));
+        }
+        Err(Short::HeldInFlight) => {
+            // A wait, not a spent day: the seats' other calls hold the rest until they end.
+            let mut wait = refuse(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limit_error",
+                &format!(
+                    "bench: calls in flight hold what is left of today's ${dollars:.2}; try again shortly"
+                ),
+            );
+            wait.headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("10"));
+            return wait;
+        }
     };
     call["max_tokens"] = json!(cap);
+    let (bench2, model2) = (bench.clone(), model.clone());
     let settle: Settle = Box::new(move |used| {
         let micros = used.map(|used| cost(price_of(&model, used.prompt()).unwrap_or(price), used));
         bench.settle(&store, hold, micros);
@@ -271,23 +380,25 @@ pub(super) async fn messages(
             },
         );
     });
-    pass_on(upstream, key, version, beta, call, settle).await
+    let answer = pass_on(upstream, key, version, beta, call, settle).await;
+    as_said(&bench2, "the call", &model2, answer).await
 }
 
 /// `POST /team-relay/v1/messages/count_tokens` with the bench's token: free, held to the
 /// same rules.
 pub(super) async fn count_tokens(
     state: AppState,
-    _bench: Arc<Bench>,
+    bench: Arc<Bench>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let (asked, _) = match fit(&body) {
+    let (asked, model) = match fit(&body) {
         Ok(fit) => fit,
-        Err(why) => return refused(why),
+        Err(why) => return gate(&why),
     };
     let beta = betas_for_claude_code(super::relay::header(&headers, "anthropic-beta").as_deref());
-    count_on(&state, &headers, &asked, beta).await
+    let answer = count_on(&state, &headers, &asked, beta).await;
+    as_said(&bench, "counting the prompt", &model, answer).await
 }
 
 /// `GET /team-relay/bench` with the bench's token: what its day has cost so far, and its use
@@ -301,6 +412,7 @@ pub(super) async fn today_so_far(State(state): State<AppState>, headers: HeaderM
         );
     };
     let day = today();
+    let refusals = bench.refusals();
     let spent = state.store.bench_spent(day);
     let used = state.store.model_usage_totals("bench", day * 86_400_000);
     let (Ok(spent), Ok(used)) = (spent, used) else {
@@ -314,6 +426,7 @@ pub(super) async fn today_so_far(State(state): State<AppState>, headers: HeaderM
         "day": day, "cap_micros": bench.cap_micros(), "spent_micros": spent,
         "calls": used.calls, "prompt_tokens": used.prompt_tokens,
         "completion_tokens": used.completion_tokens, "cached_tokens": used.cached_tokens,
+        "upstream_refusals": refusals.0, "last_refusal": refusals.1,
     }))
     .into_response()
 }
@@ -410,6 +523,21 @@ mod tests {
         super::today()
     }
 
+    async fn said_json(res: axum::response::Response) -> serde_json::Value {
+        serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap()
+    }
+
+    async fn said(res: axum::response::Response) -> serde_json::Value {
+        said_json(res).await
+    }
+
+    /// Whether a refusal says it is the bench's.
+    fn said_bench(said: &serde_json::Value) -> bool {
+        said["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("bench: "))
+    }
+
     #[tokio::test]
     async fn the_bench_token_reaches_claude_without_hq_and_is_metered_as_bench() {
         let (hq_url, to_hq) = hq();
@@ -499,7 +627,12 @@ mod tests {
                     .oneshot(ask(path, TOKEN, &a_round(model)))
                     .await
                     .unwrap();
-                assert_eq!(res.status(), StatusCode::FORBIDDEN, "{model} on {path}");
+                assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{model} on {path}");
+                let said = said(res).await;
+                assert!(
+                    said_bench(&said),
+                    "a refusal Claude Code shows as the bench's own: {said}"
+                );
             }
         }
         assert_eq!(messages_sent(&to_anthropic).len(), 2, "only the two passed");
@@ -566,8 +699,175 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::PAYMENT_REQUIRED);
+        // Not 402 or `billing_error`: Claude Code shows those as "Credit balance too low",
+        // which would blame the owner's Anthropic account for the bench's own cap.
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = said(res).await;
+        assert_eq!(said["error"]["type"], "invalid_request_error");
+        assert!(said_bench(&said), "{said}");
+        assert!(
+            said["error"]["message"].as_str().unwrap().contains("$2.00"),
+            "{said}"
+        );
         assert!(messages_sent(&to_anthropic).is_empty());
+    }
+
+    #[tokio::test]
+    async fn calls_in_flight_holding_the_rest_are_a_wait_not_a_spent_day() {
+        let (hq_url, _) = hq();
+        let (upstream, to_anthropic) = anthropic();
+        let (_dir, file) = token_file(TOKEN);
+        let state = with_bench(node(&hq_url, &upstream), &file, 1);
+        // Another seat's call in flight holds the whole cent.
+        let haiku = endora_infrastructure::relay::price_of("claude-haiku-5-5", 0).unwrap();
+        let bench = state.bench.clone().unwrap();
+        let _held = bench.hold(&state.store, today(), haiku, 0, None).unwrap();
+        let res = team_relay(state)
+            .oneshot(ask(
+                "/team-relay/v1/messages",
+                TOKEN,
+                &a_round("claude-haiku-5-5"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(res.headers().contains_key("retry-after"));
+        let said = said(res).await;
+        assert_eq!(said["error"]["type"], "rate_limit_error");
+        assert!(said_bench(&said), "{said}");
+        assert!(messages_sent(&to_anthropic).is_empty());
+    }
+
+    /// A round as Claude Code 2.1.296 sent it in the harness's seats (seen by the stand-in
+    /// relay before the run): streamed, `max_tokens` 128,000, adaptive thinking, an effort,
+    /// cache marks, and 22 tools, on a prompt of about 27,000 tokens.
+    fn a_seats_round(model: &str) -> serde_json::Value {
+        let tools: Vec<_> = (0..22)
+            .map(|i| {
+                json!({ "name": format!("Tool{i}"), "description": "a tool",
+                             "input_schema": { "type": "object" } })
+            })
+            .collect();
+        json!({
+            "model": model, "max_tokens": 128_000, "stream": true,
+            "system": [
+                { "type": "text", "text": "You are Claude Code." },
+                { "type": "text", "text": "The seat's role.",
+                  "cache_control": { "type": "ephemeral", "ttl": "1h" } }],
+            "tools": tools,
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "orch-lead@bench",
+                  "cache_control": { "type": "ephemeral" } }] }],
+            "metadata": { "user_id": "{\"session_id\":\"s\"}" },
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": "high" },
+        })
+    }
+
+    #[tokio::test]
+    async fn a_seats_real_first_round_passes_the_gate_on_either_model() {
+        let (hq_url, _) = hq();
+        let (upstream, to_anthropic) = super::super::relay::tests::anthropic_counting(27_000);
+        let (_dir, file) = token_file(TOKEN);
+        let state = with_bench(node(&hq_url, &upstream), &file, 200);
+        for model in ["claude-sonnet-5-5", "claude-haiku-5-5"] {
+            let res = team_relay(state.clone())
+                .oneshot(ask(
+                    "/team-relay/v1/messages?beta=true",
+                    TOKEN,
+                    &a_seats_round(model),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{model}");
+            let _ = res.into_body().collect().await.unwrap();
+        }
+        let sent = messages_sent(&to_anthropic);
+        assert_eq!(sent.len(), 2, "both reached Anthropic");
+        // Sonnet: 40¢ a call at most, less 27k written to the cache at $2.50 a million.
+        assert_eq!(sent[0]["max_tokens"], 33_250);
+        assert_eq!(
+            sent[1]["max_tokens"], 128_000,
+            "Haiku can pay for all it asked"
+        );
+    }
+
+    /// Anthropic refusing, as it answered the bench's first run (2026-10-18): a 400 whose words
+    /// Claude Code shows as "Credit balance is too low", with Anthropic's request id.
+    fn anthropic_refusing(at: &'static str) -> (String, Seen) {
+        fake(Arc::new(move |path, _| {
+            if path == at {
+                return (
+                    400,
+                    "application/json",
+                    json!({ "type": "error", "error": { "type": "invalid_request_error",
+                            "message": "Your credit balance is too low to access the Anthropic API." },
+                            "request_id": "req_test_0001" })
+                    .to_string(),
+                );
+            }
+            if path == "/v1/messages/count_tokens" {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "input_tokens": 100 }).to_string(),
+                );
+            }
+            (500, "application/json", "{}".to_owned())
+        }))
+    }
+
+    #[tokio::test]
+    async fn anthropics_refusal_is_passed_on_as_anthropics_and_kept_on_the_record() {
+        for (at, step) in [
+            ("/v1/messages/count_tokens", "counting the prompt"),
+            ("/v1/messages", "the call"),
+        ] {
+            let (hq_url, _) = hq();
+            let (upstream, _) = anthropic_refusing(at);
+            let (_dir, file) = token_file(TOKEN);
+            let state = with_bench(node(&hq_url, &upstream), &file, 200);
+            let res = team_relay(state.clone())
+                .oneshot(ask(
+                    "/team-relay/v1/messages?beta=true",
+                    TOKEN,
+                    &a_seats_round("claude-haiku-5-5"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{at}");
+            let said = said(res).await;
+            let words = said["error"]["message"].as_str().unwrap();
+            assert!(
+                words.starts_with(&format!("bench: Anthropic refused {step}")),
+                "{words}"
+            );
+            assert!(words.contains("credit balance is too low"), "{words}");
+            assert_eq!(said["request_id"], "req_test_0001");
+            // The record says who refused, at which step, in Anthropic's own words.
+            let res = team_relay(state)
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/team-relay/bench")
+                        .header("authorization", format!("Bearer {TOKEN}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let day = said_json(res).await;
+            assert_eq!(day["upstream_refusals"], 1, "{day}");
+            let last = &day["last_refusal"];
+            assert_eq!(last["step"], step);
+            assert_eq!(last["status"], 400);
+            assert_eq!(last["model"], "claude-haiku-5-5");
+            assert_eq!(last["request_id"], "req_test_0001");
+            assert_eq!(
+                last["message"],
+                "Your credit balance is too low to access the Anthropic API."
+            );
+            assert_eq!(day["calls"], 0, "nothing was charged");
+        }
     }
 
     #[tokio::test]
@@ -601,8 +901,9 @@ mod tests {
         // 1,000 left: the next may write 1,000 tokens less its own input of 500.
         let (cap, second) = bench.hold(&store, 5, haiku, 500, Some(16_000)).unwrap();
         assert_eq!(cap, 1_000);
-        assert!(
-            bench.hold(&store, 5, haiku, 0, Some(10)).is_none(),
+        assert_eq!(
+            bench.hold(&store, 5, haiku, 0, Some(10)).unwrap_err(),
+            Short::HeldInFlight,
             "nothing is left while they are in flight"
         );
         // The first spent less than it set aside: the rest comes back.
@@ -702,7 +1003,7 @@ mod tests {
             said,
             json!({ "day": today(), "cap_micros": 2_000_000, "spent_micros": 150,
                     "calls": 1, "prompt_tokens": 1_000, "completion_tokens": 100,
-                    "cached_tokens": 0 })
+                    "cached_tokens": 0, "upstream_refusals": 0, "last_refusal": null })
         );
         for stranger in ["", "good", "bench"] {
             let res = team_relay(state.clone())

@@ -615,6 +615,14 @@ tagged release.
 
 ### Fixed
 
+- **The bench's refusals say whose they are** (ADR 0123, rule 5). The first bench run reached
+  no model: every seat's first call came back "Credit balance is too low", which Claude Code
+  shows for any 402 or `billing_error`. That 400 was Anthropic's own (its request id was in
+  the body), passed on word for word, so the run's record could not say at which step or why.
+  Anthropic's refusals now keep their status, kind and request id, with words naming the step
+  and the model, and are kept in `GET /team-relay/bench` (`upstream_refusals`,
+  `last_refusal`) and in the node's log. The bench's own refusals are a 400 starting `bench: `
+  (never a 402), and calls in flight holding the rest of the day are a 429 with `retry-after`.
 - **The team's world, from the owner's live export** ([ADR 0122](docs/adr/0122-the-teams-world-stages-stories-and-situations.md)).
   The move of the house log dated a yearless day by comparing its noon with the move's instant,
   so a move in the early morning put the move's own day a year back; it now compares days, in
