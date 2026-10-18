@@ -373,6 +373,125 @@ pub fn map_block(briefing: &str) -> Option<String> {
     Some(rest[..end].to_owned())
 }
 
+/// A thing on a member's map as plain facts: for the line the briefing shows, and for the
+/// questions the nightly quiz asks of it, which code scores against these same facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fact {
+    /// `world:area/3`, or `world:area/3#backups` for a section.
+    pub address: String,
+    /// The page's slug.
+    pub page: String,
+    /// The page's title, or the section's heading.
+    pub title: String,
+    /// What the page says, as a phrase: `how the lab is built`.
+    pub topic: String,
+    /// Who keeps it, by name.
+    pub steward: String,
+    /// What a person might answer to "who keeps it?", lowercase.
+    pub answers: Vec<String>,
+    /// Whether it is a section, not a page.
+    pub section: bool,
+    /// The line a map shows of it.
+    pub line: String,
+    /// How much may be left off.
+    pub weight: Weight,
+}
+
+impl Fact {
+    /// A page.
+    #[must_use]
+    pub fn page(
+        key: PageKey,
+        title: &str,
+        topic: &str,
+        steward: String,
+        answers: Vec<String>,
+        weight: Weight,
+    ) -> Self {
+        Self {
+            address: format!("world:{}", key.slug()),
+            page: key.slug(),
+            title: title.to_owned(),
+            topic: topic.to_owned(),
+            line: format!("{title}: {topic}. Kept by {steward}."),
+            steward,
+            answers,
+            section: false,
+            weight,
+        }
+    }
+
+    /// A section of a page: its heading, and what it says in a line, with how established it is.
+    #[must_use]
+    pub fn section(
+        key: PageKey,
+        anchor: &str,
+        heading: &str,
+        headline: &str,
+        stage: &str,
+        weight: Weight,
+    ) -> Self {
+        Self {
+            address: format!("world:{}#{anchor}", key.slug()),
+            page: key.slug(),
+            title: heading.to_owned(),
+            topic: headline.to_owned(),
+            steward: String::new(),
+            answers: Vec::new(),
+            section: true,
+            line: format!("{heading}: {headline} [{stage}]"),
+            weight,
+        }
+    }
+
+    /// The map's line for it.
+    #[must_use]
+    pub fn entry(&self) -> Entry {
+        Entry::new(self.address.clone(), &self.line, self.weight)
+    }
+}
+
+/// What a role's page starts from: a headline and a body in a few words, until the owner writes
+/// it fully. Never more than what the role is for, from the roles' own definitions.
+#[must_use]
+pub const fn role_seed(role: Role) -> (&'static str, &'static str) {
+    match role {
+        Role::Ceo => (
+            "Runs the team for the owner, who is the board.",
+            "Decides what the leads ask, reviews the house once a day, delegates to leads and \
+             never to the weeds, and puts to the board only what the owner alone decides.",
+        ),
+        Role::Lead => (
+            "Plans an area's work, hands its parts on and accepts tested work.",
+            "Keeps its area's page, decides stuck work in its area, and accepts or sends back \
+             what the tester passed, against the task's criteria.",
+        ),
+        Role::Developer => (
+            "Writes and changes code in the fork, on a branch, and submits it with evidence.",
+            "Claims a task, reads before it writes, tests, and submits for review with the \
+             readings that show each criterion holds. Pushes only through the gateway.",
+        ),
+        Role::Researcher => (
+            "Finds things out and writes them up on evidence from HQ's record.",
+            "Reads, compares and reports; makes no change to the lab.",
+        ),
+        Role::Reviewer => (
+            "Re-checks submitted work with a reading of her own; passes it or sends it back.",
+            "Never makes work and never reviews her own. Sending back names exactly what does \
+             not hold; a story's handle can stand in for the paragraph.",
+        ),
+    }
+}
+
+/// The briefing without its map block: what a test of what comes first compares.
+#[must_use]
+pub fn without_map(briefing: &str) -> String {
+    match map_block(briefing) {
+        Some(block) => briefing.replacen(&block, "", 1),
+        None => briefing.to_owned(),
+    }
+}
+
 // ---- addresses cited in a page ------------------------------------------------------------
 
 /// The addresses a text cites: every `world:…` and `story:…` word in it, lowercase, once each,

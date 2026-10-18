@@ -94,6 +94,7 @@ fn accepts(w: &mut Office, name: String) {
     assert!(done.is_some(), "refused: {:?}", w.refused);
 }
 
+#[given(expr = "the owner makes {string} canon")]
 #[when(expr = "the owner makes {string} canon")]
 fn owner_makes_canon(w: &mut Office, address: String) {
     let address = w.addressed(&address);
@@ -101,6 +102,7 @@ fn owner_makes_canon(w: &mut Office, address: String) {
         .expect("the owner makes it canon");
 }
 
+#[given(expr = "the owner writes {string} on {string} saying {string}")]
 #[when(expr = "the owner writes {string} on {string} saying {string}")]
 fn owner_writes(w: &mut Office, heading: String, page: String, text: String) {
     let page = w.addressed(&page);
@@ -138,4 +140,67 @@ fn no_section(w: &mut Office, page: String) {
         "sections on {page}: {sections:?}"
     );
     let _ = w.hq.store().world_pages();
+}
+
+#[then(regex = r#"^(\w+)'s map names "(.+)"$"#)]
+fn map_names(w: &mut Office, name: String, address: String) {
+    let address = w.addressed(&address);
+    let told = &w
+        .turns
+        .get(&name)
+        .unwrap_or_else(|| panic!("{name}'s turn has not started"))
+        .told;
+    let map = endora_team::domain::map::map_block(told)
+        .unwrap_or_else(|| panic!("{name}'s briefing has no map:\n{told}"));
+    assert!(map.contains(&format!("- {address} ")), "{map}");
+}
+
+#[when(regex = r#"^(\w+) reports a gap "(.+)", looked in "(.+)"$"#)]
+fn reports_gap(w: &mut Office, name: String, what: String, looked: String) {
+    let done = w.use_tool(
+        &name,
+        "report_gap",
+        &json!({ "what": what, "where_looked": looked }),
+    );
+    assert!(done.is_some(), "refused: {:?}", w.refused);
+}
+
+#[when(regex = r#"^(\w+) retires "(.+)" because "(.+)"$"#)]
+fn retires(w: &mut Office, name: String, address: String, why: String) {
+    let address = w.addressed(&address);
+    let done = w.use_tool(
+        &name,
+        "retire_world",
+        &json!({ "address": address, "why": why }),
+    );
+    assert!(done.is_some(), "refused: {:?}", w.refused);
+}
+
+#[when(regex = r#"^(\w+) writes "(.+)" on the house page, saying "(.+)", citing the task "(.+)"$"#)]
+fn writes_on_house(w: &mut Office, name: String, heading: String, headline: String, task: String) {
+    let headline = w.addressed(&headline);
+    let evidence = w.cites(&task);
+    let done = w.use_tool(
+        &name,
+        "write_world",
+        &json!({ "heading": heading, "headline": headline, "stage": "observation",
+                 "evidence": [evidence] }),
+    );
+    assert!(done.is_some(), "refused: {:?}", w.refused);
+}
+
+#[then("no road is broken")]
+fn no_road_broken(w: &mut Office) {
+    let roads = w.hq.broken_roads().expect("the store answers");
+    assert!(roads.is_empty(), "{roads:?}");
+}
+
+#[then(expr = "the road from {string} to {string} is broken")]
+fn road_broken(w: &mut Office, from: String, to: String) {
+    let (from, to) = (w.addressed(&from), w.addressed(&to));
+    let roads = w.hq.broken_roads().expect("the store answers");
+    assert!(
+        roads.iter().any(|r| r.from == from && r.to == to),
+        "{roads:?}"
+    );
 }

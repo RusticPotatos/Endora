@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use super::engine::{Engine, PageProposing, StoryTelling, WorldWrite};
 use super::ports::{Clock, Run, TeamStore, WorkerAdapter};
+use crate::domain::map;
 use crate::domain::situations::Situation;
 use crate::domain::world::{self, HandoverNote, Stage, WorldRefusal};
 use crate::domain::{Member, Ref, Role};
@@ -117,7 +118,25 @@ pub fn tools(role: Role) -> Vec<Value> {
         }),
         &["page", "heading", "headline", "evidence"],
     ));
+    all.push(tool(
+        "report_gap",
+        "Say you looked on your map for something and it is not there: what you looked for, and where you looked. It goes to your lead as one item (the same gap from others is the same item), not to the owner. Do this instead of building the thing again: a knowledge gap is mended by writing the page, a missing route by the steward. Look first: read_world the pages your map names.",
+        json!({
+            "what": { "type": "string", "maxLength": map::GAP_MOST, "description": "what you looked for" },
+            "where_looked": { "type": "string", "maxLength": map::GAP_MOST, "description": "the addresses and docs you looked in" },
+        }),
+        &["what", "where_looked"],
+    ));
     if matches!(role, Role::Ceo | Role::Lead) {
+        all.push(tool(
+            "close_gap",
+            "Close a gap reported to you (your briefing lists them), saying how: the address you wrote, or why nothing.",
+            json!({
+                "id": { "type": "integer", "description": "the gap's number" },
+                "how": { "type": "string", "maxLength": map::GAP_MOST },
+            }),
+            &["id", "how"],
+        ));
         all.push(tool(
             "decide_proposal",
             "Decide a proposal to a page you keep (your briefing lists them): accept it, and it is written as an observation (or an insight, when you give a warrant and the evidence warrants it), or decline it, saying why. The proposer is told which.",
@@ -240,6 +259,29 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             Ok(format!(
                 "Proposal {id} is with the page's steward: {steward} decides, and your next briefing says which."
             ))
+        })(),
+        "report_gap" => engine
+            .report_gap_in(run.id, text(args, "what"), text(args, "where_looked"))
+            .map(|g| {
+                let again = if g.already {
+                    " Others reported it too: it is one item."
+                } else {
+                    ""
+                };
+                format!(
+                    "Gap {} is with {}, who keeps the pages.{again} Do not build it again; read on or ask in the task's thread.",
+                    g.id, g.steward
+                )
+            })
+            .map_err(said),
+        "close_gap" => (|| {
+            let id = args["id"]
+                .as_i64()
+                .ok_or_else(|| "`id` is the gap's number".to_owned())?;
+            engine
+                .close_gap_in(run.id, id, text(args, "how"))
+                .map_err(said)?;
+            Ok(format!("Gap {id} is closed."))
         })(),
         "decide_proposal" => (|| {
             let id = args["id"]

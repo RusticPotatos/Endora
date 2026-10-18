@@ -45,3 +45,45 @@ Feature: The team's map
     And Ada is handed the task "Check the NAS"
     And Ada accepts the proposal
     Then "world:area/Ada#backups" stands as an observation
+
+  Scenario: A developer finds what exists from its map, and reports a gap to its lead when there is none
+    Given Ada has the task "Look at backups"
+    When Ada writes "Desk notices" on "area/Ada" citing the task "Look at backups"
+    And Ada's turn ends
+    And Linus is handed the task "Tell the owner when a branch passes"
+    And Linus's turn starts
+    Then Linus's map names "world:area/Ada#desk-notices"
+    And Linus reading "world:area/Ada#desk-notices" sees "Nightly, at 03:00."
+    When Linus reports a gap "how a restore drill is run", looked in "world:area/Ada, world:lab"
+    And Linus's turn ends
+    And Ada is handed the task "Check the NAS"
+    And Ada's turn starts
+    Then Ada's briefing says "how a restore drill is run"
+    And the owner's desk is empty
+
+  Scenario: A retired section breaks the roads that cite it, and the steward of the citing page is told
+    Given Ada has the task "Look at backups"
+    And Mara has the task "Review the house"
+    When Ada writes "Restores" on "area/Ada" citing the task "Look at backups"
+    And Mara writes "Disks" on the house page, saying "Disks: see world:area/Ada#restores", citing the task "Look at backups"
+    Then no road is broken
+    When Ada retires "world:area/Ada#restores" because "restores moved"
+    Then the road from "world:house#disks" to "world:area/Ada#restores" is broken
+    When Mara's turn ends
+    And Mara is handed the task "Review the house again"
+    And Mara's turn starts
+    Then Mara's briefing says "Broken roads"
+    And Mara's briefing says "world:house#disks cites world:area/"
+
+  Scenario: A lead's briefing is its map, its area's sections and the house canon
+    Given the owner writes "The disk" on "house" saying "The NAS has 16 GB."
+    And the owner makes "world:house#the-disk" canon
+    And Ada has the task "Look at backups"
+    When Ada writes "Backups" on "area/Ada" citing the task "Look at backups"
+    And Ada's turn ends
+    And Ada is handed the task "Look at the router"
+    And Ada's turn starts
+    Then Ada's map names "world:area/Ada#backups"
+    And Ada's briefing says "The NAS has 16 GB."
+    And Ada's briefing keeps to its budget of 1800 tokens
+    And nothing was left out of Ada's briefing unnamed

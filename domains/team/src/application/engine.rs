@@ -36,6 +36,7 @@ mod areas;
 mod discipline;
 mod evidence;
 mod games;
+mod gaps;
 mod guards;
 mod health;
 mod ladder;
@@ -56,6 +57,7 @@ mod world;
 
 pub use areas::{DAILY_REVIEW, PATTERNS_ASKS, REPORT_ASKS};
 pub use evidence::Called;
+pub use gaps::GapReported;
 pub use map::MapMigrated;
 pub use notebook::note_number;
 pub use office::Standing;

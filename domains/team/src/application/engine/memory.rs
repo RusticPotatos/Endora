@@ -128,7 +128,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The pieces a situation needs, in the order they are told: what the situation is about
     /// first (core), then the house page, the lab, the team, the stories and the notebook.
     fn pieces(&self, member: &Member, run: &Run, situation: Situation) -> Done<Vec<Piece>> {
-        let mut pieces = Vec::new();
+        // The map opens it: the pages that matter to this member, by address (ADR 0126).
+        let mut pieces = vec![Piece::new(
+            "map",
+            self.map_for(member, run)?.text,
+            Weight::Core,
+        )];
         let last = self.last_turn_of(member, run)?;
         let back = self.back_from_furlough(member, run)?;
         // What changed while it was away: since its furlough began, or its last turn.
@@ -166,6 +171,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         pieces.push(Piece::new(
             "your proposals",
             self.proposals_decided(member)?,
+            Weight::Core,
+        ));
+        // The two ways the map fails, to those who keep the pages: what members looked for and
+        // did not find, and the roads that lead nowhere (ADR 0126).
+        pieces.push(Piece::new(
+            "gaps",
+            self.gaps_to_answer(member)?,
+            Weight::Core,
+        ));
+        pieces.push(Piece::new(
+            "broken roads",
+            self.roads_to_mend(member)?,
             Weight::Core,
         ));
         pieces.extend(self.house_pieces(member, situation, last)?);

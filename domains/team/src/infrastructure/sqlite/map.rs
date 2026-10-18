@@ -6,7 +6,7 @@ use rusqlite::params;
 use super::{SqliteTeamStore, backend, corrupt};
 use crate::application::map_ports::MapStore;
 use crate::application::ports::Stored;
-use crate::domain::map::{PageProposal, ProposalStatus};
+use crate::domain::map::{Gap, PageProposal, ProposalStatus};
 use crate::domain::world::Snapshot;
 use crate::domain::{MemberId, Millis, RunId};
 
@@ -22,7 +22,35 @@ CREATE TABLE IF NOT EXISTS world_proposals (
     why TEXT NOT NULL DEFAULT '', decided_at INTEGER, told INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE INDEX IF NOT EXISTS world_proposals_by_status ON world_proposals(status);
+CREATE TABLE IF NOT EXISTS world_gaps (
+    id INTEGER PRIMARY KEY, what TEXT NOT NULL, where_looked TEXT NOT NULL, key TEXT NOT NULL,
+    steward INTEGER REFERENCES members(id), by_member INTEGER NOT NULL REFERENCES members(id),
+    run INTEGER REFERENCES runs(id), count INTEGER NOT NULL, opened_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL, closed_at INTEGER, closed_by TEXT NOT NULL DEFAULT '',
+    how TEXT NOT NULL DEFAULT ''
+) STRICT;
 ";
+
+const GAP_SELECT: &str = "SELECT id, what, where_looked, key, steward, by_member, run, count, \
+    opened_at, last_at, closed_at, closed_by, how FROM world_gaps";
+
+fn gap_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Gap> {
+    Ok(Gap {
+        id: r.get(0)?,
+        what: r.get(1)?,
+        where_looked: r.get(2)?,
+        key: r.get(3)?,
+        steward: r.get::<_, Option<i64>>(4)?.map(MemberId),
+        by: MemberId(r.get(5)?),
+        run: r.get::<_, Option<i64>>(6)?.map(RunId),
+        count: r.get(7)?,
+        opened_at: r.get(8)?,
+        last_at: r.get(9)?,
+        closed_at: r.get(10)?,
+        closed_by: r.get(11)?,
+        how: r.get(12)?,
+    })
+}
 
 const PROPOSAL_SELECT: &str = "SELECT id, page, anchor, heading, headline, body, evidence, \
     by_member, run, at_ms, status, decided_by, why, decided_at, told FROM world_proposals";
@@ -129,6 +157,51 @@ impl MapStore for SqliteTeamStore {
                 p.why,
                 p.decided_at,
                 p.told
+            ],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn gaps(&self) -> Stored<Vec<Gap>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("{GAP_SELECT} ORDER BY id"))
+            .map_err(backend)?;
+        stmt.query_map([], gap_row)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn save_gap(&self, g: &Gap) -> Stored<i64> {
+        let conn = self.conn()?;
+        if g.id != 0 {
+            conn.execute(
+                "UPDATE world_gaps SET count = ?2, last_at = ?3, closed_at = ?4, closed_by = ?5,
+                    how = ?6 WHERE id = ?1",
+                params![g.id, g.count, g.last_at, g.closed_at, g.closed_by, g.how],
+            )
+            .map_err(backend)?;
+            return Ok(g.id);
+        }
+        conn.execute(
+            "INSERT INTO world_gaps (what, where_looked, key, steward, by_member, run, count,
+                opened_at, last_at, closed_at, closed_by, how)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                g.what,
+                g.where_looked,
+                g.key,
+                g.steward.map(|m| m.0),
+                g.by.0,
+                g.run.map(|r| r.0),
+                g.count,
+                g.opened_at,
+                g.last_at,
+                g.closed_at,
+                g.closed_by,
+                g.how
             ],
         )
         .map_err(backend)?;

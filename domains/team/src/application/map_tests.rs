@@ -425,6 +425,363 @@ fn end(hq: &Hq<'_>, clock: &Hands, context: &RunContext) {
     clock.0.fetch_add(3 * 60_000, Ordering::SeqCst);
 }
 
+/// The map block of a briefing.
+fn map_of(told: &str) -> String {
+    crate::domain::map::map_block(told).unwrap_or_else(|| panic!("no map in:\n{told}"))
+}
+
+#[test]
+fn every_briefing_opens_with_a_map_of_the_pages_that_matter_to_its_member() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let task = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal: t.goal,
+                project: Some(t.upkeep),
+                parent: None,
+                title: "Fix the proxy".to_owned(),
+                description: String::new(),
+                assignee: Some(t.linus),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    let linus = turn(&hq, t.linus);
+    let map = map_of(&linus.told);
+    for wanted in [
+        "world:role/developer".to_owned(),
+        format!("world:area/{}", t.ada.0),
+        format!("world:project/{}", t.upkeep.0),
+        "world:house".to_owned(),
+        "world:lab".to_owned(),
+        "Kept by Ada.".to_owned(),
+        "Kept by the owner.".to_owned(),
+        "Kept by Mara, the CEO.".to_owned(),
+        "report_gap".to_owned(),
+    ] {
+        assert!(map.contains(&wanted), "{wanted} in\n{map}");
+    }
+    // Wide and shallow: another lead's area is on it too, a line each.
+    assert!(map.contains(&format!("world:area/{}", t.bo.0)), "{map}");
+    assert!(map.lines().all(|l| l.chars().count() <= 260), "{map}");
+    // It opens the briefing: after who the member is, before its task.
+    let at = linus.told.find("Your map of the team's world").unwrap();
+    assert!(
+        at < linus.told.find("Your task:").unwrap(),
+        "{}",
+        linus.told
+    );
+    assert!(at < 120, "right after who it is: {}", linus.told);
+    // The run records it was told.
+    let briefed = hq.briefed(linus.run).unwrap().unwrap();
+    assert_eq!(briefed.briefed.first().map(String::as_str), Some("map"));
+    let _ = task;
+    end(&hq, &clock, &linus);
+    // A lead's map holds the project it leads; the CEO's holds every area.
+    task_for(&hq, t.goal, t.ada, "Look at backups");
+    let ada = turn(&hq, t.ada);
+    assert!(map_of(&ada.told).contains(&format!("world:project/{}", t.upkeep.0)));
+    assert!(map_of(&ada.told).contains("world:role/lead"));
+    task_for(&hq, t.goal, t.ceo, "Review");
+    let mara = turn(&hq, t.ceo);
+    let wide = map_of(&mara.told);
+    assert!(
+        wide.contains(&format!("world:area/{}", t.ada.0))
+            && wide.contains(&format!("world:area/{}", t.bo.0)),
+        "{wide}"
+    );
+    assert!(wide.contains("world:role/ceo"), "{wide}");
+}
+
+#[test]
+fn a_tight_map_leaves_off_the_least_and_names_it() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    // Many areas, so the map is wide; Linus thinks with the house's model, so it is short.
+    for n in 0..14 {
+        hq.hire(&format!("Lead{n}"), Role::Lead, 25, 2, 5).unwrap();
+    }
+    hq.migrate_map().unwrap();
+    let (linus, _) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    let map = map_of(&linus.told);
+    assert!(
+        map.chars().count() <= crate::domain::map::MAP_CHARS_LOCAL + 200,
+        "{} chars",
+        map.chars().count()
+    );
+    assert!(map.contains("Left off this map to keep it short:"), "{map}");
+    // What matters most stays: his role, his area, the house.
+    for kept in [
+        "world:role/developer".to_owned(),
+        format!("world:area/{}", t.ada.0),
+        "world:house".to_owned(),
+    ] {
+        assert!(map.contains(&format!("- {kept} ")), "{kept} in\n{map}");
+    }
+    // What was left off is named, one by one.
+    let left = map.lines().find(|l| l.starts_with("Left off")).unwrap();
+    assert!(left.contains("world:area/"), "{left}");
+}
+
+#[test]
+fn a_leads_map_points_at_its_areas_sections_and_the_house_canon() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    hq.write_as_owner("house", "disk", "The disk", "The NAS has 16 GB.")
+        .unwrap();
+    hq.promote("world:house#disk", "").unwrap();
+    let page = area(t.ada);
+    let (ada, task) = working(&hq, t.goal, t.ada, "Look at backups");
+    use_tool(&hq, &ada, "write_world", &write(&page, "Backups", task)).unwrap();
+    end(&hq, &clock, &ada);
+    let (again, _) = working(&hq, t.goal, t.ada, "Look at the router");
+    let map = map_of(&again.told);
+    assert!(
+        map.contains(&format!("world:{page}#backups")),
+        "a section of her own area is on the map\n{map}"
+    );
+    assert!(
+        again.told.contains("The NAS has 16 GB."),
+        "the house canon is told"
+    );
+}
+
+#[test]
+fn a_role_page_starts_from_what_the_role_is_for() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let (linus, _) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    let said = use_tool(
+        &hq,
+        &linus,
+        "read_world",
+        &json!({ "address": "world:role/developer" }),
+    )
+    .unwrap();
+    assert!(
+        said.contains("Kept by the owner.") && said.contains("How a developer works here"),
+        "{said}"
+    );
+    // The default is HQ's to show, never stored: it cannot go stale or pass for a confirmation.
+    assert!(
+        said.contains("Endora's default") && said.contains("read_doc docs/standards.md"),
+        "{said}"
+    );
+    assert!(hq.store().sections().unwrap().is_empty());
+    // Once the owner writes the page, the default steps aside.
+    hq.write_as_owner(
+        "role/developer",
+        "flow",
+        "How we work",
+        "Branch, test, push.",
+    )
+    .unwrap();
+    let said = use_tool(
+        &hq,
+        &linus,
+        "read_world",
+        &json!({ "address": "world:role/developer" }),
+    )
+    .unwrap();
+    assert!(
+        said.contains("Branch, test, push.") && !said.contains("Endora's default"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_gap_is_one_item_for_the_members_lead_and_never_the_owners_desk() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let cy = hq.hire("Cy", Role::Developer, 40, 2, 6).unwrap();
+    hq.set_reports_to(cy, t.ada).unwrap();
+    hq.migrate_map().unwrap();
+    let (linus, _) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    // A report says what was looked for and where.
+    let bare = use_tool(
+        &hq,
+        &linus,
+        "report_gap",
+        &json!({ "what": "the desk notice" }),
+    )
+    .unwrap_err();
+    assert!(bare.contains("where you looked"), "{bare}");
+    let said = use_tool(
+        &hq,
+        &linus,
+        "report_gap",
+        &json!({ "what": "How the desk notice works", "where_looked": "world:lab, world:house" }),
+    )
+    .unwrap();
+    assert!(said.contains("Ada"), "it goes to the lead: {said}");
+    end(&hq, &clock, &linus);
+    let (cy_turn, _) = working(&hq, t.goal, cy, "Fix the VPN");
+    use_tool(
+        &hq,
+        &cy_turn,
+        "report_gap",
+        &json!({ "what": "how the desk  notice works?", "where_looked": "world:team" }),
+    )
+    .unwrap();
+    let gaps = hq.store().gaps().unwrap();
+    assert_eq!(gaps.len(), 1, "the same gap is one item");
+    assert_eq!(gaps[0].count, 2);
+    assert_eq!(gaps[0].steward, Some(t.ada));
+    assert!(
+        hq.store().desk().unwrap().is_empty(),
+        "never the owner's desk"
+    );
+    end(&hq, &clock, &cy_turn);
+    // The lead's next briefing carries it; another lead's does not.
+    let (bo, _) = working(&hq, t.goal, t.bo, "Look at the router");
+    assert!(!bo.told.contains("desk notice"), "{}", bo.told);
+    end(&hq, &clock, &bo);
+    let (ada, _) = working(&hq, t.goal, t.ada, "Look at backups");
+    assert!(
+        ada.told.contains("Gaps reported to you") && ada.told.contains("How the desk notice works"),
+        "{}",
+        ada.told
+    );
+    // Closing it takes it out of the next briefing.
+    let id = gaps[0].id;
+    let refused = use_tool(&hq, &ada, "close_gap", &json!({ "id": id })).unwrap_err();
+    assert!(refused.contains("how"), "{refused}");
+    use_tool(
+        &hq,
+        &ada,
+        "close_gap",
+        &json!({ "id": id, "how": "written at world:area/x#desk" }),
+    )
+    .unwrap();
+    end(&hq, &clock, &ada);
+    let (again, _) = working(&hq, t.goal, t.ada, "Look at the NAS");
+    assert!(
+        !again.told.contains("Gaps reported to you"),
+        "{}",
+        again.told
+    );
+    // A lead's own gap goes to the CEO.
+    use_tool(
+        &hq,
+        &again,
+        "report_gap",
+        &json!({ "what": "the budget rules", "where_looked": "world:house" }),
+    )
+    .unwrap();
+    assert_eq!(hq.store().gaps().unwrap().last().unwrap().steward, None);
+    task_for(&hq, t.goal, t.ceo, "Review");
+    let mara = turn(&hq, t.ceo);
+    assert!(mara.told.contains("the budget rules"), "{}", mara.told);
+}
+
+#[test]
+fn a_cited_address_that_does_not_resolve_is_a_broken_road_found_by_code() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let page = area(t.ada);
+    let (ada, ada_task) = working(&hq, t.goal, t.ada, "Look at backups");
+    use_tool(
+        &hq,
+        &ada,
+        "write_world",
+        &write(&page, "Restores", ada_task),
+    )
+    .unwrap();
+    use_tool(&hq, &ada, "write_world", &write(&page, "Spare", ada_task)).unwrap();
+    use_tool(
+        &hq,
+        &ada,
+        "write_world",
+        &write(&page, "Restoring", ada_task),
+    )
+    .unwrap();
+    task_for(&hq, t.goal, t.ceo, "Review");
+    let mara = turn(&hq, t.ceo);
+    let cites = json!({ "heading": "Disks", "headline": format!("Disks: see world:{page}#restores"),
+                        "body": "Also world:area/9999 and story:no-such-story.", "stage": "observation",
+                        "evidence": [format!("task {}", ada_task.0)] });
+    use_tool(&hq, &mara, "write_world", &cites).unwrap();
+    let roads = hq.broken_roads().unwrap();
+    let wrong: Vec<&str> = roads.iter().map(|r| r.to.as_str()).collect();
+    assert_eq!(
+        wrong,
+        ["world:area/9999", "story:no-such-story"],
+        "{roads:?}"
+    );
+    assert!(roads.iter().all(|r| r.from == "world:house#disks"));
+    // Retiring what is cited breaks the road; the steward of the citing page is told.
+    use_tool(
+        &hq,
+        &ada,
+        "retire_world",
+        &json!({ "address": format!("world:{page}#restores"), "why": "restores moved" }),
+    )
+    .unwrap();
+    let roads = hq.broken_roads().unwrap();
+    let retired = roads
+        .iter()
+        .find(|r| r.to == format!("world:{page}#restores"))
+        .unwrap();
+    assert!(retired.why.contains("retired"), "{retired:?}");
+    // A superseded section is not broken: it says where to go.
+    use_tool(
+        &hq,
+        &ada,
+        "retire_world",
+        &json!({ "address": format!("world:{page}#spare"), "why": "merged", "superseded_by": format!("world:{page}#restoring") }),
+    )
+    .unwrap();
+    assert!(
+        hq.broken_roads()
+            .unwrap()
+            .iter()
+            .all(|r| r.from != format!("world:{page}#spare")),
+        "a superseded section points at what replaces it"
+    );
+    end(&hq, &clock, &mara);
+    task_for(&hq, t.goal, t.ceo, "Review again");
+    let mara = turn(&hq, t.ceo);
+    assert!(
+        mara.told.contains("Broken roads") && mara.told.contains(&format!("world:{page}#restores")),
+        "{}",
+        mara.told
+    );
+    // Gaps and roads are kept apart.
+    assert!(hq.store().gaps().unwrap().is_empty());
+    // Mending the cite clears the road.
+    let mended = json!({ "anchor": "disks", "heading": "Disks", "headline": "Disks: nothing cited", "body": "Plain.",
+                         "stage": "observation", "evidence": [format!("task {}", ada_task.0)] });
+    use_tool(&hq, &mara, "write_world", &mended).unwrap();
+    assert!(
+        hq.broken_roads()
+            .unwrap()
+            .iter()
+            .all(|r| r.from != "world:house#disks")
+    );
+    // And a section shows its routes out when read.
+    let read = use_tool(
+        &hq,
+        &ada,
+        "read_world",
+        &json!({ "address": format!("world:{page}#spare") }),
+    )
+    .unwrap();
+    assert!(read.contains("Superseded by"), "{read}");
+}
+
 fn propose(page: &str, heading: &str, task: TaskId) -> Value {
     json!({ "page": page, "heading": heading, "headline": format!("{heading}: how it goes"),
             "body": "Nightly, at 03:00.", "evidence": [format!("task {}", task.0)] })

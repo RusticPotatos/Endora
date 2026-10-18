@@ -6,10 +6,11 @@
 use serde_json::json;
 
 use super::{Done, Engine, EngineError};
-use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
-use crate::domain::map::{PageKey, Steward, steward_of};
-use crate::domain::world::{self, WorldRefusal};
-use crate::domain::{EventKind, GoalStatus, Member, ProjectStatus, Refusal, Role};
+use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
+use crate::domain::map::{self, PageKey, Steward, steward_of};
+use crate::domain::situations::Weight;
+use crate::domain::world::{self, Section, WorldRefusal};
+use crate::domain::{Brain, EventKind, GoalStatus, Member, ProjectStatus, Refusal, Role};
 
 fn refused(r: WorldRefusal) -> EngineError {
     EngineError::Refused(Refusal::World(r))
@@ -100,6 +101,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(made)
     }
 
+    /// What a role's page says until the owner writes it: what the role is for, from the roles'
+    /// own definitions, as a default HQ shows and never stores, so it cannot go stale or pass
+    /// for a confirmation.
+    pub(super) fn role_default(role: Role) -> String {
+        let (headline, body) = map::role_seed(role);
+        format!(
+            "How a {} works here (Endora's default, until the owner writes this page): \
+             {headline} {body} The team's standards: read_doc docs/standards.md.\n",
+            role.title().to_lowercase()
+        )
+    }
+
     /// Whether the world has a page for `key`: the house and the derived pages always do.
     pub(super) fn page_exists(&self, key: PageKey) -> Done<bool> {
         if matches!(key, PageKey::House | PageKey::Lab | PageKey::Team) {
@@ -183,6 +196,177 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ),
             PageKey::Role(role) => format!("The {} role", role.title().to_lowercase()),
         })
+    }
+
+    // ---- the map ----------------------------------------------------------------------------
+
+    /// What a page says, as a phrase, from the data it is about.
+    fn page_topic(&self, key: PageKey) -> Done<String> {
+        Ok(match key {
+            PageKey::House => "what the team knows about the house".to_owned(),
+            PageKey::Lab => "how the lab is built".to_owned(),
+            PageKey::Team => "who is on the team, and whom each reports to".to_owned(),
+            PageKey::Area(lead) => {
+                let name = self
+                    .store
+                    .members()?
+                    .iter()
+                    .find(|m| m.id == lead)
+                    .map_or_else(|| "a former lead".to_owned(), |m| m.name.clone());
+                format!("how {name}'s area works, and what its team has learned")
+            }
+            PageKey::Project(id) => {
+                let title = self
+                    .store
+                    .projects()?
+                    .iter()
+                    .find(|p| p.id == id)
+                    .map_or_else(|| id.0.to_string(), |p| p.title.clone());
+                format!("what the project \"{title}\" is for, and how it goes")
+            }
+            PageKey::Goal(id) => {
+                let title = self
+                    .store
+                    .goal(id)?
+                    .map_or_else(|| id.0.to_string(), |g| g.title);
+                format!("why the goal \"{title}\" exists, and what the CEO decided about it")
+            }
+            PageKey::Role(role) => format!("how a {} works here", role.title().to_lowercase()),
+        })
+    }
+
+    /// A page as a fact of a map.
+    fn page_fact(&self, key: PageKey, weight: Weight) -> Done<map::Fact> {
+        let steward = self.steward(key)?;
+        let members = self.store.members()?;
+        Ok(map::Fact::page(
+            key,
+            &self.page_title(key)?,
+            &self.page_topic(key)?,
+            steward.said(&members),
+            steward.answers(&members),
+            weight,
+        ))
+    }
+
+    /// What a member's map is made of: the pages that matter to its role and its task, then the
+    /// others a line each, with the best of each page's sections after it. The facts are the
+    /// map's and the nightly quiz's alike.
+    pub(super) fn map_facts(&self, member: &Member, run: &Run) -> Done<Vec<map::Fact>> {
+        let members = self.store.members()?;
+        let projects = self.store.projects()?;
+        let mut facts: Vec<map::Fact> = Vec::new();
+        let add = |this: &Self,
+                   key: PageKey,
+                   weight: Weight,
+                   facts: &mut Vec<map::Fact>|
+         -> Done<()> {
+            if facts.iter().any(|f| !f.section && f.page == key.slug()) || !this.page_exists(key)? {
+                return Ok(());
+            }
+            facts.push(this.page_fact(key, weight)?);
+            if key.derived() {
+                return Ok(());
+            }
+            let slug = key.slug();
+            let mut sections: Vec<(Section, world::Trust)> = Vec::new();
+            for s in this.store.sections()? {
+                if s.page == slug && s.stage.current() {
+                    let trust = this.section_trust(&s)?;
+                    sections.push((s, trust));
+                }
+            }
+            sections.sort_by_key(|(s, t)| (std::cmp::Reverse(t.stage), std::cmp::Reverse(s.id)));
+            for (s, trust) in sections.into_iter().take(map::MAP_SECTIONS_PER_PAGE) {
+                let weight = match trust.stage {
+                    world::Stage::Canon | world::Stage::Insight => Weight::Recommended,
+                    _ => Weight::Optional,
+                };
+                facts.push(map::Fact::section(
+                    key,
+                    &s.anchor,
+                    &s.heading,
+                    &s.headline,
+                    &this.stage_said(trust),
+                    weight,
+                ));
+            }
+            Ok(())
+        };
+        let task_project = self.project_of(run.task)?;
+        let lead = crate::domain::staffing::lead_of(member, &members);
+        add(self, PageKey::Role(member.role), Weight::Core, &mut facts)?;
+        if let Some(lead) = lead {
+            add(self, PageKey::Area(lead), Weight::Core, &mut facts)?;
+        }
+        if let Some(project) = task_project {
+            add(self, PageKey::Project(project), Weight::Core, &mut facts)?;
+        }
+        add(self, PageKey::House, Weight::Core, &mut facts)?;
+        if member.role == Role::Lead {
+            for p in projects.iter().filter(|p| p.lead == member.id) {
+                if map::project_is_current(p.status) {
+                    add(self, PageKey::Project(p.id), Weight::Core, &mut facts)?;
+                }
+            }
+        }
+        let leads_or_ceo = matches!(member.role, Role::Ceo | Role::Lead);
+        add(
+            self,
+            PageKey::Lab,
+            if leads_or_ceo {
+                Weight::Core
+            } else {
+                Weight::Recommended
+            },
+            &mut facts,
+        )?;
+        add(self, PageKey::Team, Weight::Recommended, &mut facts)?;
+        if let Some(task) = run.task {
+            let goal = self.task(task)?.goal;
+            add(self, PageKey::Goal(goal), Weight::Recommended, &mut facts)?;
+        }
+        // The rest of the team's pages, a line each: the CEO's to look over, others' to know of.
+        let wide = if member.role == Role::Ceo {
+            Weight::Recommended
+        } else {
+            Weight::Optional
+        };
+        for m in members.iter().filter(|m| m.role == Role::Lead) {
+            add(self, PageKey::Area(m.id), wide, &mut facts)?;
+        }
+        for p in projects
+            .iter()
+            .filter(|p| map::project_is_current(p.status))
+        {
+            add(self, PageKey::Project(p.id), wide, &mut facts)?;
+        }
+        if member.role == Role::Ceo {
+            for g in self.store.goals()? {
+                if g.status == GoalStatus::Active {
+                    add(self, PageKey::Goal(g.id), Weight::Optional, &mut facts)?;
+                }
+            }
+            for role in ROLES {
+                add(self, PageKey::Role(role), Weight::Optional, &mut facts)?;
+            }
+        }
+        Ok(facts)
+    }
+
+    /// A member's map, composed within its size: a short one for a member on the house's model.
+    pub(super) fn map_for(&self, member: &Member, run: &Run) -> Done<map::MapText> {
+        let cap = if matches!(member.brain, Brain::Local) {
+            map::MAP_CHARS_LOCAL
+        } else {
+            map::MAP_CHARS
+        };
+        let entries = self
+            .map_facts(member, run)?
+            .iter()
+            .map(map::Fact::entry)
+            .collect();
+        Ok(map::compose(entries, cap))
     }
 
     /// Whether `who` may write the page directly: its steward may; anyone else proposes.

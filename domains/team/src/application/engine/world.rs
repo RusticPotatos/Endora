@@ -525,6 +525,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             said.push_str(&format!("Warrant: {}\n", s.warrant));
         }
         said.push_str(&Self::evidence_lines(&s.evidence));
+        said.push_str(&self.routes_said(&s.headline, &s.body, &s.address())?);
         if let Some(next) = &s.superseded_by {
             said.push_str(&format!("Superseded by {next}.\n"));
         }
@@ -563,6 +564,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect();
         if sections.is_empty() {
             said.push_str("No sections yet.\n");
+        }
+        if let (PageKey::Role(role), true) = (key, sections.is_empty()) {
+            said.push_str(&Self::role_default(role));
         }
         for s in &sections {
             let trust = self.section_trust(s)?;

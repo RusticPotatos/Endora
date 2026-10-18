@@ -3,7 +3,7 @@
 
 use super::ports::Stored;
 use crate::domain::Millis;
-use crate::domain::map::PageProposal;
+use crate::domain::map::{Gap, PageProposal};
 
 /// The map's part of HQ's store.
 pub trait MapStore {
@@ -30,4 +30,17 @@ pub trait MapStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn save_proposal(&self, proposal: &PageProposal) -> Stored<i64>;
+
+    /// Every gap, oldest first.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn gaps(&self) -> Stored<Vec<Gap>>;
+
+    /// Keeps a gap: a new one when its id is 0 (its id is returned), else its new count and
+    /// closing.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn save_gap(&self, gap: &Gap) -> Stored<i64>;
 }

@@ -781,6 +781,8 @@ pub enum WorldRefusal {
     NoSuchGap(i64),
     /// The gap is closed already.
     GapClosed(i64),
+    /// Closing a gap says how it was answered.
+    GapNeedsHow,
     /// The gap is another steward's.
     GapNotYours(i64),
     /// There is no quiz open for this member.
@@ -891,6 +893,9 @@ impl fmt::Display for WorldRefusal {
             ),
             Self::NoSuchGap(id) => write!(f, "there is no gap {id}"),
             Self::GapClosed(id) => write!(f, "gap {id} is closed already"),
+            Self::GapNeedsHow => f.write_str(
+                "say how the gap was answered (how): the address you wrote, or why nothing",
+            ),
             Self::GapNotYours(id) => write!(f, "gap {id} was reported to another steward"),
             Self::NoQuizForYou => f.write_str("there is no quiz open for you"),
             Self::QuizAnswers(n) => {
