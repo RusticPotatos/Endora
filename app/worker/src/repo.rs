@@ -61,6 +61,37 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+/// `git` with `input` on its stdin.
+fn git_stdin(dir: &Path, args: &[&str], input: &str) -> Result<String, String> {
+    use std::io::Write as _;
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .spawn()
+        .map_err(|e| format!("git could not be run: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("git has no stdin")?
+        .write_all(input.as_bytes())
+        .map_err(|e| format!("git could not be fed: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("git did not finish: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed",
+            args.first().copied().unwrap_or("")
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
 /// A word in a shell single-quoted string.
 fn quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
@@ -122,7 +153,7 @@ pub fn checkout(
     }
     std::fs::write(
         work.join("checkout.json"),
-        serde_json::json!({ "branch": branch, "base": base }).to_string(),
+        serde_json::json!({ "branch": branch, "base": base, "trailer": trailer }).to_string(),
     )
     .map_err(|e| format!("the checkout could not be noted: {e}"))?;
     let head = git(&repo, &["rev-parse", "HEAD"])?;
@@ -143,6 +174,58 @@ fn base_of(work: &Path) -> String {
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .and_then(|v| v["base"].as_str().map(str::to_owned))
         .unwrap_or_else(|| "main".to_owned())
+}
+
+/// The trailer this checkout stamps, as noted at checkout.
+fn trailer_of(work: &Path) -> Option<String> {
+    std::fs::read_to_string(work.join("checkout.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|v| v["trailer"].as_str().map(str::to_owned))
+}
+
+/// Gives every commit of `base..branch` that lacks the trailer its trailer, rewriting only
+/// those (and the commits above them, whose parents move), with git's plumbing: no hook, no
+/// script, nothing to execute. The commit hook does the same at commit time, but the sandbox's
+/// `/work` is a tmpfs that Docker mounts `noexec`, where git cannot run it; so the trailer is
+/// guaranteed here, on the member's own branch, before it is bundled. A branch that already
+/// complies is left exactly as it was. Author, dates, trees and any other header are kept.
+fn stamp(repo: &Path, base: &str, branch: &str, trailer: &str) -> Result<(), String> {
+    let range = format!("refs/heads/{base}..refs/heads/{branch}");
+    let order = git(repo, &["rev-list", "--reverse", "--topo-order", &range])?;
+    let mut moved: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for old in order.lines().filter(|l| !l.is_empty()) {
+        let raw = git(repo, &["cat-file", "commit", old])?;
+        let (headers, message) = raw.split_once("\n\n").unwrap_or((raw.as_str(), ""));
+        let lacks = !message.lines().any(|l| l.trim_start().starts_with(TRAILER));
+        let reparented: Vec<String> = headers
+            .lines()
+            .map(|line| {
+                line.strip_prefix("parent ")
+                    .and_then(|p| moved.get(p))
+                    .map_or_else(|| line.to_owned(), |new| format!("parent {new}"))
+            })
+            .collect();
+        if !lacks && reparented.iter().map(String::as_str).eq(headers.lines()) {
+            continue;
+        }
+        let mut body = message.trim_end().to_owned();
+        if lacks {
+            body.push_str(&format!("\n\n{trailer}"));
+        }
+        let text = format!("{}\n\n{body}\n", reparented.join("\n"));
+        let new = git_stdin(
+            repo,
+            &["hash-object", "-t", "commit", "-w", "--stdin"],
+            &text,
+        )?;
+        moved.insert(old.to_owned(), new);
+    }
+    let Some(top) = order.lines().last().and_then(|old| moved.get(old)) else {
+        return Ok(());
+    };
+    git(repo, &["update-ref", &format!("refs/heads/{branch}"), top])?;
+    Ok(())
 }
 
 /// Bundles `branch` (under `hq/`, committed in `work/repo`) from the default branch, for the
@@ -168,7 +251,7 @@ pub fn bundle(work: &Path, branch: &str) -> Result<(Vec<u8>, String), String> {
     if !repo.join(".git").exists() {
         return Err("nothing is checked out: call repo_checkout first".to_owned());
     }
-    let head = git(
+    git(
         &repo,
         &[
             "rev-parse",
@@ -195,6 +278,18 @@ pub fn bundle(work: &Path, branch: &str) -> Result<(Vec<u8>, String), String> {
             dirty.lines().take(10).collect::<Vec<_>>().join("\n")
         ));
     }
+    // The trailer is guaranteed here, not left to a hook the sandbox may not be able to run.
+    if let Some(trailer) = trailer_of(work) {
+        stamp(&repo, &base, branch, &trailer)?;
+    }
+    let head = git(
+        &repo,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{branch}^{{commit}}"),
+        ],
+    )?;
     let file = work.join("submit.bundle");
     git(
         &repo,
@@ -332,6 +427,86 @@ mod tests {
             run(&again.path, &["log", "-1", "--format=%B"]).contains("(Rae) for the wing"),
             "no task: for the wing"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_commit_made_without_the_hook_is_stamped_when_the_branch_is_bundled() {
+        // The sandbox's /work is a tmpfs, mounted noexec by default, so git cannot run the hook
+        // there: the trailer must not depend on it.
+        let (root, fork) = a_bundle("stamp");
+        let work = root.join("work");
+        let out = checkout(&work, &fork, "main", "main", "Rae", Some(12)).unwrap();
+        run(&out.path, &["checkout", "-q", "-b", "hq/task-12-tidy"]);
+        let commit = |file: &str, message: &str| {
+            std::fs::write(out.path.join(file), "---\n").unwrap();
+            run(&out.path, &["add", "-A"]);
+            run(
+                &out.path,
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "-q",
+                    "-m",
+                    message,
+                ],
+            );
+        };
+        commit("a.yml", "first, no trailer");
+        commit(
+            "b.yml",
+            "second\n\nMade-by: Endora HQ (Rae, Zed) for task #12",
+        );
+        commit("c.yml", "third, no trailer");
+        let before_tree = run(&out.path, &["rev-parse", "HEAD^{tree}"]);
+        let second = run(&out.path, &["rev-parse", "HEAD^"]);
+        let (bytes, head) = bundle(&work, "hq/task-12-tidy").unwrap();
+        // The branch itself carries the stamped commits, and the head returned is theirs.
+        assert_eq!(head, run(&out.path, &["rev-parse", "hq/task-12-tidy"]));
+        assert_eq!(before_tree, run(&out.path, &["rev-parse", "HEAD^{tree}"]));
+        let log = run(
+            &out.path,
+            &[
+                "log",
+                "--format=%B%x1e%an <%ae>%x1f",
+                "main..hq/task-12-tidy",
+            ],
+        );
+        let commits: Vec<&str> = log
+            .split('\u{1f}')
+            .filter(|c| !c.trim().is_empty())
+            .collect();
+        assert_eq!(commits.len(), 3, "{log}");
+        for c in &commits {
+            assert_eq!(c.matches(TRAILER).count(), 1, "one trailer each: {c}");
+            assert!(
+                c.trim_end().ends_with("Endora HQ <hq@endora.invalid>"),
+                "{c}"
+            );
+        }
+        assert!(
+            log.contains("first, no trailer\n\nMade-by: Endora HQ (Rae) for task #12"),
+            "{log}"
+        );
+        assert!(
+            log.contains("second\n\nMade-by: Endora HQ (Rae, Zed) for task #12"),
+            "{log}"
+        );
+        // The one that had its trailer is stamped the same, so its parent chain moved only
+        // because the first did; a branch that already complies is left exactly as it was.
+        assert_ne!(second, run(&out.path, &["rev-parse", "HEAD^"]));
+        let heads = run(
+            &out.path,
+            &["bundle", "list-heads", &{
+                let f = root.join("o.bundle");
+                std::fs::write(&f, &bytes).unwrap();
+                f.to_string_lossy().into_owned()
+            }],
+        );
+        assert!(heads.contains(&head), "{heads}");
+        let (_, again) = bundle(&work, "hq/task-12-tidy").unwrap();
+        assert_eq!(again, head, "already stamped: nothing is rewritten");
         let _ = std::fs::remove_dir_all(&root);
     }
 
