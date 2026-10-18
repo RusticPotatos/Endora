@@ -401,5 +401,8 @@ pub(crate) fn owner_only(path: &Path) {
     let _ = path;
 }
 
+// The tests sit beside this file, not in a `secrets/` folder: `.gitignore` keeps any folder of
+// that name out of git, on purpose.
 #[cfg(test)]
+#[path = "secrets_tests.rs"]
 mod tests;
