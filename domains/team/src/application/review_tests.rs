@@ -412,6 +412,21 @@ fn work_moved_to_review_wakes_the_reviewer_and_its_owner_waits() {
          container_logs, the queues)"
     ));
     assert!(review.told.contains("You are Grace, the team's tester."));
+    // Live, the tester tried three times to make the sub-tasks herself before she asked.
+    assert!(
+        review.told.contains(
+            "A tester passes work or sends it back; she never creates or assigns work. When \
+             the work is fine, pass it (review, verdict approve), and say what you checked."
+        ),
+        "{}",
+        review.told
+    );
+    let tools_line = review
+        .told
+        .lines()
+        .find(|l| l.starts_with("Your tools at HQ:"))
+        .unwrap();
+    assert!(!tools_line.contains("create_task"), "{tools_line}");
     assert!(
         review.told.contains(&format!(
             "It was submitted on this evidence:\nThe work:\n  - task {}",

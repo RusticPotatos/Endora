@@ -2034,6 +2034,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if member.role == Role::Ceo {
             told.push_str(&self.ceo_context(member, run)?);
         }
+        if member.role == Role::Reviewer {
+            told.push_str(&format!("{}\n", review::TESTER));
+        }
         let log = self.house_log()?;
         if member.role == Role::Lead && !log.trim().is_empty() {
             told.push_str(&format!(
@@ -2199,10 +2202,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(beside);
             return Ok(told);
         }
-        told.push_str(
+        // The tester is not offered create_task: she passes or sends back (ADR 0114).
+        told.push_str(if member.role == Role::Reviewer {
+            "Your tools at HQ: my_turn, claim, post, set_status, ask_owner, check_back, \
+             run_gate, request_action"
+        } else {
             "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
-             check_back, run_gate, request_action",
-        );
+             check_back, run_gate, request_action"
+        });
         told.push_str(match member.role {
             Role::Reviewer => ", review, read_document. ",
             Role::Lead => ", propose_project, accept, hand_to, request_hire, read_document. ",

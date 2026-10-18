@@ -238,9 +238,12 @@ pub fn tools(role: Role) -> Value {
     ]);
     if role == Role::Reviewer {
         if let Some(list) = all.as_array_mut() {
+            // The tester passes or sends back, and never makes work (ADR 0114): she is not
+            // offered the tool the engine would refuse her anyway.
+            list.retain(|t| t["name"] != "create_task");
             list.push(tool(
                 "review",
-                "You are the tester. Your verdict on work in review, after re-checking it yourself: take your own readings to confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of your own this turn (its lead then accepts it); send_back returns it to its owner with exactly what does not hold. Sending back is a finished test too. Never your own work.",
+                "You are the tester. Your verdict on work in review, after re-checking it yourself: take your own readings to confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of your own this turn (its lead then accepts it); send_back returns it to its owner with exactly what does not hold. Sending back is a finished test too. Never your own work. You pass or send back; you never create or assign work.",
                 json!({ "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" }, "evidence": per_criterion("For approve: your readings and what else shows each criterion holds.") }),
                 &["task", "verdict", "notes"],
             ));
