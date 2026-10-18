@@ -5,6 +5,10 @@
 use super::*;
 use endora_infrastructure::HqError;
 
+/// The team's world (ADR 0122).
+mod world;
+pub(super) use world::*;
+
 fn client(
     state: &AppState,
 ) -> Result<Arc<endora_infrastructure::HqClient>, (StatusCode, Json<serde_json::Value>)> {

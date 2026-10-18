@@ -25,6 +25,8 @@ use endora_team::infrastructure::demo;
 
 use crate::Hq;
 
+mod world;
+
 /// The system clock.
 pub struct SystemClock;
 
@@ -145,6 +147,9 @@ pub fn app(state: State) -> Router {
             "/v1/team/push/{id}/outcome",
             post(crate::team::push_outcome),
         )
+        // The team's world (ADR 0122): the owner reads and downloads it, and alone makes
+        // something canon or demotes it.
+        .merge(world::routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             signed_by_the_node,
