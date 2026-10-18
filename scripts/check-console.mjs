@@ -684,6 +684,8 @@ if (failures.length) {
           alarms: { count: 0, tasks: 0, closed_median_ms: null, open: 0 },
           desk: { approvals: 0, questions: 0, stuck: 0, notices: 0, other: 0, waiting: 0 },
           cache: { input: 0, read: 0, share: null } },
+        // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
+        pool: { base: 2333333, topped_up: 2333333 },
         teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }],
         // Each area's measures (ADR 0120).
         areas: [{ lead: 1, name: "Ada", members: [1, 2],
@@ -737,6 +739,18 @@ if (failures.length) {
     if (!office.includes(said)) fail(`hq: the scorecard does not say ${said}`);
   }
   if (office.includes("<i>Dee</i>: 1 turns")) fail("hq: a member's name became markup on the scorecard");
+  // The owner's one-day top-up (ADR 0113 rule 6): the button, and today's pool line.
+  for (const said of ['data-act="hq:pool:topup:go">Top up today</button>', "pool $2.33 + $2.33 top-up"]) {
+    if (!office.includes(said)) fail(`hq: the scorecard does not show the top-up (${said})`);
+  }
+  if (office.includes("Top up the pool first")) fail("hq: the out-for-the-day card offers a top-up while the pool has money");
+  {
+    const spent = runInContext(`(() => { const p = HQ.snap.pool, keep = p.committed; p.committed = p.per_day;
+      const t = HQ.snap.scorecard.pool; const kept = t.topped_up; t.topped_up = 0;
+      const html = viewHQ(); p.committed = keep; t.topped_up = kept; return html; })()`, context);
+    if (!spent.includes('data-act="hq:pool:topup:go">Top up the pool first</button>')) fail("hq: a spent pool offers no top-up on the out-for-the-day card");
+    if (!spent.includes("pool $2.33<")) fail("hq: a day with no top-up says it has one");
+  }
   if (office.includes("the record for the 7 days starts")) fail("hq: a week the record covers is said to start late");
   if (!office.includes("Demo · scripted team")) fail("hq: demo mode is not labelled");
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");

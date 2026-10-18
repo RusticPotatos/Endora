@@ -532,6 +532,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/office/reset", post(hq_office_reset))
         .route("/v1/hq/office/proposals/{id}/veto", post(hq_office_veto))
         .route("/v1/hq/office/downtime", post(hq_office_downtime))
+        // The owner tops the money pool up for one day (ADR 0113 rule 6).
+        .route("/v1/hq/pool/top-up", post(hq_pool_top_up))
         // A member's notebook (ADR 0118): the owner reads it and writes, edits and deletes notes.
         .route(
             "/v1/hq/members/{id}/notebook",

@@ -459,6 +459,12 @@ pub enum Refusal {
         /// What is left of the pool's day.
         left: super::money::Micros,
     },
+    /// A top-up of the pool is above nothing, and with the day's earlier ones at most three
+    /// times the base pool day.
+    TopUpOutOfRange {
+        /// What may still be added today.
+        room: super::money::Micros,
+    },
     /// A proposal names at least one task or event from HQ's record.
     NoEvidence,
     /// Evidence that is not in HQ's record.
@@ -723,6 +729,12 @@ impl fmt::Display for Refusal {
                 "an allowance is at least a turn's worth and at most what the pool's day has \
                  left, {}",
                 super::projects::dollars(*left)
+            ),
+            Self::TopUpOutOfRange { room } => write!(
+                f,
+                "a top-up is more than nothing, and a day's top-ups together are at most three \
+                 times the pool's day; {} may still be added today",
+                super::projects::dollars(*room)
             ),
             Self::NoEvidence => f.write_str(
                 "a proposal names its evidence: at least one task number (`tasks`) or alarm \

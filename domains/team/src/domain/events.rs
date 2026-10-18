@@ -57,6 +57,8 @@ pub enum EventKind {
     RoutineSkipped,
     /// An alarm was passed into a routine's open task.
     RoutinePosted,
+    /// The owner topped the pool up for one day (ADR 0113 rule 6).
+    PoolToppedUp,
     /// A member asked to come back to its task.
     CheckBackSet,
     /// A check-back woke its member.
@@ -204,6 +206,7 @@ impl EventKind {
             Self::StuckClimbed => "stuck.climbed",
             Self::HuddleCalled => "huddle.called",
             Self::HuddleDecided => "huddle.decided",
+            Self::PoolToppedUp => "pool.topped_up",
         }
     }
 }

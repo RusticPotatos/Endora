@@ -48,10 +48,24 @@ pub const fn claim(weight: u8, brain: Brain) -> i64 {
 /// paid members' claims (`paid`, its own among them). Nothing when there is no claim.
 #[must_use]
 pub const fn member_a_day(pool_per_month: Micros, claim: i64, paid: i64) -> Micros {
+    share_of_day(pool_a_day(pool_per_month), claim, paid)
+}
+
+/// A claim's part of a given day's pool (the base day, or the base day and the owner's top-up,
+/// ADR 0113 rule 6), shared among the paid members' claims.
+#[must_use]
+pub const fn share_of_day(pool_day: Micros, claim: i64, paid: i64) -> Micros {
     if paid <= 0 {
         return 0;
     }
-    pool_a_day(pool_per_month) * claim / paid
+    pool_day * claim / paid
+}
+
+/// The most the owner may top the pool up in one owner's day, in all: three times the base
+/// pool day (ADR 0113 rule 6).
+#[must_use]
+pub const fn most_top_up(pool_per_month: Micros) -> Micros {
+    pool_a_day(pool_per_month) * 3
 }
 
 /// The most one turn of a member in `role` may spend.
@@ -236,6 +250,20 @@ mod tests {
     fn the_owners_offer_is_fifty_cents_or_what_the_pools_day_has_left() {
         assert_eq!(allowance_offer(2_000_000), 500_000);
         assert_eq!(allowance_offer(58_824), 58_824);
+    }
+
+    #[test]
+    fn a_top_up_scales_every_share_by_the_pool_days_growth_and_is_held_to_three_days() {
+        let day = pool_a_day(POOL_PER_MONTH);
+        let share = |pool_day| share_of_day(pool_day, 40, 100);
+        assert_eq!(share(day), member_a_day(POOL_PER_MONTH, 40, 100));
+        assert_eq!(
+            share(2 * day),
+            2 * share(day),
+            "doubled pool, doubled share"
+        );
+        assert_eq!(share_of_day(day, 25, 0), 0);
+        assert_eq!(most_top_up(POOL_PER_MONTH), 3 * day);
     }
 
     #[test]

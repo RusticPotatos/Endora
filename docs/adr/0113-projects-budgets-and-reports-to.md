@@ -186,6 +186,27 @@ offered. Borrowing is now limited, and the item is built.
    furloughed or with no share is never offered. Nothing is woken on approval: the member's
    next wake, or a turn already queued for it, starts under the allowance.
 
+6. **The owner's one-day top-up.** Decided by the owner on 2026-10-18: when the pool's day is
+   short and the money is there, the owner adds to it for today. `POST /v1/pool/top-up
+   {amount_micros}` on HQ (the node's `/v1/hq/pool/top-up`, signed and audited; only the node's
+   token reaches it) stores the setting `pool_topup:<owner-day>`, summed if the owner tops up
+   twice, so it is gone when the owner's next day begins, like an allowance. The amount is
+   above nothing, and a day's top-ups together are at most three times the base pool day
+   (`money::most_top_up`); beyond that HQ refuses and says what room is left
+   (`Refusal::TopUpOutOfRange`). HQ records a `pool.topped_up` event (`amount`, `total`,
+   `by: "owner"`, `day`); the ledger is untouched. Today's pool is the base day plus the
+   top-up, and that is the pool wherever the pool's day is used: the hard ceiling in
+   `affordable()`, what is left for an allowance (rule 5), downtime's room and the scorecard.
+   **Shares scale with it.** A member's share is its claim's part of today's pool
+   (`money::share_of_day`), so every share grows by the factor (base + top-up) / base, and the
+   borrowing cap of rule 4, which is one more share and is built from the shares (its own and
+   the others' unused), grows by the same factor: a member whose day reached twice a share of
+   $0.94 reaches twice $1.88 with a one-pool-day top-up. A member out for the day (rule 5)
+   can therefore take a turn at once, with no allowance. Spend already booked stays booked.
+   The scorecard's today row says "pool $2.33 + $2.33 top-up" and has a "Top up today"
+   button (a prompt prefilled with the base pool day, then a confirmation); an "is out for
+   today" card offers "Top up the pool first" when the pool has nothing left.
+
 Scenarios: "A member past its share borrows what the others left", "The owner's own request
 is the pool's, not the member's" and "A member may borrow one more share, then asks the owner"
 (`features/projects-and-their-money.feature`).

@@ -9,6 +9,13 @@ tagged release.
 
 ### Added
 
+- **The owner's one-day top-up of the money pool** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md)
+  rule 6). `POST /v1/hq/pool/top-up {amount_micros}` (through the node and its audit log) adds
+  to today's pool only: it is gone when the owner's next day begins, and a day's top-ups are
+  at most three times the base pool day. Every member's share, and the borrowing cap with it,
+  grows in proportion, so a member out for the day can work again. The scorecard shows "pool
+  $2.33 + $2.33 top-up" with a "Top up today" button, and an "is out for today" card offers
+  "Top up the pool first" when the pool is spent. HQ records a `pool.topped_up` event.
 - **The owner writes the world** ([ADR 0122](docs/adr/0122-the-teams-world-stages-stories-and-situations.md)).
   `POST /v1/hq/world/section {page, key, title, text}` writes or replaces a section as the
   owner (an insight at least, canon if it was, no evidence asked, every revision kept) and

@@ -394,13 +394,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// A member's budget for one day: its claim's part of the pool among the paid, and
     /// nothing for a member on the house's model, which costs nothing.
-    fn per_day(&self, member: &Member, paid: i64) -> Micros {
+    fn per_day(&self, member: &Member, paid: i64, pool_day: Micros) -> Micros {
         // A member on furlough takes no share (ADR 0118).
         if member.furloughed() {
             return 0;
         }
-        money::member_a_day(
-            self.settings.pool_per_month,
+        money::share_of_day(
+            pool_day,
             money::claim(member.share_percent, member.brain),
             paid,
         )
@@ -437,13 +437,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(money::reservation(pool_left, pool_left, most));
         }
         let paid = self.paid_weights()?;
-        let share = self.per_day(member, paid);
+        let pool_day = self.pool_day_today()?;
+        let share = self.per_day(member, paid, pool_day);
         let spent = self.store.share_committed(member.id, day)?;
         let mut others = Vec::new();
         for other in self.store.members()? {
             if other.id != member.id && other.brain.cloud() && !other.furloughed() {
-                others
-                    .push(self.per_day(&other, paid) - self.store.share_committed(other.id, day)?);
+                others.push(
+                    self.per_day(&other, paid, pool_day)
+                        - self.store.share_committed(other.id, day)?,
+                );
             }
         }
         let allowance = self.allowance_of(member.id, day)?;
@@ -464,8 +467,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// What is left of the pool's day, whoever spent it.
     fn pool_left_today(&self) -> Done<Micros> {
-        Ok(money::pool_a_day(self.settings.pool_per_month)
-            - self.store.committed(None, self.today())?)
+        Ok(self.pool_day_today()? - self.store.committed(None, self.today())?)
     }
 
     // ---- the team and the work ---------------------------------------------------------
@@ -4288,6 +4290,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let mut members = Vec::new();
         let paid = self.paid_weights()?;
+        let pool_day = self.pool_day_today()?;
+        let topped_up = self.topup_of(day)?;
         let all_members = self.store.members()?;
         for m in all_members.clone() {
             let committed = self.store.committed(Some(m.id), day)?;
@@ -4309,7 +4313,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
                 "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
                 // A member on the house's model costs nothing; the paid share the pool.
-                "per_day": self.per_day(&m, paid),
+                "per_day": self.per_day(&m, paid, pool_day),
                 "committed": committed, "spent": spent, "held": (committed - spent).max(0),
                 "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
                     .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
@@ -4380,7 +4384,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "counts": { "ticks": ticks, "running": running, "queued": queued, "held": held,
                         "folded": folded, "open_tasks": tasks.iter().filter(|t| !t.status.finished()).count() },
             "last_tick_at": last_tick_at,
-            "pool": { "per_day": money::pool_a_day(pool), "committed": pool_committed,
+            "pool": { "per_day": pool_day, "base_per_day": money::pool_a_day(pool),
+                      "topped_up": topped_up, "committed": pool_committed,
                       "spent": pool_spent, "held": (pool_committed - pool_spent).max(0) },
             "members": members,
             "goals": goals.iter().map(|g| json!({
@@ -4471,6 +4476,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(json!({
             "today": scorecard::score(&record, &scorecard::Window::day(day, offset)).json(),
             "week": scorecard::score(&record, &scorecard::Window::days_ending(day, 7, offset)).json(),
+            // Today's pool: the base day and the owner's top-up (ADR 0113 rule 6).
+            "pool": { "base": money::pool_a_day(self.settings.pool_per_month),
+                      "topped_up": self.topup_of(day)? },
             // Each team's seats, at work and on furlough (ADR 0118).
             "teams": self.teams_shown()?,
             // Each area's measures, today and the last seven days (ADR 0120).
