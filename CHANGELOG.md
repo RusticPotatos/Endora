@@ -662,6 +662,14 @@ tagged release.
 
 ### Fixed
 
+- **The check job has every collection the fork needs** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)).
+  The workbench's `ansible-playbook --syntax-check nas.yml` failed on the fork's
+  `endora.homelab.*` roles because the image baked every collection and role in the fork's
+  requirements except Endora's own, which the fork pins to a git commit the offline sandbox
+  cannot fetch, so the team kept asking the owner to install it on the dev node. The image now
+  builds `endora.homelab` from the Endora source it is built from and installs it beside the
+  others, and its build fails if the collection or its roles are missing.
+
 - **The bench's refusals say whose they are** (ADR 0123, rule 5). The first bench run reached
   no model: every seat's first call came back "Credit balance is too low", which Claude Code
   shows for any 402 or `billing_error`. That 400 was Anthropic's own (its request id was in

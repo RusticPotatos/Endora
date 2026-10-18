@@ -164,6 +164,20 @@ RUN python3 -m venv /opt/venv \
     && find /opt/venv -type d -name '__pycache__' -prune -exec rm -rf '{}' + \
     && rm -rf /root/.ansible /root/.cache /opt/venv/collections/ansible_collections/*/*/docs \
     && chmod -R a+rX /opt/venv
+# Endora's own collection (endora.homelab), built from THIS source so the image carries the
+# version of the Endora it was built from. The fork's requirements.yml pins it to a git commit,
+# which the sandbox cannot fetch; the baked copy is what `--syntax-check` and ansible-lint find.
+# (`ansible-doc -t role -l` lists only roles with an argument spec, so the smoke checks look for
+# the role files themselves.) `--no-deps`: its one dependency, community.docker, is installed above.
+COPY deploy/ansible/collection /tmp/endora-collection
+RUN /opt/venv/bin/ansible-galaxy collection build --output-path /tmp/endora-build /tmp/endora-collection \
+    && /opt/venv/bin/ansible-galaxy collection install --no-deps -p /opt/venv/collections \
+        /tmp/endora-build/endora-homelab-*.tar.gz \
+    && /opt/venv/bin/ansible-galaxy collection list -p /opt/venv/collections endora.homelab \
+        | grep -q endora.homelab \
+    && test -f /opt/venv/collections/ansible_collections/endora/homelab/roles/mail_mirror/tasks/main.yml \
+    && rm -rf /tmp/endora-collection /tmp/endora-build /root/.ansible \
+    && chmod -R a+rX /opt/venv
 
 # Claude Code, one pinned release, for the workbench and the bench (ADR 0117, 0123).
 FROM debian:bookworm-slim AS claude-code
@@ -210,7 +224,10 @@ COPY --from=lab-checks /opt/venv /opt/venv
 COPY --from=claude-code /usr/local/bin/claude /usr/local/bin/claude
 # Fail the build, not the first check job, if a check tool did not make it across the COPY.
 RUN /opt/venv/bin/ansible-playbook --version && /opt/venv/bin/ansible-lint --version \
-    && /opt/venv/bin/yamllint --version
+    && /opt/venv/bin/yamllint --version \
+    && ANSIBLE_COLLECTIONS_PATH=/opt/venv/collections /opt/venv/bin/ansible-galaxy collection list endora.homelab \
+        | grep -q endora.homelab \
+    && test -f /opt/venv/collections/ansible_collections/endora/homelab/roles/endora_terminal_agent/tasks/main.yml
 # Its settings, read-only and above any other (managed): no updates, telemetry, error reports,
 # feedback or other traffic but the model's; no experimental betas; the five-minute cache the
 # relay meters; no attribution of its own (the wing's commits carry Endora's trailer); the web
@@ -267,7 +284,10 @@ COPY --from=lab-checks /opt/venv /opt/venv
 COPY --from=claude-code /usr/local/bin/claude /usr/local/bin/claude
 # Fail the build, not the first check job, if a check tool did not make it across the COPY.
 RUN /opt/venv/bin/ansible-playbook --version && /opt/venv/bin/ansible-lint --version \
-    && /opt/venv/bin/yamllint --version
+    && /opt/venv/bin/yamllint --version \
+    && ANSIBLE_COLLECTIONS_PATH=/opt/venv/collections /opt/venv/bin/ansible-galaxy collection list endora.homelab \
+        | grep -q endora.homelab \
+    && test -f /opt/venv/collections/ansible_collections/endora/homelab/roles/endora_terminal_agent/tasks/main.yml
 COPY --from=bench-install /opt/harness /opt/harness
 RUN install -d -m 755 /etc/claude-code
 COPY --chmod=444 deploy/bench/managed-settings.json /etc/claude-code/managed-settings.json
