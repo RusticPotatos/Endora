@@ -137,6 +137,12 @@ pub fn app(state: State) -> Router {
         // The node's receipts (ADR 0114): each call a turn made of Endora's tools, with the
         // turn's own token, written by the node and never by the model.
         .route("/v1/team/receipt", post(crate::team::receipt))
+        // What a turn said, kept for a while (ADR 0129): scrubbed by the node, told with the
+        // turn's own token while it runs. Room for a megabyte of text and its escapes.
+        .route(
+            "/v1/team/transcript",
+            post(crate::team::transcript).layer(axum::extract::DefaultBodyLimit::max(4 << 20)),
+        )
         // The node's contracts: a safe fix a member made, told to the owner (ADR 0106).
         .route("/v1/team/notice", post(crate::team::notice))
         // The bridge (ADR 0108): an action waiting for the owner's yes, and what came of it.
@@ -1410,8 +1416,8 @@ mod tests {
         // (ADR 0120). It reads the world, tells stories (a lesson is one now), confirms and
         // retires what it stewards, and proposes canon (ADR 0122). And it may play chess (ADR 0121).
         // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
-        // keeps (ADR 0126).
-        assert_eq!(names.len(), 37, "{names:?}");
+        // keeps (ADR 0126). And it asks the record, consults and answers a consult (ADR 0129).
+        assert_eq!(names.len(), 40, "{names:?}");
         assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"office"), "every member shapes the office");
         assert!(names.contains(&"chess"), "every member may play chess");
@@ -1555,6 +1561,75 @@ mod tests {
         st.hq.tick().unwrap();
         let late = app.oneshot(tell(Some(TOKEN), &turn.token)).await.unwrap();
         assert_eq!(late.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn only_the_node_keeps_a_turns_conversation_and_the_replay_shows_it() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let app = app(st.clone());
+        let tell = |signed: Option<&str>, token: &str, text: &str| {
+            call(
+                "POST",
+                "/v1/team/transcript",
+                signed,
+                &json!({ "token": token, "runtime": "worker", "text": text }).to_string(),
+            )
+        };
+        let said = "--- assistant ---\nI will cap sonarr at 512M.";
+        let res = app
+            .clone()
+            .oneshot(tell(Some(&turn.token), &turn.token, said))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a worker cannot write its own history"
+        );
+        let forged = app
+            .clone()
+            .oneshot(tell(Some(TOKEN), "not-a-turns-token", said))
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), StatusCode::NOT_FOUND);
+        let kept = json_of(
+            app.clone()
+                .oneshot(tell(Some(TOKEN), &turn.token, said))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (&kept["kept"], &kept["tier"]),
+            (&json!(true), &json!("internal"))
+        );
+        let again = app
+            .clone()
+            .oneshot(tell(Some(TOKEN), &turn.token, said))
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::BAD_REQUEST, "a turn has one");
+        // The owner's replay carries it.
+        let replay = json_of(
+            app.clone()
+                .oneshot(call(
+                    "GET",
+                    &format!("/v1/runs/{}/replay", turn.run.0),
+                    Some(TOKEN),
+                    "",
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            replay["replay"]["transcript"]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("cap sonarr at 512M")),
+            "{replay}"
+        );
     }
 
     #[tokio::test]

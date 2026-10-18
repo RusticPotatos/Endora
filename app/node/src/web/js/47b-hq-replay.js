@@ -132,6 +132,40 @@ function replayMoment(m, member) {
   return `<li class="hq-replay-moment t-${tag}">${time}<span class="hq-replay-tag">${esc(label)}</span><div class="hq-replay-body">${body}${m.by_time ? ` <span class="hq-replay-time">matched by time</span>` : ""}</div></li>`;
 }
 
+// A turn's conversation (ADR 0129): the text HQ kept is divided by lines like `--- assistant ---`
+// and `--- call: post ---`. Each part is who said it (or which call, or what it came to) and
+// its words; nothing in it is markup.
+function replayParts(text) {
+  const parts = [];
+  for (const line of String(text == null ? "" : text).split("\n")) {
+    const m = /^--- ([a-z]+)(?:: ([^\n]*?))? ---$/.exec(line);
+    if (m) { parts.push({ kind: m[1], name: m[2] || "", lines: [] }); continue; }
+    if (!parts.length) parts.push({ kind: "note", name: "", lines: [] });
+    parts[parts.length - 1].lines.push(line);
+  }
+  return parts.map((p) => ({ kind: p.kind, name: p.name, body: p.lines.join("\n").replace(/^\n+|\n+$/g, "") }));
+}
+
+// What the model and the calls said between them, in order: the turn's conversation.
+function replayTalk(t, member) {
+  const who = { user: "told", system: "rules", assistant: member ? member.name : "model", thinking: "thought", call: "call", result: "result", note: "note" };
+  const tags = { user: "brief", system: "brief", assistant: "post", thinking: "note", call: "call", result: "call", note: "note" };
+  const parts = replayParts(t.text).map((p) => {
+    const long = p.kind === "user" || p.kind === "system";
+    const body = long
+      ? `<details class="hq-replay-told"><summary>${esc(p.kind === "system" ? "The rules it was given" : "The briefing it was given")}</summary><pre>${esc(p.body)}</pre></details>`
+      : `${p.kind === "call" && p.name ? `<b>${esc(p.name)}</b><br>` : ""}${replayText(p.body)}`;
+    const label = p.kind === "call" ? "asked" : p.kind === "result" && p.name ? "refused" : (who[p.kind] || esc(p.kind));
+    const tag = p.kind === "result" && p.name ? "bad" : (tags[p.kind] || "note");
+    return `<li class="hq-replay-moment t-${tag}"><time></time><span class="hq-replay-tag">${esc(label)}</span><div class="hq-replay-body">${body}</div></li>`;
+  });
+  const facts = [esc(String(t.runtime || "").replace(/-/g, " ")), `${esc(String(t.brain || ""))}`, `about ${Number(t.est_tokens) || 0} tokens`];
+  if (t.tier && t.tier !== "internal") facts.push(`<span class="hq-replay-conf">${esc(t.tier)}</span>`);
+  const cut = t.cut ? `<p class="hq-note">This conversation was longer than HQ keeps: its middle was cut, and the cut is marked.</p>` : "";
+  const until = t.kept_until ? `<p class="hq-note">HQ keeps it until ${esc(new Date(t.kept_until).toLocaleDateString())}; after that only the handover notes and last words remain.</p>` : "";
+  return `<section class="hq-card"><h2>What was said</h2><p class="hq-who">${facts.join(" · ")}</p>${cut}<ol class="hq-replay-line">${parts.join("") || `<li class="hq-empty">Nothing was said.</li>`}</ol>${until}</section>`;
+}
+
 // A turn's header: who, why, what it came to, what it cost, how long.
 function replayHead(r) {
   const m = r.member, money = r.money || {}, tokens = r.tokens || {};
@@ -172,6 +206,7 @@ function viewReplay() {
   return shell(`${task ? `<p class="hq-who">${hqKey(task.id)} · ${esc(task.title)}</p>` : ""}${steps}
     <section class="hq-card">${replayHead(r)}</section>
     <section class="hq-card"><h2>What happened</h2>${byTime}<ol class="hq-replay-line">${moments || `<li class="hq-empty">Nothing recorded.</li>`}</ol></section>
+    ${r.transcript ? replayTalk(r.transcript, r.member) : ""}
     ${steps}`);
 }
 

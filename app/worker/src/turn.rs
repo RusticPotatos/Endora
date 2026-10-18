@@ -203,30 +203,37 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     talk.effort.clone_from(&setup.effort);
     // One loop whichever API the relay speaks: the rounds limit, the repeat guard, the line
     // saying what the turn did, and the ends of a turn are the same for every brain.
-    for _ in 0..setup.most_rounds {
-        let said = model.ask(&talk)?;
-        if said.calls.is_empty() {
-            last_word(&mut hq, task, said.text.trim(), &did)?;
-            return Ok(Taken::Answered);
-        }
-        talk.said(&said);
-        let mut replies = Vec::new();
-        for call in &said.calls {
-            let reply = match (&shell, setup.workbench.as_deref()) {
-                (Some(shell), _) if call.name == SHELL => in_the_shell(shell, &mut did, call),
-                (_, Some(dir)) if is_repo_tool(&call.name) => {
-                    in_the_repo(&node, dir, &who, task, &mut did, call)?
-                }
-                _ => run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?,
-            };
-            if reply.asked {
-                return Ok(Taken::AskedTheOwner);
+    let taken = (|| {
+        for _ in 0..setup.most_rounds {
+            let said = model.ask(&talk)?;
+            // Its words are part of what the turn said, its last ones too.
+            talk.said(&said);
+            if said.calls.is_empty() {
+                last_word(&mut hq, task, said.text.trim(), &did)?;
+                return Ok(Taken::Answered);
             }
-            replies.push((call.id.clone(), reply));
+            let mut replies = Vec::new();
+            for call in &said.calls {
+                let reply = match (&shell, setup.workbench.as_deref()) {
+                    (Some(shell), _) if call.name == SHELL => in_the_shell(shell, &mut did, call),
+                    (_, Some(dir)) if is_repo_tool(&call.name) => {
+                        in_the_repo(&node, dir, &who, task, &mut did, call)?
+                    }
+                    _ => run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?,
+                };
+                if reply.asked {
+                    return Ok(Taken::AskedTheOwner);
+                }
+                replies.push((call.id.clone(), reply));
+            }
+            talk.answered(replies);
         }
-        talk.answered(replies);
-    }
-    Ok(Taken::OutOfRounds)
+        Ok(Taken::OutOfRounds)
+    })();
+    // What the turn said is kept by HQ for a while (ADR 0129), however the turn ended: the
+    // node scrubs it of secrets on the way.
+    node.tell_conversation("worker", &talk.as_text());
+    taken
 }
 
 /// The node's container tools, in the order the instructions name them.
@@ -623,6 +630,14 @@ impl Talk {
             body["output_config"] = json!({ "effort": effort });
         }
         body
+    }
+
+    /// The conversation so far as plain text (ADR 0129), in the shape of the API it was held in.
+    fn as_text(&self) -> String {
+        match self.api {
+            Api::OpenAi => crate::transcript::openai(&self.messages),
+            Api::Anthropic => crate::transcript::anthropic(&self.system, &self.messages),
+        }
     }
 
     /// The model's answer, kept as it said it.
@@ -1281,6 +1296,29 @@ impl<'a> Node<'a> {
                 eprintln!("worker: no contracts this turn: {why}");
                 Ok(Vec::new())
             }
+        }
+    }
+
+    /// Tells the node what the turn said, for HQ to keep a while (ADR 0129): the conversation as
+    /// text, with the turn's token. It is the last thing a turn does and it never changes how
+    /// the turn ended: a node that cannot be reached, or refuses, is said on stderr and the turn
+    /// goes on its way.
+    pub(crate) fn tell_conversation(&self, runtime: &str, text: &str) {
+        let sent = self
+            .agent
+            .post(&crate::transcript::url(self.url))
+            .header("authorization", &format!("Bearer {}", self.token))
+            .send_json(json!({ "runtime": runtime, "text": crate::transcript::bounded(text) }));
+        match sent {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => eprintln!(
+                "worker: its conversation was not kept: the node answered {}",
+                response.status().as_u16()
+            ),
+            Err(e) => eprintln!(
+                "worker: its conversation was not kept: {}",
+                quiet(&e.to_string(), self.token)
+            ),
         }
     }
 

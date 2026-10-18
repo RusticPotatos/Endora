@@ -33,12 +33,14 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
+mod consult;
 mod discipline;
 mod evidence;
 mod games;
 mod gaps;
 mod guards;
 mod health;
+mod history;
 mod ladder;
 mod map;
 mod memory;
@@ -59,6 +61,7 @@ mod world;
 pub use areas::{DAILY_REVIEW, PATTERNS_ASKS, REPORT_ASKS};
 pub use evidence::Called;
 pub use gaps::GapReported;
+pub use history::TranscriptKept;
 pub use map::MapMigrated;
 pub use notebook::note_number;
 pub use office::Standing;
@@ -1011,6 +1014,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // allowance for it (ADR 0119): never out of the member's own share.
             can_afford_a_turn: if reason == WakeReason::Downtime {
                 self.downtime_reservation(member)?.is_some()
+            } else if reason == WakeReason::Consulted {
+                // Whose share pays is known when the turn starts, with its consult (ADR 0129);
+                // a turn that cannot be paid for then is answered from the record.
+                true
             } else {
                 self.affordable(member, project, self.asked_by_owner())?
                     .is_some()
@@ -1980,7 +1987,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let now = self.clock.now();
         self.store
-            .record_use(run, current.member, self.today(), amount, now)?;
+            .record_use(run, self.payer_of(&current)?, self.today(), amount, now)?;
         current.spent = current.spent.saturating_add(amount);
         self.store.save_run(&current)?;
         self.emit(
@@ -2009,9 +2016,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         let now = self.clock.now();
+        let payer = self.payer_of(&run)?;
         self.store
-            .record_use(run.id, run.member, self.today(), amount, now)?;
-        self.store.settle(run.id, run.member, self.today(), now)?;
+            .record_use(run.id, payer, self.today(), amount, now)?;
+        self.store.settle(run.id, payer, self.today(), now)?;
         run.spent = run.spent.saturating_add(amount);
         self.store.save_run(&run)?;
         self.emit(
@@ -2094,8 +2102,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn end(&self, mut run: Run, status: RunStatus, why: &str) -> Done<()> {
         let now = self.clock.now();
         if run.started_at.is_some() {
-            self.store.settle(run.id, run.member, self.today(), now)?;
+            let payer = self.payer_of(&run)?;
+            self.store.settle(run.id, payer, self.today(), now)?;
         }
+        let consulted = self.reason_for(&run)? == WakeReason::Consulted.name();
         let label = self.settle_label(&mut run)?;
         run.status = status;
         run.ended_at = Some(now);
@@ -2146,6 +2156,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.submit_when_enough(&run)?;
             self.after_nothing_shown(&run)?;
         }
+        // A consulted member that did not answer is answered for from the record, and an asker
+        // whose answer came while its turn ran is woken now (ADR 0129).
+        self.consults_after(&run, consulted)?;
         Ok(())
     }
 
@@ -2165,7 +2178,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // A retry is a stale continuation: it backs off like one.
         let due = due.max(now + self.back_off(run.member, run.task, WakeReason::Retry)?);
         if run.started_at.is_some() {
-            self.store.settle(run.id, run.member, self.today(), now)?;
+            let payer = self.payer_of(&run)?;
+            self.store.settle(run.id, payer, self.today(), now)?;
         }
         run.status = RunStatus::RetryWaiting;
         run.retry_at = Some(due);
@@ -2208,6 +2222,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// its situation needs within its budget (ADR 0122), then its work; and at the very end,
     /// what of the world was left out and how to read it. The run records its situation.
     fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
+        // A consulted turn is told the question and what it wrote on the matter, and no more
+        // (ADR 0129).
+        if let Some(found) = self.consult_of_run(run.id)? {
+            return self.consult_briefing(member, &found);
+        }
         let (_, memory) = self.memory(member, run)?;
         let mut told = self.briefing_body(member, run, &memory.text)?;
         told.push_str(&memory.omitted);
@@ -2907,6 +2926,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
         // gets its page.
         self.migrate_map_held()?;
+        // The team's history (ADR 0129): what is past its thirty days, or beyond the last five
+        // of a member on a task, is let go; handover notes and posts are not touched.
+        self.history_tick(now)?;
         // The nightly quiz on the map (ADR 0126) takes a free member's downtime first.
         if self.settings.quiz {
             self.quiz_look(now)?;
@@ -3062,6 +3084,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.end(run, RunStatus::Stopped, "its member was paused")?;
                 continue;
             }
+            // A consulted member paused since its wake queued a turn is not kept: the record
+            // answers for it when the turn ends (ADR 0129).
+            let consulted = self.reason_for(&run)? == WakeReason::Consulted.name();
+            if consulted && member.paused {
+                self.end(run, RunStatus::Stopped, "its member was paused")?;
+                continue;
+            }
             if busy >= usize::from(member.slots) || member.paused {
                 continue;
             }
@@ -3069,7 +3098,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.held_by_owner(project)? {
                 continue;
             }
-            let amount = if downtime {
+            // Whose share pays for it: a consulted turn of a cloud member counts against its
+            // asker's share (ADR 0129).
+            let mut payer = member.clone();
+            if consulted {
+                let Some(paying) = self.consult_payer(&run)? else {
+                    self.end(run, RunStatus::Stopped, "no consult waits for it")?;
+                    continue;
+                };
+                payer = paying;
+            }
+            let amount = if consulted {
+                let Some(amount) = self.affordable(&payer, None, false)? else {
+                    self.end(run, RunStatus::Stopped, "its asker's share is spent")?;
+                    continue;
+                };
+                amount
+            } else if downtime {
                 // Free on the house's model; on Claude, the owner's allowance for the day.
                 let Some(amount) = self.downtime_reservation(&member)? else {
                     self.end(run, RunStatus::Stopped, "no allowance left for downtime")?;
@@ -3084,7 +3129,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             };
             run.told = self.briefing(&member, &run)?;
             self.store
-                .reserve(run.id, member.id, self.today(), amount, now)?;
+                .reserve(run.id, payer.id, self.today(), amount, now)?;
             run.status = RunStatus::Running;
             run.attempts = run.attempts.saturating_add(1);
             run.started_at = Some(now);

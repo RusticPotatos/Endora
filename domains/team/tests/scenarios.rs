@@ -38,6 +38,10 @@ mod guards;
 #[path = "scenarios/map.rs"]
 mod map;
 
+/// The team's history (ADR 0129), in its own file.
+#[path = "scenarios/history.rs"]
+mod history;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 
@@ -80,6 +84,10 @@ struct Office {
     reading: Option<i64>,
     /// What the owner's last retraction said (ADR 0124): its id, and its sweep.
     retraction: Option<serde_json::Value>,
+    /// What the record last answered a member (ADR 0129), and how many wakes there were when
+    /// it was asked.
+    answer: Option<String>,
+    wakes_at_ask: usize,
 }
 
 impl Default for Office {
@@ -103,6 +111,8 @@ impl Default for Office {
             push: None,
             reading: None,
             retraction: None,
+            answer: None,
+            wakes_at_ask: 0,
         }
     }
 }

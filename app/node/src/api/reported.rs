@@ -8,6 +8,10 @@
 //! Only a running turn HQ says Claude Code runs is heard; the team's own tools
 //! (`mcp__endora__*`) are left out, since the node and HQ record those themselves as they
 //! answer them. What is kept is short and scrubbed of secrets and of the turn's own token.
+//!
+//! Beside it, what every turn's worker says of the whole turn (ADR 0129): its conversation as
+//! text, told at the turn's end with the turn's token. The node scrubs it with the same scrubber
+//! as the receipts, holds it to a megabyte and tells HQ, which keeps it for a while.
 
 use super::*;
 use axum::body::Bytes;
@@ -125,6 +129,83 @@ pub(super) async fn sandbox_receipt(
     }
 }
 
+/// The most of a turn's conversation the node passes on to HQ: a megabyte, its head and its
+/// tail (ADR 0129). HQ holds the same line when it keeps it; the node holds it first so that
+/// nothing larger is ever sent.
+const CONVERSATION_MOST: usize = 1024 * 1024;
+
+/// `text` held to `most` bytes: its head and its tail, with a line where the middle was cut.
+fn held_to(text: &str, most: usize) -> String {
+    if text.len() <= most {
+        return text.to_owned();
+    }
+    let mark = |removed: usize| {
+        format!(
+            "\n[... cut by the node: {removed} bytes removed from the middle of this conversation ...]\n"
+        )
+    };
+    let room = most.saturating_sub(mark(text.len()).len());
+    let mut head = (room / 2).min(text.len());
+    while !text.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = text.len().saturating_sub(room - room / 2);
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{}{}{}", &text[..head], mark(tail - head), &text[tail..])
+}
+
+/// `POST /team-relay/transcript`: what a turn said, told by its own worker at the end of the
+/// turn, with the turn's token (ADR 0129). The node scrubs it of secrets with the scrubber the
+/// receipts use, and of the turn's own token, holds it to a megabyte (head and tail, the cut
+/// marked), and tells HQ, which keeps it for thirty days. Any running turn's worker may tell
+/// its own; HQ keeps one a turn.
+pub(super) async fn turn_transcript(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(hq) = state.hq.clone() else {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HQ is not set up on this node",
+        );
+    };
+    let token = token_of(&headers);
+    if let Err(refused) = turn_of(hq.clone(), token.clone(), relay_wording).await {
+        return refused;
+    }
+    let Ok(said) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return refuse(StatusCode::BAD_REQUEST, "the body is not JSON");
+    };
+    let text = said["text"].as_str().unwrap_or("");
+    if text.trim().is_empty() {
+        return refuse(StatusCode::BAD_REQUEST, "a conversation says something");
+    }
+    let mut text = endora_capabilities::scrub_secrets(text);
+    if !token.is_empty() {
+        text = text.replace(&token, "[the turn's token]");
+    }
+    let told = json!({
+        "token": token,
+        "runtime": said["runtime"].as_str().unwrap_or("worker"),
+        "text": held_to(&text, CONVERSATION_MOST),
+    });
+    let kept = tokio::task::spawn_blocking(move || hq.post("/v1/team/transcript", &told)).await;
+    match kept {
+        Ok(Ok(answer)) => Json(answer).into_response(),
+        Ok(Err(endora_infrastructure::HqError::Answered { status: 404, .. })) => {
+            refuse(StatusCode::UNAUTHORIZED, "no running turn has that token")
+        }
+        Ok(Err(endora_infrastructure::HqError::Answered {
+            status: 400,
+            message,
+        })) => refuse(StatusCode::CONFLICT, &message),
+        _ => refuse(StatusCode::BAD_GATEWAY, "HQ kept no conversation"),
+    }
+}
+
 /// How this route words a refusal of the token: as the rest of the team listener does.
 fn relay_wording(status: StatusCode, _kind: &str, message: &str) -> Response {
     refuse(status, message)
@@ -160,6 +241,103 @@ mod tests {
             status,
             serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
         )
+    }
+
+    fn tell_transcript(token: Option<&str>, body: &serde_json::Value) -> axum::http::Request<Body> {
+        let mut req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/team-relay/transcript")
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            req = req.header("authorization", format!("Bearer {token}"));
+        }
+        req.body(Body::from(body.to_string())).unwrap()
+    }
+
+    #[test]
+    fn a_long_conversation_is_held_to_its_head_and_tail_with_the_cut_marked() {
+        assert_eq!(held_to("short", 100), "short");
+        let long = format!("HEAD{}TAIL{}", "é".repeat(50_000), "x".repeat(10));
+        let held = held_to(&long, 4_000);
+        assert!(held.len() <= 4_000, "{}", held.len());
+        assert!(held.starts_with("HEAD") && held.ends_with('x'));
+        assert!(held.contains("cut by the node"), "{held}");
+    }
+
+    #[tokio::test]
+    async fn a_turns_worker_tells_its_conversation_scrubbed_of_secrets_and_capped_and_hq_keeps_it()
+    {
+        let (hq_url, seen) = fake(Arc::new(|path, body| match path {
+            "/v1/team/turn" if body.contains("\"tok\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Rae", "role": "developer", "left": 1000,
+                        "cloud": false, "brain": "local", "runtime": "worker" })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            "/v1/team/transcript" => (
+                200,
+                "application/json",
+                r#"{"kept":true,"cut":false,"est_tokens":9,"tier":"internal"}"#.to_owned(),
+            ),
+            _ => (200, "application/json", "{}".to_owned()),
+        }));
+        let state = node(&hq_url, "http://127.0.0.1:9");
+        let talk = json!({ "runtime": "worker", "text":
+            "--- assistant ---\nThe key is password=hunter2 and my token is tok, ok." });
+        for token in [None, Some("bad")] {
+            let (got, _) = answer(&state, tell_transcript(token, &talk)).await;
+            assert_eq!(got, StatusCode::UNAUTHORIZED, "{token:?}");
+        }
+        let (empty, _) = answer(
+            &state,
+            tell_transcript(Some("tok"), &json!({ "runtime": "worker", "text": "  " })),
+        )
+        .await;
+        assert_eq!(empty, StatusCode::BAD_REQUEST);
+        let (status, said) = answer(&state, tell_transcript(Some("tok"), &talk)).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert_eq!(said["kept"], true);
+        let told: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/transcript")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(told.len(), 1, "only a turn that runs has its words told");
+        assert_eq!(
+            told[0]["token"], "tok",
+            "named by the turn's own token, to HQ"
+        );
+        let text = told[0]["text"].as_str().unwrap();
+        assert!(!text.contains("hunter2"), "scrubbed: {text}");
+        assert!(
+            !text.contains("is tok,"),
+            "the turn's own token is hidden: {text}"
+        );
+        assert!(text.contains("[the turn's token]"), "{text}");
+        // A conversation over a megabyte reaches HQ held to it, head and tail.
+        let huge = format!("START{}END", "line of talk\n".repeat(200_000));
+        let (status, _) = answer(
+            &state,
+            tell_transcript(Some("tok"), &json!({ "runtime": "worker", "text": huge })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let sent: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/transcript")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        let text = sent[1]["text"].as_str().unwrap();
+        assert!(text.len() <= CONVERSATION_MOST, "{}", text.len());
+        assert!(
+            text.starts_with("START") && text.ends_with("END") && text.contains("cut by the node")
+        );
     }
 
     #[tokio::test]

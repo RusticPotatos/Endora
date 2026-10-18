@@ -284,6 +284,7 @@ of an existing record and take the next number.
 | [0126](0126-the-teams-map.md) | The team's map | — |
 | [0127](0127-openbao-and-the-passkey-unlock.md) | OpenBao and the passkey unlock | — |
 | [0128](0128-an-airplay-2-door.md) | An AirPlay 2 door | — |
+| [0129](0129-the-teams-history-and-asking-the-past.md) | The team's history, and asking the past | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

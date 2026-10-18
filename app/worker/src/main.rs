@@ -22,6 +22,7 @@ mod check;
 mod claude_code;
 mod repo;
 mod shell;
+mod transcript;
 mod turn;
 
 use turn::{Api, EFFORTS, Setup, Stopped, Taken};

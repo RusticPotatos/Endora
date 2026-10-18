@@ -825,6 +825,10 @@ pub fn team_relay(state: AppState) -> Router {
 /// The most a contract call may carry: a submitted bundle (8 MB) as base64, and its words.
 const CONTRACT_CALL_MOST: usize = 12 * 1024 * 1024;
 
+/// The most a worker's account of its turn may carry: the node holds what it keeps to a
+/// megabyte, and refuses what is far past it.
+const TRANSCRIPT_CALL_MOST: usize = 6 * 1024 * 1024;
+
 /// The team listener's routes but the model relay's own two.
 fn relay_routes() -> Router<AppState> {
     Router::new()
@@ -841,6 +845,14 @@ fn relay_routes() -> Router<AppState> {
         )
         // What a Claude Code turn's sandbox says its own tools did (ADR 0117), by its hook.
         .route("/team-relay/receipt", post(reported::sandbox_receipt))
+        // What a turn said, told by its worker at the turn's end (ADR 0129): scrubbed, capped,
+        // and passed to HQ, which keeps it for thirty days. Room for a megabyte of text, and
+        // a worker that did not hold it to that.
+        .route(
+            "/team-relay/transcript",
+            post(reported::turn_transcript)
+                .layer(axum::extract::DefaultBodyLimit::max(TRANSCRIPT_CALL_MOST)),
+        )
         // A check job's bundle (ADR 0115), opened by the job's own token.
         .route(
             "/team-relay/check/{id}/bundle",

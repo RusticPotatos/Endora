@@ -246,7 +246,10 @@ pub struct Timer {
 /// HQ's own store (spec section 14). Every change the engine makes goes through it, and the
 /// engine is its only writer, one change at a time.
 pub trait TeamStore:
-    super::world_ports::WorldStore + super::guard_ports::GuardStore + super::map_ports::MapStore
+    super::world_ports::WorldStore
+    + super::guard_ports::GuardStore
+    + super::map_ports::MapStore
+    + super::history_ports::HistoryStore
 {
     /// Adds a member.
     ///

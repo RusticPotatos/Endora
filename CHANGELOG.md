@@ -55,6 +55,23 @@ tagged release.
   the vault is locked — rather than failing. Every passkey lost, two break-glass shares and a
   new passkey set unlock up again and replace the shares. Opened by an address, the screen says
   to open `https://endora.home.arpa:8787`.
+- **The team's history, and asking the past** ([ADR 0129](docs/adr/0129-the-teams-history-and-asking-the-past.md)).
+  Every turn's conversation is told by its worker to the node at the turn's end, scrubbed with
+  the receipts' scrubber, held to a megabyte (head and tail, the cut marked) and kept by HQ for
+  **30 days and the last 5 per member and task**, marked with the tier of what the turn read;
+  then only handover notes and posts remain. The owner's replay shows what the model said. Two
+  tools for every member: `ask_record`, a deterministic search of the last 90 days of posts,
+  handover notes, pages, stories, notebooks and conversations (FTS5 where it can, no new
+  dependency; five excerpts of 400 characters, newest first, each with what to cite, as
+  testimony, and never a Confidential turn's to a member on a cloud model), which wakes no one;
+  and `consult` / `answer_consult`, a direct question that takes the colleague's one short turn
+  (6 rounds, read tools and the answer), is answered in the asker's thread and wakes the asker,
+  at most 2 a turn and 6 a day, the CEO consulting leads only, paid from the asker's share, and
+  answered from the record for a member who is paused or on furlough, who is never woken. What
+  a member writes that lands in another's briefing is cleaned and prefixed. New tables
+  (`transcripts`, `consults`) and an FTS5 index are made if missing; no row changes. Resuming a
+  Claude Code session is a later step.
+
 - **The team's map** ([ADR 0126](docs/adr/0126-the-teams-map.md)). The world gains a page for
   every lead's area, every project and goal not given up, and every role
   (`world:area/3`, `world:project/2`, `world:role/developer`), made once each from the team as it

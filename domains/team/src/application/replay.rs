@@ -127,6 +127,9 @@ pub struct RunReplay {
     /// The situation it started from and what of the world it was told (ADR 0122), for a turn
     /// briefed since.
     pub briefed: Option<crate::domain::situations::Briefed>,
+    /// What was said in the turn, between its calls (ADR 0129), while HQ still keeps it: for
+    /// thirty days, and the last five of its member on its task.
+    pub transcript: Option<crate::domain::history::Transcript>,
 }
 
 /// The order of moments at the same millisecond: woken, started, told, the rest, ended.
@@ -287,6 +290,7 @@ pub fn replay(record: &Record<'_>, run: &Run) -> RunReplay {
         moments,
         by_time,
         briefed: None,
+        transcript: None,
     }
 }
 
@@ -369,6 +373,7 @@ impl RunReplay {
                 "cache_read": r.cache_read_tokens, "cache_write": r.cache_write_tokens },
             "by_time": self.by_time,
             "briefed": self.briefed.as_ref().map(crate::domain::situations::Briefed::shown),
+            "transcript": self.transcript.as_ref().map(crate::domain::history::Transcript::shown),
             "moments": self.moments.iter().map(|m| m.shown(r)).collect::<Vec<_>>(),
         })
     }
