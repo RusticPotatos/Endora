@@ -405,6 +405,9 @@ tagged release.
 
 ### Fixed
 
+- **HQ's day is the owner's.** HQ counted its days from UTC midnight, so the scorecard's
+  "today" emptied at eight in the evening and the ledger's days turned over then too. HQ now
+  reads the same `ENDORA_TIME_ZONE` / `ENDORA_UTC_OFFSET_MINUTES` the node does.
 - **The team never switches the owner's devices** ([ADR 0108](docs/adr/0108-the-bridge.md)).
   Every act of the tool server paired with Home Assistant (`HassTurnOff`, `HassTurnOn` and the
   rest) is kept off the bridge: live, the developer asked to turn off "deluge" to restart it.

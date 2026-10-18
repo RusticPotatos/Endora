@@ -59,6 +59,10 @@ services:
       HQ_RUNNER_TOKEN_FILE: /runner-token/token
       HQ_DEMO: "${ENDORA_HQ_DEMO:-1}"
       HQ_TICK_SECONDS: "${ENDORA_HQ_TICK_SECONDS:-30}"
+      # The owner's day, for "today" on the scorecard, the ledger's days and the briefings:
+      # the same zone the node is given (above the node's own block).
+      ENDORA_TIME_ZONE: "${ENDORA_TIME_ZONE-}"
+      ENDORA_UTC_OFFSET_MINUTES: "${ENDORA_UTC_OFFSET_MINUTES:-0}"
     volumes:
       - ${ENDORA_HQ_DIR:-endora-hq-data}:/data
       - endora-hq-token:/token

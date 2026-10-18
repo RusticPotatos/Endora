@@ -91,6 +91,32 @@ pub(crate) fn seed_routine(
     Ok(Some(made))
 }
 
+/// The owner's distance from UTC in minutes, for where their day starts: the zone the node is
+/// given (`ENDORA_TIME_ZONE`, e.g. `America/New_York`), else the fixed
+/// `ENDORA_UTC_OFFSET_MINUTES`, else UTC. Taken once, at `now`: after a clock change it is an
+/// hour out until HQ next starts, which is still a day that begins at the owner's midnight
+/// rather than at eight in the evening. A zone nobody knows is an error, never quietly UTC.
+fn owners_offset(env: impl Fn(&str) -> Option<String>, now: i64) -> Result<i64, String> {
+    let zone = env("ENDORA_TIME_ZONE").unwrap_or_default();
+    let fixed = match env("ENDORA_UTC_OFFSET_MINUTES")
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    {
+        None => 0,
+        Some(minutes) => minutes.parse::<i64>().map_err(|_| {
+            format!("ENDORA_UTC_OFFSET_MINUTES must be whole minutes from UTC, not {minutes}")
+        })?,
+    };
+    let tz = endora_infrastructure::time_zone::TimeZone::named_or_fixed(&zone, fixed)?;
+    Ok(tz.offset_minutes_at(now))
+}
+
+/// Now, in milliseconds since the epoch.
+fn now_ms() -> i64 {
+    use endora_team::application::ports::Clock as _;
+    api::SystemClock.now()
+}
+
 /// The token the node signs with: `HQ_TOKEN` if set, else the one in `HQ_TOKEN_FILE`, made
 /// there (random, readable by its owner only) the first time. The node reads the same file
 /// through a volume only the two of them mount, so nobody has to keep a secret by hand.
@@ -257,12 +283,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Runner::Remote(RemoteRunner::default())
     };
+    let settings = Settings {
+        offset_minutes: owners_offset(|name| std::env::var(name).ok(), now_ms())?,
+        ..Settings::default()
+    };
     let hq: Arc<Hq> = Arc::new(
         Engine::new(
             SqliteTeamStore::open(&db)?,
             runner,
             api::SystemClock,
-            Settings::default(),
+            settings,
         )
         .with_docs(public_docs::PUBLIC_DOCS),
     );
@@ -372,7 +402,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{the_runner_token, the_token};
+    use super::{owners_offset, the_runner_token, the_token};
+
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        move |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        }
+    }
+
+    #[test]
+    fn the_owners_day_starts_where_the_node_says_it_does() {
+        // 2026-10-18 00:09 UTC: eight in the evening of the 17th in New York.
+        let evening = 1_792_282_140_000;
+        assert_eq!(owners_offset(env(&[]), evening), Ok(0), "nothing said: UTC");
+        assert_eq!(
+            owners_offset(env(&[("ENDORA_UTC_OFFSET_MINUTES", "-240")]), evening),
+            Ok(-240)
+        );
+        assert_eq!(
+            owners_offset(
+                env(&[
+                    ("ENDORA_TIME_ZONE", "America/New_York"),
+                    ("ENDORA_UTC_OFFSET_MINUTES", "0")
+                ]),
+                evening
+            ),
+            Ok(-240),
+            "the zone wins, and knows it is still summer time"
+        );
+        assert_eq!(
+            owners_offset(
+                env(&[("ENDORA_TIME_ZONE", "America/New_York")]),
+                1_768_000_000_000
+            ),
+            Ok(-300),
+            "in January the same zone is five hours west"
+        );
+        assert!(owners_offset(env(&[("ENDORA_TIME_ZONE", "Mars/Olympus")]), evening).is_err());
+        assert!(owners_offset(env(&[("ENDORA_UTC_OFFSET_MINUTES", "four")]), evening).is_err());
+    }
 
     #[test]
     fn the_ceos_library_is_the_public_records_and_plans_and_nothing_else() {
