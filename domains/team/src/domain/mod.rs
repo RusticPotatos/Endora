@@ -3,6 +3,7 @@
 pub mod areas;
 pub mod brain;
 pub mod chain;
+pub mod cut;
 pub mod docs;
 pub mod effort;
 pub mod events;
@@ -12,6 +13,7 @@ pub mod ladder;
 pub mod lessons;
 pub mod money;
 pub mod notebook;
+pub mod office;
 pub mod projects;
 pub mod review;
 pub mod routines;

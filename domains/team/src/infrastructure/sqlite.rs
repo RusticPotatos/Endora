@@ -9,6 +9,7 @@ use crate::application::ports::{
     Wake,
 };
 use crate::application::ports::{LedgerRow, ThreadPost};
+use crate::domain::office;
 use crate::domain::{
     Brain, CheckBack, CheckBackStatus, DeskId, Event, Evidence, Goal, GoalId, GoalStatus, Member,
     MemberId, Micros, Millis, Note, Pause, Priority, Project, ProjectId, ProjectStatus, Receipt,
@@ -169,6 +170,26 @@ CREATE TABLE IF NOT EXISTS checks (
     branch INTEGER NOT NULL REFERENCES branches(id), run INTEGER NOT NULL REFERENCES runs(id),
     token TEXT NOT NULL UNIQUE, status TEXT NOT NULL, ok INTEGER, summary TEXT NOT NULL DEFAULT '',
     queued_at INTEGER NOT NULL, started_at INTEGER, done_at INTEGER
+) STRICT;
+-- The office as data (ADR 0119): what stands on the floor, the proposals to change it and the
+-- votes on them, and what it looked like before each change, for the owner's undo. Made only
+-- if missing, so a store from before the open office gains them and keeps everything else.
+CREATE TABLE IF NOT EXISTS office_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL,
+    placed_by TEXT NOT NULL, placed_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS office_proposals (
+    id INTEGER PRIMARY KEY, proposer TEXT NOT NULL, changes TEXT NOT NULL, why TEXT NOT NULL,
+    at_ms INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open', outcome TEXT NOT NULL DEFAULT '',
+    decided_at INTEGER
+) STRICT;
+CREATE TABLE IF NOT EXISTS office_votes (
+    proposal INTEGER NOT NULL REFERENCES office_proposals(id), who TEXT NOT NULL,
+    yes INTEGER NOT NULL, why TEXT NOT NULL DEFAULT '', at_ms INTEGER NOT NULL,
+    PRIMARY KEY (proposal, who)
+) STRICT;
+CREATE TABLE IF NOT EXISTS office_history (
+    id INTEGER PRIMARY KEY, what TEXT NOT NULL, items_before TEXT NOT NULL, at_ms INTEGER NOT NULL
 ) STRICT;
 ";
 
@@ -1639,6 +1660,29 @@ impl TeamStore for SqliteTeamStore {
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
 
+    fn events_before(&self, id: i64, limit: usize) -> Stored<Vec<Event>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, at_ms, kind, data FROM events WHERE id < ?1 ORDER BY id DESC LIMIT ?2",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![id, i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
+                let data: String = r.get(3)?;
+                Ok(Event {
+                    id: r.get(0)?,
+                    at: r.get(1)?,
+                    kind: r.get(2)?,
+                    data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .map_err(backend)?;
+        let mut events: Vec<Event> = rows.collect::<rusqlite::Result<_>>().map_err(backend)?;
+        events.reverse();
+        Ok(events)
+    }
+
     fn add_desk(
         &self,
         kind: &str,
@@ -2084,6 +2128,238 @@ impl TeamStore for SqliteTeamStore {
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
 
+    fn office_items(&self) -> Stored<Vec<office::Item>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT id, kind, x, y, placed_by, placed_at FROM office_items ORDER BY id")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut items = Vec::new();
+        for row in rows {
+            let (id, kind, x, y, placed_by, placed_at) = row.map_err(backend)?;
+            let kind = office::Kind::from_name(&kind).ok_or_else(|| corrupt("an item's kind"))?;
+            items.push(office::Item {
+                id,
+                kind,
+                x,
+                y,
+                placed_by,
+                placed_at,
+            });
+        }
+        Ok(items)
+    }
+
+    fn add_office_item(
+        &self,
+        kind: office::Kind,
+        x: i64,
+        y: i64,
+        by: &str,
+        at: Millis,
+    ) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO office_items (kind, x, y, placed_by, placed_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![kind.name(), x, y, by, at],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn move_office_item(&self, id: i64, x: i64, y: i64) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE office_items SET x = ?2, y = ?3 WHERE id = ?1",
+                params![id, x, y],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn remove_office_item(&self, id: i64) -> Stored<()> {
+        self.conn()?
+            .execute("DELETE FROM office_items WHERE id = ?1", [id])
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn replace_office_items(&self, items: &[office::Item]) -> Stored<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().map_err(backend)?;
+        tx.execute("DELETE FROM office_items", [])
+            .map_err(backend)?;
+        for item in items {
+            tx.execute(
+                "INSERT INTO office_items (id, kind, x, y, placed_by, placed_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    item.id,
+                    item.kind.name(),
+                    item.x,
+                    item.y,
+                    item.placed_by,
+                    item.placed_at
+                ],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)
+    }
+
+    fn add_office_proposal(
+        &self,
+        by: &str,
+        changes: &[office::Change],
+        why: &str,
+        at: Millis,
+    ) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO office_proposals (proposer, changes, why, at_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![by, office::Change::kept(changes), why, at],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn office_proposals(&self) -> Stored<Vec<office::Proposal>> {
+        let conn = self.conn()?;
+        let mut votes: std::collections::HashMap<i64, Vec<office::Vote>> =
+            std::collections::HashMap::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT proposal, who, yes, why, at_ms FROM office_votes ORDER BY at_ms, rowid",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    office::Vote {
+                        who: r.get(1)?,
+                        yes: r.get(2)?,
+                        why: r.get(3)?,
+                        at: r.get(4)?,
+                    },
+                ))
+            })
+            .map_err(backend)?;
+        for row in rows {
+            let (proposal, vote) = row.map_err(backend)?;
+            votes.entry(proposal).or_default().push(vote);
+        }
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, proposer, changes, why, at_ms, status, outcome FROM office_proposals \
+                 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut all = Vec::new();
+        for row in rows {
+            let (id, by, changes, why, at, status, outcome) = row.map_err(backend)?;
+            all.push(office::Proposal {
+                id,
+                by,
+                changes: office::Change::read(&changes),
+                why,
+                at,
+                status: office::Status::from_name(&status)
+                    .ok_or_else(|| corrupt("a proposal's status"))?,
+                outcome,
+                votes: votes.remove(&id).unwrap_or_default(),
+            });
+        }
+        Ok(all)
+    }
+
+    fn set_office_proposal(
+        &self,
+        id: i64,
+        status: office::Status,
+        outcome: &str,
+        at: Millis,
+    ) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE office_proposals SET status = ?2, outcome = ?3, decided_at = ?4 \
+                 WHERE id = ?1",
+                params![id, status.name(), outcome, at],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn add_office_vote(&self, proposal: i64, vote: &office::Vote) -> Stored<bool> {
+        let kept = self
+            .conn()?
+            .execute(
+                "INSERT OR IGNORE INTO office_votes (proposal, who, yes, why, at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![proposal, vote.who, vote.yes, vote.why, vote.at],
+            )
+            .map_err(backend)?;
+        Ok(kept == 1)
+    }
+
+    fn push_office_history(&self, what: &str, before: &[office::Item], at: Millis) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO office_history (what, items_before, at_ms) VALUES (?1, ?2, ?3)",
+            params![what, items_kept(before), at],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn pop_office_history(&self) -> Stored<Option<(String, Vec<office::Item>)>> {
+        let conn = self.conn()?;
+        let newest: Option<(i64, String, String)> = conn
+            .query_row(
+                "SELECT id, what, items_before FROM office_history ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((id, what, before)) = newest else {
+            return Ok(None);
+        };
+        conn.execute("DELETE FROM office_history WHERE id = ?1", [id])
+            .map_err(backend)?;
+        Ok(Some((what, items_read(&before)?)))
+    }
+
+    fn office_history_len(&self) -> Stored<i64> {
+        self.conn()?
+            .query_row("SELECT COUNT(*) FROM office_history", [], |r| r.get(0))
+            .map_err(backend)
+    }
+
     fn strategies(&self) -> Stored<Vec<crate::domain::areas::Strategy>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -2199,6 +2475,41 @@ impl TeamStore for SqliteTeamStore {
             .map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
+}
+
+/// Items as an undo keeps them.
+fn items_kept(items: &[office::Item]) -> String {
+    serde_json::Value::Array(
+        items
+            .iter()
+            .map(|i| {
+                serde_json::json!({ "id": i.id, "kind": i.kind.name(), "x": i.x, "y": i.y,
+                                    "by": i.placed_by, "at": i.placed_at })
+            })
+            .collect(),
+    )
+    .to_string()
+}
+
+/// The items an undo kept.
+fn items_read(kept: &str) -> Stored<Vec<office::Item>> {
+    let all: Vec<serde_json::Value> =
+        serde_json::from_str(kept).map_err(|_| corrupt("an undo's items"))?;
+    all.iter()
+        .map(|v| {
+            Ok(office::Item {
+                id: v["id"].as_i64().ok_or_else(|| corrupt("an undo's item"))?,
+                kind: v["kind"]
+                    .as_str()
+                    .and_then(office::Kind::from_name)
+                    .ok_or_else(|| corrupt("an undo's item"))?,
+                x: v["x"].as_i64().ok_or_else(|| corrupt("an undo's item"))?,
+                y: v["y"].as_i64().ok_or_else(|| corrupt("an undo's item"))?,
+                placed_by: v["by"].as_str().unwrap_or_default().to_owned(),
+                placed_at: v["at"].as_i64().unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 const DOCUMENT_SELECT: &str = "SELECT id, task, run, title, text, at_ms FROM documents";
@@ -2366,6 +2677,57 @@ CREATE TABLE IF NOT EXISTS check_backs (
             [None, Some(a)]
         );
         assert_eq!(desk[0].text, "Linus asks: why?");
+    }
+
+    #[test]
+    fn a_store_made_before_the_open_office_gains_its_tables_and_keeps_everything_else() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA_BEFORE_PROJECTS).unwrap();
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
+                (1, 'Ada', 'developer', 40, 2);
+             INSERT INTO settings (key, value) VALUES ('house_log', 'kept');",
+        )
+        .unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        assert!(store.office_items().unwrap().is_empty());
+        assert!(store.office_proposals().unwrap().is_empty());
+        assert_eq!(store.office_history_len().unwrap(), 0);
+        assert_eq!(store.members().unwrap().len(), 1);
+        assert_eq!(store.setting("house_log").unwrap().as_deref(), Some("kept"));
+        // And they work: an item, a proposal with a vote, a change to undo.
+        let tank = store
+            .add_office_item(office::Kind::FishTank, 10, 3, "Ada", 5)
+            .unwrap();
+        let id = store
+            .add_office_proposal("Ada", &[office::Change::Remove { item: tank }], "gone", 6)
+            .unwrap();
+        let vote = office::Vote {
+            who: "Ada".to_owned(),
+            yes: true,
+            why: String::new(),
+            at: 6,
+        };
+        assert!(store.add_office_vote(id, &vote).unwrap());
+        assert!(!store.add_office_vote(id, &vote).unwrap(), "one vote each");
+        let kept = store.office_proposals().unwrap();
+        assert_eq!(kept[0].votes, [vote]);
+        assert_eq!(kept[0].changes, [office::Change::Remove { item: tank }]);
+        store
+            .push_office_history("remove the fish tank", &store.office_items().unwrap(), 7)
+            .unwrap();
+        store.remove_office_item(tank).unwrap();
+        let (what, before) = store.pop_office_history().unwrap().unwrap();
+        assert_eq!(what, "remove the fish tank");
+        store.replace_office_items(&before).unwrap();
+        assert_eq!(store.office_items().unwrap()[0].id, tank);
+        // A number is never used twice, even after a reset empties the floor.
+        store.replace_office_items(&[]).unwrap();
+        let next = store
+            .add_office_item(office::Kind::Plant, 8, 3, "endora", 9)
+            .unwrap();
+        assert!(next > tank, "{next} reuses a number");
     }
 
     #[test]

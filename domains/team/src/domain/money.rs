@@ -14,6 +14,8 @@ pub type Micros = i64;
 
 /// One dollar.
 pub const DOLLAR: Micros = 1_000_000;
+/// One cent: the least a turn can be given, and the unit the owner's downtime allowance is in.
+pub const CENT: Micros = DOLLAR / 100;
 /// The team pool for a month: $70 of the owner's $100 of API credits.
 pub const POOL_PER_MONTH: Micros = 70 * DOLLAR;
 /// The days a month's pool is spread over.

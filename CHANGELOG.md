@@ -28,7 +28,24 @@ tagged release.
   only when the lead says so; work sent back three times goes to a huddle. A project's lead
   closes its own work on its own acceptance. New tables made if missing: `strategies`,
   `area_reports`, `report_tasks`. Scenarios in `domains/team/features/roles.feature`.
-
+- **The open office** ([ADR 0119](docs/adr/0119-the-open-office.md)). HQ's office is an
+  open-plan floor: one pod of desks per team, side by side with no walls and labelled as the
+  roster labels them, laid out from the snapshot (a hire grows a pod, a third lead makes a third;
+  a member on furlough keeps an empty desk with an "away" card); Mara keeps her own office with
+  the door open; a kitchen and lounge replace the engineering wing's walled room. People walk
+  round desks and furniture and through the doors, visit another team's pod for its work (the
+  tester goes to whose task it is), and drift about the office when idle. What stands on the
+  floor is **data**: an `office_items` table of plants, lamps, couches and the rest, seeded once,
+  drawn by the screen from the snapshot, and moved by the team. Every role has a team tool,
+  `office`, to propose up to five changes, vote and look; the placement rules (inside the floor,
+  never on a wall, door, desk, walking lane, room or another item; 40 things, 2 fish tanks) are
+  pure and checked when a proposal is made and again when it carries (two yes, or six quiet
+  hours; dropped on more no, or after 48 hours). The owner can undo the last change, reset the
+  office or veto any open proposal from a new Office card. **Downtime**: a member with nothing to
+  do is given a turn about no task, once a day, one at a time, to tidy the office or its notebook
+  — free on the house's model, and never on Claude unless the owner sets
+  `downtime_paid_cents_per_day`, which the pool pays, never a member's share. A downtime turn
+  makes no work. The owner's scenarios are in `domains/team/features/the-office.feature`.
 - **Claude Code as a developer runtime** ([ADR 0117](docs/adr/0117-claude-code-as-a-developer-runtime.md)).
   A member setting, `runtime`: `worker` (the default) or `claude-code`, offered only to a
   developer on Claude and refused otherwise; the owner sets it with
@@ -537,6 +554,22 @@ tagged release.
   seconds apart re-reading one status.
 - **House log dates**: lines carry the year, and a date the writer put in the entry is taken
   off ("17 Oct: 2025-10-18: …").
+- **Logs are no longer cut off.** The HQ feed shows a thread post whole (it was cut to 80
+  characters with no sign of it; the event now names its post's place in the thread and says
+  when its preview was cut), folds lines over 240 characters behind "more", and on a phone is a
+  plain list in the page, not a 300px window. It shows thirty lines and "Show older" reveals
+  the kept ones, then asks HQ for earlier events (`GET /v1/hq/events?before=&limit=`). The
+  Activity screen has "Load more" (`GET /v1/activity?limit=&offset=`), and the home "Watching N
+  things" line wraps to two lines instead of ending in an ellipsis.
+- **Every server-side cut says it was cut.** One helper (`domain::cut::cut`) ends what it cuts
+  in "…[cut]", character-safe and inside the same limit: a remote run's failure reason, a
+  receipt's excerpt, arguments and criterion, and the question, approval, notice, answer and
+  outcome texts. The limits are unchanged.
+- **"Try again" on a stuck desk item no longer does nothing without a word.** It released the
+  task and queued a wake that the kill switch, a pause, a furlough, the budget or a paused
+  project refused, then marked the item decided. Now it checks first: if nobody can be woken it
+  changes nothing, the item stays waiting, and the refusal's reason is said on the card (a
+  refused desk decision stays visible there, not only in a toast).
 - **A post in a turn with receipts is never "unsupported"**, nor the worker's automatic last
   word ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md), amended): a
   closing post in a turn with two receipts was tagged, because only receipts of calls that held

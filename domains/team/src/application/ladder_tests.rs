@@ -322,6 +322,72 @@ fn a_lead_that_says_it_needs_the_ceo_or_the_board_sends_it_up_and_only_then() {
     }
 }
 
+/// A member a huddle asked is not idle (ADR 0119 and 0120 together): while its huddle wake
+/// waits behind another member's turn on the task, it is given no downtime turn.
+#[test]
+fn a_member_waiting_to_give_its_view_is_not_given_downtime() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq: Hq<'_> = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings {
+            downtime: true,
+            ..Settings::default()
+        },
+    );
+    let w = wing(&hq, false);
+    let task = task_for(&hq, &w, w.devs[0], "Fix the lint");
+    let members = hq.store().members().unwrap();
+    for (i, m) in [w.devs[1], w.dee].iter().enumerate() {
+        let name = &members.iter().find(|x| x.id == *m).unwrap().name;
+        hq.store()
+            .post(task, name, "I looked at it.", OCT_17 + i as i64)
+            .unwrap();
+    }
+    stuck(&hq, &clock);
+    let kit = turn_on(&hq, w.kit, task);
+    hq.runner().finish(kit.run, true);
+    hq.tick().unwrap();
+    later(&clock, STRANDED_AFTER_MS + 1);
+    for _ in 0..4 {
+        hq.tick().unwrap();
+    }
+    let held: Vec<MemberId> = hq
+        .wakes()
+        .unwrap()
+        .into_iter()
+        .filter(|wk| {
+            wk.task == Some(task)
+                && wk.reason == WakeReason::Huddle
+                && wk.receipt == crate::domain::Receipt::Held
+        })
+        .map(|wk| wk.member)
+        .collect();
+    assert!(!held.is_empty(), "one waits behind another's turn");
+    let called = hq
+        .store()
+        .events_after(0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "huddle.called")
+        .expect("a huddle")
+        .at;
+    // The next day's look, with the huddle still waiting on that member.
+    later(&clock, 24 * 60 * 60_000);
+    for _ in 0..3 {
+        hq.tick().unwrap();
+    }
+    for member in held {
+        assert!(
+            !hq.wakes().unwrap().iter().any(|wk| wk.member == member
+                && wk.reason == WakeReason::Downtime
+                && wk.at >= called),
+            "member {member:?} waits for the huddle, not downtime"
+        );
+    }
+}
+
 #[test]
 fn a_huddle_hears_at_most_four_who_touched_it_and_its_lead_decides_when_views_are_late() {
     let clock = Hands(AtomicI64::new(OCT_17));

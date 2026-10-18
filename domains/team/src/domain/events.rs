@@ -97,6 +97,16 @@ pub enum EventKind {
     NoteWritten,
     /// A note was forgotten, edited or deleted (ADR 0118).
     NoteForgotten,
+    /// A member proposed a change to the office (ADR 0119).
+    OfficeProposed,
+    /// A member voted on a proposal for the office.
+    OfficeVoted,
+    /// The office changed: a proposal carried, or the owner undid a change or reset it.
+    OfficeChanged,
+    /// A proposal for the office was let go, and why.
+    OfficeDropped,
+    /// The owner vetoed a proposal for the office.
+    OfficeVetoed,
     /// A goal's strategy was written, by the CEO or the owner (ADR 0120).
     StrategySet,
     /// A lead reported on its area (ADR 0120).
@@ -161,6 +171,11 @@ impl EventKind {
             Self::MemberRecalled => "member.recalled",
             Self::NoteWritten => "note.written",
             Self::NoteForgotten => "note.forgotten",
+            Self::OfficeProposed => "office.proposed",
+            Self::OfficeVoted => "office.voted",
+            Self::OfficeChanged => "office.changed",
+            Self::OfficeDropped => "office.dropped",
+            Self::OfficeVetoed => "office.vetoed",
             Self::StrategySet => "goal.strategy",
             Self::AreaReported => "area.reported",
             Self::StuckClimbed => "stuck.climbed",

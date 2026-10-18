@@ -280,6 +280,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let settings = Settings {
         offset_minutes: owners_offset(|name| std::env::var(name).ok(), now_ms())?,
+        // Downtime (ADR 0119): a member with nothing to do tidies the office or its notebook,
+        // free on the house's model. The scripted demo has none.
+        downtime: !demo_mode,
         ..Settings::default()
     };
     let hq: Arc<Hq> = Arc::new(
@@ -344,6 +347,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(true) => println!("hq: put how this lab is built in the house log"),
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not seed the house log: {e}"),
+        }
+        // The office's decorations as data (ADR 0119), once: the team moves them from there.
+        match hq.seed_office() {
+            Ok(true) => println!("hq: put the office's decorations on the floor"),
+            Ok(false) => {}
+            Err(e) => eprintln!("hq: could not seed the office: {e}"),
         }
         // The engineering wing (ADR 0115), once: its goal, project, lead, developers and first task.
         match hq.seed_wing() {

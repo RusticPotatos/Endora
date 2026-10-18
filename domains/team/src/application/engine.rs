@@ -14,6 +14,7 @@ use super::ports::{
 };
 use super::scorecard;
 use crate::domain::chain::{self, Decision};
+use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
 use crate::domain::lessons;
 use crate::domain::money::{self, Micros};
@@ -34,6 +35,7 @@ mod areas;
 mod evidence;
 mod ladder;
 mod notebook;
+mod office;
 mod planning;
 mod projects;
 mod raci;
@@ -45,6 +47,7 @@ mod wing;
 pub use areas::{DAILY_REVIEW, PATTERNS_ASKS, REPORT_ASKS};
 pub use evidence::Called;
 pub use notebook::note_number;
+pub use office::Standing;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
 pub use raci::DIRECTION_MOST;
@@ -56,6 +59,8 @@ pub const STRANDED_AFTER_MS: Millis = 10 * 60 * 1000;
 
 /// The most characters a goal's notes from the owner may run to.
 pub const GOAL_NOTE_MOST: usize = 2_000;
+/// The most events one read of the past returns.
+pub const MOST_EVENTS_BEFORE: usize = 200;
 
 /// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
 pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
@@ -110,6 +115,9 @@ pub struct Settings {
     pub offset_minutes: i64,
     /// How long a turn asked to stop gets before it is ended.
     pub grace: Duration,
+    /// Whether a member with nothing to do is given a downtime turn (ADR 0119). Off unless
+    /// the service turns it on: a scripted demo, and the engine's older tests, have none.
+    pub downtime: bool,
 }
 
 impl Default for Settings {
@@ -118,6 +126,7 @@ impl Default for Settings {
             pool_per_month: money::POOL_PER_MONTH,
             offset_minutes: 0,
             grace: Duration::from_secs(10),
+            downtime: false,
         }
     }
 }
@@ -275,6 +284,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn with_docs(mut self, docs: Library) -> Self {
         self.docs = docs;
         self
+    }
+
+    /// Turns downtime on or off (ADR 0119): whether a member with nothing to do is given a turn
+    /// for the office and its notebook. The service turns it on at start; a scenario, when it
+    /// is about downtime.
+    pub fn set_downtime(&mut self, on: bool) {
+        self.settings.downtime = on;
     }
 
     /// The containers Endora's home lab has now, as the node says them: what each question to
@@ -950,9 +966,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             stopped: self.store.stopped()?,
             paused: member.paused,
             furloughed: member.furloughed(),
-            can_afford_a_turn: self
-                .affordable(member, project, self.asked_by_owner())?
-                .is_some(),
+            // Downtime is free on the house's model, and on Claude only within the owner's
+            // allowance for it (ADR 0119): never out of the member's own share.
+            can_afford_a_turn: if reason == WakeReason::Downtime {
+                self.downtime_reservation(member)?.is_some()
+            } else {
+                self.affordable(member, project, self.asked_by_owner())?
+                    .is_some()
+            },
             live: self.live_turns(member.id, task)?,
             already_held,
             nothing_to_do,
@@ -982,8 +1003,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .store
                     .add_wake(member, task, reason, Receipt::Queued, None, now)?;
                 self.mark_owners(wake, None)?;
-                let (run, delayed) =
-                    self.queue_turn(member, task, wake, reason, self.asked_by_owner())?;
+                // A paid member's downtime turn is the pool's to pay, within the owner's
+                // allowance, as an owner's own request is (ADR 0119).
+                let pooled =
+                    self.asked_by_owner() || (reason == WakeReason::Downtime && who.brain.cloud());
+                let (run, delayed) = self.queue_turn(member, task, wake, reason, pooled)?;
                 self.store.set_wake(wake, Receipt::Queued, Some(run))?;
                 if let Some(until) = delayed {
                     about["delayed_until"] = json!(until);
@@ -1454,13 +1478,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<()> {
         self.task(task)?;
         let author = self.author_name(by)?;
+        let at = self.clock.now();
         self.store
-            .post_marked(task, &author, text, self.clock.now(), cited, unsupported)?;
-        let preview: String = text.chars().take(80).collect();
+            .post_marked(task, &author, text, at, cited, unsupported)?;
+        // A short line for a bubble. The feed shows the whole post: `post` is its place in the
+        // task's thread (posts are only ever added), and `cut` says the preview is not all of it.
+        let place = self.store.thread(task)?.len().saturating_sub(1);
+        let mut preview: String = text.chars().take(80).collect();
+        let cut = text.chars().count() > 80;
+        if cut {
+            preview.push('…');
+        }
         self.emit(
             EventKind::ThreadPosted,
-            json!({ "task": task.0, "author": author, "preview": preview,
-                    "unsupported": unsupported }),
+            json!({ "task": task.0, "author": author, "preview": preview, "cut": cut,
+                    "post": place, "unsupported": unsupported }),
         )?;
         if let Author::Member(member) = by {
             self.mark_turn(member, task, &|run| run.posted = true)?;
@@ -2121,6 +2153,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         );
         // The member's own notebook, first: what it learned, newest first (ADR 0118).
         told.push_str(&self.notebook_said(member, run)?);
+        // Downtime has no task to brief: the office, the open proposals and what may be done
+        // (ADR 0119).
+        if self.reason_for(run)? == WakeReason::Downtime.name() {
+            told.push_str(&self.downtime_said(member)?);
+            told.push_str(
+                "Your tools at HQ: my_turn, office, note, forget, read_notebook, read_doc.\n",
+            );
+            return Ok(told);
+        }
         // The CEO's quiet briefing is held under half its whole one: its read_doc names the
         // standards instead.
         if member.role != Role::Ceo {
@@ -2325,7 +2366,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "Your tools at HQ: my_turn, claim, post, set_status, create_task (to a lead), \
                  direct, set_strategy, decide_project, propose_goal, ask_owner (for the board), \
                  check_back, note_house, rewrite_house, read_doc, hand_to (to a lead), \
-                 read_document, note, forget, read_notebook.\n",
+                 read_document, note, forget, read_notebook, office.\n",
             );
             return Ok(told);
         }
@@ -2338,11 +2379,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
              check_back, run_gate, request_action"
         });
         told.push_str(match member.role {
-            Role::Reviewer => ", review, read_document, read_doc. ",
+            Role::Reviewer => ", review, read_document, read_doc, office. ",
             Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, read_document, read_doc. "
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, read_document, read_doc, office. "
             }
-            _ => ", read_document, read_doc. ",
+            _ => ", read_document, read_doc, office. ",
         });
         told.push_str(beside);
         told.push_str(notebook::TOOLS);
@@ -2752,6 +2793,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
 
+        // 3b. The office (ADR 0119): proposals whose time came carry or are dropped, and one
+        //     member with nothing to do is given a downtime turn.
+        self.office_tick()?;
+        if self.settings.downtime {
+            self.downtime_look(now)?;
+        }
+
         // 4. Queued turns start where a member has a free slot, budget can be reserved, and a
         //    runner has room: urgent work first, then the oldest.
         report.started = self.start_queued(now)?;
@@ -2880,6 +2928,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.end(run, RunStatus::Stopped, "its member is on furlough")?;
                 continue;
             }
+            let downtime = self.reason_for(&run)? == WakeReason::Downtime.name();
+            if downtime && member.paused {
+                // Paused after its wake queued a turn: downtime is not kept waiting.
+                self.end(run, RunStatus::Stopped, "its member was paused")?;
+                continue;
+            }
             if busy >= usize::from(member.slots) || member.paused {
                 continue;
             }
@@ -2887,8 +2941,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.held_by_owner(project)? {
                 continue;
             }
-            let Some(amount) = self.affordable(&member, project, run.asked_by_owner)? else {
-                continue;
+            let amount = if downtime {
+                // Free on the house's model; on Claude, the owner's allowance for the day.
+                let Some(amount) = self.downtime_reservation(&member)? else {
+                    self.end(run, RunStatus::Stopped, "no allowance left for downtime")?;
+                    continue;
+                };
+                amount
+            } else {
+                let Some(amount) = self.affordable(&member, project, run.asked_by_owner)? else {
+                    continue;
+                };
+                amount
             };
             run.told = self.briefing(&member, &run)?;
             self.store
@@ -2982,7 +3046,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<Asked> {
         let _held = self.held();
         // Room for the question and the worker's line saying what the turn actually did.
-        let text: String = text.trim().chars().take(1200).collect();
+        let text = cut(text.trim(), 1200);
         let lab = self.lab_names();
         let turn = self.running(run)?;
         let task = self.task(
@@ -3321,7 +3385,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// As [`Self::ask_owner`].
     pub fn ask_approval(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
         let _held = self.held();
-        let text: String = text.trim().chars().take(1200).collect();
+        let text = cut(text.trim(), 1200);
         self.ask_held_lock(run, "approval", &|_| text.clone())
     }
 
@@ -3416,7 +3480,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let _asked = self.for_owner();
         let found = self.waiting_on_desk(item)?;
-        let words: String = words.trim().chars().take(4000).collect();
+        let words = cut(words.trim(), 4000);
         if found.kind == "decision" {
             return self.board_decides(&found, decision, &words);
         }
@@ -3497,12 +3561,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("stuck", "retry") => {
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
                 let to = task.owner.or(task.assignee);
+                // Tried again means someone is woken. If nobody can be, say so and change
+                // nothing: the item stays on the desk, rather than the button doing nothing
+                // with no word about it.
+                let member = to.ok_or(EngineError::Refused(Refusal::NobodyHasIt))?;
+                let who = self.member(member)?;
+                let asked = self.situation(&who, Some(task.id), WakeReason::ProposalDecided)?;
+                if let WakeDecision::Refuse(why) = wakes::decide(member, &asked) {
+                    return Err(EngineError::Refused(Refusal::NotWoken(why)));
+                }
                 self.store.release(task.id)?;
                 self.store.set_task_status(task.id, TaskStatus::Todo)?;
                 self.store.set_nudged(task.id, false)?;
-                if let Some(member) = to {
-                    self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
-                }
+                self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
             }
             ("stuck", "drop") => {
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
@@ -3708,7 +3779,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             _ => return Err(EngineError::Unknown("approved approval")),
         }
         self.store.set_desk_status(item, "ran")?;
-        let text: String = text.trim().chars().take(4000).collect();
+        let text = cut(text.trim(), 4000);
         if let Some(task) = found.task {
             self.post_held_lock(Author::Endora, task, &text)?;
             if let Some(member) = found.member {
@@ -3730,7 +3801,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Some(id) => self.store.run(id)?,
             None => None,
         };
-        let text: String = text.trim().chars().take(600).collect();
+        let text = cut(text.trim(), 600);
         let task = run.as_ref().and_then(|r| r.task);
         let desk = self.store.add_desk(
             "notice",
@@ -4149,7 +4220,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .into_iter()
             .filter(|t| !reports.contains(&t.id))
             .collect();
-        let scorecard = self.scorecard(&every_run, &tasks, day)?;
+        // Downtime is not work: its turns are not on the scorecard (ADR 0119).
+        let downtime = self.downtime_wakes()?;
+        let worked: Vec<Run> = every_run
+            .iter()
+            .filter(|r| !downtime.contains(&r.wake))
+            .cloned()
+            .collect();
+        let scorecard = self.scorecard(&worked, &tasks, day)?;
         let runs: Vec<Run> = every_run.into_iter().filter(|r| r.status.live()).collect();
         let goals = self.store.goals()?;
         let mut notes = std::collections::HashMap::new();
@@ -4311,6 +4389,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "scorecard": scorecard,
             // The engineering wing (ADR 0115): who sits in it, and its seats.
             "wing": self.wing_shown()?,
+            // The office as data (ADR 0119): what stands on the floor, and what the team is
+            // deciding about it.
+            "office": self.office_shown()?,
         }))
     }
 
@@ -4364,6 +4445,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Store`] if the store fails.
     pub fn events_after(&self, id: i64) -> Done<Vec<crate::domain::Event>> {
         Ok(self.store.events_after(id)?)
+    }
+
+    /// The `limit` events just before an id (at most [`MOST_EVENTS_BEFORE`]), oldest first:
+    /// how the activity log goes further back than what it was opened with.
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if the store fails.
+    pub fn events_before(&self, id: i64, limit: usize) -> Done<Vec<crate::domain::Event>> {
+        Ok(self
+            .store
+            .events_before(id, limit.min(MOST_EVENTS_BEFORE))?)
     }
 
     /// Every wake, with its receipt.

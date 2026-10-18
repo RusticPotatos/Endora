@@ -120,15 +120,31 @@ pub fn recent_activity(
     events: &impl EventLog,
     limit: usize,
 ) -> Result<Vec<ActivityItem>, AppError> {
+    activity_page(audit, events, limit, 0)
+}
+
+/// A page of the activity feed: `limit` entries after skipping the newest `offset`, newest
+/// first. Each source is read to `offset + limit` entries, which is enough to fill the page
+/// from either one however the two interleave.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn activity_page(
+    audit: &impl AuditLog,
+    events: &impl EventLog,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<ActivityItem>, AppError> {
+    let reach = offset.saturating_add(limit);
     let mut items = Vec::new();
-    for r in audit.recent(limit)? {
+    for r in audit.recent(reach)? {
         items.push(ActivityItem {
             at: r.at(),
             kind: ActivityKind::Decision,
             summary: r.summary().to_owned(),
         });
     }
-    for e in events.recent(limit)? {
+    for e in events.recent(reach)? {
         items.push(ActivityItem {
             at: e.at,
             kind: ActivityKind::Action,
@@ -142,6 +158,7 @@ pub fn recent_activity(
             .cmp(&a.at.unix_millis())
             .then_with(|| b.summary.cmp(&a.summary))
     });
+    items.drain(..offset.min(items.len()));
     items.truncate(limit);
     Ok(items)
 }

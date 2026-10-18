@@ -89,6 +89,13 @@ pub fn app(state: State) -> Router {
         // There is no route that removes a member: nobody is ever fired.
         .route("/v1/members/{id}/furlough", post(furlough))
         .route("/v1/members/{id}/recall", post(recall))
+        // The owner as landlord of the office (ADR 0119): undo the last change, reset it to the
+        // layout it began with, veto an open proposal, and say what paid members' downtime may
+        // spend a day. The team's own proposals and votes come through the worker's door.
+        .route("/v1/office/undo", post(office_undo))
+        .route("/v1/office/reset", post(office_reset))
+        .route("/v1/office/proposals/{id}/veto", post(office_veto))
+        .route("/v1/office/downtime", post(office_downtime))
         // A member's notebook (ADR 0118): the owner reads it, and writes, edits and deletes
         // notes in it (the node maps its DELETE to the last route).
         .route(
@@ -233,15 +240,26 @@ async fn snapshot(Extract(state): Extract<State>) -> Result<Json<serde_json::Val
 struct After {
     #[serde(default)]
     after: i64,
+    /// With `before`, the past instead: the events just below this id.
+    #[serde(default)]
+    before: Option<i64>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 /// The events after an id, at most 500 at a time: the stream, resumed from the last id seen.
+/// With `before` (and a `limit`, 50 by default), the events just below that id instead, oldest
+/// first: the activity log asking for what it did not open with.
 async fn events(
     Extract(state): Extract<State>,
     Query(q): Query<After>,
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
-    let events = blocking(move || hq.events_after(q.after)).await?;
+    let events = blocking(move || match q.before {
+        Some(before) => hq.events_before(before, q.limit.unwrap_or(50)),
+        None => hq.events_after(q.after),
+    })
+    .await?;
     let rows: Vec<serde_json::Value> = events
         .iter()
         .take(500)
@@ -647,6 +665,45 @@ async fn recall(
     Ok(Json(json!({ "member": id, "furloughed": false })))
 }
 
+/// The owner undoes the last change to the office; nothing happens if there is none.
+async fn office_undo(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let undone = blocking(move || hq.undo_office()).await?;
+    Ok(Json(json!({ "undone": undone })))
+}
+
+/// The owner puts the office back as it began.
+async fn office_reset(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.reset_office()).await?;
+    Ok(Json(json!({ "reset": true })))
+}
+
+/// The owner vetoes an open proposal for the office.
+async fn office_veto(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.veto_office(id)).await?;
+    Ok(Json(json!({ "proposal": id, "vetoed": true })))
+}
+
+#[derive(Deserialize)]
+struct DowntimeAllowance {
+    cents: i64,
+}
+
+/// The owner says what paid members' downtime turns may spend together in a day, in cents.
+async fn office_downtime(
+    Extract(state): Extract<State>,
+    Json(req): Json<DowntimeAllowance>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_downtime_paid_cents(req.cents)).await?;
+    Ok(Json(json!({ "downtime_paid_cents_per_day": req.cents })))
+}
+
 #[derive(Deserialize)]
 struct NoteText {
     text: String,
@@ -999,6 +1056,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_events_before_an_id_are_the_past_the_log_scrolls_back_into() {
+        let app = app(state(true));
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let last = snap["last_event"].as_i64().unwrap();
+        assert!(last > 3, "the demo has a past");
+        let page = json_of(
+            app.clone()
+                .oneshot(call(
+                    "GET",
+                    &format!("/v1/events?before={last}&limit=2"),
+                    Some(TOKEN),
+                    "",
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let ids: Vec<i64> = page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [last - 2, last - 1],
+            "the two just before, oldest first"
+        );
+        let none = json_of(
+            app.oneshot(call("GET", "/v1/events?before=1&limit=50", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(none["events"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn the_snapshot_and_the_events_after_it_are_the_contract() {
         let app = app(state(true));
         let snap = json_of(
@@ -1237,9 +1338,11 @@ mod tests {
         // projects, accepts tested work, hands a subordinate's task on, asks the owner to hire
         // and reads a task's documents and the team's library, too, and asks for staff when a
         // project has a backlog. Every member keeps a notebook of its own, too (ADR 0118):
-        // note, forget, read and check. And it reports on its area, decides its area's stuck
-        // work, and gives its view in a huddle (ADR 0120).
-        assert_eq!(names.len(), 24, "{names:?}");
+        // note, forget, read and check. Every member shapes the office (ADR 0119). And it
+        // reports on its area, decides its area's stuck work, and gives its view in a huddle
+        // (ADR 0120).
+        assert_eq!(names.len(), 25, "{names:?}");
+        assert!(names.contains(&"office"), "every member shapes the office");
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
         for added in ["report_area", "decide_stuck", "huddle_view"] {
             assert!(names.contains(&added), "{added}");
@@ -2665,6 +2768,102 @@ mod tests {
         );
         assert_eq!(snap["tasks"][0]["project"], id);
         assert_eq!(snap["members"][2]["reports_to"], other.0);
+    }
+
+    #[tokio::test]
+    async fn the_owner_is_the_offices_landlord_and_the_snapshot_carries_the_office() {
+        use endora_team::domain::office::{Change, Kind};
+        let st = state(false);
+        st.hq.seed_office().unwrap();
+        let seeded = st.hq.store().office_items().unwrap().len();
+        let app = app(st.clone());
+        let send = |uri: String, body: String, signed: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(call("POST", &uri, signed, &body))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        // The node signs; nobody else may.
+        let (status, _) = send("/v1/office/reset".to_owned(), "{}".to_owned(), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        // Nothing to undo yet.
+        let (status, said) = send("/v1/office/undo".to_owned(), "{}".to_owned(), Some(TOKEN)).await;
+        assert_eq!(
+            (status, said["undone"].clone()),
+            (StatusCode::OK, json!(null))
+        );
+        // A proposal open, and the owner vetoes it.
+        let id = st
+            .hq
+            .store()
+            .add_office_proposal(
+                "Jane Doe",
+                &[Change::Place {
+                    kind: Kind::FishTank,
+                    x: 10,
+                    y: 3,
+                }],
+                "life",
+                1,
+            )
+            .unwrap();
+        let (status, said) = send(
+            format!("/v1/office/proposals/{id}/veto"),
+            "{}".to_owned(),
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(
+            (status, said["vetoed"].clone()),
+            (StatusCode::OK, json!(true))
+        );
+        let (status, _) = send(
+            format!("/v1/office/proposals/{id}/veto"),
+            "{}".to_owned(),
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a closed proposal");
+        let (status, _) = send(
+            "/v1/office/proposals/99/veto".to_owned(),
+            "{}".to_owned(),
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Reset puts the seeded layout back, and the allowance is set within the pool's day.
+        st.hq.store().remove_office_item(1).unwrap();
+        let (status, _) = send("/v1/office/reset".to_owned(), "{}".to_owned(), Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(st.hq.store().office_items().unwrap().len(), seeded);
+        let (status, said) = send(
+            "/v1/office/downtime".to_owned(),
+            json!({ "cents": 25 }).to_string(),
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(
+            (status, said["downtime_paid_cents_per_day"].clone()),
+            (StatusCode::OK, json!(25))
+        );
+        let (status, _) = send(
+            "/v1/office/downtime".to_owned(),
+            json!({ "cents": -1 }).to_string(),
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let snap = st.hq.snapshot().unwrap();
+        assert_eq!(snap["office"]["items"].as_array().unwrap().len(), seeded);
+        assert_eq!(snap["office"]["downtime_paid_cents_per_day"], 25);
+        assert_eq!(snap["office"]["can_undo"], true, "a reset can be undone");
+        let (status, said) = send("/v1/office/undo".to_owned(), "{}".to_owned(), Some(TOKEN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(said["undone"].as_str().unwrap().contains("reset"), "{said}");
     }
 
     #[tokio::test]

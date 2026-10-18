@@ -313,7 +313,7 @@ async function reload() {
   try { NODE_BUSY = !!(await api("GET", "/health")).busy; } catch (_) { NODE_BUSY = false; }
   const [db, activity, caps, autonomy] = await Promise.all([
     api("GET", "/v1/export"),
-    api("GET", "/v1/activity?limit=30"),
+    api("GET", `/v1/activity?limit=${ACTIVITY_PAGE}`),
     api("GET", "/v1/capabilities"),
     api("GET", "/v1/autonomy"),
   ]);
@@ -332,6 +332,7 @@ async function reload() {
   // every message there has ever been so the browser can throw most of them away.
   await loadChatDay(CHAT_DAY);
   ACTIVITY = activity;
+  ACTIVITY_MORE = activity.length >= ACTIVITY_PAGE;
   CAPS = caps;
   AUTONOMY = autonomy;
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }

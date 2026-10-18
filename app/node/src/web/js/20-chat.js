@@ -58,12 +58,15 @@ function listOr(items, emptyText) {
 const ACTIVITY_ICON = { observation: "note", decision: "scale", action: "sparkle" };
 function activityFeed() {
   if (!ACTIVITY.length) return `<div class="empty">No activity yet.</div>`;
+  const more = ACTIVITY_MORE
+    ? `<div class="row" style="margin-top:6px;"><button class="ghost" data-act="activity:more"${ACTIVITY_BUSY ? " disabled" : ""}>${ACTIVITY_BUSY ? "Loading…" : "Load more"}</button></div>`
+    : `<div class="sub">That is everything.</div>`;
   return ACTIVITY.map((a) => `
     <div class="card"><div class="row">
       <div class="grow"><div class="title">${icon(ACTIVITY_ICON[a.kind] || "note", 15)} ${esc(a.summary)}</div>
       <div class="sub">${esc(a.kind)}</div></div>
       <span class="sub">${esc(new Date(a.at_ms).toLocaleString())}</span>
-    </div></div>`).join("");
+    </div></div>`).join("") + more;
 }
 
 // Everything Endora has actually done, in one place.

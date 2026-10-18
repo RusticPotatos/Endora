@@ -108,16 +108,18 @@ impl CallReceipt {
     }
 }
 
-/// Text cut to one line of at most `most` characters, with no control characters.
+/// Text cut to one line of at most `most` characters, with no control characters. A text that
+/// does not fit ends in [`super::cut::CUT`], so a reader knows words were lost.
 #[must_use]
 pub fn short(text: &str, most: usize) -> String {
-    text.split_whitespace()
+    let one_line: String = text
+        .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
         .filter(|c| !c.is_control())
-        .take(most)
-        .collect()
+        .collect();
+    super::cut::cut(&one_line, most)
 }
 
 /// How long the home lab's "no new alarm since" waits from the work's last change, in minutes.
@@ -603,6 +605,16 @@ mod tests {
 
     const NOW: RunId = RunId(9);
     const BEFORE: RunId = RunId(3);
+
+    #[test]
+    fn a_receipt_that_had_to_be_cut_says_so() {
+        let long = format!("line one\n\n  line   two {}", "x".repeat(500));
+        let got = short(&long, EXCERPT_MOST);
+        assert_eq!(got.chars().count(), EXCERPT_MOST);
+        assert!(got.starts_with("line one line two x"), "{got}");
+        assert!(got.ends_with("…[cut]"));
+        assert_eq!(short("  fits\n fine ", EXCERPT_MOST), "fits fine");
+    }
 
     fn reading(run: RunId) -> (Ref, Found) {
         (

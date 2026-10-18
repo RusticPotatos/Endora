@@ -2189,6 +2189,86 @@ async fn the_kill_switch_goes_to_hq_signed_and_into_endoras_own_record() {
 }
 
 #[tokio::test]
+async fn the_activity_feed_pages_on_with_an_offset() {
+    let state = test_state();
+    let now = endora_application::Clock::now(state.clock.as_ref());
+    for n in 1..=5 {
+        endora_application::EventLog::record(state.events.as_ref(), now, &format!("event {n}"))
+            .unwrap();
+    }
+    let summaries = |page: serde_json::Value| -> Vec<String> {
+        page.as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["summary"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let first = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/activity?limit=2"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let second = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/activity?limit=2&offset=2"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let last = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/activity?limit=2&offset=4"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let beyond = json_body(
+        app(state)
+            .oneshot(get("/v1/activity?limit=2&offset=9"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(summaries(first), ["event 5", "event 4"]);
+    assert_eq!(summaries(second), ["event 3", "event 2"]);
+    assert_eq!(summaries(last), ["event 1"]);
+    assert!(summaries(beyond).is_empty());
+}
+
+#[tokio::test]
+async fn the_log_can_ask_hq_for_the_events_before_the_ones_it_has() {
+    let (url, seen) = one_hq_answer(r#"{"events":[]}"#);
+    let token = "a-token-of-at-least-thirty-two-characters";
+    let state = test_state().with_hq(endora_infrastructure::HqClient::new(&url, token));
+    let res = app(state)
+        .oneshot(get("/v1/hq/events?before=40&limit=50"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let sent = seen.join().unwrap();
+    assert!(
+        sent.starts_with("GET /v1/events?before=40&limit=50 "),
+        "{sent}"
+    );
+}
+
+#[tokio::test]
+async fn the_stream_still_resumes_after_an_id() {
+    let (url, seen) = one_hq_answer(r#"{"events":[]}"#);
+    let token = "a-token-of-at-least-thirty-two-characters";
+    let state = test_state().with_hq(endora_infrastructure::HqClient::new(&url, token));
+    let res = app(state)
+        .oneshot(get("/v1/hq/events?after=7"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let sent = seen.join().unwrap();
+    assert!(sent.starts_with("GET /v1/events?after=7 "), "{sent}");
+}
+
+#[tokio::test]
 async fn providers_go_in_once_lists_sort_and_no_key_ever_comes_back_out() {
     let state = test_state();
     let added = json_body(

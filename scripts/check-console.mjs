@@ -643,6 +643,22 @@ if (failures.length) {
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
       contracts: { all: true, restart_container: false },
+      // The open office (ADR 0119): what stands on the floor (a plant, a fish tank somebody
+      // hostile put there, a couch, a poster on the wall, a rug, a coffee machine, and a kind this
+      // screen has no picture for), and the one proposal the team has open, in the team's words.
+      office: { cols: 32, rows: 20, can_undo: true, downtime_paid_cents_per_day: 25, downtime_paid_cents_used: 5,
+        items: [{ id: 1, kind: "plant", x: 8, y: 3, w: 1, h: 1, wall: false, placed_by: "endora" },
+                { id: 2, kind: "fish_tank", x: 10, y: 3, w: 1, h: 1, wall: false, placed_by: "<b>Dee</b>" },
+                { id: 3, kind: "couch", x: 17, y: 18, w: 2, h: 1, wall: false, placed_by: "endora" },
+                { id: 4, kind: "poster", x: 26, y: 1, w: 1, h: 1, wall: true, placed_by: "Bo" },
+                { id: 5, kind: "rug", x: 11, y: 4, w: 2, h: 2, wall: false, placed_by: "endora" },
+                { id: 6, kind: "hologram", x: 14, y: 3, w: 1, h: 1, wall: false, placed_by: "Cy" },
+                { id: 7, kind: "coffee_machine", x: 22, y: 15, w: 1, h: 1, wall: false, placed_by: "endora" }],
+        proposals: [{ id: 3, by: "<i>Dee</i>", why: "<img src=w onerror=alert(10)> the kitchen needs life", at: 0, yes: 1, no: 1,
+                      changes: ["add a fish tank in the commons", "move the <u>fern</u> to the lounge"],
+                      votes: [{ who: "<i>Dee</i>", vote: "yes", why: "" }, { who: "Bo", vote: "no", why: "<b>too wet</b>" }],
+                      carries_at: 21600000, expires_at: 172800000 }],
+        recent: [{ id: 2, by: "Bo", status: "applied", outcome: "carried 2 to 0", changes: ["add a plant in the commons"] }] },
       // How the team is doing, as the engine's scorecard serves it: every number computed there.
       scorecard: {
         today: { from: 0, until: 86400000, since: 43200000,
@@ -727,6 +743,71 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  // "Try again" posts exactly the decision HQ takes for stuck work, and when HQ refuses it the
+  // card says why and keeps saying it: a press that seems to do nothing is the worst answer.
+  {
+    const sent = [];
+    const realFetch = context.fetch;
+    const snapshot = JSON.parse(runInContext("JSON.stringify(HQ.snap)", context));
+    context.fetch = (path, opts = {}) => {
+      sent.push([String(path), opts.method, opts.body]);
+      const refused = String(path).includes("/v1/hq/desk/");
+      return Promise.resolve({ ok: !refused, status: refused ? 400 : 200,
+        json: async () => (refused ? { error: "it was not tried again: the kill switch is on" } : snapshot) });
+    };
+    // The art is not loaded here (no images in Node): the reload after a decision skips it.
+    runInContext("HQ_ART_READY = Promise.resolve();", context);
+    await runInContext('dispatch("hq:decide:12:retry")', context);
+    context.fetch = realFetch;
+    const posted = sent.find(([path]) => path === "/v1/hq/desk/12");
+    if (!posted || posted[1] !== "POST" || JSON.parse(posted[2]).decision !== "retry") fail(`hq: "Try again" does not post the retry decision: ${JSON.stringify(sent)}`);
+    const refusedCard = runInContext("viewHQ()", context);
+    if (!refusedCard.includes("Couldn&#39;t decide: it was not tried again: the kill switch is on") && !refusedCard.includes("Couldn't decide: it was not tried again: the kill switch is on")) fail("hq: a refused desk decision is not said on its card");
+    runInContext("HQ.deskNote = {}; clearInterval(HQ.polling); HQ.polling = null; HQ_ART_READY = null;", context);
+  }
+  // The activity log: a post is told whole (long ones folded behind "more", opened in place),
+  // thirty lines show, and "Show older" first reveals what is kept, then asks HQ for earlier events.
+  {
+    runInContext(`HQ.log = []; HQ.logShown = 30; HQ.logOpen = {}; HQ.oldest = 0; HQ.logDone = false;
+      HQ.snap.tasks[0].thread.push({ author: "Bo", text: "start " + "word ".repeat(80) + "THE-END", at: 9 });`, context);
+    runInContext(`hqTell({ id: 70, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "start word word…", cut: true, post: HQ.snap.tasks[0].thread.length - 1 } }, false);`, context);
+    // Only the activity card: the selected task's card shows its own thread too.
+    const logOf = () => runInContext("viewHQ()", context).split('class="hq-log"')[1].split("</ul>")[0];
+    const folded = logOf();
+    if (folded.includes("THE-END")) fail("hq: a long post in the log is not folded");
+    if (!folded.includes('data-act="hq:logmore:70:toggle"') || !folded.includes("start word word word")) fail("hq: a long post in the log has no way to be opened");
+    await runInContext('dispatch("hq:logmore:70:toggle")', context);
+    const opened = logOf();
+    if (!opened.includes("Bo: start word") || !opened.includes("THE-END")) fail("hq: opening a long post does not show all of it");
+    // A post whose event the snapshot does not hold falls back to the preview, which says it was cut.
+    runInContext(`hqTell({ id: 71, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "a cut preview…", cut: true } }, false);`, context);
+    if (!runInContext("viewHQ()", context).includes("Bo: a cut preview…")) fail("hq: a post with no place in the thread loses its preview");
+    runInContext("HQ.snap.tasks[0].thread.pop();", context);
+
+    runInContext(`HQ.log = []; HQ.oldest = 0; HQ.logOpen = {};
+      for (let i = 100; i > 60; i--) hqTell({ id: i, at: 0, kind: "resumed", data: {} }, false);`, context);
+    const page = runInContext("viewHQ()", context);
+    const lines = (page.match(/<li><time>/g) || []).length;
+    if (lines !== 30) fail(`hq: the log shows ${lines} lines, not thirty`);
+    if (!page.includes('data-act="hq:logolder:0:more"') || !page.includes("Show older")) fail("hq: the log cannot show older lines");
+    // The kept ones first, with no request.
+    const asked = [];
+    const realFetch = context.fetch;
+    context.fetch = (path, opts = {}) => {
+      asked.push(String(path));
+      const events = [60, 59].map((id) => ({ id, at: 0, kind: "resumed", data: {} }));
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ events }) });
+    };
+    await runInContext('dispatch("hq:logolder:0:more")', context);
+    if (asked.length) fail(`hq: "Show older" asked HQ while it still had kept lines: ${asked}`);
+    if ((runInContext("viewHQ()", context).match(/<li><time>/g) || []).length !== 40) fail("hq: \"Show older\" did not reveal the kept lines");
+    // Then HQ: events before the oldest this screen has, added after the rest.
+    await runInContext('dispatch("hq:logolder:0:more")', context);
+    context.fetch = realFetch;
+    if (asked.length !== 1 || asked[0] !== "/v1/hq/events?before=61&limit=50") fail(`hq: "Show older" asked for ${asked}`);
+    if (runInContext("HQ.log.length", context) !== 42 || runInContext("HQ.oldest", context) !== 59) fail("hq: older events were not added after the newer ones");
+    runInContext("HQ.log = []; HQ.logShown = 30; HQ.oldest = 0; HQ.logDone = false;", context);
+  }
   // The bridge's approval (ADR 0108): the tool, its arguments in plain words, the why, and
   // Approve / Decline; none of what the member wrote becomes markup.
   for (const act of ["hq:decide:17:approve", "hq:decide:17:decline"]) {
@@ -785,6 +866,34 @@ if (failures.length) {
   if (office.includes("<b>$0.50</b>")) fail("hq: an out-for-the-day card became markup");
   if (!office.includes("on furlough · ")) fail("hq: the roster does not say who is on furlough");
   if (!office.includes("3 seats · 2 at work · 1 on furlough") || !office.includes("&lt;u&gt;Kit&lt;/u&gt;")) fail("hq: the scorecard does not count a team's seats");
+  // The Office card (ADR 0119): the team's open proposals with their votes, the owner's veto on
+  // each, undo, reset, and the allowance for paid members' downtime; and every word the team
+  // wrote (a proposal's reason, a vote's, a member's name) as text.
+  for (const said of ['<h2>Office <span class="hq-count">1</span></h2>', "7 things on the floor", "add a fish tank in the commons; move the &lt;u&gt;fern&lt;/u&gt; to the lounge",
+    "&lt;img src=w onerror=alert(10)&gt; the kitchen needs life", "yes 1, no 1", "&lt;i&gt;Dee&lt;/i&gt; yes", "Bo no (&lt;b&gt;too wet&lt;/b&gt;)", 'data-act="hq:office:veto:3"',
+    'data-act="hq:office:undo:go">Undo last change', 'data-act="hq:office:reset:go">Reset the office', "Paid members' downtime: $0.25 a day ($0.05 used today)",
+    'data-act="hq:office:downtime:set">change', "applied: add a plant in the commons", "carried 2 to 0"]) {
+    if (!office.includes(said)) fail(`hq: the Office card does not say ${said}`);
+  }
+  for (const raw of ["<img src=w", "<u>fern</u>", "<b>too wet</b>", "<i>Dee</i> proposes", "<b>Dee</b>"]) {
+    if (office.includes(raw)) fail(`hq: the Office card let a member's words become markup (${raw})`);
+  }
+  {
+    const none = runInContext(`(() => { const o = HQ.snap.office, keep = [o.proposals, o.can_undo, o.downtime_paid_cents_per_day];
+      o.proposals = []; o.can_undo = false; o.downtime_paid_cents_per_day = 0;
+      const html = hqOffice(HQ.snap); [o.proposals, o.can_undo, o.downtime_paid_cents_per_day] = keep; return html; })()`, context);
+    for (const said of ["No proposals open.", 'data-act="hq:office:undo:go" disabled>', "Paid members' downtime: $0.00 a day — "]) {
+      if (!none.includes(said)) fail(`hq: the Office card with nothing open does not say ${said}`);
+    }
+    const item = runInContext(`HQ.selected = { type: "item", id: 2 }; const looked = hqSelected(); HQ.selected = { type: "task", id: 7 }; looked`, context);
+    // And the activity log and Replay say what the team did to the office, escaped like the rest.
+    runInContext(`hqTell({ id: 70, at: 0, kind: "office.proposed", data: { proposal: 3, by: "Dee", text: "Dee proposes: add a fish tank in the commons \\u2014 '<b>life</b>'" } }, false);
+      hqTell({ id: 71, at: 0, kind: "office.changed", data: { proposal: 3, via: "votes", text: "The office changed: add a fish tank in the commons (Dee's idea; carried 2 to 0)" } }, false);`, context);
+    const logged = runInContext("viewHQ()", context);
+    if (!logged.includes("Dee proposes: add a fish tank in the commons — &#39;&lt;b&gt;life&lt;/b&gt;&#39;") || !logged.includes("The office changed: add a fish tank in the commons (Dee&#39;s idea; carried 2 to 0)")) fail("hq: the activity log does not say what the team did to the office");
+    if (runInContext(`replayEvent({ name: "office.changed", data: { text: "The office changed: add a plant" } })[1]`, context) !== "The office changed: add a plant") fail("hq: Replay does not say that the office changed");
+    if (!item.includes("fish tank") || !item.includes("&lt;b&gt;Dee&lt;/b&gt;") || item.includes("<b>Dee</b>") || !item.includes("the commons")) fail("hq: tapping a thing does not say what it is and who put it there, as text");
+  }
   // A member's notebook (ADR 0118), in its panel: each note as text with its evidence, or marked
   // as the owner's, Edit and Delete on each, and Add note; what a member wrote is never markup.
   for (const act of ["hq:notebook:2:edit-4", "hq:notebook:2:del-4", "hq:notebook:2:edit-5", "hq:notebook:2:del-5",
@@ -921,26 +1030,55 @@ if (failures.length) {
     if (!(many[0].indexOf("R3 Bo") < many[0].indexOf("R7 Bo"))) fail("hq: the last five turns are not oldest first");
     if (!many[1].includes("R1 Bo") || !many[1].includes("Show the last 5")) fail("hq: show all does not show every turn");
   }
-  // The office itself (the pixel canvas): a desk for each of five members, the CEO's office and
-  // the meeting room where people walk, and the whole room drawn, through an explicit 2D context
-  // that keeps what was written on it. No art is loaded here, so this draws the room's own shapes.
+  // The open office (the pixel canvas, ADR 0119): one pod of desks for each team, side by side
+  // with no walls, laid out from the snapshot alone (a third team makes a third pod); a desk for
+  // every member, empty with an "away" card for one on furlough; Mara in her own office with the
+  // door open; everything that stands on the floor drawn from the snapshot's office, so a thing
+  // that moves in the data moves on screen; and people who walk round desks and furniture and
+  // through doors only, visit another team's pod for its work, and drift about when idle. Drawn
+  // through an explicit 2D context that keeps what was written and filled on it. No art is
+  // loaded here, so this draws the room's own shapes.
   {
-    const seats = runInContext("hqSeats(HQ.snap.members)", context);
-    // The five of the first team (four on the floor, the CEO in its office) have five desks of
-    // their own; the wing's two sit in the wing (checked below).
-    const desks = Object.entries(seats).filter(([id]) => Number(id) <= 5).map(([, s]) => `${s.desk.x},${s.desk.y}`);
-    if (desks.length !== 5 || new Set(desks).size !== 5) fail(`hq: five members do not have five desks: ${desks}`);
-    if (seats[5].desk.room !== "ceo") fail("hq: the CEO's desk is not in the CEO's office");
+    const layout = runInContext(`(() => {
+      const l = hqLayout(HQ.snap.members);
+      return { pods: l.pods.map((p) => ({ label: p.label, x: p.x, y: p.y, width: p.width, rows: p.rows, desks: p.desks.map((d) => [d.x, d.y, d.member]) })),
+        seats: Object.fromEntries(Object.entries(l.seats).map(([id, s]) => [id, { pod: s.pod, work: [s.work.cx, s.work.cy, s.work.dir] }])) };
+    })()`, context);
+    if (layout.pods.map((p) => p.label).join("|") !== "Ops · Ada|Engineering · Kit") fail(`hq: the pods are not the roster's teams: ${layout.pods.map((p) => p.label)}`);
+    // Cy and Dee have no lead above them but the CEO, so they join the first pod; Zed, on furlough, keeps the last desk.
+    if (layout.pods[0].desks.map((d) => d[2]).join() !== "1,2,3,4") fail(`hq: the first pod is not Ada, Bo, Cy and Dee: ${layout.pods[0].desks.map((d) => d[2])}`);
+    if (layout.pods[1].desks.map((d) => d[2]).join() !== "6,7,8") fail(`hq: the second pod is not Kit, Rae, then Zed on furlough: ${layout.pods[1].desks.map((d) => d[2])}`);
+    if (layout.seats[5].pod !== -1) fail("hq: the CEO sits in a pod");
+    const [podA, podB] = layout.pods;
+    if (!(podA.x + podA.width < podB.x)) fail("hq: the pods are not side by side");
+    const every = layout.pods.flatMap((p) => p.desks.map((d) => `${d[0]},${d[1]}`));
+    if (new Set(every).size !== every.length) fail("hq: two members share a desk");
+    if (layout.pods.some((p) => p.desks.some((d) => d[0] < 1 || d[0] + 3 > 28 || d[1] < 8 || d[1] + 2 > 14))) fail("hq: a desk is outside the band the rules of the office keep for desks");
+    // Two to a row, standing in the aisle between their desks, facing each other.
+    if (layout.seats[1].work.join() !== "8,9,right" || layout.seats[2].work.join() !== "9,9,left") fail(`hq: the two of a row do not face each other: ${layout.seats[1].work} ${layout.seats[2].work}`);
+    // The teams are the snapshot's: a third lead is a third pod, a fourth that will not fit goes below, none leaves the band.
+    const grown = runInContext(`(() => {
+      const members = HQ.snap.members.concat([{ id: 9, name: "Ned", role: "lead", reports_to: 5 }, { id: 10, name: "Pia", role: "developer", reports_to: 9 }]);
+      const three = hqLayout(members), four = hqLayout(members.concat([{ id: 11, name: "Oz", role: "lead", reports_to: 5 }]));
+      const rows = (l) => l.pods.flatMap((p) => p.desks.map((d) => d.x + "," + d.y));
+      return { labels: three.pods.map((p) => p.label), of: [three.seats[9].pod, three.seats[10].pod], right: Math.max(...three.pods.map((p) => p.x + p.width)),
+        four: four.pods.map((p) => [p.x, p.y]), unique: new Set(rows(four)).size === rows(four).length,
+        inside: four.pods.every((p) => p.desks.every((d) => d.y + 2 <= 14)) };
+    })()`, context);
+    if (grown.labels.join("|") !== "Ops · Ada|Engineering · Kit|Ops · Ned" || grown.of.join() !== "2,2" || grown.right > 28) fail(`hq: a third team does not make a third pod: ${JSON.stringify(grown)}`);
+    if (grown.four.length !== 4 || grown.four[3].join() !== "1,12" || !grown.unique || !grown.inside) fail(`hq: a fourth team does not wrap below inside the band: ${JSON.stringify(grown)}`);
     const inside = runInContext(`(() => {
-      const In = (r, s) => s.x >= r.x && s.x < r.x + r.w && s.y >= r.y && s.y < r.y + r.h;
+      const In = (r, s) => s.cx >= r.x && s.cx < r.x + r.w && s.cy >= r.y && s.cy < r.y + r.h;
       const M = HQ_ROOMS.meeting, O = HQ_ROOMS.ceo;
-      return [!!M && !!O, In(M, HQ_MEETING.head), HQ_MEETING.chairs.every((c) => In(M, c)), In(M, M.in), !In(M, M.out),
-        In(O, HQ_CEO_DESK), In(O, HQ_CEO_REST), In(O, O.in), !In(O, O.out)];
+      return [In(M, HQ_MEETING.head), HQ_MEETING.chairs.every((c) => In(M, c)), In(M, M.in), !In(M, M.out),
+        In(O, HQ_CEO.work), In(O, HQ_CEO.rest), In(O, O.in), !In(O, O.out), O.door.to - O.door.from === 2];
     })()`, context);
     if (inside.some((ok) => !ok)) fail(`hq: the meeting room or the CEO's office is not where its seats and door are: ${inside}`);
-    const written = [];
+    const written = [], filled = [];
     const ctx = {
-      fillRect() {}, strokeRect() {}, drawImage() {}, beginPath() {}, arc() {}, moveTo() {}, fill() {}, stroke() {},
+      fillStyle: "", strokeStyle: "", font: "",
+      fillRect(x, y, w, h) { filled.push({ x, y, w, h, style: this.fillStyle }); },
+      strokeRect() {}, drawImage() {}, beginPath() {}, arc() {}, moveTo() {}, fill() {}, stroke() {},
       save() {}, restore() {}, translate() {}, scale() {},
       fillText(text) { written.push(String(text)); },
       measureText: (text) => ({ width: String(text).length * 6 }),
@@ -951,33 +1089,89 @@ if (failures.length) {
     stubs.document.createElement = (tag) => (tag === "canvas" ? canvas() : createElement(tag));
     const saved = runInContext("JSON.stringify(HQ.snap)", context);
     try {
-      runInContext(`HQ.people = {}; HQ_BG = hqPaintRoom(); HQ_FURN = hqFurniture(); hqPlacePeople(); hqDraw();`, context);
-      for (const label of ["BOARD ROOM", "CEO", "MEETING", "SERVERS", "WING"]) {
+      runInContext(`HQ.people = {}; HQ.settled = false; HQ_BG = hqPaintRoom(); hqPlacePeople(); hqDraw();`, context);
+      for (const label of ["BOARD ROOM", "CEO", "MEETING", "SERVERS", "KITCHEN", "LOUNGE", "PING-PONG", "OPS · ADA", "ENGINEERING · KIT"]) {
         if (!written.includes(label)) fail(`hq: the office does not say ${label}`);
       }
-      // The wing (ADR 0115): its members sit in its room, at six desks, and walk in through its
-      // door from the lane; the floor's members keep their desks.
-      const wing = runInContext(`(() => {
-        const seats = hqSeats(HQ.snap.members);
-        const rae = HQ.people[7], kit = HQ.people[6];
-        const floor = hqWalk({ x: HQ_RESTS[0].x * HQ_T, y: HQ_RESTS[0].y * HQ_T, path: [] }, hqSpot(rae));
-        return [seats[6].desk.room === "wing", seats[7].desk.room === "wing", seats[6].desk !== seats[7].desk,
-          seats[1].desk === HQ_DESKS[0], seats[2].desk === HQ_DESKS[1], HQ_WING_DESKS.length === 6,
-          rae.at.desk === true && rae.at.room === "wing", kit.at.room === "wing" && !kit.working,
-          hqRoomAt(HQ_ROOMS.wing.in.x, HQ_ROOMS.wing.in.y) === HQ_ROOMS.wing,
-          hqRoomAt(HQ_P.door.x, HQ_P.door.y) === null, !hqPong()];
-      })()`, context);
-      if (wing.some((ok) => !ok)) fail(`hq: the wing does not seat its members or stand where it should: ${wing}`);
-      const through = runInContext(`(() => {
-        const p = { x: HQ_RESTS[0].x * HQ_T, y: HQ_RESTS[0].y * HQ_T, path: [] };
-        hqWalk(p, { x: HQ_WING_DESKS[0].x + 1.6, y: HQ_WING_DESKS[0].y - 0.5, room: "wing", dir: "down", desk: true });
-        const steps = p.path.map((s) => [s.x / HQ_T, s.y / HQ_T]);
-        const door = steps.findIndex((s) => s[0] === HQ_ROOMS.wing.out.x && s[1] === HQ_ROOMS.wing.out.y);
-        const inside = steps.findIndex((s) => s[0] === HQ_ROOMS.wing.in.x && s[1] === HQ_ROOMS.wing.in.y);
-        return door >= 0 && inside === door + 1;
-      })()`, context);
-      if (!through) fail("hq: a walk into the wing does not go through its door");
+      if (written.includes("WING")) fail("hq: the walled wing is still drawn");
+      // Zed is on furlough: no one stands at his desk, and a card on it says he is away.
+      if (!written.includes("AWAY")) fail("hq: a furloughed member's empty desk has no away card");
+      if (runInContext("HQ.people[8]", context) !== undefined) fail("hq: a member on furlough is walking about the office");
       if (!written.includes("<I>DEE</I>")) fail("hq: a member's name is not written on the canvas");
+      // Everything on the floor is drawn from the snapshot's office: the tank's water where the
+      // data puts the tank, and elsewhere once the data moves it.
+      const at = (style) => filled.filter((f) => f.style === style).map((f) => f.x + "," + f.y);
+      if (at("rgba(127,178,255,.55)").join() !== `${10 * 16 + 1},${3 * 16 + 3}`) fail(`hq: the fish tank is not drawn where the data has it: ${at("rgba(127,178,255,.55)")}`);
+      if (!at("#7d6bb0").includes(`${17 * 16},${18 * 16 + 2}`)) fail("hq: the couch is not drawn where the data has it");
+      if (!at("rgba(185,140,240,.55)").includes(`${11 * 16 + 1},${4 * 16 + 1}`)) fail("hq: the rug is not drawn flat where the data has it");
+      if (!filled.some((f) => f.x === 26 * 16 + 2 && f.y === 5 && f.w === 12 && f.h === 17)) fail("hq: the poster is not drawn on the wall where the data has it");
+      if (!at("#b8a68a").includes(`${14 * 16 + 1},${3 * 16 + 1}`)) fail("hq: a kind of thing with no picture is not drawn as a plain box");
+      filled.length = 0;
+      runInContext(`HQ.snap.office.items.find((i) => i.kind === "fish_tank").x = 12; hqPlacePeople(); hqDraw();`, context);
+      if (at("rgba(127,178,255,.55)").join() !== `${12 * 16 + 1},${3 * 16 + 3}`) fail("hq: a thing moved in the data is not moved on screen");
+      runInContext(`HQ.snap.office.items.find((i) => i.kind === "fish_tank").x = 10; hqPlacePeople();`, context);
+      // What stands on the floor is in the way, and the desks too; a rug is not.
+      const world = runInContext(`(() => { const b = HQ.world.blocked, [first, , , last] = HQ.pods[0].desks, w = HQ.seats[1].work;
+        return [b.has("8,3"), b.has("17,18"), b.has("18,18"), !b.has("11,4"), b.has(first.x + "," + first.y), b.has(last.x + "," + last.y), b.has("22,3"), !b.has(w.cx + "," + w.cy)]; })()`, context);
+      if (world.some((ok) => !ok)) fail(`hq: the floor's things and desks are not what blocks the way: ${world}`);
+      // Nobody walks through glass or furniture: from the ping-pong table to Mara's desk, in by
+      // her open door; to the head of the meeting table, in by its door.
+      const paths = runInContext(`(() => {
+        const W = HQ.world, from = hqAt(2, 17), toMara = hqPathCells(from, HQ_CEO.work), toMeeting = hqPathCells(from, HQ_MEETING.head);
+        const clear = (cells, goal) => cells.every((c) => c.cx + "," + c.cy === goal || !W.blocked.has(c.cx + "," + c.cy));
+        const crosses = (cells) => { let at = from; for (const c of cells) { if (W.edges.has(at.cx + "," + at.cy + ">" + c.cx + "," + c.cy)) return true; at = c; } return false; };
+        return [!!toMara, clear(toMara, "22,3"), !crosses(toMara), toMara.some((c) => c.cy === 7 && c.cx >= 20 && c.cx < 22) && toMara.some((c) => c.cy === 6 && c.cx >= 20 && c.cx < 22),
+          !!toMeeting, clear(toMeeting, "12,16"), !crosses(toMeeting), toMeeting.some((c) => c.cy === 14 && c.cx >= 9 && c.cx < 11) && toMeeting.some((c) => c.cy === 15 && c.cx >= 9 && c.cx < 11),
+          hqPathCells(from, hqAt(3, 3)) === null, hqPathCells(from, from).length === 0];
+      })()`, context);
+      if (paths.some((ok) => !ok)) fail(`hq: a walk goes through glass or furniture, or not by the open door: ${paths}`);
+      // Working at a desk, or elsewhere when the work is: another team's project, a task a tester
+      // checks, a project the CEO leads (her door); Mara herself stays in her office.
+      const visits = runInContext(`(() => {
+        const run = (id, task) => { HQ.snap.members.find((m) => m.id === id).running = task ? [{ run: 90 + id, task }] : []; };
+        const cell = (p) => p.at.cx + "," + p.at.cy, spot = (s) => s.cx + "," + s.cy;
+        HQ.snap.projects.push({ id: 9, goal: 1, title: "Wing work", lead: 6, status: "active" }, { id: 10, goal: 1, title: "Board work", lead: 5, status: "active" });
+        HQ.snap.tasks.push({ id: 31, goal: 1, project: 9, title: "t", status: "doing", owner: 2, thread: [] }, { id: 32, goal: 1, project: 10, title: "t", status: "doing", owner: 2, thread: [] },
+          { id: 33, goal: 1, project: 1, title: "t", status: "doing", owner: 2, thread: [] });
+        const out = [];
+        run(2, 31); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ.seats[6].visit), HQ.seats[6].visit.cx !== HQ.seats[2].work.cx);
+        run(2, 32); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ_ROOMS.ceo.out));
+        run(2, 33); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ.seats[2].work), HQ.people[2].at.desk === true);
+        run(2, 7); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ.seats[2].work));
+        run(2, null); run(4, 9); hqPlacePeople(); out.push(cell(HQ.people[4]) === spot(HQ.seats[7].visit));
+        run(4, null); run(5, 31); hqPlacePeople(); out.push(cell(HQ.people[5]) === spot(HQ_CEO.work));
+        run(5, null); hqPlacePeople();
+        return out;
+      })()`, context);
+      if (visits.some((ok) => !ok)) fail(`hq: a working member is not at its desk, or at the other team's, the tester's or the CEO's door when the work is: ${visits}`);
+      // Idle members drift between ping-pong, the kitchen, the couches and the rest at random, so
+      // the teams mix; two at the table's ends play; and nobody drifts for someone who asks for calm.
+      const drift = runInContext(`(() => {
+        for (const m of HQ.snap.members) m.running = [];
+        hqPlacePeople();
+        const bo = HQ.people[2], cy = HQ.people[3], keep = HQ.rand, out = [];
+        HQ.rand = () => 0; bo.idleT = 0; hqIdle(bo, 0.1); out.push(bo.wander.pong === "L", bo.path.length > 0);
+        HQ.rand = () => 0; cy.idleT = 0; hqIdle(cy, 0.1); out.push(cy.wander.pong === "R");
+        HQ.rand = () => 0.999; bo.idleT = 0; hqIdle(bo, 0.1); out.push(bo.wander.cx === 22 && bo.wander.cy === 16);
+        HQ.rand = keep;
+        bo.idleT = 0; bo.wander = null; globalThis.matchMedia = () => ({ matches: true }); const before = bo.spotKey; hqIdle(bo, 0.1);
+        out.push(hqCalm(), bo.wander === null, bo.spotKey === before); delete globalThis.matchMedia;
+        out.push(!hqCalm());
+        bo.at = HQ_WANDER[0]; cy.at = HQ_WANDER[1]; bo.path = []; cy.path = [];
+        out.push(!!hqPong() && hqPong().length === 2);
+        cy.at = HQ_WANDER[2]; out.push(!hqPong());
+        bo.errand = null; bo.wander = null; hqPlacePeople();
+        return out;
+      })()`, context);
+      if (drift.some((ok) => !ok)) fail(`hq: idle members do not drift about at random, play ping-pong as two, or stay put for calm: ${drift}`);
+      // Zed comes back from furlough: he walks in at the front door to his desk.
+      const back = runInContext(`(() => {
+        HQ.snap.members.find((m) => m.id === 8).furloughed = false; hqPlacePeople();
+        const zed = HQ.people[8], out = [!!zed, zed.x === HQ_P.lobby.x * HQ_T, zed.path.length > 0, zed.at === HQ.seats[8].work];
+        HQ.snap.members.find((m) => m.id === 8).furloughed = true; hqPlacePeople();
+        return out.concat([HQ.people[8] === undefined]);
+      })()`, context);
+      if (back.some((ok) => !ok)) fail(`hq: a recalled member does not walk in at the front door to his desk: ${back}`);
       // The CEO's daily review: the CEO at the head of the meeting table, the lead on a chair.
       const review = runInContext(`HQ.snap.routines.push({ id: 9, title: "Daily review", assignee: 5 });
         HQ.snap.tasks.push({ id: 8, goal: 1, title: "Daily review", status: "doing", routine: 9, thread: [] });
@@ -992,11 +1186,21 @@ if (failures.length) {
         hqTell({ id: 61, at: 0, kind: "wake.queued", data: { member: 5, task: 7, reason: "question_asked" } }, true);
         hqTell({ id: 62, at: 0, kind: "desk.added", data: { item: 30, kind: "decision", task: 7 } }, true);
         const ada = HQ.people[1], mara = HQ.people[5];
-        const there = ada.at.x === HQ_ROOMS.ceo.out.x && ada.at.y === HQ_ROOMS.ceo.out.y && ada.path.length > 0;
-        const board = mara.at.x === HQ_P.boardDoor.x && mara.at.y === HQ_P.boardDoor.y && mara.path.length > 0;
+        const there = ada.at.cx === HQ_ROOMS.ceo.out.cx && ada.at.cy === HQ_ROOMS.ceo.out.cy && ada.path.length > 0;
+        const board = mara.at.cx === HQ_P.boardDoor.cx && mara.at.cy === HQ_P.boardDoor.cy && mara.path.length > 0;
         hqTell({ id: 63, at: 0, kind: "run.ended", data: { run: 21, member: 5, task: 7, result: "succeeded" } }, true);
-        [there, board, !ada.errand, ada.at === ada.seat.rest]`, context);
+        [there, board, !ada.errand, ada.at === ada.seat.work]`, context);
       if (errands.some((ok) => !ok)) fail(`hq: a question or a decision does not send its member to the right door and back: ${errands}`);
+      // A question for someone on a team: the one who asked walks to their desk, and goes back.
+      const asks = runInContext(`HQ.snap.members.find((m) => m.id === 6).running = [];
+        hqPlacePeople();
+        hqTell({ id: 64, at: 0, kind: "thread.posted", data: { task: 7, author: "Rae", preview: "@Kit which?" } }, true);
+        hqTell({ id: 65, at: 0, kind: "wake.queued", data: { member: 6, task: 7, reason: "question_asked" } }, true);
+        const rae = HQ.people[7], kit = HQ.seats[6].visit;
+        const gone = rae.at.cx === kit.cx && rae.at.cy === kit.cy && rae.path.length > 0;
+        hqTell({ id: 66, at: 0, kind: "run.ended", data: { run: 22, member: 6, task: 7, result: "succeeded" } }, true);
+        [gone, !rae.errand]`, context);
+      if (asks.some((ok) => !ok)) fail(`hq: a question for someone on a team does not take its asker to their desk and back: ${asks}`);
     } finally {
       stubs.document.getElementById = getElementById;
       stubs.document.createElement = createElement;
@@ -1013,7 +1217,7 @@ if (failures.length) {
   if (!runInContext("viewHQ()", context).includes("not set up")) fail("hq: a node without HQ does not say so");
   runInContext('HQ.error = "";', context);
   console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
-  console.log("hq: the office draws five desks, the CEO's office, the meeting room and the wing's six desks, and walks people to them");
+  console.log("hq: the open office has a pod for each team, empty desks for the furloughed, its floor from the snapshot, and people who walk round the furniture");
 }
 
 // Replay: a turn read back in full, and a task's turns stepped through in order. Opened from a
@@ -1877,6 +2081,30 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
 // measure this is a narrow viewport in a real browser, which is a slower tier than this one
 // is allowed to be. Until that exists, this is caught by a person with a phone, and it is
 // better to say so here than to pretend otherwise.
+
+// The Activity screen opens with thirty rows and pages on by the count already shown, so a long
+// history is not cut off at the thirtieth.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const row = (n) => `{ at_ms: ${n}, kind: "action", summary: "did thing ${n}" }`;
+  // Let anything an earlier check left in flight finish before the requests are counted.
+  await new Promise((done) => setTimeout(done, 100));
+  runInContext(`NAV = { v: "audit" }; ACTIVITY = [${Array.from({ length: 30 }, (_, i) => row(100 - i)).join(",")}]; ACTIVITY_MORE = true; ACTIVITY_BUSY = false;`, context);
+  if (!runInContext("activityFeed()", context).includes('data-act="activity:more"')) fail("activity: a full page offers no way to see older rows");
+  const asked = [];
+  const realFetch = context.fetch;
+  context.fetch = (path) => {
+    asked.push(String(path));
+    return Promise.resolve({ ok: true, status: 200, json: async () => [{ at_ms: 5, kind: "decision", summary: "an old one" }] });
+  };
+  await runInContext('dispatch("activity:more")', context);
+  context.fetch = realFetch;
+  if (asked.length !== 1 || asked[0] !== "/v1/activity?limit=30&offset=30") fail(`activity: "Load more" asked for ${asked}`);
+  const after = runInContext("activityFeed()", context);
+  if (!after.includes("an old one") || after.includes('data-act="activity:more"') || !after.includes("That is everything")) fail("activity: a short page did not end the list");
+  runInContext('ACTIVITY = []; ACTIVITY_MORE = false; NAV = { v: "chat" };', context);
+  console.log("activity: pages on by what is shown, and says when it has everything");
+}
 
 // Every button leads somewhere, and every request has somewhere to land.
 //

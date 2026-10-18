@@ -579,6 +579,26 @@ pub enum Refusal {
     NotStuckForYou,
     /// A decision that is not one of proceed, drop, hand_to, needs_ceo or needs_board.
     NotADecisionForStuck,
+    /// The rules of the office refuse a change (ADR 0119).
+    Office(super::office::Refused),
+    /// There is no such proposal for the office.
+    NoSuchProposal(i64),
+    /// The proposal is decided already.
+    ProposalClosed(i64),
+    /// A member has one vote on a proposal, and it is cast; the proposer's is its yes.
+    AlreadyVoted,
+    /// A downtime turn makes no work: it is for the office and the notebook.
+    InDowntime,
+    /// The owner's allowance for paid downtime is at most what the pool's day holds.
+    DowntimeOverPool {
+        /// The most it can be, in cents.
+        most_cents: i64,
+    },
+    /// Stuck work was to be tried again, but nobody can be woken for it now: nothing was
+    /// changed, and the item still waits.
+    NotWoken(super::wakes::Refused),
+    /// Stuck work was to be tried again, but no member has it to wake.
+    NobodyHasIt,
 }
 
 impl fmt::Display for Refusal {
@@ -740,6 +760,30 @@ impl fmt::Display for Refusal {
             Self::NotAProjectStep { from, asked } => {
                 write!(f, "a project that is {from} does not {asked}")
             }
+            Self::Office(refused) => refused.fmt(f),
+            Self::NoSuchProposal(id) => write!(f, "there is no proposal {id} for the office"),
+            Self::ProposalClosed(id) => write!(f, "proposal {id} is closed: it is decided"),
+            Self::AlreadyVoted => f.write_str(
+                "you already voted on this proposal (a proposer's own vote is its yes)",
+            ),
+            Self::InDowntime => f.write_str(
+                "this is a downtime turn: it makes no work. React to a proposal, propose a small \
+                 change to the office, or note an idea in your notebook",
+            ),
+            Self::NotWoken(why) => write!(
+                f,
+                "it was not tried again, and still waits here: nobody can be woken for it now \
+                 ({})",
+                why.plainly()
+            ),
+            Self::NobodyHasIt => f.write_str(
+                "it was not tried again, and still waits here: no member has this task to wake",
+            ),
+            Self::DowntimeOverPool { most_cents } => write!(
+                f,
+                "paid downtime is at most what the pool's day holds: {most_cents} cents, and at \
+                 least none"
+            ),
             Self::NotAManager => f.write_str(
                 "a member reports to another member, never itself and never in a circle; the \
                  CEO reports to the board",
