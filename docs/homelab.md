@@ -325,8 +325,12 @@ time, tells the node, and loads or unloads the model. It touches no other proces
 5. **In the console again:** enter the model's address as the node reaches the Mac,
    `http://<the Mac's address>:8080/v1`, the key (`cat` the key file), and a model name
    (anything: `llama-server` serves the one model it has), and save. The node refuses an address
-   that is not on your own network. Give the Mac a fixed address (a DHCP reservation in UniFi) so
-   this stays true.
+   that is not on your own network. Better than a fixed address: the Mac's name as the router
+   gives it out (`http://<name>.home:8080/v1`, `dig <name>.home @<router>` shows it), which
+   follows the Mac when its address changes. The node asks the router for names when
+   `ENDORA_LAN_DNS = <the router's address>` is in `local.mk` (it cannot ask a Pi-hole on its
+   own macvlan address: the NAS cannot reach those), and accepts a name only while everything it
+   resolves to is on your own network.
 6. **The firewall prompt.** The first time `llama-server` listens on the network, macOS asks
    whether to allow incoming connections for it: allow it. If you answered no, or it never asked,
    open *System Settings › Network › Firewall › Options* and allow `llama-server`.
