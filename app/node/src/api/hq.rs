@@ -292,6 +292,29 @@ pub(super) async fn hq_set_brain(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqRuntime {
+    runtime: String,
+}
+
+/// The owner sets what runs a member's turns (ADR 0117): Endora's worker, or Claude Code for a
+/// developer on Claude. HQ decides who may; the node records what was set.
+pub(super) async fn hq_set_runtime(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqRuntime>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/runtime"),
+        Some(json!({ "runtime": req.runtime })),
+    )
+    .await?;
+    let runtime = answer.0["runtime"].as_str().unwrap_or("").to_owned();
+    record(&state, &format!("you set member {id} to run on {runtime}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqName {
     name: String,
 }
@@ -733,6 +756,52 @@ mod tests {
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_owner_sets_a_members_runtime_through_the_node_and_it_is_recorded() {
+        let (url, seen) = fake(Arc::new(|_, body| {
+            if body.contains("lead") {
+                return (
+                    400,
+                    "application/json",
+                    json!({ "error": "no" }).to_string(),
+                );
+            }
+            (
+                200,
+                "application/json",
+                json!({ "member": 5, "runtime": "claude-code" }).to_string(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_set_runtime(
+            State(state.clone()),
+            Path(5),
+            Json(HqRuntime {
+                runtime: "claude-code".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.0["runtime"], "claude-code");
+        let sent = seen.lock().unwrap()[0].clone();
+        assert_eq!(sent.0, "/v1/members/5/runtime");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&sent.2).unwrap(),
+            json!({ "runtime": "claude-code" })
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a == "HQ: you set member 5 to run on claude-code"),
+            "{audit:?}"
+        );
     }
 
     #[tokio::test]

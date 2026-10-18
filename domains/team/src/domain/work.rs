@@ -392,6 +392,13 @@ pub enum Refusal {
         /// What was asked for.
         asked: String,
     },
+    /// Not a runtime a member in this role, on its brain, may run on (ADR 0117).
+    NotARuntime {
+        /// The member's role.
+        role: Role,
+        /// What was asked for.
+        asked: String,
+    },
     /// Only the lead and the reviewer keep the team's lessons.
     NotALessonKeeper,
     /// A goal's notes have no room for one more lesson.
@@ -585,6 +592,12 @@ impl fmt::Display for Refusal {
                     may.join(", ")
                 )
             }
+            Self::NotARuntime { role, asked } => write!(
+                f,
+                "a {} runs on the worker, not {asked:?}: Claude Code is a developer's on Claude \
+                 alone",
+                role.name()
+            ),
             Self::NotALessonKeeper => {
                 f.write_str("only the lead and the reviewer note the team's lessons")
             }

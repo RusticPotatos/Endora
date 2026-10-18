@@ -472,6 +472,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/goals/{id}/note", post(hq_goal_note))
         // What a member thinks with (ADR 0109).
         .route("/v1/hq/members/{id}/brain", post(hq_set_brain))
+        // What runs a member's turns (ADR 0117).
+        .route("/v1/hq/members/{id}/runtime", post(hq_set_runtime))
         // The owner renames a member, and keeps the CEO's house log with it (ADR 0111).
         .route("/v1/hq/members/{id}/name", post(hq_rename))
         .route("/v1/hq/house", post(hq_house_log))
@@ -737,6 +739,8 @@ fn relay_routes() -> Router<AppState> {
             "/team-relay/contracts/{name}",
             post(contracts::call).layer(axum::extract::DefaultBodyLimit::max(CONTRACT_CALL_MOST)),
         )
+        // What a Claude Code turn's sandbox says its own tools did (ADR 0117), by its hook.
+        .route("/team-relay/receipt", post(reported::sandbox_receipt))
         // A check job's bundle (ADR 0115), opened by the job's own token.
         .route(
             "/team-relay/check/{id}/bundle",
@@ -947,6 +951,8 @@ mod relay;
 mod contracts;
 // The bridge: Endora's capabilities as the team's tools (ADR 0108).
 mod bridge;
+// What a Claude Code turn's sandbox reports its own tools did (ADR 0117).
+mod reported;
 // The team gateway: HQ's doors for the Pi, passed on (ADR 0110).
 mod gateway;
 // The providers and ordered model lists on the AI screen (ADR 0105).

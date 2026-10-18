@@ -9,11 +9,16 @@
 //! In the workbench (ring 1, `ENDORA_WORKBENCH=1`), the disposable sandbox whose only way out
 //! is Endora's egress proxy, the model is also given a shell, run right there in `/work`.
 //!
+//! With `ENDORA_RUNTIME=claude-code` (ADR 0117), a developer on Claude in the workbench, the
+//! worker does the same bookkeeping and then hands the turn to Claude Code, headless; the same
+//! binary is Claude Code's MCP bridge (`--mcp`) and its tools' receipt hook (`--receipt`).
+//!
 //! What its exit says, for the runner: 0, a turn taken (the model's last word, or its rounds
 //! used up); 3, the turn was over before it ended (HQ or the relay answered 401 or 402); 1,
 //! anything else, with a short reason on stderr. The token is never printed.
 
 mod check;
+mod claude_code;
 mod repo;
 mod shell;
 mod turn;
@@ -30,6 +35,9 @@ const CONTRACTS: &str = "http://node:8788/team-relay/contracts";
 const MODEL: &str = "local";
 /// The most rounds of the model in a turn, unless told otherwise.
 const MOST_ROUNDS: u32 = 12;
+/// The most rounds of Claude Code in a turn, unless told otherwise: a round is one model call,
+/// and Claude Code reads and edits a file a round. The relay's money cap is the real limit.
+const MOST_CLAUDE_CODE_ROUNDS: u32 = 30;
 /// Where the workbench's shell runs: the sandbox's writable home, gone when the turn ends.
 const WORKBENCH_DIR: &str = "/work";
 
@@ -50,7 +58,18 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
     let Some(token) = given("ENDORA_RUN_TOKEN") else {
         return Err("ENDORA_RUN_TOKEN is not set: a turn starts only with its token".to_owned());
     };
+    // What takes the turn (ADR 0117): Endora's worker, or Claude Code.
+    let claude_code = match given("ENDORA_RUNTIME").as_deref() {
+        None | Some("worker") => false,
+        Some("claude-code") => true,
+        Some(other) => {
+            return Err(format!(
+                "ENDORA_RUNTIME must be worker or claude-code, not {other}"
+            ));
+        }
+    };
     let most_rounds = match given("ENDORA_MOST_ROUNDS") {
+        None if claude_code => MOST_CLAUDE_CODE_ROUNDS,
         None => MOST_ROUNDS,
         Some(n) => n.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
             format!("ENDORA_MOST_ROUNDS must be a whole number above zero, not {n}")
@@ -85,11 +104,16 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
         }
     };
     // The workbench (ring 1) says so: only there is the model given a shell.
-    let workbench = (given("ENDORA_WORKBENCH").as_deref() == Some("1")).then(|| {
-        given("ENDORA_WORKBENCH_DIR")
-            .unwrap_or_else(|| WORKBENCH_DIR.to_owned())
-            .into()
-    });
+    let workbench: Option<std::path::PathBuf> = (given("ENDORA_WORKBENCH").as_deref() == Some("1"))
+        .then(|| {
+            given("ENDORA_WORKBENCH_DIR")
+                .unwrap_or_else(|| WORKBENCH_DIR.to_owned())
+                .into()
+        });
+    // Claude Code is in the workbench image alone, and speaks only Anthropic's API.
+    if claude_code && (workbench.is_none() || api != Api::Anthropic) {
+        return Err("Claude Code takes a turn only in the workbench, on a Claude model".to_owned());
+    }
     Ok(Setup {
         token,
         mcp: given("ENDORA_HQ_MCP").unwrap_or_else(|| HQ_MCP.to_owned()),
@@ -100,10 +124,17 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
         most_rounds,
         workbench,
         effort,
+        claude_code,
     })
 }
 
 fn main() {
+    // Claude Code's helpers (ADR 0117): its MCP bridge, and its tools' receipt hook.
+    match std::env::args().nth(1).as_deref() {
+        Some("--mcp") => std::process::exit(claude_code::serve()),
+        Some("--receipt") => std::process::exit(claude_code::report()),
+        _ => {}
+    }
     // A check job (ADR 0115): no model, no turn, a job token alone; the workbench run to check
     // a submitted branch and report.
     if std::env::var("ENDORA_CHECK").as_deref() == Ok("1") {
@@ -123,7 +154,12 @@ fn main() {
             std::process::exit(FAILED);
         }
     };
-    let code = match turn::take(&setup) {
+    let taken = if setup.claude_code {
+        claude_code::take(&setup)
+    } else {
+        turn::take(&setup)
+    };
+    let code = match taken {
         Ok(Taken::Answered) => TAKEN,
         Ok(Taken::AskedTheOwner) => {
             eprintln!("worker: asked the owner, which ends the turn");
@@ -264,6 +300,39 @@ mod tests {
         for odd in ["extreme", "HIGH", "low\nENDORA_MODEL=x"] {
             assert!(at(odd).is_err(), "{odd}");
         }
+    }
+
+    #[test]
+    fn claude_code_takes_a_turn_only_in_the_workbench_on_claude() {
+        let at = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("ENDORA_RUN_TOKEN", "a-turns-token")];
+            all.extend_from_slice(pairs);
+            setup(env(&all)).map(|s| (s.claude_code, s.most_rounds))
+        };
+        let bench = [
+            ("ENDORA_WORKBENCH", "1"),
+            ("ENDORA_MODEL", "claude-haiku-5-5"),
+            ("ENDORA_RUNTIME", "claude-code"),
+        ];
+        assert_eq!(at(&bench), Ok((true, 30)), "thirty rounds unless told");
+        let mut told = bench.to_vec();
+        told.push(("ENDORA_MOST_ROUNDS", "8"));
+        assert_eq!(at(&told), Ok((true, 8)));
+        assert_eq!(at(&[]), Ok((false, 12)), "the worker by default");
+        assert_eq!(at(&[("ENDORA_RUNTIME", "worker")]), Ok((false, 12)));
+        assert!(
+            at(&[
+                ("ENDORA_RUNTIME", "claude-code"),
+                ("ENDORA_MODEL", "claude-haiku-5-5")
+            ])
+            .is_err(),
+            "not in the workbench"
+        );
+        assert!(
+            at(&[("ENDORA_RUNTIME", "claude-code"), ("ENDORA_WORKBENCH", "1")]).is_err(),
+            "not on Claude"
+        );
+        assert!(at(&[("ENDORA_RUNTIME", "codex")]).is_err());
     }
 
     #[test]

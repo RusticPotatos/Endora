@@ -14,6 +14,12 @@ reaches the sandbox as a bundle from the node's mirror of the fork (`repo_checko
 it as a bundle the node takes by its rules (`repo_submit`); the sandbox still holds no key and
 no remote, and the owner alone pushes.
 
+Amended 2026-10-18 by [0117](0117-claude-code-as-a-developer-runtime.md): the workbench image
+carries Claude Code (one pinned release, its settings read-only, no credential), and a
+developer's turn in it may be Claude Code's, started by the worker, reaching Claude only
+through the node's relay with the turn's token. The sandbox stays offline: with egress gone, a
+whole Claude Code turn was seen to reach nothing but the gateway's relay, HQ and the node.
+
 **Ring 1 is the sandbox on the Pi, with no internet: a turn's workbench reaches the node's team
 gateway and nothing else.** Built: the team gateway on the node's team listener, published on
 the house's network on 8788 (`/team-gateway/mcp` and `/team-gateway/runner/...`, passed on to

@@ -309,6 +309,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ok,
             act: false,
             confidential: false,
+            sandbox: false,
             at: now,
         })?;
         let document = self.store.add_document(&Document {
@@ -540,6 +541,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ok,
             act: true,
             confidential: false,
+            sandbox: false,
             at: self.clock.now(),
         })?;
         self.post_held_lock(

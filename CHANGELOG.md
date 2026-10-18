@@ -9,6 +9,25 @@ tagged release.
 
 ### Added
 
+- **Claude Code as a developer runtime** ([ADR 0117](docs/adr/0117-claude-code-as-a-developer-runtime.md)).
+  A member setting, `runtime`: `worker` (the default) or `claude-code`, offered only to a
+  developer on Claude and refused otherwise; the owner sets it with
+  `POST /v1/members/{id}/runtime` (through the node's `/v1/hq/members/{id}/runtime`), and HQ
+  seeds the pilot once: Rae on Claude Code, Zed on the worker. In the workbench the worker does
+  HQ's bookkeeping, checks the fork out, then runs `claude -p` headless with the member's brain
+  and effort, `dontAsk`, no prompts, no settings but the image's, one MCP server (the worker
+  itself, `endora-worker --mcp`, carrying HQ's tools and the node's contracts) and an explicit
+  tool list (files, and Bash for git and the lab's checks); Claude Code reaches Claude only
+  through the node's relay with the turn's token as Bearer, never a subscription login. Its
+  result is the last word. Its own tools' calls are posted by a hook (`endora-worker --receipt`)
+  to the node's new `POST /team-relay/receipt` and kept as **sandbox-reported** receipts, which
+  may be cited but never stand for a live reading. The relay passes a Claude Code turn's own
+  request shape and betas, still holding it to the member's brain, the turn's money, the
+  five-minute cache (1h rewritten) and the fence. The workbench image carries Claude Code
+  2.1.296 (digest-pinned, fetched at build time) and its managed settings (no updates,
+  telemetry, error reports or nonessential traffic; the receipt hook). The scorecard gives each
+  member's finished tasks and their cost, the pilot's measure. Built and run offline in the
+  arm64 image against a fake HQ, node and relay; not yet against Anthropic's API or on the Pi.
 - **Elastic staffing and notebooks** ([ADR 0118](docs/adr/0118-elastic-staffing-and-notebooks.md)).
   The team grows and shrinks with its work, and nobody is fired. A member on **furlough** is
   never woken, holds no task, is left out of every briefing's team and of the share arithmetic,

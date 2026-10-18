@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended 2026-10-17 by
+Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended 2026-10-18 by
+[0117](0117-claude-code-as-a-developer-runtime.md): a Claude Code turn's own tools (its Bash,
+Edit and the rest) leave **sandbox-reported** receipts, posted by its hook and recorded by the
+node with the turn's token but not witnessed by it; one may be cited for what the sandbox did,
+and a live criterion still needs a fresh reading the node witnessed. Amended 2026-10-17 by
 [0115](0115-the-engineering-wing-and-the-git-flow.md): a branch the wing submits and the check
 of it are receipts the node and HQ write (a document on the task holds the diff and the report),
 the check is the task's gate, a branch that fails its checks is sent back by HQ itself, and the

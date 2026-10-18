@@ -112,6 +112,7 @@ fn receipt(id: i64, run: i64, at: i64) -> CallReceipt {
         act: false,
         confidential: true,
         at,
+        sandbox: false,
     }
 }
 

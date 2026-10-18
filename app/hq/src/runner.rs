@@ -108,12 +108,18 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
         let turn = hq.runner().remote().and_then(RemoteRunner::next);
         Ok::<_, StoreError>(turn.map(|handed| {
             let member = members.into_iter().find(|m| m.id == handed.turn.member);
-            (handed, member)
+            // What runs it (ADR 0117): read before it is handed out; a member HQ cannot read
+            // runs on the worker.
+            let runtime = member
+                .as_ref()
+                .and_then(|m| hq.runtime_of(m.id).ok())
+                .unwrap_or_default();
+            (handed, member, runtime)
         }))
     })
     .await;
     match handed {
-        Ok(Ok(Some((handed, member)))) => Json(json!({
+        Ok(Ok(Some((handed, member, runtime)))) => Json(json!({
             "run": handed.turn.run.0,
             "lease": handed.lease,
             "token": handed.turn.token,
@@ -123,6 +129,8 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             "brain": member.as_ref().map_or("local", |m| m.brain.name()),
             "task": handed.turn.task.map(|t| t.0),
             "effort": handed.turn.effort.map(endora_team::domain::Effort::name),
+            // What runs the turn in the workbench (ADR 0117): `worker` or `claude-code`.
+            "runtime": runtime.name(),
         }))
         .into_response(),
         Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),

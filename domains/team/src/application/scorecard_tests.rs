@@ -245,6 +245,58 @@ fn a_finished_task_costs_its_whole_life_and_a_dropped_one_is_waste() {
 }
 
 #[test]
+fn each_members_finished_tasks_and_their_cost_compare_two_developers() {
+    // The Claude Code pilot (ADR 0117): Rae (2) and Zed (3), each with a task finished today.
+    let runs = [
+        spending(
+            run(1, 2, Some(1), Some(NOON), Some(Label::Advanced)),
+            120_000,
+        ),
+        spending(
+            run(2, 2, Some(1), Some(NOON), Some(Label::Advanced)),
+            30_000,
+        ),
+        spending(
+            run(3, 3, Some(2), Some(NOON), Some(Label::Advanced)),
+            40_000,
+        ),
+        spending(run(4, 3, Some(3), Some(NOON), Some(Label::TalkOnly)), 5_000),
+    ];
+    let mut tasks = [
+        task(1, TaskStatus::Done),
+        task(2, TaskStatus::Done),
+        task(3, TaskStatus::Doing),
+    ];
+    tasks[0].assignee = Some(MemberId(2));
+    tasks[1].assignee = Some(MemberId(3));
+    tasks[2].assignee = Some(MemberId(3));
+    let events = [
+        changed(1, NOON, 1, TaskStatus::Done),
+        changed(2, NOON, 2, TaskStatus::Done),
+    ];
+    let card = score(&record(&runs, &tasks, &[], &events), &today());
+    let of = |m: i64| {
+        let mine = card
+            .turns
+            .members
+            .iter()
+            .find(|t| t.member == MemberId(m))
+            .unwrap();
+        (mine.done, mine.done_spent)
+    };
+    assert_eq!(of(2), (1, 150_000));
+    assert_eq!(of(3), (1, 40_000), "an open task is not a finished one");
+    let shown = card.json();
+    let rae = &shown["turns"]["members"][0];
+    assert_eq!(
+        (rae["done"].clone(), rae["per_done"].clone()),
+        (json!(1), json!(150_000))
+    );
+    let none = score(&record(&runs, &[], &[], &[]), &today()).json();
+    assert_eq!(none["turns"]["members"][0]["per_done"], Value::Null);
+}
+
+#[test]
 fn alarms_count_the_tasks_they_made_and_how_long_each_took_to_close() {
     let fired = |id, at, task| {
         event(

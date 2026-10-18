@@ -206,6 +206,8 @@ pub struct Turn {
     cloud: Option<String>,
     /// How hard Claude tries this turn, as HQ decided, or `None` for the model's own.
     effort: Option<String>,
+    /// Whether Claude Code runs it (ADR 0117), started by the worker in the workbench.
+    claude_code: bool,
 }
 
 /// Why a turn HQ handed out was refused.
@@ -221,6 +223,9 @@ pub enum Refused {
     Brain(u64, u64),
     /// Its effort is not one of Anthropic's five.
     Effort(u64, u64),
+    /// Its runtime is neither `worker` nor `claude-code`, or Claude Code for a brain that is
+    /// not Claude (ADR 0117).
+    Runtime(u64, u64),
 }
 
 /// The efforts a turn may name: Anthropic's own, each of which goes into the worker's
@@ -284,6 +289,14 @@ impl Turn {
         let Ok(effort) = effort_of(&handed["effort"]) else {
             return Err(Refused::Effort(run, lease));
         };
+        // What runs it (ADR 0117): the worker unless HQ says Claude Code, which speaks only
+        // Anthropic's API, so only for a Claude brain. An older HQ says nothing: the worker.
+        let claude_code = match &handed["runtime"] {
+            Value::Null => false,
+            Value::String(r) if r == "worker" => false,
+            Value::String(r) if r == "claude-code" && cloud.is_some() => true,
+            _ => return Err(Refused::Runtime(run, lease)),
+        };
         let text = |key: &str| handed[key].as_str().unwrap_or("").to_owned();
         Ok(Self {
             run,
@@ -294,6 +307,7 @@ impl Turn {
             task: handed["task"].as_u64(),
             cloud,
             effort,
+            claude_code,
         })
     }
 }
@@ -330,6 +344,10 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
     if work.workbench {
         env.push("ENDORA_WORKBENCH=1".to_owned());
         tmpfs["/work"] = json!(WORK_FOLDER);
+    }
+    // Claude Code (ADR 0117) is in the workbench image alone; the worker starts it there.
+    if turn.claude_code && work.workbench {
+        env.push("ENDORA_RUNTIME=claude-code".to_owned());
     }
     let mut spec = json!({
         "Image": work.image,
@@ -678,6 +696,15 @@ impl<D: Docker> Runner<D> {
                 continue;
             }
             match Turn::from_hq(&handed) {
+                // Claude Code is in the workbench image alone: elsewhere the turn is refused,
+                // never quietly run on the worker instead (the pilot compares the two).
+                Ok(turn) if turn.claude_code && !self.work.workbench => {
+                    self.refused(
+                        turn.run,
+                        turn.lease,
+                        "Claude Code runs only in the workbench",
+                    );
+                }
                 Ok(turn) => self.start(&turn, now),
                 Err(Refused::NoRun) => {
                     eprintln!("runner: refused a turn from HQ whose run is not a number");
@@ -693,6 +720,9 @@ impl<D: Docker> Runner<D> {
                 }
                 Err(Refused::Effort(run, lease)) => {
                     self.refused(run, lease, "its effort is not one of the five");
+                }
+                Err(Refused::Runtime(run, lease)) => {
+                    self.refused(run, lease, "its runtime is not one the runner can start");
                 }
             }
         }
@@ -1207,6 +1237,94 @@ mod tests {
                     "Dns": ["192.0.2.1"],
                 },
             })]
+        );
+    }
+
+    #[test]
+    fn a_claude_code_turn_runs_in_the_workbench_alone_and_only_on_claude() {
+        let gateway = "http://192.168.1.10:8788";
+        let bench = |workbench: bool| Work {
+            image: "endora-workbench:latest".to_owned(),
+            network: "endora_sandbox".to_owned(),
+            model_url: format!("{gateway}/team-relay/local/v1"),
+            cloud_url: format!("{gateway}/team-relay/v1"),
+            hq_mcp: format!("{gateway}/team-gateway/mcp"),
+            capacity: 4,
+            workbench,
+            check_bundle: format!("{gateway}/team-relay/check/"),
+            check_done: format!("{gateway}/team-gateway/runner/check/"),
+        };
+        let handed = |run: u64, brain: &str, runtime: Value| {
+            let mut t = turn(run);
+            t["brain"] = json!(brain);
+            t["runtime"] = runtime;
+            t
+        };
+        let hq = FakeHq::new(vec![
+            handed(1, "claude-haiku-5-5", json!("claude-code")),
+            handed(2, "claude-haiku-5-5", json!("worker")),
+            handed(3, "local", json!("claude-code")),
+            handed(4, "claude-haiku-5-5", json!("codex")),
+        ]);
+        let docker = FakeDocker::default();
+        let mut runner = Runner::new(
+            docker.clone(),
+            Hq::new(&hq.url, token_file("claude-code")).unwrap(),
+            bench(true),
+        );
+        runner.step(T0);
+        let envs: Vec<Vec<String>> = docker
+            .specs()
+            .iter()
+            .map(|s| {
+                s["Env"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| e.as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(envs.len(), 2, "two started: {envs:?}");
+        assert!(envs[0].contains(&"ENDORA_RUNTIME=claude-code".to_owned()));
+        assert!(envs[0].contains(&"ENDORA_MODEL=claude-haiku-5-5".to_owned()));
+        assert!(
+            !envs[1].iter().any(|e| e.starts_with("ENDORA_RUNTIME")),
+            "the worker is the default"
+        );
+        let endings = hq.endings();
+        let why: Vec<(u64, String)> = endings
+            .iter()
+            .map(|(run, e)| (*run, e["why"].as_str().unwrap().to_owned()))
+            .collect();
+        assert_eq!(
+            why,
+            [
+                (
+                    3,
+                    "its container never started: its runtime is not one the runner can start"
+                        .to_owned()
+                ),
+                (
+                    4,
+                    "its container never started: its runtime is not one the runner can start"
+                        .to_owned()
+                ),
+            ]
+        );
+        // Outside the workbench there is no Claude Code: refused, never run on the worker.
+        let hq = FakeHq::new(vec![handed(5, "claude-haiku-5-5", json!("claude-code"))]);
+        let docker = FakeDocker::default();
+        let mut runner = Runner::new(
+            docker.clone(),
+            Hq::new(&hq.url, token_file("claude-code-nas")).unwrap(),
+            bench(false),
+        );
+        runner.step(T0);
+        assert!(docker.specs().is_empty());
+        assert_eq!(
+            hq.endings()[0].1["why"],
+            "its container never started: Claude Code runs only in the workbench"
         );
     }
 

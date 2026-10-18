@@ -1404,3 +1404,397 @@ fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_sta
         "{system}"
     );
 }
+
+// ---- Claude Code as the runtime (ADR 0117) ----------------------------------------------------
+
+/// A folder of a test's own, fresh.
+fn folder(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("endora-cc-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A stand-in for Claude Code: a script that keeps its arguments, environment, stdin and
+/// folder in `dir`, and prints `result` as Claude Code's JSON.
+fn stand_in(dir: &std::path::Path, result: &Value) -> std::path::PathBuf {
+    let script = dir.join("claude");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/bash\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > {d}/args\nenv > {d}/env\npwd > {d}/cwd\ncat > {d}/stdin\nprintf '%s\\n' '{r}'\n",
+            d = dir.display(),
+            r = result.to_string().replace('\'', "")
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&script, permissions).unwrap();
+    script
+}
+
+/// The worker's environment for a Claude Code turn in the workbench, as the runner gives it.
+fn with_claude_code(
+    hq: &str,
+    relay: &str,
+    node: &str,
+    work: &std::path::Path,
+    claude: &std::path::Path,
+) -> Vec<(&'static str, String)> {
+    let mut env = on_claude(hq, relay, node);
+    env.retain(|(k, _)| *k != "ENDORA_MODEL");
+    env.extend([
+        ("ENDORA_MODEL", "claude-haiku-5-5".to_owned()),
+        ("ENDORA_EFFORT", "low".to_owned()),
+        ("ENDORA_WORKBENCH", "1".to_owned()),
+        ("ENDORA_WORKBENCH_DIR", work.display().to_string()),
+        ("ENDORA_RUNTIME", "claude-code".to_owned()),
+        ("ENDORA_CLAUDE", claude.display().to_string()),
+        ("PATH", std::env::var("PATH").unwrap_or_default()),
+    ]);
+    env
+}
+
+#[test]
+fn a_claude_code_turn_is_hqs_bookkeeping_then_claude_code_headless_then_its_last_word() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let dir = folder("turn");
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let result = json!({ "type": "result", "subtype": "success", "is_error": false,
+        "result": format!("Listed what is watched; nothing about {TOKEN}."), "session_id": "s",
+        "total_cost_usd": 0.0042, "num_turns": 6 });
+    let claude = stand_in(&dir, &result);
+    let out = worker(&with_claude_code(
+        &hq_url,
+        "http://192.168.1.10:8788",
+        &node_url,
+        &work,
+        &claude,
+    ));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(
+        methods(&to_hq),
+        [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "tools/call my_turn",
+            "tools/call claim",
+            "tools/call post",
+        ],
+        "the worker's own bookkeeping; the model's calls go through the bridge"
+    );
+    let last = to_hq.lock().unwrap()[5].body["params"]["arguments"].clone();
+    let text = last["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("Listed what is watched; nothing about [the turn's token]."),
+        "{text}"
+    );
+    assert!(
+        text.contains("This turn made no tool calls.")
+            && text.contains("Claude Code took 6 rounds"),
+        "{text}"
+    );
+    assert_eq!(last["last_word"], true);
+
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+    let args: Vec<String> = read("args").lines().map(str::to_owned).collect();
+    let at = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
+    assert_eq!(args[0], "-p");
+    assert_eq!(at("--model"), "claude-haiku-5-5");
+    assert_eq!(at("--effort"), "low");
+    assert_eq!(at("--max-turns"), "30");
+    for tool in [
+        "mcp__endora__post",
+        "mcp__endora__homelab_status",
+        "mcp__endora__restart_container",
+        "Bash(git *)",
+    ] {
+        assert!(args.contains(&tool.to_owned()), "{tool}: {args:?}");
+    }
+    assert!(
+        !args.iter().any(|a| a.contains(TOKEN)),
+        "no token in an argument"
+    );
+    let env = read("env");
+    assert!(
+        env.contains("ANTHROPIC_BASE_URL=http://192.168.1.10:8788/team-relay\n"),
+        "{env}"
+    );
+    assert!(env.contains(&format!("ANTHROPIC_AUTH_TOKEN={TOKEN}\n")));
+    assert!(env.contains("ANTHROPIC_SMALL_FAST_MODEL=claude-haiku-5-5\n"));
+    assert!(
+        !env.contains("ENDORA_RUN_TOKEN="),
+        "the worker's own name for it is not passed on"
+    );
+    let stdin = read("stdin");
+    assert!(
+        stdin.starts_with("You are Jane, the team's developer."),
+        "{stdin}"
+    );
+    assert!(
+        stdin.contains("your task was claimed for you: Task 7 is yours."),
+        "{stdin}"
+    );
+    let files = work.join(".endora");
+    let mcp = std::fs::read_to_string(files.join("mcp.json")).unwrap();
+    assert!(
+        !mcp.contains(TOKEN) && mcp.contains("${ENDORA_TURN_TOKEN}"),
+        "{mcp}"
+    );
+    let rules = std::fs::read_to_string(files.join("rules.md")).unwrap();
+    assert!(
+        rules.contains("mcp__endora__") && rules.contains("sandbox-reported"),
+        "{rules}"
+    );
+    assert_eq!(
+        read("cwd").trim(),
+        std::fs::canonicalize(&work).unwrap().display().to_string()
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_claude_code_turn_the_relay_ended_exits_3_and_a_broken_one_1() {
+    for (result, code) in [
+        (
+            json!({ "type": "result", "subtype": "success", "is_error": true, "result": "API Error: 402",
+                 "api_error_status": 402 }),
+            3,
+        ),
+        (
+            json!({ "type": "result", "subtype": "error_max_turns", "is_error": true, "num_turns": 30 }),
+            0,
+        ),
+        (json!({ "type": "nothing" }), 1),
+    ] {
+        let (hq_url, to_hq) = hq(None);
+        let (node_url, _) = node(json!([]), None);
+        let dir = folder(&format!("ended-{code}"));
+        let claude = stand_in(&dir, &result);
+        let out = worker(&with_claude_code(
+            &hq_url,
+            "http://127.0.0.1:9",
+            &node_url,
+            &dir,
+            &claude,
+        ));
+        assert_eq!(out.status.code(), Some(code), "{result}: {}", said(&out));
+        assert!(!said(&out).contains(TOKEN));
+        assert!(
+            !methods(&to_hq).contains(&"tools/call post".to_owned()),
+            "no last word: {result}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    // Outside the workbench, or on the house's model, there is no Claude Code.
+    let (hq_url, _) = hq(None);
+    let mut env = usual(&hq_url, "http://127.0.0.1:9");
+    env.push(("ENDORA_RUNTIME", "claude-code".to_owned()));
+    assert_eq!(worker(&env).status.code(), Some(1));
+}
+
+/// Runs the worker as Claude Code's bridge, with `lines` on its stdin: what it answered.
+fn bridge(env: &[(&'static str, String)], lines: &[Value]) -> (Vec<Value>, Output) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_endora-worker"))
+        .arg("--mcp")
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    for line in lines {
+        writeln!(stdin, "{line}").unwrap();
+    }
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    let answers = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    (answers, out)
+}
+
+#[test]
+fn the_bridge_serves_hqs_tools_and_the_nodes_and_a_question_ends_the_turn() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, to_node) = node(contracts_that_say_what_they_are(), None);
+    let dir = folder("bridge");
+    let ledger = dir.join("did.json");
+    let env = vec![
+        ("ENDORA_TURN_TOKEN", TOKEN.to_owned()),
+        ("ENDORA_HQ_MCP", format!("{hq_url}/v1/team/mcp")),
+        (
+            "ENDORA_CONTRACTS",
+            format!("{node_url}/team-relay/contracts"),
+        ),
+        ("ENDORA_WORKBENCH_DIR", dir.display().to_string()),
+        ("ENDORA_MEMBER", "Jane".to_owned()),
+        ("ENDORA_TASK", "7".to_owned()),
+        ("ENDORA_LEDGER", ledger.display().to_string()),
+    ];
+    let rpc = |id: u64, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    let call = |id: u64, name: &str, arguments: Value| {
+        rpc(
+            id,
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+        )
+    };
+    let (answers, out) = bridge(
+        &env,
+        &[
+            rpc(
+                1,
+                "initialize",
+                json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "claude-code" } }),
+            ),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+            rpc(2, "tools/list", json!({})),
+            call(3, "homelab_status", json!({})),
+            call(
+                4,
+                "post",
+                json!({ "task": 7, "text": format!("found it, token {TOKEN}") }),
+            ),
+            call(5, "ask_owner", json!({ "text": "May I restart sonarr?" })),
+            call(6, "post", json!({ "task": 7, "text": "more" })),
+            rpc(7, "resources/list", json!({})),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(
+        answers.len(),
+        7,
+        "a notification takes no answer: {answers:?}"
+    );
+    assert_eq!(answers[0]["result"]["serverInfo"]["name"], "endora");
+    let listed: Vec<&str> = answers[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            "my_turn",
+            "claim",
+            "post",
+            "set_status",
+            "homelab_status",
+            "container_logs",
+            "restart_container"
+        ]
+    );
+    assert_eq!(answers[2]["result"]["isError"], false);
+    assert!(
+        answers[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("services")
+    );
+    assert_eq!(answers[4]["result"]["isError"], false);
+    assert!(
+        answers[4]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("That ends your turn")
+    );
+    assert_eq!(
+        answers[5]["result"]["isError"], true,
+        "nothing after a question"
+    );
+    assert_eq!(answers[6]["error"]["code"], -32601);
+    let posted: Vec<Value> = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.method() == "tools/call post")
+        .map(|s| s.body["params"]["arguments"].clone())
+        .collect();
+    assert_eq!(posted.len(), 1);
+    assert_eq!(
+        posted[0]["text"], "found it, token [the turn's token]",
+        "never the token on"
+    );
+    assert!(
+        to_node
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.path == "/team-relay/contracts/homelab_status")
+    );
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&ledger).unwrap()).unwrap();
+    assert_eq!(kept["asked"], true);
+    assert_eq!(kept["calls"][0][0], "read the home lab's state");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_hook_posts_claude_codes_own_tools_to_the_node_and_never_blocks_the_turn() {
+    let (node_url, to_node) = fake(Box::new(|_, _| (200, json!({ "receipt": 52 }).to_string())));
+    let hook = |env: &[(&'static str, String)], input: &Value| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_endora-worker"))
+            .arg("--receipt")
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let env = vec![
+        ("ENDORA_TURN_TOKEN", TOKEN.to_owned()),
+        (
+            "ENDORA_RECEIPT_URL",
+            format!("{node_url}/team-relay/receipt"),
+        ),
+    ];
+    let bash = json!({ "session_id": "s", "transcript_path": "/work/.claude/x.jsonl", "cwd": "/work/repo",
+        "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": { "command": "git status" },
+        "tool_response": { "stdout": "clean", "stderr": "", "interrupted": false }, "tool_use_id": "toolu_1" });
+    let out = hook(&env, &bash);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        out.stdout.is_empty(),
+        "a hook that prints says nothing to Claude Code"
+    );
+    let mcp = json!({ "hook_event_name": "PostToolUse", "tool_name": "mcp__endora__post", "tool_input": {} });
+    assert_eq!(hook(&env, &mcp).status.code(), Some(0));
+    let sent = to_node.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1, "the bridge's own tools are not reported");
+    assert_eq!(sent[0].path, "/team-relay/receipt");
+    assert_eq!(
+        sent[0].header("authorization"),
+        Some(format!("Bearer {TOKEN}").as_str())
+    );
+    assert_eq!(sent[0].body["tool_name"], "Bash");
+    assert_eq!(sent[0].body["tool_input"]["command"], "git status");
+    assert!(sent[0].body.get("transcript_path").is_none());
+    // A node that is not there leaves the turn going, and the token unsaid.
+    let gone = vec![
+        ("ENDORA_TURN_TOKEN", TOKEN.to_owned()),
+        (
+            "ENDORA_RECEIPT_URL",
+            "http://127.0.0.1:9/team-relay/receipt".to_owned(),
+        ),
+    ];
+    let out = hook(&gone, &bash);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(!said(&out).contains(TOKEN));
+}

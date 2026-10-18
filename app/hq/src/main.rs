@@ -363,6 +363,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(None) => {}
             Err(e) => eprintln!("hq: could not seed the wing: {e}"),
         }
+        // The Claude Code pilot (ADR 0117), once: one wing developer on it, the other on the
+        // worker, for the scorecard to compare.
+        match hq.seed_claude_code_pilot() {
+            Ok(Some(member)) => println!("hq: member {} runs on Claude Code (the pilot)", member.0),
+            Ok(None) => {}
+            Err(e) => eprintln!("hq: could not seed the Claude Code pilot: {e}"),
+        }
     }
 
     // The tick: every `tick_every` seconds; a late one runs once.

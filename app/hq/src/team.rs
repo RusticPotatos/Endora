@@ -131,9 +131,17 @@ pub(crate) struct TokenAsked {
 /// spend. Signed by the node; nothing else may ask.
 pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAsked>) -> Response {
     let hq = state.hq.clone();
-    let found = tokio::task::spawn_blocking(move || hq.turn_of(&req.token)).await;
+    let found = tokio::task::spawn_blocking(move || {
+        let Some((run, member)) = hq.turn_of(&req.token)? else {
+            return Ok(None);
+        };
+        // What runs the turn (ADR 0117): the relay passes a Claude Code turn's own shape.
+        let runtime = hq.runtime_of(member.id).unwrap_or_default();
+        Ok::<_, endora_team::application::EngineError>(Some((run, member, runtime)))
+    })
+    .await;
     match found {
-        Ok(Ok(Some((run, member)))) => Json(json!({
+        Ok(Ok(Some((run, member, runtime)))) => Json(json!({
             "run": run.id.0,
             "member": member.name,
             "role": member.role.name(),
@@ -143,6 +151,7 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             // and only such a turn reaches Anthropic.
             "cloud": member.brain.cloud(),
             "brain": member.brain.name(),
+            "runtime": runtime.name(),
             // The task the turn is on (ADR 0115): the node names the wing's branches by it.
             "task": run.task.map(|t| t.0),
         }))
@@ -212,6 +221,10 @@ pub(crate) struct ReceiptTold {
     act: bool,
     #[serde(default)]
     confidential: bool,
+    /// Whether the turn's sandbox reported it rather than the node witnessing it (ADR 0117):
+    /// the node says so for what a Claude Code hook posts.
+    #[serde(default)]
+    sandbox: bool,
 }
 
 /// For the node's contracts and bridge (ADR 0114): one call a turn made of Endora's tools,
@@ -224,17 +237,18 @@ pub(crate) async fn receipt(
 ) -> Response {
     let hq = state.hq.clone();
     let recorded = tokio::task::spawn_blocking(move || {
-        hq.record_receipt(
-            &req.token,
-            &endora_team::application::engine::Called {
-                tool: req.tool,
-                args: req.args,
-                excerpt: req.excerpt,
-                ok: req.ok,
-                act: req.act,
-                confidential: req.confidential,
-            },
-        )
+        let called = endora_team::application::engine::Called {
+            tool: req.tool,
+            args: req.args,
+            excerpt: req.excerpt,
+            ok: req.ok,
+            act: req.act,
+            confidential: req.confidential,
+        };
+        if req.sandbox {
+            return hq.record_sandbox_receipt(&req.token, &called);
+        }
+        hq.record_receipt(&req.token, &called)
     })
     .await;
     match recorded {

@@ -315,6 +315,17 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
+    /// What runs a member's turns, as the owner set it (ADR 0117): the worker for a member
+    /// never set, or one the store does not know.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn runtime_of(&self, member: MemberId) -> Stored<crate::domain::Runtime>;
+    /// Sets what runs a member's turns.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_runtime(&self, member: MemberId, runtime: crate::domain::Runtime) -> Stored<()>;
     /// Renames a member.
     ///
     /// # Errors

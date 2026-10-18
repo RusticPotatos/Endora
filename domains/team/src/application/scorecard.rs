@@ -78,6 +78,12 @@ pub struct MemberTurns {
     pub unlabelled: usize,
     /// What they spent, in micros.
     pub spent: Micros,
+    /// How many tasks assigned to the member reached done in the window: with
+    /// [`Self::done_spent`], the cost of a finished task by member, which the Claude Code pilot
+    /// is measured by (ADR 0117).
+    pub done: usize,
+    /// Everything ever spent on turns on those tasks, by anyone.
+    pub done_spent: Micros,
 }
 
 /// The turns that ended in a window.
@@ -217,7 +223,7 @@ pub fn score(record: &Record<'_>, window: &Window) -> Scorecard {
             .first()
             .map(|e| e.at)
             .filter(|at| *at > window.from),
-        turns: turns(record.runs, window),
+        turns: with_done(turns(record.runs, window), record, window),
         review: review(record.events, window),
         finished: finished(record, window),
         alarms: alarms(record, window),
@@ -249,6 +255,8 @@ fn turns(runs: &[Run], window: &Window) -> Turns {
                     nothing: 0,
                     unlabelled: 0,
                     spent: 0,
+                    done: 0,
+                    done_spent: 0,
                 });
                 turns.members.len() - 1
             }
@@ -332,6 +340,28 @@ fn finished(record: &Record<'_>, window: &Window) -> Finished {
         dropped: dropped.len(),
         dropped_spent: dropped.iter().map(|t| spent_on(record.runs, *t)).sum(),
     }
+}
+
+/// Each member's turns with the tasks assigned to it that reached done in the window, and
+/// what their whole lives cost.
+fn with_done(mut turns: Turns, record: &Record<'_>, window: &Window) -> Turns {
+    let done: HashSet<TaskId> = record
+        .events
+        .iter()
+        .filter(|e| window.holds(e.at) && status_of(e) == Some(TaskStatus::Done))
+        .filter_map(task_of)
+        .collect();
+    for mine in &mut turns.members {
+        let theirs: Vec<TaskId> = record
+            .tasks
+            .iter()
+            .filter(|t| t.assignee == Some(mine.member) && done.contains(&t.id))
+            .map(|t| t.id)
+            .collect();
+        mine.done = theirs.len();
+        mine.done_spent = theirs.iter().map(|t| spent_on(record.runs, *t)).sum();
+    }
+    turns
 }
 
 /// When a task closed (done or dropped) at or after `from`, if the record says it did.
@@ -438,6 +468,8 @@ impl Scorecard {
                 "members": self.turns.members.iter().map(|m| json!({
                     "member": m.member.0, "turns": m.turns, "nothing": m.nothing,
                     "unlabelled": m.unlabelled, "spent": m.spent,
+                    "done": m.done, "done_spent": m.done_spent,
+                    "per_done": (m.done > 0).then(|| m.done_spent / m.done as Micros),
                 })).collect::<Vec<_>>(),
             },
             "review": {

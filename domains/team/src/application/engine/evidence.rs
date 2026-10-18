@@ -58,6 +58,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// [`EngineError::Unknown`] for a token that opens no running turn; a store failure.
     pub fn record_receipt(&self, token: &str, called: &Called) -> Done<i64> {
+        self.record(token, called, false)
+    }
+
+    /// The node records what a turn's sandbox reported its own tools did (ADR 0117): Claude
+    /// Code's Bash, Edit and the rest, posted by its hook with the turn's token. Kept as a
+    /// receipt marked sandbox-reported: it may be cited, but no live criterion rests on it.
+    ///
+    /// # Errors
+    /// As [`Self::record_receipt`].
+    pub fn record_sandbox_receipt(&self, token: &str, called: &Called) -> Done<i64> {
+        self.record(token, called, true)
+    }
+
+    fn record(&self, token: &str, called: &Called, sandbox: bool) -> Done<i64> {
         let _held = self.held();
         let Some(id) = self.store.run_of_token(token)? else {
             return Err(EngineError::Unknown("running turn with that token"));
@@ -80,6 +94,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ok: called.ok,
             act: called.act,
             confidential: called.confidential,
+            sandbox,
             at: self.clock.now(),
         };
         let id = self.store.add_call_receipt(&receipt)?;
@@ -87,7 +102,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::ReceiptRecorded,
             json!({ "receipt": id, "run": run.id.0, "member": run.member.0,
                     "task": run.task.map(|t| t.0), "tool": receipt.tool, "ok": receipt.ok,
-                    "act": receipt.act }),
+                    "act": receipt.act, "sandbox": sandbox }),
         )?;
         Ok(id)
     }
@@ -121,6 +136,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     run: found.run,
                     ok: found.ok,
                     in_work: about(found.task),
+                    witnessed: !found.sandbox,
                 },
             },
             Ref::Task(id) => match self.store.task(id)? {

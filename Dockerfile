@@ -174,8 +174,42 @@ RUN python3 -m venv /opt/venv \
     && find /opt/venv -type d -name '__pycache__' -prune -exec rm -rf '{}' + \
     && rm -rf /root/.ansible /root/.cache /opt/venv/collections/ansible_collections/*/*/docs \
     && chmod -R a+rX /opt/venv
+# Claude Code (ADR 0117), a developer's runtime when the owner chooses it: the native binary of
+# one pinned release, fetched at build time from Anthropic's release bucket and checked against
+# the digest pinned here (the release manifest's, per architecture); the sandbox never fetches it,
+# never updates it, and holds no credential for it. 2.1.293 is the first that knows Haiku 5.5,
+# 2.1.295 the first whose hooks can block; this one is a week older than the newest.
+ARG CLAUDE_CODE_VERSION=2.1.296
+ARG CLAUDE_CODE_SHA256_ARM64=sha256:f1f6e96e0d8342b9dbf41d7e88255397a6a52ce3d8736ad6a4c6b59c9b62fefa
+ARG CLAUDE_CODE_SHA256_AMD64=sha256:24972e3bc859fab2b46ed4c1e51f7d6130f06d3bd550811a114640de3370d0de
+ARG TARGETARCH
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      arm64) platform=linux-arm64; sum="$CLAUDE_CODE_SHA256_ARM64" ;; \
+      amd64) platform=linux-x64; sum="$CLAUDE_CODE_SHA256_AMD64" ;; \
+      *) echo "no Claude Code for $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/claude \
+      "https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION}/${platform}/claude"; \
+    echo "${sum#sha256:}  /usr/local/bin/claude" | sha256sum -c -; \
+    chmod 755 /usr/local/bin/claude
+# Its settings, read-only and above any other (managed): no updates, telemetry, error reports,
+# feedback or other traffic but the model's; no experimental betas; the five-minute cache the
+# relay meters; no attribution of its own (the wing's commits carry Endora's trailer); the web
+# tools refused; and the hook that reports each of its own tools to the node as a
+# sandbox-reported receipt.
+# (The folder is made first: one made by COPY --chmod takes the file's mode, and Claude Code,
+# not root, could then not open it, and would run on none of these settings, silently.)
+RUN install -d -m 755 /etc/claude-code
+COPY --chmod=444 deploy/workbench/managed-settings.json /etc/claude-code/managed-settings.json
 COPY --from=builder /endora-worker /usr/local/bin/endora-worker
 ENV HOME=/work
+# Claude Code keeps its state in the turn's own /work (a tmpfs, gone with the turn), and is
+# told the same as its settings say before it reads them.
+ENV CLAUDE_CONFIG_DIR=/work/.claude
+ENV DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 \
+    CLAUDE_CODE_PROMPT_CACHE_TTL=5m
 ENV ENDORA_WORKBENCH=1
 ENV PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV ANSIBLE_COLLECTIONS_PATH=/opt/venv/collections

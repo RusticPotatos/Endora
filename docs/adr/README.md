@@ -271,6 +271,7 @@ of an existing record and take the next number.
 | [0113](0113-projects-budgets-and-reports-to.md) | Projects, budgets and reports_to | — |
 | [0114](0114-evidence-acceptance-criteria-and-the-tester.md) | Evidence, acceptance criteria and the tester | — |
 | [0115](0115-the-engineering-wing-and-the-git-flow.md) | The engineering wing and the git flow | — |
+| [0117](0117-claude-code-as-a-developer-runtime.md) | Claude Code as a developer runtime | — |
 | [0118](0118-elastic-staffing-and-notebooks.md) | Elastic staffing and notebooks | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
