@@ -25,6 +25,21 @@ const MOST: usize = 2 * RATE as usize * CHANNELS;
 /// so a source that trickles does not crackle.
 const PRIME: usize = RATE as usize / 5 * CHANNELS;
 
+/// How much a real-time source (an AirPlay door) may stand behind the mix, beyond the block
+/// being taken, before the excess is dropped: 60 ms, in samples.
+pub const PACED_TARGET: usize = RATE as usize * 60 / 1000 * CHANNELS;
+
+/// How many takes (20 ms each) the backlog's lowest point is watched over before a standing
+/// excess is called one: half a second. A burst from the pipe passes; a drift stays.
+const PACED_WINDOW: u32 = 25;
+
+/// The most dropped in one take, in frames: 10 ms. A larger excess is worked off over
+/// several takes, so no single skip is audible.
+const PACED_SKIP: usize = RATE as usize / 100;
+
+/// The crossfade over a skip, in frames: 5 ms.
+const PACED_FADE: usize = RATE as usize / 200;
+
 /// The protocols a station may use. Not `file`, not `concat`: a playlist must not be able
 /// to point `ffmpeg` at something on the hub's own disk.
 const STATION_PROTOCOLS: &str = "http,https,tls,tcp,crypto";
@@ -39,6 +54,28 @@ pub struct Buffer {
     primed: bool,
     most: usize,
     prime: usize,
+    pace: Option<Pace>,
+}
+
+/// What keeps a real-time source's backlog from growing: its sender's clock is not ours, and
+/// if it runs a little fast the unread sound would pile up, delaying everything more each
+/// minute. The lowest the backlog sinks to over a window is the standing excess; it is
+/// dropped a few milliseconds a take, crossfaded.
+#[derive(Debug, Clone, Copy)]
+struct Pace {
+    floor: usize,
+    takes: u32,
+    excess: usize,
+}
+
+impl Pace {
+    const fn new() -> Self {
+        Self {
+            floor: usize::MAX,
+            takes: 0,
+            excess: 0,
+        }
+    }
 }
 
 impl Default for Buffer {
@@ -56,6 +93,20 @@ impl Buffer {
             primed: false,
             most: MOST,
             prime: PRIME,
+            pace: None,
+        }
+    }
+
+    /// A buffer for a real-time source whose clock is not ours (an AirPlay door): like
+    /// [`Buffer::live`], but its backlog is held to [`PACED_TARGET`] beyond the block taken.
+    #[must_use]
+    pub const fn paced() -> Self {
+        Self {
+            samples: VecDeque::new(),
+            primed: false,
+            most: MOST,
+            prime: PRIME,
+            pace: Some(Pace::new()),
         }
     }
 
@@ -68,6 +119,7 @@ impl Buffer {
             primed: false,
             most: MOST_SPOKEN,
             prime: 0,
+            pace: None,
         }
     }
 
@@ -91,8 +143,54 @@ impl Buffer {
         let out: Vec<i16> = self.samples.drain(..n).collect();
         if self.samples.len() < CHANNELS {
             self.primed = false;
+            if self.pace.is_some() {
+                self.pace = Some(Pace::new());
+            }
+            return out;
         }
+        self.pace_backlog();
         out
+    }
+
+    /// Drops a paced buffer's standing backlog, a little each take, with a crossfade from what
+    /// would have played to what plays instead.
+    fn pace_backlog(&mut self) {
+        let Some(mut pace) = self.pace else {
+            return;
+        };
+        let held = self.samples.len();
+        if pace.excess == 0 {
+            pace.floor = pace.floor.min(held);
+            pace.takes += 1;
+            if pace.takes >= PACED_WINDOW {
+                pace.excess = pace.floor.saturating_sub(PACED_TARGET);
+                pace.takes = 0;
+                pace.floor = usize::MAX;
+            }
+        }
+        let fade = PACED_FADE * CHANNELS;
+        let skip = pace
+            .excess
+            .min(PACED_SKIP * CHANNELS)
+            .min(held.saturating_sub(fade))
+            / CHANNELS
+            * CHANNELS;
+        if skip > 0 {
+            for i in 0..fade {
+                let weight = (i / CHANNELS) as f32 / PACED_FADE as f32;
+                let (old, new) = (
+                    f32::from(self.samples[i]),
+                    f32::from(self.samples[skip + i]),
+                );
+                self.samples[skip + i] = (old + (new - old) * weight).round() as i16;
+            }
+            self.samples.drain(..skip);
+            pace.excess -= skip;
+            if pace.excess < CHANNELS {
+                pace.excess = 0;
+            }
+        }
+        self.pace = Some(pace);
     }
 
     /// Whether it holds as much as it keeps: its reader should wait.
@@ -436,10 +534,11 @@ impl FeedSet {
             let Some(source) = bay.source(*id) else {
                 continue;
             };
-            let buffer: Shared = Arc::new(Mutex::new(if source.kind == SourceKind::Voice {
-                Buffer::spoken()
-            } else {
-                Buffer::live()
+            let buffer: Shared = Arc::new(Mutex::new(match source.kind {
+                SourceKind::Voice => Buffer::spoken(),
+                // A door is paced by its sender's clock, not ours: its backlog is bounded.
+                SourceKind::AirPlay => Buffer::paced(),
+                _ => Buffer::live(),
             }));
             let running = match &source.kind {
                 SourceKind::Radio(address) => {
