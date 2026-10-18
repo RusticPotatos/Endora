@@ -235,7 +235,8 @@ impl ConfigStore {
 
 impl DeepModelRepository for ConfigStore {
     fn get(&self) -> Result<Option<DeepModel>, RepositoryError> {
-        self.db
+        let found = self
+            .db
             .lock()?
             .query_row(
                 "SELECT url, model, api_key, escalate FROM deep_model WHERE id = 0",
@@ -250,16 +251,22 @@ impl DeepModelRepository for ConfigStore {
                 },
             )
             .optional()
-            .map_err(backend)
+            .map_err(backend)?;
+        let Some(mut model) = found else {
+            return Ok(None);
+        };
+        model.api_key = self.db.unseal("deep_model.api_key", &model.api_key)?;
+        Ok(Some(model))
     }
 
     fn set(&self, model: &DeepModel) -> Result<(), RepositoryError> {
+        let api_key = self.db.seal(&model.api_key)?;
         self.db
             .lock()?
             .execute(
                 "INSERT OR REPLACE INTO deep_model (id, url, model, api_key, escalate) \
                  VALUES (0, ?1, ?2, ?3, ?4)",
-                params![model.url, model.model, model.api_key, model.escalate],
+                params![model.url, model.model, api_key, model.escalate],
             )
             .map_err(backend)?;
         Ok(())
@@ -268,7 +275,8 @@ impl DeepModelRepository for ConfigStore {
 
 impl ButlerModelConfigRepository for ConfigStore {
     fn get(&self) -> Result<Option<ButlerModelConfig>, RepositoryError> {
-        self.db
+        let found = self
+            .db
             .lock()?
             .query_row(
                 "SELECT base_url, api_key, mixture, \
@@ -316,10 +324,18 @@ impl ButlerModelConfigRepository for ConfigStore {
                 },
             )
             .optional()
-            .map_err(backend)
+            .map_err(backend)?;
+        let Some(mut config) = found else {
+            return Ok(None);
+        };
+        config.api_key = self
+            .db
+            .unseal("butler_model_config.api_key", &config.api_key)?;
+        Ok(Some(config))
     }
 
     fn set(&self, c: &ButlerModelConfig) -> Result<(), RepositoryError> {
+        let api_key = self.db.seal(&c.api_key)?;
         self.db
             .lock()?
             .execute(
@@ -333,7 +349,7 @@ impl ButlerModelConfigRepository for ConfigStore {
                  ?16, ?17, ?18, ?19, ?20)",
                 params![
                     c.base_url,
-                    c.api_key,
+                    api_key,
                     i64::from(c.mixture),
                     c.single.model,
                     c.single.sampling.temperature,
@@ -409,7 +425,18 @@ impl CapabilitySettingsRepository for ConfigStore {
                 ))
             })
             .map_err(backend)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+        let rows = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
+        drop(stmt);
+        drop(conn);
+        // Every value is sealed (ADR 0125): tokens, keys and passwords sit beside harmless
+        // settings in this one table, and sealing by a guess at the key's name is how a new
+        // credential would slip through.
+        rows.into_iter()
+            .map(|(id, key, value)| {
+                let value = self.db.unseal("capability_settings.value", &value)?;
+                Ok((id, key, value))
+            })
+            .collect()
     }
 
     fn set_setting(
@@ -418,6 +445,7 @@ impl CapabilitySettingsRepository for ConfigStore {
         key: &str,
         value: &str,
     ) -> Result<(), RepositoryError> {
+        let value = self.db.seal(value)?;
         self.db
             .lock()?
             .execute(
@@ -855,6 +883,8 @@ impl McpServerRegistry for ConfigStore {
                 trust_all,
                 reader_tool,
             ) = row.map_err(backend)?;
+            let env_json = self.db.unseal("mcp_servers.env", &env_json)?;
+            let auth = self.db.unseal("mcp_servers.auth", &auth)?;
             let transport = match kind.as_str() {
                 "http" => McpTransport::Http { url, auth },
                 // Default anything else to stdio — the only other variant we write.
@@ -902,6 +932,8 @@ impl McpServerRegistry for ConfigStore {
                 auth.clone(),
             ),
         };
+        let env_json = self.db.seal(&env_json)?;
+        let auth = self.db.seal(&auth)?;
         self.db
             .lock()?
             .execute(
@@ -1433,10 +1465,19 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
                 })
             })
             .map_err(backend)?;
-        rows.collect::<Result<_, _>>().map_err(backend)
+        let providers: Vec<crate::model_lists::Provider> =
+            rows.collect::<Result<_, _>>().map_err(backend)?;
+        providers
+            .into_iter()
+            .map(|mut p| {
+                p.api_key = self.db.unseal("model_providers.api_key", &p.api_key)?;
+                Ok(p)
+            })
+            .collect()
     }
 
     fn add_provider(&self, name: &str, url: &str, api_key: &str) -> Result<i64, RepositoryError> {
+        let api_key = self.db.seal(api_key)?;
         let conn = self.db.lock()?;
         conn.execute(
             "INSERT INTO model_providers (name, url, api_key) VALUES (?1, ?2, ?3)",
@@ -1453,6 +1494,7 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
         url: &str,
         api_key: Option<&str>,
     ) -> Result<(), RepositoryError> {
+        let api_key = api_key.map(|key| self.db.seal(key)).transpose()?;
         let conn = self.db.lock()?;
         match api_key {
             Some(key) => conn.execute(

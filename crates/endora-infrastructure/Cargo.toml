@@ -19,6 +19,9 @@ ureq = { version = "3.4", features = ["json", "socks-proxy"] }
 serde_json = "1.0.150"
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 chrono = { version = "0.4", default-features = false }
+# Session tokens are kept as SHA-256 digests (ADR 0125). Already in the workspace at this
+# version (the capabilities context's PKCE uses it), so no new crate.
+sha2 = "0.10"
 
 [dev-dependencies]
 endora-mail = { path = "../../domains/mail" }

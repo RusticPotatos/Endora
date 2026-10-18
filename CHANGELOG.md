@@ -713,6 +713,27 @@ tagged release.
   Both now use one rule (`settings_ready`), so mail shows as needing Home Assistant and the
   home-lab skills as needing their service until each is set up.
 
+### Security
+
+- **Secrets at rest in the node** ([ADR 0125](docs/adr/0125-secrets-at-rest-in-the-node.md)).
+  The node's database held every credential in plaintext and its sessions as the tokens
+  themselves, so any copy of the file (a nightly snapshot, the house's backup) handed over
+  all of them. Now: provider API keys, MCP bearer tokens and environments, every capability
+  setting (the Home Assistant token, the services' keys and passwords, Spotify's tokens), the
+  authenticator secret and the bootstrap token are sealed with XChaCha20-Poly1305 under a
+  data key (`enc:v1:<kid>:<nonce>:<ct>`), and the data key is wrapped by a key outside the
+  database: `secrets.key` beside it (`ENDORA_SECRETS_KEY_FILE`), made `0600` on the first
+  start. That start seals what was stored in plaintext, once, and `VACUUM`s so none survives
+  in the file; a plaintext value found later is refused and logged by column, never by value.
+  Sessions are kept only as SHA-256 digests (hashed in place on the first start, nobody
+  signed out), and a console session also ends after seven days unused. `endora-node secrets
+  rekey` rotates the data key; `secrets forget --i-have-lost-the-key` is the way out when
+  the key is lost. The key-encryption key sits behind a `KeySource` trait, so a Transit
+  engine (OpenBao) can take over by re-wrapping the data keys, without touching a value. **Keep
+  `secrets.key` apart from the database's backups** (`docs/homelab.md`, `docs/recovery.md`).
+  The TLS private key and the database file are now written owner-only too. No new crate:
+  `chacha20poly1305`, `base64`, `zeroize` and `sha2` were already in the lock file.
+
 ### Changed
 
 - **A shorter Settings menu.** Settings is five entries: Notifications & voice, Models, Skills,

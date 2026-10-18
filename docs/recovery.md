@@ -9,6 +9,7 @@ the steps assume a few things were put in place beforehand (below).
 | What | Where it lives | How it comes back |
 |---|---|---|
 | Endora's settings, keys and memory | `endora.db` in the node's data folder (a Docker volume by default) | Endora's own nightly copy, `backups/daily-*.db` beside it, restored from the house's backup |
+| Endora's secrets key, which the credentials in `endora.db` are sealed under ([ADR 0125](adr/0125-secrets-at-rest-in-the-node.md)) | `secrets.key` in the node's data folder | your password manager — **never** only the house's backup beside the database |
 | The rebuild kit: your ansible-nas checkout, with the vault encrypted | its checkout folder on the NAS | the house's backup, with the home folder |
 | The vault password | your password manager, and `vault_password.txt.enc` (encrypted under your recovery passphrase) in the backup | either one |
 | The house's backup repository password | your password manager | needed to read any backup |
@@ -39,7 +40,11 @@ the steps assume a few things were put in place beforehand (below).
      Keep the copy outside the checkout so it can never be committed, in a folder the backup
      covers.
 5. **The backup repository's own password is in your password manager.**
-6. **An offsite copy** (a second backup repository off the machine). Without one, losing the
+6. **Endora's secrets key is in your password manager**, and excluded from the plan that
+   covers the data folder (`docs/homelab.md`, "Secrets at rest"):
+   `docker compose exec node base64 /data/secrets.key`. A database copy without it restores
+   no credential.
+7. **An offsite copy** (a second backup repository off the machine). Without one, losing the
    machine loses its backups too.
 
 ## Rebuild
@@ -74,8 +79,12 @@ the steps assume a few things were put in place beforehand (below).
    ```sh
    docker compose stop node
    cp daily-YYYY-MM-DD.db <data folder>/endora.db
+   # the secrets key, from your password manager (paste, then Ctrl-D):
+   base64 -d > <data folder>/secrets.key && chmod 600 <data folder>/secrets.key
    docker compose start node
    ```
+
+   Without the key the node does not start, and says the key file is missing.
 
    Then deploy as usual (`make deploy`). A copy is a whole database, checked when written: the
    node opens it as it would its own.

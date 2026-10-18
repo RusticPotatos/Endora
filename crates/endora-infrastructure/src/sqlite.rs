@@ -6,7 +6,12 @@
 //! read. The store is synchronous; when the async node uses it, calls run on a
 //! blocking thread (see `docs/adr/0007-async-web-stack.md`).
 
+use std::path::Path;
+use std::sync::Arc;
+
 use endora_persistence::Db;
+use endora_persistence::secrets::{KeyFile, KeySource, SecretColumn};
+use sha2::{Digest as _, Sha256};
 
 use endora_application::{
     AuditId, AuditRecord, BeliefId, ChatMessage, Intention, IntentionId, IntentionOrigin,
@@ -227,10 +232,14 @@ CREATE TABLE IF NOT EXISTS node_auth (
 -- that one is the recovery path and should not be what a password buys, and these can be
 -- thrown away without changing it.
 CREATE TABLE IF NOT EXISTS node_sessions (
+    -- Never the token itself: `sha256:<hex>` of it (ADR 0125). A copy of this table lets
+    -- nobody in.
     token     TEXT PRIMARY KEY,
     issued_ms INTEGER NOT NULL,
     -- 'full' for the console, 'checks' for the smoke suite's read-only credential.
-    scope     TEXT NOT NULL DEFAULT 'full'
+    scope     TEXT NOT NULL DEFAULT 'full',
+    -- When it was last let in, for the console's idle limit.
+    last_seen_ms INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 -- Questions the person answered by asking not to be asked again. Answering is the
 -- dismissal (ADR 0052), and somebody who does not know a real name still needs an answer.
@@ -270,6 +279,130 @@ CREATE TABLE IF NOT EXISTS bench_spend (
     micros INTEGER NOT NULL
 ) STRICT;
 ";
+
+/// Every column in the node's database that holds a credential, sealed at rest (ADR 0125).
+///
+/// The migration seals what an older node left in plaintext, and a rekey re-seals all of
+/// it, by walking this list — so a credential column added later must be added here too.
+/// The stores that read and write these columns seal and unseal them; a value that reaches
+/// one of them unsealed is refused.
+///
+/// `capability_settings.value` is sealed whole rather than by key: the Home Assistant
+/// token, the *arr and dashboard API keys, passwords, and Spotify's tokens all live there
+/// beside harmless settings, and a guess at which is which would be the one place a new
+/// credential slipped through.
+pub const SECRET_COLUMNS: &[SecretColumn] = &[
+    SecretColumn {
+        table: "model_providers",
+        column: "api_key",
+    },
+    SecretColumn {
+        table: "deep_model",
+        column: "api_key",
+    },
+    SecretColumn {
+        table: "butler_model_config",
+        column: "api_key",
+    },
+    SecretColumn {
+        table: "mcp_servers",
+        column: "env",
+    },
+    SecretColumn {
+        table: "mcp_servers",
+        column: "auth",
+    },
+    SecretColumn {
+        table: "capability_settings",
+        column: "value",
+    },
+    SecretColumn {
+        table: "node_auth",
+        column: "token",
+    },
+    SecretColumn {
+        table: "node_auth",
+        column: "totp_secret",
+    },
+    SecretColumn {
+        table: "node_auth",
+        column: "pending_totp",
+    },
+];
+
+/// What a session token is stored as: `sha256:<hex>`. The tokens are 256 random bits, so a
+/// plain hash is enough — there is nothing to guess that a slow hash would slow down.
+fn session_digest(token: &str) -> String {
+    let digest = Sha256::digest(token.as_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{SESSION_HASHED}{hex}")
+}
+
+const SESSION_HASHED: &str = "sha256:";
+
+/// How often a session's last use is written down: once a minute is plenty for a seven-day
+/// limit, and a write on every request is not.
+const TOUCH_EVERY_MS: i64 = 60_000;
+
+/// Compares two strings without stopping at the first difference.
+fn same_text(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |differences, (x, y)| differences | (x ^ y))
+            == 0
+}
+
+/// Replaces every session token stored raw with its digest, and gives each a last use of
+/// `now_ms` so nobody is signed out by the upgrade itself. Guarded by the prefix, so a
+/// second run changes nothing. Returns how many were hashed.
+fn hash_stored_sessions(conn: &mut Connection, now_ms: i64) -> Result<usize, RepositoryError> {
+    let tx = conn.transaction().map_err(backend)?;
+    let raw: Vec<(i64, String)> = {
+        let mut stmt = tx
+            .prepare(&format!(
+                "SELECT rowid, token FROM node_sessions WHERE substr(token, 1, {}) != '{SESSION_HASHED}'",
+                SESSION_HASHED.len()
+            ))
+            .map_err(backend)?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(backend)?
+            .collect::<Result<_, _>>()
+            .map_err(backend)?
+    };
+    for (rowid, token) in &raw {
+        tx.execute(
+            "UPDATE node_sessions SET token = ?1 WHERE rowid = ?2",
+            params![session_digest(token), rowid],
+        )
+        .map_err(backend)?;
+    }
+    tx.execute(
+        "UPDATE node_sessions SET last_seen_ms = ?1 WHERE last_seen_ms = 0",
+        params![now_ms],
+    )
+    .map_err(backend)?;
+    tx.commit().map_err(backend)?;
+    if !raw.is_empty() {
+        conn.execute_batch("VACUUM").map_err(backend)?;
+    }
+    Ok(raw.len())
+}
+
+/// The way out when the secrets key is lost for good (ADR 0125): empties every sealed
+/// credential and the password, drops the data keys, and so lets the node start with a new
+/// key. Sign-in is then set up again from the bootstrap token the log prints, and every
+/// provider key, token and password is entered again. Needs no key.
+///
+/// # Errors
+/// [`RepositoryError`] if the database fails; nothing changes then.
+pub fn forget_sealed_secrets(db: &Db) -> Result<usize, RepositoryError> {
+    let emptied = db.forget_sealed(SECRET_COLUMNS)?;
+    db.lock()?
+        .execute("UPDATE node_auth SET password_hash = ''", [])
+        .map_err(backend)?;
+    Ok(emptied)
+}
 
 /// A SQLite-backed store implementing the persistence ports over the shared
 /// [`Db`] handle.
@@ -448,19 +581,23 @@ impl SqliteStore {
             return Ok(None);
         };
         let token: String = row.get(0).map_err(backend)?;
+        let token = self.db.unseal("node_auth.token", &token)?;
         Ok((!token.is_empty()).then_some(token))
     }
 
-    /// Stores the token this node will accept from then on.
+    /// Stores the token this node will accept from then on, sealed: unlike a session it has
+    /// to be read back (the log prints it until sign-in is set up, and the console reveals
+    /// it), so it cannot be a hash.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     pub fn set_node_token(&self, token: &str) -> Result<(), RepositoryError> {
+        let sealed = self.db.seal(token)?;
         self.db
             .lock()?
             .execute(
                 "INSERT OR REPLACE INTO node_auth (id, token) VALUES (0, ?1)",
-                params![token],
+                params![sealed],
             )
             .map_err(backend)?;
         Ok(())
@@ -482,14 +619,18 @@ impl SqliteStore {
         let Some(row) = rows.next().map_err(backend)? else {
             return Ok((String::new(), String::new()));
         };
-        Ok((row.get(0).map_err(backend)?, row.get(1).map_err(backend)?))
+        let hash: String = row.get(0).map_err(backend)?;
+        let secret: String = row.get(1).map_err(backend)?;
+        Ok((hash, self.db.unseal("node_auth.totp_secret", &secret)?))
     }
 
-    /// Stores the password hash and authenticator secret.
+    /// Stores the password hash and authenticator secret, the secret sealed. The hash stays
+    /// as it is: Argon2id is already what a stolen copy should face.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     pub fn set_sign_in_setup(&self, hash: &str, secret: &str) -> Result<(), RepositoryError> {
+        let secret = self.db.seal(secret)?;
         self.db
             .lock()?
             // Upsert, not `UPDATE … WHERE id = 0`: that matches nothing before the row exists
@@ -517,7 +658,8 @@ impl SqliteStore {
         let Some(row) = rows.next().map_err(backend)? else {
             return Ok(String::new());
         };
-        row.get(0).map_err(backend)
+        let pending: String = row.get(0).map_err(backend)?;
+        self.db.unseal("node_auth.pending_totp", &pending)
     }
 
     /// Puts a replacement authenticator secret aside, or clears it with an empty string.
@@ -528,6 +670,7 @@ impl SqliteStore {
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     pub fn set_pending_authenticator(&self, secret: &str) -> Result<(), RepositoryError> {
+        let secret = self.db.seal(secret)?;
         self.db
             .lock()?
             .execute(
@@ -580,6 +723,9 @@ impl SqliteStore {
 
     /// Hands out a session token, and forgets any older than `keep_for_ms`.
     ///
+    /// Only the token's digest is kept (ADR 0125): the token goes back to whoever signed in
+    /// and nowhere else, so a copy of the database or a backup lets nobody in.
+    ///
     /// Pruned on issue rather than on a timer: the only moment the set can grow is the only
     /// moment it needs tidying, and nothing accumulates for anybody to clear.
     ///
@@ -594,8 +740,9 @@ impl SqliteStore {
     ) -> Result<(), RepositoryError> {
         let conn = self.db.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO node_sessions (token, issued_ms, scope) VALUES (?1, ?2, ?3)",
-            params![token, now_ms, scope],
+            "INSERT OR REPLACE INTO node_sessions (token, issued_ms, scope, last_seen_ms) \
+             VALUES (?1, ?2, ?3, ?2)",
+            params![session_digest(token), now_ms, scope],
         )
         .map_err(backend)?;
         conn.execute(
@@ -606,33 +753,92 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Every session token still within `keep_for_ms` of being issued.
+    /// The scope of the session `token` opens, or `None` if it opens none.
+    ///
+    /// Looked up by digest, so the token itself is never stored or compared in the
+    /// database. A session lasts `keep_for_ms` from being issued; a **console** session
+    /// (`full`) also ends after `idle_ms` unused. The checking and dashboard credentials do
+    /// not idle out: they live in a file or on a pocket device, are used rarely by design,
+    /// and expiring them while unused would only break `make live-smoke` and the dashboard.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
-    pub fn sessions(
+    pub fn session_scope(
         &self,
+        token: &str,
         now_ms: i64,
         keep_for_ms: i64,
-    ) -> Result<Vec<(String, String)>, RepositoryError> {
+        idle_ms: i64,
+    ) -> Result<Option<String>, RepositoryError> {
+        if token.is_empty() {
+            return Ok(None);
+        }
+        let digest = session_digest(token);
         let conn = self.db.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT token, scope FROM node_sessions WHERE issued_ms >= ?1")
+        let found: Option<(String, String, i64, i64)> = conn
+            .query_row(
+                "SELECT token, scope, issued_ms, last_seen_ms FROM node_sessions WHERE token = ?1",
+                params![digest],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
             .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![now_ms - keep_for_ms], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
+        let Some((stored, scope, issued_ms, last_seen_ms)) = found else {
+            return Ok(None);
+        };
+        if !same_text(&stored, &digest) || issued_ms < now_ms - keep_for_ms {
+            return Ok(None);
+        }
+        if scope == "full" && last_seen_ms < now_ms - idle_ms {
+            return Ok(None);
+        }
+        if now_ms - last_seen_ms >= TOUCH_EVERY_MS {
+            conn.execute(
+                "UPDATE node_sessions SET last_seen_ms = ?1 WHERE token = ?2",
+                params![now_ms, digest],
+            )
             .map_err(backend)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+        }
+        Ok(Some(scope))
     }
 
-    /// Opens (creating if needed) a store at `path` and applies the schema.
+    /// Opens (creating if needed) a store at `path`, with `keys` as its key source, and
+    /// applies the schema.
     ///
     /// # Errors
-    /// [`RepositoryError::Backend`] if the database cannot be opened or migrated.
-    pub fn open(path: &str) -> Result<Self, RepositoryError> {
-        Self::from_db(Db::open(path)?)
+    /// [`RepositoryError::Backend`] if the database cannot be opened, its data keys do not
+    /// open with `keys`, or it cannot be migrated.
+    pub fn open(path: &str, keys: Arc<dyn KeySource>) -> Result<Self, RepositoryError> {
+        let db = Db::open(path)?;
+        db.attach_key_source(keys)?;
+        Self::from_db(db)
+    }
+
+    /// Opens the node's store the way the node does (ADR 0125): the database at `path`, its
+    /// secrets sealed under the key in `key_file`.
+    ///
+    /// The key file is made (owner-only) on the first start, and **only** then: a database
+    /// that already holds data keys with no key file beside it is an error, because a new
+    /// key would open none of them.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the key file is missing over sealed secrets, is not a key, or
+    /// does not open the data keys; or if the database cannot be opened or migrated.
+    pub fn open_sealed(path: &str, key_file: &Path) -> Result<Self, RepositoryError> {
+        let db = Db::open(path)?;
+        let keys = KeyFile::open(key_file, !db.has_data_keys()?)?;
+        db.attach_key_source(Arc::new(keys))?;
+        Self::from_db(db)
+    }
+
+    /// Rotates the data key: every sealed credential is sealed again under a new one, and
+    /// the old one is forgotten. Returns the new key's id (an id, not a secret).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if a value does not open or the database fails; nothing changes
+    /// then.
+    pub fn rekey_secrets(&self) -> Result<String, RepositoryError> {
+        self.db.rekey(SECRET_COLUMNS)
     }
 
     /// Opens a private in-memory store, mainly for tests.
@@ -650,7 +856,7 @@ impl SqliteStore {
     /// [`RepositoryError::Backend`] if the schema cannot be applied.
     pub fn from_db(db: Db) -> Result<Self, RepositoryError> {
         {
-            let conn = db.lock()?;
+            let mut conn = db.lock()?;
             // Drop the goal-tracker schema before creating anything, so an existing
             // database sheds it rather than carrying dead tables forever.
             drop_goal_tracker(&conn)?;
@@ -802,8 +1008,26 @@ impl SqliteStore {
                 "owner_token",
                 "TEXT NOT NULL DEFAULT ''",
             )?;
+            // Sessions are kept as digests (ADR 0125); one stored raw by an older node is
+            // hashed in place, and given a last use of now so the upgrade signs nobody out.
+            ensure_column(
+                &conn,
+                "node_sessions",
+                "last_seen_ms",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            let hashed = hash_stored_sessions(&mut conn, now_ms())?;
+            if hashed > 0 {
+                println!("secrets: {hashed} session token(s) now kept only as a digest");
+            }
         }
         endora_understanding::migrate(&db)?;
+        // Credentials an older node stored in plaintext are sealed now, once (ADR 0125). A
+        // store with no key source is refused here rather than left holding them in the clear.
+        let sealed = db.seal_plaintext(SECRET_COLUMNS)?;
+        if sealed > 0 {
+            println!("secrets: sealed {sealed} stored credential(s) at rest");
+        }
         Ok(Self { db })
     }
 
@@ -1397,6 +1621,12 @@ fn drop_the_clean_slate(conn: &Connection) -> Result<(), RepositoryError> {
     Ok(())
 }
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 /// Maps any backend error into a [`RepositoryError::Backend`].
 fn backend(error: impl core::fmt::Display) -> RepositoryError {
     RepositoryError::Backend(error.to_string())
@@ -1417,6 +1647,11 @@ mod tests {
 
     fn store() -> SqliteStore {
         SqliteStore::open_in_memory().unwrap()
+    }
+
+    /// A key source for a test database on disk; reopening it takes the same one.
+    pub(super) fn memory_key() -> std::sync::Arc<dyn endora_persistence::secrets::KeySource> {
+        std::sync::Arc::new(endora_persistence::secrets::MemoryKey::random())
     }
 
     /// The direction repositories over the store's shared connection (ADR 0050).
@@ -1799,6 +2034,9 @@ mod tests {
 }
 
 #[cfg(test)]
+mod secrets_at_rest;
+
+#[cfg(test)]
 mod the_schema_production_actually_runs {
     use super::SqliteStore;
     use endora_capabilities::{
@@ -1841,7 +2079,8 @@ mod the_schema_production_actually_runs {
             )
             .unwrap();
         }
-        let store = SqliteStore::open(path.to_str().unwrap()).expect("an older database opens");
+        let store = SqliteStore::open(path.to_str().unwrap(), super::tests::memory_key())
+            .expect("an older database opens");
         let cfg = ConfigStore::new(store.db());
         let read = ButlerModelConfigRepository::get(&cfg)
             .expect("its model config reads")
@@ -2111,8 +2350,9 @@ mod the_schema_production_actually_runs {
             "endora-research-restart-{}.sqlite",
             uuid::Uuid::new_v4()
         ));
+        let keys = super::tests::memory_key();
         {
-            let store = SqliteStore::open(path.to_str().unwrap()).unwrap();
+            let store = SqliteStore::open(path.to_str().unwrap(), keys.clone()).unwrap();
             let mut work = store
                 .commission_research(
                     endora_application::IntentionId::new(40),
@@ -2143,7 +2383,7 @@ mod the_schema_production_actually_runs {
             .unwrap();
             assert!(store.publish_research(&work, &notice, &[]).unwrap());
         }
-        let reopened = SqliteStore::open(path.to_str().unwrap()).unwrap();
+        let reopened = SqliteStore::open(path.to_str().unwrap(), keys).unwrap();
         let snapshot = reopened.export().unwrap();
         assert_eq!(snapshot.research.len(), 1);
         assert!(snapshot.research[0].report().is_some());

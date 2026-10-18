@@ -14,47 +14,74 @@
 
 #![forbid(unsafe_code)]
 
+pub mod secrets;
+
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
+use zeroize::Zeroizing;
 
 pub use endora_kernel::RepositoryError;
+use secrets::{DataKey, KeySource, Keyring, MemoryKey, SEALED, SecretColumn};
+
+/// Where the data keys live, each wrapped by the [`KeySource`] (ADR 0125).
+const KEYS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS secret_keys (
+    kid        TEXT PRIMARY KEY,
+    wrapped    TEXT NOT NULL,
+    created_ms INTEGER NOT NULL,
+    active     INTEGER NOT NULL DEFAULT 0
+) STRICT;";
 
 /// A shared handle to the one SQLite connection. Cloning is cheap (an `Arc`
 /// bump) and every clone locks the same underlying connection.
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
+    /// The data keys, once a [`KeySource`] is attached. Locked after `conn` when both are
+    /// held, never before.
+    secrets: Arc<RwLock<Option<Keyring>>>,
 }
 
 impl Db {
-    /// Opens (creating if needed) the database at `path` with foreign keys on.
+    /// Opens (creating if needed) the database at `path` with foreign keys on, and makes the
+    /// file owner-only: it holds the node's sealed secrets and their wrapped keys.
+    ///
+    /// **No key source is attached**: sealing and unsealing refuse until
+    /// [`attach_key_source`](Self::attach_key_source) is called.
     ///
     /// # Errors
     /// [`RepositoryError::Backend`] if the database cannot be opened.
     pub fn open(path: &str) -> Result<Self, RepositoryError> {
         let conn = Connection::open(path).map_err(backend)?;
+        secrets::owner_only(Path::new(path));
         Self::wrap(conn)
     }
 
-    /// Opens a private in-memory database, mainly for tests.
+    /// Opens a private in-memory database, mainly for tests, with a key source that lives
+    /// only in this process ([`MemoryKey`]) — the contents die with it anyway.
     ///
     /// # Errors
     /// [`RepositoryError::Backend`] if the database cannot be created.
     pub fn open_in_memory() -> Result<Self, RepositoryError> {
         let conn = Connection::open_in_memory().map_err(backend)?;
-        Self::wrap(conn)
+        let db = Self::wrap(conn)?;
+        db.attach_key_source(Arc::new(MemoryKey::random()))?;
+        Ok(db)
     }
 
     /// Wraps an already-open connection as a shared handle (foreign keys are
-    /// enabled). Useful for tests that seed a legacy schema before opening.
+    /// enabled). Useful for tests that seed a legacy schema before opening; it gets an
+    /// in-process key source, as [`open_in_memory`](Self::open_in_memory) does.
     ///
     /// # Errors
     /// [`RepositoryError::Backend`] if the foreign-keys pragma cannot be set.
     pub fn from_connection(conn: Connection) -> Result<Self, RepositoryError> {
-        Self::wrap(conn)
+        let db = Self::wrap(conn)?;
+        db.attach_key_source(Arc::new(MemoryKey::random()))?;
+        Ok(db)
     }
 
     fn wrap(conn: Connection) -> Result<Self, RepositoryError> {
@@ -62,7 +89,300 @@ impl Db {
             .map_err(backend)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            secrets: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Whether this database already holds data keys — which is to say, secrets sealed
+    /// under some key source. A missing key file over such a database must be an error,
+    /// never a fresh key.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Backend`] if the database cannot be read.
+    pub fn has_data_keys(&self) -> Result<bool, RepositoryError> {
+        let conn = self.lock()?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='secret_keys')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(backend)?;
+        if !exists {
+            return Ok(false);
+        }
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM secret_keys", [], |r| r.get(0))
+            .map_err(backend)?;
+        Ok(count > 0)
+    }
+
+    /// Attaches the key source: unwraps every data key this database has, making the first
+    /// one if it has none.
+    ///
+    /// Also turns on `secure_delete`, so a secret replaced or removed later is overwritten on
+    /// disk rather than left in a free page for a copy of the file to carry.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the keys cannot be read, unwrapped or made.
+    pub fn attach_key_source(&self, source: Arc<dyn KeySource>) -> Result<(), RepositoryError> {
+        let mut conn = self.lock()?;
+        conn.pragma_update(None, "secure_delete", "ON")
+            .map_err(backend)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        tx.execute_batch(KEYS_SCHEMA).map_err(backend)?;
+        let rows: Vec<(String, String, bool)> = {
+            let mut stmt = tx
+                .prepare("SELECT kid, wrapped, active FROM secret_keys ORDER BY created_ms")
+                .map_err(backend)?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))
+                .map_err(backend)?
+                .collect::<Result<_, _>>()
+                .map_err(backend)?
+        };
+        let mut keys = HashMap::new();
+        let mut active = None;
+        for (kid, wrapped, is_active) in rows {
+            keys.insert(kid.clone(), source.unwrap(&kid, &wrapped)?);
+            if is_active {
+                active = Some(kid);
+            }
+        }
+        let active = match active {
+            Some(kid) => kid,
+            None => {
+                let kid = secrets::new_kid();
+                let key = DataKey::random();
+                tx.execute(
+                    "INSERT INTO secret_keys (kid, wrapped, created_ms, active) VALUES (?1, ?2, ?3, 1)",
+                    params![kid, source.wrap(&kid, &key)?, now_ms()],
+                )
+                .map_err(backend)?;
+                keys.insert(kid.clone(), key);
+                kid
+            }
+        };
+        tx.commit().map_err(backend)?;
+        drop(conn);
+        *self.write_secrets()? = Some(Keyring {
+            source,
+            active,
+            keys,
+        });
+        Ok(())
+    }
+
+    /// Seals a secret for storage. An empty string stays empty: it means "none".
+    ///
+    /// # Errors
+    /// [`RepositoryError::Backend`] if no key source is attached.
+    pub fn seal(&self, plaintext: &str) -> Result<String, RepositoryError> {
+        if plaintext.is_empty() {
+            return Ok(String::new());
+        }
+        let guard = self.read_secrets()?;
+        let ring = guard.as_ref().ok_or_else(no_key_source)?;
+        ring.seal(plaintext)
+    }
+
+    /// Opens a value [`seal`](Self::seal) made. `label` (`table.column`) names it in any
+    /// error, which never carries the value. A value that is not sealed is an error, logged
+    /// by column: after the migration nothing should be, and using one would be trusting
+    /// whatever wrote it around the store.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if no key source is attached, or the value is plaintext, damaged,
+    /// or sealed under a key this database does not have.
+    pub fn unseal(&self, label: &str, stored: &str) -> Result<String, RepositoryError> {
+        if stored.is_empty() {
+            return Ok(String::new());
+        }
+        let guard = self.read_secrets()?;
+        let ring = guard.as_ref().ok_or_else(no_key_source)?;
+        ring.unseal(label, stored)
+    }
+
+    /// Seals every plaintext value left in `columns`: the first start after secrets at rest,
+    /// or a value somebody wrote around the store. Guarded and idempotent — a sealed value
+    /// is left exactly as it is — and done in one transaction.
+    ///
+    /// When anything was sealed, the file is `VACUUM`ed afterwards, so the plaintext does not
+    /// survive in free pages for the next copy of the file to carry.
+    ///
+    /// Returns how many values were sealed.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if no key source is attached or the database fails.
+    pub fn seal_plaintext(&self, columns: &[SecretColumn]) -> Result<usize, RepositoryError> {
+        let mut conn = self.lock()?;
+        let guard = self.read_secrets()?;
+        let ring = guard.as_ref().ok_or_else(no_key_source)?;
+        let tx = conn.transaction().map_err(backend)?;
+        let mut sealed = 0;
+        for column in columns {
+            let (table, col) = (column.table, column.column);
+            let rows: Vec<(i64, Zeroizing<String>)> = {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "SELECT rowid, {col} FROM {table} \
+                         WHERE {col} != '' AND substr({col}, 1, {len}) != '{SEALED}'",
+                        len = SEALED.len()
+                    ))
+                    .map_err(backend)?;
+                stmt.query_map([], |r| Ok((r.get(0)?, Zeroizing::new(r.get(1)?))))
+                    .map_err(backend)?
+                    .collect::<Result<_, _>>()
+                    .map_err(backend)?
+            };
+            for (rowid, plain) in rows {
+                tx.execute(
+                    &format!("UPDATE {table} SET {col} = ?1 WHERE rowid = ?2"),
+                    params![ring.seal(&plain)?, rowid],
+                )
+                .map_err(backend)?;
+                sealed += 1;
+            }
+        }
+        tx.commit().map_err(backend)?;
+        if sealed > 0 {
+            conn.execute_batch("VACUUM").map_err(backend)?;
+        }
+        Ok(sealed)
+    }
+
+    /// Rotates the data key: makes a new one, re-seals every sealed value in `columns` under
+    /// it, and forgets the old ones, all in one transaction. Returns the new key's id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if no key source is attached, a value does not open, or the
+    /// database fails; nothing changes then.
+    pub fn rekey(&self, columns: &[SecretColumn]) -> Result<String, RepositoryError> {
+        let mut conn = self.lock()?;
+        let mut guard = self.write_secrets()?;
+        let ring = guard.as_mut().ok_or_else(no_key_source)?;
+        let kid = secrets::new_kid();
+        let key = DataKey::random();
+        let wrapped = ring.source.wrap(&kid, &key)?;
+        ring.keys.insert(kid.clone(), key);
+        let before = std::mem::replace(&mut ring.active, kid.clone());
+        let done = (|| {
+            let tx = conn.transaction().map_err(backend)?;
+            tx.execute("UPDATE secret_keys SET active = 0", [])
+                .map_err(backend)?;
+            tx.execute(
+                "INSERT INTO secret_keys (kid, wrapped, created_ms, active) VALUES (?1, ?2, ?3, 1)",
+                params![kid, wrapped, now_ms()],
+            )
+            .map_err(backend)?;
+            for column in columns {
+                let (table, col) = (column.table, column.column);
+                let rows: Vec<(i64, String)> = {
+                    let mut stmt = tx
+                        .prepare(&format!(
+                            "SELECT rowid, {col} FROM {table} \
+                             WHERE substr({col}, 1, {len}) = '{SEALED}'",
+                            len = SEALED.len()
+                        ))
+                        .map_err(backend)?;
+                    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                        .map_err(backend)?
+                        .collect::<Result<_, _>>()
+                        .map_err(backend)?
+                };
+                for (rowid, stored) in rows {
+                    let plain = Zeroizing::new(ring.unseal(&column.label(), &stored)?);
+                    tx.execute(
+                        &format!("UPDATE {table} SET {col} = ?1 WHERE rowid = ?2"),
+                        params![ring.seal(&plain)?, rowid],
+                    )
+                    .map_err(backend)?;
+                }
+            }
+            tx.execute("DELETE FROM secret_keys WHERE kid != ?1", params![kid])
+                .map_err(backend)?;
+            tx.commit().map_err(backend)
+        })();
+        if let Err(e) = done {
+            ring.keys.remove(&kid);
+            ring.active = before;
+            return Err(e);
+        }
+        ring.keys.retain(|k, _| *k == kid);
+        Ok(kid)
+    }
+
+    /// Re-wraps every data key under `source` and uses it from then on. **No value changes**:
+    /// this is how the key-encryption key moves (a new key file, or a Transit engine) without
+    /// a data migration.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if no key source is attached, `source` cannot wrap, or the
+    /// database fails; nothing changes then.
+    pub fn rewrap(&self, source: Arc<dyn KeySource>) -> Result<(), RepositoryError> {
+        let mut conn = self.lock()?;
+        let mut guard = self.write_secrets()?;
+        let ring = guard.as_mut().ok_or_else(no_key_source)?;
+        let tx = conn.transaction().map_err(backend)?;
+        for (kid, key) in &ring.keys {
+            tx.execute(
+                "UPDATE secret_keys SET wrapped = ?1 WHERE kid = ?2",
+                params![source.wrap(kid, key)?, kid],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        ring.source = source;
+        Ok(())
+    }
+
+    /// The way out when the key is gone for good: empties every sealed value in `columns` and
+    /// drops the data keys, so the node can start again with a new key and the secrets can be
+    /// entered again. Needs no key. Returns how many values were emptied.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database fails; nothing changes then.
+    pub fn forget_sealed(&self, columns: &[SecretColumn]) -> Result<usize, RepositoryError> {
+        let had_keys = self.has_data_keys()?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        let mut emptied = 0;
+        for column in columns {
+            let (table, col) = (column.table, column.column);
+            emptied += tx
+                .execute(
+                    &format!(
+                        "UPDATE {table} SET {col} = '' WHERE substr({col}, 1, {len}) = '{SEALED}'",
+                        len = SEALED.len()
+                    ),
+                    [],
+                )
+                .map_err(backend)?;
+        }
+        if had_keys {
+            tx.execute("DELETE FROM secret_keys", []).map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        drop(conn);
+        *self.write_secrets()? = None;
+        Ok(emptied)
+    }
+
+    fn read_secrets(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, Option<Keyring>>, RepositoryError> {
+        self.secrets
+            .read()
+            .map_err(|_| RepositoryError::Backend("secrets lock poisoned".to_owned()))
+    }
+
+    fn write_secrets(
+        &self,
+    ) -> Result<std::sync::RwLockWriteGuard<'_, Option<Keyring>>, RepositoryError> {
+        self.secrets
+            .write()
+            .map_err(|_| RepositoryError::Backend("secrets lock poisoned".to_owned()))
     }
 
     /// Locks the shared connection for the duration of one operation.
@@ -159,6 +479,16 @@ fn copy_into(conn: &Connection, dest: &Path, dest_text: &str) -> Result<(), Repo
         )));
     }
     Ok(())
+}
+
+fn no_key_source() -> RepositoryError {
+    backend("no key source is attached to this database, so it cannot keep secrets")
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// Maps any backend failure into a shared [`RepositoryError::Backend`].

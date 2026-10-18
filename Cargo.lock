@@ -940,6 +940,7 @@ dependencies = [
  "endora-understanding",
  "rusqlite",
  "serde_json",
+ "sha2",
  "ureq",
  "uuid",
 ]
@@ -995,8 +996,11 @@ dependencies = [
 name = "endora-persistence"
 version = "0.12.0"
 dependencies = [
+ "base64 0.22.1",
+ "chacha20poly1305",
  "endora-kernel",
  "rusqlite",
+ "zeroize",
 ]
 
 [[package]]

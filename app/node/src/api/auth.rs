@@ -3,6 +3,10 @@ use super::*;
 /// How long a session lasts before it has to be earned again.
 pub(super) const SESSIONS_LAST_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 
+/// How long a console session may sit unused before it has to be earned again (ADR 0125).
+/// Console sessions only: the checking and dashboard credentials are used rarely by design.
+pub(super) const SESSIONS_IDLE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+
 /// Prints the bootstrap token to the log, **for as long as it is still the only way in**.
 ///
 /// It used to be printed once, on the run that generated it. That locked somebody out of their
@@ -455,33 +459,41 @@ pub(super) async fn require_the_token(
         q.split('&')
             .find_map(|pair| pair.strip_prefix("token=").map(str::to_owned))
     });
-    // The bootstrap token from the log, plus any live session. Read per request: it is one
-    // indexed lookup over a handful of rows, and it means signing out takes effect at once
-    // rather than whenever a cache felt like it.
+    // The bootstrap token from the log, plus whichever offered token is a live session. Read
+    // per request: one indexed lookup, and it means signing out takes effect at once rather
+    // than whenever a cache felt like it.
     let mut accepted: Vec<(String, crate::auth::Scope)> = Vec::new();
     if !state.token.is_empty() {
         // The bootstrap token is the recovery path and is unrestricted; scoping it would mean
         // the credential you fall back to could not fix whatever went wrong.
         accepted.push(((*state.token).clone(), crate::auth::Scope::Full));
     }
-    accepted.extend(
-        state
-            .store
-            .sessions(state.clock.now().unix_millis(), SESSIONS_LAST_MS)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(token, scope)| {
-                // Anything unrecognised is treated as the narrow scope, not the wide one: a
-                // scope nobody understands must not be read as permission.
-                let scope = match scope.as_str() {
-                    "full" => crate::auth::Scope::Full,
-                    "checks" => crate::auth::Scope::Checks,
-                    "dashboard" => crate::auth::Scope::Dashboard,
-                    _ => crate::auth::Scope::Denied,
-                };
-                (token, scope)
-            }),
-    );
+    // Sessions are stored only as digests (ADR 0125), so they cannot be listed and compared:
+    // each credential this request offers is looked up by its digest instead. Both places a
+    // token can arrive are tried; `may_pass` still decides which of them this path may use.
+    let bearer = offered
+        .as_deref()
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(str::trim);
+    let now_ms = state.clock.now().unix_millis();
+    for candidate in [bearer, in_query.as_deref()].into_iter().flatten() {
+        let Ok(Some(scope)) =
+            state
+                .store
+                .session_scope(candidate, now_ms, SESSIONS_LAST_MS, SESSIONS_IDLE_MS)
+        else {
+            continue;
+        };
+        // Anything unrecognised is treated as the narrow scope, not the wide one: a scope
+        // nobody understands must not be read as permission.
+        let scope = match scope.as_str() {
+            "full" => crate::auth::Scope::Full,
+            "checks" => crate::auth::Scope::Checks,
+            "dashboard" => crate::auth::Scope::Dashboard,
+            _ => crate::auth::Scope::Denied,
+        };
+        accepted.push((candidate.to_owned(), scope));
+    }
     // A node nobody has claimed yet may be claimed without the token, briefly after it comes
     // up. This is the one place the closed-by-default rule bends, and it bends only while
     // there is nothing to protect: no password, no owner, and a fifteen-minute window from
