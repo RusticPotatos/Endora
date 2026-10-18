@@ -574,12 +574,13 @@ if (failures.length) {
 // presses, each offering only what that kind of item takes; nothing a task says becomes markup.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
-  runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 };
+  // The members whose controls the checks below read are opened, as tapping their lines does.
+  runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 }; HQ.roster = { 1: true, 2: true, 4: true, 5: true };
     HQ.snap = { demo: true, stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
-                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }],
+                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }], reports_to: 1,
                   brain: "local", brains: [{ name: "local", label: "Local" }, { name: "claude-haiku-5-5", label: "<b>Haiku</b>" }] },
                 { id: 3, name: "Cy", role: "researcher", look: 1, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
                 { id: 4, name: "<i>Dee</i>", role: "reviewer", look: 2, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
@@ -815,6 +816,47 @@ if (failures.length) {
   // A dropped goal's notes leave the board, finished ones too: the retired demo's hundreds of
   // done tasks must not bury the owner's own.
   if (office.includes("<i>Dee</i>") || !office.includes("&lt;i&gt;Dee&lt;/i&gt;")) fail("hq: a member's name became markup");
+  // The Team card is an org chart (the owner, on a phone: "can't tell the teams"): the board
+  // and the CEO with whoever has no lead above them, then a group per lead, the lead first;
+  // one line per member, its controls closed until the line is tapped.
+  {
+    const roster = runInContext("HQ.roster = {}; hqRoster(HQ.snap)", context);
+    const at = (said) => roster.indexOf(said);
+    for (const said of ["<h3>Board: you</h3>", "<h3>Ops · Ada</h3>", "<h3>Engineering · Kit</h3>", "<b>Mara</b>", "<b>&lt;i&gt;Dee&lt;/i&gt;</b>",
+      'Tester · <span class="hq-tag">Local</span> · between turns · costs nothing', 'lead · <span class="hq-tag">Sonnet</span> · between turns · $0.00 today of $0.58',
+      'developer · <span class="hq-tag">Haiku</span> · on #9 · $0.00 today of $0.00', 'CEO · <span class="hq-tag">Opus</span>']) {
+      if (at(said) < 0) fail(`hq: the roster does not show ${said}`);
+    }
+    if (roster.includes("<i>Dee</i>")) fail("hq: a member's name became markup on the roster");
+    if (!(at("Board: you") < at("<b>Mara</b>") && at("<b>Mara</b>") < at("<b>Cy</b>") && at("<b>Cy</b>") < at("Ops · Ada"))) fail("hq: the CEO and those with no lead are not under the board");
+    if (!(at("Ops · Ada") < at("<b>Ada</b>") && at("<b>Ada</b>") < at("<b>Bo</b>") && at("<b>Bo</b>") < at("Engineering · Kit"))) fail("hq: Ada's team is not Ada, then Bo");
+    if (!(at("Engineering · Kit") < at("<b>Kit</b>") && at("<b>Kit</b>") < at("<b>Rae</b>"))) fail("hq: the wing's team is not Kit, then Rae");
+    for (const id of [1, 2, 3, 4, 5, 6, 7]) {
+      if (!roster.includes(`aria-expanded="false" data-act="hq:roster:${id}:toggle"`)) fail(`hq: member ${id}'s line does not open its controls`);
+    }
+    for (const control of ["hq:brain:", "hq:rename:", 'id="hq-reports-', "hq:pick:member:"]) {
+      if (roster.includes(control)) fail(`hq: a member's controls (${control}) show before its line is tapped`);
+    }
+    const opened = runInContext("hqDispatch('hq', 'roster', '7', 'toggle'); hqRoster(HQ.snap)", context);
+    for (const control of ['aria-expanded="true" data-act="hq:roster:7:toggle"', 'data-act="hq:rename:7"', 'id="hq-reports-7"', 'data-act="hq:pick:member:7"']) {
+      if (!opened.includes(control)) fail(`hq: tapping a member's line does not show ${control}`);
+    }
+    if (opened.includes('data-act="hq:rename:6"')) fail("hq: tapping one member opened another's controls");
+    runInContext("HQ.roster = { 1: true, 2: true, 4: true, 5: true }", context);
+  }
+  // The turns on a task read oldest first, as its thread does, the last five unless all are asked.
+  {
+    const card = runInContext("hqSelected()", context);
+    if (!(card.indexOf("R1 Bo · EL-7") < card.indexOf("R2 Bo · EL-7"))) fail("hq: a task's turns are not oldest first");
+    if (card.includes("hq:turns:task-7:toggle")) fail("hq: two turns were offered a show-all");
+    const many = runInContext(`(() => { const kept = HQ.snap.recent_runs;
+      HQ.snap.recent_runs = [7, 6, 5, 4, 3, 2, 1].map((id) => ({ id, member: 2, task: 7, status: "succeeded", label: "checked" }));
+      const five = hqSelected(); hqDispatch("hq", "turns", "task-7", "toggle"); const all = hqSelected();
+      HQ.allTurns = {}; HQ.snap.recent_runs = kept; return [five, all]; })()`, context);
+    if (many[0].includes("R2 Bo") || !many[0].includes("R3 Bo") || !many[0].includes("Show all 7")) fail("hq: a task's turns are not cut to the last five");
+    if (!(many[0].indexOf("R3 Bo") < many[0].indexOf("R7 Bo"))) fail("hq: the last five turns are not oldest first");
+    if (!many[1].includes("R1 Bo") || !many[1].includes("Show the last 5")) fail("hq: show all does not show every turn");
+  }
   // The office itself (the pixel canvas): a desk for each of five members, the CEO's office and
   // the meeting room where people walk, and the whole room drawn, through an explicit 2D context
   // that keeps what was written on it. No art is loaded here, so this draws the room's own shapes.

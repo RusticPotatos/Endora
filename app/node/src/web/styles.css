@@ -429,6 +429,13 @@
   .hq-log .k-you { color: var(--hq-violet); }
   .hq-team { display: grid; gap: 4px; }
   .hq-team span { color: var(--hq-muted); }
+  /* The Team card's org chart: one group per team, one tappable line per member. */
+  .hq-group + .hq-group { margin-top: 10px; }
+  .hq-group h3 { font-size: 12px; margin: 0 0 4px; color: var(--hq-fg); }
+  .hq .hq-line { display: block; width: 100%; text-align: left; font: 12.5px var(--hq-mono); background: none; border: 0; padding: 4px 0; color: var(--hq-fg); cursor: pointer; box-shadow: none; overflow-wrap: anywhere; }
+  .hq .hq-line[aria-expanded="true"] b { text-decoration: underline; }
+  .hq-tag { font-size: 11px; border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; }
+  .hq-controls { padding: 4px 0 8px 10px; display: grid; gap: 4px; }
   .hq .hq-link { font: 600 12.5px var(--hq-mono); background: none; border: 0; padding: 0; color: var(--hq-fg); cursor: pointer; text-decoration: underline dotted; box-shadow: none; }
   .hq input { font: 13px var(--hq-mono); flex: 1 1 12em; min-width: 0; }
   .hq-need textarea { font: 13px var(--hq-mono); width: 100%; box-sizing: border-box; margin: 0 0 6px; resize: vertical; }
