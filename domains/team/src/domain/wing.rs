@@ -21,10 +21,13 @@ pub const BRANCH_PREFIX: &str = "hq/";
 /// What every member working towards the wing's goal is told: the goal's notes from the owner,
 /// seeded once (the owner may edit them on the HQ screen).
 pub const WING_NOTE: &str = "The wing's job is the owner's public ansible-nas fork, which \
-    builds the home lab. The flow: repo_checkout brings the fork's default branch into \
-    /work/repo in your sandbox (git is set up there: commits are authored Endora HQ and carry \
-    the trailer). Work on a branch named hq/task-<N>-<slug> for your task, commit in small \
-    steps, then repo_submit sends the branch to Endora, which keeps it, writes its diff as a \
+    builds the home lab. Your base is the fork's develop branch (main only mirrors upstream): \
+    repo_checkout brings it into /work/repo in your sandbox and says so (git is set up there: \
+    commits are authored Endora HQ and carry the trailer). Never edit, cite or copy from \
+    group_vars/*.yml, host_vars or any inventory: they hold the owner's own values, and a \
+    branch touching them is refused. Work on a branch named hq/task-<N>-<slug> cut from the \
+    base, commit in small steps, then repo_submit sends the branch to Endora, which keeps it, \
+    writes its diff as a \
     document on the task and runs the checks (ansible syntax, ansible-lint, yamllint) on the \
     dev node; the result comes back as a receipt. Then submit the task for review (set_status \
     in_review, citing the receipts): Dee, the tester, reads the diff and the check; the lead \

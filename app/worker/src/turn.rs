@@ -326,7 +326,9 @@ fn instructions(posted: bool, on_the_node: &[String], lessons: bool, shell: bool
              with the shell, then repo_submit that branch: Endora keeps it, writes its diff as \
              a document on the task and runs the lab's checks; the result comes back as a \
              receipt. Then submit the task for review, citing that receipt. You never push: \
-             the owner pushes an accepted branch to the fork and merges it there.",
+             the owner pushes an accepted branch to the fork and merges it there. Never edit, \
+             cite or copy from group_vars/*.yml, host_vars or any inventory: they hold the \
+             owner's own values, and a branch touching them is refused.",
         );
     }
     if lessons {
@@ -442,18 +444,21 @@ fn in_the_repo(
         ));
     };
     let branch = handed["branch"].as_str().unwrap_or("main");
-    let default = handed["default_branch"].as_str().unwrap_or(branch);
-    match repo::checkout(dir, &bundle, branch, default, member, task) {
+    let base = handed["base"].as_str().unwrap_or(branch);
+    match repo::checkout(dir, &bundle, branch, base, member, task) {
         Ok(out) => {
             did.note(&call.name, &args, Outcome::Done);
             let slug = task.map_or_else(|| "N-<slug>".to_owned(), |t| format!("{t}-<slug>"));
             Ok(Reply {
                 text: format!(
-                    "Checked out {} at {} into {} ({} files){receipt}. Git is set up: your \
-                     commits are authored Endora HQ and the trailer is added for you. Work on \
-                     a branch of your own: `cd /work/repo && git checkout -b hq/task-{slug}`, \
-                     edit, `git add -A && git commit -m \"what and why\"`, then repo_submit with \
-                     that branch.",
+                    "Checked out {} at {} into {} ({} files){receipt}. Your base is {base}: \
+                     branch from it and your submission must sit on top of it. Git is set up: \
+                     your commits are authored Endora HQ and the trailer is added for you. Work \
+                     on a branch of your own: `cd /work/repo && git checkout -b hq/task-{slug} \
+                     {base}`, edit, `git add -A && git commit -m \"what and why\"`, then \
+                     repo_submit with that branch. Never edit, cite or copy from \
+                     group_vars/*.yml, host_vars or any inventory: they hold the owner's own \
+                     values, and a branch touching them is refused.",
                     out.branch,
                     &out.head[..12.min(out.head.len())],
                     out.path.display(),

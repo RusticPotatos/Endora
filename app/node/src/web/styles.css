@@ -406,6 +406,11 @@
   .hq-need.notice { border-left-color: var(--hq-muted); }
   .hq-need.project_cap { border-left-color: var(--hq-amber); }
   .hq-need.project_budget { border-left-color: var(--hq-red); }
+  .hq-need.hire { border-left-color: var(--hq-amber); }
+  .hq-need.push { border-left-color: var(--hq-green); }
+  .hq-doc { margin-top: 6px; font-size: 12.5px; }
+  .hq-doc summary { cursor: pointer; }
+  .hq-doc pre { font: 11px var(--hq-mono); max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0; padding: 6px; background: var(--hq-panel-2); border-radius: 4px; }
   .hq-need input { font: 13px var(--hq-mono); width: 100%; box-sizing: border-box; margin: 0 0 6px; }
   .hq-gauge { height: 6px; background: var(--hq-line); border-radius: 3px; overflow: hidden; margin: 4px 0 2px; }
   .hq-gauge i { display: block; height: 100%; background: var(--hq-green); }

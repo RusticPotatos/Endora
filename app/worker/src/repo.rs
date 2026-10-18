@@ -68,8 +68,8 @@ fn quoted(word: &str) -> String {
 
 /// Unpacks `bundle` (one branch, `branch`, with its history) into `work/repo`, fresh, and sets
 /// git up the team's way: the author, no remote, and a `prepare-commit-msg` hook that adds
-/// the trailer naming `member` and `task` when a commit lacks it. `default_branch` is kept
-/// beside it, so a submission is bundled from there.
+/// the trailer naming `member` and `task` when a commit lacks it. `base`, the branch the wing
+/// works from, is kept beside it, so a submission is bundled from there.
 ///
 /// # Errors
 /// What git said, in a line.
@@ -77,7 +77,7 @@ pub fn checkout(
     work: &Path,
     bundle: &[u8],
     branch: &str,
-    default_branch: &str,
+    base: &str,
     member: &str,
     task: Option<i64>,
 ) -> Result<CheckedOut, String> {
@@ -122,7 +122,7 @@ pub fn checkout(
     }
     std::fs::write(
         work.join("checkout.json"),
-        serde_json::json!({ "branch": branch, "default_branch": default_branch }).to_string(),
+        serde_json::json!({ "branch": branch, "base": base }).to_string(),
     )
     .map_err(|e| format!("the checkout could not be noted: {e}"))?;
     let head = git(&repo, &["rev-parse", "HEAD"])?;
@@ -137,11 +137,11 @@ pub fn checkout(
 }
 
 /// The default branch the checkout was made against, as noted then.
-fn default_branch_of(work: &Path) -> String {
+fn base_of(work: &Path) -> String {
     std::fs::read_to_string(work.join("checkout.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|v| v["default_branch"].as_str().map(str::to_owned))
+        .and_then(|v| v["base"].as_str().map(str::to_owned))
         .unwrap_or_else(|| "main".to_owned())
 }
 
@@ -177,7 +177,7 @@ pub fn bundle(work: &Path, branch: &str) -> Result<(Vec<u8>, String), String> {
         ],
     )
     .map_err(|_| format!("there is no branch {branch} in /work/repo: git branch lists them"))?;
-    let base = default_branch_of(work);
+    let base = base_of(work);
     if git(
         &repo,
         &["rev-parse", "--verify", &format!("refs/heads/{base}")],

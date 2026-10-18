@@ -29,21 +29,28 @@ const HQ_C = {
 };
 const HQ_STATUS_COL = { todo: HQ_C.sticky, doing: HQ_C.lamp, in_review: HQ_C.blue, done: HQ_C.green, blocked: HQ_C.red, dropped: "#cfcac0" };
 // The office, in tiles. Along the wall: the board room (the owner's), the task board, the
-// CEO's office and the server closet; the open floor's desks; then ping-pong, the meeting
-// room, the lounge and the lobby.
+// CEO's office and the server closet; the open floor's desks and the front door; then
+// ping-pong, the meeting room, the lounge and the engineering wing (ADR 0115).
 const HQ_P = {
   board: { x: 8, y: 0, w: 12, h: 2 }, owner: { x: 2, y: 3 }, lever: { x: 6.1, y: 2.3 },
   boardRoom: { x: 0, y: 2, w: 7, h: 5 }, boardDoor: { x: 5.7, y: 7.3 },
   engine: { x: 27, y: 2, w: 5, h: 5 }, rack: { x: 30.2, y: 2.4 }, jar: { x: 27.8, y: 2.8 },
-  door: { x: 29.5, y: 17 }, pong: { x: 2.5, y: 15.6 }, tap: { x: 16.8, y: 15 },
+  door: { x: 30, y: 10.5 }, pong: { x: 2.5, y: 15.6 }, tap: { x: 16.8, y: 15 },
   upperLane: 7.8, lowerLane: 12.9, split: 11.8, aisles: [7.5, 13.5, 19.5, 25.5],
 };
-// The two rooms people walk into, each with its open door: `out` is the step outside it,
-// `in` the step inside; a member goes through the gap between them.
+// The three rooms people walk into, each with its open door: `out` is the step outside it,
+// `in` the step inside; a member goes through the gap between them. The wing (ADR 0115) is
+// the engineering team's room: six desks and a door onto the lower lane.
 const HQ_ROOMS = {
   ceo: { x: 20, y: 2, w: 7, h: 5, out: { x: 20.4, y: 7.6 }, in: { x: 20.4, y: 6.2 } },
   meeting: { x: 9, y: 14, w: 7, h: 6, out: { x: 9.5, y: 13.0 }, in: { x: 9.5, y: 15.0 } },
+  wing: { x: 22, y: 14, w: 10, h: 6, out: { x: 22.5, y: 13.0 }, in: { x: 22.5, y: 15.0 } },
 };
+// The wing's six desks, two rows of three; a member of the wing rests beside its own desk.
+const HQ_WING_DESKS = [
+  { x: 22.4, y: 15.2, room: "wing" }, { x: 25.6, y: 15.2, room: "wing" }, { x: 28.8, y: 15.2, room: "wing" },
+  { x: 22.4, y: 17.6, room: "wing" }, { x: 25.6, y: 17.6, room: "wing" }, { x: 28.8, y: 17.6, room: "wing" },
+];
 // Where people sit in the meeting room: the CEO at the head, behind the table; the others on
 // the chairs before it, their backs to us.
 const HQ_MEETING = {
@@ -194,7 +201,7 @@ function hqTell(e, live) {
     "run.ended": [d.result === "succeeded" ? "done" : d.result === "retry_waiting" ? "warn" : "bad",
       `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.result !== "succeeded" && d.why ? `: ${d.why}` : ""}${d.label ? " · " + d.label : ""}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}${d.input != null ? ` · in ${d.input} / out ${d.output || 0}` : ""}${d.cached != null ? ` · cached: ${d.cached}% of input` : ""}`],
     "gate.result": [d.passed ? "done" : "bad", `Gate on ${key}: ${d.passed ? "passed" : "failed"}`],
-    "desk.added": ["you", `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
+    "desk.added": ["you", d.kind === "push" ? `On your desk: push ${d.branch || "a branch"}${on}` : d.kind === "hire" ? `On your desk: ${d.name ? d.name + ", " : ""}a ${hqRole(d.role)} to hire${on}` : `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
     "desk.decided": ["you", `You decided: ${String(d.decision || "").replace(/_/g, " ")}`],
     "budget.crossed": ["bad", `${name} crossed its limit; R${d.run} stopped`],
     "stopped": ["bad", "You pulled the kill switch: every run stopped, nothing new starts"],
@@ -217,6 +224,10 @@ function hqTell(e, live) {
     "project.changed": [d.status === "paused" || d.status === "dropped" ? "warn" : "you", `Project ${d.title} is ${d.status}: ${d.what || ""}${d.by && d.by !== "owner" ? ", by " + d.by : ""}`],
     "project.budget": [d.level === "spent" ? "bad" : "warn", `Project ${d.title} ${d.said || ""}`],
     "member.reports_to": ["you", `${d.name} now reports to ${d.manager}`],
+    // The engineering wing (ADR 0115): branches, their checks and the owner's pushes.
+    "branch.submitted": ["run", `${name} submitted ${d.name} (${d.files} files) on ${key}: check c${d.check} queued`],
+    "check.done": [d.ok ? "done" : "bad", `Check c${d.check} on ${d.branch}: ${d.summary || (d.ok ? "passed" : "failed")}`],
+    "branch.pushed": [d.ok ? "you" : "bad", d.ok ? `You pushed ${d.branch} to the fork` : `Pushing ${d.branch} failed`],
   }[e.kind];
   if (said) {
     const at = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -264,16 +275,25 @@ function hqCeo() { return ((HQ.snap && HQ.snap.members) || []).find((m) => m.rol
 function hqShort(text) { return String(text || "").replace(/^[a-z_]+ → [a-z_]+: /, "").toLowerCase().slice(0, 26); }
 function hqSay(p, text) { p.bubble = hqShort(text); p.bubbleT = 3.2; }
 
-// Each member's desk and place to rest, by id: the CEO's office for the CEO, and the open
-// floor's desks for the others in the order they joined (`rank`), so five members have five
-// desks. Past four others they share again, as the floor holds four.
+// Each member's desk and place to rest, by id: the CEO's office for the CEO, the wing's room
+// for the wing's members (its project's lead and whoever reports up to them, as HQ says in
+// `wing.members`; they rest at their desks), and the open floor's desks for the others in the
+// order they joined (`rank`), so five members have five desks. Past four others they share
+// again, as the floor holds four; past six in the wing, likewise.
 function hqSeats(members) {
   const out = {};
-  let rank = 0, boss = false;
+  const wing = new Set(((HQ.snap && HQ.snap.wing) || {}).members || []);
+  let rank = 0, boss = false, seated = 0;
   for (const m of members || []) {
     if (m.role === "ceo" && !boss) {
       boss = true;
       out[m.id] = { desk: HQ_CEO_DESK, deskNo: HQ_DESKS.length, rest: HQ_CEO_REST, rank: -1 };
+      continue;
+    }
+    if (wing.has(m.id)) {
+      const w = seated % HQ_WING_DESKS.length, desk = HQ_WING_DESKS[w];
+      out[m.id] = { desk, deskNo: HQ_DESKS.length + 1 + w, rest: { x: desk.x + 0.3, y: desk.y - 0.5, room: "wing", dir: "down" }, rank: 100 + seated };
+      seated++;
       continue;
     }
     const n = rank % HQ_DESKS.length;
@@ -401,7 +421,7 @@ function hqPaintRoom() {
   floor("plain", "#c3c8d0", 27, 2, HQ_COLS, 7);
   floor("grid", "#8fa6c7", 0, 14, 9, HQ_ROWS);
   floor("grid", "#d9e1ea", 9, 14, 16, HQ_ROWS);
-  floor("check", "#efe9de", 23, 14, HQ_COLS, HQ_ROWS);
+  floor("check", "#efe9de", 22, 14, HQ_COLS, HQ_ROWS);
   // The wall.
   g.fillStyle = C.wall; g.fillRect(0, 0, W, 2 * T); g.fillStyle = C.wallTop; g.fillRect(0, 0, W, 5); g.fillStyle = C.trim; g.fillRect(0, 2 * T - 3, W, 3);
   // A window onto the bay, with the bridge.
@@ -425,7 +445,7 @@ function hqPaintRoom() {
     g.fillStyle = "rgba(150,205,235,.5)"; g.fillRect(x, y0, 3, 18); g.fillStyle = C.glassEdge; g.fillRect(x + 2, y0, 1, 18);
     g.fillStyle = C.trim; g.fillRect(x, y0 + (dir < 0 ? 3 : 13), 2, 2);
   };
-  const B = P.boardRoom, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = P.engine;
+  const B = P.boardRoom, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = P.engine, G = HQ_ROOMS.wing;
   glass(B); edge((B.x + B.w) * T - 2, B.y * T, 2, B.h * T); edge(0, (B.y + B.h) * T - 2, (B.x + B.w) * T - 22, 2);
   glass(O); edge(O.x * T, O.y * T, 2, O.h * T);
   edge(O.x * T, (O.y + O.h) * T - 2, 0.3 * T, 2); edge((O.x + 1.7) * T, (O.y + O.h) * T - 2, (O.w - 1.7) * T, 2);
@@ -434,6 +454,10 @@ function hqPaintRoom() {
   glass(M); edge(M.x * T, M.y * T, 2, M.h * T); edge((M.x + M.w) * T - 2, M.y * T, 2, M.h * T);
   edge(M.x * T, M.y * T, 0.3 * T, 2); edge((M.x + 1.7) * T, M.y * T, (M.w - 1.7) * T, 2);
   swung((M.x + 1.7) * T - 3, M.y * T + 2, 1);
+  // The engineering wing (ADR 0115): glass like the meeting room's, its door onto the lane.
+  glass(G, "rgba(120,185,140,.16)"); edge(G.x * T, G.y * T, 2, G.h * T);
+  edge(G.x * T, G.y * T, 0.3 * T, 2); edge((G.x + 1.7) * T, G.y * T, (G.w - 1.7) * T, 2);
+  swung((G.x + 1.7) * T - 3, G.y * T + 2, 1);
   // Ping-pong.
   const px = P.pong.x * T, py = P.pong.y * T;
   g.fillStyle = C.shadow; g.fillRect(px + 2, py + 13, 66, 4); g.fillStyle = "#1f7a4f"; g.fillRect(px, py, 66, 13); g.fillStyle = "#ffffff"; g.fillRect(px, py + 6, 66, 1); g.fillRect(px + 32, py - 3, 2, 16);
@@ -443,15 +467,14 @@ function hqPaintRoom() {
   g.fillStyle = "#b8a68a"; g.fillRect(18 * T, 14.6 * T, 4 * T, 3); g.fillRect(18 * T, 15.4 * T, 4 * T, 3);
   const snacks = ["#ff4fa3", "#ffb347", "#45c486", "#7fb2ff", "#ef5a5f", "#fff2a8"];
   for (let i = 0; i < 14; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(18 * T + 2 + i * 4.4, 14.6 * T - 5 + (i % 2) * 13, 3, 5); }
-  // The lobby: reception and the door.
-  g.fillStyle = "#ffffff"; g.fillRect(25 * T, 15.2 * T, 2.6 * T, 11); g.fillStyle = C.trim; g.fillRect(25 * T, 15.2 * T + 10, 2.6 * T, 2);
+  // The front door, on the floor's right wall.
   g.fillStyle = "#3d3a44"; g.fillRect(P.door.x * T, P.door.y * T, 2 * T, 3 * T); g.fillStyle = "#9fd3f0"; g.fillRect(P.door.x * T + 4, P.door.y * T + 4, 2 * T - 8, 3 * T - 4);
   // Labels.
   g.font = HQ_PIXEL; g.fillStyle = "rgba(31,29,41,.6)";
   g.fillText("BOARD ROOM", 4, 2 * T + 9); g.fillText("CEO", O.x * T + 5, O.y * T + 9);
   g.fillText("SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4); g.fillText("MEETING", M.x * T + 5, (M.y + M.h) * T - 4);
   g.fillStyle = "rgba(255,255,255,.8)"; g.fillText("PING-PONG", 4, 14 * T + 9); g.fillStyle = "rgba(31,29,41,.6)"; g.fillText("COLD BREW", 16.3 * T, HQ_ROWS * T - 4);
-  g.fillText("LOBBY", 23.4 * T, 14 * T + 9); g.fillText("ENDORA", 25.1 * T, 15.2 * T + 8);
+  g.fillText("WING", (G.x + 2) * T, G.y * T + 9);
   return bg;
 }
 
@@ -479,10 +502,14 @@ function hqFurniture() {
   f("CUSHIONED_CHAIR_BACK", (m.x + 0.1) * T, (m.y + 1.9) * T);
   f("CUSHIONED_CHAIR_BACK", (m.x + 1.1) * T, (m.y + 1.9) * T);
   f("LARGE_PLANT", 14.2 * T, 14.1 * T);
-  // The floor, the lounge and the lobby.
-  f("PLANT", 0.1 * T, 10.2 * T); f("PLANT_2", 31 * T, 9.6 * T); f("CACTUS", 27.6 * T, 10 * T);
-  f("SOFA_FRONT", 17.6 * T, 16.8 * T); f("SOFA_FRONT", 19.6 * T, 16.8 * T); f("PLANT", 22.2 * T, 16.6 * T);
-  f("BOOKSHELF", 23.4 * T, 19 * T);
+  // The floor and the lounge.
+  f("PLANT", 0.1 * T, 10.2 * T); f("PLANT_2", 28.4 * T, 9.6 * T); f("CACTUS", 25.6 * T, 10.4 * T);
+  f("SOFA_FRONT", 17.6 * T, 16.8 * T); f("SOFA_FRONT", 19.6 * T, 16.8 * T); f("PLANT", 21 * T, 16.6 * T);
+  // The engineering wing (ADR 0115): six desks with their PCs, two rows of three.
+  HQ_WING_DESKS.forEach((d, i) => {
+    f("DESK_FRONT", d.x * T, d.y * T);
+    f("PC_FRONT_OFF", d.x * T + 4, d.y * T - 6, { lift: 0.5, pc: HQ_DESKS.length + 1 + i });
+  });
   return out;
 }
 
@@ -714,7 +741,12 @@ function viewHQ() {
       // the month turns and the pause lifts itself.
       project_budget: [["raise", "Raise the cap", "ok"], ["wait", "Wait for next month", "no"]],
       // Work sent back three times (ADR 0114): its next round is the owner's alone.
-      rounds: [["accept", "Accept as done", "ok"], ["send_back", "Send it back", "no"]] }[d.kind] || [];
+      rounds: [["accept", "Accept as done", "ok"], ["send_back", "Send it back", "no"]],
+      // The wing (ADR 0115): a lead's request to hire, and an accepted branch to push to the
+      // fork. Without a deploy key on the node there is nothing to approve: the card offers
+      // the branch's bundle to download instead.
+      hire: [["approve", "Hire", "ok"], ["decline", "Decline", "no"]],
+      push: hqCanPush(d) ? [["approve", "Push it", "ok"], ["decline", "Decline", "no"]] : [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
@@ -723,12 +755,15 @@ function viewHQ() {
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
       ${d.kind === "approval" ? hqApproval(d.approval) : ""}
       ${d.kind === "decision" ? hqDecision(d.decision) : ""}
+      ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
       ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
       ${d.kind === "project_cap" || d.kind === "project_budget" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="${d.kind === "project_cap" ? "Dollars a month (empty: as asked)" : "The new cap, in dollars a month"}" aria-label="The cap, in dollars a month" />` : ""}
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
   }).join("");
   // The latest twenty, newest first: enough to follow the team, short enough to read.
   const log = HQ.log.slice(0, 20).map((l) => `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${esc(l.text)}</span></li>`).join("");
+  const wing = s.wing || {};
+  const wingLine = wing.goal ? `<p class="hq-note">The engineering wing (goal "${esc(wing.goal)}") seats ${wing.most_leads || 1} lead on Claude Sonnet and at most ${wing.most_developers || 5} developers on Claude Haiku or the house's model when its lead asks to hire: ${wing.developers || 0} of ${wing.most_developers || 5} developer seats are taken. Your own hiring here is not limited.</p>` : "";
   const team = (s.members || []).map((m) => {
     const on = (m.running || []).map((r) => r.task ? hqKey(r.task) : "a look round").join(", ");
     return `<li><button class="hq-link" data-act="hq:pick:member:${m.id}">${esc(m.name)}</button>
@@ -748,7 +783,7 @@ function viewHQ() {
     <div class="hq-main">
       <div class="hq-stage">
         <canvas id="hq-office" width="${HQ_W}" height="${HQ_H}"
-          aria-label="The team's office: members at their desks, the board of tasks, the CEO's office, the meeting room, the server closet, the board room"></canvas>
+          aria-label="The team's office: members at their desks, the board of tasks, the CEO's office, the meeting room, the engineering wing, the server closet, the board room"></canvas>
         <div class="hq-stats">${stats}</div>
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
         ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
@@ -759,7 +794,7 @@ function viewHQ() {
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
         ${hqScorecard(s)}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul></section>
-        <section class="hq-card"><h2>Team</h2><ul class="hq-team">${team}</ul></section>
+        <section class="hq-card"><h2>Team</h2><ul class="hq-team">${team}</ul>${wingLine}${hqHireForm(s)}</section>
         ${hqProjects(s)}
         ${hqHouse(s)}
         <details class="hq-card"><summary>Set the team a goal</summary>
@@ -771,6 +806,45 @@ function viewHQ() {
     </div>
     <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
+}
+
+// Whether a push on the desk can be approved: the node has a deploy key, so the card says
+// "Push ..."; without one it says the branch is accepted but pushing is not set up.
+function hqCanPush(d) { return String(d.text || "").startsWith("Push "); }
+
+// The bundle a push card offers to download when the node cannot push: `hq/<slug>` from the
+// path the card names, as the slug alone (letters, digits and dashes, which is all a slug is).
+function hqBundleOf(d) {
+  const m = /\/v1\/hq\/bundles\/\d+\/([a-z0-9-]+)/.exec(String(d.text || ""));
+  return m ? m[1] : "";
+}
+
+// The owner hires (ADR 0115): a name, a role, a brain from the models the team knows, and whom
+// the member reports to. HQ decides the rules (one CEO, a brain the role may use) and refuses
+// the rest; this only asks.
+function hqHireForm(s) {
+  const roles = [["developer", "Developer"], ["lead", "Lead"], ["researcher", "Researcher"], ["reviewer", "Tester"], ["ceo", "CEO"]]
+    .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  const brains = [["local", "Local"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus (the CEO's alone)"]]
+    .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  const to = `<option value="">by role</option>` + (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(hqRole(m.role))})</option>`).join("");
+  return `<details><summary>Hire</summary><div class="hq-row" style="margin-top:8px;">
+      <input id="hq-hire-name" placeholder="Name" aria-label="The new member's name" />
+      <select id="hq-hire-role" aria-label="Role">${roles}</select>
+      <select id="hq-hire-brain" aria-label="Brain">${brains}</select>
+      <label>reports to <select id="hq-hire-to" aria-label="Whom the member reports to">${to}</select></label>
+      <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div></details>`;
+}
+
+// A task's documents and branches (ADR 0115): a submitted branch's diff and stat, a check's
+// report, each a document the tester and the lead read; and each branch with where it is and
+// how its check went. Every word is a diff's or a tool's, so all of it is escaped.
+function hqDocuments(t) {
+  const docs = t.documents || [], branches = t.branches || [];
+  if (!docs.length && !branches.length) return "";
+  const rows = branches.map((b) => `<li>${esc(b.name)} at ${esc(String(b.head || "").slice(0, 12))} · ${b.files} files, +${b.plus} −${b.minus} · ${esc(String(b.status || "").replace(/_/g, " "))}${b.check ? ` · check c${b.check.id}: ${esc(b.check.status === "done" ? (b.check.ok ? "passed" : "failed") + (b.check.summary ? ", " + b.check.summary : "") : b.check.status)}` : " · no check yet"}</li>`).join("");
+  const shown = docs.map((d) => `<details class="hq-doc"><summary>d${d.id} ${esc(d.title)}</summary><pre>${esc(d.text || "")}</pre></details>`).join("");
+  return `<div class="hq-evidence"><h3>Branches and documents</h3>${rows ? `<ul class="hq-thread">${rows}</ul>` : ""}${shown}</div>`;
 }
 
 // What a member thinks with (ADR 0109): the house's own model, or a Claude its role may use,
@@ -988,7 +1062,7 @@ function hqSelected() {
     <dt>Owner</dt><dd>${t.owner ? esc(hqName(t.owner)) : "nobody"}</dd>
     <dt>Lock</dt><dd>${runner ? "held by R" + runner.id : "free"}</dd>
     <dt>Blocked by</dt><dd>${(t.waits_on || []).length ? t.waits_on.map(hqKey).join(", ") : "nothing"}</dd>
-    <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${hqEvidence(t)}${hqTurns((r) => r.task === t.id)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}
+    <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${hqEvidence(t)}${hqDocuments(t)}${hqTurns((r) => r.task === t.id)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}
     <textarea id="hq-reply-${t.id}" rows="2" placeholder="Reply in the thread: whoever has it reads it now" aria-label="Your reply"></textarea>
     <div class="hq-row"><button class="hq-btn ok" data-act="hq:reply:${t.id}:send">Send</button></div>`;
 }
@@ -1036,6 +1110,32 @@ async function hqDispatch(verb, noun, id, arg) {
     try { await api("POST", `/v1/hq/members/${id}/name`, { name }); flash(`${m.name} is now ${name}.`, "ok"); }
     catch (e) { flash("Couldn't rename: " + e.message, "err"); }
     await loadHQ(); render(); return true;
+  }
+  // The owner hires (ADR 0115): HQ refuses a second CEO or a brain the role may not use.
+  if (noun === "hire") {
+    const name = val("hq-hire-name");
+    const role = (document.getElementById("hq-hire-role") || {}).value || "developer";
+    const brain = (document.getElementById("hq-hire-brain") || {}).value || "local";
+    const to = Number((document.getElementById("hq-hire-to") || {}).value || 0) || null;
+    if (!name) { flash("Give the new member a name.", "warn"); return true; }
+    try { await api("POST", "/v1/hq/members", { name, role, brain, reports_to: to }); flash(`${name} joined the team.`, "ok"); }
+    catch (e) { flash("Couldn't hire: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // A branch's bundle, when the node cannot push it: fetched with this device's token and
+  // saved, for the owner to `git fetch` into their own clone.
+  if (noun === "bundle") {
+    const slug = String(arg || "").replace(/[^a-z0-9-]/g, "");
+    if (!slug) return true;
+    try {
+      const res = await fetch(`/v1/hq/bundles/${Number(id)}/${slug}`, { headers: signed({}) });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a"); a.href = url; a.download = `${slug}.bundle`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      flash("Bundle saved. In your clone: git fetch <the file> refs/submissions/hq/" + slug + ":hq/" + slug, "ok");
+    } catch (e) { flash("Couldn't fetch the bundle: " + e.message, "err"); }
+    return true;
   }
   // Whom a member reports to.
   if (noun === "reports") {

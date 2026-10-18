@@ -79,6 +79,27 @@ pub fn branch_for(task: i64, title: &str) -> String {
     format!("{BRANCH_PREFIX}task-{task}-{}", slug(title))
 }
 
+/// Whether a path is one the team may never touch (ADR 0115): the owner's values live in
+/// `group_vars/*.yml`, `host_vars/` and every inventory, and anything named for a vault. A
+/// branch that changes one is refused whole; the briefing says never to edit, cite or copy
+/// from them.
+#[must_use]
+pub fn forbidden_path(path: &str) -> bool {
+    let lower = path.trim().trim_start_matches("./").to_ascii_lowercase();
+    let parts: Vec<&str> = lower.split('/').collect();
+    parts.iter().any(|p| {
+        matches!(
+            *p,
+            "group_vars"
+                | "host_vars"
+                | "inventories"
+                | "inventory"
+                | "inventory.yml"
+                | "inventory.ini"
+        ) || p.contains("vault")
+    })
+}
+
 /// A branch name as the team may use one: a plain name under `hq/`, nothing else.
 ///
 /// # Errors
@@ -213,29 +234,32 @@ pub struct Mirror {
     dir: PathBuf,
     submissions: PathBuf,
     url: String,
-    default_branch: String,
+    base: String,
     refreshed: Mutex<Option<i64>>,
 }
 
 impl Mirror {
-    /// The mirror of the repository at `url` (its default branch `default_branch`), kept under
+    /// The mirror of the repository at `url`, worked from `base`, kept under
     /// `data_dir/team-repo`.
     #[must_use]
-    pub fn new(data_dir: &Path, url: &str, default_branch: &str) -> Self {
+    pub fn new(data_dir: &Path, url: &str, base: &str) -> Self {
         let root = data_dir.join("team-repo");
         Self {
             dir: root.join("mirror.git"),
             submissions: root.join("submissions"),
             url: url.to_owned(),
-            default_branch: default_branch.to_owned(),
+            base: base.to_owned(),
             refreshed: Mutex::new(None),
         }
     }
 
-    /// The fork's default branch, as the mirror knows it.
+    /// The base branch the wing works from: `ENDORA_ANSIBLE_NAS_REF` when the owner set it
+    /// (the fork's own line, `develop`, with `main` only mirroring upstream), else the fork's
+    /// default branch. A checkout is a bundle of it, a submission must sit on top of it, and
+    /// `hq/*` branches are cut from it.
     #[must_use]
-    pub fn default_branch(&self) -> &str {
-        &self.default_branch
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     /// Where the mirror is.
@@ -357,13 +381,13 @@ impl Mirror {
     /// A branch that is neither, one the fork does not have, or git failing.
     pub fn bundle(&self, branch: Option<&str>, now: i64) -> Result<Bundle, String> {
         let branch = match branch.map(str::trim).filter(|b| !b.is_empty()) {
-            None => self.default_branch.clone(),
-            Some(named) if named == self.default_branch => named.to_owned(),
+            None => self.base.clone(),
+            Some(named) if named == self.base => named.to_owned(),
             Some(named) => hq_branch(named)
                 .map_err(|_| {
                     format!(
                         "check out the fork's {} or one of the team's hq/ branches, not {named:?}",
-                        self.default_branch
+                        self.base
                     )
                 })?
                 .to_owned(),
@@ -448,7 +472,7 @@ impl Mirror {
         git(&self.dir, &["bundle", "verify", &file], &[]).map_err(|_| {
             format!(
                 "the bundle does not apply to the fork: its base is not in {}. Check out again and put your commits on top of it",
-                self.default_branch
+                self.base
             )
         })?;
         let heads = text(git(&self.dir, &["bundle", "list-heads", &file], &[])?);
@@ -475,7 +499,7 @@ impl Mirror {
             &[],
         )?;
         let head = text(git(&self.dir, &["rev-parse", &kept], &[])?);
-        let base_ref = format!("refs/heads/{}", self.default_branch);
+        let base_ref = format!("refs/heads/{}", self.base);
         let base = text(git(&self.dir, &["rev-parse", &base_ref], &[])?);
         if git(
             &self.dir,
@@ -486,16 +510,16 @@ impl Mirror {
         {
             return Err(format!(
                 "{branch} is not on top of {}: its head {} is {}. Rebase it on {} and submit again",
-                self.default_branch,
+                self.base,
                 &base[..12.min(base.len())],
                 "behind or beside the fork's",
-                self.default_branch
+                self.base
             ));
         }
         if head == base {
             return Err(format!(
                 "{branch} has no commits beyond {}: nothing to submit",
-                self.default_branch
+                self.base
             ));
         }
         let range = format!("{base_ref}..{kept}");
@@ -521,6 +545,11 @@ impl Mirror {
             }
         }
         let names = text(git(&self.dir, &["diff", "--name-only", &base, &head], &[])?);
+        if let Some(touched) = names.lines().find(|l| forbidden_path(l)) {
+            return Err(format!(
+                "{branch} touches {touched}, which holds the owner's own values: never edit, cite or copy from group_vars/*.yml, host_vars or an inventory. Drop that change and submit again"
+            ));
+        }
         let files = names.lines().filter(|l| !l.is_empty()).count();
         if files > FILES_MOST {
             return Err(format!(
@@ -578,7 +607,7 @@ impl Mirror {
         key: Option<&Path>,
     ) -> Result<String, String> {
         let branch = hq_branch(branch)?;
-        if branch == self.default_branch || branch.starts_with('+') {
+        if branch == self.base || branch.starts_with('+') {
             return Err(format!("{branch} is never pushed by HQ"));
         }
         plain_remote(remote)?;
@@ -831,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mirror_hands_out_the_default_branch_and_refreshes_at_most_every_five_minutes() {
+    fn the_mirror_hands_out_the_base_branch_and_refreshes_at_most_every_five_minutes() {
         let s = scene("bundle");
         let before = s.mirror.head_of("main").unwrap();
         // The fork moves on; within five minutes the mirror does not look.

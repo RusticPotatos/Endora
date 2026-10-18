@@ -574,7 +574,7 @@ impl LabKnowledge {
         lab
     }
 
-    /// With a mirror of the repository at `url` (its default branch `branch`) kept under
+    /// With a mirror of the repository at `url` (worked from `branch`) kept under
     /// `dir`, pushed to `push_remote`: a test's local bare repository.
     #[cfg(test)]
     pub(crate) fn with_repo(
@@ -602,8 +602,9 @@ impl LabKnowledge {
         self.push_key.as_ref().is_some_and(|k| k.exists())
     }
 
-    /// The node's mirror of the fork, made the first time it is asked for (the fork's default
-    /// branch is asked of GitHub then); `None` when no fork is configured.
+    /// The node's mirror of the fork, made the first time it is asked for, worked from the base
+    /// branch: `ENDORA_ANSIBLE_NAS_REF` when set (the fork's `develop`), else the fork's default
+    /// branch, asked of GitHub then; `None` when no fork is configured.
     pub(crate) fn mirror(&self, now: i64) -> Option<Arc<Mirror>> {
         let mut kept = self
             .repo
@@ -652,7 +653,7 @@ fn repo_checkout(state: &AppState, args: &serde_json::Value) -> Result<Done, Ref
         bundle.bytes.len() >> 10
     );
     let text = json!({
-        "branch": bundle.branch, "head": bundle.head, "default_branch": mirror.default_branch(),
+        "branch": bundle.branch, "head": bundle.head, "base": mirror.base(),
         "bundle": repo::to_base64(&bundle.bytes),
     })
     .to_string();
@@ -2226,7 +2227,7 @@ mod tests {
         assert!(receipt.starts_with("r41"), "{receipt}");
         let checkout: serde_json::Value = serde_json::from_str(bundle_json).unwrap();
         assert_eq!(checkout["branch"], "main");
-        assert_eq!(checkout["default_branch"], "main");
+        assert_eq!(checkout["base"], "main");
         let bytes = repo::from_base64(checkout["bundle"].as_str().unwrap()).unwrap();
         let file = root.join("checkout.bundle");
         std::fs::write(&file, &bytes).unwrap();
