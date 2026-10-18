@@ -65,6 +65,67 @@ Their keys permit broader operations, but this adapter only sends fixed GETs.
 TLS uses the existing HTTP library's verified trust roots; do not disable TLS.
 HTTP is possible on a trusted private network, but does not encrypt keys.
 
+## The vault (ADR 0127)
+
+OpenBao keeps the house's secrets, beside the node, and locks itself on every restart. You
+unlock it with one passkey tap in the console.
+
+### Setting it up
+
+1. **Run it.** In your ansible-nas, after the Endora node's role (it makes the network the two
+   share), add the `endora.homelab.openbao` role and these variables, then run the playbook:
+
+   ```yaml
+   openbao_enabled: true
+   openbao_data_dir: "{{ docker_home }}/openbao"
+   endora_vault_url: http://openbao:8200
+   ```
+
+   For `make deploy` from your Mac, put `ENDORA_VAULT_URL = http://openbao:8200` in `local.mk`
+   too, so both ways of starting the node agree. Check it: `docker ps` shows `endora-openbao`
+   healthy, and the node's log says `vault: OpenBao, unlocked with a passkey for
+   endora.home.arpa`. It uses about 20 MB (capped at 256 MB).
+2. **Open the console by its name**: `https://endora.home.arpa:8787`. Passkeys are bound to that
+   name; opened by the NAS's address, the Vault screen says so and offers nothing.
+3. **Settings › Vault › Add a passkey.** Your iPhone (iOS 18 or later) offers to save a passkey
+   for Endora; Face ID. A passkey that cannot do PRF is refused with the reason.
+4. **Initialise the vault**, one more tap. You are shown **three break-glass shares, once**:
+   save them now, in your password manager, or on paper apart from it. Any two of them open the
+   vault if every passkey is lost; Endora never shows them again.
+5. **Add a second passkey** (an iPad, a security key): Add a passkey asks your phone first,
+   then the new one twice. Any registered passkey then unlocks on its own.
+6. **When you are ready, Endora's own keys** (folded under the passkeys): moving them into the
+   vault means a copy of the NAS's disk opens nothing without the vault, and that **after every
+   restart Endora waits for your tap**. It cannot be undone from the console.
+
+### After a reboot
+
+The console shows **Vault locked → Unlock**; tap it and Face ID. If Endora's own keys are in
+the vault, the whole console is the unlock screen until you do, before sign-in.
+
+### If something is lost
+
+- **A passkey** (a lost phone): remove it under Settings › Vault from another device, and add
+  the new phone. The last passkey that can unlock cannot be removed.
+- **Every passkey**: on the NAS, unlock with two break-glass shares,
+
+  ```sh
+  docker exec -it endora-openbao bao operator unseal -address=http://127.0.0.1:8200
+  ```
+
+  twice (it asks for a share each time, without echoing it), restart the node if it was
+  waiting (`docker restart endora-node`), sign in, and under **Settings › Vault › Lost every
+  passkey?** give two shares and a new passkey. The vault makes three new shares — save them;
+  the old ones stop working — and only the new passkey can unlock until you add others.
+- **The vault's data**: restore `openbao_data_dir` from the backup; your shares and passkeys
+  still fit it. If it is gone for good and Endora's keys were not in it, **Start over** (folded
+  on the Vault screen) forgets this node's copy so a new vault can be initialised. If Endora's
+  keys were in it, they are gone with it: `endora-node secrets forget --i-have-lost-the-key`
+  (above) is the way out.
+
+Back up `openbao_data_dir` with everything else; keep the break-glass shares apart from it,
+the way the secrets key is kept apart from the database.
+
 ## The wing's deploy key (ADR 0115)
 
 The engineering wing's branches reach your ansible-nas fork only when you approve a push on the

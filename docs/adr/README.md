@@ -282,6 +282,7 @@ of an existing record and take the next number.
 | [0125](0125-secrets-at-rest-in-the-node.md) | Secrets at rest in the node | — |
 | [0124](0124-guards-against-how-agent-teams-fail.md) | Guards against how agent teams fail | — |
 | [0126](0126-the-teams-map.md) | The team's map | — |
+| [0127](0127-openbao-and-the-passkey-unlock.md) | OpenBao and the passkey unlock | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
