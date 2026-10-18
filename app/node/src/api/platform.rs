@@ -109,6 +109,8 @@ pub(super) async fn health(State(state): State<AppState>) -> Json<serde_json::Va
 #[derive(Deserialize)]
 pub(super) struct AuditQuery {
     limit: Option<usize>,
+    /// The activity feed only: skip this many of the newest, to page on.
+    offset: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -161,10 +163,12 @@ pub(super) async fn activity(
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<Vec<ActivityResponse>>, ApiError> {
     let limit = query.limit.unwrap_or(50);
+    let offset = query.offset.unwrap_or(0);
     let audit = state.audit.clone();
     let events = state.events.clone();
     let items =
-        blocking(move || usecases::recent_activity(audit.as_ref(), events.as_ref(), limit)).await?;
+        blocking(move || usecases::activity_page(audit.as_ref(), events.as_ref(), limit, offset))
+            .await?;
     Ok(Json(items.iter().map(ActivityResponse::from).collect()))
 }
 

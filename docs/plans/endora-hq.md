@@ -1117,6 +1117,17 @@ in their downtime. Built:
 Not built: pictures for the kinds that have only a pixel shape; the owner placing or pinning an
 item; events beyond decorating.
 
+### Logs and the retry (as built 2026-10-18)
+
+- The feed tells a thread post whole, read from the snapshot's task thread by the place the
+  `thread.posted` event names (`post`, with `cut` and a preview ending in "…"); lines over 240
+  characters fold behind more/less; the log is a plain list on a phone, thirty lines at first,
+  "Show older" then `GET /v1/events?before=&limit=` (at most 200). The Activity screen pages
+  by `offset`.
+- Every server cap that loses text ends in "…[cut]" (`domain::cut`); the limits are unchanged.
+- "Try again" on a stuck item (`retry`) first asks whether its member can be woken; if not, it is
+  refused with the reason, nothing changes, and the item stays on the desk. The card says so.
+
 ### The team's standards ([ADR 0116](../adr/0116-the-teams-standards.md), proposed 2026-10-17)
 
 - The owner's global standards are [docs/standards.md](../standards.md): every member's

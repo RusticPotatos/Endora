@@ -16,6 +16,9 @@ function messages() {
   return (DB && DB.messages) || [];
 }
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
+const ACTIVITY_PAGE = 30;      // rows the Activity screen opens with, and each "Load more" adds
+let ACTIVITY_MORE = false;     // the last page was full, so there may be older rows
+let ACTIVITY_BUSY = false;     // a page is being fetched
 let CAPS = [];                 // the butler's capabilities/skills (modules)
 let MCP_SERVERS = { servers: [] }; // connected MCP servers + their tools (ADR 0054)
 let RECIPES = [];              // the person's own capabilities — five fields, no code (ADR 0071)

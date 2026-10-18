@@ -2063,6 +2063,30 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
 // is allowed to be. Until that exists, this is caught by a person with a phone, and it is
 // better to say so here than to pretend otherwise.
 
+// The Activity screen opens with thirty rows and pages on by the count already shown, so a long
+// history is not cut off at the thirtieth.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const row = (n) => `{ at_ms: ${n}, kind: "action", summary: "did thing ${n}" }`;
+  // Let anything an earlier check left in flight finish before the requests are counted.
+  await new Promise((done) => setTimeout(done, 100));
+  runInContext(`NAV = { v: "audit" }; ACTIVITY = [${Array.from({ length: 30 }, (_, i) => row(100 - i)).join(",")}]; ACTIVITY_MORE = true; ACTIVITY_BUSY = false;`, context);
+  if (!runInContext("activityFeed()", context).includes('data-act="activity:more"')) fail("activity: a full page offers no way to see older rows");
+  const asked = [];
+  const realFetch = context.fetch;
+  context.fetch = (path) => {
+    asked.push(String(path));
+    return Promise.resolve({ ok: true, status: 200, json: async () => [{ at_ms: 5, kind: "decision", summary: "an old one" }] });
+  };
+  await runInContext('dispatch("activity:more")', context);
+  context.fetch = realFetch;
+  if (asked.length !== 1 || asked[0] !== "/v1/activity?limit=30&offset=30") fail(`activity: "Load more" asked for ${asked}`);
+  const after = runInContext("activityFeed()", context);
+  if (!after.includes("an old one") || after.includes('data-act="activity:more"') || !after.includes("That is everything")) fail("activity: a short page did not end the list");
+  runInContext('ACTIVITY = []; ACTIVITY_MORE = false; NAV = { v: "chat" };', context);
+  console.log("activity: pages on by what is shown, and says when it has everything");
+}
+
 // Every button leads somewhere, and every request has somewhere to land.
 //
 // Two seams that nothing watched, both of which have broken here before. A `data-act` the

@@ -524,6 +524,22 @@ tagged release.
 
 ### Fixed
 
+- **Logs are no longer cut off.** The HQ feed shows a thread post whole (it was cut to 80
+  characters with no sign of it; the event now names its post's place in the thread and says
+  when its preview was cut), folds lines over 240 characters behind "more", and on a phone is a
+  plain list in the page, not a 300px window. It shows thirty lines and "Show older" reveals
+  the kept ones, then asks HQ for earlier events (`GET /v1/hq/events?before=&limit=`). The
+  Activity screen has "Load more" (`GET /v1/activity?limit=&offset=`), and the home "Watching N
+  things" line wraps to two lines instead of ending in an ellipsis.
+- **Every server-side cut says it was cut.** One helper (`domain::cut::cut`) ends what it cuts
+  in "…[cut]", character-safe and inside the same limit: a remote run's failure reason, a
+  receipt's excerpt, arguments and criterion, and the question, approval, notice, answer and
+  outcome texts. The limits are unchanged.
+- **"Try again" on a stuck desk item no longer does nothing without a word.** It released the
+  task and queued a wake that the kill switch, a pause, a furlough, the budget or a paused
+  project refused, then marked the item decided. Now it checks first: if nobody can be woken it
+  changes nothing, the item stays waiting, and the refusal's reason is said on the card (a
+  refused desk decision stays visible there, not only in a toast).
 - **A post in a turn with receipts is never "unsupported"**, nor the worker's automatic last
   word ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md), amended): a
   closing post in a turn with two receipts was tagged, because only receipts of calls that held
