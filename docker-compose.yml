@@ -76,8 +76,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    # A small service on a NAS whose memory is tight: a hard cap, not a hope.
-    mem_limit: 128m
+    # A small service on a NAS whose memory is tight: a hard cap, not a hope. It idles near
+    # 100 MB since the record's search index (ADR 0129); 128m was killed applying a large paste.
+    mem_limit: 384m
   # The runner (ADR 0102, phase 4): starts each turn HQ hands it as a fresh worker container,
   # from this same image, on the fenced `team` network. It holds Docker's socket, which is as
   # good as holding the host, so it is a profile of its own, off until the owner turns it on,
