@@ -13,7 +13,12 @@ receipts and documents; the check is the task's gate). Built: the mirror and the
 on the node, the worker's checkout and submission, the check job on the runner and in the
 workbench image, HQ's branches, documents, checks, hiring and the wing seeded once, the push on
 the owner's approval, and the HQ screen's wing, cards and forms. The owner's scenarios in
-`domains/team/features/the-engineering-wing.feature`.
+`domains/team/features/the-engineering-wing.feature`. Amended by
+[0118](0118-elastic-staffing-and-notebooks.md) (2026-10-17): a lead with a backlog asks for
+staff with `request_staff` (the project's open tasks as evidence, at least twice its active
+developers); a developer on furlough is offered back to the lead first, and with none the
+request becomes the hire request of rule 7, under the same seats. A member on furlough still
+counts as a seat.
 
 ## Context
 
