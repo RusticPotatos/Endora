@@ -79,10 +79,32 @@ pub const THRESHOLDS: Thresholds = Thresholds {
 pub enum GuardRefusal {
     /// A closing reason not in the set for the status it closes to.
     NotAClosure(TaskStatus),
+    /// The parent already has as many open sub-tasks as one task may.
+    TooManySubtasks {
+        /// The parent.
+        parent: super::work::TaskId,
+        /// Its open sub-tasks.
+        open: usize,
+    },
+    /// A sub-task would sit deeper than work may.
+    TooDeep {
+        /// The parent.
+        parent: super::work::TaskId,
+        /// How deep the sub-task would be.
+        depth: u8,
+    },
+    /// A sub-task says which of its parent's criteria it serves.
+    ServesWhich {
+        /// The parent.
+        parent: super::work::TaskId,
+        /// The parent's criteria, in order.
+        criteria: Vec<String>,
+    },
 }
 
 impl core::fmt::Display for GuardRefusal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let t = THRESHOLDS;
         match self {
             Self::NotAClosure(status) => write!(
                 f,
@@ -90,8 +112,100 @@ impl core::fmt::Display for GuardRefusal {
                 status.name(),
                 super::closure::Closure::names(*status).join(", ")
             ),
+            Self::TooManySubtasks { parent, open } => write!(
+                f,
+                "#{parent} already has {open} open sub-tasks, and {} is the most: finish or \
+                 drop one, or add to one with post, before making another",
+                t.open_subtasks_most
+            ),
+            Self::TooDeep { parent, depth } => write!(
+                f,
+                "a sub-task of #{parent} would be {depth} deep, and {} is the deepest work goes: \
+                 do it in #{parent}, or ask its lead to plan it",
+                t.depth_most
+            ),
+            Self::ServesWhich { parent, criteria } => {
+                let listed: Vec<String> = criteria
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| format!("{}. {c}", i + 1))
+                    .collect();
+                write!(
+                    f,
+                    "which of #{parent}'s criteria does this serve? Give serves (its number or \
+                     its words): {}",
+                    listed.join("; ")
+                )
+            }
         }
     }
+}
+
+/// Whether one more sub-task fits under a parent with `open` open sub-tasks, `depth` deep
+/// itself (ADR 0124): at most [`Thresholds::open_subtasks_most`] open under one task, and no
+/// deeper than [`Thresholds::depth_most`].
+///
+/// # Errors
+/// [`GuardRefusal::TooManySubtasks`] or [`GuardRefusal::TooDeep`], with the counts.
+pub fn room_for_a_subtask(
+    parent: super::work::TaskId,
+    open: usize,
+    depth: u8,
+) -> Result<(), GuardRefusal> {
+    if open >= THRESHOLDS.open_subtasks_most {
+        return Err(GuardRefusal::TooManySubtasks { parent, open });
+    }
+    let deeper = depth.saturating_add(1);
+    if deeper > THRESHOLDS.depth_most {
+        return Err(GuardRefusal::TooDeep {
+            parent,
+            depth: deeper,
+        });
+    }
+    Ok(())
+}
+
+/// Which of `criteria` (counted from 1) `said` names: its number (`2`, `#2`, `criterion 2`)
+/// or its words, case and spacing aside. `None` when it names none of them.
+#[must_use]
+pub fn serves(criteria: &[super::evidence::Criterion], said: &str) -> Option<usize> {
+    let squeezed = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let said = squeezed(said);
+    let number = said
+        .trim_start_matches("criterion")
+        .trim()
+        .trim_start_matches('#')
+        .trim()
+        .parse::<usize>()
+        .ok();
+    if let Some(n) = number.filter(|n| (1..=criteria.len()).contains(n)) {
+        return Some(n);
+    }
+    if said.is_empty() {
+        return None;
+    }
+    criteria
+        .iter()
+        .position(|c| squeezed(&c.text) == said)
+        .map(|i| i + 1)
+}
+
+/// What a member whose evidence already meets its task's criteria is told (ADR 0124): submit
+/// now, with a fresh reading first for any live criterion.
+#[must_use]
+pub const fn enough_said(live: bool) -> &'static str {
+    if live {
+        return "Your evidence already meets the criteria: submit now (set_status in_review, \
+                citing it), with one fresh reading this turn for each live criterion. More \
+                checking of the same is not more evidence.";
+    }
+    "Your evidence already meets the criteria: submit now (set_status in_review, citing it). \
+     More checking of the same is not more evidence."
 }
 
 /// The two windows the process-health detectors look over: a day, and a week.
@@ -858,6 +972,62 @@ mod tests {
         assert!(
             carousel(&[20, 40, 60], &silent),
             "nothing submitted between is nothing new"
+        );
+    }
+
+    #[test]
+    fn a_task_holds_five_open_sub_tasks_three_deep_and_says_so() {
+        use super::super::work::TaskId;
+        let p = TaskId(4);
+        assert!(room_for_a_subtask(p, 4, 2).is_ok());
+        let full = room_for_a_subtask(p, 5, 1).unwrap_err();
+        assert_eq!(full, GuardRefusal::TooManySubtasks { parent: p, open: 5 });
+        assert!(
+            full.to_string()
+                .contains("#4 already has 5 open sub-tasks, and 5 is the most")
+        );
+        let deep = room_for_a_subtask(p, 0, 3).unwrap_err();
+        assert_eq!(
+            deep,
+            GuardRefusal::TooDeep {
+                parent: p,
+                depth: 4
+            }
+        );
+        assert!(
+            deep.to_string()
+                .contains("would be 4 deep, and 3 is the deepest")
+        );
+    }
+
+    #[test]
+    fn a_sub_task_serves_a_criterion_named_by_number_or_words() {
+        use super::super::evidence::Criterion;
+        let c = [
+            Criterion::new("The cause is found", false),
+            Criterion::new("Sonarr is running", true),
+        ];
+        for said in [
+            "2",
+            "#2",
+            "criterion 2",
+            " Criterion  2 ",
+            "sonarr is  RUNNING",
+        ] {
+            assert_eq!(serves(&c, said), Some(2), "{said:?}");
+        }
+        for said in ["", "3", "0", "sonarr", "the fix"] {
+            assert_eq!(serves(&c, said), None, "{said:?}");
+        }
+        let asked = GuardRefusal::ServesWhich {
+            parent: super::super::work::TaskId(4),
+            criteria: c.iter().map(|k| k.text.clone()).collect(),
+        }
+        .to_string();
+        assert!(
+            asked.contains("which of #4's criteria does this serve?")
+                && asked.contains("1. The cause is found; 2. Sonarr is running"),
+            "{asked}"
         );
     }
 

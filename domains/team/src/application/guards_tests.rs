@@ -524,3 +524,268 @@ fn a_member_woken_for_nothing_again_and_again_is_parked_not_woken() {
     hq.tick().unwrap();
     assert!(hq.store().findings().unwrap()[0].cleared_at.is_some());
 }
+
+// ---- sub-task discipline and evidence that is enough -----------------------------------------
+
+/// `member` uses a tool of the team protocol in its running turn `t`.
+fn use_tool(
+    hq: &Hq<'_>,
+    t: &RunContext,
+    tool: &str,
+    args: &serde_json::Value,
+) -> Result<String, String> {
+    let (run, member) = hq.turn_of(&t.token).unwrap().expect("a running turn");
+    super::protocol::call(hq, &run, &member, tool, args)
+}
+
+/// A member's sub-task of a member's task says which of its parent's criteria it serves; the
+/// owner's task needs no such thing.
+#[test]
+fn a_sub_task_of_a_members_task_says_which_criterion_it_serves() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, linus_first) = team(&clock, true);
+    let ada = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == Role::Lead)
+        .unwrap()
+        .id;
+    // Linus's first task is put away, so his next turn is on what Ada hands him.
+    hq.drop_task(linus_first).unwrap();
+    let goal = hq.store().task(linus_first).unwrap().unwrap().goal;
+    // The owner's task (depth 0) is split with no `serves`.
+    let owners = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Keep the downloads moving".to_owned(),
+                description: String::new(),
+                assignee: Some(ada),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    let a = turn(&hq, ada);
+    assert_eq!(a.task, Some(owners));
+    let made = use_tool(
+        &hq,
+        &a,
+        "create_task",
+        &serde_json::json!({ "title": "Find why the downloads stick", "description": "Why do they stick?",
+            "assignee": "Linus",
+            "criteria": [{ "text": "The cause is found" }, { "text": "The fix is written up" }] }),
+    )
+    .unwrap();
+    let fix = TaskId(
+        made.trim_start_matches("Created task ")
+            .trim_end_matches('.')
+            .parse()
+            .unwrap(),
+    );
+    hq.runner().finish(a.run, true);
+    hq.tick().unwrap();
+    // Linus's sub-task of that (a member's task, with criteria) must say which it serves.
+    let l = turn(&hq, dev);
+    assert_eq!(l.task, Some(fix));
+    let mine = |serves: Option<&str>| {
+        use_tool(
+            &hq,
+            &l,
+            "create_task",
+            &serde_json::json!({ "title": "Read the queue", "description": "What is in it?", "serves": serves }),
+        )
+    };
+    let refused = mine(None).unwrap_err();
+    assert!(
+        refused.contains(&format!("which of #{fix}'s criteria does this serve?"))
+            && refused.contains("1. The cause is found; 2. The fix is written up"),
+        "{refused}"
+    );
+    assert!(
+        mine(Some("the moon base")).is_err(),
+        "no criterion of the parent"
+    );
+    let made = mine(Some("1")).unwrap();
+    let read = TaskId(
+        made.trim_start_matches("Created task ")
+            .trim_end_matches('.')
+            .parse()
+            .unwrap(),
+    );
+    let task = hq.store().task(read).unwrap().unwrap();
+    assert_eq!(
+        hq.serves_said(&task).unwrap(),
+        format!("It serves #{fix}'s criterion 1: The cause is found. Keep to that.\n")
+    );
+}
+
+/// No task holds more than five open sub-tasks, and work goes no deeper than three; the
+/// refusals say the counts.
+#[test]
+fn a_task_holds_five_open_sub_tasks_and_work_goes_three_deep() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, owners) = team(&clock, true);
+    let t = turn(&hq, dev);
+    for i in 0..5 {
+        use_tool(
+            &hq,
+            &t,
+            "create_task",
+            &serde_json::json!({ "title": format!("Part {i}"), "description": "a part" }),
+        )
+        .unwrap();
+    }
+    let refused = use_tool(
+        &hq,
+        &t,
+        "create_task",
+        &serde_json::json!({ "title": "Part 5", "description": "a part" }),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains(&format!(
+            "#{owners} already has 5 open sub-tasks, and 5 is the most"
+        )),
+        "{refused}"
+    );
+    hq.runner().finish(t.run, true);
+    hq.tick().unwrap();
+    // Three deep below the owner's task, and no deeper.
+    let goal = hq.store().task(owners).unwrap().unwrap().goal;
+    let mut parent = TaskId(owners.0 + 1);
+    for depth in 2..=3 {
+        parent = hq
+            .add_task(
+                Author::Member(dev),
+                NewTask {
+                    goal,
+                    project: None,
+                    parent: Some(parent),
+                    title: format!("Depth {depth}"),
+                    description: String::new(),
+                    assignee: Some(dev),
+                    priority: Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(hq.store().task(parent).unwrap().unwrap().depth, 3);
+    hq.wake(dev, Some(parent), WakeReason::Mentioned).unwrap();
+    let deep = turn(&hq, dev);
+    assert_eq!(deep.task, Some(parent));
+    let refused = use_tool(
+        &hq,
+        &deep,
+        "create_task",
+        &serde_json::json!({ "title": "Depth 4", "description": "too deep" }),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("would be 4 deep, and 3 is the deepest"),
+        "{refused}"
+    );
+}
+
+/// Enough evidence means submit: told so, then three turns that only check the same again
+/// are talk only, and on the third HQ submits the work for its member.
+#[test]
+fn evidence_already_enough_is_submitted_by_hq_after_three_re_checks() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, _) = team(&clock, true);
+    let goal = hq.store().goals().unwrap()[0].id;
+    let task = hq
+        .add_task_with(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Find why sonarr restarts".to_owned(),
+                description: String::new(),
+                assignee: Some(dev),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[crate::domain::Criterion::new("The cause is found", false)],
+        )
+        .unwrap();
+    let read = |t: &RunContext| {
+        hq.record_receipt(
+            &t.token,
+            &super::engine::Called {
+                tool: "container_logs".to_owned(),
+                args: "{\"name\":\"sonarr\"}".to_owned(),
+                excerpt: "killed: out of memory".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap()
+    };
+    // Linus's turns on it, each started by the tick after the previous (the first by its
+    // handing-on, the next by a mention).
+    let mut turns = Vec::new();
+    for i in 0..4 {
+        if i > 0 {
+            hq.wake(dev, Some(task), WakeReason::Mentioned).unwrap();
+        }
+        let t = turn(&hq, dev);
+        if i == 0 {
+            hq.claim_in(t.run, task).unwrap();
+        }
+        turns.push(t.clone());
+        read(&t);
+        hq.runner().finish(t.run, true);
+        hq.tick().unwrap();
+    }
+    assert!(
+        !turns[0].told.contains("already meets the criteria"),
+        "no evidence before its first reading"
+    );
+    assert!(
+        turns[1]
+            .told
+            .contains("Your evidence already meets the criteria: submit now"),
+        "{}",
+        turns[1].told
+    );
+    let labels: Vec<_> = turns
+        .iter()
+        .map(|t| hq.store().run(t.run).unwrap().unwrap().label)
+        .collect();
+    use crate::domain::Label;
+    assert_eq!(
+        labels,
+        [
+            Some(Label::Advanced),
+            Some(Label::TalkOnly),
+            Some(Label::TalkOnly),
+            Some(Label::TalkOnly)
+        ],
+        "re-checking enough evidence is talk only"
+    );
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::InReview,
+        "HQ submitted it"
+    );
+    let thread = hq.store().thread(task).unwrap();
+    assert!(
+        thread
+            .iter()
+            .any(|p| p.author == "endora" && p.text.contains("HQ submits it for Linus")),
+        "{thread:?}"
+    );
+    assert!(
+        !hq.store().cited(task).unwrap().is_empty(),
+        "on that evidence"
+    );
+}

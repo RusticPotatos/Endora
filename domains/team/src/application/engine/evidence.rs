@@ -39,7 +39,7 @@ pub struct Called {
 }
 
 /// The stages evidence is cited at.
-const SUBMITTED: &str = "submitted";
+pub(super) const SUBMITTED: &str = "submitted";
 const TESTED: &str = "tested";
 const ACCEPTED: &str = "accepted";
 const CLOSED: &str = "closed";
@@ -265,7 +265,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Records what a turn cited for each criterion, at a stage.
-    fn keep_cited(&self, task: TaskId, run: &Run, stage: &str, cited: &[Vec<Ref>]) -> Done<()> {
+    pub(super) fn keep_cited(
+        &self,
+        task: TaskId,
+        run: &Run,
+        stage: &str,
+        cited: &[Vec<Ref>],
+    ) -> Done<()> {
         let now = self.clock.now();
         for (i, group) in cited.iter().enumerate() {
             if group.is_empty() {
@@ -589,18 +595,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A turn hands work on (see [`Engine::add_task`]): work handed to another member says what
-    /// done means. Creating it is a change.
+    /// done means, and a sub-task of a member's task which of its parent's criteria it serves
+    /// (`serves`, ADR 0124); no task holds more than five open sub-tasks, nor work go deeper
+    /// than three. Creating it is a change.
     ///
     /// # Errors
-    /// [`Refusal::NoCriteria`], [`Refusal::TooLong`], and what [`Engine::add_task`] refuses.
+    /// [`Refusal::NoCriteria`], [`Refusal::TooLong`], what [`Engine::add_task`] refuses, and
+    /// the sub-task discipline's refusals (with their counts).
     pub fn create_task_in(
         &self,
         run: RunId,
         task: NewTask,
         criteria: &[Criterion],
+        serves: Option<&str>,
     ) -> Done<TaskId> {
         let _held = self.held();
         let turn = self.running(run)?;
+        let served = match task.parent {
+            Some(parent) => self.subtask_discipline(parent, serves)?,
+            None => None,
+        };
         let to_another = task.assignee.filter(|a| *a != turn.member);
         if let Some(to) = to_another {
             let (from, to) = (self.member(turn.member)?, self.member(to)?);
@@ -623,6 +637,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
         let id = self.add_task_held_lock(Author::Member(turn.member), task)?;
         self.store.set_criteria(id, criteria)?;
+        if let Some(n) = served {
+            self.store
+                .set_setting(&super::discipline::serves_key(id), &n.to_string())?;
+        }
         if let Some(own) = turn.task {
             self.mark_progress(turn.member, own)?;
         }
@@ -1189,6 +1207,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             run.blocked |= stored.blocked;
         }
         let label = self.label_of(run)?;
+        // Re-checking evidence already enough is talk only (ADR 0124).
+        let label = self.after_enough_label(run, label)?;
         run.label = Some(label);
         Ok(Some(label))
     }

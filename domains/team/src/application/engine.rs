@@ -33,6 +33,7 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
+mod discipline;
 mod evidence;
 mod games;
 mod guards;
@@ -2120,6 +2121,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.after_huddle_turn(&run)?;
         }
         if status == RunStatus::Succeeded && label.is_some() {
+            // Enough evidence, re-checked three times: HQ submits it (ADR 0124).
+            self.submit_when_enough(&run)?;
             self.after_nothing_shown(&run)?;
         }
         Ok(())
@@ -2277,6 +2280,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(nudge) = self.nudge_for(member.id, run)? {
             told.push_str(&format!("{nudge}\n"));
         }
+        // Evidence already enough is submitted, not polished (ADR 0124).
+        told.push_str(&self.enough_said_for(member.id, run)?);
         let note = self.goal_note_briefed(task.goal)?;
         if !note.is_empty() {
             told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
@@ -2295,6 +2300,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             why.push(format!("goal: {}", goal.title));
         }
         told.push_str(&format!("Why it exists: {}\n", why.join(" ← ")));
+        told.push_str(&self.serves_said(&task)?);
         told.push_str(&self.documents_said(task.id)?);
         if !task.waits_on.is_empty() {
             let waits: Vec<String> = task.waits_on.iter().map(|t| format!("#{t}")).collect();

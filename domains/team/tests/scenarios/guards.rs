@@ -92,6 +92,82 @@ fn guard_precision(w: &mut Office, guard: String, percent: u64) {
     assert_eq!(found["precision"], json!(percent), "{found}");
 }
 
+#[given(regex = r#"^(\w+) has the task "(.+)", done when "(.+)"$"#)]
+fn has_task_done_when(w: &mut Office, name: String, title: String, criterion: String) {
+    let to = w.member(&name);
+    let goal = w.goal();
+    let made = w.hq.add_task_with(
+        endora_team::application::Author::Owner,
+        endora_team::application::NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title,
+            description: String::new(),
+            assignee: Some(to),
+            priority: endora_team::domain::Priority::Normal,
+            waits_on: Vec::new(),
+        },
+        &[endora_team::domain::Criterion::new(&criterion, false)],
+    );
+    w.note(made).expect("the owner hands it out");
+}
+
+impl Office {
+    /// The node's receipt of a reading of sonarr's logs in `member`'s running turn.
+    fn reads_the_logs(&mut self, member: &str) {
+        let context = self.turn_of(member);
+        self.hq
+            .record_receipt(
+                &context.token,
+                &endora_team::application::engine::Called {
+                    tool: "container_logs".to_owned(),
+                    args: "{\"name\":\"sonarr\"}".to_owned(),
+                    excerpt: "sonarr: killed, out of memory".to_owned(),
+                    ok: true,
+                    act: false,
+                    confidential: false,
+                },
+            )
+            .expect("the node's receipt is kept");
+    }
+}
+
+#[when(regex = r#"^(\w+) takes "(.+)" and reads sonarr's logs$"#)]
+fn takes_and_reads(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.use_tool(&name, "claim", &json!({ "task": task.0 }))
+        .expect("the member takes its task");
+    w.reads_the_logs(&name);
+    super::turn_ends(w, name);
+}
+
+#[when(regex = r"^(\w+) is woken and reads sonarr's logs again$")]
+fn reads_again(w: &mut Office, name: String) {
+    let member = w.member(&name);
+    let task = w
+        .turns
+        .get(&name)
+        .and_then(|t| t.task)
+        .expect("a turn on a task before");
+    w.hq.wake(member, Some(task), WakeReason::Mentioned)
+        .expect("a wake has a receipt");
+    w.reads_the_logs(&name);
+    super::turn_ends(w, name);
+}
+
+#[then(regex = r#"^HQ says in "(.+)": "(.+)"$"#)]
+fn hq_says_in(w: &mut Office, title: String, said: String) {
+    let task = w.task(&title);
+    let thread = w.hq.store().thread(task).expect("the store answers");
+    assert!(
+        thread
+            .iter()
+            .any(|p| p.author == "endora" && p.text.contains(&said)),
+        "the thread: {thread:?}"
+    );
+}
+
 #[then(regex = r#"^a huddle is called on "(.+)", because it was "(.+)"$"#)]
 fn huddle_called_because(w: &mut Office, title: String, why: String) {
     let task = w.task(&title);
