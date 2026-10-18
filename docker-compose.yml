@@ -245,6 +245,11 @@ services:
     image: endora-node:latest
     container_name: endora-node
     restart: unless-stopped
+    # Names first from the house's router when ENDORA_LAN_DNS names it (local.mk), so a laptop's
+    # name (the Mac's brain, ADR 0130) follows it when its address changes; then the public one.
+    dns:
+      - "${ENDORA_LAN_DNS:-1.1.1.1}"
+      - 1.1.1.1
     ports:
       - "8787:8787"
       # The team listener (ENDORA_TEAM_ADDR, plain HTTP), published on the house's network for

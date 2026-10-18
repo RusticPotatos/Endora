@@ -89,6 +89,8 @@ export ENDORA_BRAIN_DIR
 # ENDORA_HQ_DEMO = 0.
 export COMPOSE_PROFILES
 export ENDORA_HQ_URL
+# The house's router, which knows each device's name (ADR 0130): the node asks it first.
+export ENDORA_LAN_DNS
 export ENDORA_HQ_DEMO
 export ENDORA_HQ_TICK_SECONDS
 export ENDORA_HQ_DEMO

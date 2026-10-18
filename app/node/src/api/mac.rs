@@ -334,6 +334,31 @@ pub(super) struct SettingsRequest {
     idle_minutes: Option<u64>,
 }
 
+/// Whether every address is on the house's network (and there is at least one).
+fn all_at_home(addrs: &[std::net::SocketAddr]) -> bool {
+    !addrs.is_empty()
+        && addrs
+            .iter()
+            .all(|a| endora_infrastructure::is_private_endpoint(&format!("http://{a}/")))
+}
+
+/// Whether a name in `url` (a laptop's name the router gives out, which follows it when its
+/// address changes) resolves, now, only to addresses on the house's network.
+async fn resolves_home(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split('/').next().unwrap_or_default();
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let target = if authority.contains(':') {
+        authority.to_owned()
+    } else {
+        format!("{authority}:80")
+    };
+    match tokio::net::lookup_host(target).await {
+        Ok(found) => all_at_home(&found.collect::<Vec<_>>()),
+        Err(_) => false,
+    }
+}
+
 /// `POST /v1/mac/settings`: the owner changes what they sent; the rest stays. The address must
 /// be on the house's network, so nothing of the team's can be sent anywhere else. A key left
 /// out is kept; an empty one clears it.
@@ -342,11 +367,11 @@ pub(super) async fn change(
     Json(req): Json<SettingsRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if let Some(url) = req.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
-        if !endora_infrastructure::is_private_endpoint(url) {
-            return Err(refused("the Mac's address must be on your own network"));
-        }
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err(refused("the Mac's address starts with http:// or https://"));
+        }
+        if !endora_infrastructure::is_private_endpoint(url) && !resolves_home(url).await {
+            return Err(refused("the Mac's address must be on your own network"));
         }
     }
     if req
@@ -668,6 +693,21 @@ mod tests {
         assert_eq!(told_hq(&to_hq).len(), told);
     }
 
+    #[test]
+    fn a_name_is_at_home_only_when_every_address_it_resolves_to_is() {
+        let at = |s: &str| s.parse::<std::net::SocketAddr>().unwrap();
+        assert!(super::all_at_home(&[at("192.168.1.10:8080")]));
+        assert!(super::all_at_home(&[
+            at("192.168.1.10:8080"),
+            at("[fd00::10]:8080")
+        ]));
+        assert!(!super::all_at_home(&[
+            at("192.168.1.10:8080"),
+            at("8.8.8.8:8080")
+        ]));
+        assert!(!super::all_at_home(&[]));
+    }
+
     #[tokio::test]
     async fn the_address_must_be_on_the_owners_network_and_the_key_is_kept_sealed_and_unshown() {
         let state = test_state();
@@ -676,6 +716,8 @@ mod tests {
             "https://example.com/v1",
             "http://8.8.8.8:8080/v1",
             "ftp://192.168.1.10/v1",
+            // A name that resolves to nothing is not known to be at home.
+            "http://no-such-mac.invalid:8080/v1",
         ] {
             let res = router
                 .clone()
