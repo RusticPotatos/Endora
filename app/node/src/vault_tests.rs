@@ -406,3 +406,66 @@ fn the_unlock_key_is_bound_to_the_passkey_its_salt_and_its_output() {
     assert_ne!(*a, *unlock_key(&[2u8; 32], &[9u8; 32], "one"));
     assert_eq!(*a, *unlock_key(&[2u8; 32], &salt, "one"));
 }
+
+/// The whole flow against a real, fresh OpenBao (the pinned image): register, initialise,
+/// move the node's keys in, restart sealed and wait, unlock with the passkey. Ignored: it needs
+/// a vault nobody has initialised, at `ENDORA_OPENBAO_TEST_URL` (for example one started with
+/// `docker run` as the infrastructure crate's ignored test does), and it initialises it.
+#[test]
+#[ignore = "needs a fresh OpenBao at ENDORA_OPENBAO_TEST_URL"]
+fn against_a_real_openbao() {
+    let url = std::env::var("ENDORA_OPENBAO_TEST_URL").expect("ENDORA_OPENBAO_TEST_URL");
+    let api: Arc<dyn OpenBaoApi> = Arc::new(endora_infrastructure::openbao::HttpOpenBao::new(&url));
+    let scratch = Scratch::new();
+    let store = Arc::new(SqliteStore::open_sealed(&scratch.db(), &scratch.key()).unwrap());
+    ConfigStore::new(store.db())
+        .set_setting("home-assistant", "token", "placeholder-token-0077")
+        .unwrap();
+    let key = Arc::new(KeyFile::open(&scratch.key(), false).unwrap());
+    let vault = Vault::new(
+        Some(api.clone()),
+        store.clone(),
+        Some(key.clone()),
+        DEFAULT_RP_ID,
+    );
+    let mut phone = Device::new(b"phone");
+    register(&vault, &phone, T0);
+    let shares = vault
+        .initialise(&tap(&vault, &mut phone, "initialise", T0), T0)
+        .unwrap();
+    assert_eq!(shares.len(), 3);
+    vault.keys_into_vault().unwrap();
+    drop(vault);
+    drop(store);
+
+    // A reboot: the container named by ENDORA_OPENBAO_TEST_CONTAINER is restarted, which
+    // seals it, and the node starts waiting for the unlock.
+    let container =
+        std::env::var("ENDORA_OPENBAO_TEST_CONTAINER").expect("ENDORA_OPENBAO_TEST_CONTAINER");
+    let restarted = std::process::Command::new("docker")
+        .args(["restart", &container])
+        .status()
+        .unwrap();
+    assert!(restarted.success());
+    for _ in 0..100 {
+        if api.seal_status().is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(api.seal_status().unwrap().sealed, "a restart seals it");
+    let store = Arc::new(open_node_store(&scratch.db(), &scratch.key(), Some(&api)).unwrap());
+    assert!(!store.db().has_key_source(), "the node waits");
+    let vault = Vault::new(Some(api), store.clone(), Some(key), DEFAULT_RP_ID);
+    assert!(
+        vault
+            .unlock(&tap(&vault, &mut phone, "unlock", T0 + 1), T0 + 1)
+            .unwrap()
+    );
+    let settings = ConfigStore::new(store.db()).all_settings().unwrap();
+    assert!(
+        settings
+            .iter()
+            .any(|(_, _, v)| v == "placeholder-token-0077")
+    );
+}
