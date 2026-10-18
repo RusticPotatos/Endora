@@ -1238,6 +1238,38 @@ As built: the first of three builds of the team's memory; the map and asking the
   `POST /v1/hq/world/promote`, `POST /v1/hq/world/demote`, through the node and its audit log.
 - Scenarios: `domains/team/features/the-world.feature`.
 
+### Guards against how agent teams fail (as built 2026-10-18, [ADR 0124](../adr/0124-guards-against-how-agent-teams-fail.md))
+
+As built: rules over HQ's record for the ways a team of models fails without any one turn
+showing it, every number in `domain::guards::THRESHOLDS`, every finding judged.
+
+- **The stopped diagnosis** (working, parked, held, indeterminate), read when asked, decides every
+  stuck step: only parked work is nudged and climbs; held work waits; indeterminate work gets one
+  look from its area's lead. **Recovery wakes are receipted** (`nudges`) before they are sent and
+  never sent twice unchanged; a stuck desk item is put up once and closes itself.
+- **Closure reasons** on done and dropped (`closures`), a successor if any; a dropped wait keeps
+  its waiter blocked and tells its holder at once (`wait_dropped`).
+- **Process health**, every five minutes: per project over 24 h and 7 d, coordination against
+  product change (12 and 4:1: a notice, the project's lead woken, the Guards card's line); a task
+  sent back three times with nothing new goes to a huddle; a member woken three times for nothing
+  is not woken for nothing again.
+- **Sub-task discipline** in `create_task` (5 open, 3 deep, `serves`), and **evidence already
+  enough** is submitted (the briefing says so; three re-checks later HQ submits it).
+- **Retract and sweep**: the owner's "Not true" on a note, section or story; what else says it,
+  to forget at once; refused written again; notes built on notes named when one is forgotten.
+- **Fence pushes** (3 refused acts a turn, or one act refused for 2 members a day) and the goal's
+  "not now" in every briefing. **The same ask once**: a question or decision alike to one waiting
+  from another task is put with its card, and one answer reaches both.
+- **Verdicts**: real, false positive, not enough, resolved, and whether the fix worked, from the
+  desk, the Guards card (`POST /v1/hq/guards/findings/{id}/verdict`) or a lead's
+  `judge_finding`; each guard's precision on the card.
+- **Small ones**: a tester's pass bound to the criteria it judged ("needs re-check"); the CEO's
+  rescues per member on the roster; a home-lab read that timed out is `unverified`, never
+  `unavailable`; HQ's `/health` gives the tick's age.
+- The owner: `POST /v1/hq/retractions`, `GET /v1/hq/retractions/{id}/sweep`,
+  `POST /v1/hq/retractions/{id}/forget`, through the node and its audit log.
+- Scenarios: `domains/team/features/guards.feature`.
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams;

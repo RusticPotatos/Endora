@@ -3,6 +3,11 @@
 ## Status
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended 2026-10-18 by
+[0124](0124-guards-against-how-agent-teams-fail.md): a tester's pass keeps a hash of the
+criteria it judged and, once they change, reads "needs re-check" and does not count; a member
+whose evidence already meets the criteria is told to submit, its re-checking turns after that
+are talk only, and on the third HQ submits it; the back-off no longer reads the progress flag
+for a turn with no label; done and dropped carry a reason from a small set. Amended 2026-10-18 by
 [0120](0120-roles-as-an-enforced-raci.md): a criterion may wait (`after`) from the work's last
 change, the lab's "no new alarm since" 60 minutes; a reading the turn before already took shows
 nothing; the CEO's chain acts on a lead's area become `direct`, and a lead's stalled task is
