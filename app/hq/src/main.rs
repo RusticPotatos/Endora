@@ -357,6 +357,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not move the house log into the team's world: {e}"),
         }
+        // What the move dated wrongly, mended once (ADR 0122).
+        match hq.repair_world_dates() {
+            Ok(0) => {}
+            Ok(n) => println!("hq: mended the dates of {n} lines of the house page's timeline"),
+            Err(e) => eprintln!("hq: could not mend the house page's dates: {e}"),
+        }
         // The office's decorations as data (ADR 0119), once: the team moves them from there.
         match hq.seed_office() {
             Ok(true) => println!("hq: put the office's decorations on the floor"),

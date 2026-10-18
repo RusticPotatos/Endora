@@ -204,7 +204,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let trust = self.section_trust(&s)?;
             current.push((s, trust.stage, self.stage_said(trust)));
         }
-        current.sort_by_key(|(s, stage, _)| (std::cmp::Reverse(*stage), s.id));
+        // What the owner wrote comes first, then by stage.
+        current.sort_by_key(|(s, stage, _)| {
+            (s.written_by != "the owner", std::cmp::Reverse(*stage), s.id)
+        });
         let header = match member.role {
             Role::Ceo => {
                 "The house page (world:house), yours to keep with write_world and note_house; \
@@ -218,8 +221,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let shown: Vec<&(Section, Stage, String)> = current
             .iter()
-            .filter(|(_, stage, _)| {
+            .filter(|(s, stage, _)| {
                 keeps_house
+                    || s.written_by == "the owner"
                     || *stage == Stage::Canon
                     || (situation == Situation::Fresh && *stage == Stage::Insight)
             })

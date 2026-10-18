@@ -10,6 +10,7 @@
 //!   to retell: what to do instead is the lesson, its handle its first words; it belongs to the
 //!   area of the lead who noted it (or the tester's lead), else to the house.
 
+use super::house::without_dates;
 use super::lessons::civil;
 use super::money::day_of;
 use super::work::Millis;
@@ -72,7 +73,7 @@ fn month_of(word: &str) -> Option<u32> {
 }
 
 /// Days since the Unix epoch of a civil date (Howard Hinnant's days-from-civil).
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+pub(crate) fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
     let yoe = year - era * 400;
@@ -82,7 +83,9 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// Noon of a date in the owner's time; with no year, the latest one not after `now`.
+/// Noon of a date in the owner's time; with no year, the latest one not after `now`'s day, in
+/// the owner's calendar (compared by day: noon of the move's own day is later than a move in
+/// the early morning, and that day is not after the move).
 fn noon_of(day: u32, month: u32, year: Option<i64>, now: Millis, offset_minutes: i64) -> Millis {
     let at = |year: i64| {
         days_from_civil(year, month, day) * 86_400_000 + 12 * 3_600_000 - offset_minutes * 60_000
@@ -90,9 +93,13 @@ fn noon_of(day: u32, month: u32, year: Option<i64>, now: Millis, offset_minutes:
     if let Some(year) = year {
         return at(year);
     }
-    let (this_year, _, _) = civil(day_of(now, offset_minutes));
-    let this = at(this_year);
-    if this > now { at(this_year - 1) } else { this }
+    let today = day_of(now, offset_minutes);
+    let (this_year, _, _) = civil(today);
+    if days_from_civil(this_year, month, day) > today {
+        at(this_year - 1)
+    } else {
+        at(this_year)
+    }
 }
 
 /// A day, a month and maybe a year.
@@ -147,6 +154,81 @@ fn pieces(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// A row of the house page's timeline, as the store keeps it, with its id.
+pub type Row = (i64, TimelineLine);
+
+/// A repair of one row: when and what it should say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fix {
+    /// The row's id.
+    pub id: i64,
+    /// When it should be.
+    pub at: Millis,
+    /// What it should say.
+    pub line: String,
+}
+
+/// How far before the move a yearless date must have been put to be a year out.
+const A_YEAR_OUT_DAYS: i64 = 183;
+
+/// The texts of the house log's lines whose date has no year, or follows one that has none
+/// (an undated line takes the date before it): the rows that took a year from the move.
+fn yearless_texts(house_log: &str) -> Vec<String> {
+    let mut texts = Vec::new();
+    let mut yearless = false;
+    for line in house_log.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        match dated(line) {
+            Some(((_, _, year), entry)) => {
+                yearless = year.is_none();
+                if yearless {
+                    texts.push(entry.to_owned());
+                }
+            }
+            None if yearless => texts.push(line.strip_prefix("- ").unwrap_or(line).to_owned()),
+            None => {}
+        }
+    }
+    texts
+}
+
+/// What to mend in the rows the house log was moved into (`rows`, all written by
+/// [`FROM_THE_HOUSE_LOG`]) after a move at `moved_at` that dated a yearless day a year out
+/// (a move in the early morning compared the day's noon with the move's instant) and kept
+/// the dates the writers put at the start of their lines. A row whose date had no year in the
+/// log and lies more than half a year before the move takes the latest year not after the
+/// move's day; a date at the start of the line goes. Rows already right are not listed.
+#[must_use]
+pub fn repairs(rows: &[Row], house_log: &str, moved_at: Millis, offset_minutes: i64) -> Vec<Fix> {
+    let yearless = yearless_texts(house_log);
+    let moved_day = day_of(moved_at, offset_minutes);
+    let mut fixes = Vec::new();
+    for (id, row) in rows {
+        let said = row
+            .line
+            .strip_suffix(" (undated in the house log)")
+            .unwrap_or(&row.line);
+        let was_yearless = yearless.iter().any(|t| t.contains(said));
+        let (_, month, day) = civil(day_of(row.at, offset_minutes));
+        let a_year_out = day_of(row.at, offset_minutes) < moved_day - A_YEAR_OUT_DAYS;
+        let at = if was_yearless && a_year_out {
+            noon_of(day, month, None, moved_at, offset_minutes)
+        } else {
+            row.at
+        };
+        let line = without_dates(&row.line);
+        let line = if line.is_empty() { &row.line } else { line };
+        if at == row.at && line == row.line {
+            continue;
+        }
+        fixes.push(Fix {
+            id: *id,
+            at,
+            line: line.to_owned(),
+        });
+    }
+    fixes
+}
+
 /// The plan for moving `house_log` and the lessons in `goal_notes` into the world, at `now` in
 /// the owner's time (`offset_minutes`). `seeded` are the lines Endora seeded the log with (the
 /// lab page's now); `writers` say whose area each member's lessons belong to, by name; and
@@ -171,7 +253,7 @@ pub fn plan(
             Some(((day, month, year), entry)) => {
                 let at = noon_of(day, month, year, now, offset_minutes);
                 last_at = Some(at);
-                (at, entry.to_owned())
+                (at, without_dates(entry).to_owned())
             }
             None => (
                 last_at.unwrap_or(now),
@@ -242,6 +324,89 @@ mod tests {
             noon_of(18, 10, Some(2026), OCT_18, -240),
             OCT_18 + 4 * 3_600_000
         );
+    }
+
+    /// 18 October 2026, 04:00 UTC: the move ran in the early morning, before the day's noon.
+    const OCT_18_EARLY: Millis = OCT_18 - 8 * 3_600_000;
+
+    #[test]
+    fn a_date_with_no_year_is_compared_by_day_not_by_instant() {
+        // The move's own day is not after the move: 18 Oct is this year's, though its noon is
+        // later than the move's instant.
+        assert_eq!(noon_of(18, 10, None, OCT_18_EARLY, 0), OCT_18);
+        assert_eq!(
+            noon_of(19, 10, None, OCT_18_EARLY, 0),
+            OCT_18 + DAY - 365 * DAY
+        );
+        // In the owner's time: 01:00 on 19 Oct UTC is still 18 Oct at UTC-5.
+        let late = OCT_18 + 13 * 3_600_000;
+        assert_eq!(
+            noon_of(19, 10, None, late, -300),
+            noon_of(19, 10, Some(2025), late, -300)
+        );
+        assert_eq!(
+            noon_of(18, 10, None, late, -300),
+            noon_of(18, 10, Some(2026), late, -300)
+        );
+    }
+
+    #[test]
+    fn a_date_the_writer_put_in_the_text_is_not_kept_in_the_line() {
+        let log = "- 17 Oct: 2025-10-18: Taken as intentional.\n\
+                   - 18 Oct: 18 Oct: #668 accepted.\n\
+                   - 18 Oct: 17 Oct 2025: 18 Oct: twice.";
+        let plan = plan(log, &[], &[], &[], &[], OCT_18_EARLY, 0);
+        let got: Vec<(Millis, &str)> = plan
+            .timeline
+            .iter()
+            .map(|l| (l.at, l.line.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (OCT_18 - DAY, "Taken as intentional."),
+                (OCT_18, "#668 accepted."),
+                (OCT_18, "twice."),
+            ]
+        );
+    }
+
+    #[test]
+    fn rows_moved_a_year_out_are_repaired_once_by_the_log_they_came_from() {
+        let log = "- 18 Oct: 18 Oct: #668 accepted.\n- 16 Oct 2025: A year ago.\n\
+                   - 17 Oct: 2025-10-18: Taken.\n- Undated.";
+        let row = |id, at, line: &str| {
+            (
+                id,
+                TimelineLine {
+                    page: "house".to_owned(),
+                    at,
+                    by: FROM_THE_HOUSE_LOG.to_owned(),
+                    line: line.to_owned(),
+                },
+            )
+        };
+        let a_year = 365 * DAY;
+        let rows = vec![
+            row(1, OCT_18 - a_year, "18 Oct: #668 accepted."),
+            row(2, OCT_18 - 2 * DAY - a_year, "A year ago."),
+            row(3, OCT_18 - DAY, "2025-10-18: Taken."),
+            row(4, OCT_18 - DAY, "Undated. (undated in the house log)"),
+        ];
+        let fixes = repairs(&rows, log, OCT_18_EARLY, 0);
+        let got: Vec<(i64, Millis, &str)> = fixes
+            .iter()
+            .map(|f| (f.id, f.at, f.line.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(1, OCT_18, "#668 accepted."), (3, OCT_18 - DAY, "Taken."),],
+            "the yearless date a year out gets the year; the year the writer wrote is kept; \
+             the date the writer put in the text goes"
+        );
+        // Repaired rows need nothing more.
+        let again: Vec<_> = fixes.iter().map(|f| row(f.id, f.at, &f.line)).collect();
+        assert!(repairs(&again, log, OCT_18_EARLY, 0).is_empty());
     }
 
     #[test]

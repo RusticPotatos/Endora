@@ -9,11 +9,19 @@ use crate::application::ports::Stored;
 use crate::application::world_ports::WorldStore;
 use crate::domain::situations::{Briefed, Situation};
 use crate::domain::world::{Handover, HandoverNote, Scope, Section, Snapshot, Stage, Story};
-use crate::domain::world_migration::{Plan, TimelineLine};
+use crate::domain::world_migration::{Fix, Plan, Row, TimelineLine};
 use crate::domain::{MemberId, Millis, Ref, RunId, TaskId};
 
 /// Set, in the same transaction as the move itself, once the old record is in the world.
 pub(super) const MIGRATED: &str = "world_migrated";
+
+/// Set, in the same transaction as the mending, once the move's wrong dates are mended.
+pub(super) const REPAIRED: &str = "world_dates_repaired";
+
+/// The trigger that keeps a timeline row as written; the mending lifts it and puts it back
+/// within its one transaction.
+const TIMELINE_KEPT: &str = "CREATE TRIGGER IF NOT EXISTS world_timeline_is_kept_update
+    BEFORE UPDATE ON world_timeline BEGIN SELECT RAISE(ABORT, 'a timeline is append-only'); END;";
 
 pub(super) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS world_sections (
@@ -40,6 +48,10 @@ CREATE TABLE IF NOT EXISTS world_timeline (
     run INTEGER REFERENCES runs(id), line TEXT NOT NULL
 ) STRICT;
 CREATE INDEX IF NOT EXISTS world_timeline_by_page ON world_timeline(page, at_ms);
+CREATE TABLE IF NOT EXISTS world_timeline_repairs (
+    id INTEGER PRIMARY KEY, row INTEGER NOT NULL, old_at_ms INTEGER NOT NULL,
+    old_line TEXT NOT NULL, repaired_at INTEGER NOT NULL
+) STRICT;
 CREATE TRIGGER IF NOT EXISTS world_timeline_is_kept_update
     BEFORE UPDATE ON world_timeline BEGIN SELECT RAISE(ABORT, 'a timeline is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS world_timeline_is_kept_delete
@@ -250,6 +262,20 @@ impl WorldStore for SqliteTeamStore {
             )
             .map_err(backend)?;
         Ok(())
+    }
+
+    fn section_revisions(&self, section: i64) -> Stored<Vec<(i64, String)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT revision, headline FROM world_revisions WHERE section = ?1
+                 ORDER BY revision, id",
+            )
+            .map_err(backend)?;
+        stmt.query_map([section], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
     }
 
     fn timeline(&self, page: &str) -> Stored<Vec<TimelineLine>> {
@@ -477,6 +503,72 @@ impl WorldStore for SqliteTeamStore {
         }))
     }
 
+    fn timeline_rows_by(&self, page: &str, by: &str) -> Stored<Vec<Row>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, page, at_ms, by, line FROM world_timeline
+                 WHERE page = ?1 AND by = ?2 ORDER BY at_ms, id",
+            )
+            .map_err(backend)?;
+        stmt.query_map(params![page, by], |r| {
+            Ok((
+                r.get(0)?,
+                TimelineLine {
+                    page: r.get(1)?,
+                    at: r.get(2)?,
+                    by: r.get(3)?,
+                    line: r.get(4)?,
+                },
+            ))
+        })
+        .map_err(backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(backend)
+    }
+
+    fn repair_timeline(&self, fixes: &[Fix], at: Millis) -> Stored<bool> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().map_err(backend)?;
+        let done: bool = tx
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM settings WHERE key = ?1",
+                [REPAIRED],
+                |r| r.get(0),
+            )
+            .map_err(backend)?;
+        if done {
+            return Ok(false);
+        }
+        if !fixes.is_empty() {
+            tx.execute_batch("DROP TRIGGER IF EXISTS world_timeline_is_kept_update;")
+                .map_err(backend)?;
+        }
+        for fix in fixes {
+            tx.execute(
+                "INSERT INTO world_timeline_repairs (row, old_at_ms, old_line, repaired_at)
+                 SELECT id, at_ms, line, ?2 FROM world_timeline WHERE id = ?1",
+                params![fix.id, at],
+            )
+            .map_err(backend)?;
+            tx.execute(
+                "UPDATE world_timeline SET at_ms = ?2, line = ?3 WHERE id = ?1",
+                params![fix.id, fix.at, fix.line],
+            )
+            .map_err(backend)?;
+        }
+        if !fixes.is_empty() {
+            tx.execute_batch(TIMELINE_KEPT).map_err(backend)?;
+        }
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+            params![REPAIRED, at.to_string()],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(true)
+    }
+
     fn migrate_world(&self, plan: &Plan, at: Millis) -> Stored<bool> {
         let mut conn = self.conn()?;
         let tx = conn.transaction().map_err(backend)?;
@@ -619,6 +711,41 @@ mod tests {
         );
         assert_eq!(store.notes(MemberId(1)).unwrap().len(), 1);
         assert_eq!(store.setting(MIGRATED).unwrap().as_deref(), Some("9"));
+    }
+
+    #[test]
+    fn mended_rows_keep_what_they_said_and_the_timeline_stays_append_only() {
+        let store = live_store();
+        assert!(store.migrate_world(&the_plan(), 9).unwrap());
+        let rows = store.timeline_rows_by("house", "the house log").unwrap();
+        assert_eq!(rows.len(), 1);
+        let fix = Fix {
+            id: rows[0].0,
+            at: 77,
+            line: "Mended.".to_owned(),
+        };
+        assert!(store.repair_timeline(&[fix.clone()], 100).unwrap());
+        assert!(!store.repair_timeline(&[fix], 101).unwrap(), "once");
+        let now = store.timeline("house").unwrap();
+        assert_eq!((now[0].at, now[0].line.as_str()), (77, "Mended."));
+        let kept: (i64, String) = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT old_at_ms, old_line FROM world_timeline_repairs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (rows[0].1.at, "The NAS has 16 GB.".to_owned()));
+        assert!(
+            store
+                .conn()
+                .unwrap()
+                .execute("UPDATE world_timeline SET line = ''", [])
+                .is_err(),
+            "append-only again"
+        );
     }
 
     #[test]

@@ -33,6 +33,59 @@ pub(in crate::api) async fn hq_world_export(State(state): State<AppState>) -> Re
 }
 
 #[derive(Deserialize)]
+pub(in crate::api) struct HqSection {
+    page: String,
+    #[serde(default)]
+    key: String,
+    title: String,
+    text: String,
+}
+
+/// The owner writes a section of a page, or replaces one.
+pub(in crate::api) async fn hq_world_section(
+    State(state): State<AppState>,
+    Json(req): Json<HqSection>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/world/section".to_owned(),
+        Some(json!({ "page": req.page, "key": req.key, "title": req.title, "text": req.text })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you wrote \"{}\" on world:{}", req.title, req.page),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(in crate::api) struct HqTimeline {
+    page: String,
+    #[serde(default)]
+    at: Option<i64>,
+    text: String,
+}
+
+/// The owner adds an entry to a page's timeline.
+pub(in crate::api) async fn hq_world_timeline(
+    State(state): State<AppState>,
+    Json(req): Json<HqTimeline>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/world/timeline".to_owned(),
+        Some(json!({ "page": req.page, "at": req.at, "text": req.text })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you added to the timeline of world:{}", req.page),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(in crate::api) struct HqPromote {
     address: String,
     #[serde(default)]
@@ -106,6 +159,27 @@ mod tests {
             download.headers()[axum::http::header::CONTENT_DISPOSITION],
             "attachment; filename=\"team-world.md\""
         );
+        let _ = hq_world_section(
+            State(state.clone()),
+            Json(HqSection {
+                page: "house".to_owned(),
+                key: "nas".to_owned(),
+                title: "The NAS".to_owned(),
+                text: "The NAS has 16 GB.".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let _ = hq_world_timeline(
+            State(state.clone()),
+            Json(HqTimeline {
+                page: "house".to_owned(),
+                at: None,
+                text: "Moved the router.".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
         let _ = hq_world_promote(
             State(state.clone()),
             Json(HqPromote {
@@ -136,6 +210,8 @@ mod tests {
             [
                 "/v1/world",
                 "/v1/world/export",
+                "/v1/world/section",
+                "/v1/world/timeline",
                 "/v1/world/promote",
                 "/v1/world/demote"
             ]
@@ -146,6 +222,8 @@ mod tests {
             .map(|r| r.summary().to_owned())
             .collect();
         for line in [
+            "HQ: you wrote \"The NAS\" on world:house",
+            "HQ: you added to the timeline of world:house",
             "HQ: you made world:house#backups canon",
             "HQ: you demoted world:house#backups from canon to insight: it moved to 04:00",
         ] {
@@ -153,7 +231,7 @@ mod tests {
         }
         assert_eq!(
             audit.len(),
-            2,
+            4,
             "reading and downloading record nothing: {audit:?}"
         );
     }

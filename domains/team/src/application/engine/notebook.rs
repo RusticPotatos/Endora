@@ -82,7 +82,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let turn = self.running(run)?;
         let who = self.member(turn.member)?;
-        let text = notebook::clean(text).map_err(EngineError::Refused)?;
+        let text = self.dated_true(&who.name, "a note", text)?;
+        let text = notebook::clean(&text).map_err(EngineError::Refused)?;
         if cited.is_empty() {
             return Err(EngineError::Refused(Refusal::NoteNeedsEvidence));
         }

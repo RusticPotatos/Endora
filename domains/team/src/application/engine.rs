@@ -2170,14 +2170,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The briefing, around what it carries of the world (`memory`).
     fn briefing_body(&self, member: &Member, run: &Run, memory: &str) -> Done<String> {
         let mut told = format!(
-            "You are {}, the team's {}.\n",
+            "You are {}, the team's {}. Today is {}.\n",
             member.name,
             match member.role {
                 Role::Ceo => "CEO",
                 // The reviewer's role is shown as the tester (ADR 0114).
                 Role::Reviewer => "tester",
                 role => role.name(),
-            }
+            },
+            self.said_today()
         );
         // What it knows, first: its situation's pieces of the world, its stories and its own
         // notebook (ADR 0118, 0122).

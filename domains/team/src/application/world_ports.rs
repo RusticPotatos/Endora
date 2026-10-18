@@ -1,12 +1,13 @@
 //! What the engine needs from the store for the team's world (ADR 0122): sections and their
 //! revisions, the pages' timelines, stories, handover notes, what each turn was briefed, and
 //! the one-time move of the old record into it. Every one of these only adds: a revision, a
-//! timeline line and a handover note are never changed or removed.
+//! timeline line and a handover note are never changed or removed (but for the one-time
+//! mending of the dates the move got wrong, which keeps what each row said).
 
 use super::ports::Stored;
 use crate::domain::situations::Briefed;
 use crate::domain::world::{Handover, Section, Story};
-use crate::domain::world_migration::{Plan, TimelineLine};
+use crate::domain::world_migration::{Fix, Plan, Row, TimelineLine};
 use crate::domain::{Millis, RunId, TaskId};
 
 /// The world's part of HQ's store.
@@ -29,6 +30,13 @@ pub trait WorldStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn touch_section(&self, id: i64, at: Millis) -> Stored<()>;
+
+    /// The headlines of a section's revisions as they were written, oldest first, with their
+    /// numbers.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn section_revisions(&self, section: i64) -> Stored<Vec<(i64, String)>>;
 
     /// A page's timeline, oldest first.
     ///
@@ -83,6 +91,20 @@ pub trait WorldStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn briefed(&self, run: RunId) -> Stored<Option<Briefed>>;
+
+    /// The rows of a page's timeline written by `by`, oldest first, with their ids.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn timeline_rows_by(&self, page: &str, by: &str) -> Stored<Vec<Row>>;
+
+    /// Mends timeline rows, once: in one transaction with the mark that it is done, and with
+    /// each row's old date and text kept aside, so a second start changes nothing and nothing
+    /// is lost. The one change a timeline ever takes. Returns whether it was applied now.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails; nothing is applied then.
+    fn repair_timeline(&self, fixes: &[Fix], at: Millis) -> Stored<bool>;
 
     /// Applies the move of the old record into the world, once: in one transaction with the
     /// mark that it is done, so a second start changes nothing. Returns whether it was applied
