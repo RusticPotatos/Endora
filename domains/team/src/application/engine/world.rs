@@ -1,0 +1,1414 @@
+//! The team's world (ADR 0122): the house page and its timeline, the derived lab and team
+//! pages, stories, the owner's canon, handover notes, and the one-time move of the house log
+//! and the lessons into it. Models propose and code decides: a member writes only what its role
+//! stewards, at a stage its evidence warrants, and only the owner makes something canon.
+
+use serde_json::{Value, json};
+
+use super::{Done, Engine, EngineError};
+use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
+use crate::domain::evidence::Found;
+use crate::domain::situations::Situation;
+use crate::domain::world::{
+    self, Address, HOUSE, HandoverNote, Page, Scope, Section, Snapshot, Stage, Story, Trust,
+    WorldRefusal,
+};
+use crate::domain::world_migration::{self, TimelineLine};
+use crate::domain::{EventKind, Member, MemberId, Millis, Ref, Refusal, Role, RunId};
+
+/// When a lead was last asked to retell its area's lessons as stories.
+pub(super) fn retell_key(member: MemberId) -> String {
+    format!("world_retell_asked:{}", member.0)
+}
+
+/// How many lessons a lead is asked to retell at a time.
+pub const RETELL_AT_ONCE: usize = 3;
+
+/// A desk item proposing canon names its address here.
+fn canon_key(item: crate::domain::DeskId) -> String {
+    format!("canon_proposed:{}", item.0)
+}
+
+/// A section a steward writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldWrite {
+    /// The page: `house`.
+    pub page: String,
+    /// The section to revise, by its anchor; a new one takes its anchor from its heading.
+    pub anchor: Option<String>,
+    /// Its heading.
+    pub heading: String,
+    /// What a briefing shows of it, in one line.
+    pub headline: String,
+    /// The rest of it.
+    pub body: String,
+    /// An observation or an insight.
+    pub stage: Stage,
+    /// Why it is believed, for an insight.
+    pub warrant: String,
+    /// What it rests on.
+    pub evidence: Vec<Ref>,
+}
+
+/// A story a member tells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoryTelling {
+    /// Its handle.
+    pub handle: String,
+    /// When it matters.
+    pub moment: String,
+    /// The tempting wrong move.
+    pub reflex: String,
+    /// What to do instead.
+    pub instead: String,
+    /// Why.
+    pub because: String,
+    /// What it rests on.
+    pub evidence: Vec<Ref>,
+    /// An observation, or an insight from its scope's steward.
+    pub stage: Stage,
+    /// Why it is believed, for an insight.
+    pub warrant: String,
+    /// When to tell it whole; the default situations for none.
+    pub taught: Vec<Situation>,
+}
+
+/// The day of `at` with its year, in the owner's time: `17 Oct 2026`.
+pub(super) fn day_with_year(at: Millis, offset_minutes: i64) -> String {
+    let day = crate::domain::money::day_of(at, offset_minutes);
+    let (year, _, _) = crate::domain::lessons::civil(day);
+    let (d, m) = crate::domain::lessons::day_and_month(day);
+    format!("{d} {m} {year}")
+}
+
+fn refused(r: WorldRefusal) -> EngineError {
+    EngineError::Refused(Refusal::World(r))
+}
+
+impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
+    // ---- the move of the old record (once) ------------------------------------------------
+
+    /// Moves the house log and the goals' lessons into the world, once: the house log's lines
+    /// into the house page's timeline at their dates, and each lesson into a story to retell.
+    /// Nothing old is deleted or changed. Returns whether it was moved now; a second start
+    /// changes nothing.
+    ///
+    /// # Errors
+    /// A store failure; nothing is moved then.
+    pub fn migrate_world(&self) -> Done<bool> {
+        let _held = self.held();
+        let members = self.store.members()?;
+        let writers: Vec<(String, Scope)> = members
+            .iter()
+            .map(|m| (m.name.clone(), self.scope_written(m, &members)))
+            .collect();
+        let mut notes = Vec::new();
+        for goal in self.store.goals()? {
+            notes.push(self.store.goal_note(goal.id)?);
+        }
+        let seeded: Vec<String> = crate::domain::house::lab_built()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let handles: Vec<String> = self
+            .store
+            .stories()?
+            .into_iter()
+            .map(|s| s.handle)
+            .collect();
+        let plan = world_migration::plan(
+            &self.house_log()?,
+            &seeded,
+            &notes,
+            &writers,
+            &handles,
+            self.clock.now(),
+            self.settings.offset_minutes,
+        );
+        if !self.store.migrate_world(&plan, self.clock.now())? {
+            return Ok(false);
+        }
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "migrated", "timeline": plan.timeline.len(),
+                    "stories": plan.lessons.len(), "by": "Endora" }),
+        )?;
+        Ok(true)
+    }
+
+    /// Whether the old record has been moved into the world.
+    pub(super) fn world_migrated(&self) -> Done<bool> {
+        Ok(self.store.setting("world_migrated")?.is_some())
+    }
+
+    /// A goal's notes as a briefing reads them: without the lessons that are stories now.
+    pub(super) fn goal_note_briefed(&self, goal: crate::domain::GoalId) -> Done<String> {
+        let note = self.store.goal_note(goal)?;
+        let moved: Vec<String> = self
+            .store
+            .stories()?
+            .into_iter()
+            .filter_map(|s| s.migrated_from)
+            .collect();
+        if moved.is_empty() {
+            return Ok(note);
+        }
+        Ok(note
+            .lines()
+            .filter(|l| !moved.iter().any(|m| m == l.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_owned())
+    }
+
+    // ---- who writes what ------------------------------------------------------------------
+
+    /// The scope a member's stories go in: the CEO's the house's, a lead's its area's, the
+    /// tester's her lead's area's, anyone else's its own.
+    pub(super) fn scope_written(&self, member: &Member, members: &[Member]) -> Scope {
+        match member.role {
+            Role::Ceo => Scope::House,
+            Role::Lead => Scope::Area(member.id),
+            Role::Reviewer => {
+                crate::domain::staffing::lead_of(member, members).map_or(Scope::House, Scope::Area)
+            }
+            _ => Scope::Member(member.id),
+        }
+    }
+
+    /// The scopes whose stories a member is told: the house's, its area's, and its own.
+    pub(super) fn scopes_seen(&self, member: &Member, members: &[Member]) -> Vec<Scope> {
+        let mut seen = vec![Scope::House, Scope::Member(member.id)];
+        if let Some(lead) = crate::domain::staffing::lead_of(member, members) {
+            seen.push(Scope::Area(lead));
+        }
+        seen
+    }
+
+    /// Whether `member` stewards a scope: may write insights in it, confirm and retire.
+    fn stewards(member: &Member, scope: Scope) -> bool {
+        match scope {
+            Scope::House => member.role == Role::Ceo,
+            Scope::Area(lead) | Scope::Member(lead) => member.id == lead,
+        }
+    }
+
+    /// Who stewards a scope, by name, for a refusal.
+    fn steward_named(&self, scope: Scope) -> Done<String> {
+        let members = self.store.members()?;
+        let name = |id: MemberId| {
+            members
+                .iter()
+                .find(|m| m.id == id)
+                .map_or_else(|| "its steward".to_owned(), |m| m.name.clone())
+        };
+        Ok(match scope {
+            Scope::House => members
+                .iter()
+                .find(|m| m.role == Role::Ceo)
+                .map_or_else(|| "the CEO".to_owned(), |m| format!("{}, the CEO", m.name)),
+            Scope::Area(id) | Scope::Member(id) => name(id),
+        })
+    }
+
+    // ---- evidence and trust ---------------------------------------------------------------
+
+    /// Each reference looked up in the record, about anything.
+    fn found_all(&self, cited: &[Ref]) -> Done<Vec<(Ref, Found)>> {
+        cited
+            .iter()
+            .map(|r| Ok((*r, self.found(*r, None, &[])?)))
+            .collect()
+    }
+
+    /// How many different turns the references come from: a receipt's, and an event's that
+    /// names its turn.
+    fn turns_behind(&self, cited: &[Ref]) -> Done<usize> {
+        let mut runs: Vec<i64> = Vec::new();
+        for r in cited {
+            let run = match r {
+                Ref::Receipt(id) => self.store.call_receipt(*id)?.map(|c| c.run.0),
+                Ref::Event(id) => self.store.event(*id)?.and_then(|e| e.data["run"].as_i64()),
+                Ref::Task(_) => None,
+            };
+            if let Some(run) = run.filter(|r| !runs.contains(r)) {
+                runs.push(run);
+            }
+        }
+        Ok(runs.len())
+    }
+
+    /// The references with what the record says of each now, to keep beside them.
+    fn snapshots(&self, cited: &[Ref]) -> Done<Vec<Snapshot>> {
+        let short = |text: &str| crate::domain::evidence::short(text, 120);
+        let mut kept = Vec::new();
+        for r in cited {
+            let said = match r {
+                Ref::Receipt(id) => self.store.call_receipt(*id)?.map_or_else(String::new, |c| {
+                    if c.confidential {
+                        format!("{}: (Confidential)", c.tool)
+                    } else {
+                        format!("{}: {}", c.tool, short(&c.excerpt))
+                    }
+                }),
+                Ref::Task(id) => self
+                    .store
+                    .task(*id)?
+                    .map_or_else(String::new, |t| short(&t.title)),
+                Ref::Event(id) => self
+                    .store
+                    .event(*id)?
+                    .map_or_else(String::new, |e| short(&format!("{} {}", e.kind, e.data))),
+            };
+            kept.push(Snapshot { cited: *r, said });
+        }
+        Ok(kept)
+    }
+
+    /// Whether any of a piece's evidence is still in the record (a piece with none, the owner's
+    /// own word, needs none).
+    fn resolves(&self, evidence: &[Snapshot]) -> Done<bool> {
+        if evidence.is_empty() {
+            return Ok(true);
+        }
+        for s in evidence {
+            if self.found(s.cited, None, &[])? != Found::Missing {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// How far a section is trusted now.
+    pub(super) fn section_trust(&self, s: &Section) -> Done<Trust> {
+        let horizon = world::page(&s.page).map_or(HOUSE.horizon_days, |p| p.horizon_days);
+        Ok(world::trust(
+            s.stage,
+            s.verified_at.unwrap_or(s.updated_at),
+            horizon,
+            self.clock.now(),
+            self.resolves(&s.evidence)?,
+        ))
+    }
+
+    /// How far a story is trusted now.
+    pub(super) fn story_trust(&self, s: &Story) -> Done<Trust> {
+        Ok(world::trust(
+            s.stage,
+            s.verified_at.unwrap_or(s.written_at),
+            s.scope.horizon_days(),
+            self.clock.now(),
+            self.resolves(&s.evidence)?,
+        ))
+    }
+
+    /// A stage as shown: `insight`, or `observation, unconfirmed since 17 Sep`.
+    pub(super) fn stage_said(&self, trust: Trust) -> String {
+        match trust.unconfirmed_since {
+            Some(since) => format!("unconfirmed since {}", self.said_day(since)),
+            None => trust.stage.said().to_owned(),
+        }
+    }
+
+    // ---- finding things -------------------------------------------------------------------
+
+    fn address(said: &str) -> Done<Address> {
+        Address::parse(said).ok_or_else(|| refused(WorldRefusal::NotAnAddress(said.to_owned())))
+    }
+
+    fn section_at(&self, page: &str, anchor: &str) -> Done<Option<Section>> {
+        Ok(self
+            .store
+            .sections()?
+            .into_iter()
+            .find(|s| s.page == page && s.anchor == anchor))
+    }
+
+    fn story_called(&self, handle: &str) -> Done<Option<Story>> {
+        Ok(self
+            .store
+            .stories()?
+            .into_iter()
+            .find(|s| s.handle == handle))
+    }
+
+    /// Adds a line to a page's timeline, now.
+    fn timeline_line(&self, page: &str, by: &str, run: Option<RunId>, line: &str) -> Done<()> {
+        let line: String = line.chars().take(world::TIMELINE_LINE_MOST).collect();
+        self.store.add_timeline(
+            &TimelineLine {
+                page: page.to_owned(),
+                at: self.clock.now(),
+                by: by.to_owned(),
+                line,
+            },
+            run,
+        )?;
+        Ok(())
+    }
+
+    /// The house page's timeline gains a member's dated line: what the house log's `note_house`
+    /// does now (ADR 0122). Returns the line, dated.
+    pub(super) fn note_house_line(&self, run: &Run, ceo: &Member, entry: &str) -> Done<String> {
+        let line =
+            crate::domain::house::line(entry, self.clock.now(), self.settings.offset_minutes)
+                .map_err(EngineError::Refused)?;
+        let said = line
+            .split_once(": ")
+            .map_or(line.as_str(), |(_, rest)| rest)
+            .to_owned();
+        self.timeline_line(HOUSE.slug, &ceo.name, Some(run.id), &said)?;
+        self.emit(
+            EventKind::HouseNoted,
+            json!({ "by": ceo.name, "entry": line, "page": HOUSE.slug }),
+        )?;
+        Ok(line)
+    }
+
+    // ---- what a turn may do ---------------------------------------------------------------
+
+    /// A turn reads a page, a section or a story of the world. What it reads counts as used.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`WorldRefusal::NotAnAddress`]; [`WorldRefusal::Nothing`].
+    pub fn read_world_in(&self, run: RunId, address: &str) -> Done<String> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        let reader = self.member(turn.member)?;
+        let at = Self::address(address)?;
+        let now = self.clock.now();
+        match &at {
+            Address::Page(page) => self.page_said(page),
+            Address::Section { page, anchor } => {
+                let s = self
+                    .section_at(page, anchor)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                self.store.touch_section(s.id, now)?;
+                self.section_said(&s)
+            }
+            Address::Story(handle) => {
+                let s = self
+                    .story_called(handle)?
+                    .filter(|s| match s.scope {
+                        Scope::Member(id) => id == reader.id,
+                        _ => true,
+                    })
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                self.store.touch_story(s.id, now)?;
+                let trust = self.story_trust(&s)?;
+                let mut said = format!(
+                    "Story {} ({}, {}), told by {} on {}:\n{}\n",
+                    s.handle,
+                    self.scope_said(s.scope)?,
+                    self.stage_said(trust),
+                    s.author,
+                    self.said_day(s.written_at),
+                    s.told()
+                );
+                if s.to_retell {
+                    said.push_str(
+                        "It is a one-line lesson from before stories: still to be retold whole.\n",
+                    );
+                }
+                said.push_str(&Self::evidence_lines(&s.evidence));
+                Ok(said)
+            }
+        }
+    }
+
+    fn evidence_lines(evidence: &[Snapshot]) -> String {
+        if evidence.is_empty() {
+            return String::new();
+        }
+        let lines: Vec<String> = evidence
+            .iter()
+            .map(|e| {
+                if e.said.is_empty() {
+                    e.cited.said()
+                } else {
+                    format!("{} ({})", e.cited.said(), e.said)
+                }
+            })
+            .collect();
+        format!("It rests on: {}\n", lines.join("; "))
+    }
+
+    fn scope_said(&self, scope: Scope) -> Done<String> {
+        Ok(match scope {
+            Scope::House => "the house's".to_owned(),
+            Scope::Area(lead) => format!("{}'s area", self.member(lead)?.name),
+            Scope::Member(member) => format!("{}'s own", self.member(member)?.name),
+        })
+    }
+
+    /// A section, whole, as `read_world` gives it.
+    fn section_said(&self, s: &Section) -> Done<String> {
+        let trust = self.section_trust(s)?;
+        let mut said = format!(
+            "{} ({}): {} [{}]\n{}\n",
+            s.heading,
+            s.address(),
+            s.headline,
+            self.stage_said(trust),
+            s.body
+        );
+        if !s.warrant.is_empty() {
+            said.push_str(&format!("Warrant: {}\n", s.warrant));
+        }
+        said.push_str(&Self::evidence_lines(&s.evidence));
+        if let Some(next) = &s.superseded_by {
+            said.push_str(&format!("Superseded by {next}.\n"));
+        }
+        if !s.why.is_empty() {
+            said.push_str(&format!("{}\n", s.why));
+        }
+        said.push_str(&format!(
+            "Revision {}, by {}, {}.\n",
+            s.revision,
+            s.written_by,
+            self.said_day(s.updated_at)
+        ));
+        Ok(said)
+    }
+
+    /// A page, as `read_world` gives it: a written page's sections and the newest of its
+    /// timeline; a derived page as HQ derives it now.
+    fn page_said(&self, page: &str) -> Done<String> {
+        if page == world::LAB.slug {
+            return Ok(self.lab_said());
+        }
+        if page == world::TEAM.slug {
+            return self.team_said();
+        }
+        let mut said = format!("{} (world:{page}):\n", HOUSE.title);
+        let sections: Vec<Section> = self
+            .store
+            .sections()?
+            .into_iter()
+            .filter(|s| s.page == page)
+            .collect();
+        if sections.is_empty() {
+            said.push_str("No sections yet.\n");
+        }
+        for s in &sections {
+            let trust = self.section_trust(s)?;
+            said.push_str(&format!(
+                "- {} [{}] ({})\n",
+                s.headline,
+                self.stage_said(trust),
+                s.address()
+            ));
+        }
+        let timeline = self.store.timeline(page)?;
+        if !timeline.is_empty() {
+            said.push_str("Its timeline, newest last:\n");
+            for line in timeline.iter().rev().take(20).rev() {
+                said.push_str(&format!(
+                    "- {}, {}: {}\n",
+                    day_with_year(line.at, self.settings.offset_minutes),
+                    line.by,
+                    line.line
+                ));
+            }
+        }
+        Ok(said)
+    }
+
+    /// The lab page, derived from code (ADR 0112).
+    pub(super) fn lab_said(&self) -> String {
+        let mut said = format!("{} (world:lab):\n", world::LAB.title);
+        for line in endora_kernel::lab::LAB_BUILT {
+            said.push_str(&format!("- {line}\n"));
+        }
+        said
+    }
+
+    /// The team page, derived from the record: who is at work, in what role, on what brain,
+    /// reporting to whom.
+    pub(super) fn team_said(&self) -> Done<String> {
+        let members = self.store.members()?;
+        let mut said = format!("{} (world:team):\n", world::TEAM.title);
+        for m in &members {
+            let to = m
+                .reports_to
+                .and_then(|id| members.iter().find(|o| o.id == id))
+                .map(|o| format!(", reports to {}", o.name))
+                .unwrap_or_default();
+            let away = if m.furloughed() {
+                ", on furlough"
+            } else if m.paused {
+                ", paused"
+            } else {
+                ""
+            };
+            said.push_str(&format!(
+                "- {} ({}, {}{to}{away})\n",
+                m.name,
+                m.role.name(),
+                m.brain.label()
+            ));
+        }
+        Ok(said)
+    }
+
+    /// The CEO's turn writes or revises a section of the house page, on evidence, as an
+    /// observation or an insight. Returns its address.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`WorldRefusal::NotYours`] for anyone but the page's steward;
+    /// [`WorldRefusal::Derived`]; [`WorldRefusal::CanonIsTheOwners`] for a canon section or a
+    /// canon stage; what the evidence rule refuses; a heading, headline, body or warrant that
+    /// does not keep.
+    pub fn write_world_in(&self, run: RunId, write: &WorldWrite) -> Done<String> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        let writer = self.member(turn.member)?;
+        let page: Page = world::page(write.page.trim())
+            .ok_or_else(|| refused(WorldRefusal::NotAnAddress(write.page.clone())))?;
+        if page.derived {
+            return Err(refused(WorldRefusal::Derived(format!(
+                "world:{}",
+                page.slug
+            ))));
+        }
+        if !Self::stewards(&writer, Scope::House) {
+            return Err(refused(WorldRefusal::NotYours {
+                what: "the house page".to_owned(),
+                steward: self.steward_named(Scope::House)?,
+            }));
+        }
+        let heading = world::one_line(&write.heading, world::HEADING_MOST).map_err(refused)?;
+        let anchor = match &write.anchor {
+            Some(a) if !a.trim().is_empty() => world::anchor_of(a),
+            _ => world::anchor_of(&heading),
+        }
+        .ok_or_else(|| refused(WorldRefusal::NeedsHeading))?;
+        let headline = world::one_line(&write.headline, world::HEADLINE_MOST).map_err(refused)?;
+        let body = world::body(&write.body).map_err(refused)?;
+        let warrant = world::one_line(&write.warrant, world::WARRANT_MOST).map_err(refused)?;
+        let found = self.found_all(&write.evidence)?;
+        world::warranted(
+            write.stage,
+            &found,
+            self.turns_behind(&write.evidence)?,
+            &warrant,
+            turn.id,
+        )
+        .map_err(EngineError::Refused)?;
+        let old = self.section_at(page.slug, &anchor)?;
+        if old.as_ref().is_some_and(|s| s.stage == Stage::Canon) {
+            return Err(refused(WorldRefusal::CanonIsTheOwners));
+        }
+        let heading = if heading.is_empty() {
+            old.as_ref().map(|s| s.heading.clone()).unwrap_or_default()
+        } else {
+            heading
+        };
+        if heading.is_empty() || headline.is_empty() {
+            return Err(refused(WorldRefusal::NeedsHeading));
+        }
+        let now = self.clock.now();
+        let section = Section {
+            id: old.as_ref().map_or(0, |s| s.id),
+            page: page.slug.to_owned(),
+            anchor: anchor.clone(),
+            heading: heading.clone(),
+            headline,
+            body,
+            stage: write.stage,
+            warrant,
+            evidence: self.snapshots(&write.evidence)?,
+            verified_at: Some(now),
+            verified_by: writer.name.clone(),
+            superseded_by: None,
+            why: String::new(),
+            written_by: writer.name.clone(),
+            written_in_run: Some(turn.id),
+            revision: old.as_ref().map_or(1, |s| s.revision + 1),
+            updated_at: now,
+            last_used_at: now,
+        };
+        let address = section.address();
+        let what = if old.is_some() { "revised" } else { "wrote" };
+        self.store.save_section(&section, what)?;
+        self.timeline_line(
+            page.slug,
+            &writer.name,
+            Some(turn.id),
+            &format!(
+                "{} {what} \"{heading}\" ({address}) as an {}.",
+                writer.name,
+                write.stage.said()
+            ),
+        )?;
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "written", "address": address, "stage": write.stage.name(),
+                    "by": writer.name, "heading": heading }),
+        )?;
+        if let Some(task) = turn.task {
+            self.mark_progress(writer.id, task)?;
+        }
+        Ok(address)
+    }
+
+    /// A steward's turn confirms an insight or canon on fresh evidence: a reading the node
+    /// witnessed this turn, or references from two turns. It is trusted again from now.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`WorldRefusal::NotYours`]; [`WorldRefusal::Nothing`]; what the
+    /// evidence rule refuses.
+    pub fn verify_world_in(&self, run: RunId, address: &str, cited: &[Ref]) -> Done<()> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        let who = self.member(turn.member)?;
+        let at = Self::address(address)?;
+        let found = self.found_all(cited)?;
+        let turns = self.turns_behind(cited)?;
+        let now = self.clock.now();
+        match &at {
+            Address::Section { page, anchor } => {
+                let mut s = self
+                    .section_at(page, anchor)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                self.may_steward(&who, Scope::House, "the house page")?;
+                world::warranted(Stage::Insight, &found, turns, "confirmed", turn.id)
+                    .map_err(EngineError::Refused)?;
+                s.verified_at = Some(now);
+                s.verified_by = who.name.clone();
+                s.evidence = Self::kept_with(&s.evidence, self.snapshots(cited)?);
+                self.store
+                    .save_section(&s, &format!("confirmed by {}", who.name))?;
+            }
+            Address::Story(handle) => {
+                let mut s = self
+                    .story_called(handle)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                self.may_steward(&who, s.scope, &format!("story {handle}"))?;
+                world::warranted(Stage::Insight, &found, turns, "confirmed", turn.id)
+                    .map_err(EngineError::Refused)?;
+                s.verified_at = Some(now);
+                s.evidence = Self::kept_with(&s.evidence, self.snapshots(cited)?);
+                self.store.save_story(&s)?;
+            }
+            Address::Page(_) => return Err(refused(WorldRefusal::NotAnAddress(at.said()))),
+        }
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "confirmed", "address": at.said(), "by": who.name }),
+        )
+    }
+
+    /// Old evidence and new together, the newest eight.
+    fn kept_with(old: &[Snapshot], new: Vec<Snapshot>) -> Vec<Snapshot> {
+        let mut all: Vec<Snapshot> = old
+            .iter()
+            .filter(|o| !new.iter().any(|n| n.cited == o.cited))
+            .cloned()
+            .collect();
+        all.extend(new);
+        let skip = all.len().saturating_sub(8);
+        all.into_iter().skip(skip).collect()
+    }
+
+    fn may_steward(&self, who: &Member, scope: Scope, what: &str) -> Done<()> {
+        if Self::stewards(who, scope) {
+            return Ok(());
+        }
+        Err(refused(WorldRefusal::NotYours {
+            what: what.to_owned(),
+            steward: self.steward_named(scope)?,
+        }))
+    }
+
+    /// A steward's turn retires a section or story, saying why, or supersedes it with the
+    /// address of what replaces it. It still resolves, and says where to go.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`WorldRefusal::NotYours`]; [`WorldRefusal::Nothing`];
+    /// [`WorldRefusal::NeedsWhy`]; [`WorldRefusal::CanonIsTheOwners`] for canon.
+    pub fn retire_world_in(
+        &self,
+        run: RunId,
+        address: &str,
+        why: &str,
+        superseded_by: Option<&str>,
+    ) -> Done<()> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        let who = self.member(turn.member)?;
+        let at = Self::address(address)?;
+        let why = world::one_line(why, world::WHY_MOST).map_err(refused)?;
+        if why.is_empty() {
+            return Err(refused(WorldRefusal::NeedsWhy));
+        }
+        let next = match superseded_by.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(next) => Some(Self::address(next)?.said()),
+            None => None,
+        };
+        let stage = if next.is_some() {
+            Stage::Superseded
+        } else {
+            Stage::Retired
+        };
+        let said = format!(
+            "{} by {} on {}: {why}",
+            stage.said(),
+            who.name,
+            self.said_day(self.clock.now())
+        );
+        match &at {
+            Address::Section { page, anchor } => {
+                let mut s = self
+                    .section_at(page, anchor)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                self.may_steward(&who, Scope::House, "the house page")?;
+                if s.stage == Stage::Canon {
+                    return Err(refused(WorldRefusal::CanonIsTheOwners));
+                }
+                s.stage = stage;
+                s.superseded_by.clone_from(&next);
+                s.why.clone_from(&said);
+                s.revision += 1;
+                s.updated_at = self.clock.now();
+                s.written_by.clone_from(&who.name);
+                s.written_in_run = Some(turn.id);
+                self.store.save_section(&s, &said)?;
+                self.timeline_line(
+                    page,
+                    &who.name,
+                    Some(turn.id),
+                    &format!("\"{}\" ({}) {said}", s.heading, at.said()),
+                )?;
+            }
+            Address::Story(handle) => {
+                let mut s = self
+                    .story_called(handle)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                self.may_steward(&who, s.scope, &format!("story {handle}"))?;
+                if s.stage == Stage::Canon {
+                    return Err(refused(WorldRefusal::CanonIsTheOwners));
+                }
+                s.stage = stage;
+                s.why.clone_from(&said);
+                s.to_retell = false;
+                self.store.save_story(&s)?;
+            }
+            Address::Page(_) => return Err(refused(WorldRefusal::NotAnAddress(at.said()))),
+        }
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": stage.name(), "address": at.said(), "by": who.name, "why": why,
+                    "superseded_by": next }),
+        )
+    }
+
+    /// A turn of the CEO's or a lead's proposes a trusted insight for canon, with its warrant:
+    /// it goes on the owner's desk, who alone decides. Returns the desk item.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`WorldRefusal::NotAProposer`]; [`WorldRefusal::Nothing`];
+    /// [`WorldRefusal::NotReadyForCanon`]; [`WorldRefusal::NeedsWarrant`].
+    pub fn propose_canon_in(
+        &self,
+        run: RunId,
+        address: &str,
+        warrant: &str,
+    ) -> Done<crate::domain::DeskId> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        let who = self.member(turn.member)?;
+        if !matches!(who.role, Role::Ceo | Role::Lead) {
+            return Err(refused(WorldRefusal::NotAProposer));
+        }
+        let at = Self::address(address)?;
+        let warrant = world::one_line(warrant, world::WARRANT_MOST).map_err(refused)?;
+        if warrant.is_empty() {
+            return Err(refused(WorldRefusal::NeedsWarrant));
+        }
+        let (title, trust, evidence) = match &at {
+            Address::Section { page, anchor } => {
+                let s = self
+                    .section_at(page, anchor)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                (s.headline.clone(), self.section_trust(&s)?, s.evidence)
+            }
+            Address::Story(handle) => {
+                let s = self
+                    .story_called(handle)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                (s.short(), self.story_trust(&s)?, s.evidence)
+            }
+            Address::Page(_) => return Err(refused(WorldRefusal::NotAnAddress(at.said()))),
+        };
+        if trust.stage == Stage::Canon {
+            return Err(refused(WorldRefusal::AlreadyCanon(at.said())));
+        }
+        if trust.stage != Stage::Insight {
+            return Err(refused(WorldRefusal::NotReadyForCanon(at.said())));
+        }
+        for item in self.store.desk()? {
+            let same = item.kind == "canon"
+                && item.status == "waiting"
+                && self.store.setting(&canon_key(item.id))?.as_deref() == Some(&at.said());
+            if same {
+                return Ok(item.id);
+            }
+        }
+        let rests: Vec<String> = evidence
+            .iter()
+            .map(|e| format!("{} ({})", e.cited.said(), e.said))
+            .collect();
+        let text = format!(
+            "{} proposes making this canon: \"{title}\" ({}). Warrant: {warrant} It rests on: {}.",
+            who.name,
+            at.said(),
+            if rests.is_empty() {
+                "nothing cited".to_owned()
+            } else {
+                rests.join("; ")
+            }
+        );
+        let item = self.store.add_desk(
+            "canon",
+            turn.task,
+            None,
+            Some(who.id),
+            &text,
+            self.clock.now(),
+        )?;
+        self.store.set_setting(&canon_key(item), &at.said())?;
+        self.emit(
+            EventKind::DeskAdded,
+            json!({ "item": item.0, "kind": "canon", "task": turn.task.map(|t| t.0) }),
+        )?;
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "proposed", "address": at.said(), "by": who.name,
+                    "warrant": warrant }),
+        )?;
+        Ok(item)
+    }
+
+    /// The owner's word on a proposal for canon, from the desk.
+    pub(super) fn decide_canon(
+        &self,
+        item: &crate::application::ports::DeskItem,
+        yes: bool,
+    ) -> Done<()> {
+        let address = self
+            .store
+            .setting(&canon_key(item.id))?
+            .ok_or(EngineError::Unknown("proposal for canon"))?;
+        if !yes {
+            return self.emit(
+                EventKind::WorldChanged,
+                json!({ "what": "not_canon", "address": address, "by": "owner" }),
+            );
+        }
+        let proposer = match item.member {
+            Some(m) => self.member(m)?.name,
+            None => "a member".to_owned(),
+        };
+        self.promote_held_lock(&address, &format!("on {proposer}'s proposal"))
+    }
+
+    /// The owner makes a section or a story canon, from the World card or the desk. It keeps
+    /// its warrant and the snapshots of its evidence, and says so on the house page's
+    /// timeline and in the feed.
+    ///
+    /// # Errors
+    /// [`WorldRefusal::NotAnAddress`]; [`WorldRefusal::Nothing`]; [`WorldRefusal::AlreadyCanon`];
+    /// [`WorldRefusal::NotReadyForCanon`] for a piece that is retired or superseded.
+    pub fn promote(&self, address: &str, why: &str) -> Done<()> {
+        let _held = self.held();
+        let why = world::one_line(why, world::WHY_MOST).map_err(refused)?;
+        self.promote_held_lock(address, &why)
+    }
+
+    fn promote_held_lock(&self, address: &str, why: &str) -> Done<()> {
+        let at = Self::address(address)?;
+        let now = self.clock.now();
+        let said = if why.is_empty() {
+            format!("Made canon by the owner on {}.", self.said_day(now))
+        } else {
+            format!("Made canon by the owner on {}: {why}.", self.said_day(now))
+        };
+        let title = match &at {
+            Address::Section { page, anchor } => {
+                let mut s = self
+                    .section_at(page, anchor)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                Self::may_be_canon(s.stage, &at)?;
+                s.stage = Stage::Canon;
+                s.verified_at = Some(now);
+                s.verified_by = "the owner".to_owned();
+                s.why.clone_from(&said);
+                s.revision += 1;
+                s.updated_at = now;
+                s.written_by = "the owner".to_owned();
+                s.written_in_run = None;
+                self.store.save_section(&s, &said)?;
+                s.headline
+            }
+            Address::Story(handle) => {
+                let mut s = self
+                    .story_called(handle)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                Self::may_be_canon(s.stage, &at)?;
+                s.stage = Stage::Canon;
+                s.verified_at = Some(now);
+                s.why.clone_from(&said);
+                s.to_retell = false;
+                self.store.save_story(&s)?;
+                s.short()
+            }
+            Address::Page(_) => return Err(refused(WorldRefusal::NotAnAddress(at.said()))),
+        };
+        self.timeline_line(
+            HOUSE.slug,
+            "the owner",
+            None,
+            &format!("\"{title}\" ({}): {said}", at.said()),
+        )?;
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "promoted", "address": at.said(), "by": "owner", "why": why }),
+        )
+    }
+
+    fn may_be_canon(stage: Stage, at: &Address) -> Done<()> {
+        if stage == Stage::Canon {
+            return Err(refused(WorldRefusal::AlreadyCanon(at.said())));
+        }
+        if !stage.current() {
+            return Err(refused(WorldRefusal::NotReadyForCanon(at.said())));
+        }
+        Ok(())
+    }
+
+    /// The owner demotes canon, saying why: to an insight, an observation, or retired. It is
+    /// said in the feed and on the house page's timeline, and the piece keeps the reason.
+    ///
+    /// # Errors
+    /// [`WorldRefusal::NotAnAddress`]; [`WorldRefusal::Nothing`]; [`WorldRefusal::NotCanon`];
+    /// [`WorldRefusal::NeedsWhy`]; [`WorldRefusal::NotAWritableStage`] for any other stage.
+    pub fn demote(&self, address: &str, to: Stage, why: &str) -> Done<()> {
+        let _held = self.held();
+        let at = Self::address(address)?;
+        let why = world::one_line(why, world::WHY_MOST).map_err(refused)?;
+        if why.is_empty() {
+            return Err(refused(WorldRefusal::NeedsWhy));
+        }
+        if !matches!(to, Stage::Insight | Stage::Observation | Stage::Retired) {
+            return Err(refused(WorldRefusal::NotAWritableStage(
+                to.name().to_owned(),
+            )));
+        }
+        let now = self.clock.now();
+        let said = format!(
+            "Demoted from canon to {} by the owner on {}: {why}",
+            to.said(),
+            self.said_day(now)
+        );
+        let title = match &at {
+            Address::Section { page, anchor } => {
+                let mut s = self
+                    .section_at(page, anchor)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                if s.stage != Stage::Canon {
+                    return Err(refused(WorldRefusal::NotCanon(at.said())));
+                }
+                s.stage = to;
+                s.why.clone_from(&said);
+                s.revision += 1;
+                s.updated_at = now;
+                s.written_by = "the owner".to_owned();
+                s.written_in_run = None;
+                self.store.save_section(&s, &said)?;
+                s.headline
+            }
+            Address::Story(handle) => {
+                let mut s = self
+                    .story_called(handle)?
+                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                if s.stage != Stage::Canon {
+                    return Err(refused(WorldRefusal::NotCanon(at.said())));
+                }
+                s.stage = to;
+                s.why.clone_from(&said);
+                self.store.save_story(&s)?;
+                s.short()
+            }
+            Address::Page(_) => return Err(refused(WorldRefusal::NotAnAddress(at.said()))),
+        };
+        self.timeline_line(
+            HOUSE.slug,
+            "the owner",
+            None,
+            &format!("\"{title}\" ({}): {said}", at.said()),
+        )?;
+        self.emit(
+            EventKind::WorldChanged,
+            json!({ "what": "demoted", "address": at.said(), "by": "owner", "to": to.name(),
+                    "why": why }),
+        )
+    }
+
+    /// A turn tells a story in its member's scope (the CEO the house's, a lead its area's, the
+    /// tester her lead's area's, anyone else its own), or retells a lesson marked to retell
+    /// under the same handle. Returns its address.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`WorldRefusal::NotAHandle`]; [`WorldRefusal::StoryNeedsParts`];
+    /// [`WorldRefusal::HandleTaken`]; [`WorldRefusal::NotYours`] for an insight outside the
+    /// member's stewardship or a lesson of another scope; what the evidence rule refuses.
+    pub fn tell_story_in(&self, run: RunId, told: &StoryTelling) -> Done<String> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        let teller = self.member(turn.member)?;
+        let members = self.store.members()?;
+        let scope = self.scope_written(&teller, &members);
+        let handle = world::handle_of(&told.handle).map_err(refused)?;
+        let part = |p: &str| world::one_line(p, world::STORY_PART_MOST).map_err(refused);
+        let (moment, reflex, instead, because) = (
+            part(&told.moment)?,
+            part(&told.reflex)?,
+            part(&told.instead)?,
+            part(&told.because)?,
+        );
+        if [&moment, &reflex, &instead, &because]
+            .iter()
+            .any(|p| p.is_empty())
+        {
+            return Err(refused(WorldRefusal::StoryNeedsParts));
+        }
+        let warrant = world::one_line(&told.warrant, world::WARRANT_MOST).map_err(refused)?;
+        if told.stage == Stage::Insight && !Self::stewards(&teller, scope) {
+            return Err(refused(WorldRefusal::NotYours {
+                what: "an insight in this scope".to_owned(),
+                steward: self.steward_named(scope)?,
+            }));
+        }
+        let found = self.found_all(&told.evidence)?;
+        world::warranted(
+            told.stage,
+            &found,
+            self.turns_behind(&told.evidence)?,
+            &warrant,
+            turn.id,
+        )
+        .map_err(EngineError::Refused)?;
+        let existing = self.story_called(&handle)?;
+        let retold = match &existing {
+            Some(s) if s.to_retell && s.scope == scope => true,
+            Some(s) if s.to_retell => {
+                return Err(refused(WorldRefusal::NotYours {
+                    what: format!("story {handle}"),
+                    steward: self.steward_named(s.scope)?,
+                }));
+            }
+            Some(_) => return Err(refused(WorldRefusal::HandleTaken(handle))),
+            None => false,
+        };
+        let now = self.clock.now();
+        let story = Story {
+            id: existing.as_ref().map_or(0, |s| s.id),
+            scope,
+            handle: handle.clone(),
+            moment,
+            reflex,
+            instead,
+            because,
+            evidence: self.snapshots(&told.evidence)?,
+            stage: told.stage,
+            warrant,
+            taught: if told.taught.is_empty() {
+                crate::domain::situations::TAUGHT_BY_DEFAULT.to_vec()
+            } else {
+                told.taught.clone()
+            },
+            author: teller.name.clone(),
+            written_in_run: Some(turn.id),
+            written_at: now,
+            to_retell: false,
+            migrated_from: existing.as_ref().and_then(|s| s.migrated_from.clone()),
+            verified_at: Some(now),
+            last_used_at: now,
+            why: String::new(),
+        };
+        self.store.save_story(&story)?;
+        self.emit(
+            EventKind::StoryTold,
+            json!({ "handle": handle, "scope": scope.name(), "stage": told.stage.name(),
+                    "by": teller.name, "retold": retold }),
+        )?;
+        if let Some(task) = turn.task {
+            self.mark_progress(teller.id, task)?;
+        }
+        Ok(story.address())
+    }
+
+    /// A one-line lesson, as `note_lesson` kept it before stories: a story marked to retell, in
+    /// its writer's scope, under a handle from its first words. The owner is told on the desk.
+    pub(super) fn lesson_as_story(&self, run: &Run, writer: &Member, lesson: &str) -> Done<String> {
+        let lesson =
+            world::one_line(lesson, crate::domain::lessons::LESSON_MOST).map_err(|_| {
+                EngineError::Refused(Refusal::TooLong(crate::domain::lessons::LESSON_MOST))
+            })?;
+        let members = self.store.members()?;
+        let taken: Vec<String> = self
+            .store
+            .stories()?
+            .into_iter()
+            .map(|s| s.handle)
+            .collect();
+        let handle = world::handle_from(&lesson, &taken);
+        let now = self.clock.now();
+        let story = Story {
+            id: 0,
+            scope: self.scope_written(writer, &members),
+            handle: handle.clone(),
+            moment: String::new(),
+            reflex: String::new(),
+            instead: lesson.clone(),
+            because: String::new(),
+            evidence: Vec::new(),
+            stage: Stage::Observation,
+            warrant: String::new(),
+            taught: crate::domain::situations::TAUGHT_BY_DEFAULT.to_vec(),
+            author: writer.name.clone(),
+            written_in_run: Some(run.id),
+            written_at: now,
+            to_retell: true,
+            migrated_from: None,
+            verified_at: None,
+            last_used_at: now,
+            why: String::new(),
+        };
+        self.store.save_story(&story)?;
+        Ok(handle)
+    }
+
+    /// After a member's post: the stories it names by handle, and the sections it names by
+    /// address, were used.
+    pub(super) fn world_used(&self, text: &str) -> Done<()> {
+        let now = self.clock.now();
+        for s in self.store.stories()? {
+            if s.cited_in(text) {
+                self.store.touch_story(s.id, now)?;
+            }
+        }
+        let lower = text.to_ascii_lowercase();
+        for s in self.store.sections()? {
+            if lower.contains(&s.address()) {
+                self.store.touch_section(s.id, now)?;
+            }
+        }
+        Ok(())
+    }
+
+    // ---- handing work on ------------------------------------------------------------------
+
+    /// Keeps the handover note of work handed on in a turn, and says so in the feed.
+    pub(super) fn keep_handover(
+        &self,
+        turn: &Run,
+        task: crate::domain::TaskId,
+        from: Option<MemberId>,
+        to: Option<MemberId>,
+        note: &HandoverNote,
+    ) -> Done<()> {
+        self.store.add_handover(&world::Handover {
+            id: 0,
+            task,
+            by: turn.member,
+            from,
+            to,
+            run: Some(turn.id),
+            note: note.clone(),
+            evidence: Vec::new(),
+            at: self.clock.now(),
+        })?;
+        self.emit(
+            EventKind::HandedOver,
+            json!({ "task": task.0, "by": turn.member.0, "from": from.map(|m| m.0),
+                    "to": to.map(|m| m.0), "note": note.line() }),
+        )
+    }
+
+    // ---- what the owner sees --------------------------------------------------------------
+
+    /// The world as the HQ screen shows it: the pages by stage, with their timelines, and the
+    /// stories.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn world_shown(&self) -> Done<Value> {
+        let off = self.settings.offset_minutes;
+        let snaps = |all: &[Snapshot]| -> Vec<Value> {
+            all.iter()
+                .map(|e| json!({ "ref": e.cited.said(), "said": e.said }))
+                .collect()
+        };
+        let mut sections = Vec::new();
+        for s in self.store.sections()? {
+            let trust = self.section_trust(&s)?;
+            sections.push(json!({
+                "address": s.address(), "page": s.page, "anchor": s.anchor, "heading": s.heading,
+                "headline": s.headline, "body": s.body, "stage": s.stage.name(),
+                "shown": trust.stage.name(), "said": self.stage_said(trust),
+                "unconfirmed_since": trust.unconfirmed_since, "warrant": s.warrant,
+                "evidence": snaps(&s.evidence), "verified_at": s.verified_at,
+                "verified_by": s.verified_by, "revision": s.revision, "updated_at": s.updated_at,
+                "written_by": s.written_by, "why": s.why, "superseded_by": s.superseded_by,
+            }));
+        }
+        let timeline: Vec<Value> = self
+            .store
+            .timeline(HOUSE.slug)?
+            .iter()
+            .rev()
+            .take(50)
+            .map(|l| {
+                json!({ "at": l.at, "day": day_with_year(l.at, off), "by": l.by,
+                             "line": l.line })
+            })
+            .collect();
+        let mut stories = Vec::new();
+        for s in self.store.stories()? {
+            let trust = self.story_trust(&s)?;
+            stories.push(json!({
+                "address": s.address(), "handle": s.handle, "scope": s.scope.name(),
+                "whose": self.scope_said(s.scope).unwrap_or_default(), "moment": s.moment,
+                "reflex": s.reflex, "instead": s.instead, "because": s.because,
+                "stage": s.stage.name(), "shown": trust.stage.name(),
+                "said": self.stage_said(trust), "unconfirmed_since": trust.unconfirmed_since,
+                "to_retell": s.to_retell, "author": s.author, "written_at": s.written_at,
+                "why": s.why, "evidence": snaps(&s.evidence),
+            }));
+        }
+        Ok(json!({
+            "pages": [
+                { "slug": HOUSE.slug, "title": HOUSE.title, "derived": false,
+                  "horizon_days": HOUSE.horizon_days, "timeline": timeline },
+                { "slug": world::LAB.slug, "title": world::LAB.title, "derived": true,
+                  "lines": endora_kernel::lab::LAB_BUILT },
+                { "slug": world::TEAM.slug, "title": world::TEAM.title, "derived": true,
+                  "lines": self.team_said()?.lines().skip(1).map(|l| l.trim_start_matches("- ").to_owned()).collect::<Vec<_>>() },
+            ],
+            "sections": sections,
+            "stories": stories,
+            "migrated": self.world_migrated()?,
+        }))
+    }
+
+    /// The world as one Markdown document, for the owner to download and keep.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn world_markdown(&self) -> Done<String> {
+        let off = self.settings.offset_minutes;
+        let now = self.clock.now();
+        let mut md = format!(
+            "# The team's world\n\nExported from Endora HQ on {}.\n\n## {} (world:house)\n\n",
+            day_with_year(now, off),
+            HOUSE.title
+        );
+        let sections = self.store.sections()?;
+        if sections.is_empty() {
+            md.push_str("No sections yet.\n\n");
+        }
+        for s in &sections {
+            let trust = self.section_trust(s)?;
+            md.push_str(&format!(
+                "### {} {{#{}}}\n\n**{}**\n\nStage: {} · revision {}, by {}, {}\n\n",
+                s.heading,
+                s.anchor,
+                s.headline,
+                self.stage_said(trust),
+                s.revision,
+                s.written_by,
+                day_with_year(s.updated_at, off)
+            ));
+            if !s.body.is_empty() {
+                md.push_str(&format!("{}\n\n", s.body));
+            }
+            if !s.warrant.is_empty() {
+                md.push_str(&format!("Warrant: {}\n\n", s.warrant));
+            }
+            let lines = Self::evidence_lines(&s.evidence);
+            if !lines.is_empty() {
+                md.push_str(&format!("{lines}\n"));
+            }
+            if !s.why.is_empty() {
+                md.push_str(&format!("{}\n\n", s.why));
+            }
+        }
+        md.push_str("### Timeline\n\n");
+        for l in self.store.timeline(HOUSE.slug)? {
+            md.push_str(&format!(
+                "- {}, {}: {}\n",
+                day_with_year(l.at, off),
+                l.by,
+                l.line
+            ));
+        }
+        md.push('\n');
+        md.push_str(&format!(
+            "## {}\n\n",
+            self.lab_said().trim_end().trim_end_matches(':')
+        ));
+        let lab = self.lab_said();
+        for line in lab.lines().skip(1) {
+            md.push_str(&format!("{line}\n"));
+        }
+        let team = self.team_said()?;
+        md.push_str(&format!(
+            "\n## {}\n\n",
+            team.lines().next().unwrap_or("").trim_end_matches(':')
+        ));
+        for line in team.lines().skip(1) {
+            md.push_str(&format!("{line}\n"));
+        }
+        md.push_str("\n## Stories\n\n");
+        for s in self.store.stories()? {
+            let trust = self.story_trust(&s)?;
+            md.push_str(&format!(
+                "### {} ({}, {})\n\n",
+                s.handle,
+                self.scope_said(s.scope)?,
+                self.stage_said(trust)
+            ));
+            for (label, part) in [
+                ("When", &s.moment),
+                ("Tempting", &s.reflex),
+                ("Instead", &s.instead),
+                ("Because", &s.because),
+            ] {
+                if !part.is_empty() {
+                    md.push_str(&format!("- {label}: {part}\n"));
+                }
+            }
+            if s.to_retell {
+                md.push_str("- To retell: a one-line lesson from before stories.\n");
+            }
+            md.push_str(&format!(
+                "- Told by {}, {}\n\n",
+                s.author,
+                day_with_year(s.written_at, off)
+            ));
+        }
+        Ok(md)
+    }
+
+    /// What a turn was briefed: its situation, what of the world it carried and what was left
+    /// out, against its budget.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn briefed(&self, run: RunId) -> Done<Option<crate::domain::situations::Briefed>> {
+        Ok(self.store.briefed(run)?)
+    }
+}

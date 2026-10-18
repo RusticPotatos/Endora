@@ -357,7 +357,13 @@ fn the_ceo_delegates_to_leads_only_and_proposes_no_project() {
     assert!(new("Ada").unwrap().starts_with("Created task"));
     let linus_task = task_for(&hq, &o, o.dev, "Fix sonarr", Some(o.upkeep));
     assert_eq!(
-        hq.hand_to_in(mara.run, linus_task, o.dev, "yours"),
+        hq.hand_to_in(
+            mara.run,
+            linus_task,
+            o.dev,
+            "yours",
+            &crate::domain::world::HandoverNote::new("a", "b", "c", "d").unwrap()
+        ),
         Err(EngineError::Refused(Refusal::CeoToLeads))
     );
     assert_eq!(
@@ -596,7 +602,9 @@ fn a_lead_still_acts_on_its_own_members_work() {
         &hq,
         &ada,
         "hand_to",
-        &json!({ "task": task.0, "to": "Ada", "why": "I will take it" }),
+        &json!({ "task": task.0, "to": "Ada", "why": "I will take it",
+                 "handover": { "done": "nothing yet", "not_done": "the look", "next": "look",
+                               "watch_out": "radarr restarts slowly" } }),
     )
     .unwrap();
     assert_eq!(

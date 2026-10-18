@@ -26,6 +26,10 @@ use endora_team::domain::{
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 use serde_json::json;
 
+/// The team's world (ADR 0122), in its own file.
+#[path = "scenarios/world.rs"]
+mod world;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

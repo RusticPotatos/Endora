@@ -124,7 +124,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// What a reference is in HQ's record, and whether it is about `work` (`None`: anything
     /// in the record counts, as for a decision).
-    fn found(&self, r: Ref, work: Option<&[TaskId]>, waits: &[TaskId]) -> Done<Found> {
+    pub(super) fn found(&self, r: Ref, work: Option<&[TaskId]>, waits: &[TaskId]) -> Done<Found> {
         let about = |task: Option<TaskId>| match work {
             None => true,
             Some(work) => task.is_some_and(|t| work.contains(&t)),
@@ -349,12 +349,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A turn of a manager's hands a subordinate's task to another member (itself, or one
-    /// below it), saying why: let go, handed, `todo`, and the new member woken.
+    /// below it), saying why, with its handover note (ADR 0122): let go, handed, `todo`, the
+    /// note kept for the new member's first turn, and the new member woken.
     ///
     /// # Errors
     /// [`Refusal::TurnOver`]; [`Refusal::NotYours`] for a task held by nobody below the turn's
     /// member; [`Refusal::Finished`]; [`Refusal::NotBelow`]; [`EngineError::Unknown`].
-    pub fn hand_to_in(&self, run: RunId, task: TaskId, to: MemberId, why: &str) -> Done<()> {
+    pub fn hand_to_in(
+        &self,
+        run: RunId,
+        task: TaskId,
+        to: MemberId,
+        why: &str,
+        handover: &crate::domain::world::HandoverNote,
+    ) -> Done<()> {
         let _held = self.held();
         let turn = self.running(run)?;
         let current = self.task(task)?;
@@ -395,6 +403,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ),
         )?;
         self.mark_progress(by.id, task)?;
+        self.keep_handover(&turn, task, holder, Some(target.id), handover)?;
         self.wake_held_lock(target.id, Some(task), WakeReason::Assigned)?;
         Ok(())
     }

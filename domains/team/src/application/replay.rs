@@ -124,6 +124,9 @@ pub struct RunReplay {
     pub moments: Vec<Moment>,
     /// Whether any moment was matched by time: a turn from before events named their turn.
     pub by_time: bool,
+    /// The situation it started from and what of the world it was told (ADR 0122), for a turn
+    /// briefed since.
+    pub briefed: Option<crate::domain::situations::Briefed>,
 }
 
 /// The order of moments at the same millisecond: woken, started, told, the rest, ended.
@@ -283,6 +286,7 @@ pub fn replay(record: &Record<'_>, run: &Run) -> RunReplay {
         money,
         moments,
         by_time,
+        briefed: None,
     }
 }
 
@@ -364,6 +368,7 @@ impl RunReplay {
             "tokens": { "input": r.input_tokens, "output": r.output_tokens,
                 "cache_read": r.cache_read_tokens, "cache_write": r.cache_write_tokens },
             "by_time": self.by_time,
+            "briefed": self.briefed.as_ref().map(crate::domain::situations::Briefed::shown),
             "moments": self.moments.iter().map(|m| m.shown(r)).collect::<Vec<_>>(),
         })
     }

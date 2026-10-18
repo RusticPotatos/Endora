@@ -172,7 +172,8 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         offered.retain(|t| t["name"] != SHELL);
         offered.push(shell_tool());
     }
-    let lessons = offered.iter().any(|t| t["name"] == "note_lesson");
+    // A lesson is a story since ADR 0122: told with tell_story.
+    let lessons = offered.iter().any(|t| t["name"] == "tell_story");
     let (briefing, refused) = hq.call("my_turn", &json!({}))?;
     if refused {
         return Err(Stopped::Failed(format!("HQ refused my_turn: {briefing}")));
@@ -236,7 +237,7 @@ const LAB_TOOLS: [&str; 3] = ["homelab_status", "container_logs", "restart_conta
 /// offers it (the home lab's container tools among them are named as the turn's own: live, a
 /// lead on Claude offered `homelab_status` said three times that its tools could not read the
 /// home lab, reading HQ's briefing, which lists only HQ's tools, as all it had); `lessons`,
-/// whether it keeps the team's lessons (`note_lesson`); `shell`, whether it is in the
+/// whether it tells the team's lessons as stories (`tell_story`); `shell`, whether it is in the
 /// workbench, with a shell.
 pub(crate) fn instructions(
     posted: bool,
@@ -320,7 +321,7 @@ pub(crate) fn instructions(
              turn ends: write durable findings in the task's thread",
         );
         told.push_str(if lessons {
-            ", or with note_lesson."
+            ", or as a story with tell_story."
         } else {
             "."
         });
@@ -341,7 +342,9 @@ pub(crate) fn instructions(
     if lessons {
         told.push_str(
             "\n\nWhen the owner corrects you, or you learn something about this house that the \
-             team will need again, note it with note_lesson so nobody asks twice.",
+             team will need again, tell it as a story with tell_story (when it matters, the \
+             tempting move, what to do instead, and why) so nobody asks twice; cite a story by \
+             its handle rather than retelling it.",
         );
     }
     // How done is shown (ADR 0114): from the record, never from what a model says.
@@ -1574,7 +1577,7 @@ mod tests {
         assert!(!told.contains('\\') && !told.contains("  "), "{told}");
         assert!(told.ends_with("one or two sentences. That reply goes in your task's thread."));
         assert!(instructions(false, &[], false, false).ends_with("one or two sentences."));
-        assert!(!told.contains("note_lesson"), "{told}");
+        assert!(!told.contains("tell_story"), "{told}");
         // With the node's contracts, a paragraph more: what they may do, and what is the
         // owner's, one rule a line.
         let told = instructions(false, &lab(), false, false);
@@ -1613,14 +1616,17 @@ mod tests {
         );
         assert!(told.contains("a routine's check"), "{told}");
         assert!(!told.contains("  "), "{told}");
-        // The lead and the reviewer keep the team's lessons: a paragraph of its own.
+        // A member offered tell_story tells the team's lessons as stories: a paragraph of its
+        // own.
         let told = instructions(true, &lab(), true, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 6, "{told}");
         assert_eq!(
             parts[4],
             "When the owner corrects you, or you learn something about this house that the team \
-             will need again, note it with note_lesson so nobody asks twice."
+             will need again, tell it as a story with tell_story (when it matters, the tempting \
+             move, what to do instead, and why) so nobody asks twice; cite a story by its handle \
+             rather than retelling it."
         );
         assert!(told.ends_with("That reply goes in your task's thread."));
     }
@@ -1643,13 +1649,13 @@ mod tests {
              with the shell tool, and say why. The sandbox is offline: neither the internet nor \
              the house's services are reachable from the shell, so use the house through the \
              team's tools. Anything you leave in /work is gone when the turn ends: write \
-             durable findings in the task's thread, or with note_lesson."
+             durable findings in the task's thread, or as a story with tell_story."
         );
         assert!(!told.contains("  ") && !told.contains('\\'), "{told}");
         let told = instructions(true, &[], false, true);
         assert!(
             told.contains("durable findings in the task's thread.\n\n"),
-            "no note_lesson for a member without it: {told}"
+            "no tell_story for a member without it: {told}"
         );
     }
 

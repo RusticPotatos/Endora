@@ -348,6 +348,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not seed the house log: {e}"),
         }
+        // The team's world (ADR 0122), once: the house log's lines into the house page's
+        // timeline, the lessons into stories to retell. Nothing old is deleted.
+        match hq.migrate_world() {
+            Ok(true) => println!("hq: moved the house log and the lessons into the team's world"),
+            Ok(false) => {}
+            Err(e) => eprintln!("hq: could not move the house log into the team's world: {e}"),
+        }
         // The office's decorations as data (ADR 0119), once: the team moves them from there.
         match hq.seed_office() {
             Ok(true) => println!("hq: put the office's decorations on the floor"),

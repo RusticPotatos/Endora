@@ -3,6 +3,7 @@
 pub mod engine;
 pub mod ports;
 pub mod protocol;
+pub mod protocol_world;
 pub mod replay;
 pub mod scorecard;
 pub mod world_ports;
@@ -69,3 +70,6 @@ mod raci_tests;
 
 #[cfg(test)]
 mod ladder_tests;
+
+#[cfg(test)]
+mod world_tests;

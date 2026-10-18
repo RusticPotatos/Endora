@@ -34,6 +34,7 @@ mod allowance;
 mod areas;
 mod evidence;
 mod ladder;
+mod memory;
 mod notebook;
 mod office;
 mod planning;
@@ -43,6 +44,7 @@ mod replay;
 mod runtime;
 mod staffing;
 mod wing;
+mod world;
 
 pub use areas::{DAILY_REVIEW, PATTERNS_ASKS, REPORT_ASKS};
 pub use evidence::Called;
@@ -52,6 +54,7 @@ pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
 pub use raci::DIRECTION_MOST;
 pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
+pub use world::{RETELL_AT_ONCE, StoryTelling, WorldWrite};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
 /// member is woken once, and again before it goes on the owner's desk as stuck.
@@ -600,52 +603,54 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(true)
     }
 
-    /// The owner rewrites the house log on HQ's screen; empty clears it.
+    /// The owner rewrites the house log on HQ's screen; empty clears it. Once the house log is
+    /// the house page's timeline (ADR 0122), it is kept read-only for a release: refused.
     ///
     /// # Errors
-    /// [`Refusal::TooLong`] past [`house::HOUSE_LOG_MOST`]; a store failure.
+    /// [`Refusal::TooLong`] past [`house::HOUSE_LOG_MOST`];
+    /// [`crate::domain::world::WorldRefusal::HouseLogRetired`] once moved; a store failure.
     pub fn set_house_log(&self, log: &str) -> Done<()> {
         let _held = self.held();
+        if self.world_migrated()? {
+            return Err(EngineError::Refused(Refusal::World(
+                crate::domain::world::WorldRefusal::HouseLogRetired,
+            )));
+        }
         let log = house::rewritten(log).map_err(EngineError::Refused)?;
         self.keep_house_log(&log, "owner", json!({ "rewritten": true }))
     }
 
-    /// A turn of the CEO's adds a dated line to the house log. Returns the line.
+    /// A turn of the CEO's adds a dated line to the house page's timeline (ADR 0122; before
+    /// it, to the house log). Returns the line.
     ///
     /// # Errors
     /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`] for anyone else; [`EngineError::Unknown`]
-    /// for no entry; [`Refusal::TooLong`] past [`house::HOUSE_ENTRY_MOST`];
-    /// [`Refusal::HouseLogFull`] when it has no room.
+    /// for no entry; [`Refusal::TooLong`] past [`house::HOUSE_ENTRY_MOST`].
     pub fn note_house(&self, run: RunId, entry: &str) -> Done<String> {
         let _held = self.held();
         let (run, ceo) = self.the_ceos_turn(run)?;
         if entry.trim().is_empty() {
-            return Err(EngineError::Unknown("entry for the house log"));
+            return Err(EngineError::Unknown("entry for the house page's timeline"));
         }
-        let line = house::line(entry, self.clock.now(), self.settings.offset_minutes)
-            .map_err(EngineError::Refused)?;
-        let log = house::appended(&self.house_log()?, &line).map_err(EngineError::Refused)?;
-        self.keep_house_log(&log, &ceo.name, json!({ "entry": line }))?;
+        let line = self.note_house_line(&run, &ceo, entry)?;
         if let Some(task) = run.task {
             self.mark_progress(ceo.id, task)?;
         }
         Ok(line)
     }
 
-    /// A turn of the CEO's rewrites the house log whole, compactly.
+    /// A turn of the CEO's once rewrote the house log whole. The house log is the house page
+    /// now (ADR 0122): refused, saying what to use instead, for one release.
     ///
     /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`]; [`Refusal::TooLong`] past
-    /// [`house::HOUSE_LOG_MOST`].
-    pub fn rewrite_house(&self, run: RunId, log: &str) -> Done<usize> {
+    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`];
+    /// [`crate::domain::world::WorldRefusal::HouseLogRetired`].
+    pub fn rewrite_house(&self, run: RunId, _log: &str) -> Done<usize> {
         let _held = self.held();
-        let (run, ceo) = self.the_ceos_turn(run)?;
-        let log = house::rewritten(log).map_err(EngineError::Refused)?;
-        self.keep_house_log(&log, &ceo.name, json!({ "rewritten": true }))?;
-        if let Some(task) = run.task {
-            self.mark_progress(ceo.id, task)?;
-        }
-        Ok(log.chars().count())
+        self.the_ceos_turn(run)?;
+        Err(EngineError::Refused(Refusal::World(
+            crate::domain::world::WorldRefusal::HouseLogRetired,
+        )))
     }
 
     /// A running turn of the CEO's, and the CEO.
@@ -1496,6 +1501,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )?;
         if let Author::Member(member) = by {
             self.mark_turn(member, task, &|run| run.posted = true)?;
+            // The stories and sections it names were used (ADR 0122).
+            self.world_used(text)?;
         }
         let members = self.store.members()?;
         for named in mentions(text, &members) {
@@ -2139,8 +2146,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
-    /// What a member is told at the start of a turn.
+    /// What a member is told at the start of a turn: who it is, then what of the team's world
+    /// its situation needs within its budget (ADR 0122), then its work; and at the very end,
+    /// what of the world was left out and how to read it. The run records its situation.
     fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
+        let (_, memory) = self.memory(member, run)?;
+        let mut told = self.briefing_body(member, run, &memory.text)?;
+        told.push_str(&memory.omitted);
+        Ok(told)
+    }
+
+    /// The briefing, around what it carries of the world (`memory`).
+    fn briefing_body(&self, member: &Member, run: &Run, memory: &str) -> Done<String> {
         let mut told = format!(
             "You are {}, the team's {}.\n",
             member.name,
@@ -2151,14 +2168,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 role => role.name(),
             }
         );
-        // The member's own notebook, first: what it learned, newest first (ADR 0118).
-        told.push_str(&self.notebook_said(member, run)?);
+        // What it knows, first: its situation's pieces of the world, its stories and its own
+        // notebook (ADR 0118, 0122).
+        told.push_str(memory);
         // Downtime has no task to brief: the office, the open proposals and what may be done
         // (ADR 0119).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
             told.push_str(&self.downtime_said(member)?);
             told.push_str(
-                "Your tools at HQ: my_turn, office, note, forget, read_notebook, read_doc.\n",
+                "Your tools at HQ: my_turn, office, note, forget, read_notebook, read_doc, \
+                 read_world.\n",
             );
             return Ok(told);
         }
@@ -2174,13 +2193,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(&format!("{}\n", review::TESTER));
         }
         told.push_str(self.wing_rules(member)?);
-        let log = self.house_log()?;
-        if member.role == Role::Lead && !log.trim().is_empty() {
-            told.push_str(&format!(
-                "The house log, kept by the CEO (read it; it is not yours to change):\n{}\n",
-                log.trim()
-            ));
-        }
         let on = match run.task {
             Some(task) => Some(self.task(task)?),
             None => None,
@@ -2231,7 +2243,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(nudge) = self.nudge_for(member.id, run)? {
             told.push_str(&format!("{nudge}\n"));
         }
-        let note = self.store.goal_note(task.goal)?;
+        let note = self.goal_note_briefed(task.goal)?;
         if !note.is_empty() {
             told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
         }
@@ -2365,7 +2377,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(
                 "Your tools at HQ: my_turn, claim, post, set_status, create_task (to a lead), \
                  direct, set_strategy, decide_project, propose_goal, ask_owner (for the board), \
-                 check_back, note_house, rewrite_house, read_doc, hand_to (to a lead), \
+                 check_back, note_house, write_world, verify_world, retire_world, \
+                 propose_canon, tell_story, read_world, read_doc, hand_to (to a lead), \
                  read_document, note, forget, read_notebook, office.\n",
             );
             return Ok(told);
@@ -2379,11 +2392,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
              check_back, run_gate, request_action"
         });
         told.push_str(match member.role {
-            Role::Reviewer => ", review, read_document, read_doc, office. ",
+            Role::Reviewer => ", review, read_document, read_doc, read_world, tell_story, office. ",
             Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, read_document, read_doc, office. "
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, read_document, read_doc, read_world, tell_story, verify_world, retire_world, propose_canon, office. "
             }
-            _ => ", read_document, read_doc, office. ",
+            _ => ", read_document, read_doc, read_world, tell_story, office. ",
         });
         told.push_str(beside);
         told.push_str(notebook::TOOLS);
@@ -2391,26 +2404,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// What the CEO is told first (ADR 0111). It opens with what changes rarely, always in one
-    /// order: the house log, its team, the goals, and what only the board decides. Then, on
+    /// order: (after the house page, ADR 0122) its team, the goals, and what only the board
+    /// decides. Then, on
     /// its first turn and its daily review, the whole picture: the goals' notes and lessons,
     /// the open work, the home lab's trouble and what reached the board's desk in the last
     /// week. On any other turn, only what changed since its last turn began (see
-    /// [`Self::ceo_news`]): what it read before is in the house log it keeps and the threads,
+    /// [`Self::ceo_news`]): what it read before is in the house page it keeps and the threads,
     /// and every turn's briefing is paid for again at each of its rounds. Nothing of the
     /// owner's brain, mail or chat: the CEO thinks on a cloud model.
     fn ceo_context(&self, ceo: &Member, run: &Run) -> Done<String> {
+        // The house page, which it keeps, comes before this with the rest of what it knows
+        // (ADR 0122).
         let mut told = String::new();
-        let log = self.house_log()?;
-        told.push_str(
-            "The house log, yours to keep (note_house adds a dated line, rewrite_house rewrites \
-             it whole when it fills; the owner reads and edits it):\n",
-        );
-        told.push_str(if log.trim().is_empty() {
-            "(empty)"
-        } else {
-            log.trim()
-        });
-        told.push('\n');
         let members = self.store.members()?;
         let name_of = |id: Option<MemberId>| {
             id.and_then(|id| members.iter().find(|m| m.id == id))
@@ -2608,6 +2613,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         e.data["goal"],
                         e.data["lesson"].as_str().unwrap_or("")
                     ),
+                    "story.told" => format!(
+                        "story:{} was {}, by {}",
+                        e.data["handle"].as_str().unwrap_or("?"),
+                        if e.data["retold"] == true {
+                            "retold"
+                        } else {
+                            "told"
+                        },
+                        e.data["by"].as_str().unwrap_or("?")
+                    ),
+                    // The owner's canon, made or demoted (ADR 0122).
+                    "world.changed"
+                        if matches!(e.data["what"].as_str(), Some("promoted" | "demoted")) =>
+                    {
+                        format!(
+                            "the owner {} {}{}",
+                            if e.data["what"] == "promoted" {
+                                "made canon"
+                            } else {
+                                "demoted from canon"
+                            },
+                            e.data["address"].as_str().unwrap_or("?"),
+                            e.data["why"]
+                                .as_str()
+                                .filter(|w| !w.is_empty())
+                                .map(|w| format!(": {w}"))
+                                .unwrap_or_default()
+                        )
+                    }
                     "project.budget" => format!(
                         "project #{} {}: {}",
                         e.data["project"],
@@ -3619,6 +3653,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     }
                 }
             }
+            // A piece proposed for canon (ADR 0122): only the owner makes it so.
+            ("canon", "approve" | "decline") => self.decide_canon(found, decision == "approve")?,
             // The wing (ADR 0115): a lead's request to hire, and a branch to push.
             ("hire", "approve" | "decline") => self.decide_hire(found, decision == "approve")?,
             ("push", "approve" | "decline") => self.decide_push(found, decision == "approve")?,
@@ -4152,17 +4188,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(due)
     }
 
-    /// A turn of the lead's or the reviewer's notes a lesson the team will need again: one
-    /// line at the end of its task's goal's notes for the team, which every briefing under the
-    /// goal carries, as `- <lesson> (<member>, <day> <month>)`. Each is an event in the feed
-    /// and a notice on the owner's desk, so the owner sees, and can edit, what the team
-    /// learned. Returns the line.
+    /// A turn of the lead's or the reviewer's notes a lesson the team will need again. Since
+    /// stories (ADR 0122) it is kept as a story marked to retell, under a handle from its first
+    /// words, in its writer's area, and no longer in the goal's notes; `tell_story` is the tool
+    /// members are offered now, and this stays for a worker told of it before. Each is an event
+    /// in the feed and a notice on the owner's desk. Returns the story's handle.
     ///
     /// # Errors
     /// [`Refusal::TurnOver`] for a turn that has ended; [`Refusal::NotALessonKeeper`] for a
     /// member that is neither; [`EngineError::Unknown`] for a turn with no task, or no lesson;
-    /// [`Refusal::TooLong`] for a lesson past [`lessons::LESSON_MOST`]; [`Refusal::NotesFull`]
-    /// when the notes have no room for it.
+    /// [`Refusal::TooLong`] for a lesson past [`lessons::LESSON_MOST`].
     pub fn note_lesson(&self, run: RunId, lesson: &str) -> Done<String> {
         let _held = self.held();
         let run = self.running(run)?;
@@ -4176,18 +4211,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Err(EngineError::Unknown("lesson"));
         }
         let now = self.clock.now();
-        let line = lessons::line(lesson, &member.name, now, self.settings.offset_minutes)
-            .map_err(EngineError::Refused)?;
-        let notes = lessons::appended(&self.store.goal_note(goal)?, &line, GOAL_NOTE_MOST)
-            .map_err(EngineError::Refused)?;
-        self.store.set_goal_note(goal, &notes)?;
-        let said = line
-            .trim_start_matches("- ")
-            .rsplit_once(" (")
-            .map_or(line.as_str(), |(l, _)| l);
+        let handle = self.lesson_as_story(&run, &member, lesson)?;
+        let said = lesson.split_whitespace().collect::<Vec<_>>().join(" ");
         self.emit(
             EventKind::LessonNoted,
-            json!({ "goal": goal.0, "task": task.0, "member": member.id.0, "lesson": said }),
+            json!({ "goal": goal.0, "task": task.0, "member": member.id.0, "lesson": said,
+                    "story": handle }),
         )?;
         let text = format!("{} noted: {said}", member.name);
         let desk = self
@@ -4197,7 +4226,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::DeskAdded,
             json!({ "item": desk.0, "kind": "notice", "task": task.0 }),
         )?;
-        Ok(line)
+        Ok(handle)
     }
 
     // ---- what the office shows ------------------------------------------------------------
@@ -4382,6 +4411,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 item
             }).collect::<Vec<_>>(),
             "house_log": self.store.setting(HOUSE_LOG)?.unwrap_or_default(),
+            // The team's world (ADR 0122): its pages by stage, and its stories.
+            "world": self.world_shown()?,
             "projects": self.projects_shown(&tasks)?,
             // The turns that ended last, with their labels (ADR 0114).
             "recent_runs": self.recent_runs(30)?,
