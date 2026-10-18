@@ -948,7 +948,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         Ok(format!(
             "Your projects (you lead them; the sub-tasks of their tasks stay in them; \
-             propose_project for one more, with evidence):\n{lines}"
+             propose_project for one more, with evidence):\n{lines}\
+             Your projects' plans are yours to decide: hand their parts on with create_task, \
+             and close a task of your own in them as done yourself (set_status done, on \
+             evidence). Inside an approved project you need nobody's leave, the CEO's included.\n"
         ))
     }
 

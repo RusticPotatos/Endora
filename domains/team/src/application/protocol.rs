@@ -284,6 +284,12 @@ pub fn tools(role: Role) -> Value {
             &[]
         ),
         tool(
+            "huddle_view",
+            "Give your view on stuck work, when a huddle asks you (your turn says so): three sentences at most, on evidence from HQ's record. One short turn: give it and stop; the area's lead then decides.",
+            json!({ "task": task, "view": { "type": "string", "maxLength": crate::domain::ladder::VIEW_MOST }, "evidence": ids("What your view rests on: at least one.") }),
+            &["task", "view", "evidence"]
+        ),
+        tool(
             "run_gate",
             "Run the task's tests and build on a runner and get the result.",
             json!({ "task": task }),
@@ -327,6 +333,18 @@ pub fn tools(role: Role) -> Value {
                     "proposals": report_part("what you propose (make each with propose_project)"),
                 }),
                 &["moved", "stuck", "need", "proposals"],
+            ));
+            list.push(tool(
+                "decide_stuck",
+                "Decide stuck work in your area, when HQ asks you (your turn says it is stuck): proceed (say with what), drop, hand_to a member of your team (`to`), needs_ceo (money, a new goal, another area), or needs_board (the owner alone: money beyond the caps, a hire, the owner's repos). On evidence. Only a board matter reaches the owner, through the CEO.",
+                json!({
+                    "task": { "type": "integer", "description": "the task's number" },
+                    "decision": { "type": "string", "enum": ["proceed", "drop", "hand_to", "needs_ceo", "needs_board"] },
+                    "detail": { "type": "string", "description": "what, and why, in a sentence or two" },
+                    "to": { "type": "string", "description": "for hand_to: the member's name" },
+                    "evidence": ids("What the decision rests on: at least one."),
+                }),
+                &["task", "decision", "detail", "evidence"],
             ));
         }
     }
@@ -719,6 +737,39 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!("Project {} is {}.", project.0, now.name()))
+        }
+        "huddle_view" => {
+            let task = task_arg(args)?;
+            engine
+                .huddle_view_in(run.id, task, text_arg(args, "view")?, &evidence_flat(args)?)
+                .map_err(|e| said(&e))?;
+            Ok("Your view is with the huddle: your turn may end now.".to_owned())
+        }
+        "decide_stuck" => {
+            let task = task_arg(args)?;
+            let decision = args["decision"]
+                .as_str()
+                .and_then(crate::domain::ladder::Decision::from_name)
+                .ok_or_else(|| Refusal::NotADecisionForStuck.to_string())?;
+            let to = match args["to"].as_str().filter(|t| !t.trim().is_empty()) {
+                Some(name) => Some(member_named(engine, name)?.id),
+                None => None,
+            };
+            engine
+                .decide_stuck_in(
+                    run.id,
+                    task,
+                    decision,
+                    text_arg(args, "detail")?,
+                    to,
+                    &evidence_flat(args)?,
+                )
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "Task {} is decided ({}): it is in its thread.",
+                task.0,
+                decision.name().replace('_', " ")
+            ))
         }
         "set_strategy" => {
             let goal = args["goal"]

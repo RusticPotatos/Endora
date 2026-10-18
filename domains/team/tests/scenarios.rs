@@ -1566,6 +1566,91 @@ fn daily_review(w: &mut Office, name: String) {
     w.hq.fire_routine(routine).expect("the review runs");
 }
 
+/// Time passes on a task nobody comes back to, as the tick sees it: what is queued starts and
+/// ends, ten minutes go by, and again, until the ladder climbs a rung (at most four rounds).
+#[when(expr = "{string} sits with nobody coming back to it")]
+fn sits(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let climbed = |w: &Office| {
+        w.hq.store()
+            .events_after(0)
+            .expect("the store answers")
+            .iter()
+            .filter(|e| {
+                matches!(e.kind.as_str(), "stuck.climbed" | "huddle.called")
+                    && e.data["task"] == task.0
+            })
+            .count()
+    };
+    let before = climbed(w);
+    for _ in 0..4 {
+        w.hq.tick().expect("the tick runs");
+        w.hq.tick().expect("the tick runs");
+        for started in w.hq.runner().started() {
+            w.hq.runner().finish(started.run, true);
+        }
+        w.hq.tick().expect("the tick runs");
+        w.clock.0.fetch_add(
+            endora_team::application::engine::STRANDED_AFTER_MS + 1,
+            Ordering::SeqCst,
+        );
+        w.hq.tick().expect("the tick runs");
+        if climbed(w) > before {
+            return;
+        }
+    }
+    panic!("{title} never climbed the ladder");
+}
+
+#[then(expr = "{word} is asked to decide {string}")]
+fn asked_to_decide(w: &mut Office, name: String, title: String) {
+    let (member, task) = (w.member(&name), w.task(&title));
+    let wake = w.last_wake();
+    assert_eq!(
+        (wake.member, wake.task, wake.reason),
+        (member, Some(task), WakeReason::Decide),
+        "{wake:?}"
+    );
+}
+
+#[then(expr = "a huddle is called on {string}")]
+fn huddle_called(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    assert!(
+        w.hq.store()
+            .events_after(0)
+            .expect("the store answers")
+            .iter()
+            .any(|e| e.kind == "huddle.called" && e.data["task"] == task.0),
+        "no huddle on {title}"
+    );
+}
+
+/// A member's one short turn in a huddle: its view, on the task as evidence; then it ends.
+#[when(expr = "{word} gives the view {string} on {string}")]
+fn gives_view(w: &mut Office, name: String, view: String, title: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "huddle_view",
+        &json!({ "task": task.0, "view": view, "evidence": [format!("task {}", task.0)] }),
+    )
+    .expect("the member is heard");
+    turn_ends(w, name);
+}
+
+#[when(regex = r#"^(\w+) decides "(.+)": (\w+), "(.+)"$"#)]
+fn decides_stuck(w: &mut Office, name: String, title: String, decision: String, detail: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "decide_stuck",
+        &json!({ "task": task.0, "decision": decision, "detail": detail,
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .expect("the lead decides");
+}
+
 #[when(expr = "{word} checks back in an hour")]
 fn checks_back(w: &mut Office, name: String) {
     w.use_tool(

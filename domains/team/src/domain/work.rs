@@ -571,6 +571,14 @@ pub enum Refusal {
     EmptyReport,
     /// Only a lead reports on its area, in its report's own turn.
     NotAReport,
+    /// A huddle's view is three sentences at most.
+    ViewTooLong,
+    /// That member is not asked for a view on that task's huddle, or gave it already.
+    NotInTheHuddle,
+    /// Only the lead of the task's area decides stuck work, and only once it is stuck.
+    NotStuckForYou,
+    /// A decision that is not one of proceed, drop, hand_to, needs_ceo or needs_board.
+    NotADecisionForStuck,
 }
 
 impl fmt::Display for Refusal {
@@ -821,6 +829,16 @@ impl fmt::Display for Refusal {
             ),
             Self::NotAReport => f.write_str(
                 "report_area is a lead's, in the turn of its own \"State of my area\" task",
+            ),
+            Self::ViewTooLong => f.write_str("a huddle's view is three sentences at most"),
+            Self::NotInTheHuddle => f.write_str(
+                "you are not asked for a view on that task's huddle, or you gave yours already",
+            ),
+            Self::NotStuckForYou => f.write_str(
+                "only the lead of the task's area decides stuck work, once HQ has found it stuck",
+            ),
+            Self::NotADecisionForStuck => f.write_str(
+                "`decision` is proceed, drop, hand_to (with `to`), needs_ceo or needs_board",
             ),
         }
     }

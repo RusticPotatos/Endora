@@ -116,16 +116,55 @@ fn stranded_assigned_work_gets_one_recovery_wake_after_ten_minutes() {
 }
 
 #[test]
-fn still_stranded_after_its_recovery_it_goes_on_the_desk_once_and_stays_assigned() {
+fn still_stranded_after_its_recovery_it_climbs_the_ladder_one_rung_at_a_time_and_stays_assigned() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, dev, task) = stranded(&clock);
+    let lead = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == Role::Lead)
+        .unwrap()
+        .id;
+    // What a tick queued starts on the next: two ticks, then every turn that started ends.
+    let finish_all = || {
+        hq.tick().unwrap();
+        hq.tick().unwrap();
+        for c in hq.runner().started() {
+            hq.runner().finish(c.run, true);
+        }
+        hq.tick().unwrap();
+    };
+    later(&clock, STRANDED_AFTER_MS + 1);
+    finish_all();
+    assert_eq!(stuck(&hq, task), 0, "not ten minutes since the recovery");
+    let reasons = |member: MemberId| -> Vec<WakeReason> {
+        hq.wakes()
+            .unwrap()
+            .into_iter()
+            .filter(|w| w.member == member && w.task == Some(task))
+            .map(|w| w.reason)
+            .collect()
+    };
+    // The first rung: its area's lead decides.
     later(&clock, STRANDED_AFTER_MS + 1);
     hq.tick().unwrap();
+    assert_eq!(reasons(lead), [WakeReason::Decide]);
+    finish_all();
+    // Still stuck: a huddle hears who touched it, then the lead decides.
+    later(&clock, STRANDED_AFTER_MS + 1);
     hq.tick().unwrap();
-    let recovery = hq.runner().started().pop().unwrap();
-    hq.runner().finish(recovery.run, true);
-    hq.tick().unwrap();
-    assert_eq!(stuck(&hq, task), 0, "not ten minutes since the recovery");
+    assert!(
+        reasons(dev).contains(&WakeReason::Huddle),
+        "{:?}",
+        reasons(dev)
+    );
+    finish_all();
+    assert_eq!(reasons(lead), [WakeReason::Decide, WakeReason::Decide]);
+    finish_all();
+    assert_eq!(stuck(&hq, task), 0, "the lead and a huddle come first");
+    // Still stuck, with no CEO to climb to: the owner's desk, as before there was one, once.
     later(&clock, STRANDED_AFTER_MS + 1);
     hq.tick().unwrap();
     assert_eq!(stuck(&hq, task), 1);
@@ -134,7 +173,7 @@ fn still_stranded_after_its_recovery_it_goes_on_the_desk_once_and_stays_assigned
         hq.tick().unwrap();
     }
     assert_eq!(stuck(&hq, task), 1, "once");
-    assert_eq!(recoveries(&hq, task).len(), 1, "and no more wakes");
+    assert_eq!(recoveries(&hq, task).len(), 1, "and no more recovery wakes");
     let after = hq.store().task(task).unwrap().unwrap();
     assert_eq!(after.assignee, Some(dev), "never handed to anyone else");
 }

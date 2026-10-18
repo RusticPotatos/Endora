@@ -1237,10 +1237,13 @@ mod tests {
         // projects, accepts tested work, hands a subordinate's task on, asks the owner to hire
         // and reads a task's documents and the team's library, too, and asks for staff when a
         // project has a backlog. Every member keeps a notebook of its own, too (ADR 0118):
-        // note, forget, read and check. And it reports on its area (ADR 0120).
-        assert_eq!(names.len(), 22, "{names:?}");
+        // note, forget, read and check. And it reports on its area, decides its area's stuck
+        // work, and gives its view in a huddle (ADR 0120).
+        assert_eq!(names.len(), 24, "{names:?}");
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
-        assert!(names.contains(&"report_area"));
+        for added in ["report_area", "decide_stuck", "huddle_view"] {
+            assert!(names.contains(&added), "{added}");
+        }
         assert!(names.contains(&"request_staff") && names.contains(&"note"));
         assert!(
             names.contains(&"read_doc"),

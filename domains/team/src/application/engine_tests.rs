@@ -365,7 +365,7 @@ fn a_turn_that_goes_on_too_long_is_stopped_as_timed_out() {
 }
 
 #[test]
-fn doing_without_a_turn_gets_one_nudge_then_goes_to_the_desk_as_stuck() {
+fn doing_without_a_turn_gets_one_nudge_then_climbs_to_its_lead_never_the_desk() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
@@ -376,13 +376,44 @@ fn doing_without_a_turn_gets_one_nudge_then_goes_to_the_desk_as_stuck() {
     assert_eq!(report.nudged, 1);
     let nudge = hq.wakes().unwrap();
     assert_eq!(nudge.last().unwrap().reason, WakeReason::Recovery);
-    // The nudged turn starts and ends without moving the task.
+    // The nudged turn starts and ends without moving the task; it sits ten minutes more.
     hq.tick().unwrap();
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::Doing,
+        "a lead woken to decide is a turn, never a reflex"
+    );
+    clock.forward(super::engine::STRANDED_AFTER_MS + 1);
     hq.tick().unwrap();
     let after = hq.store().task(task).unwrap().unwrap();
     assert_eq!(after.status, TaskStatus::Blocked);
-    let desk = hq.store().desk().unwrap();
-    assert_eq!(desk.last().unwrap().kind, "stuck");
+    // Stuck work climbs the ladder (ADR 0120): its area's lead decides, and the desk is empty.
+    assert!(hq.store().desk().unwrap().is_empty());
+    let asked = hq.wakes().unwrap().pop().unwrap();
+    assert_eq!(
+        (asked.member, asked.task, asked.reason),
+        (t.lead, Some(task), WakeReason::Decide)
+    );
+}
+
+#[test]
+fn with_no_lead_at_work_stuck_work_is_on_the_desk_as_before() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    hq.pause(t.lead, true).unwrap();
+    hq.runner().script(t.dev, Script::Succeeds);
+    let task = task_for(&hq, t.goal, None, "Pick a database");
+    hq.claim(t.dev, task).unwrap();
+    for _ in 0..3 {
+        hq.tick().unwrap();
+    }
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::Blocked
+    );
+    assert_eq!(hq.store().desk().unwrap().last().unwrap().kind, "stuck");
 }
 
 #[test]
@@ -1131,7 +1162,9 @@ fn the_owner_decides_each_desk_item_once() {
             .is_empty()
     );
 
-    // Stuck work, tried again: back to its member with a fresh nudge.
+    // Stuck work with no lead at work to climb to, tried again: back to its member with a
+    // fresh nudge.
+    hq.pause(t.lead, true).unwrap();
     hq.runner().script(t.dev, Script::Succeeds);
     let task = task_for(&hq, t.goal, None, "Pick a database");
     hq.claim(t.dev, task).unwrap();

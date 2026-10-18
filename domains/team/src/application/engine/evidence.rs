@@ -501,6 +501,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let current = self.task(task)?;
         self.ceo_keeps_out(turn.member, &current)?;
         let check = to == TaskStatus::Done && self.routine_of(task)?.is_some();
+        if to == TaskStatus::Done && !check && self.leads_own(&current, turn.member)? {
+            return self.lead_closes_own(&current, &turn, reason, cited);
+        }
         let judged = to == TaskStatus::InReview || (check && !current.criteria.is_empty());
         let holds = current.owner == Some(turn.member)
             || self.above_in_chain(turn.member, current.owner.or(current.assignee))?;
@@ -527,6 +530,53 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(())
+    }
+
+    /// Whether `task` is its project's lead's own work, held by `member` who leads it, with no
+    /// branch on it (a branch goes through the wing's gate and the tester): a plan, a decision.
+    fn leads_own(&self, task: &Task, member: MemberId) -> Done<bool> {
+        if task.owner != Some(member) || task.project.is_none() {
+            return Ok(false);
+        }
+        if self.area_lead(task)?.is_none_or(|l| l.id != member) {
+            return Ok(false);
+        }
+        Ok(!self.store.branches()?.iter().any(|b| b.task == task.id))
+    }
+
+    /// The project's lead closes its own work as done, on its own acceptance with evidence
+    /// (ADR 0120): no tester's round, nobody's leave. Judged by the one rule, its time-bound
+    /// criteria waited.
+    fn lead_closes_own(
+        &self,
+        task: &Task,
+        turn: &Run,
+        reason: &str,
+        cited: &[Vec<Ref>],
+    ) -> Done<()> {
+        self.judge_work(
+            task,
+            cited,
+            &Judged {
+                fresh: &[turn.id],
+                own_reading: None,
+            },
+        )?;
+        self.waited_for(task)?;
+        self.keep_cited(task.id, turn, ACCEPTED, cited)?;
+        self.store.set_task_status(task.id, TaskStatus::Done)?;
+        let said = self.evidence_said(&cited.concat())?;
+        self.post_held_lock(
+            Author::Member(turn.member),
+            task.id,
+            &format!(
+                "{} → done: {reason} (the project's lead decides its own work)\nEvidence: {said}",
+                task.status.name()
+            ),
+        )?;
+        self.mark_progress(turn.member, task.id)?;
+        self.emit_status(task, TaskStatus::Done)?;
+        self.after_finishing(task)
     }
 
     /// A turn hands work on (see [`Engine::add_task`]): work handed to another member says what
@@ -876,11 +926,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// lab's state fourteen turns in a row to no effect; and on #667 a lead re-read only the
     /// status its turn before had read, four times). A first reading always shows something.
     pub(super) fn shown_nothing(&self, member: MemberId, task: TaskId) -> Done<Vec<(RunId, bool)>> {
+        // A huddle's short turn is the member's view, not its work on the task (ADR 0120).
+        let huddles: Vec<crate::domain::WakeId> = self
+            .store
+            .wakes()?
+            .into_iter()
+            .filter(|w| w.reason == WakeReason::Huddle)
+            .map(|w| w.id)
+            .collect();
         let mut runs: Vec<Run> = self
             .store
             .runs()?
             .into_iter()
             .filter(|r| r.member == member && r.task == Some(task) && r.label.is_some())
+            .filter(|r| !huddles.contains(&r.wake))
             .collect();
         runs.sort_by_key(|r| r.id);
         let mut shown = Vec::new();

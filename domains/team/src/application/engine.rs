@@ -32,6 +32,7 @@ use crate::domain::{docs, house};
 mod allowance;
 mod areas;
 mod evidence;
+mod ladder;
 mod notebook;
 mod planning;
 mod projects;
@@ -1573,8 +1574,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
     /// thread, as it stands.
     fn review_asked(&self, task: &Task) -> Done<()> {
-        // Sent back three times: this round is the owner's (ADR 0114).
-        if crate::domain::evidence::to_the_owner(self.sent_back(task.id)?) {
+        // Sent back three times: a huddle of its area decides it (ADR 0120, amending 0114's
+        // owner's round); the owner's only with no lead to call one.
+        let decided = matches!(
+            self.rung_of(task.id)?,
+            Some((crate::domain::ladder::Rung::Decided, _))
+        );
+        if !decided && crate::domain::evidence::to_the_owner(self.sent_back(task.id)?) {
+            if let Some(lead) = self.area_lead(task)? {
+                let rounds = self.sent_back(task.id)?;
+                return self.call_huddle(task, &lead, &format!("sent back {rounds} times"));
+            }
             return self.rounds_to_the_owner(task);
         }
         match self.checkers_of(task)? {
@@ -2033,6 +2043,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.store.set_nudged(task, false)?;
             }
             self.release_held(task)?;
+            // A huddle hears each member once (ADR 0120).
+            self.after_huddle_turn(&run)?;
         }
         if status == RunStatus::Succeeded && label.is_some() {
             self.after_nothing_shown(&run)?;
@@ -2294,6 +2306,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.reason_for(run)? == WakeReason::Directed.name() {
             told.push_str(&self.direction_said(member, task.id)?);
         }
+        told.push_str(&self.ladder_said(member, run, &task)?);
         if member.role == Role::Ceo {
             if let Some(lead) = self.area_lead(&task)? {
                 told.push_str(&format!(
@@ -2327,7 +2340,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str(match member.role {
             Role::Reviewer => ", review, read_document, read_doc. ",
             Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, read_document, read_doc. "
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, read_document, read_doc. "
             }
             _ => ", read_document, read_doc. ",
         });
@@ -2627,6 +2640,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Once a day, on the day's first tick: members with nothing to do are offered to the
         // owner for furlough (ADR 0118).
         self.idle_look()?;
+        // A huddle whose views are late goes to its lead to decide (ADR 0120).
+        self.huddles_due()?;
         // Check-backs whose time came wake their member, while the task is still open.
         for back in self.store.check_backs()? {
             if back.status != CheckBackStatus::Pending || back.due_at > now {
@@ -2774,28 +2789,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 report.nudged += 1;
                 continue;
             }
+            // In a lead's area it climbs the ladder (ADR 0120), once it has sat as long as
+            // stranded work does: a lead woken to decide is a turn, never a reflex.
+            if self.area_lead(task)?.is_some() && !self.idle_for(task.id, STRANDED_AFTER_MS)? {
+                continue;
+            }
             self.store.set_task_status(task.id, TaskStatus::Blocked)?;
-            let desk = self.store.add_desk(
-                "stuck",
-                Some(task.id),
-                None,
-                None,
-                &format!(
-                    "Stuck: {}. It was nudged once and did not move.",
-                    task.title
-                ),
-                now,
-            )?;
             self.emit(
                 EventKind::TaskChanged,
                 json!({ "task": task.id.0, "goal": task.goal.0, "owner": owner.0,
                         "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
             )?;
-            self.emit(
-                EventKind::DeskAdded,
-                json!({ "item": desk.0, "kind": "stuck", "task": task.id.0 }),
-            )?;
             report.stuck += 1;
+            // Stuck work climbs the ladder (ADR 0120); the owner's desk only with no lead.
+            if !self.climb_stuck(task, "it was nudged once and did not move")? {
+                self.stuck_on_the_desk(task, "It was nudged once and did not move.")?;
+            }
         }
 
         // 5b. Open work handed to a member that nothing will bring it back to: no turn queued,
@@ -3645,28 +3654,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.wake_held_lock(member, Some(task.id), WakeReason::AssignmentRecovery)?;
                 continue;
             }
-            self.store.set_task_status(task.id, TaskStatus::Blocked)?;
-            let item = self.store.add_desk(
-                "stuck",
-                Some(task.id),
-                None,
-                None,
-                &format!(
-                    "Stuck: {}. It was handed on, woken once, and nobody came back to it.",
-                    task.title
-                ),
-                now,
-            )?;
-            self.emit(
-                EventKind::TaskChanged,
-                json!({ "task": task.id.0, "goal": task.goal.0, "owner": task.owner.map(|o| o.0),
-                        "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
-            )?;
-            self.emit(
-                EventKind::DeskAdded,
-                json!({ "item": item.0, "kind": "stuck", "task": task.id.0 }),
-            )?;
+            if task.status != TaskStatus::Blocked {
+                self.store.set_task_status(task.id, TaskStatus::Blocked)?;
+                self.emit(
+                    EventKind::TaskChanged,
+                    json!({ "task": task.id.0, "goal": task.goal.0, "owner": task.owner.map(|o| o.0),
+                            "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
+                )?;
+            }
             stuck += 1;
+            // Stuck work climbs the ladder (ADR 0120); the owner's desk only with no lead.
+            let why = "it was handed on, woken once, and nobody came back to it";
+            if !self.climb_stuck(task, why)? {
+                self.stuck_on_the_desk(
+                    task,
+                    "It was handed on, woken once, and nobody came back to it.",
+                )?;
+            }
         }
         Ok((nudged, stuck))
     }

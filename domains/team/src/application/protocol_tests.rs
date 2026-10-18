@@ -169,7 +169,9 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(names.len(), 15, "{names:?}");
+    // A huddle on stuck work asks every member's view (ADR 0120).
+    assert_eq!(names.len(), 16, "{names:?}");
+    assert!(names.contains(&"huddle_view".to_owned()));
     assert!(names.contains(&"read_document".to_owned()));
     // Every role keeps a notebook of its own (ADR 0118).
     assert!(
@@ -191,7 +193,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(reviewers.len(), 16, "{reviewers:?}");
+    assert_eq!(reviewers.len(), 17, "{reviewers:?}");
     assert!(
         !reviewers.contains(&"create_task".to_owned()),
         "the tester passes or sends back, and never makes work"

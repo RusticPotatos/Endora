@@ -101,6 +101,12 @@ pub enum EventKind {
     StrategySet,
     /// A lead reported on its area (ADR 0120).
     AreaReported,
+    /// Stuck work climbed a rung of the ladder (ADR 0120).
+    StuckClimbed,
+    /// A huddle was called on stuck work: the task and its members (ADR 0120).
+    HuddleCalled,
+    /// A lead decided stuck work, in a huddle or on its own (ADR 0120).
+    HuddleDecided,
 }
 
 impl EventKind {
@@ -157,6 +163,9 @@ impl EventKind {
             Self::NoteForgotten => "note.forgotten",
             Self::StrategySet => "goal.strategy",
             Self::AreaReported => "area.reported",
+            Self::StuckClimbed => "stuck.climbed",
+            Self::HuddleCalled => "huddle.called",
+            Self::HuddleDecided => "huddle.decided",
         }
     }
 }

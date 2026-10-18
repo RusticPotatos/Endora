@@ -53,6 +53,11 @@ pub enum WakeReason {
     /// The CEO gave the lead of the task's area a direction (ADR 0120): the lead decides what
     /// to do with it. Kept last, apart from the rest, for an easy merge.
     Directed,
+    /// Stuck work climbed the ladder to this member (ADR 0120): the area's lead, to decide;
+    /// or the CEO, when the lead said it needs the CEO.
+    Decide,
+    /// A huddle on stuck work asks this member for its view, in one short turn (ADR 0120).
+    Huddle,
 }
 
 impl WakeReason {
@@ -79,6 +84,8 @@ impl WakeReason {
             Self::AcceptanceAsked => "acceptance_asked",
             Self::CheckDone => "check_done",
             Self::Directed => "directed",
+            Self::Decide => "decide",
+            Self::Huddle => "huddle",
         }
     }
 
@@ -115,6 +122,8 @@ impl WakeReason {
                 | Self::QuestionAnswered
                 | Self::CheckDone
                 | Self::Directed
+                | Self::Decide
+                | Self::Huddle
         )
     }
 
@@ -152,6 +161,8 @@ impl WakeReason {
             Self::AcceptanceAsked,
             Self::CheckDone,
             Self::Directed,
+            Self::Decide,
+            Self::Huddle,
         ]
         .into_iter()
         .find(|r| r.name() == name)

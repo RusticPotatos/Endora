@@ -758,7 +758,7 @@ fn the_testers_check_of_a_draft_reads_the_receipts_it_cites_and_the_lead_goes_up
 }
 
 #[test]
-fn work_sent_back_three_times_is_the_owners_on_its_fourth_submission() {
+fn work_sent_back_three_times_goes_to_a_huddle_on_its_fourth_submission_not_the_owner() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq, false, true);
@@ -792,25 +792,119 @@ fn work_sent_back_three_times_is_the_owners_on_its_fourth_submission() {
         .unwrap();
         end(&hq, &clock, &tester);
     }
-    let rounds: Vec<_> = hq
+    // The owner's desk is not the next round (ADR 0120): a huddle of the area is.
+    assert!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .all(|d| d.kind != "rounds"),
+        "{:?}",
+        hq.store().desk().unwrap()
+    );
+    let called = hq
         .store()
-        .desk()
+        .events_after(0)
         .unwrap()
         .into_iter()
-        .filter(|d| d.kind == "rounds")
-        .collect();
-    assert_eq!(rounds.len(), 1);
-    assert!(
-        rounds[0].text.contains("Sent back 3 times"),
-        "{}",
-        rounds[0].text
-    );
-    assert!(rounds[0].text.contains("- Grace: not yet (3)"));
-    assert_ne!(last_wake(&hq).0, grace, "no fourth round for the tester");
-    hq.decide(rounds[0].id, "accept").unwrap();
+        .find(|e| e.kind == "huddle.called")
+        .expect("a huddle is called");
     assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Done
+        called.data["members"],
+        json!([t.lead.0, t.dev.0, grace.0]),
+        "the lead, then who touched it, newest first"
+    );
+    assert!(
+        called.data["why"]
+            .as_str()
+            .unwrap()
+            .contains("sent back 3 times")
+    );
+    // Each is heard once, in one short turn of its own: Linus, mid-turn when it was called, is
+    // asked again once his turn ends.
+    for (who, view) in [
+        (
+            grace,
+            "It still fails the second criterion. Sonarr restarts every hour.",
+        ),
+        (
+            t.dev,
+            "The restarts come from its memory limit. Raising it would hold.",
+        ),
+    ] {
+        let context = turn(&hq, who);
+        assert!(
+            context
+                .told
+                .contains("A huddle on this task, which is stuck"),
+            "{}",
+            context.told
+        );
+        use_tool(
+            &hq,
+            &context,
+            "huddle_view",
+            &json!({ "task": task.0, "view": view, "evidence": [format!("task {}", task.0)] }),
+        )
+        .unwrap();
+        assert_eq!(
+            use_tool(
+                &hq,
+                &context,
+                "huddle_view",
+                &json!({ "task": task.0, "view": "Again.", "evidence": [format!("task {}", task.0)] }),
+            ),
+            Err(Refusal::NotInTheHuddle.to_string()),
+            "one view each"
+        );
+        end(&hq, &clock, &context);
+    }
+    // Then the lead decides, on what was said.
+    let ada = turn(&hq, t.lead);
+    for said in [
+        "Your huddle's views:",
+        "- Grace: It still fails the second criterion. Sonarr restarts every hour.",
+        "- Linus: The restarts come from its memory limit.",
+    ] {
+        assert!(ada.told.contains(said), "{said}\n---\n{}", ada.told);
+    }
+    use_tool(
+        &hq,
+        &ada,
+        "decide_stuck",
+        &json!({ "task": task.0, "decision": "proceed",
+                 "detail": "raise sonarr's memory limit, then resubmit",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    let docs = hq.store().documents_of(task).unwrap();
+    let huddle = docs
+        .iter()
+        .find(|d| d.title == format!("Huddle on #{}", task.0))
+        .unwrap();
+    assert!(
+        huddle.text.contains("- Grace: It still fails"),
+        "{}",
+        huddle.text
+    );
+    assert!(
+        huddle
+            .text
+            .contains("Decided by Ada: proceed: raise sonarr's memory limit")
+    );
+    assert!(
+        hq.store()
+            .events_after(0)
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "huddle.decided" && e.data["decision"] == "proceed")
+    );
+    let now = hq.store().task(task).unwrap().unwrap();
+    assert_eq!((now.status, now.assignee), (TaskStatus::Todo, Some(t.dev)));
+    assert_eq!(last_wake(&hq), (t.dev, Some(task), WakeReason::Assigned));
+    assert!(
+        hq.store().desk().unwrap().is_empty(),
+        "nothing on the owner's desk"
     );
 }
 
@@ -1030,25 +1124,21 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
     clock.0.fetch_add(2 * 60_000, Ordering::SeqCst);
     let nudged = turn(&hq, t.dev);
     end(&hq, &clock, &nudged);
+    clock
+        .0
+        .fetch_add(super::engine::STRANDED_AFTER_MS + 1, Ordering::SeqCst);
+    hq.tick().unwrap();
     assert_eq!(
         hq.store().task(task).unwrap().unwrap().status,
         TaskStatus::Blocked
     );
-    // The CEO does not close an area's work (ADR 0120): she directs its lead.
-    hq.wake(ceo, Some(task), WakeReason::Assigned).unwrap();
-    let mara = turn(&hq, ceo);
-    assert_eq!(
-        use_tool(
-            &hq,
-            &mara,
-            "set_status",
-            &json!({ "task": task.0, "status": "done", "reason": "deluge is back" }),
-        ),
-        Err(Refusal::CeoDirects("Ada".to_owned()).to_string())
+    // Stuck, it climbs to its area's lead, never the CEO (ADR 0120): Ada, above Linus,
+    // confirms the recovery herself, done on her own fresh reading.
+    assert_eq!(last_wake(&hq), (t.lead, Some(task), WakeReason::Decide));
+    assert!(
+        hq.store().wakes().unwrap().iter().all(|w| w.member != ceo),
+        "the CEO is not woken for it"
     );
-    end(&hq, &clock, &mara);
-    // Ada, above Linus, confirms the recovery herself: done on her own fresh reading.
-    hq.wake(t.lead, Some(task), WakeReason::Assigned).unwrap();
     let ada = turn(&hq, t.lead);
     let close = |evidence: Value| {
         use_tool(
