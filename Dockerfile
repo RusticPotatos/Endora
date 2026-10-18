@@ -208,6 +208,9 @@ RUN apt-get update \
 # The lab's checks and Claude Code, from their stages above (ADR 0115, 0117).
 COPY --from=lab-checks /opt/venv /opt/venv
 COPY --from=claude-code /usr/local/bin/claude /usr/local/bin/claude
+# Fail the build, not the first check job, if a check tool did not make it across the COPY.
+RUN /opt/venv/bin/ansible-playbook --version && /opt/venv/bin/ansible-lint --version \
+    && /opt/venv/bin/yamllint --version
 # Its settings, read-only and above any other (managed): no updates, telemetry, error reports,
 # feedback or other traffic but the model's; no experimental betas; the five-minute cache the
 # relay meters; no attribution of its own (the wing's commits carry Endora's trailer); the web
@@ -261,6 +264,9 @@ RUN apt-get update \
     && useradd --uid 10001 --home-dir /work --no-create-home --shell /bin/bash bench
 COPY --from=lab-checks /opt/venv /opt/venv
 COPY --from=claude-code /usr/local/bin/claude /usr/local/bin/claude
+# Fail the build, not the first check job, if a check tool did not make it across the COPY.
+RUN /opt/venv/bin/ansible-playbook --version && /opt/venv/bin/ansible-lint --version \
+    && /opt/venv/bin/yamllint --version
 COPY --from=bench-install /opt/harness /opt/harness
 RUN install -d -m 755 /etc/claude-code
 COPY --chmod=444 deploy/bench/managed-settings.json /etc/claude-code/managed-settings.json
