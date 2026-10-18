@@ -468,6 +468,15 @@ pub enum Refusal {
         /// What it says.
         text: String,
     },
+    /// A time-bound criterion that has not waited its time yet (ADR 0120).
+    TooSoon {
+        /// Which criterion, from 1.
+        criterion: usize,
+        /// What it says.
+        text: String,
+        /// When it may be shown, by the owner's clock: `00:44`.
+        until: String,
+    },
     /// Evidence from another piece of work than this one.
     NotThisWork(String),
     /// A receipt of a call that was refused or failed: it shows nothing.
@@ -549,6 +558,27 @@ pub enum Refusal {
     Furloughed(String),
     /// A notebook holds as many notes as it may.
     NotebookFull,
+    /// The task is in a lead's area (named): the CEO does not claim, move, close, accept or
+    /// send back its work, but directs the lead (ADR 0120).
+    CeoDirects(String),
+    /// The CEO hands work to a lead only; the lead hands it on in its area (ADR 0120).
+    CeoToLeads,
+    /// The task is in no lead's area: there is nobody to direct.
+    NoAreaLead,
+    /// A strategy change that gives no part.
+    NotAStrategy,
+    /// An area report that says nothing.
+    EmptyReport,
+    /// Only a lead reports on its area, in its report's own turn.
+    NotAReport,
+    /// A huddle's view is three sentences at most.
+    ViewTooLong,
+    /// That member is not asked for a view on that task's huddle, or gave it already.
+    NotInTheHuddle,
+    /// Only the lead of the task's area decides stuck work, and only once it is stuck.
+    NotStuckForYou,
+    /// A decision that is not one of proceed, drop, hand_to, needs_ceo or needs_board.
+    NotADecisionForStuck,
     /// The rules of the office refuse a change (ADR 0119).
     Office(super::office::Refused),
     /// A game of chess refuses a move or a challenge (ADR 0121).
@@ -653,7 +683,9 @@ impl fmt::Display for Refusal {
                 names.join(", ")
             ),
             Self::NotAProjectLead => f.write_str("a project's lead is a lead or the CEO"),
-            Self::OnlyLeadsPropose => f.write_str("only a lead or the CEO proposes a project"),
+            Self::OnlyLeadsPropose => f.write_str(
+                "only a lead proposes a project; the CEO decides proposals with decide_project",
+            ),
             Self::OtherGoal => f.write_str(
                 "that project serves another goal: a task's or a routine's project serves its goal",
             ),
@@ -700,6 +732,16 @@ impl fmt::Display for Refusal {
                 "criterion {criterion} ({text}) is about the lab now: cite a reading from this \
                  turn (take one now, e.g. homelab_status, and cite its receipt), not an older \
                  one or someone's word"
+            ),
+            Self::TooSoon {
+                criterion,
+                text,
+                until,
+            } => write!(
+                f,
+                "criterion {criterion} ({text}) needs time to show: wait until {until} (owner's \
+                 time), then cite a fresh reading. Set a check_back for then, rather than \
+                 closing it now"
             ),
             Self::NotThisWork(what) => {
                 write!(f, "{what} is not from this task's work: cite this work's own")
@@ -813,6 +855,37 @@ impl fmt::Display for Refusal {
                 f,
                 "your notebook holds {} notes, the most it may: forget some that are wrong or no longer true first",
                 super::notebook::NOTES_MOST
+            ),
+            Self::CeoDirects(lead) => write!(
+                f,
+                "this is {lead}'s area: the CEO does not claim, move, close, accept or send back \
+                 its work. Give {lead} a direction with direct (task, direction, evidence), and \
+                 {lead} decides"
+            ),
+            Self::CeoToLeads => f.write_str(
+                "the CEO hands work to a lead only, and the lead hands it on in its area",
+            ),
+            Self::NoAreaLead => f.write_str(
+                "that task is in no lead's area: there is no lead at work to direct",
+            ),
+            Self::NotAStrategy => f.write_str(
+                "a strategy change gives at least one of purpose, success, measures, bets or not_now",
+            ),
+            Self::EmptyReport => f.write_str(
+                "a report says at least one of moved, stuck, need or proposals",
+            ),
+            Self::NotAReport => f.write_str(
+                "report_area is a lead's, in the turn of its own \"State of my area\" task",
+            ),
+            Self::ViewTooLong => f.write_str("a huddle's view is three sentences at most"),
+            Self::NotInTheHuddle => f.write_str(
+                "you are not asked for a view on that task's huddle, or you gave yours already",
+            ),
+            Self::NotStuckForYou => f.write_str(
+                "only the lead of the task's area decides stuck work, once HQ has found it stuck",
+            ),
+            Self::NotADecisionForStuck => f.write_str(
+                "`decision` is proceed, drop, hand_to (with `to`), needs_ceo or needs_board",
             ),
         }
     }

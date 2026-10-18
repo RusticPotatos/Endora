@@ -17,7 +17,7 @@ use crate::domain::evidence::{
     self, AfterNothing, CallReceipt, Checkers, Criterion, Found, Judged, Label, Ref, TurnFacts,
 };
 use crate::domain::{
-    EventKind, Member, MemberId, Refusal, Role, RunId, RunStatus, Task, TaskId, TaskStatus,
+    EventKind, Member, MemberId, Millis, Refusal, Role, RunId, RunStatus, Task, TaskId, TaskStatus,
     WakeReason,
 };
 
@@ -185,6 +185,43 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         evidence::judge(&task.criteria, &found, how).map_err(EngineError::Refused)
     }
 
+    /// The work's last change, which a time-bound criterion waits from (ADR 0120): its latest
+    /// act that succeeded (a restart's receipt) on the task or under it, or the latest alarm
+    /// about the task, whichever is later; `None` when neither happened.
+    fn last_change(&self, task: TaskId) -> Done<Option<Millis>> {
+        let work = self.work_of(task)?;
+        let mut latest: Option<Millis> = None;
+        for run in self.store.runs()? {
+            if !run.task.is_some_and(|t| work.contains(&t)) {
+                continue;
+            }
+            for receipt in self.store.call_receipts_of(run.id)? {
+                if receipt.ok && receipt.act && receipt.tool != "push" {
+                    latest = latest.max(Some(receipt.at));
+                }
+            }
+        }
+        for event in self.store.events_after(0)? {
+            let alarm = (event.kind == "routine.fired" && event.data["firing"] == "alarm")
+                || (event.kind == "routine.posted" && event.data["recovered"] != true);
+            if alarm && event.data["task"].as_i64() == Some(task.0) {
+                latest = latest.max(Some(event.at));
+            }
+        }
+        Ok(latest)
+    }
+
+    /// Whether `task`'s time-bound criteria have waited their time, now.
+    pub(super) fn waited_for(&self, task: &Task) -> Done<()> {
+        evidence::waited(
+            &task.criteria,
+            self.last_change(task.id)?,
+            self.clock.now(),
+            self.settings.offset_minutes,
+        )
+        .map_err(EngineError::Refused)
+    }
+
     /// Judges evidence for a decision or a message up: at least one reference, each in HQ's
     /// record.
     pub(super) fn judge_decision(&self, cited: &[Ref], turn: RunId) -> Done<()> {
@@ -332,6 +369,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if target.furloughed() {
             return Err(EngineError::Refused(Refusal::Furloughed(target.name)));
         }
+        // The CEO hands work to a lead only (ADR 0120).
+        if by.role == Role::Ceo && target.role != Role::Lead {
+            return Err(EngineError::Refused(Refusal::CeoToLeads));
+        }
         if target.id != by.id {
             crate::domain::work::may_delegate(by.role, target.role)
                 .map_err(EngineError::Refused)?;
@@ -382,10 +423,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let manager = worker
             .and_then(|w| members.iter().find(|m| m.id == w))
             .and_then(|m| chain::manager(m, &members));
+        // The CEO accepts only its own work: in a lead's area the lead does (ADR 0120).
+        let ceos_own = self.area_lead(task)?.is_none();
         Ok(at_work(project_lead)
-            .or_else(|| at_work(manager))
+            .filter(|m| ceos_own || m.role != Role::Ceo)
+            .or_else(|| at_work(manager).filter(|m| ceos_own || m.role != Role::Ceo))
             .or_else(|| first(Role::Lead))
-            .or_else(|| first(Role::Ceo)))
+            .or_else(|| first(Role::Ceo).filter(|_| ceos_own)))
     }
 
     /// Who checks `task`'s work now.
@@ -455,7 +499,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let turn = self.running(run)?;
         self.reach(&turn, task, false)?;
         let current = self.task(task)?;
+        self.ceo_keeps_out(turn.member, &current)?;
         let check = to == TaskStatus::Done && self.routine_of(task)?.is_some();
+        if to == TaskStatus::Done && !check && self.leads_own(&current, turn.member)? {
+            return self.lead_closes_own(&current, &turn, reason, cited);
+        }
         let judged = to == TaskStatus::InReview || (check && !current.criteria.is_empty());
         let holds = current.owner == Some(turn.member)
             || self.above_in_chain(turn.member, current.owner.or(current.assignee))?;
@@ -469,6 +517,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 },
             )?;
         }
+        if check && holds {
+            self.waited_for(&current)?;
+        }
         self.set_status_held_lock(turn.member, task, to, reason)?;
         if judged {
             let stage = if check { CLOSED } else { SUBMITTED };
@@ -479,6 +530,53 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(())
+    }
+
+    /// Whether `task` is its project's lead's own work, held by `member` who leads it, with no
+    /// branch on it (a branch goes through the wing's gate and the tester): a plan, a decision.
+    fn leads_own(&self, task: &Task, member: MemberId) -> Done<bool> {
+        if task.owner != Some(member) || task.project.is_none() {
+            return Ok(false);
+        }
+        if self.area_lead(task)?.is_none_or(|l| l.id != member) {
+            return Ok(false);
+        }
+        Ok(!self.store.branches()?.iter().any(|b| b.task == task.id))
+    }
+
+    /// The project's lead closes its own work as done, on its own acceptance with evidence
+    /// (ADR 0120): no tester's round, nobody's leave. Judged by the one rule, its time-bound
+    /// criteria waited.
+    fn lead_closes_own(
+        &self,
+        task: &Task,
+        turn: &Run,
+        reason: &str,
+        cited: &[Vec<Ref>],
+    ) -> Done<()> {
+        self.judge_work(
+            task,
+            cited,
+            &Judged {
+                fresh: &[turn.id],
+                own_reading: None,
+            },
+        )?;
+        self.waited_for(task)?;
+        self.keep_cited(task.id, turn, ACCEPTED, cited)?;
+        self.store.set_task_status(task.id, TaskStatus::Done)?;
+        let said = self.evidence_said(&cited.concat())?;
+        self.post_held_lock(
+            Author::Member(turn.member),
+            task.id,
+            &format!(
+                "{} → done: {reason} (the project's lead decides its own work)\nEvidence: {said}",
+                task.status.name()
+            ),
+        )?;
+        self.mark_progress(turn.member, task.id)?;
+        self.emit_status(task, TaskStatus::Done)?;
+        self.after_finishing(task)
     }
 
     /// A turn hands work on (see [`Engine::add_task`]): work handed to another member says what
@@ -498,6 +596,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(to) = to_another {
             let (from, to) = (self.member(turn.member)?, self.member(to)?);
             crate::domain::work::may_delegate(from.role, to.role).map_err(EngineError::Refused)?;
+        }
+        // The CEO delegates to leads, from its own work; in a lead's area it directs
+        // (ADR 0120).
+        if self.member(turn.member)?.role == Role::Ceo {
+            if let Some(parent) = task.parent {
+                self.ceo_keeps_out(turn.member, &self.task(parent)?)?;
+            }
+            let to_a_lead = match task.assignee {
+                Some(to) => self.member(to)?.role == Role::Lead,
+                None => false,
+            };
+            if !to_a_lead {
+                return Err(EngineError::Refused(Refusal::CeoToLeads));
+            }
         }
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
         let id = self.add_task_held_lock(Author::Member(turn.member), task)?;
@@ -566,6 +678,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 own_reading: Some(turn.id),
             },
         )?;
+        self.waited_for(&current)?;
         self.keep_cited(task, &turn, TESTED, cited)?;
         let said = self.evidence_said(&cited.concat())?;
         self.post_held_lock(
@@ -626,6 +739,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !lead.role.leads() || worker == Some(lead.id) {
             return Err(EngineError::Refused(Refusal::NotTheLead));
         }
+        self.ceo_keeps_out(lead.id, &current)?;
         if current.status != TaskStatus::InReview {
             return Err(EngineError::Refused(Refusal::NotAStep {
                 from: current.status,
@@ -664,6 +778,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 own_reading: None,
             },
         )?;
+        self.waited_for(&current)?;
         self.keep_cited(task, &turn, ACCEPTED, cited)?;
         let said = self.evidence_said(&cited.concat())?;
         self.post_held_lock(
@@ -757,6 +872,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         };
         self.store.set_setting(&key, "1")?;
+        // The CEO never takes an area's work (ADR 0120): live, #667 went up from Ada to Mara,
+        // who closed it two minutes after a restart. It stays with the area's lead, said so.
+        if manager.role == Role::Ceo {
+            if let Some(lead) = self.area_lead(&task)? {
+                self.post_held_lock(
+                    Author::Endora,
+                    task_id,
+                    &format!(
+                        "{} took {count} turns on this that showed nothing (talk only, empty or \
+                         the same reading again), after {} nudges. It stays in {}'s area: the \
+                         CEO directs, and does not take the area's work. Take one concrete step, \
+                         or mark it blocked and say why.",
+                        member.name,
+                        evidence::MOST_NUDGES,
+                        lead.name
+                    ),
+                )?;
+                return Ok(());
+            }
+        }
         self.post_held_lock(
             Author::Endora,
             task_id,
@@ -785,15 +920,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A member's ended turns on a task, oldest first, each with whether it showed nothing:
-    /// talk only or empty by its label, or a reading of the same tools with the same arguments
-    /// as its turn before, which changed nothing (ADR 0114: live, a member read the lab's state
-    /// fourteen turns in a row to no effect). A first reading always shows something.
-    fn shown_nothing(&self, member: MemberId, task: TaskId) -> Done<Vec<(RunId, bool)>> {
+    /// talk only or empty by its label, or readings that its turn before had already taken
+    /// (the same tools with the same arguments, as their arguments read once spaces and an
+    /// empty `{}` are put aside), which changed nothing (ADR 0114: live, a member read the
+    /// lab's state fourteen turns in a row to no effect; and on #667 a lead re-read only the
+    /// status its turn before had read, four times). A first reading always shows something.
+    pub(super) fn shown_nothing(&self, member: MemberId, task: TaskId) -> Done<Vec<(RunId, bool)>> {
+        // A huddle's short turn is the member's view, not its work on the task (ADR 0120).
+        let huddles: Vec<crate::domain::WakeId> = self
+            .store
+            .wakes()?
+            .into_iter()
+            .filter(|w| w.reason == WakeReason::Huddle)
+            .map(|w| w.id)
+            .collect();
         let mut runs: Vec<Run> = self
             .store
             .runs()?
             .into_iter()
             .filter(|r| r.member == member && r.task == Some(task) && r.label.is_some())
+            .filter(|r| !huddles.contains(&r.wake))
             .collect();
         runs.sort_by_key(|r| r.id);
         let mut shown = Vec::new();
@@ -804,12 +950,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .call_receipts_of(run.id)?
                 .into_iter()
                 .filter(|r| r.ok)
-                .map(|r| (r.tool, r.args))
+                .map(|r| (r.tool, evidence::same_args(&r.args)))
                 .collect();
             read.sort();
             read.dedup();
             let nothing = match run.label {
-                Some(Label::Checked) => before.as_ref() == Some(&read),
+                Some(Label::Checked) => before
+                    .as_ref()
+                    .is_some_and(|b| !read.is_empty() && read.iter().all(|r| b.contains(r))),
                 Some(label) => !label.productive(),
                 None => false,
             };
@@ -855,7 +1003,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             } else {
                 ""
             };
-            told.push_str(&format!("{}. {}{live}\n", i + 1, c.text));
+            let after = c
+                .after
+                .map(|m| format!(" [shown only {m} minutes after the work's last change]"))
+                .unwrap_or_default();
+            told.push_str(&format!("{}. {}{live}{after}\n", i + 1, c.text));
         }
         told
     }
@@ -1010,7 +1162,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         Ok(json!({
             "criteria": task.criteria.iter()
-                .map(|c| json!({ "text": c.text, "live": c.live })).collect::<Vec<_>>(),
+                .map(|c| json!({ "text": c.text, "live": c.live, "after": c.after }))
+                .collect::<Vec<_>>(),
             "cited": cited,
         }))
     }

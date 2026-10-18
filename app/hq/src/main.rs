@@ -39,13 +39,8 @@ const LAB_CHECK: &str = "Look at the home lab with homelab_status, read logs of 
 /// The CEO's name when HQ seats one (ADR 0111): the owner may rename it.
 const CEO_NAME: &str = "Mara";
 
-/// What the CEO's daily review asks of it each day (ADR 0111).
-const DAILY_REVIEW: &str = "Review the house once: read your briefing (the house log, the \
-    team, the goals and their lessons, the open work, the home lab's trouble this week and what \
-    the board decided), and the threads of what matters. Note in the house log what you \
-    learned or decided, with note_house. Hand on what needs doing to the lead with \
-    create_task. Put to the board only what the owner alone decides, as a decision with \
-    ask_owner. Then close this review as done, saying what you found.";
+/// What the CEO's daily review asks of it each day (ADR 0111, rebuilt by ADR 0120).
+const DAILY_REVIEW: &str = endora_team::application::engine::DAILY_REVIEW;
 
 /// The owner's routine for the home lab (ADR 0107), made once: with no routine yet but the
 /// CEO's, an active goal called "Keep the home lab healthy" and a lead, the lead checks the
@@ -373,6 +368,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
             Ok(None) => {}
             Err(e) => eprintln!("hq: could not seed the wing: {e}"),
+        }
+        // Each lead's "State of my area" (daily, at the owner's 18:00) and "Patterns" (weekly),
+        // once per lead that leads a project (ADR 0120).
+        match hq.seed_area_routines() {
+            Ok(made) if made.is_empty() => {}
+            Ok(made) => println!("hq: made {} of the leads' report routines", made.len()),
+            Err(e) => eprintln!("hq: could not make the leads' report routines: {e}"),
         }
         // The Claude Code pilot (ADR 0117), once: one wing developer on it, the other on the
         // worker, for the scorecard to compare.

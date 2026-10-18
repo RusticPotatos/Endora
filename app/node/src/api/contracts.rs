@@ -308,7 +308,8 @@ async fn called(
              (read_document) and the check's receipt instead"
                 .to_owned()
         } else if contract.may_be_seen_by(&turn.role, turn.cloud) {
-            "the CEO takes no step on the house itself: hand it to the lead with create_task"
+            "the CEO reads the house and takes no step on it itself: direct the lead of the \
+             task's area with direct, who decides; or hand it to the lead"
                 .to_owned()
         } else {
             super::bridge::confidential(&name)
@@ -1548,30 +1549,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_cloud_ceo_reads_the_home_labs_state_and_neither_its_logs_nor_its_restarts() {
+    async fn the_cloud_ceo_reads_the_home_lab_as_the_lead_does_and_never_restarts_anything() {
+        // The owner's word of 2026-10-18 (ADR 0120): reading is open to the CEO, whose system
+        // it is; acting on the lab is the areas' own.
         let state = on_claude("ceo");
         let offered = listed(&state).await;
-        assert!(
-            offered.contains(&"homelab_status".to_owned()),
-            "{offered:?}"
-        );
-        for refused in [
-            "container_logs",
-            "restart_container",
-            "sonarr_queue",
-            "radarr_queue",
-        ] {
-            assert!(
-                !offered.contains(&refused.to_owned()),
-                "{refused}: {offered:?}"
-            );
+        for read in ["homelab_status", "container_logs", "homelab_map"] {
+            assert!(offered.contains(&read.to_owned()), "{read}: {offered:?}");
         }
-        let (status, said) =
-            use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
         assert!(
-            said["error"].as_str().unwrap().contains("Confidential"),
-            "{said}"
+            !offered.contains(&"restart_container".to_owned()),
+            "{offered:?}"
         );
         let (status, said) = use_contract(
             &state,
@@ -1584,7 +1572,7 @@ mod tests {
             said["error"]
                 .as_str()
                 .unwrap()
-                .contains("hand it to the lead"),
+                .contains("direct the lead of the task's area"),
             "{said}"
         );
     }

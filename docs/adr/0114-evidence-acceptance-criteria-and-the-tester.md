@@ -3,6 +3,12 @@
 ## Status
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended 2026-10-18 by
+[0120](0120-roles-as-an-enforced-raci.md): a criterion may wait (`after`) from the work's last
+change, the lab's "no new alarm since" 60 minutes; a reading the turn before already took shows
+nothing; the CEO's chain acts on a lead's area become `direct`, and a lead's stalled task is
+never handed up to the CEO; stuck work, and work sent back three times, climb a ladder (the
+lead, a huddle, then the CEO) instead of the owner's desk; a project's lead closes its own work
+on its own acceptance. Amended 2026-10-18 by
 [0117](0117-claude-code-as-a-developer-runtime.md): a Claude Code turn's own tools (its Bash,
 Edit and the rest) leave **sandbox-reported** receipts, posted by its hook and recorded by the
 node with the turn's token but not witnessed by it; one may be cited for what the sandbox did,

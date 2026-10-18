@@ -42,13 +42,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let tasks = self.store.tasks()?;
         let runs = self.store.runs()?;
         let routines = self.store.routines()?;
+        let wakes = self.store.wakes()?;
         Ok(self
             .store
             .members()?
             .into_iter()
             .filter(|m| m.role != Role::Ceo && m.at_work())
             .filter(|m| {
-                let busy = runs.iter().any(|r| r.member == m.id && r.status.live());
+                // A wake held behind another member's turn is work coming (ADR 0120): not idle.
+                let busy = runs.iter().any(|r| r.member == m.id && r.status.live())
+                    || wakes
+                        .iter()
+                        .any(|w| w.member == m.id && w.receipt == crate::domain::Receipt::Held);
                 let holds = tasks.iter().any(|t| {
                     !t.status.finished() && (t.owner == Some(m.id) || t.assignee == Some(m.id))
                 });

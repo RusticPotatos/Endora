@@ -410,8 +410,30 @@ fn the_home_labs_routine_and_alarm_tasks_say_what_done_means_and_close_on_a_fres
         )
     };
     assert!(close(json!([])).unwrap_err().contains("criterion 1"));
+    // Live, #667: closed two minutes after the restart, and the alarm came back. "No new
+    // alarm since" waits an hour from the work's last change: here, the restart.
+    clock.0.fetch_add(60_000, Ordering::SeqCst);
+    reading(&hq, &ada, "restart_container", "container: sonarr", true);
+    clock.0.fetch_add(2 * 60_000, Ordering::SeqCst);
     let now = reading(&hq, &ada, "homelab_status", "", false);
-    close(json!([format!("r{now}"), format!("r{now}")])).unwrap();
+    let restarted = OCT_17 + 60_000;
+    let refused = close(json!([format!("r{now}"), format!("r{now}")])).unwrap_err();
+    assert_eq!(
+        refused,
+        Refusal::TooSoon {
+            criterion: 2,
+            text: crate::domain::evidence::LAB_CRITERIA[1].to_owned(),
+            until: crate::domain::evidence::clock_time(restarted + 60 * 60_000, 0),
+        }
+        .to_string()
+    );
+    assert!(
+        ada.told
+            .contains("shown only 60 minutes after the work's last change")
+    );
+    clock.0.fetch_add(58 * 60_000, Ordering::SeqCst);
+    let later = reading(&hq, &ada, "homelab_status", "", false);
+    close(json!([format!("r{later}"), format!("r{later}")])).unwrap();
     assert_eq!(
         hq.store().task(task).unwrap().unwrap().status,
         TaskStatus::Done
@@ -736,7 +758,7 @@ fn the_testers_check_of_a_draft_reads_the_receipts_it_cites_and_the_lead_goes_up
 }
 
 #[test]
-fn work_sent_back_three_times_is_the_owners_on_its_fourth_submission() {
+fn work_sent_back_three_times_goes_to_a_huddle_on_its_fourth_submission_not_the_owner() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq, false, true);
@@ -770,25 +792,119 @@ fn work_sent_back_three_times_is_the_owners_on_its_fourth_submission() {
         .unwrap();
         end(&hq, &clock, &tester);
     }
-    let rounds: Vec<_> = hq
+    // The owner's desk is not the next round (ADR 0120): a huddle of the area is.
+    assert!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .all(|d| d.kind != "rounds"),
+        "{:?}",
+        hq.store().desk().unwrap()
+    );
+    let called = hq
         .store()
-        .desk()
+        .events_after(0)
         .unwrap()
         .into_iter()
-        .filter(|d| d.kind == "rounds")
-        .collect();
-    assert_eq!(rounds.len(), 1);
-    assert!(
-        rounds[0].text.contains("Sent back 3 times"),
-        "{}",
-        rounds[0].text
-    );
-    assert!(rounds[0].text.contains("- Grace: not yet (3)"));
-    assert_ne!(last_wake(&hq).0, grace, "no fourth round for the tester");
-    hq.decide(rounds[0].id, "accept").unwrap();
+        .find(|e| e.kind == "huddle.called")
+        .expect("a huddle is called");
     assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Done
+        called.data["members"],
+        json!([t.lead.0, t.dev.0, grace.0]),
+        "the lead, then who touched it, newest first"
+    );
+    assert!(
+        called.data["why"]
+            .as_str()
+            .unwrap()
+            .contains("sent back 3 times")
+    );
+    // Each is heard once, in one short turn of its own: Linus, mid-turn when it was called, is
+    // asked again once his turn ends.
+    for (who, view) in [
+        (
+            grace,
+            "It still fails the second criterion. Sonarr restarts every hour.",
+        ),
+        (
+            t.dev,
+            "The restarts come from its memory limit. Raising it would hold.",
+        ),
+    ] {
+        let context = turn(&hq, who);
+        assert!(
+            context
+                .told
+                .contains("A huddle on this task, which is stuck"),
+            "{}",
+            context.told
+        );
+        use_tool(
+            &hq,
+            &context,
+            "huddle_view",
+            &json!({ "task": task.0, "view": view, "evidence": [format!("task {}", task.0)] }),
+        )
+        .unwrap();
+        assert_eq!(
+            use_tool(
+                &hq,
+                &context,
+                "huddle_view",
+                &json!({ "task": task.0, "view": "Again.", "evidence": [format!("task {}", task.0)] }),
+            ),
+            Err(Refusal::NotInTheHuddle.to_string()),
+            "one view each"
+        );
+        end(&hq, &clock, &context);
+    }
+    // Then the lead decides, on what was said.
+    let ada = turn(&hq, t.lead);
+    for said in [
+        "Your huddle's views:",
+        "- Grace: It still fails the second criterion. Sonarr restarts every hour.",
+        "- Linus: The restarts come from its memory limit.",
+    ] {
+        assert!(ada.told.contains(said), "{said}\n---\n{}", ada.told);
+    }
+    use_tool(
+        &hq,
+        &ada,
+        "decide_stuck",
+        &json!({ "task": task.0, "decision": "proceed",
+                 "detail": "raise sonarr's memory limit, then resubmit",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    let docs = hq.store().documents_of(task).unwrap();
+    let huddle = docs
+        .iter()
+        .find(|d| d.title == format!("Huddle on #{}", task.0))
+        .unwrap();
+    assert!(
+        huddle.text.contains("- Grace: It still fails"),
+        "{}",
+        huddle.text
+    );
+    assert!(
+        huddle
+            .text
+            .contains("Decided by Ada: proceed: raise sonarr's memory limit")
+    );
+    assert!(
+        hq.store()
+            .events_after(0)
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "huddle.decided" && e.data["decision"] == "proceed")
+    );
+    let now = hq.store().task(task).unwrap().unwrap();
+    assert_eq!((now.status, now.assignee), (TaskStatus::Todo, Some(t.dev)));
+    assert_eq!(last_wake(&hq), (t.dev, Some(task), WakeReason::Assigned));
+    assert!(
+        hq.store().desk().unwrap().is_empty(),
+        "nothing on the owner's desk"
     );
 }
 
@@ -880,6 +996,104 @@ fn a_check_back_on_a_task_blocked_on_a_wait_is_replaced_by_the_wait() {
     assert_eq!(said.len(), 1);
 }
 
+/// Live, task #667: after restarting two containers, Ada took four turns ten seconds apart,
+/// each one fresh homelab_status, a check-back and a post. The first of them read only what
+/// her turn before had read, so it showed nothing; and its label (checked) reset the task's
+/// recovery nudge, so the tick woke her again at once, check-back or not.
+#[test]
+fn a_reading_already_taken_the_turn_before_shows_nothing_whatever_its_trivial_differences() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, false);
+    let task = owners_task(&hq, &t, t.dev, "Look at deluge");
+    let first = turn(&hq, t.dev);
+    use_tool(&hq, &first, "claim", &json!({ "task": task.0 })).unwrap();
+    reading(&hq, &first, "homelab_status", "", false);
+    reading(&hq, &first, "container_logs", "container: deluge", false);
+    reading(&hq, &first, "restart_container", "container: deluge", true);
+    end(&hq, &clock, &first);
+    hq.post(Author::Owner, task, "Next.").unwrap();
+    let again = turn(&hq, t.dev);
+    assert!(!again.told.contains(NUDGE), "{}", again.told);
+    reading(&hq, &again, "homelab_status", " { } ", false);
+    end(&hq, &clock, &again);
+    hq.post(Author::Owner, task, "Next.").unwrap();
+    let third = turn(&hq, t.dev);
+    assert!(
+        third.told.contains(NUDGE),
+        "the status it read the turn before, again: {}",
+        third.told
+    );
+}
+
+#[test]
+fn a_member_with_a_check_back_set_is_not_woken_again_until_it_comes() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, false);
+    let task = owners_task(&hq, &t, t.dev, "Look at deluge");
+    let linus = turn(&hq, t.dev);
+    use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+    reading(&hq, &linus, "homelab_status", "", false);
+    use_tool(
+        &hq,
+        &linus,
+        "check_back",
+        &json!({ "minutes": 10, "why": "see that deluge held" }),
+    )
+    .unwrap();
+    end(&hq, &clock, &linus);
+    let turns = || {
+        hq.store()
+            .runs()
+            .unwrap()
+            .iter()
+            .filter(|r| r.member == t.dev)
+            .count()
+    };
+    for _ in 0..10 {
+        hq.tick().unwrap();
+        clock.0.fetch_add(30_000, Ordering::SeqCst);
+    }
+    assert_eq!(turns(), 1, "no recovery wake while its check-back waits");
+    clock.0.fetch_add(6 * 60_000, Ordering::SeqCst);
+    let back = turn(&hq, t.dev);
+    assert_ne!(back.run, linus.run);
+    assert!(
+        back.told
+            .contains("You said you would check back: see that deluge held")
+    );
+}
+
+#[test]
+fn a_member_is_not_woken_again_on_its_task_within_two_minutes_unless_something_new_came() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, false);
+    let task = owners_task(&hq, &t, t.dev, "Look at deluge");
+    let linus = turn(&hq, t.dev);
+    use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+    reading(&hq, &linus, "homelab_status", "", false);
+    end(&hq, &clock, &linus);
+    // A stale wake (a recovery nudge) seconds after its turn ended waits out the two minutes.
+    hq.wake(t.dev, Some(task), WakeReason::Recovery).unwrap();
+    let held = hq.store().runs().unwrap().pop().unwrap();
+    assert_eq!(held.status, RunStatus::RetryWaiting);
+    let ended = hq
+        .store()
+        .run(linus.run)
+        .unwrap()
+        .unwrap()
+        .ended_at
+        .unwrap();
+    assert_eq!(held.retry_at, Some(ended + 2 * 60_000));
+    // The owner's word is new: it brings the turn forward at once.
+    hq.post(Author::Owner, task, "Deluge is back, look now.")
+        .unwrap();
+    let now = hq.store().run(held.id).unwrap().unwrap();
+    assert_eq!(now.status, RunStatus::Queued);
+}
+
 #[test]
 fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its_work() {
     let clock = Hands(AtomicI64::new(OCT_17));
@@ -893,7 +1107,7 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
             description: String::new(),
             goal: t.goal,
             project: None,
-            assignee: t.lead,
+            assignee: t.dev,
             every_ms: 6 * HOUR_MS,
             on_lab_trouble: true,
         },
@@ -901,30 +1115,44 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
     .unwrap();
     hq.alarm("deluge exited at 12:01").unwrap();
     let task = hq.store().routines().unwrap()[0].last_task.unwrap();
-    let ada = turn(&hq, t.lead);
-    use_tool(&hq, &ada, "claim", &json!({ "task": task.0 })).unwrap();
-    end(&hq, &clock, &ada);
-    // Mara, above Ada, confirms the recovery herself: done on her own fresh reading.
-    // Nudged once and still not moving, it is stuck and blocked, as #663 was live.
-    let nudged = turn(&hq, t.lead);
+    let linus = turn(&hq, t.dev);
+    use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+    end(&hq, &clock, &linus);
+    // Nudged once (two minutes after his turn) and still not moving, it is stuck and blocked,
+    // as #663 was live.
+    hq.tick().unwrap();
+    clock.0.fetch_add(2 * 60_000, Ordering::SeqCst);
+    let nudged = turn(&hq, t.dev);
     end(&hq, &clock, &nudged);
+    clock
+        .0
+        .fetch_add(super::engine::STRANDED_AFTER_MS + 1, Ordering::SeqCst);
+    hq.tick().unwrap();
     assert_eq!(
         hq.store().task(task).unwrap().unwrap().status,
         TaskStatus::Blocked
     );
-    hq.wake(ceo, Some(task), WakeReason::Assigned).unwrap();
-    let mara = turn(&hq, ceo);
+    // Stuck, it climbs to its area's lead, never the CEO (ADR 0120): Ada, above Linus,
+    // confirms the recovery herself, done on her own fresh reading.
+    assert_eq!(last_wake(&hq), (t.lead, Some(task), WakeReason::Decide));
+    assert!(
+        hq.store().wakes().unwrap().iter().all(|w| w.member != ceo),
+        "the CEO is not woken for it"
+    );
+    let ada = turn(&hq, t.lead);
     let close = |evidence: Value| {
         use_tool(
             &hq,
-            &mara,
+            &ada,
             "set_status",
             &json!({ "task": task.0, "status": "done", "reason": "deluge is back",
                      "evidence": evidence }),
         )
     };
     assert!(close(json!([])).unwrap_err().contains("criterion 1"));
-    let now = reading(&hq, &mara, "homelab_status", "", false);
+    // An hour on from the alarm, "no new alarm since" may be shown.
+    clock.0.fetch_add(60 * 60_000, Ordering::SeqCst);
+    let now = reading(&hq, &ada, "homelab_status", "", false);
     close(json!([format!("r{now}"), format!("r{now}")])).unwrap();
     assert_eq!(
         hq.store().task(task).unwrap().unwrap().status,
@@ -933,11 +1161,11 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
     assert!(
         thread(&hq, task)
             .iter()
-            .any(|p| p.ends_with("deluge is back (for Ada, as one above them)")),
+            .any(|p| p.ends_with("deluge is back (for Linus, as one above them)")),
         "{:?}",
         thread(&hq, task)
     );
-    end(&hq, &clock, &mara);
+    end(&hq, &clock, &ada);
 
     // Ada hands Linus's task to herself; Linus may not hand hers.
     let mine = owners_task(&hq, &t, t.dev, "Look at radarr");

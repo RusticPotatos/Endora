@@ -115,6 +115,16 @@ pub enum EventKind {
     ChessMoved,
     /// A game of chess ended: won, drawn or adjourned.
     ChessEnded,
+    /// A goal's strategy was written, by the CEO or the owner (ADR 0120).
+    StrategySet,
+    /// A lead reported on its area (ADR 0120).
+    AreaReported,
+    /// Stuck work climbed a rung of the ladder (ADR 0120).
+    StuckClimbed,
+    /// A huddle was called on stuck work: the task and its members (ADR 0120).
+    HuddleCalled,
+    /// A lead decided stuck work, in a huddle or on its own (ADR 0120).
+    HuddleDecided,
 }
 
 impl EventKind {
@@ -178,6 +188,11 @@ impl EventKind {
             Self::ChessStarted => "chess.started",
             Self::ChessMoved => "chess.moved",
             Self::ChessEnded => "chess.ended",
+            Self::StrategySet => "goal.strategy",
+            Self::AreaReported => "area.reported",
+            Self::StuckClimbed => "stuck.climbed",
+            Self::HuddleCalled => "huddle.called",
+            Self::HuddleDecided => "huddle.decided",
         }
     }
 }

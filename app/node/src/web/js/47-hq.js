@@ -195,7 +195,7 @@ function hqEvidence(t) {
   const rows = (n) => cited.filter((c) => c.criterion === n)
     .map((c) => `<li>${esc(stage[c.stage] || c.stage)}, ${esc(hqName(c.member))}<ul>${refs(c)}</ul></li>`).join("");
   const items = crit.length
-    ? crit.map((c, i) => `<li><b>${esc(c.text)}</b>${c.live ? " · live: a reading the same turn" : ""}<ul>${rows(i + 1) || `<li class="hq-empty">No evidence yet.</li>`}</ul></li>`).join("")
+    ? crit.map((c, i) => `<li><b>${esc(c.text)}</b>${c.live ? " · live: a reading the same turn" : ""}${c.after ? ` · shown ${Number(c.after)} min after the last change` : ""}<ul>${rows(i + 1) || `<li class="hq-empty">No evidence yet.</li>`}</ul></li>`).join("")
     : `<li><b>The work</b><ul>${rows(0)}</ul></li>`;
   const passed = cited.some((c) => c.stage === "tested") ? "Tester's pass: given." : "Tester's pass: not yet.";
   return `<div class="hq-evidence"><h3>What done means</h3><ul>${items}</ul><p class="hq-who">${passed}</p></div>`;
@@ -297,6 +297,12 @@ function hqTell(e, live, older) {
     "chess.started": ["run", d.text || ""],
     "chess.moved": ["run", d.text || ""],
     "chess.ended": ["done", d.text || ""],
+    // Roles as an enforced RACI (ADR 0120): strategy, the leads' reports and the ladder.
+    "goal.strategy": ["you", `Goal ${d.goal}'s strategy was written by ${d.by === "owner" ? "you" : d.by}`],
+    "area.reported": ["run", `${hqName(d.lead)} reported on their area`],
+    "stuck.climbed": ["warn", `${key} is stuck: it goes to ${d.to ? hqName(d.to) : "the owner"} (${d.rung})`],
+    "huddle.called": ["wake", `Huddle on ${key}: ${(d.members || []).map(hqName).join(", ")}`],
+    "huddle.decided": ["done", `${hqName(d.lead)} decided ${key}: ${String(d.decision || "").replace(/_/g, " ")}`],
   }[e.kind];
   if (said) {
     const at = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -1594,8 +1600,26 @@ function hqScorecard(s) {
     .map(([w, at]) => `the record for ${w} starts ${esc(when(at))}`).join("; ");
   // Each team's seats (ADR 0118): who is at work and who is on furlough. Never anyone gone.
   const teams = (card.teams || []).map((t) => `<li>${esc(t.name || "A lead")}'s team: ${Number(t.seats)} seats · ${Number(t.active)} at work · ${Number(t.furloughed)} on furlough</li>`).join("");
+  // Each area's measures (ADR 0120), which the CEO steers by, and its lead's latest report.
+  const labOf = (m) => (m ? `${n(m.alarms)} alarms · ${n(m.outages)} outages over 10 min · closed in ${m.closed_median_ms == null ? "—" : hqSpan(m.closed_median_ms)} · ${n(m.repeats)} repeats within 24 h` : "");
+  const branchesOf = (m) => (m ? `${n(m.submitted)} branches · to push approved ${m.to_push_median_ms == null ? "—" : hqSpan(m.to_push_median_ms)} · ${n(m.passed_first)} of ${n(m.tested)} passed the tester first time` : "");
+  const reports = s.area_reports || [];
+  const area = (a) => {
+    const measure = (label, f) => (f(a.today) || f(a.week) ? `<tr><th>${label}</th><td>${esc(f(a.today) || "—")}</td><td>${esc(f(a.week) || "—")}</td></tr>` : "");
+    const lab = measure("The lab", (w) => labOf(w && w.lab)), work = measure("Branches", (w) => branchesOf(w && w.branches));
+    const r = reports.find((x) => x.lead === a.lead);
+    const said = r ? `<dl class="hq-kv"><dt>Moved</dt><dd>${esc(r.moved || "nothing")}</dd><dt>Stuck</dt><dd>${esc(r.stuck || "nothing")}</dd>
+        <dt>Needs</dt><dd>${esc(r.need || "nothing")}</dd><dt>Proposes</dt><dd>${esc(r.proposals || "nothing")}</dd></dl>
+        <p class="hq-note">${esc(a.name || "The lead")}'s report, ${esc(when(r.at))}</p>`
+      : `<p class="hq-empty">No report from ${esc(a.name || "the lead")} yet.</p>`;
+    return `<div class="hq-group"><h3>${esc(a.name || "A lead")}'s area</h3>
+      ${lab || work ? `<table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${lab}${work}</tbody></table>` : `<p class="hq-empty">No measures yet.</p>`}
+      ${said}</div>`;
+  };
+  const areas = (card.areas || []).map(area).join("");
   return `<section class="hq-card"><h2>How the team is doing</h2>
     <table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${rows}</tbody></table>
+    ${areas ? `<details open><summary>Each area</summary>${areas}</details>` : ""}
     ${teams ? `<details><summary>Seats</summary><ul class="hq-team">${teams}</ul></details>` : ""}
     <details><summary>Per member</summary><div class="hq-score-members">
       <div><b>Today</b><ul class="hq-team">${members(card.today)}</ul></div>
@@ -1638,14 +1662,33 @@ function hqContracts(c) {
 
 // Each active goal's notes from the owner: standing facts every member working towards it reads
 // near the top of each briefing. Escaped like everything a person typed.
+// Each goal's strategy (ADR 0120): the CEO's, which the owner may edit here. Every part is the
+// CEO's or the owner's words, so all of it is escaped.
+const HQ_STRATEGY_PARTS = [["purpose", "Purpose: the goal of the goal"], ["success", "What success looks like"],
+  ["measures", "Measures, one a line"], ["bets", "Current bets: the active projects, and why"], ["not_now", "Not now"]];
+
+function hqStrategy(g) {
+  const st = g.strategy || {};
+  const written = HQ_STRATEGY_PARTS.filter(([k]) => st[k]);
+  const shown = written.length
+    ? `<dl class="hq-kv">${written.map(([k, label]) => `<dt>${esc(label)}</dt><dd>${esc(st[k])}</dd>`).join("")}</dl>
+       <p class="hq-note">Written by ${esc(st.by || "nobody")}${st.updated_at ? ` · ${esc(new Date(st.updated_at).toLocaleString())}` : ""}</p>`
+    : `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`;
+  const fields = HQ_STRATEGY_PARTS.map(([k, label]) => `<label>${esc(label)}
+      <textarea id="hq-strategy-${g.id}-${k}" rows="2" maxlength="800">${esc(st[k] || "")}</textarea></label>`).join("");
+  return `${shown}<details><summary>Edit the strategy</summary>${fields}
+      <div class="hq-row"><button class="hq-btn ok" data-act="hq:strategy:${g.id}:save">Save the strategy</button></div></details>`;
+}
+
 function hqNotes(s) {
   const goals = (s.goals || []).filter((g) => g.status === "active");
   if (!goals.length) return "";
   const rows = goals.map((g) => `<li><b>${esc(g.title)}</b>
+      ${hqStrategy(g)}
       <textarea id="hq-note-${g.id}" rows="3" maxlength="2000" aria-label="Notes for the team on ${esc(g.title)}"
         placeholder="What every member working on this should know">${esc(g.note || "")}</textarea>
       <div class="hq-row"><button class="hq-btn ok" data-act="hq:note:${g.id}:save">Save notes</button></div></li>`).join("");
-  return `<details class="hq-card"><summary>Notes for the team</summary><ul class="hq-team">${rows}</ul></details>`;
+  return `<details class="hq-card"><summary>Goals: strategy and notes for the team</summary><ul class="hq-team">${rows}</ul></details>`;
 }
 
 // Routines (ADR 0107): work that comes round again, each a task for one member. Each shows
@@ -1890,6 +1933,17 @@ async function hqDispatch(verb, noun, id, arg) {
   if (noun === "house") {
     const box = document.getElementById("hq-house"), log = box ? box.value.trim() : "";
     try { await api("POST", "/v1/hq/house", { log }); flash("House log saved.", "ok"); }
+    catch (e) { flash("Couldn't save it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // A goal's strategy (ADR 0120): every part as written, an empty one cleared.
+  if (noun === "strategy") {
+    const body = {};
+    for (const [k] of HQ_STRATEGY_PARTS) {
+      const box = document.getElementById(`hq-strategy-${id}-${k}`);
+      if (box) body[k] = box.value.trim();
+    }
+    try { await api("POST", `/v1/hq/goals/${id}/strategy`, body); flash("Strategy saved.", "ok"); }
     catch (e) { flash("Couldn't save it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }

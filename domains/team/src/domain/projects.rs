@@ -195,12 +195,13 @@ pub const fn may_lead(role: Role) -> Result<(), Refusal> {
     Err(Refusal::NotAProjectLead)
 }
 
-/// Whether a member in `role` may propose a project.
+/// Whether a member in `role` may propose a project: a lead, who spots the pattern in its
+/// area; the CEO decides proposals and makes none (ADR 0120).
 ///
 /// # Errors
-/// [`Refusal::OnlyLeadsPropose`] for anyone but a lead or the CEO.
+/// [`Refusal::OnlyLeadsPropose`] for anyone but a lead.
 pub const fn may_propose(role: Role) -> Result<(), Refusal> {
-    if role.leads() {
+    if matches!(role, Role::Lead) {
         return Ok(());
     }
     Err(Refusal::OnlyLeadsPropose)
@@ -356,13 +357,13 @@ mod tests {
     use crate::domain::money::POOL_PER_MONTH;
 
     #[test]
-    fn only_a_lead_or_the_ceo_leads_or_proposes_a_project() {
+    fn a_lead_or_the_ceo_leads_a_project_and_only_a_lead_proposes_one() {
         for role in [Role::Ceo, Role::Lead] {
-            assert!(
-                may_lead(role).is_ok() && may_propose(role).is_ok(),
-                "{role:?}"
-            );
+            assert!(may_lead(role).is_ok(), "{role:?}");
         }
+        // Leads propose; the CEO decides (ADR 0120).
+        assert!(may_propose(Role::Lead).is_ok());
+        assert_eq!(may_propose(Role::Ceo), Err(Refusal::OnlyLeadsPropose));
         for role in [Role::Developer, Role::Researcher, Role::Reviewer] {
             assert_eq!(may_lead(role), Err(Refusal::NotAProjectLead));
             assert_eq!(may_propose(role), Err(Refusal::OnlyLeadsPropose));

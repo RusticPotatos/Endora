@@ -452,6 +452,250 @@ fn cache(runs: &[Run], window: &Window) -> Cache {
     cache
 }
 
+// ---- each team's measures (ADR 0120) ------------------------------------------------------
+
+/// An outage this long or longer, from an alarm to its recovery (or its task closed), is
+/// unplanned downtime worth counting.
+pub const OUTAGE_MS: Millis = 10 * 60 * 1000;
+
+/// How close two alarms about the same containers are a repeat: a day.
+pub const REPEAT_MS: Millis = DAY_MS;
+
+/// One lead's area as the record says it: the lead, whoever reports to it, the projects it
+/// leads, and which measures apply (the home lab's, when its projects take the lab's alarms;
+/// the wing's, when it works through branches). Never told by a name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Area {
+    /// The lead.
+    pub lead: MemberId,
+    /// The lead and its members.
+    pub members: Vec<MemberId>,
+    /// The tasks in the projects it leads.
+    pub tasks: HashSet<TaskId>,
+    /// Whether the home lab's measures apply.
+    pub lab: bool,
+    /// Whether the wing's measures apply.
+    pub branches: bool,
+}
+
+/// What the measures read beyond the [`Record`]: the branches, the threads of the tasks that
+/// have one, the testers' names, the home lab's containers when the node said them, and now.
+#[derive(Debug, Clone, Copy)]
+pub struct AreaRecord<'a> {
+    /// Every event kept, oldest first.
+    pub events: &'a [Event],
+    /// Every task.
+    pub tasks: &'a [Task],
+    /// Every desk item.
+    pub desk: &'a [DeskItem],
+    /// Every branch submitted.
+    pub branches: &'a [crate::domain::Branch],
+    /// The threads of the branches' tasks: each post's author and text, oldest first.
+    pub threads: &'a HashMap<TaskId, Vec<(String, String)>>,
+    /// The testers' names.
+    pub testers: &'a [String],
+    /// The home lab's containers, if the node said them.
+    pub lab: Option<&'a [String]>,
+    /// Now.
+    pub now: Millis,
+}
+
+/// The home lab's measures for an area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LabMeasures {
+    /// Alarms about its work.
+    pub alarms: usize,
+    /// Alarms whose recovery (or task closed) came [`OUTAGE_MS`] or more after, or not yet.
+    pub outages: usize,
+    /// The median time from an alarm to its task closed.
+    pub closed_median_ms: Option<Millis>,
+    /// Alarms about containers an alarm named within [`REPEAT_MS`] before.
+    pub repeats: usize,
+}
+
+/// The wing's measures for an area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BranchMeasures {
+    /// Branches its members submitted.
+    pub submitted: usize,
+    /// The median time from a branch submitted to the owner approving its push (the merge
+    /// itself is on GitHub, out of HQ's sight).
+    pub to_push_median_ms: Option<Millis>,
+    /// Branch tasks the tester gave a verdict on.
+    pub tested: usize,
+    /// Of those, the ones whose first verdict was a pass.
+    pub passed_first: usize,
+}
+
+/// What an alarm event says and is about, if it is one: (its task, its words).
+fn alarm_of(event: &Event) -> Option<(Option<TaskId>, &str)> {
+    if event.kind == "routine.fired" && event.data["firing"] == "alarm" {
+        return Some((task_of(event), event.data["why"].as_str().unwrap_or("")));
+    }
+    if event.kind == "routine.posted" && event.data["recovered"] != true {
+        return Some((task_of(event), event.data["said"].as_str().unwrap_or("")));
+    }
+    None
+}
+
+/// The containers an alarm names, or its words when the lab's names are not known.
+fn named_in(said: &str, lab: Option<&[String]>) -> Vec<String> {
+    match lab {
+        Some(lab) => crate::domain::review::about(said, "", lab),
+        None => vec![said.trim().to_ascii_lowercase()],
+    }
+}
+
+/// The home lab's measures of an area, in a window.
+#[must_use]
+pub fn lab_measures(area: &Area, record: &AreaRecord<'_>, window: &Window) -> LabMeasures {
+    let mut measures = LabMeasures::default();
+    let alarms: Vec<(&Event, TaskId, &str)> = record
+        .events
+        .iter()
+        .filter_map(|e| {
+            let (task, said) = alarm_of(e)?;
+            let task = task.filter(|t| area.tasks.contains(t))?;
+            Some((e, task, said))
+        })
+        .collect();
+    let mut closed = Vec::new();
+    for (i, (event, task, said)) in alarms.iter().enumerate() {
+        if !window.holds(event.at) {
+            continue;
+        }
+        measures.alarms += 1;
+        let ended = record
+            .events
+            .iter()
+            .filter(|e| e.at >= event.at && task_of(e) == Some(*task) && e.id > event.id)
+            .find(|e| {
+                (e.kind == "routine.posted" && e.data["recovered"] == true)
+                    || matches!(status_of(e), Some(s) if s.finished())
+            })
+            .map(|e| e.at);
+        let lasted = ended.unwrap_or(record.now.min(window.until)) - event.at;
+        measures.outages += usize::from(lasted >= OUTAGE_MS);
+        if event.kind == "routine.fired" {
+            if let Some(at) = closed_after(record.events, *task, event.at) {
+                closed.push(at - event.at);
+            }
+        }
+        let names = named_in(said, record.lab);
+        let again = alarms[..i].iter().any(|(before, _, was)| {
+            event.at - before.at <= REPEAT_MS
+                && named_in(was, record.lab).iter().any(|n| names.contains(n))
+        });
+        measures.repeats += usize::from(again);
+    }
+    measures.closed_median_ms = median(closed);
+    measures
+}
+
+/// The wing's measures of an area, in a window.
+#[must_use]
+pub fn branch_measures(area: &Area, record: &AreaRecord<'_>, window: &Window) -> BranchMeasures {
+    let mut measures = BranchMeasures::default();
+    let ours: Vec<&crate::domain::Branch> = record
+        .branches
+        .iter()
+        .filter(|b| area.members.contains(&b.member) && window.holds(b.at))
+        .collect();
+    let mut waited = Vec::new();
+    for branch in &ours {
+        measures.submitted += 1;
+        let items: Vec<i64> = record
+            .desk
+            .iter()
+            .filter(|d| d.kind == "push" && d.task == Some(branch.task) && d.at >= branch.at)
+            .map(|d| d.id.0)
+            .collect();
+        let approved = record.events.iter().find(|e| {
+            e.kind == "desk.decided"
+                && e.data["decision"] == "approve"
+                && e.data["item"].as_i64().is_some_and(|i| items.contains(&i))
+        });
+        if let Some(approved) = approved {
+            waited.push(approved.at - branch.at);
+        }
+    }
+    measures.to_push_median_ms = median(waited);
+    let tasks: HashSet<TaskId> = ours.iter().map(|b| b.task).collect();
+    for task in tasks {
+        let Some(thread) = record.threads.get(&task) else {
+            continue;
+        };
+        let first = thread.iter().find(|(author, text)| {
+            record.testers.contains(author)
+                && (text.starts_with("Tested and passed") || text.starts_with("Sent back: "))
+        });
+        let Some((_, verdict)) = first else {
+            continue;
+        };
+        measures.tested += 1;
+        measures.passed_first += usize::from(verdict.starts_with("Tested and passed"));
+    }
+    measures
+}
+
+impl LabMeasures {
+    /// For the screen.
+    #[must_use]
+    pub fn json(&self) -> Value {
+        json!({ "alarms": self.alarms, "outages": self.outages,
+                "closed_median_ms": self.closed_median_ms, "repeats": self.repeats })
+    }
+
+    /// As the CEO and the lead read them.
+    #[must_use]
+    pub fn said(&self) -> String {
+        format!(
+            "{} alarms; unplanned outages over 10 min: {}; median alarm to closed: {}; repeat \
+             alarms within 24 h: {}",
+            self.alarms,
+            self.outages,
+            self.closed_median_ms.map_or("none closed".to_owned(), span),
+            self.repeats
+        )
+    }
+}
+
+impl BranchMeasures {
+    /// For the screen.
+    #[must_use]
+    pub fn json(&self) -> Value {
+        json!({ "submitted": self.submitted, "to_push_median_ms": self.to_push_median_ms,
+                "tested": self.tested, "passed_first": self.passed_first })
+    }
+
+    /// As the CEO and the lead read them.
+    #[must_use]
+    pub fn said(&self) -> String {
+        format!(
+            "{} branches submitted; median branch submitted to push approved: {}; branches \
+             passing the tester first time: {} of {}",
+            self.submitted,
+            self.to_push_median_ms
+                .map_or("none approved".to_owned(), span),
+            self.passed_first,
+            self.tested
+        )
+    }
+}
+
+/// A span in plain words: `12 min`, `3 h 5 min`, `2 days`.
+#[must_use]
+pub fn span(ms: Millis) -> String {
+    let minutes = ms / 60_000;
+    if minutes < 60 {
+        return format!("{minutes} min");
+    }
+    if minutes < 48 * 60 {
+        return format!("{} h {} min", minutes / 60, minutes % 60);
+    }
+    format!("{} days", minutes / (24 * 60))
+}
+
 impl Scorecard {
     /// The card's numbers for the screen, which only renders them.
     #[must_use]
@@ -504,5 +748,197 @@ impl Scorecard {
                 "share": self.cache.share(),
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod measures_tests {
+    use super::*;
+    use crate::domain::{Branch, DeskId, RunId};
+
+    const MIN: Millis = 60_000;
+
+    fn event(id: i64, at: Millis, kind: &str, data: Value) -> Event {
+        Event {
+            id,
+            at,
+            kind: kind.to_owned(),
+            data,
+        }
+    }
+
+    fn area(tasks: &[i64]) -> Area {
+        Area {
+            lead: MemberId(2),
+            members: vec![MemberId(2), MemberId(4)],
+            tasks: tasks.iter().copied().map(TaskId).collect(),
+            lab: true,
+            branches: true,
+        }
+    }
+
+    fn window() -> Window {
+        Window {
+            from: 0,
+            until: 10 * DAY_MS,
+        }
+    }
+
+    /// The night of 17 October as the record kept it: deluge and prowlarr exited, came back,
+    /// and exited again two hours later, in two tasks of the upkeep area.
+    #[test]
+    fn the_labs_measures_count_long_outages_the_time_to_close_and_repeats() {
+        let lab = [
+            "deluge".to_owned(),
+            "prowlarr".to_owned(),
+            "nzbget".to_owned(),
+        ];
+        let events = [
+            event(
+                1,
+                0,
+                "routine.fired",
+                json!({ "firing": "alarm", "task": 667,
+                  "why": "deluge, prowlarr exited" }),
+            ),
+            event(
+                2,
+                3 * MIN,
+                "routine.posted",
+                json!({ "task": 667, "recovered": true,
+                  "said": "deluge is back" }),
+            ),
+            event(
+                3,
+                3 * MIN,
+                "task.changed",
+                json!({ "task": 667, "status": "done" }),
+            ),
+            event(
+                4,
+                120 * MIN,
+                "routine.fired",
+                json!({ "firing": "alarm", "task": 668,
+                  "why": "deluge, nzbget, prowlarr exited" }),
+            ),
+            event(
+                5,
+                150 * MIN,
+                "task.changed",
+                json!({ "task": 668, "status": "done" }),
+            ),
+            // Another area's alarm counts nowhere here.
+            event(
+                6,
+                150 * MIN,
+                "routine.fired",
+                json!({ "firing": "alarm", "task": 900,
+                  "why": "deluge exited" }),
+            ),
+        ];
+        let threads = HashMap::new();
+        let record = AreaRecord {
+            events: &events,
+            tasks: &[],
+            desk: &[],
+            branches: &[],
+            threads: &threads,
+            testers: &[],
+            lab: Some(&lab),
+            now: 200 * MIN,
+        };
+        let m = lab_measures(&area(&[667, 668]), &record, &window());
+        assert_eq!(
+            m,
+            LabMeasures {
+                alarms: 2,
+                outages: 1,
+                closed_median_ms: Some((3 * MIN + 30 * MIN) / 2),
+                repeats: 1,
+            }
+        );
+        assert_eq!(
+            m.said(),
+            "2 alarms; unplanned outages over 10 min: 1; median alarm to closed: 16 min; \
+             repeat alarms within 24 h: 1"
+        );
+    }
+
+    #[test]
+    fn the_wings_measures_time_a_branch_to_its_push_and_count_first_time_passes() {
+        let branch = |id: i64, task: i64, at: Millis| Branch {
+            id,
+            task: TaskId(task),
+            run: RunId(1),
+            member: MemberId(4),
+            name: format!("hq/task-{task}"),
+            head: String::new(),
+            base: String::new(),
+            files: 1,
+            plus: 1,
+            minus: 0,
+            can_push: true,
+            status: "submitted".to_owned(),
+            at,
+        };
+        let branches = [branch(1, 10, 0), branch(2, 11, 0)];
+        let desk = [DeskItem {
+            id: DeskId(5),
+            kind: "push".to_owned(),
+            task: Some(TaskId(10)),
+            goal: None,
+            project: None,
+            member: Some(MemberId(4)),
+            text: String::new(),
+            status: "approve".to_owned(),
+            at: 30 * MIN,
+        }];
+        let events = [event(
+            1,
+            90 * MIN,
+            "desk.decided",
+            json!({ "item": 5, "kind": "push", "decision": "approve" }),
+        )];
+        let mut threads = HashMap::new();
+        threads.insert(
+            TaskId(10),
+            vec![
+                ("Rae".to_owned(), "doing → in_review: ready".to_owned()),
+                ("Dee".to_owned(), "Tested and passed: fine".to_owned()),
+            ],
+        );
+        threads.insert(
+            TaskId(11),
+            vec![
+                ("Dee".to_owned(), "Sent back: lint fails".to_owned()),
+                ("Dee".to_owned(), "Tested and passed: fixed".to_owned()),
+            ],
+        );
+        let testers = ["Dee".to_owned()];
+        let record = AreaRecord {
+            events: &events,
+            tasks: &[],
+            desk: &desk,
+            branches: &branches,
+            threads: &threads,
+            testers: &testers,
+            lab: None,
+            now: 100 * MIN,
+        };
+        let m = branch_measures(&area(&[]), &record, &window());
+        assert_eq!(
+            m,
+            BranchMeasures {
+                submitted: 2,
+                to_push_median_ms: Some(90 * MIN),
+                tested: 2,
+                passed_first: 1,
+            }
+        );
+        assert!(
+            m.said().contains("passing the tester first time: 1 of 2"),
+            "{}",
+            m.said()
+        );
     }
 }

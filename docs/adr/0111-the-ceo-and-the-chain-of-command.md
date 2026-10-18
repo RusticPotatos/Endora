@@ -3,6 +3,12 @@
 ## Status
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
+[0120](0120-roles-as-an-enforced-raci.md) (2026-10-18): roles are an enforced RACI. The CEO
+sets direction and keeps out of the areas' work: it reads anything (on a cloud brain what the
+cloud lead reads), acts on nothing in the lab, is never woken by its alarms, and on a lead's
+task directs the lead (`direct`) rather than claiming, moving, closing or accepting it; it
+writes each goal's strategy, and its review and planning steer by strategy, the leads' reports
+and each area's measures. House log lines carry the year. Amended by
 [0116](0116-the-teams-standards.md): `read_doc` is every member's, and its library gains the
 team's standards and drafts. Amends
 [0102](0102-endora-hq.md) (the owner is the board, and a CEO member takes most of the desk),

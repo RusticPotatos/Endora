@@ -334,7 +334,7 @@ fn coming_back_up_is_said_in_the_alarms_open_task_and_wakes_its_owner() {
         told.contains(
             "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
              check_back, run_gate, request_action, propose_project, accept, hand_to, \
-             request_hire, request_staff, read_document, read_doc, office. Endora's own tools on the home lab \
+             request_hire, request_staff, report_area, decide_stuck, read_document, read_doc, office. Endora's own tools on the home lab \
              (homelab_status and the like) come beside them: what your tool list offers, you \
              have.\n"
         ),
@@ -585,6 +585,8 @@ fn a_task_that_moves_nothing_twice_backs_off_its_stale_wakes_but_never_news() {
         )
         .unwrap();
     empty_turn(&hq, t.dev, task, WakeReason::Assigned);
+    // A stale wake waits two minutes after the member's last turn on the task, whatever.
+    clock.forward(2 * MINUTE_MS);
     empty_turn(&hq, t.dev, task, WakeReason::Recovery);
 
     // Two empty turns: a nudge waits two minutes.
@@ -679,8 +681,11 @@ fn turns_that_only_reclaim_and_leave_a_last_word_move_nothing() {
     let first = ended(&hq).pop().unwrap();
     assert!(first.moved_forward, "taking the task is progress");
     // Two more that only re-claim it and say their last word: not progress.
-    workers_empty_turn(&hq, t.dev, task, WakeReason::Recovery);
-    workers_empty_turn(&hq, t.dev, task, WakeReason::Recovery);
+    for _ in 0..2 {
+        // A stale wake waits two minutes after the member's last turn on the task.
+        clock.forward(2 * MINUTE_MS);
+        workers_empty_turn(&hq, t.dev, task, WakeReason::Recovery);
+    }
     let turns = ended(&hq);
     assert_eq!(turns.len(), 3);
     assert!(

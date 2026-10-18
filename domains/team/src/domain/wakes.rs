@@ -1,6 +1,11 @@
 //! Wakes: every turn a member takes starts with one, and every one leaves a receipt.
 
-use super::work::{MemberId, RunId};
+use super::work::{MemberId, Millis, RunId};
+
+/// How long after a member's turn on a task ended a wake that brings nothing new waits before
+/// its next turn on it: two minutes. Something new (a reply, an answer, an alarm, a
+/// check-back's time) is never kept waiting.
+pub const AGAIN_AFTER_MS: Millis = 2 * 60 * 1000;
 
 /// Why a member is asked to take a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +52,14 @@ pub enum WakeReason {
     CheckDone,
     /// Nothing to do: a turn about no task, for the office and the notebook (ADR 0119).
     Downtime,
+    /// The CEO gave the lead of the task's area a direction (ADR 0120): the lead decides what
+    /// to do with it.
+    Directed,
+    /// Stuck work climbed the ladder to this member (ADR 0120): the area's lead, to decide;
+    /// or the CEO, when the lead said it needs the CEO.
+    Decide,
+    /// A huddle on stuck work asks this member for its view, in one short turn (ADR 0120).
+    Huddle,
 }
 
 impl WakeReason {
@@ -73,6 +86,9 @@ impl WakeReason {
             Self::AcceptanceAsked => "acceptance_asked",
             Self::CheckDone => "check_done",
             Self::Downtime => "downtime",
+            Self::Directed => "directed",
+            Self::Decide => "decide",
+            Self::Huddle => "huddle",
         }
     }
 
@@ -108,6 +124,9 @@ impl WakeReason {
                 | Self::QuestionAsked
                 | Self::QuestionAnswered
                 | Self::CheckDone
+                | Self::Directed
+                | Self::Decide
+                | Self::Huddle
         )
     }
 
@@ -150,6 +169,9 @@ impl WakeReason {
             Self::AcceptanceAsked,
             Self::CheckDone,
             Self::Downtime,
+            Self::Directed,
+            Self::Decide,
+            Self::Huddle,
         ]
         .into_iter()
         .find(|r| r.name() == name)
