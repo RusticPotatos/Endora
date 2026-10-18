@@ -126,7 +126,7 @@ async function soundLiveStart(url) {
       stat: soundLiveStat,
       playing: (on) => { if (on && gen === SOUND.gen) soundAudioQuiet(); },
       ended: () => { if (gen === SOUND.gen && SOUND.listening && SOUND.mode === "live") setTimeout(soundReconnect, 1500); },
-    });
+    }, (soundMine() || {}).sync_ms);
     if (gen !== SOUND.gen) { liveClose(s); return; }
     LIVE.session = s;
   } catch (_) {
@@ -167,6 +167,39 @@ function soundModeSaid() {
   }
   return SOUND.liveBlocked ? "listening · a few seconds behind; live needs a tap"
     : "listening · a few seconds behind; plays on with the screen locked";
+}
+
+// Lip-sync on the speaker card, in live mode: "Lip-sync  −  +0.0 s  +", a tenth of a second a
+// tap. Positive plays this speaker later. Earlier than the buffer allows says what to do.
+function soundSyncControl(mine) {
+  const ms = Number(mine.sync_ms) || 0;
+  const short = liveSyncPlan(ms, LIVE_MIN).short;
+  return `<div class="row" style="gap:8px;align-items:center;margin-top:6px;">
+      <span class="sub">Lip-sync</span>
+      <button class="ghost" data-act="sound:sync:-100" aria-label="Play 0.1 s earlier"${ms <= -500 ? " disabled" : ""}>−</button>
+      <b id="sound-sync-label">${esc(soundSyncLabel(ms))}</b>
+      <button class="ghost" data-act="sound:sync:100" aria-label="Play 0.1 s later"${ms >= 1500 ? " disabled" : ""}>+</button></div>
+    ${short ? `<div class="sub" id="sound-sync-note">Can't go earlier on this speaker; lower the door's early hand-over.</div>` : ""}`;
+}
+
+// Moves this speaker's lip-sync by `by` ms: the playing stream follows at once, and the hub
+// keeps it. A hub that refuses puts it back.
+async function soundSyncBy(by) {
+  const mine = soundMine();
+  if (!mine) return;
+  const was = Number(mine.sync_ms) || 0;
+  const ms = Math.max(-500, Math.min(1500, was + by));
+  if (ms === was) return;
+  mine.sync_ms = ms;
+  if (LIVE.session) liveSetSync(LIVE.session, ms);
+  render();
+  try { await api("PUT", `/v1/sound/speakers/${mine.id}/sync`, { ms }); }
+  catch (e) {
+    mine.sync_ms = was;
+    if (LIVE.session) liveSetSync(LIVE.session, was);
+    flash("Couldn't save the lip-sync: " + e.message, "err");
+    render();
+  }
 }
 
 // The way to hear changed (the owner picked one, the wires changed, the page went to the
@@ -284,7 +317,8 @@ function viewSound() {
       <div class="sub" id="sound-live-label" style="margin-top:4px;">${esc(soundModeSaid())}</div>
       <div class="row" style="gap:8px;align-items:center;margin-top:6px;">
         <button class="ghost" data-act="sound:measure"${SOUND.measuring || !SOUND.listening ? " disabled" : ""}>Measure delay</button>
-        <span class="sub grow">${esc(measured || (SOUND.listening ? "" : "Listen first, then measure."))}</span></div></div>`
+        <span class="sub grow">${esc(measured || (SOUND.listening ? "" : "Listen first, then measure."))}</span></div>
+      ${SOUND.listening && SOUND.mode === "live" ? soundSyncControl(mine) : ""}</div>`
     : `<div class="card"><div class="title">Listen on this device</div>
         <div class="sub">It becomes a speaker you can wire sound to.</div>
         <div class="form" style="margin-top:8px;"><input id="sound-mine" value="${esc(soundGuessName())}" maxlength="40" autocomplete="off" />
@@ -412,6 +446,7 @@ async function soundDispatch(verb, noun, id, arg) {
     render(); return true;
   }
   if (noun === "measure") { await soundMeasure(); return true; }
+  if (noun === "sync") { await soundSyncBy(Number(id) || 0); return true; }
   if (noun === "forgetlisten") { soundRemember(false); soundBanner(""); return true; }
   if (noun === "stop") {
     SOUND.listening = false; SOUND.mode = null; SOUND.gen++; SOUND.stat = null;

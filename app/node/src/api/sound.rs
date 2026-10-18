@@ -221,6 +221,21 @@ pub(super) async fn sound_set_volume(
     .await
 }
 
+/// A speaker's lip-sync, in milliseconds: positive plays it later, negative earlier.
+pub(super) async fn sound_set_sync(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+    Json(body): Json<serde_json::Value>,
+) -> Answer {
+    ask(
+        &state,
+        SoundMethod::Put,
+        format!("/v1/speakers/{id}/sync"),
+        Some(body),
+    )
+    .await
+}
+
 /// The AirPlay speakers the hub's senders can see, to add by name.
 pub(super) async fn sound_found(State(state): State<AppState>) -> Answer {
     ask(&state, SoundMethod::Get, "/v1/found".to_owned(), None).await
@@ -521,6 +536,41 @@ mod tests {
         let res = app(test_state()).oneshot(get("/v1/sound")).await.unwrap();
         assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(json_body(res).await["configured"], false);
+    }
+
+    #[tokio::test]
+    async fn a_speakers_lip_sync_goes_to_the_hub_signed_and_only_with_the_owners_token() {
+        let (url, requests) = a_hub("204 No Content", "application/json", b"");
+        let put = |token: Option<&str>| {
+            let mut b = Request::builder()
+                .method("PUT")
+                .uri("/v1/sound/speakers/3/sync")
+                .header("content-type", "application/json");
+            if let Some(t) = token {
+                b = b.header("authorization", format!("Bearer {t}"));
+            }
+            b.body(Body::from(r#"{"ms":300}"#)).unwrap()
+        };
+        let refused = app(with_hub(&url)).oneshot(put(None)).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+        let res = app(with_hub(&url))
+            .oneshot(put(Some(crate::api::tests::TEST_TOKEN)))
+            .await
+            .unwrap();
+        assert!(res.status().is_success(), "{}", res.status());
+        let request = requests.recv().unwrap();
+        assert!(request.starts_with("PUT /v1/speakers/3/sync "), "{request}");
+        let body = request.split("\r\n\r\n").nth(1).unwrap();
+        let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(sent["ms"], 300);
+        assert!(
+            request.to_lowercase().contains("bearer the-hubs-own-token"),
+            "{request}"
+        );
+        assert!(
+            !request.contains(crate::api::tests::TEST_TOKEN),
+            "the owner's token went to the hub"
+        );
     }
 
     #[tokio::test]

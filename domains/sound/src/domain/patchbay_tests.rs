@@ -377,6 +377,23 @@ fn a_speakers_volume_is_its_own() {
 }
 
 #[test]
+fn a_speakers_sync_starts_at_zero_and_stays_within_its_range() {
+    let (mut bay, _, _, _, kitchen, _) = usual();
+    assert_eq!(bay.speaker(kitchen).unwrap().sync_ms, 0);
+    bay.set_sync(kitchen, 700).unwrap();
+    assert_eq!(bay.speaker(kitchen).unwrap().sync_ms, 700);
+    bay.set_sync(kitchen, SYNC_MIN).unwrap();
+    bay.set_sync(kitchen, SYNC_MAX).unwrap();
+    for bad in [SYNC_MIN - 1, SYNC_MAX + 1] {
+        assert_eq!(bay.set_sync(kitchen, bad), Err(Refusal::BadSync));
+    }
+    assert_eq!(bay.speaker(kitchen).unwrap().sync_ms, SYNC_MAX);
+    assert_eq!(bay.set_sync(SpeakerId(99), 0), Err(Refusal::NoSuchSpeaker));
+    // Sync is how late the speaker plays, not part of its mix.
+    assert!(bay.groups().is_empty());
+}
+
+#[test]
 fn every_change_moves_the_revision_on_and_a_refusal_does_not() {
     let (mut bay, phone, _, phone_out, kitchen, _) = usual();
     let r = bay.revision();

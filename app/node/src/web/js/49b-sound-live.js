@@ -15,6 +15,8 @@
 // source is these functions' own `toString()` plus the processor below.
 
 const LIVE_RATE = 44100;       // what the hub mixes at; the context is asked for it too
+const LIVE_MIN = 300;          // the buffer's least depth, in ms, and
+const LIVE_MAX = 800;          // its most
 const LIVE_HEADER = 24;        // a frame's header, in bytes (see app/sound/src/live.rs)
 const LIVE_TONE = { hz: 2000, amp: 0.1 };  // the delay probe's tone, which the hub plays
 
@@ -74,28 +76,69 @@ function liveSeqStep(expected, seq) {
 }
 
 // ---- pure: the adaptive buffer ---------------------------------------------------------------
-// The target depth of the buffer, in ms, and how it moves. It starts at `min` (300), grows when
-// the sound ran dry (x1.5) or frames went missing (x1.25), up to `max` (1000), and shrinks by
-// 25 ms for each 5 s that played without trouble. `ev` is { kind: "underrun" }, { kind: "gap" }
-// or { kind: "tick", ms } (ms of smooth playing). Returns the new state; never changes the old.
+// The target depth of the buffer, in ms, and how it moves. It starts at `min` (300), grows by
+// a fixed step when the sound ran dry (+60) or frames went missing (+30), up to `max` (800), and
+// shrinks by 10 ms for each 10 s that played without trouble, but never below a FLOOR: the
+// target that last ran dry plus its step, which itself falls back towards `min` by 10 ms for
+// each 30 s without a dry spell. So the buffer settles just above what the network needs, does
+// not climb to a second and stay there (multiplying did), and does not shrink into the same
+// dry spell every few minutes (shrinking to the minimum did).
+// `ev` is { kind: "underrun" }, { kind: "gap" } or { kind: "tick", ms } (ms of smooth playing).
+// Returns the new state; never changes the old. `floor` and `fcalm` may be missing (zero).
 function liveJitter(s, ev) {
   const min = s.min, max = s.max;
-  if (ev.kind === "underrun") return { target: Math.min(max, Math.round(s.target * 1.5)), min, max, calm: 0 };
-  if (ev.kind === "gap") return { target: Math.min(max, Math.round(s.target * 1.25)), min, max, calm: 0 };
+  const floor = Math.max(min, Math.min(max, s.floor || 0));
+  if (ev.kind === "underrun") {
+    const target = Math.min(max, s.target + 60);
+    return { target, min, max, calm: 0, floor: target, fcalm: 0 };
+  }
+  if (ev.kind === "gap") {
+    return { target: Math.min(max, s.target + 30), min, max, calm: 0, floor, fcalm: s.fcalm || 0 };
+  }
   if (ev.kind === "tick") {
-    const calm = s.calm + ev.ms;
-    if (calm >= 5000) return { target: Math.max(min, s.target - 25), min, max, calm: 0 };
-    return { target: s.target, min, max, calm };
+    let calm = s.calm + ev.ms, fcalm = (s.fcalm || 0) + ev.ms, f = floor, target = s.target;
+    while (fcalm >= 30000) { fcalm -= 30000; f = Math.max(min, f - 10); }
+    while (calm >= 10000) { calm -= 10000; target = Math.max(min, f, target - 10); }
+    return { target, min, max, calm, floor: f, fcalm };
   }
   return s;
 }
 
+// The state with a new minimum (lip-sync lowers or restores it): the target and the floor move
+// by as much as the minimum did, and stay between the minimum and the maximum.
+function liveRebase(s, min) {
+  const d = min - s.min;
+  const clamp = (x) => Math.max(min, Math.min(s.max, x));
+  return { target: clamp(s.target + d), min, max: s.max, calm: s.calm || 0, floor: clamp((s.floor || 0) + d), fcalm: s.fcalm || 0 };
+}
+
+// What a lip-sync offset (ms; positive plays later, negative earlier) asks of the buffer.
+// Later is a fixed extra delay on top of the target. Earlier lowers the buffer's minimum, but
+// never under 80 ms; `short` says the offset asked for more than that allows.
+function liveSyncPlan(ms, baseMin) {
+  const sync = Math.max(-500, Math.min(1500, Math.round(Number(ms) || 0)));
+  if (sync >= 0) return { extra: sync, min: baseMin, short: false };
+  const want = baseMin + sync;
+  return { extra: 0, min: Math.max(80, want), short: want < 80 };
+}
+
+// "+0.3 s", "−0.2 s": a lip-sync offset for the card.
+function soundSyncLabel(ms) {
+  const n = Math.round(Number(ms) || 0);
+  return `${n < 0 ? "−" : "+"}${(Math.abs(n) / 1000).toFixed(1)} s`;
+}
+
 // How fast to play to bring the buffer to its target: half a percent faster when it holds more
-// than 40 ms too much, slower when it holds that much too little. (Half a percent is a tenth of
-// a semitone; nobody hears it, and 5 ms of buffer goes every second.)
+// than 40 ms too much, two percent when it holds more than 100 ms too much (it would take half
+// a minute otherwise), and the same either way for too little (a lip-sync nudge later is a
+// buffer that must fill). (Half a percent is a tenth of a
+// semitone; nobody hears it, and 5 ms of buffer goes every second. Two percent is a third of a
+// semitone, for the few seconds it takes.)
 function liveServo(depthMs, targetMs) {
   const err = depthMs - targetMs;
+  if (err > 100) return 1.02;
   if (err > 40) return 1.005;
+  if (err < -100) return 0.98;
   if (err < -40) return 0.995;
   return 1;
 }
@@ -164,7 +207,8 @@ function liveDelayLabel(ms) {
 // ---- the worklet ----------------------------------------------------------------------------
 // The processor that plays the frames. It is built into a script out of the pure functions
 // above (so there is one copy of each), and runs on the audio thread. Messages in: { t: "frame",
-// seq, rate, l, r }, { t: "probe", on, ref }, { t: "level", v }. Messages out: { t: "stat",
+// seq, rate, l, r }, { t: "probe", on, ref }, { t: "level", v }, { t: "sync", extra, min } (the
+// lip-sync plan: ms of delay added, and the buffer's new minimum). Messages out: { t: "stat",
 // depthMs, target, playing, under, gaps, lost }, { t: "playing", on } and { t: "tone", at }
 // (the context time the probe's tone began to come out).
 //
@@ -177,7 +221,10 @@ function liveWorkletBody() {
     constructor(options) {
       super();
       const o = (options && options.processorOptions) || {};
-      this.jit = o.jitter || { target: 300, min: 300, max: 1000, calm: 0 };
+      this.jit = o.jitter || { target: 300, min: 300, max: 800, calm: 0 };
+      // Lip-sync: a fixed extra delay on top of the target, or a lower minimum.
+      this.extra = 0;
+      if (o.sync !== undefined) this.lipSync(liveSyncPlan(o.sync, this.jit.min));
       this.window = new Float32Array(Math.max(1, Math.round(sampleRate / 100)));
       this.tap = new Float32Array(128);
       this.setRate(o.rate || 44100);
@@ -187,6 +234,11 @@ function liveWorkletBody() {
       this.level = 1; this.probe = null; this.gain = 0;
       this.playing = false;
       this.port.onmessage = (e) => this.heard(e.data);
+    }
+
+    lipSync(plan) {
+      this.extra = plan.extra;
+      this.jit = liveRebase(this.jit, plan.min);
     }
 
     setRate(rate) {
@@ -200,6 +252,7 @@ function liveWorkletBody() {
 
     heard(m) {
       if (m.t === "level") { this.level = m.v; return; }
+      if (m.t === "sync") { this.lipSync({ extra: m.extra, min: m.min }); return; }
       if (m.t === "probe") { this.probe = m.on ? { ref: m.ref, found: false } : null; return; }
       if (m.t !== "frame") return;
       if (m.rate && m.rate !== this.rate) { this.setRate(m.rate); this.expected = null; this.playing = false; }
@@ -226,7 +279,9 @@ function liveWorkletBody() {
       const n = L.length;
       const dt = n / sampleRate * 1000;
       const per = this.rate / 1000;
-      if (!this.playing && this.wr - this.rd >= this.jit.target * per) {
+      // What it holds, in ms, when all is well: the target and any lip-sync delay on top.
+      const want = this.jit.target + this.extra;
+      if (!this.playing && this.wr - this.rd >= want * per) {
         this.playing = true; this.last = this.rd; this.smooth = 0; this.gain = 0;
         this.port.postMessage({ t: "playing", on: true });
       }
@@ -234,10 +289,10 @@ function liveWorkletBody() {
       if (this.playing) {
         // Far ahead of its target (a burst, or a target that shrank): skip ahead to it, after
         // fading out over the next 5 ms, so the jump is a dip and never a click.
-        if (!this.skip && this.wr - this.rd > (this.jit.target + 250) * per) {
-          this.skip = { at: this.rd + this.fade, to: this.wr - this.jit.target * per };
+        if (!this.skip && this.wr - this.rd > (want + 150) * per) {
+          this.skip = { at: this.rd + this.fade, to: this.wr - want * per };
         }
-        const step = this.rate / sampleRate * liveServo((this.wr - this.rd) / per, this.jit.target);
+        const step = this.rate / sampleRate * liveServo((this.wr - this.rd) / per, want);
         for (; i < n; i++) {
           while (this.gaps.length && this.gaps[0] <= this.rd) this.last = this.gaps.shift();
           if (this.skip && this.rd >= this.skip.at) {
@@ -302,7 +357,7 @@ function liveWorkletBody() {
 
 // The worklet's script.
 function liveWorkletSource() {
-  return [liveSeqStep, liveJitter, liveServo, liveTone].map((f) => f.toString()).join("\n")
+  return [liveSeqStep, liveJitter, liveRebase, liveSyncPlan, liveServo, liveTone].map((f) => f.toString()).join("\n")
     + "\n(" + liveWorkletBody.toString() + ")();\n";
 }
 
@@ -341,7 +396,7 @@ function liveModule(ctx) {
 // Opens a live stream (the node's `url`, with its ticket) and starts playing it into the
 // speakers, silently if `muted`. Returns the session: the stream goes on until `liveClose`.
 // `on` has callbacks: stat(s), playing(bool), ended(), tone(at).
-async function liveOpen(url, muted, on) {
+async function liveOpen(url, muted, on, sync) {
   const ctx = liveContext();
   if (!ctx) throw new Error("live mode isn't available in this browser");
   await liveModule(ctx);
@@ -349,7 +404,7 @@ async function liveOpen(url, muted, on) {
   if (ctx.state !== "running") throw new Error("the browser would not start live sound without a tap");
   const node = new AudioWorkletNode(ctx, "endora-live", {
     numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
-    processorOptions: { rate: LIVE_RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } },
+    processorOptions: { rate: LIVE_RATE, jitter: { target: LIVE_MIN, min: LIVE_MIN, max: LIVE_MAX, calm: 0 }, sync: Number(sync) || 0 },
   });
   const gain = ctx.createGain();
   gain.gain.value = muted ? 0 : 1;
@@ -382,6 +437,14 @@ async function liveOpen(url, muted, on) {
     if (!s.closed && s.on.ended) s.on.ended();
   })();
   return s;
+}
+
+// Lip-sync, applied at once to the stream playing (ms; positive plays later). Returns the plan,
+// whose `short` says an earlier offset than the buffer can give was asked for.
+function liveSetSync(s, ms) {
+  const plan = liveSyncPlan(ms, LIVE_MIN);
+  if (s && !s.closed) s.node.port.postMessage({ t: "sync", extra: plan.extra, min: plan.min });
+  return plan;
 }
 
 function liveClose(s) {

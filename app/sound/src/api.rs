@@ -46,6 +46,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/speakers", post(add_speaker))
         .route("/v1/speakers/{id}", delete(remove_speaker))
         .route("/v1/speakers/{id}/volume", put(set_volume))
+        .route("/v1/speakers/{id}/sync", put(set_sync))
         .route("/v1/wires", put(wire))
         .route("/v1/wires/{source}/{speaker}", delete(unwire))
         .route("/v1/setups", post(save_setup))
@@ -160,6 +161,13 @@ async fn the_state(Extract(state): Extract<State>) -> Json<Value> {
             }))
             .collect();
         v["listening"] = json!(state.listeners.listening().iter().map(|s| s.0).collect::<Vec<_>>());
+        // How long each source's sound waits here before it is mixed: readable without a probe.
+        v["intake"] = state
+            .listeners
+            .intake()
+            .iter()
+            .map(|(name, ms)| json!({ "source": name, "ms": ms }))
+            .collect();
         v
     }))
 }
@@ -433,6 +441,24 @@ async fn set_volume(
 ) -> Result<StatusCode, Failed> {
     let level = a_level(req.level)?;
     change(&state, move |bay| bay.set_volume(SpeakerId(id), level)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct SyncOf {
+    ms: i64,
+}
+
+/// Sets a speaker's lip-sync, in milliseconds: positive plays it later, negative earlier.
+async fn set_sync(
+    Extract(state): Extract<State>,
+    Path(id): Path<u32>,
+    Json(req): Json<SyncOf>,
+) -> Result<StatusCode, Failed> {
+    let ms = i16::try_from(req.ms)
+        .map_err(|_| Refusal::BadSync)
+        .map_err(HubError::Refused)?;
+    change(&state, move |bay| bay.set_sync(SpeakerId(id), ms)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1062,6 +1088,60 @@ mod tests {
         }
         feeder.join().unwrap();
         assert_eq!(seen, (0..10u32).zip(1..=10i16).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn a_speakers_sync_is_set_within_its_range_and_kept_in_the_state() {
+        let (state, path) = state();
+        let app = app(state);
+        let (_, kitchen) = send(
+            &app,
+            "POST",
+            "/v1/speakers",
+            r#"{"name":"Kitchen","kind":"airplay"}"#,
+        )
+        .await;
+        let uri = format!("/v1/speakers/{}/sync", kitchen["id"]);
+        let (_, before) = send(&app, "GET", "/v1/state", "").await;
+        assert_eq!(before["speakers"][0]["sync_ms"], 0);
+        assert_eq!(
+            send(&app, "PUT", &uri, r#"{"ms":-300}"#).await.0,
+            StatusCode::NO_CONTENT
+        );
+        for bad in [r#"{"ms":1600}"#, r#"{"ms":-501}"#, r#"{"ms":99999999}"#] {
+            assert_eq!(
+                send(&app, "PUT", &uri, bad).await.0,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            send(&app, "PUT", "/v1/speakers/99/sync", r#"{"ms":0}"#)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, s) = send(&app, "GET", "/v1/state", "").await;
+        assert_eq!(s["speakers"][0]["sync_ms"], -300);
+        let kept: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(kept["speakers"][0]["sync_ms"], -300);
+        let res = app
+            .clone()
+            .oneshot(call("PUT", &uri, None, r#"{"ms":0}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_state_tells_how_long_each_source_waits_without_a_probe() {
+        let (state, _) = state();
+        state
+            .listeners
+            .note_intake(vec![("Endora Mixer".to_owned(), 90)]);
+        let app = app(state);
+        let (_, s) = send(&app, "GET", "/v1/state", "").await;
+        assert_eq!(s["intake"], json!([{ "source": "Endora Mixer", "ms": 90 }]));
     }
 
     #[tokio::test(flavor = "multi_thread")]

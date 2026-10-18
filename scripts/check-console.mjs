@@ -1622,25 +1622,52 @@ if (failures.length) {
     fail("live: sequence gaps, late frames or the wrap at 2^32 are misread: " + JSON.stringify(gaps));
   }
 
-  // The buffer: starts at 300, grows when it runs dry or frames go missing, stops at 1000,
-  // shrinks by 25 ms for each 5 s of calm, stops at 300, and never changes the state it was given.
+  // The buffer: starts at 300, grows by a fixed step when it runs dry (+60) or frames go missing
+  // (+30), stops at 800, shrinks 10 ms for each 10 s of calm but never under a floor (the target
+  // that last ran dry), which itself falls 10 ms for each 30 s, and never changes its input.
   const jitter = JSON.parse(ev(`(() => {
-    const s0 = { target: 300, min: 300, max: 1000, calm: 0 };
+    const s0 = { target: 300, min: 300, max: 800, calm: 0 };
     const dry = liveJitter(s0, { kind: "underrun" }), gap = liveJitter(s0, { kind: "gap" });
     let s = s0; const grown = [];
-    for (let i = 0; i < 6; i++) { s = liveJitter(s, { kind: "underrun" }); grown.push(s.target); }
-    const calm = liveJitter(liveJitter(liveJitter(liveJitter(s, { kind: "tick", ms: 1000 }), { kind: "tick", ms: 1000 }), { kind: "tick", ms: 1000 }), { kind: "tick", ms: 1000 });
-    const shrunk = liveJitter(calm, { kind: "tick", ms: 1000 });
-    let t = { target: 330, min: 300, max: 1000, calm: 0 };
-    for (let i = 0; i < 30; i++) t = liveJitter(t, { kind: "tick", ms: 1000 });
-    const troubled = liveJitter({ target: 600, min: 300, max: 1000, calm: 4500 }, { kind: "gap" });
-    return JSON.stringify({ dry: dry.target, gap: gap.target, grown, calm: calm.target, shrunk: shrunk.target, floor: t.target, kept: s0.target, troubled });
+    for (let i = 0; i < 12; i++) { s = liveJitter(s, { kind: "underrun" }); grown.push(s.target); }
+    const tick = (x, seconds) => { for (let i = 0; i < seconds; i++) x = liveJitter(x, { kind: "tick", ms: 1000 }); return x; };
+    let t = { target: 330, min: 300, max: 800, calm: 0 };
+    t = tick(t, 600);
+    const troubled = liveJitter({ target: 600, min: 300, max: 800, calm: 4500, floor: 300, fcalm: 100 }, { kind: "gap" });
+    const rebased = liveRebase({ target: 360, min: 300, max: 800, calm: 0, floor: 360, fcalm: 0 }, 100);
+    return JSON.stringify({ dry, gap: gap.target, grown, floor: t.target, kept: s0.target, troubled, rebased });
   })()`));
-  if (jitter.dry !== 450 || jitter.gap !== 375 || jitter.grown.join() !== "450,675,1000,1000,1000,1000") fail("live: the buffer does not grow as it should: " + JSON.stringify(jitter));
-  if (jitter.calm !== 1000 || jitter.shrunk !== 975 || jitter.floor !== 300 || jitter.kept !== 300) fail("live: the buffer does not shrink slowly, or not to its floor: " + JSON.stringify(jitter));
-  if (jitter.troubled.target !== 750 || jitter.troubled.calm !== 0) fail("live: trouble did not start the calm over");
-  const servo = JSON.parse(ev(`JSON.stringify([liveServo(300, 300), liveServo(330, 300), liveServo(350, 300), liveServo(240, 300)])`));
-  if (servo.join() !== "1,1,1.005,0.995") fail("live: the buffer is not nudged toward its target: " + servo);
+  if (jitter.dry.target !== 360 || jitter.dry.floor !== 360 || jitter.gap !== 330 || jitter.grown.join() !== "360,420,480,540,600,660,720,780,800,800,800,800") fail("live: the buffer does not grow by its fixed steps: " + JSON.stringify(jitter));
+  if (jitter.floor !== 300 || jitter.kept !== 300) fail("live: the buffer does not shrink to its minimum, or changed its input: " + JSON.stringify(jitter));
+  if (jitter.troubled.target !== 630 || jitter.troubled.calm !== 0) fail("live: trouble did not start the calm over");
+  if (jitter.rebased.min !== 100 || jitter.rebased.target !== 160 || jitter.rebased.floor !== 160) fail("live: a lower minimum did not carry the target down with it: " + JSON.stringify(jitter.rebased));
+  // One burst of dry spells raises the target modestly; it then comes down at 10 ms per 10 s but
+  // never under the floor, which falls 10 ms per 30 s; and 10 quiet minutes after that, nothing
+  // runs dry for want of a target that shrank into the same trouble (no sawtooth).
+  const settle = JSON.parse(ev(`(() => {
+    let s = { target: 300, min: 300, max: 800, calm: 0 };
+    for (let i = 0; i < 2; i++) s = liveJitter(s, { kind: "underrun" });
+    const burst = s.target, floor = s.floor;
+    const trace = [];
+    let belowFloor = 0, steps = 0;
+    for (let sec = 1; sec <= 600; sec++) {
+      s = liveJitter(s, { kind: "tick", ms: 1000 });
+      if (s.target < s.floor) belowFloor++;
+      if (sec === 60 || sec === 300 || sec === 600) trace.push([sec, s.target, s.floor]);
+    }
+    return JSON.stringify({ burst, floor, trace, belowFloor });
+  })()`));
+  if (settle.burst !== 420 || settle.floor !== 420) fail("live: a burst of two dry spells should raise the target by 120 ms, no more: " + JSON.stringify(settle));
+  if (settle.belowFloor !== 0) fail("live: the target went under its floor: " + JSON.stringify(settle));
+  if (JSON.stringify(settle.trace) !== JSON.stringify([[60, 400, 400], [300, 320, 320], [600, 300, 300]])) fail("live: the target and its floor do not settle back as they should: " + JSON.stringify(settle.trace));
+  const servo = JSON.parse(ev(`JSON.stringify([liveServo(300, 300), liveServo(330, 300), liveServo(350, 300), liveServo(240, 300), liveServo(450, 300), liveServo(150, 300), liveServo(190, 300)])`));
+  if (servo.join() !== "1,1,1.005,0.995,1.02,0.98,0.98") fail("live: the buffer is not nudged toward its target: " + servo);
+  const plans = JSON.parse(ev(`JSON.stringify([liveSyncPlan(0, 300), liveSyncPlan(700, 300), liveSyncPlan(-100, 300), liveSyncPlan(-220, 300), liveSyncPlan(-500, 300), liveSyncPlan(9999, 300), liveSyncPlan(-9999, 300), liveSyncPlan("x", 300)])`));
+  if (JSON.stringify(plans) !== JSON.stringify([
+    { extra: 0, min: 300, short: false }, { extra: 700, min: 300, short: false }, { extra: 0, min: 200, short: false },
+    { extra: 0, min: 80, short: false }, { extra: 0, min: 80, short: true }, { extra: 1500, min: 300, short: false },
+    { extra: 0, min: 80, short: true }, { extra: 0, min: 300, short: false }])) fail("live: lip-sync plans are wrong: " + JSON.stringify(plans));
+  if (ev(`[soundSyncLabel(0), soundSyncLabel(300), soundSyncLabel(-200), soundSyncLabel(1500)].join()`) !== "+0.0 s,+0.3 s,−0.2 s,+1.5 s") fail("live: the lip-sync label is wrong");
 
   // Mode: the wires and the owner's choice decide; the background always listens.
   const modes = JSON.parse(ev(`(() => {
@@ -1673,7 +1700,7 @@ if (failures.length) {
   // The worklet itself: built from the same functions, driven block by block with a clock.
   const source = ev("liveWorkletSource()");
   const RATE = 44100, BLOCK = 128;
-  const run = (seconds, options, script) => {
+  const run = (seconds, options, script, keep = true) => {
     const out = [];
     const w = createContext({ sampleRate: RATE, currentTime: 0, Math, Float32Array, Number, Array, Object, JSON });
     runInContext(`class AudioWorkletProcessor { constructor() { this.port = { postMessage: (m) => globalThis.__out.push(m), onmessage: null }; } }
@@ -1686,7 +1713,7 @@ if (failures.length) {
       w.currentTime = b * BLOCK / RATE;
       script(proc, w.currentTime, b);
       proc.process([], [[L, R]]);
-      for (let i = 0; i < BLOCK; i++) left.push(L[i]);
+      if (keep) for (let i = 0; i < BLOCK; i++) left.push(L[i]);
     }
     return { out, left, proc };
   };
@@ -1716,7 +1743,7 @@ if (failures.length) {
   const start = (left) => left.findIndex((x) => x !== 0) / RATE;
 
   // Steady: nothing sounds until 300 ms are in hand, then the sound is a clean sine.
-  const steady = run(3, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5)));
+  const steady = run(3, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, feeding(sine(200, 0.5)));
   const began = start(steady.left);
   if (began < 0.27 || began > 0.37) fail(`live: it began to play after ${began} s, not once 300 ms were in hand`);
   if (steepest(steady.left, 0) > SMOOTH) fail("live: steady playing has a click in it");
@@ -1724,49 +1751,111 @@ if (failures.length) {
   if (Math.abs(stat.depthMs - 300) > 25 || stat.under !== 0 || stat.gaps !== 0 || stat.target !== 300) fail("live: steady playing did not hold its buffer: " + JSON.stringify(stat));
 
   // A burst of sound arriving at once is skipped down to the target, not played late for ever.
-  const burst = run(2, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, (() => { let done = false; return (proc, now) => { if (!done) { done = true; for (let k = 0; k < 75; k++) proc.heard(frameAt(k, sine(200, 0.5))); } else { const k = 75 + Math.floor((now - 0.0001) / 0.02); if (k >= proc.expected && now > 0) proc.heard(frameAt(proc.expected, sine(200, 0.5))); } }; })());
+  const burst = run(2, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, (() => { let done = false; return (proc, now) => { if (!done) { done = true; for (let k = 0; k < 75; k++) proc.heard(frameAt(k, sine(200, 0.5))); } else { const k = 75 + Math.floor((now - 0.0001) / 0.02); if (k >= proc.expected && now > 0) proc.heard(frameAt(proc.expected, sine(200, 0.5))); } }; })());
   const burstStat = burst.out.filter((m) => m.t === "stat").pop();
   if (burstStat.depthMs > 700) fail("live: a burst of 1.5 s was played late instead of skipped: " + JSON.stringify(burstStat));
 
   // Running dry (a stall that ends in a burst): it fades to nothing without a click, waits for
-  // 450 ms, grows its target, and, nothing being lost, counts no gap.
-  const dry = run(4, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5), [], 1.2, 1.8));
+  // 360 ms, grows its target, and, nothing being lost, counts no gap.
+  const dry = run(4, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, feeding(sine(200, 0.5), [], 1.2, 1.8));
   const dryStat = dry.out.filter((m) => m.t === "stat").pop();
-  if (dryStat.under !== 1 || dryStat.target !== 450 || dryStat.gaps !== 0) fail("live: running dry was not noticed, or did not grow the buffer: " + JSON.stringify(dryStat));
+  if (dryStat.under !== 1 || dryStat.target !== 360 || dryStat.gaps !== 0) fail("live: running dry was not noticed, or did not grow the buffer: " + JSON.stringify(dryStat));
   if (steepest(dry.left, 0) > SMOOTH) fail("live: running dry clicked");
   const playing = dry.out.filter((m) => m.t === "playing").map((m) => m.on);
   if (playing.join() !== "true,false,true") fail("live: it did not stop and start again around the dry spell: " + playing);
   // It is quiet through the dry spell (the buffer of 300 ms emptied at about 1.5 s) and plays
-  // again when the burst has brought it past the new target of 450 ms.
+  // again when the burst has brought it past the new target of 360 ms.
   const quiet = dry.left.slice(Math.round(1.55 * RATE), Math.round(1.79 * RATE));
   if (Math.max(...quiet.map(Math.abs)) !== 0) fail("live: it made sound with nothing to play");
   const again = dry.left.slice(Math.round(1.8 * RATE)).findIndex((x) => x !== 0) / RATE + 1.8;
-  if (again > 1.85) fail(`live: it began again after ${again} s, not as the burst brought 450 ms`);
+  if (again > 1.85) fail(`live: it began again after ${again} s, not as the burst brought 360 ms`);
   // A slow trickle (half the sound in time) keeps running dry, and keeps growing: to the top.
-  const starved = run(8, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, (() => { let next = 0; return (proc, now) => { while (next * 0.04 <= now) proc.heard(frameAt(next++, sine(200, 0.5))); }; })());
+  const starved = run(40, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, (() => { let next = 0; return (proc, now) => { while (next * 0.04 <= now) proc.heard(frameAt(next++, sine(200, 0.5))); }; })());
   const starvedStat = starved.out.filter((m) => m.t === "stat").pop();
-  if (starvedStat.target !== 1000 || starvedStat.under < 3) fail("live: a starved stream did not grow the buffer to its top: " + JSON.stringify(starvedStat));
+  if (starvedStat.target !== 800 || starvedStat.under < 3) fail("live: a starved stream did not grow the buffer to its top: " + JSON.stringify(starvedStat));
   if (steepest(starved.left, 0) > SMOOTH) fail("live: a starved stream clicked");
 
   // Missing frames: a dip, no click, counted, and the buffer grows by a quarter.
-  const lossy = run(3, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5), [70, 71, 72]));
+  const lossy = run(3, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, feeding(sine(200, 0.5), [70, 71, 72]));
   const lossyStat = lossy.out.filter((m) => m.t === "stat").pop();
-  if (lossyStat.gaps !== 1 || lossyStat.lost !== 3 || lossyStat.target !== 375) fail("live: lost frames were not counted, or did not grow the buffer: " + JSON.stringify(lossyStat));
+  if (lossyStat.gaps !== 1 || lossyStat.lost !== 3 || lossyStat.target !== 330) fail("live: lost frames were not counted, or did not grow the buffer: " + JSON.stringify(lossyStat));
   if (steepest(lossy.left, 0) > SMOOTH) fail("live: a gap clicked");
   const gapAt = Math.round((0.28 + 70 * 0.02 + 0.02) * RATE);
   const dip = lossy.left.slice(gapAt - 3000, gapAt + 3000).reduce((m, x, i, a) => i > 100 && i < a.length - 100 && Math.abs(x) < 0.001 ? m + 1 : m, 0);
   if (dip < 3) fail("live: a gap did not fade to silence and back");
 
-  // Calm: a target that grew comes back down, slowly: 25 ms for each 5 s.
-  const calm = run(12, { rate: RATE, jitter: { target: 450, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5)));
+  // Calm: a target that grew comes back down, slowly: 10 ms for each 10 s, but not under its floor.
+  const calm = run(25, { rate: RATE, jitter: { target: 450, min: 300, max: 800, calm: 0 } }, feeding(sine(200, 0.5)));
   const calmStat = calm.out.filter((m) => m.t === "stat").pop();
-  if (calmStat.target !== 400) fail("live: after 12 s of calm the target should have come back by 50 ms: " + JSON.stringify(calmStat));
+  if (calmStat.target !== 430) fail("live: after 25 s of calm the target should have come back by 20 ms: " + JSON.stringify(calmStat));
   if (steepest(calm.left, 0) > SMOOTH) fail("live: shrinking the buffer clicked");
+  const floored = run(60, { rate: RATE, jitter: { target: 420, min: 300, max: 800, calm: 0, floor: 420, fcalm: 0 } }, feeding(sine(200, 0.5)), false);
+  const flooredStat = floored.out.filter((m) => m.t === "stat").pop();
+  if (flooredStat.target !== 410 || flooredStat.under !== 0) fail("live: the target went under its floor, or the floor did not fall 10 ms in 60 s: " + JSON.stringify(flooredStat));
+  // No sawtooth: ten minutes of calm after it settled just above what the network needs, and not
+  // one dry spell, the target never under the floor, and a steady sound all the way.
+  const longCalm = run(600, { rate: RATE, jitter: { target: 360, min: 300, max: 800, calm: 0, floor: 360, fcalm: 0 } }, (() => {
+    const feed = feeding(sine(200, 0.5));
+    return (proc, now, b) => { feed(proc, now); if (b % 20000 === 0 && proc.jit.target < proc.jit.floor) fail("live: the target went under its floor at " + now + " s"); };
+  })(), false);
+  const longStat = longCalm.out.filter((m) => m.t === "stat").pop();
+  if (longStat.under !== 0 || longStat.gaps !== 0 || longCalm.out.filter((m) => m.t === "playing").length !== 1) fail("live: ten calm minutes had a dry spell in them (a sawtooth): " + JSON.stringify(longStat));
+  if (longStat.target < 300 || longStat.target > 360) fail("live: after ten calm minutes the target is not between the minimum and where it settled: " + JSON.stringify(longStat));
+  // A steady network keeps its target at the minimum: nothing to learn, nothing to grow.
+  const quietNet = run(60, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, feeding(sine(200, 0.5)), false);
+  const quietStat = quietNet.out.filter((m) => m.t === "stat").pop();
+  if (quietStat.target !== 300 || quietStat.under !== 0) fail("live: a steady network did not stay at the minimum: " + JSON.stringify(quietStat));
+
+  // Far over target is pulled back: 200 ms too much (more than 150 over) is skipped down at once,
+  // 120 ms too much (a servo's job) is played down at two percent, both without a click.
+  const surplus = (extraFrames) => {
+    const seen = { early: null, late: null };
+    let tick = 0, seq = 0, done = false;
+    const result = run(14, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, (proc, now) => {
+      while (tick * 0.02 <= now) { proc.heard(frameAt(seq++, sine(200, 0.5))); tick++; }
+      if (!done && now >= 2) { done = true; for (let i = 0; i < extraFrames; i++) proc.heard(frameAt(seq++, sine(200, 0.5))); }
+      if (seen.early === null && now >= 2.3) seen.early = (proc.wr - proc.rd) / 44.1;
+      if (seen.late === null && now >= 13) seen.late = (proc.wr - proc.rd) / 44.1;
+    });
+    return { seen, result };
+  };
+  const skipped = surplus(10);
+  if (skipped.seen.early > 340 || skipped.seen.late > 340) fail("live: 200 ms too much was not skipped down to the target: " + JSON.stringify(skipped.seen));
+  if (steepest(skipped.result.left, 0) > SMOOTH) fail("live: catching up by a skip clicked");
+  const servoed = surplus(6);
+  if (servoed.seen.early < 380 || servoed.seen.late > 360) fail("live: 120 ms too much was not played down to the target: " + JSON.stringify(servoed.seen));
+  if (steepest(servoed.result.left, 0) > 0.03) fail("live: catching up by playing faster clicked");
+  if (skipped.result.out.filter((m) => m.t === "stat").pop().under !== 0) fail("live: catching up ran the buffer dry");
+
+  // Lip-sync: later is a fixed extra delay on top of the target (the target itself is unchanged);
+  // earlier lowers the minimum, never under 80 ms; a change is followed while playing.
+  const depthAfter = (seconds, options, script) => {
+    const r = run(seconds, options, script || feeding(sine(200, 0.5)), false);
+    const stat = r.out.filter((m) => m.t === "stat").pop();
+    return { stat, r };
+  };
+  const base = { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } };
+  const later = depthAfter(6, { ...base, sync: 500 });
+  if (Math.abs(later.stat.depthMs - 800) > 30 || later.stat.target !== 300 || later.stat.under !== 0) fail("live: +0.5 s lip-sync did not hold 500 ms more in hand: " + JSON.stringify(later.stat));
+  const earlier = depthAfter(6, { ...base, sync: -200 });
+  if (earlier.stat.target !== 100 || earlier.stat.under !== 0 || Math.abs(earlier.stat.depthMs - 100) > 30) fail("live: -0.2 s lip-sync did not lower the buffer to 100 ms: " + JSON.stringify(earlier.stat));
+  const lowest = depthAfter(6, { ...base, sync: -500 });
+  if (lowest.stat.target !== 80) fail("live: lip-sync took the buffer under 80 ms: " + JSON.stringify(lowest.stat));
+  const nudged = depthAfter(30, base, (() => {
+    const feed = feeding(sine(200, 0.5));
+    return (proc, now) => { if (now >= 2 && !proc.nudged) { proc.nudged = true; proc.heard({ t: "sync", extra: 300, min: 300 }); } feed(proc, now); };
+  })());
+  if (Math.abs(nudged.stat.depthMs - 600) > 45 || nudged.stat.under !== 0) fail("live: nudging the lip-sync later while playing was not followed: " + JSON.stringify(nudged.stat));
+  const relaxed = depthAfter(30, { ...base, sync: 300 }, (() => {
+    const feed = feeding(sine(200, 0.5));
+    return (proc, now) => { if (now >= 2 && !proc.nudged) { proc.nudged = true; proc.heard({ t: "sync", extra: 0, min: 300 }); } feed(proc, now); };
+  })());
+  if (Math.abs(relaxed.stat.depthMs - 300) > 45 || relaxed.stat.under !== 0) fail("live: taking the lip-sync back was not followed: " + JSON.stringify(relaxed.stat));
 
   // The probe: a 2 kHz burst of 80 ms in the stream (silence before it) is found, and the time it
   // began to come out is told to within a few ms, which is what a delay measurement stands on.
   const burstWave = (n) => (n >= 0.8 * RATE && n < 0.88 * RATE ? 0.1 * Math.sin(2 * Math.PI * 2000 * n / RATE) : 0);
-  const heardTone = run(2.5, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, (() => {
+  const heardTone = run(2.5, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, (() => {
     const feed = feeding(burstWave);
     return (proc, now, b) => { if (b === 0) proc.heard({ t: "probe", on: true, ref: 0.1 }); feed(proc, now); };
   })());
@@ -1776,14 +1865,14 @@ if (failures.length) {
   const truly = heardTone.left.findIndex((x) => x !== 0) / RATE;
   if (Math.abs(tones[0].at - truly) > 0.006) fail(`live: the tone came out at ${truly} s and was told at ${tones[0].at} s`);
   // And with the owner's volume low it is found all the same.
-  const quietTone = run(2.5, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, (() => {
+  const quietTone = run(2.5, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, (() => {
     const feed = feeding(burstWave);
     return (proc, now, b) => { if (b === 0) { proc.heard({ t: "probe", on: true, ref: 0.1 }); proc.heard({ t: "level", v: 0.05 }); } feed(proc, now); };
   })());
   if (quietTone.out.filter((m) => m.t === "tone").length !== 1) fail("live: a low volume hid the probe's tone");
-  const playsOn = run(2.5, { rate: RATE, jitter: { target: 300, min: 300, max: 1000, calm: 0 } }, feeding(sine(200, 0.5)));
+  const playsOn = run(2.5, { rate: RATE, jitter: { target: 300, min: 300, max: 800, calm: 0 } }, feeding(sine(200, 0.5)));
   if (playsOn.out.some((m) => m.t === "tone")) fail("live: a probe nobody asked for was heard in music");
-  console.log(`live: frames read whole, buffer 300 to 1000 ms, no clicks across a gap or a dry spell, the probe's tone found to ${(Math.abs(tones[0].at - truly) * 1000).toFixed(1)} ms`);
+  console.log(`live: frames read whole, buffer 300 to 800 ms in fixed steps with a floor, lip-sync, no clicks across a gap or a dry spell, the probe's tone found to ${(Math.abs(tones[0].at - truly) * 1000).toFixed(1)} ms`);
 
   // Modes in the page: the background hands over to the MP3 and the front takes live back; a
   // live stream that cannot start falls back to listening and asks for a tap.
@@ -1846,6 +1935,31 @@ if (failures.length) {
     if (!card.includes(want)) fail(`live: the speaker card does not show ${want}`);
   }
   if (card.includes('data-act="sound:measure" disabled')) fail("live: Measure delay was off while listening");
+  // Lip-sync: on the card in live mode, showing the offset; a tap moves it a tenth of a second,
+  // the playing stream is told at once, and the hub is asked to keep it. Earlier than the buffer
+  // can go says what to do; a hub that refuses puts it back.
+  if (!card.includes('data-act="sound:sync:-100"') || !card.includes('data-act="sound:sync:100"') || !card.includes('id="sound-sync-label">+0.0 s<')) fail("live: the lip-sync buttons are not on the live card");
+  if (card.includes("sound-sync-note")) fail("live: lip-sync at zero already says it cannot go earlier");
+  ev(`var syncCalls = [], syncSent = [], keepApi = api;
+    api = async (m, p, b) => { syncCalls.push(m + " " + p + " " + JSON.stringify(b)); return {}; };
+    LIVE.session = { closed: false, node: { port: { postMessage: (m) => syncSent.push(m) } } };`);
+  await ev(`soundDispatch("sound", "sync", "100", "")`);
+  if (ev("syncCalls[0]") !== 'PUT /v1/sound/speakers/5/sync {"ms":100}') fail("live: a lip-sync tap did not ask the hub to keep it: " + ev("syncCalls.join()"));
+  if (JSON.stringify(ev("syncSent[0]")) !== JSON.stringify({ t: "sync", extra: 100, min: 300 })) fail("live: a lip-sync tap did not reach the playing worklet: " + ev("JSON.stringify(syncSent)"));
+  if (!ev("viewSound()").includes('id="sound-sync-label">+0.1 s<')) fail("live: the card did not show +0.1 s after a tap");
+  for (let i = 0; i < 4; i++) await ev(`soundDispatch("sound", "sync", "-100", "")`);
+  if (JSON.stringify(ev("syncSent[syncSent.length - 1]")) !== JSON.stringify({ t: "sync", extra: 0, min: 80 })) fail("live: -0.3 s lip-sync did not lower the buffer to its 80 ms floor: " + ev("JSON.stringify(syncSent)"));
+  const early = ev("viewSound()");
+  if (!early.includes('id="sound-sync-label">−0.3 s<') || !early.includes("Can&#39;t go earlier on this speaker; lower the door&#39;s early hand-over") && !early.includes("Can't go earlier on this speaker; lower the door's early hand-over")) fail("live: asking for more advance than the buffer allows did not say what to do");
+  for (let i = 0; i < 4; i++) await ev(`soundDispatch("sound", "sync", "-100", "")`);
+  if (ev("syncCalls.length") !== 7 || !ev("viewSound()").includes("sound-sync-note") || !ev("viewSound()").includes('data-act="sound:sync:-100" aria-label="Play 0.1 s earlier" disabled')) fail("live: lip-sync went past -0.5 s: " + ev("syncCalls.join()"));
+  ev(`api = async () => { throw new Error("refused"); }; syncSent.length = 0;`);
+  await ev(`soundDispatch("sound", "sync", "100", "")`);
+  if (ev("soundMine().sync_ms") !== -500 + 0 || JSON.stringify(ev("syncSent.map((m) => m.min + ':' + m.extra)")) !== JSON.stringify(["80:0", "80:0"])) fail("live: a refused lip-sync was not put back");
+  ev(`api = keepApi; LIVE.session = null; soundMine().sync_ms = 0;`);
+  ev(`SOUND.mode = "listening";`);
+  if (ev("viewSound()").includes("sound:sync:")) fail("live: lip-sync is on the card while listening");
+  ev(`SOUND.mode = "live";`);
   ev(`SOUND.listening = false; SOUND.mode = null;`);
   if (!ev("viewSound()").includes('data-act="sound:measure" disabled')) fail("live: Measure delay was on with nothing playing");
   ev(`document.getElementById = keepAudioEl; localStorage.getItem = keepLS; SOUND.state = keepSound0; SOUND.measure = null; SOUND.liveBlocked = false; SOUND.ticket = null;`.replace("keepSound0", "null"));
