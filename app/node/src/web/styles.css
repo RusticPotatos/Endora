@@ -355,6 +355,18 @@
     font: 11px var(--hq-pixel); color: var(--hq-fg); background: var(--hq-panel-2); box-shadow: none;
     border: 1px solid var(--hq-line); border-bottom-width: 3px; border-radius: 4px; padding: 6px 10px; cursor: pointer;
   }
+  .hq .hq-btn.tall { min-height: 44px; min-width: 44px; padding: 8px 14px; }
+  .hq .hq-btn:disabled { opacity: .45; cursor: default; }
+  .hq textarea.hq-doc { width: 100%; box-sizing: border-box; min-height: 52vh; font: 16px/1.45 var(--hq-mono); padding: 10px; }
+  .hq .hq-changes li, .hq .hq-world li { overflow-wrap: anywhere; }
+  .hq .hq-pick label { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 6px 0; }
+  .hq .hq-pick input[type=checkbox] { width: 24px; height: 24px; flex: none; }
+  .hq-editor { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column; gap: 8px;
+    padding: 8px 12px calc(12px + env(safe-area-inset-bottom)); background: var(--hq-bg, #fff); box-sizing: border-box; overflow: hidden; }
+  .hq-editor-bar { display: flex; align-items: center; gap: 8px; padding-top: env(safe-area-inset-top); }
+  .hq-editor-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+  .hq-editor-title { font-size: 16px; min-height: 44px; box-sizing: border-box; width: 100%; padding: 6px 10px; }
+  .hq-editor-text { flex: 1 1 auto; width: 100%; box-sizing: border-box; font: 16px/1.45 var(--hq-mono); padding: 10px; resize: none; min-height: 0; }
   .hq .hq-btn:hover { border-color: var(--hq-muted); }
   .hq .hq-btn:active { transform: translateY(1px); border-bottom-width: 2px; }
   .hq .hq-btn:focus-visible { outline: 2px solid var(--hq-neon); outline-offset: 2px; }

@@ -2275,4 +2275,122 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   }
 }
 
+// The World card on a phone: a pasted document is read into changes, a section opens in a
+// full-screen editor, and everything shown is escaped. A short synthetic document of the shape
+// the owner pastes: a title line, sections with several spellings of the heading, a section
+// with no title, a timeline of bullets, and a heading that is none of those.
+{
+  const fail = (m) => { console.error("world editor: " + m); process.exit(1); };
+  const parsed = runInContext(`JSON.stringify(hqWorldParse([
+    "# Update for the team",
+    "",
+    "Some words before any section are ignored.",
+    "",
+    "## house / purpose — What this house is for",
+    "A home lab that runs itself.",
+    "",
+    "## house/how-we-work - How we work",
+    "- Evidence over claims.",
+    "- Never fire; furlough.",
+    "",
+    "##  house /  known-facts :  What we know  ",
+    "The NAS has 16 GB.",
+    "### A smaller heading stays in the text",
+    "",
+    "## house / priorities",
+    "1. Backups",
+    "",
+    "## Notes to self",
+    "not a section",
+    "",
+    "## timeline entries",
+    "- 17 Oct 2026: The router was moved.",
+    "* 2026-10-18 - Found: the VPN restarts.",
+    "- Oct 18, 2026: The team grew.",
+    "- No date on this one.",
+    "Not a bullet.",
+    "",
+    "## timeline lab",
+    "- 18 Oct 2026: Lab entry.",
+  ].join("\\n")))`, context);
+  const got = JSON.parse(parsed);
+  const sections = got.changes.filter((c) => c.kind === "section");
+  const timeline = got.changes.filter((c) => c.kind === "timeline");
+  if (sections.length !== 4 || timeline.length !== 5) fail(`expected 4 sections and 5 entries, got ${sections.length} and ${timeline.length}`);
+  const [purpose, how, known, priorities] = sections;
+  if (purpose.page !== "house" || purpose.key !== "purpose" || purpose.title !== "What this house is for"
+      || purpose.text !== "A home lab that runs itself.") fail("a section with an em dash was misread");
+  if (how.key !== "how-we-work" || how.title !== "How we work" || !how.text.includes("- Never fire; furlough.")) fail("a hyphen, no spaces round the slash, or bullets inside a section were misread");
+  if (known.key !== "known-facts" || known.title !== "What we know" || !known.text.includes("### A smaller heading")) fail("odd spacing or a colon was misread");
+  if (priorities.title !== "Priorities") fail("a missing title is not made from the key");
+  if (got.notes.length !== 1 || !got.notes[0].includes("Notes to self")) fail("a heading that is neither is not set aside with a note");
+  if (timeline[0].at !== Date.UTC(2026, 9, 17, 12) || timeline[0].text !== "The router was moved." || timeline[0].page !== "house") fail("a day-month-year entry was misread");
+  if (timeline[1].at !== Date.UTC(2026, 9, 18, 12) || timeline[1].text !== "Found: the VPN restarts.") fail("an ISO date with a hyphen was misread");
+  if (timeline[2].at !== Date.UTC(2026, 9, 18, 12) || timeline[2].text !== "The team grew.") fail("a month-first date was misread");
+  if (timeline[3].at !== null || timeline[3].text !== "No date on this one.") fail("an undated bullet should keep its whole text");
+  if (timeline[4].page !== "lab") fail("## timeline <page> did not pick the page");
+  const nothing = runInContext(`JSON.stringify([hqWorldParse(""), hqWorldParse("just words\\n- a bullet"), hqWorldParse("## house / empty\\n\\n## house / x — X\\ntext")])`, context);
+  const [none, loose, partial] = JSON.parse(nothing);
+  if (none.changes.length || loose.changes.length) fail("a document with nothing to apply produced changes");
+  if (partial.changes.length !== 1 || partial.notes.length !== 1) fail("a section with no text should be set aside, not applied");
+
+  // The card: paste box, edit buttons, buttons tall enough to press, and hostile text escaped.
+  runInContext(`HQ.worldDoc = null; HQ.worldEdit = null;
+    HQ.snap = { world: { migrated: false, pages: [], stories: [], sections: [
+      { page: "house", anchor: "backups", address: "world:house#backups", heading: "<b>Backups</b>", headline: "<img src=w onerror=alert(1)> at 03:00",
+        body: "Nightly.", stage: "insight", said: "insight", revision: 2, written_by: "Mara", warrant: "", why: "" },
+      { page: "house", anchor: "disk", address: "world:house#disk", heading: "Disk", headline: "16 GB", body: "", stage: "canon",
+        said: "canon", revision: 3, written_by: "the owner", warrant: "", why: "" }] } };`, context);
+  let card = runInContext("hqWorldCard(HQ.snap)", context);
+  for (const need of ['data-act="hq:world:edit:open-0"', 'data-act="hq:world:edit:open-1"', 'data-act="hq:world:section:promote-0"',
+      'data-act="hq:world:section:demote-1"', 'id="hq-wd-md"', 'data-act="hq:world:paste:preview"', 'autocapitalize="off"']) {
+    if (!card.includes(need)) fail(`the World card lost ${need}`);
+  }
+  if (card.includes("<img src=w") || card.includes("<b>Backups</b>")) fail("a section's words are not escaped");
+  if (card.includes('class="hq-btn ok"') || card.includes('class="hq-btn no"') || /class="hq-btn"/.test(card)) fail("a World button is not the tall kind");
+  if (card.includes("hq-editor")) fail("the editor is open with nothing to edit");
+
+  // Preview, untick, apply: the requests go out sections first, then the timeline, and a failure is kept.
+  runInContext(`
+    // There is no page here: the boxes are not found, so the state in HQ is what is used.
+    var __getById = document.getElementById;
+    document.getElementById = (id) => /^hq-w[de]-/.test(id) ? null : __getById(id);
+    var __calls = [], __saved = [api, loadHQ, render, flash];
+    HQ.worldDoc = { md: "## timeline\\n- 17 Oct 2026: Moved.\\n## house / backups — Backups\\nRuns at 4.\\n## house / new — New one\\nHello\\n## house / bad — Bad\\nNope", items: null, notes: [] };
+    render = () => {}; loadHQ = async () => {}; flash = (t) => __calls.push("flash:" + t);
+    api = async (m, path, body) => { __calls.push(m + " " + path + " " + JSON.stringify(body)); if (body.key === "bad") throw new Error("refused"); return {}; };`, context);
+  runInContext(`hqWorldPasteAct("preview")`, context);
+  const said = JSON.parse(runInContext(`JSON.stringify(HQ.worldDoc.items.map((i) => hqWorldSaid(i.change)))`, context));
+  if (!said[0].includes("timeline: 17 Oct 2026 Moved.") || !said[1].includes("house / backups") || !said[1].includes("replaces the current text (Mara's stays in its history)")
+      || !said[2].includes("new section")) fail("the preview does not say what each change does: " + JSON.stringify(said));
+  runInContext(`hqWorldPasteAct("toggle-2")`, context);
+  const shown = runInContext("hqWorldCard(HQ.snap)", context);
+  if (!shown.includes("Apply 3 changes") || !shown.includes("Preview")) fail("the preview does not count what will be applied");
+  await runInContext(`hqWorldPasteAct("apply")`, context);
+  const calls = JSON.parse(runInContext("JSON.stringify(__calls)", context));
+  const posts = calls.filter((c) => c.startsWith("POST"));
+  if (posts.length !== 3 || !posts[0].includes("/world/section") || !posts[1].includes("/world/section") || !posts[2].includes("/world/timeline")
+      || !posts[2].includes(String(Date.UTC(2026, 9, 17, 12)))) fail("apply did not send sections first, then the timeline: " + posts.join(" | "));
+  if (posts.some((c) => c.includes('"key":"new"'))) fail("an unticked change was applied");
+  const results = JSON.parse(runInContext(`JSON.stringify(HQ.worldDoc.items.map((i) => [i.result, i.on]))`, context));
+  if (JSON.stringify(results) !== JSON.stringify([["ok", false], ["ok", false], ["", false], ["failed", true]])) fail("results are not kept per item: " + JSON.stringify(results));
+
+  // The editor opens on a member's section with its text, and saves under the same page and key.
+  runInContext(`__calls.length = 0; hqWorldEditAct("open-0")`, context);
+  card = runInContext("hqWorldCard(HQ.snap)", context);
+  if (!card.includes('class="hq-editor"') || !card.includes('data-act="hq:world:edit:save"') || !card.includes('data-act="hq:world:edit:cancel"')
+      || !card.includes("Written by Mara")) fail("the editor did not open on the section");
+  if (card.indexOf("hq:world:edit:save") > card.indexOf('id="hq-we-text"')) fail("Save is not above the text");
+  if (card.includes("<img src=w")) fail("the editor shows the section's words unescaped");
+  runInContext(`HQ.worldEdit.text = "Runs at 4.\\nNightly."; await0 = hqWorldEditAct("save")`, context);
+  await runInContext("await0", context);
+  const saved = JSON.parse(runInContext("JSON.stringify(__calls.filter((c) => c.startsWith('POST')))", context));
+  if (saved.length !== 1 || !saved[0].includes('"page":"house","key":"backups","title":"<b>Backups</b>"')) fail("the editor did not save under the same page and key: " + saved.join("|"));
+  if (runInContext("HQ.worldEdit", context) !== null) fail("the editor stayed open after saving");
+  runInContext(`hqWorldEditAct("open-1"); hqWorldEditAct("cancel")`, context);
+  if (runInContext("HQ.worldEdit", context) !== null) fail("Cancel did not close the editor");
+  runInContext(`[api, loadHQ, render, flash] = __saved; HQ.worldDoc = null; HQ.snap = null; document.getElementById = __getById;`, context);
+  console.log("world editor: paste, preview, apply and the section editor behave");
+}
+
 console.log(`console check: ${named.length} screens render`);

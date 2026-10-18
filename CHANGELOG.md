@@ -508,6 +508,14 @@ tagged release.
 
 ### Changed
 
+- **The World card is easy to edit on a phone.** A "Paste Markdown" box takes a whole document
+  (`## house / key — Title` starts a section, `## timeline` bullets `- 17 Oct 2026: text` are
+  timeline entries), shows what each change would do with a tick to leave any out, and one
+  Apply sends them, sections first, saying how each went. Every section has an Edit button
+  that opens a full-screen editor with Save and Cancel always at the top; the owner can edit a
+  member's section too, and the member's text stays in its revisions. Buttons are at least 44
+  pixels tall and the text boxes use 16-pixel type so a phone does not zoom. No new route.
+
 - **Borrowing is capped at one extra share, and a member at the cap asks the owner**
   ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md), amended again). A paid member
   may spend while its spend today is below its share plus the lesser of its share and what the
