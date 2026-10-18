@@ -758,6 +758,13 @@ pub enum WorldRefusal {
         /// Whose it is.
         steward: String,
     },
+    /// A proposal only the page's steward decides.
+    DecidedBy {
+        /// The page.
+        what: String,
+        /// Whose it is.
+        steward: String,
+    },
     /// A proposal to a page the proposer stewards: it writes it.
     YourOwnPage(String),
     /// No page of the world is called that.
@@ -862,6 +869,10 @@ impl fmt::Display for WorldRefusal {
                 f,
                 "{what} is kept by {steward}: propose the change with propose_world, and \
                  they decide"
+            ),
+            Self::DecidedBy { what, steward } => write!(
+                f,
+                "{what} is kept by {steward}: only they decide what is proposed to it"
             ),
             Self::YourOwnPage(page) => write!(
                 f,

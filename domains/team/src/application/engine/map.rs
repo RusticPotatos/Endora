@@ -139,6 +139,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
+    /// Who keeps the page at `page`, by name.
+    ///
+    /// # Errors
+    /// [`WorldRefusal::NotAnAddress`]; [`WorldRefusal::NoSuchPage`].
+    pub fn page_steward_said(&self, page: &str) -> Done<String> {
+        let key = self.page_there(&Self::slug_said(page))?;
+        self.steward_called(self.steward(key)?)
+    }
+
     /// A steward by name, for a person to read.
     pub(super) fn steward_called(&self, steward: Steward) -> Done<String> {
         Ok(steward.said(&self.store.members()?))

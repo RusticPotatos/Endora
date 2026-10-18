@@ -3,6 +3,7 @@
 
 use super::ports::Stored;
 use crate::domain::Millis;
+use crate::domain::map::PageProposal;
 
 /// The map's part of HQ's store.
 pub trait MapStore {
@@ -17,4 +18,16 @@ pub trait MapStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn add_world_page(&self, slug: &str, at: Millis) -> Stored<bool>;
+
+    /// Every proposal to a page, oldest first.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn proposals(&self) -> Stored<Vec<PageProposal>>;
+
+    /// Keeps a proposal: a new one when its id is 0 (its id is returned), else its new standing.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn save_proposal(&self, proposal: &PageProposal) -> Stored<i64>;
 }

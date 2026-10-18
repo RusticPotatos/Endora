@@ -102,6 +102,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if composed.briefed.iter().any(|b| b == "tidy") {
             self.tidy_asked(member.id)?;
         }
+        if composed.briefed.iter().any(|b| b == "your proposals") {
+            self.proposals_told(member)?;
+        }
         if composed.briefed.iter().any(|b| b == "retell") {
             self.store.set_setting(
                 &super::world::retell_key(member.id),
@@ -154,6 +157,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Weight::Core,
             ));
         }
+        // Proposals to pages it keeps, and how its own went (ADR 0126).
+        pieces.push(Piece::new(
+            "proposals to decide",
+            self.proposals_to_decide(member)?,
+            Weight::Core,
+        ));
+        pieces.push(Piece::new(
+            "your proposals",
+            self.proposals_decided(member)?,
+            Weight::Core,
+        ));
         pieces.extend(self.house_pieces(member, situation, last)?);
         // How the lab is built, for those who read the house log it was seeded in: a lead on
         // every turn, the CEO (whose briefings are held short) when it starts afresh or comes

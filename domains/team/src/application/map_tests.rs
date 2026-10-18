@@ -418,3 +418,273 @@ fn a_page_that_is_not_there_is_not_an_address() {
     assert!(said.contains("not an address"), "{said}");
     let _ = (t.dee, t.upkeep);
 }
+
+fn end(hq: &Hq<'_>, clock: &Hands, context: &RunContext) {
+    hq.runner().finish(context.run, true);
+    hq.tick().unwrap();
+    clock.0.fetch_add(3 * 60_000, Ordering::SeqCst);
+}
+
+fn propose(page: &str, heading: &str, task: TaskId) -> Value {
+    json!({ "page": page, "heading": heading, "headline": format!("{heading}: how it goes"),
+            "body": "Nightly, at 03:00.", "evidence": [format!("task {}", task.0)] })
+}
+
+#[test]
+fn a_member_proposes_to_a_page_and_its_steward_accepts_and_the_proposer_is_told() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let page = area(t.ada);
+    let (linus, task) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    // The developer cannot write the page; it proposes.
+    let proposed = use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose(&page, "Backups", task),
+    )
+    .unwrap();
+    assert!(proposed.contains("Ada decides"), "{proposed}");
+    assert!(
+        hq.store().sections().unwrap().is_empty(),
+        "nothing is written by a proposal"
+    );
+    end(&hq, &clock, &linus);
+    // The steward's next briefing carries it; nobody else's does.
+    task_for(&hq, t.goal, t.bo, "Look at the router");
+    let bo = turn(&hq, t.bo);
+    assert!(!bo.told.contains("Backups: how it goes"), "{}", bo.told);
+    end(&hq, &clock, &bo);
+    task_for(&hq, t.goal, t.ada, "Look at backups");
+    let ada = turn(&hq, t.ada);
+    assert!(
+        ada.told.contains("decide_proposal")
+            && ada.told.contains("Linus proposes")
+            && ada.told.contains("Backups: how it goes"),
+        "{}",
+        ada.told
+    );
+    // Nobody but the steward decides it.
+    let id = hq.store().proposals().unwrap()[0].id;
+    let decide = json!({ "id": id, "accept": true });
+    let refused = use_tool(
+        &hq,
+        &bo_turn(&hq, &clock, t.bo, t.goal),
+        "decide_proposal",
+        &decide,
+    )
+    .unwrap_err();
+    assert!(refused.contains("kept by Ada"), "{refused}");
+    let accepted = use_tool(&hq, &ada, "decide_proposal", &decide).unwrap();
+    assert!(
+        accepted.contains(&format!("world:{page}#backups")),
+        "{accepted}"
+    );
+    let section = hq.store().sections().unwrap().remove(0);
+    assert_eq!((section.written_by.as_str(), section.revision), ("Ada", 1));
+    assert!(
+        hq.store().timeline(&page).unwrap()[0]
+            .line
+            .contains("Linus's proposal")
+    );
+    assert!(
+        use_tool(&hq, &ada, "decide_proposal", &decide)
+            .unwrap_err()
+            .contains("decided already")
+    );
+    end(&hq, &clock, &ada);
+    // The proposer hears how it went once, in its next briefing.
+    task_for(&hq, t.goal, t.linus, "Fix the DNS");
+    let again = turn(&hq, t.linus);
+    assert!(again.told.contains("accepted by Ada"), "{}", again.told);
+    end(&hq, &clock, &again);
+    task_for(&hq, t.goal, t.linus, "Fix the VPN");
+    let third = turn(&hq, t.linus);
+    assert!(
+        !third.told.contains("accepted by Ada"),
+        "told once: {}",
+        third.told
+    );
+}
+
+/// A turn of `member`'s, on a fresh task of its own.
+fn bo_turn(hq: &Hq<'_>, clock: &Hands, member: MemberId, goal: GoalId) -> RunContext {
+    clock.0.fetch_add(60_000, Ordering::SeqCst);
+    working(hq, goal, member, "Another look").0
+}
+
+#[test]
+fn a_decline_needs_a_reason_and_the_proposer_is_told_which() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let page = area(t.ada);
+    let (linus, task) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose(&page, "Backups", task),
+    )
+    .unwrap();
+    end(&hq, &clock, &linus);
+    let (ada, _) = working(&hq, t.goal, t.ada, "Look at backups");
+    let id = hq.store().proposals().unwrap()[0].id;
+    let silent = use_tool(
+        &hq,
+        &ada,
+        "decide_proposal",
+        &json!({ "id": id, "accept": false }),
+    )
+    .unwrap_err();
+    assert!(silent.contains("say why"), "{silent}");
+    use_tool(
+        &hq,
+        &ada,
+        "decide_proposal",
+        &json!({ "id": id, "accept": false, "reason": "the backups move next week" }),
+    )
+    .unwrap();
+    assert!(hq.store().sections().unwrap().is_empty());
+    end(&hq, &clock, &ada);
+    let (again, _) = working(&hq, t.goal, t.linus, "Fix the DNS");
+    assert!(
+        again
+            .told
+            .contains("declined by Ada: the backups move next week"),
+        "{}",
+        again.told
+    );
+}
+
+#[test]
+fn a_proposal_is_for_a_page_someone_else_keeps_and_rests_on_the_record() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let (ada, ada_task) = working(&hq, t.goal, t.ada, "Look at backups");
+    let own = use_tool(
+        &hq,
+        &ada,
+        "propose_world",
+        &propose(&area(t.ada), "Backups", ada_task),
+    )
+    .unwrap_err();
+    assert!(
+        own.contains("is yours") && own.contains("write_world"),
+        "{own}"
+    );
+    let (linus, task) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    let derived =
+        use_tool(&hq, &linus, "propose_world", &propose("lab", "Disk", task)).unwrap_err();
+    assert!(derived.contains("derived"), "{derived}");
+    let nowhere = use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose("area/9999", "Disk", task),
+    )
+    .unwrap_err();
+    assert!(nowhere.contains("no page"), "{nowhere}");
+    let mut bare = propose(&area(t.ada), "Disk", task);
+    bare["evidence"] = json!([]);
+    assert!(
+        use_tool(&hq, &linus, "propose_world", &bare)
+            .unwrap_err()
+            .contains("evidence")
+    );
+    // The same proposal twice is one; six different ones are too many.
+    let first = use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose(&area(t.ada), "Disk", task),
+    )
+    .unwrap();
+    let again = use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose(&area(t.ada), "Disk", task),
+    )
+    .unwrap();
+    assert_eq!(first, again);
+    assert_eq!(hq.store().proposals().unwrap().len(), 1);
+    for n in 2..=5 {
+        use_tool(
+            &hq,
+            &linus,
+            "propose_world",
+            &propose(&area(t.ada), &format!("Topic {n}"), task),
+        )
+        .unwrap();
+    }
+    let flood = use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose(&area(t.ada), "Topic 6", task),
+    )
+    .unwrap_err();
+    assert!(flood.contains("5 proposals open"), "{flood}");
+}
+
+#[test]
+fn a_roles_page_is_decided_by_the_owner_and_canon_is_not_a_stewards_to_replace() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let (linus, task) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose("role/developer", "Branches", task),
+    )
+    .unwrap();
+    let id = hq.store().proposals().unwrap()[0].id;
+    let (ada, _) = working(&hq, t.goal, t.ada, "Look at backups");
+    let refused = use_tool(
+        &hq,
+        &ada,
+        "decide_proposal",
+        &json!({ "id": id, "accept": true }),
+    )
+    .unwrap_err();
+    assert!(refused.contains("kept by the owner"), "{refused}");
+    assert!(
+        !ada.told.contains("Branches"),
+        "only the owner decides it, so no lead's briefing carries it"
+    );
+    let address = hq.decide_proposal_as_owner(id, true, "").unwrap();
+    assert_eq!(address.as_deref(), Some("world:role/developer#branches"));
+    let section = hq.store().sections().unwrap().remove(0);
+    assert_eq!(section.written_by, "the owner");
+    // A section the owner made canon is not replaced by a steward's acceptance.
+    let page = area(t.ada);
+    hq.write_as_owner(&page, "backups", "Backups", "Nightly.")
+        .unwrap();
+    hq.promote(&format!("world:{page}#backups"), "").unwrap();
+    let mut revise = propose(&page, "Backups", task);
+    revise["anchor"] = json!("backups");
+    use_tool(&hq, &linus, "propose_world", &revise).unwrap();
+    let id = hq.store().proposals().unwrap().last().unwrap().id;
+    let refused = use_tool(
+        &hq,
+        &ada,
+        "decide_proposal",
+        &json!({ "id": id, "accept": true }),
+    )
+    .unwrap_err();
+    assert!(refused.contains("owner"), "{refused}");
+    hq.decide_proposal_as_owner(id, false, "not now").unwrap();
+    assert_eq!(
+        hq.store().proposals().unwrap().last().unwrap().why,
+        "not now"
+    );
+}

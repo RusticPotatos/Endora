@@ -170,8 +170,9 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
     // A huddle on stuck work asks every member's view (ADR 0120), and every member shapes the
-    // office (ADR 0119), and may play chess (ADR 0121); every member reads the world and tells stories (ADR 0122).
-    assert_eq!(names.len(), 20, "{names:?}");
+    // office (ADR 0119), and may play chess (ADR 0121); every member reads the world and tells stories (ADR 0122),
+    // and proposes to a page it does not keep (ADR 0126).
+    assert_eq!(names.len(), 21, "{names:?}");
     assert!(names.contains(&"read_world".to_owned()) && names.contains(&"tell_story".to_owned()));
     assert!(names.contains(&"huddle_view".to_owned()));
     assert!(names.contains(&"office".to_owned()));
@@ -199,7 +200,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .collect();
     // With the office (ADR 0119), a huddle's view (ADR 0120), chess (ADR 0121) and the world
     // (ADR 0122).
-    assert_eq!(reviewers.len(), 20, "{reviewers:?}");
+    assert_eq!(reviewers.len(), 21, "{reviewers:?}");
     assert!(
         !reviewers.contains(&"create_task".to_owned()),
         "the tester passes or sends back, and never makes work"

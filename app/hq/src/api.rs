@@ -1411,7 +1411,7 @@ mod tests {
         // retires what it stewards, and proposes canon (ADR 0122). And it may play chess (ADR 0121).
         // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
         // keeps (ADR 0126).
-        assert_eq!(names.len(), 32, "{names:?}");
+        assert_eq!(names.len(), 34, "{names:?}");
         assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"office"), "every member shapes the office");
         assert!(names.contains(&"chess"), "every member may play chess");

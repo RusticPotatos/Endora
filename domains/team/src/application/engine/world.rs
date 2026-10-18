@@ -253,7 +253,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- evidence and trust ---------------------------------------------------------------
 
     /// Each reference looked up in the record, about anything.
-    fn found_all(&self, cited: &[Ref]) -> Done<Vec<(Ref, Found)>> {
+    pub(super) fn found_all(&self, cited: &[Ref]) -> Done<Vec<(Ref, Found)>> {
         cited
             .iter()
             .map(|r| Ok((*r, self.found(*r, None, &[])?)))
@@ -278,7 +278,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The references with what the record says of each now, to keep beside them.
-    fn snapshots(&self, cited: &[Ref]) -> Done<Vec<Snapshot>> {
+    pub(super) fn snapshots(&self, cited: &[Ref]) -> Done<Vec<Snapshot>> {
         let short = |text: &str| crate::domain::evidence::short(text, 120);
         let mut kept = Vec::new();
         for r in cited {
@@ -637,9 +637,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let turn = self.running(run)?;
         let writer = self.member(turn.member)?;
+        self.write_world_held(&turn, &writer, write, None)
+    }
+
+    /// [`write_world_in`](Self::write_world_in), with the lock held and the turn and its
+    /// member found: also how a steward's acceptance of a proposal writes the section (`via`
+    /// says whose, for the revision's history and the page's timeline).
+    pub(super) fn write_world_held(
+        &self,
+        turn: &Run,
+        writer: &Member,
+        write: &WorldWrite,
+        via: Option<&str>,
+    ) -> Done<String> {
         let key = self.written_page(&Self::slug_said(&write.page))?;
         let slug = key.slug();
-        self.may_write_page(&writer, key)?;
+        self.may_write_page(writer, key)?;
         let said = |text: &str| self.dated_true(&writer.name, &format!("world:{slug}"), text);
         let (heading_in, headline_in, body_in) = (
             said(&write.heading)?,
@@ -704,13 +717,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let address = section.address();
         let what = if old.is_some() { "revised" } else { "wrote" };
-        self.store.save_section(&section, what)?;
+        let via_said = via.map(|v| format!(" ({v})")).unwrap_or_default();
+        self.store
+            .save_section(&section, &format!("{what}{via_said}"))?;
         self.timeline_line(
             &slug,
             &writer.name,
             Some(turn.id),
             &format!(
-                "{} {what} \"{heading}\" ({address}) as an {}.",
+                "{} {what} \"{heading}\" ({address}) as an {}{via_said}.",
                 writer.name,
                 write.stage.said()
             ),
@@ -1062,6 +1077,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// for no title or no text; [`WorldRefusal::TooLong`].
     pub fn write_as_owner(&self, page: &str, key: &str, title: &str, text: &str) -> Done<String> {
         let _held = self.held();
+        self.write_as_owner_held(page, key, title, text)
+    }
+
+    /// [`write_as_owner`](Self::write_as_owner), with the lock held.
+    pub(super) fn write_as_owner_held(
+        &self,
+        page: &str,
+        key: &str,
+        title: &str,
+        text: &str,
+    ) -> Done<String> {
         let slug = self.written_page(&Self::slug_said(page))?.slug();
         let owner = "the owner";
         let text = self.dated_true(owner, &format!("world:{slug}"), text)?;

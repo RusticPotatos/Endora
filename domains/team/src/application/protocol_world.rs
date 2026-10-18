@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::engine::{Engine, StoryTelling, WorldWrite};
+use super::engine::{Engine, PageProposing, StoryTelling, WorldWrite};
 use super::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::situations::Situation;
 use crate::domain::world::{self, HandoverNote, Stage, WorldRefusal};
@@ -104,7 +104,32 @@ pub fn tools(role: Role) -> Vec<Value> {
             ],
         ),
     ];
+    all.push(tool(
+        "propose_world",
+        "Propose a section to a page someone else keeps (a lead's area, a project, a goal, the house, a role): a heading, a one-line headline, a short body, on evidence from HQ's record. You cannot write that page; its steward (the page says who) writes your section or declines it with a reason, and your next briefing tells you which. Revise a section by giving its anchor.",
+        json!({
+            "page": { "type": "string", "description": "area/<n>, project/<n>, goal/<n>, role/<role> or house" },
+            "anchor": { "type": "string", "description": "the section to revise, as in world:<page>#<anchor>; leave out for a new one" },
+            "heading": { "type": "string", "maxLength": world::HEADING_MOST },
+            "headline": { "type": "string", "maxLength": world::HEADLINE_MOST },
+            "body": { "type": "string", "maxLength": world::BODY_MOST, "description": "Markdown, without # or ## headings" },
+            "evidence": evidence("What it rests on: at least one."),
+        }),
+        &["page", "heading", "headline", "evidence"],
+    ));
     if matches!(role, Role::Ceo | Role::Lead) {
+        all.push(tool(
+            "decide_proposal",
+            "Decide a proposal to a page you keep (your briefing lists them): accept it, and it is written as an observation (or an insight, when you give a warrant and the evidence warrants it), or decline it, saying why. The proposer is told which.",
+            json!({
+                "id": { "type": "integer", "description": "the proposal's number" },
+                "accept": { "type": "boolean" },
+                "reason": { "type": "string", "maxLength": world::WHY_MOST, "description": "required to decline" },
+                "stage": { "type": "string", "enum": ["observation", "insight"] },
+                "warrant": { "type": "string", "maxLength": world::WARRANT_MOST },
+            }),
+            &["id", "accept"],
+        ));
         all.push(tool(
             "write_world",
             "Write or revise a section of a page you keep (the CEO the house and goal pages, a lead its area and its projects'): a heading (its address comes from it once, and never changes), a one-line headline the briefings show, a short body, at a stage your evidence warrants: an observation on one reference, an insight on references from two turns or a reading the node witnessed this turn, with a warrant. Only the owner makes a section canon, and changes it once it is. A page someone else keeps, you propose to (propose_world).",
@@ -198,6 +223,43 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             Ok(format!(
                 "Written: {address}. Only the owner makes it canon."
             ))
+        })(),
+        "propose_world" => (|| {
+            let proposing = PageProposing {
+                page: text(args, "page").to_owned(),
+                anchor: args["anchor"].as_str().map(str::to_owned),
+                heading: text(args, "heading").to_owned(),
+                headline: text(args, "headline").to_owned(),
+                body: text(args, "body").to_owned(),
+                evidence: refs(args)?,
+            };
+            let id = engine.propose_world_in(run.id, &proposing).map_err(said)?;
+            let steward = engine
+                .page_steward_said(&proposing.page)
+                .unwrap_or_else(|_| "its steward".to_owned());
+            Ok(format!(
+                "Proposal {id} is with the page's steward: {steward} decides, and your next briefing says which."
+            ))
+        })(),
+        "decide_proposal" => (|| {
+            let id = args["id"]
+                .as_i64()
+                .ok_or_else(|| "`id` is the proposal's number".to_owned())?;
+            let accept = args["accept"].as_bool().unwrap_or(false);
+            let written = engine
+                .decide_proposal_in(
+                    run.id,
+                    id,
+                    accept,
+                    text(args, "reason"),
+                    stage(args)?,
+                    text(args, "warrant"),
+                )
+                .map_err(said)?;
+            Ok(match written {
+                Some(address) => format!("Accepted: written as {address}. The proposer is told."),
+                None => "Declined. The proposer is told why.".to_owned(),
+            })
         })(),
         "verify_world" => (|| {
             let address = text(args, "address");

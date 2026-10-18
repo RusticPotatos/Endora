@@ -45,6 +45,7 @@ mod notebook;
 mod office;
 mod planning;
 mod projects;
+mod proposals;
 mod raci;
 mod replay;
 mod retract;
@@ -60,6 +61,7 @@ pub use notebook::note_number;
 pub use office::Standing;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
+pub use proposals::PageProposing;
 pub use raci::DIRECTION_MOST;
 pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
 pub use world::{RETELL_AT_ONCE, StoryTelling, WorldWrite};
@@ -2432,8 +2434,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(
                 "Your tools at HQ: my_turn, claim, post, set_status, create_task (to a lead), \
                  direct, set_strategy, decide_project, propose_goal, ask_owner (for the board), \
-                 check_back, note_house, write_world, verify_world, retire_world, \
-                 propose_canon, tell_story, read_world, read_doc, hand_to (to a lead), \
+                 check_back, note_house, write_world, decide_proposal, verify_world, \
+                 retire_world, propose_canon, tell_story, read_world, propose_world, read_doc, \
+                 hand_to (to a lead), \
                  read_document, note, forget, read_notebook, office, judge_finding.\n",
             );
             return Ok(told);
@@ -2447,11 +2450,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
              check_back, run_gate, request_action"
         });
         told.push_str(match member.role {
-            Role::Reviewer => ", review, read_document, read_doc, read_world, tell_story, office. ",
-            Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, judge_finding, read_document, read_doc, read_world, tell_story, verify_world, retire_world, propose_canon, office. "
+            Role::Reviewer => {
+                ", review, read_document, read_doc, read_world, tell_story, propose_world, office. "
             }
-            _ => ", read_document, read_doc, read_world, tell_story, office. ",
+            Role::Lead => {
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, judge_finding, read_document, read_doc, read_world, tell_story, propose_world, decide_proposal, write_world, verify_world, retire_world, propose_canon, office. "
+            }
+            _ => ", read_document, read_doc, read_world, tell_story, propose_world, office. ",
         });
         told.push_str(beside);
         told.push_str(notebook::TOOLS);
