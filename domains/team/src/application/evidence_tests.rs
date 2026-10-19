@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use serde_json::{Value, json};
 
-use super::engine::{Author, Called, Engine, Settings};
+use super::engine::{Author, Called, Engine, EngineError, Settings};
 use super::ports::{Clock, NewRoutine, NewTask, RunContext, TeamStore};
 use super::protocol::call;
 use crate::domain::evidence::NUDGE;
@@ -372,6 +372,217 @@ fn work_is_handed_on_with_criteria_and_submitted_only_with_evidence_for_each() {
             .iter()
             .any(|p| p.contains(&format!("r{fresh} (homelab_status)"))),
     );
+}
+
+/// The work the owner hands out, as the Give work form and the API make it.
+fn owners_ask(
+    hq: &Hq<'_>,
+    t: &Team,
+    to: MemberId,
+    criteria: &[Criterion],
+) -> Result<TaskId, EngineError> {
+    hq.add_task_with(
+        Author::Owner,
+        NewTask {
+            goal: t.goal,
+            project: None,
+            parent: None,
+            title: "Remove literal passwords from the role defaults".to_owned(),
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+        criteria,
+    )
+}
+
+/// Live, 19 October: the owner's "no literal passwords in role defaults" went to a lead with no
+/// definition of done and split into three blocked sub-tasks, each defensible and none tied to
+/// what was asked. The owner's work says what done means now (ADR 0124, amended): at least one
+/// line, or it is refused with the way to give one, and nothing is made or woken.
+#[test]
+fn the_owner_hands_out_work_only_with_what_done_means() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, false);
+    assert_eq!(
+        owners_ask(&hq, &t, t.lead, &[]),
+        Err(EngineError::Refused(Refusal::OwnerNeedsCriteria))
+    );
+    assert!(hq.store().tasks().unwrap().is_empty(), "nothing was made");
+    assert!(hq.store().wakes().unwrap().is_empty(), "nobody was woken");
+
+    let many = vec![Criterion::new("x", false); crate::domain::evidence::MOST_CRITERIA + 1];
+    assert_eq!(
+        owners_ask(&hq, &t, t.lead, &many),
+        Err(EngineError::Refused(Refusal::TooLong(
+            crate::domain::evidence::MOST_CRITERIA
+        )))
+    );
+
+    let ask = [
+        Criterion::new("No role default holds a password", false),
+        Criterion::new("Each role reads its secret from the vault", false),
+    ];
+    let made = owners_ask(&hq, &t, t.lead, &ask).unwrap();
+    assert_eq!(hq.store().task(made).unwrap().unwrap().criteria, ask);
+    assert_eq!(
+        last_wake(&hq),
+        (t.lead, Some(made), WakeReason::Assigned),
+        "and the lead is woken for it as ever"
+    );
+}
+
+/// Work already on the board with no criteria is untouched: nothing rewrites its row, and its
+/// lead may give it some with `narrow_criteria`, a task with none being allowed some (ADR 0133).
+#[test]
+fn work_already_open_with_no_criteria_is_untouched_and_its_lead_may_give_it_some() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, false);
+    let legacy = owners_task(&hq, &t, t.lead, "Keep sonarr up");
+    assert!(
+        hq.store()
+            .task(legacy)
+            .unwrap()
+            .unwrap()
+            .criteria
+            .is_empty()
+    );
+    let ada = turn(&hq, t.lead);
+    use_tool(&hq, &ada, "claim", &json!({ "task": legacy.0 })).unwrap();
+    use_tool(
+        &hq,
+        &ada,
+        "narrow_criteria",
+        &json!({ "task": legacy.0, "criteria": [{ "text": "sonarr has been up for a day" }] }),
+    )
+    .unwrap();
+    assert_eq!(
+        hq.store().task(legacy).unwrap().unwrap().criteria,
+        [Criterion::new("sonarr has been up for a day", false)]
+    );
+}
+
+/// A routine's task says what done means as its routine does (ADR 0124, amended): the home lab's
+/// check, the two live criteria; any other routine of the owner's, a reading of what it is about,
+/// cited. A lead's standing reviews and the CEO's are reports and decisions, closed by filing
+/// them: they carry none, so closing one stays as it was.
+#[test]
+fn a_routines_task_carries_criteria_from_its_routine_but_a_standing_review_keeps_none() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, true, false);
+    let routine = |title: &str, to: MemberId, lab: bool| {
+        let id = hq
+            .add_routine(
+                Author::Owner,
+                NewRoutine {
+                    title: title.to_owned(),
+                    description: String::new(),
+                    goal: t.goal,
+                    project: None,
+                    assignee: to,
+                    every_ms: 6 * HOUR_MS,
+                    on_lab_trouble: lab,
+                },
+            )
+            .unwrap();
+        hq.fire_routine(id).unwrap();
+        let task = hq
+            .store()
+            .routines()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.last_task)
+            .expect("the routine made a task");
+        hq.store().task(task).unwrap().unwrap().criteria
+    };
+    assert_eq!(
+        routine("Check the home lab", t.lead, true),
+        Criterion::lab()
+    );
+    let others = routine("Look at the download queues", t.dev, false);
+    assert_eq!(others.len(), 1, "{others:?}");
+    assert!(
+        others[0].text.contains("Look at the download queues") && others[0].text.contains("cited"),
+        "{others:?}"
+    );
+    assert!(!others[0].live, "a routine need not be about the lab");
+    // The CEO's review, and a lead's report and patterns, are not work to check against a
+    // criterion: they close by being filed or decided.
+    assert!(routine("Daily review", t.ceo.unwrap(), false).is_empty());
+    hq.add_project(t.goal, "Home lab upkeep", "it runs the house", t.lead, None)
+        .unwrap();
+    for id in hq.seed_area_routines().unwrap() {
+        hq.fire_routine(id).unwrap();
+        let task = hq
+            .store()
+            .routines()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.last_task)
+            .expect("the lead's routine made a task");
+        assert!(
+            hq.store().task(task).unwrap().unwrap().criteria.is_empty(),
+            "a lead's standing review carries no criterion"
+        );
+    }
+}
+
+/// Closing the task of an owner's routine takes the reading it asks for, cited: the default
+/// criterion is not decoration. A reading closes it, and the routine can come round again.
+#[test]
+fn an_owners_routine_task_is_closed_on_a_reading_of_what_it_is_about_cited() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, false);
+    let id = hq
+        .add_routine(
+            Author::Owner,
+            NewRoutine {
+                title: "Look at the download queues".to_owned(),
+                description: "Is anything stuck?".to_owned(),
+                goal: t.goal,
+                project: None,
+                assignee: t.dev,
+                every_ms: 6 * HOUR_MS,
+                on_lab_trouble: false,
+            },
+        )
+        .unwrap();
+    hq.fire_routine(id).unwrap();
+    let task = hq.store().routines().unwrap()[0].last_task.unwrap();
+    let linus = turn(&hq, t.dev);
+    use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+    let close = |evidence: Value| {
+        use_tool(
+            &hq,
+            &linus,
+            "set_status",
+            &json!({ "task": task.0, "status": "done", "reason": "nothing is stuck",
+                     "evidence": evidence }),
+        )
+    };
+    let refused = close(json!([])).unwrap_err();
+    assert!(
+        refused.contains(
+            "criterion 1 (A reading of \"Look at the download queues\" from this run, cited) has no evidence"
+        ),
+        "{refused}"
+    );
+    let read = reading(&hq, &linus, "sonarr_queue", "", false);
+    close(json!([format!("r{read}")])).unwrap();
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::Done
+    );
+    // It is the routine's one open task that is closed, so the routine fires again.
+    clock.0.fetch_add(6 * HOUR_MS, Ordering::SeqCst);
+    assert_eq!(hq.tick().unwrap().routines, 1);
 }
 
 #[test]

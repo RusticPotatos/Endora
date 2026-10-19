@@ -760,6 +760,64 @@ fn the_ceo_accepts_or_sends_back_a_proposal_and_its_proposer_hears_why() {
     );
 }
 
+/// The plan HQ hands a project's lead when the CEO accepts the project has no criteria, so a
+/// lead splitting it names none: the only split that needs no `serves` (ADR 0124, amended). It is
+/// the lead's own work, to plan, and every other task the lead splits has an ask to be kept to.
+#[test]
+fn a_lead_splits_the_plan_of_a_project_it_was_given_with_no_serves() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let mine = task_in(&hq, t.goal, None, t.lead, "Look over the lab").unwrap();
+    let lead = turn(&hq, t.lead);
+    use_tool(
+        &hq,
+        &lead,
+        "propose_project",
+        &json!({ "title": "Backups", "reason": "it keeps failing", "tasks": [mine.0] }),
+    )
+    .unwrap();
+    hq.runner().finish(lead.run, true);
+    hq.tick().unwrap();
+    task_in(&hq, t.goal, None, t.ceo, "Weigh the proposals").unwrap();
+    let ceo = turn(&hq, t.ceo);
+    use_tool(
+        &hq,
+        &ceo,
+        "decide_project",
+        &json!({ "project": 1, "verdict": "accept", "why": "backups failed thrice",
+                 "evidence": [format!("task {}", mine.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(ceo.run, true);
+    hq.tick().unwrap();
+    let plan = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.project == Some(ProjectId(1)))
+        .expect("the lead has the project's first task");
+    assert!(
+        plan.criteria.is_empty(),
+        "HQ made it, with nothing to check a part against"
+    );
+    let planning = hq
+        .runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.member == t.lead && c.task == Some(plan.id))
+        .expect("the lead's turn on its plan");
+    use_tool(
+        &hq,
+        &planning,
+        "create_task",
+        &json!({ "title": "Check the last backup", "description": "Did it finish?",
+                 "assignee": "Linus", "criteria": [{ "text": "its log is read" }] }),
+    )
+    .expect("the parts of a plan need not say what they serve");
+}
+
 #[test]
 fn the_ceo_proposes_a_goal_to_the_board_with_its_evidence() {
     let clock = Hands(AtomicI64::new(OCT_17));

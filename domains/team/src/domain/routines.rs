@@ -2,6 +2,7 @@
 //! that keeps an empty task from waking its member over and over. Goals are passive; work
 //! always arrives as a task; a member never goes looking for work.
 
+use super::evidence::Criterion;
 use super::work::{GoalId, MemberId, Millis, ProjectId, Refusal, RoutineId, TaskId};
 
 /// A minute.
@@ -103,6 +104,28 @@ pub fn step(firing: &Firing, last_task_open: bool) -> FireStep {
         return FireStep::PostInOpenTask;
     }
     FireStep::Skip
+}
+
+/// What done means for the task a routine hands out (ADR 0124, amended): every task says, so
+/// that a lead splitting it has a criterion for each part to serve.
+///
+/// - **The home lab's check** (`on_lab_trouble`) gets the two live criteria it has always had:
+///   the lab as it is now.
+/// - **A standing review** (a lead's daily report and weekly patterns, the CEO's daily review
+///   and weekly planning) gets none. It is a report or a decision, closed by filing it or
+///   deciding it, with no reading to cite; a criterion would only make the closing ask for
+///   evidence no such review has. Nothing splits one, either.
+/// - **Any other routine** gets a reading of what it is about, from this run, cited
+///   ([`Criterion::reading_of`]), which closing its task then has to show.
+#[must_use]
+pub fn criteria_for(on_lab_trouble: bool, standing_review: bool, title: &str) -> Vec<Criterion> {
+    if on_lab_trouble {
+        return Criterion::lab();
+    }
+    if standing_review {
+        return Vec::new();
+    }
+    vec![Criterion::reading_of(title)]
 }
 
 /// When a routine fires next after firing at `now`: missed firings are skipped, never caught
@@ -272,6 +295,22 @@ mod tests {
     #[test]
     fn a_late_routine_fires_once_and_counts_on_from_then() {
         assert_eq!(next_due(10 * HOUR_MS, 6 * HOUR_MS), 16 * HOUR_MS);
+    }
+
+    #[test]
+    fn a_routines_task_says_what_done_means_by_what_kind_of_routine_it_is() {
+        // The home lab's check: the lab as it is now, as ever (ADR 0114).
+        assert_eq!(
+            criteria_for(true, false, "Check the home lab"),
+            Criterion::lab()
+        );
+        // A standing review is a report or a decision: no criterion to cite.
+        assert!(criteria_for(false, true, "State of my area").is_empty());
+        // Any other routine: a reading of what it is about, cited.
+        assert_eq!(
+            criteria_for(false, false, "Look at the download queues"),
+            [Criterion::reading_of("Look at the download queues")]
+        );
     }
 
     #[test]

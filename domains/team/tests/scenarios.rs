@@ -62,6 +62,10 @@ mod desk;
 #[path = "scenarios/caps.rs"]
 mod caps;
 
+/// What done means comes first (ADR 0124, amended), in its own file.
+#[path = "scenarios/criteria.rs"]
+mod criteria;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

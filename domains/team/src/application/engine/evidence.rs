@@ -713,9 +713,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A turn hands work on (see [`Engine::add_task`]): work handed to another member says what
-    /// done means, and a sub-task of a member's task which of its parent's criteria it serves
-    /// (`serves`, ADR 0124); no task holds more than five open sub-tasks, nor work go deeper
-    /// than three. Creating it is a change.
+    /// done means, and a sub-task of a task with criteria, the owner's and a routine's too, which
+    /// of them it serves (`serves`, ADR 0124, amended); no task holds more than five open
+    /// sub-tasks, nor work go deeper than three. Creating it is a change.
     ///
     /// # Errors
     /// [`Refusal::NoCriteria`], [`Refusal::TooLong`], what [`Engine::add_task`] refuses, and
@@ -730,10 +730,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let turn = self.running(run)?;
         let task_parent = task.parent;
-        let served = match task.parent {
-            Some(parent) => self.subtask_discipline(parent, serves)?,
-            None => None,
-        };
+        // Who may hand what to whom comes first: a member who may not make the task at all is
+        // told so, not asked what it serves.
         let to_another = task.assignee.filter(|a| *a != turn.member);
         if let Some(to) = to_another {
             let (from, to) = (self.member(turn.member)?, self.member(to)?);
@@ -753,6 +751,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 return Err(EngineError::Refused(Refusal::CeoToLeads));
             }
         }
+        let served = match task.parent {
+            Some(parent) => self.subtask_discipline(parent, serves)?,
+            None => None,
+        };
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
         let id = self.add_task_held_lock(Author::Member(turn.member), task)?;
         self.store.set_criteria(id, criteria)?;
@@ -773,14 +775,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(id)
     }
 
-    /// The owner hands the team work, with what done means if they say.
+    /// The owner hands the team work, saying what done means: at least one line (ADR 0124,
+    /// amended), since a team handed "fix the backups" has nothing to check a part against. This
+    /// is the owner's front door, the one Give work and the API use; [`Engine::add_task`] is the
+    /// primitive under it, for the tasks HQ makes itself and for work already open, which stays
+    /// as it is.
     ///
     /// # Errors
-    /// As [`Engine::add_task`].
+    /// [`Refusal::OwnerNeedsCriteria`] when the owner gives none, [`Refusal::TooLong`] past
+    /// [`evidence::MOST_CRITERIA`]; and as [`Engine::add_task`].
     pub fn add_task_with(&self, by: Author, task: NewTask, criteria: &[Criterion]) -> Done<TaskId> {
         let _held = self.held();
         let _asked = (by == Author::Owner).then(|| self.for_owner());
-        evidence::may_hand_on(criteria, false).map_err(EngineError::Refused)?;
+        let may = match by {
+            Author::Owner => evidence::owner_may_hand_out(criteria),
+            _ => evidence::may_hand_on(criteria, false),
+        };
+        may.map_err(EngineError::Refused)?;
         let id = self.add_task_held_lock(by, task)?;
         self.store.set_criteria(id, criteria)?;
         Ok(id)

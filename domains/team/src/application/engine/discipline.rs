@@ -30,9 +30,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- sub-task discipline ------------------------------------------------------------------
 
     /// Whether `parent` may take one more sub-task (ADR 0124): at most five open under it, no
-    /// deeper than three, and, under a member's task with criteria, naming which one it
-    /// serves. The owner's tasks and a routine's (depth 0) need no `serves`. Returns the
-    /// criterion served, if one is.
+    /// deeper than three, and, under any task with criteria, the owner's and a routine's
+    /// included (amended: depth 0 was exempt, and it is where a lead first splits work), naming
+    /// which one it serves. A task with no criteria has none to name: work already open from
+    /// before they were asked for, and the plan HQ hands a project's lead, which HQ makes with
+    /// none. Returns the criterion served, if one is.
     pub(super) fn subtask_discipline(
         &self,
         parent: TaskId,
@@ -46,7 +48,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|t| t.parent == Some(parent) && !t.status.finished())
             .count();
         guards::room_for_a_subtask(parent, open, above.depth).map_err(refused)?;
-        if above.depth == 0 || above.criteria.is_empty() {
+        if above.criteria.is_empty() {
             return Ok(None);
         }
         match serves.and_then(|s| guards::serves(&above.criteria, s)) {

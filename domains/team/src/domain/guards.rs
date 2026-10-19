@@ -181,7 +181,8 @@ impl core::fmt::Display for GuardRefusal {
                 write!(
                     f,
                     "which of #{parent}'s criteria does this serve? Give serves (its number or \
-                     its words): {}",
+                     its words): {}. Every part of a split serves one of the criteria it splits, \
+                     whoever asked for the task; a part that serves none is not part of it",
                     listed.join("; ")
                 )
             }
@@ -1617,6 +1618,13 @@ mod tests {
         assert!(
             asked.contains("which of #4's criteria does this serve?")
                 && asked.contains("1. The cause is found; 2. Sonarr is running"),
+            "{asked}"
+        );
+        // It applies to the owner's tasks and a routine's as to a member's (ADR 0124, amended),
+        // and the refusal says so, with what a part that serves none is.
+        assert!(
+            asked.contains("whoever asked for the task")
+                && asked.contains("a part that serves none is not part of it"),
             "{asked}"
         );
     }
