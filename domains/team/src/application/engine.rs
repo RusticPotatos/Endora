@@ -35,6 +35,7 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
+mod budget;
 mod consult;
 mod digest;
 mod discipline;
@@ -1102,6 +1103,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Some(task) if !reason.brings_news() => self.woken_for_nothing(member.id, task)?,
                 _ => false,
             },
+            // Talk on a task that has had its budget of it, with nothing changing, is held while
+            // the guard is on and its lead can decide it (ADR 0133).
+            coordination_held: match task {
+                Some(task) if reason.is_talk() => self.talk_is_held(task)?,
+                _ => false,
+            },
         })
     }
 
@@ -1117,7 +1124,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let (Some(task), true) = (task, reason.brings_news()) {
             self.bring_forward(task)?;
         }
-        let decision = wakes::decide(member, &self.situation(&who, task, reason)?);
+        let situation = self.situation(&who, task, reason)?;
+        let decision = wakes::decide(member, &situation);
         let now = self.clock.now();
         let mut about = json!({
             "member": member.0, "task": task.map(|t| t.0), "reason": reason.name(),
@@ -1150,7 +1158,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .store
                     .add_wake(member, task, reason, Receipt::Held, None, now)?;
                 self.mark_owners(wake, None)?;
+                if situation.coordination_held {
+                    about["why"] = json!("coordination_budget");
+                }
                 self.emit(EventKind::WakeHeld, about)?;
+                // Held for the budget of talk: the task's lead is asked what to do, once.
+                if let (true, Some(task)) = (situation.coordination_held, task) {
+                    self.coordination_held_notice(task)?;
+                }
                 Ok(Receipt::Held)
             }
             WakeDecision::Refuse(why) => {
@@ -3041,6 +3056,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Games (ADR 0121): free members play a match in code, and a game of chess nobody
         // has moved in a week is adjourned. No model is asked.
         self.games_tick(now)?;
+        // 3c. A wake held for a task with no turn live on it has nothing to wait behind (ADR
+        //     0133): it is asked again, and goes once the task's budget of talk is in hand.
+        self.release_held_talk()?;
 
         // 4. Queued turns start where a member has a free slot, budget can be reserved, and a
         //    runner has room: urgent work first, then the oldest.

@@ -149,6 +149,8 @@ pub enum EventKind {
     /// A lead narrowed or reworded what done means for a task in its area: the criteria it had
     /// and the criteria it has (ADR 0133).
     CriteriaChanged,
+    /// The owner switched a guard that is tried in shadow on, or back to shadow (ADR 0133).
+    GuardMode,
 }
 
 impl EventKind {
@@ -227,6 +229,7 @@ impl EventKind {
             Self::SentBack => "task.sent_back",
             Self::RecordAsked => "record.asked",
             Self::CriteriaChanged => "task.criteria",
+            Self::GuardMode => "guard.mode",
         }
     }
 }

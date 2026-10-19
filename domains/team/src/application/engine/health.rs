@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use super::guards::guard_card;
+use super::guards::{Found, guard_card};
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::application::scorecard::Window;
@@ -27,18 +27,18 @@ const CEREMONY_SEEN: &str = "guards_ceremony";
 pub(super) const TALK_SEEN: &str = "guards_talk";
 
 /// One ended turn, as the process-health look reads it.
-struct Seen {
+pub(super) struct Seen {
     /// The project of its task, if the task is in one.
-    project: Option<i64>,
+    pub(super) project: Option<i64>,
     /// The task it was on.
-    task: TaskId,
+    pub(super) task: TaskId,
     /// The top of the task tree that task hangs from; the task itself when it is the top (ADR
     /// 0133).
-    root: TaskId,
+    pub(super) root: TaskId,
     /// What it did.
-    turn: TurnSeen,
+    pub(super) turn: TurnSeen,
     /// When each act of its that succeeded was done.
-    acts: Vec<Millis>,
+    pub(super) acts: Vec<Millis>,
 }
 
 /// What a ceremony is the ceremony of: a project, or, for work outside any, the task tree it is
@@ -93,8 +93,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         self.store.set_setting(LOOKED_AT, &now.to_string())?;
-        let turns = self.turns_seen(now)?;
+        let turns = self.turns_seen(now, None)?;
         self.look_for_ceremony(now, &turns)?;
+        self.look_at_coordination(now, &turns)?;
         self.look_at_talk(now, &turns)
     }
 
@@ -150,8 +151,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// What each ended turn of the last week did, for the ceremony detector and the outcomes
-    /// line, with the project of its task if it has one.
-    fn turns_seen(&self, now: Millis) -> Done<Vec<Seen>> {
+    /// line, with the project of its task if it has one; only those on `only`, when a task is
+    /// named (ADR 0133: a task's budget of talk is asked about one task at a time).
+    pub(super) fn turns_seen(&self, now: Millis, only: Option<TaskId>) -> Done<Vec<Seen>> {
         let tasks = self.store.tasks()?;
         let wakes = self.store.wakes()?;
         let branches = self.store.branches()?;
@@ -162,6 +164,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .runs()?
             .into_iter()
             .filter(|r| r.started_at.is_some() && r.label.is_some())
+            .filter(|r| only.is_none_or(|task| r.task == Some(task)))
             .collect();
         runs.sort_by_key(|r| r.id);
         let mut seen_readings: Vec<(TaskId, String, String)> = Vec::new();
@@ -453,9 +456,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         evidence: &str,
         mark: i64,
     ) -> Done<Option<i64>> {
+        let found = self.find_noticed(guard, key, task, project, evidence, mark)?;
+        Ok(found.how.is_news().then_some(found.id))
+    }
+
+    /// [`Self::find_on_the_desk`], answering with what the detection did to the finding, news or
+    /// not, for a caller that has more to do whether it opened or was refreshed (ADR 0133).
+    pub(super) fn find_noticed(
+        &self,
+        guard: Guard,
+        key: &str,
+        task: Option<TaskId>,
+        project: Option<i64>,
+        evidence: &str,
+        mark: i64,
+    ) -> Done<Found> {
         let found = self.find(guard, key, task, project, evidence, mark)?;
         if !found.how.is_news() {
-            return Ok(None);
+            return Ok(found);
         }
         let id = found.id;
         let desk = self.store.add_desk(
@@ -471,7 +489,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::DeskAdded,
             json!({ "item": desk.0, "kind": "guard", "task": task.map(|t| t.0) }),
         )?;
-        Ok(Some(id))
+        Ok(found)
     }
 
     // ---- the review carousel ------------------------------------------------------------------
@@ -843,17 +861,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn guards_shown(&self) -> Done<Value> {
         let findings = self.store.findings()?;
         let t = THRESHOLDS;
-        let precision: Vec<Value> = guards::precision(&findings)
-            .iter()
-            .map(|p| {
-                json!({ "guard": p.guard.name(), "plainly": p.guard.plainly(),
-                        "rule": p.guard.rule(), "fired": p.fired, "open": p.open,
-                        "real": p.real, "resolved": p.resolved,
-                        "false_positive": p.false_positive, "not_enough": p.not_enough,
-                        "fixed": p.fixed, "fix_judged": p.fix_judged,
-                        "precision": p.percent() })
-            })
-            .collect();
+        let mut precision: Vec<Value> = Vec::new();
+        for p in guards::precision(&findings) {
+            // A guard that is tried in shadow says which it is in now (ADR 0133); the rest only
+            // record, and have none.
+            let mode = if p.guard.has_shadow() {
+                Some(self.guard_mode(p.guard)?.name())
+            } else {
+                None
+            };
+            precision.push(json!({
+                "guard": p.guard.name(), "plainly": p.guard.plainly(),
+                "rule": p.guard.rule(), "fired": p.fired, "open": p.open,
+                "real": p.real, "resolved": p.resolved,
+                "false_positive": p.false_positive, "not_enough": p.not_enough,
+                "fixed": p.fixed, "fix_judged": p.fix_judged,
+                "precision": p.percent(), "mode": mode }));
+        }
         let ceremony: Value = self
             .store
             .setting(CEREMONY_SEEN)?
@@ -882,6 +906,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "sufficient_turns": t.sufficient_turns,
                 "retracted_percent": t.retracted_percent,
                 "retracted_shared_least": t.retracted_shared_least,
+                "coordination_budget": t.coordination_budget,
+                "coordination_window_ms": t.coordination_window_ms,
             },
             "precision": precision,
             "ceremony": ceremony,

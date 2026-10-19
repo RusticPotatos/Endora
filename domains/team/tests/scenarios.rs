@@ -58,6 +58,10 @@ mod outcomes;
 #[path = "scenarios/desk.rs"]
 mod desk;
 
+/// Caps on talk and runaway (ADR 0133), in their own file.
+#[path = "scenarios/caps.rs"]
+mod caps;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

@@ -287,7 +287,8 @@ function hqTell(e, live, older) {
     "thread.posted": ["run", `${d.author}: ${d.preview}`],
     "wake.queued": ["wake", `Woke ${name}: ${reason}${on}`],
     "wake.folded": ["wake", `${reason} → folded into ${name}'s live run${on}`],
-    "wake.held": ["wake", `${name} waits: ${key} is being worked (${reason})`],
+    "wake.held": ["wake", d.why === "coordination_budget" ? `${name} waits: talk on ${key} is over its budget, and its lead decides (${reason})`
+      : `${name} waits: ${key} is being worked (${reason})`],
     "wake.refused": ["warn", `Wake for ${name} skipped: ${String(d.why || "").replace(/_/g, " ")}`],
     "run.started": ["run", `R${d.run} ${name} starts${key ? " on " + key : ""}${reason ? ` (${reason})` : ""}, ${hqDollars(d.reserved)} held`],
     "run.ended": [d.result === "succeeded" ? "done" : d.result === "retry_waiting" ? "warn" : "bad",
@@ -318,6 +319,8 @@ function hqTell(e, live, older) {
       : `${d.by || "Someone"} ${String(d.what || "changed").replace(/_/g, " ")} ${d.address || ""}`],
     "story.told": ["run", `${d.by} ${d.retold ? "retold" : "told"} the story ${d.handle}`],
     "task.handed_over": ["run", `${hqName(d.by)} handed ${key} on: ${d.note || ""}`],
+    // A guard that is tried in shadow was switched on, or put back in shadow (ADR 0133).
+    "guard.mode": ["you", d.mode === "on" ? `You switched the ${String(d.guard || "").replace(/_/g, " ")} guard on` : `You put the ${String(d.guard || "").replace(/_/g, " ")} guard back in shadow`],
     // A lead narrowed what done means for a task in its area (ADR 0133).
     "task.criteria": ["run", `${hqName(d.by)} narrowed what done means for ${key}: ${(d.after || []).join("; ")}${d.why ? " (" + d.why + ")" : ""}`],
     "checkback.fired": ["wake", `${name} checks back on ${key}`],
@@ -1949,7 +1952,13 @@ function hqGuards(s) {
     const judged = p.real + p.resolved + p.false_positive;
     const share = p.precision == null ? "not judged yet" : `${p.precision}% real of ${judged} judged`;
     const fixes = p.fix_judged ? ` · fixes worked ${p.fixed} of ${p.fix_judged}` : "";
-    return `<li><b>${esc(p.plainly)}</b>: ${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}</li>`;
+    // A guard that is tried in shadow before it acts (ADR 0133) says which it is in, and the
+    // owner switches it: in shadow it records what it would have done and holds nothing.
+    const on = p.mode === "on";
+    const mode = p.mode ? `<p class="hq-note">${on ? "On: it holds talk on a task over its budget, and asks the task's lead to decide it."
+      : "In shadow: it records what it would have held, and holds nothing, until you switch it on."}
+      <button class="hq-btn${on ? " ok" : ""}" aria-pressed="${on ? "true" : "false"}" data-act="hq:guardmode:${esc(p.guard)}:${on ? "shadow" : "on"}">${on ? "Put it back in shadow" : "Switch it on"}</button></p>` : "";
+    return `<li><b>${esc(p.plainly)}</b>${p.mode ? ` <span class="hq-tag">${on ? "on" : "shadow"}</span>` : ""}: ${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}${mode}</li>`;
   }).join("");
   // What each window's turns spent is said beside it (ADR 0133).
   const ceremony = (g.ceremony || []).map((c) => `<li${c.over ? ` class="hq-refused"` : ""}>${esc(c.title)}: ${(c.windows || []).map((w) => esc(w.said) + (w.spent ? ` (${hqDollars(w.spent)} spent)` : "")).join(" · ")}${c.over ? " · talking more than working" : ""}</li>`).join("");
@@ -2453,6 +2462,13 @@ async function hqDispatch(verb, noun, id, arg) {
     const title = val("hq-goal"); if (!title) return true;
     try { await api("POST", "/v1/hq/goals", { title, reason: "" }); flash("Goal set.", "ok"); }
     catch (e) { flash("Couldn't set it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // A guard that is tried in shadow before it acts (ADR 0133): switched on, or back to shadow.
+  if (noun === "guardmode") {
+    if (arg === "on" && !confirm("Switch this guard on? It will hold talk on a task over its budget, and ask the task's lead to decide it.")) return true;
+    try { await api("POST", `/v1/hq/guards/${encodeURIComponent(id)}/mode`, { mode: arg }); flash(arg === "on" ? "Switched on." : "Back in shadow.", "ok"); }
+    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // The owner's switches for the team's contracts.

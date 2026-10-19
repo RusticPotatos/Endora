@@ -661,6 +661,9 @@ pub enum Refusal {
         /// How many were given.
         gave: usize,
     },
+    /// The owner switches a guard that is tried in shadow, and this one is not (ADR 0133): it
+    /// only records, so it has no shadow to switch.
+    NoShadowMode(&'static str),
 }
 
 impl fmt::Display for Refusal {
@@ -862,6 +865,10 @@ impl fmt::Display for Refusal {
                 f,
                 "narrow_criteria narrows or rewords what done means and never widens it: the \
                  task has {had} and you gave {gave}"
+            ),
+            Self::NoShadowMode(guard) => write!(
+                f,
+                "the {guard} guard only records what it finds: it has no shadow to switch"
             ),
             Self::NotAManager => f.write_str(
                 "a member reports to another member, never itself and never in a circle; the \

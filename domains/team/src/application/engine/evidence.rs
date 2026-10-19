@@ -389,6 +389,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }));
         }
         self.set_criteria_held_lock(task, criteria)?;
+        // Narrowed, its talk is counted afresh, and the question put to its lead is answered
+        // (ADR 0133).
+        // Narrowed, its talk is counted afresh, and the question put to its lead is answered
+        // (ADR 0133).
+        self.renew_coordination_budget(task)?;
         let texts = |all: &[Criterion]| all.iter().map(|c| c.text.clone()).collect::<Vec<_>>();
         let said = |all: &[Criterion]| {
             if all.is_empty() {
@@ -726,6 +731,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<TaskId> {
         let _held = self.held();
         let turn = self.running(run)?;
+        let task_parent = task.parent;
         let served = match task.parent {
             Some(parent) => self.subtask_discipline(parent, serves)?,
             None => None,
@@ -758,6 +764,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         if let Some(own) = turn.task {
             self.mark_progress(turn.member, own)?;
+        }
+        // A lead splitting the task it was asked about has decided it: the talk is counted afresh
+        // (ADR 0133).
+        if let Some(parent) =
+            task_parent.filter(|p| self.asked_about_talk(*p, turn.member).unwrap_or(false))
+        {
+            self.renew_coordination_budget(parent)?;
         }
         Ok(id)
     }

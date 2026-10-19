@@ -67,7 +67,7 @@ pub(super) fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
         .expect("a turn started")
 }
 
-fn wakes_for(hq: &Hq<'_>, task: TaskId, reason: WakeReason) -> usize {
+pub(super) fn wakes_for(hq: &Hq<'_>, task: TaskId, reason: WakeReason) -> usize {
     hq.store()
         .wakes()
         .unwrap()
@@ -810,7 +810,7 @@ fn a_member_woken_for_nothing_again_and_again_is_parked_not_woken() {
 // ---- sub-task discipline and evidence that is enough -----------------------------------------
 
 /// `member` uses a tool of the team protocol in its running turn `t`.
-fn use_tool(
+pub(super) fn use_tool(
     hq: &Hq<'_>,
     t: &RunContext,
     tool: &str,

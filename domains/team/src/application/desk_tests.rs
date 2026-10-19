@@ -15,7 +15,7 @@ use super::guards_tests::{
     Hands, Hq, NOON, blocked, guards, later, one_turn, project_work, team, turn,
 };
 use super::ports::TeamStore;
-use crate::domain::guards::{Finding, THRESHOLDS, Verdict};
+use crate::domain::guards::{Finding, Guard, THRESHOLDS, Verdict};
 use crate::domain::{MemberId, TaskId, TaskStatus};
 
 /// A fortnight, longer than any window the guards look over.
@@ -348,12 +348,14 @@ fn look(hq: &Hq<'_>, clock: &Hands) {
     hq.tick().unwrap();
 }
 
+/// The cards the ceremony guard put up, in `status`: the budget of talk has its own (ADR 0133).
 fn talk_cards(hq: &Hq<'_>, status: &str) -> usize {
     hq.store()
         .desk()
         .unwrap()
         .iter()
         .filter(|d| d.kind == "guard" && d.status == status)
+        .filter(|d| d.text.starts_with("Talk about work"))
         .count()
 }
 
@@ -456,13 +458,24 @@ fn a_resolved_ceremony_finding_is_raised_again_only_after_a_dozen_more_turns_of_
         "it is over the line, and the owner has judged that"
     );
 
-    // A dozen more: new evidence.
+    // A dozen more: new evidence. (Twenty-four turns of talk is over a task's budget too, which
+    // has its own finding and card, ADR 0133: this is about the ceremony's.)
     talk(&hq, ada, task, 12);
     look(&hq, &clock);
-    let all = hq.store().findings().unwrap();
+    let all: Vec<_> = hq
+        .store()
+        .findings()
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.guard == Guard::Ceremony)
+        .collect();
     assert_eq!(all.len(), 2, "a new finding at last");
     assert_eq!(all[1].verdict, None);
     assert_eq!(all[1].mark, 24);
     assert_eq!(talk_cards(&hq, "waiting"), 1);
-    assert_eq!(digest(&hq).len(), 1);
+    let ceremony_cards = digest(&hq)
+        .iter()
+        .filter(|d| d["finding"]["guard"] == "ceremony")
+        .count();
+    assert_eq!(ceremony_cards, 1);
 }

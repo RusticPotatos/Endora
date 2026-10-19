@@ -112,6 +112,19 @@ fn the_digest_holds_one(w: &mut Office, what: String, starting: String) {
     assert!(text.starts_with(&starting), "the card says: {text}");
 }
 
+/// One finding of a guard in the digest, whatever else waits there: twenty-four turns of talk is
+/// over a task's budget too (ADR 0133), which has its own card.
+#[then(regex = r#"^the digest holds a finding "(.+)" once$"#)]
+fn the_digest_holds_a_finding_once(w: &mut Office, starting: String) {
+    let waiting = w.in_the_digest();
+    let cards: Vec<_> = waiting
+        .iter()
+        .filter(|d| d["kind"] == "guard")
+        .filter(|d| d["text"].as_str().is_some_and(|t| t.starts_with(&starting)))
+        .collect();
+    assert_eq!(cards.len(), 1, "in the digest: {waiting:?}");
+}
+
 #[when(expr = "Endora tells the owner {string}")]
 fn endora_tells_the_owner(w: &mut Office, text: String) {
     w.hq.notice(None, &text).expect("a notice is put up");
