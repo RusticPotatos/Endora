@@ -7,6 +7,15 @@ tagged release.
 
 ## [Unreleased]
 
+### Removed
+
+- **Two tools that were never built are gone: `run_gate` and `request_action`**
+  ([ADR 0106](docs/adr/0106-team-contracts.md), amended). Every member was offered both on every
+  turn since the first build, and every call answered "not available yet". They are no longer
+  listed (a developer's list goes from 25 to 23 tools, the tester's from 24 to 22, a lead's from
+  40 to 38), no longer named in what a member is told it can use, and a call to either is a call
+  to a tool that is not there. Nothing used them. No migration.
+
 ### Changed
 
 - **A guard that cannot tell says so** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),

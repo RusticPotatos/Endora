@@ -81,6 +81,53 @@ fn a_turns_token_opens_only_that_turn_and_only_while_it_runs() {
     );
 }
 
+/// `run_gate` and `request_action` were listed to every member and answered "not available yet"
+/// to every call, since the first build: a member was offered two tools that could only fail, and
+/// every turn paid for their listing. They are not offered to any role, not named in what a
+/// member is told it can use, and a call to either is a call to a tool that is not there.
+#[test]
+fn tools_that_were_never_built_are_not_offered_told_of_or_known() {
+    const NEVER_BUILT: [&str; 2] = ["run_gate", "request_action"];
+    for role in [
+        Role::Ceo,
+        Role::Lead,
+        Role::Developer,
+        Role::Researcher,
+        Role::Reviewer,
+    ] {
+        let offered: Vec<String> = tools(role)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect();
+        for tool in NEVER_BUILT {
+            assert!(
+                !offered.contains(&tool.to_owned()),
+                "{role:?} is offered {tool}"
+            );
+        }
+    }
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    for tool in NEVER_BUILT {
+        let refused = call(&hq, &run, &me, tool, &json!({ "task": s.task.0 })).unwrap_err();
+        assert_eq!(refused, format!("there is no tool called `{tool}`"));
+    }
+    let told = hq.runner().started()[0].told.clone();
+    for tool in NEVER_BUILT {
+        assert!(
+            !told.contains(tool),
+            "{tool} is in what the member is told: {told}"
+        );
+    }
+    assert!(
+        told.contains("Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, check_back,"),
+        "{told}"
+    );
+}
+
 #[test]
 fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
@@ -157,11 +204,6 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .is_err()
     );
 
-    assert!(
-        use_tool("run_gate", json!({ "task": s.task.0 }))
-            .unwrap_err()
-            .contains("not available yet")
-    );
     assert!(use_tool("format_the_disk", json!({})).is_err());
     let names: Vec<String> = tools(Role::Developer)
         .as_array()
@@ -175,7 +217,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     // every member asks the record and consults (ADR 0129); and a developer asks for its kept
     // branch to be checked again (ADR 0115). The answers to a quiz and to a consult are the
     // tools of those turns alone (ADR 0131, amended): two fewer than every turn was offered.
-    assert_eq!(names.len(), 25, "{names:?}");
+    assert_eq!(names.len(), 23, "{names:?}");
     assert!(names.contains(&"recheck".to_owned()));
     for tool in ["ask_record", "consult"] {
         assert!(names.contains(&tool.to_owned()), "{tool}");
@@ -213,7 +255,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .collect();
     // With the office (ADR 0119), a huddle's view (ADR 0120), chess (ADR 0121) and the world
     // (ADR 0122).
-    assert_eq!(reviewers.len(), 24, "{reviewers:?}");
+    assert_eq!(reviewers.len(), 22, "{reviewers:?}");
     assert!(
         !reviewers.contains(&"create_task".to_owned()),
         "the tester passes or sends back, and never makes work"

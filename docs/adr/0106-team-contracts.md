@@ -7,7 +7,8 @@ Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
 slice is built: three contracts on the node's team listener (`homelab_status`,
 `container_logs`, `restart_container`), the worker offering them beside the team's tools, the
 owner's two switches on the HQ screen, and restarts told on the owner's desk. There are no
-ask-first contracts yet; `request_action` stays as it was.
+ask-first contracts yet; `request_action` stays as it was. (Amended 2026-10-19: `request_action`
+was never built, and is no longer listed; a member asks the owner with `ask_owner`.)
 
 Amended 2026-10-17 by [0108](0108-the-bridge.md): these three are now the **generic container
 tools**, and beside them the **bridge** offers every capability Endora has, and every tool of
@@ -54,7 +55,7 @@ boundary.
 - **Automatic act**: a safe fix. It runs at once, within rate limits the node keeps, and every
   one is told to the owner as a notice on their desk in HQ.
 - **Ask-first act**: anything riskier, which waits for the owner. None exists yet; until one
-  does, a member asks the owner (`ask_owner`) or uses `request_action`.
+  does, a member asks the owner (`ask_owner`).
 
 **The first contracts.**
 

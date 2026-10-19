@@ -323,8 +323,7 @@ container:
 | `create_task` | Creates a sub-task for another member, with what it waits on. Refused when an open task under the same goal is already about the same home-lab containers (named in its title, or in its description when the title names none): "#664 already covers this (deluge, nzbget, prowlarr): add to it with post in #664, rather than a second task". The member's own task above the new one, and what is above it, never counts (ADR 0107) |
 | `ask_owner` | Asks a question or puts a proposal and ends the turn: HQ ends the run there and refuses any further call from it, and the worker exits 0. With a CEO at work it goes up the chain, in the task's thread (section 5); the CEO's is `{ "decision", "recommendation", "why" }`, a decision for the board's desk after the reviewer. With no CEO it goes on the owner's desk. One waits at a time per member and task. The owner can answer on the card, into the task's thread, and seeing it wakes the member who asked |
 | `check_back` | Wakes the member on its task again after 5–720 minutes, once, if it is still open: after a fix, to confirm it held |
-| `run_gate` | Runs the tests and build on a runner and returns the result |
-| `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
+| `run_gate`, `request_action` | Removed (2026-10-19): they were listed to every member from the first build and answered "not available yet" to every call, and were never built. A call to either now is a call to a tool that is not there. The gate runs where work is submitted, not on a member's call; a privileged act is asked of the owner with `ask_owner` or the bridge |
 | `note_lesson` | No longer offered (ADR 0122): a worker that still calls it gets a story marked to retell, in its writer's area, under a handle from the lesson's first words; a `lesson.noted` event and a notice on the owner's desk ("Ada noted: …") as before. The goal's notes are not changed |
 | `note_house` | The CEO's only: `{ "entry" }`, at most 500 characters, a dated line on the house page's timeline (ADR 0122; before it, the house log). A `house.noted` event |
 | `rewrite_house` | Refused for a release (ADR 0122), saying to use `write_world` and `note_house`; then removed |
@@ -858,7 +857,7 @@ for working things out: scripts, parsing what the tools returned, trying command
 - **The role**: `ceo`, ranked above the lead, which leads every goal as the lead does (it may
   act on any task); work is handed only down, so nobody hands the CEO work. Its tools: `my_turn`,
   `claim`, `post`, `set_status`, `create_task`, `check_back`, `ask_owner` (a decision),
-  `note_house`, `rewrite_house` and `read_doc`; not the gate or `request_action`.
+  `note_house`, `rewrite_house` and `read_doc`.
 - **Seated once**: HQ started with the demo off and no CEO seats "Mara" (share 35, Claude Opus,
   `member.hired` in the feed), remembered in HQ's settings so it is never seated again; and,
   once there is an active goal (the home lab's if any), the routine "Daily review" for the CEO

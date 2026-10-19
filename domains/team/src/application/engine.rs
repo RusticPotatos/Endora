@@ -2652,11 +2652,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         // The tester is not offered create_task: she passes or sends back (ADR 0114).
         told.push_str(if member.role == Role::Reviewer {
-            "Your tools at HQ: my_turn, claim, post, set_status, ask_owner, check_back, \
-             run_gate, request_action"
+            "Your tools at HQ: my_turn, claim, post, set_status, ask_owner, \
+             check_back"
         } else {
             "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
-             check_back, run_gate, request_action"
+             check_back"
         });
         told.push_str(match member.role {
             Role::Reviewer => {

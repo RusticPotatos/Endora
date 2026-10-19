@@ -177,13 +177,7 @@ fn the_ceo_directs_decides_and_reads_and_proposes_accepts_and_acts_on_nothing() 
     ] {
         assert!(ceo.iter().any(|n| n == kept), "{kept}: {ceo:?}");
     }
-    for gone in [
-        "propose_project",
-        "accept",
-        "review",
-        "run_gate",
-        "request_action",
-    ] {
+    for gone in ["propose_project", "accept", "review"] {
         assert!(!ceo.iter().any(|n| n == gone), "{gone}: {ceo:?}");
     }
     // Leads propose and accept; nobody else directs.

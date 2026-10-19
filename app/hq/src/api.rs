@@ -1478,7 +1478,7 @@ mod tests {
         // consult and to the quiz are the tools of those turns alone (ADR 0131, amended). And it
         // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
         // for work in its area (ADR 0133).
-        assert_eq!(names.len(), 40, "{names:?}");
+        assert_eq!(names.len(), 38, "{names:?}");
         assert!(names.contains(&"recheck"));
         assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"narrow_criteria"));
@@ -1538,7 +1538,7 @@ mod tests {
                 .oneshot(speak(rpc(
                     4,
                     "tools/call",
-                    json!({ "name": "run_gate", "arguments": { "task": 1 } }),
+                    json!({ "name": "format_the_disk", "arguments": {} }),
                 )))
                 .await
                 .unwrap(),

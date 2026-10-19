@@ -874,7 +874,6 @@ fn the_ceos_briefing_holds_the_house_the_team_the_strategy_the_areas_and_the_boa
             .contains("the team's standards (docs/standards.md)"),
         "{read_doc}"
     );
-    assert!(!ceo.told.contains("run_gate"), "{}", ceo.told);
 }
 
 #[test]

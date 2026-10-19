@@ -13,8 +13,6 @@ const TOOL_NAMES: &[&str] = &[
     "create_task",
     "ask_owner",
     "check_back",
-    "run_gate",
-    "request_action",
     "report_usage",
     "homelab_status",
     "container_logs",

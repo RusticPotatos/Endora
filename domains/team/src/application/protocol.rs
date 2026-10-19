@@ -499,18 +499,6 @@ pub fn tools(role: Role) -> Value {
             json!({ "task": task, "view": { "type": "string", "maxLength": crate::domain::ladder::VIEW_MOST }, "evidence": ids("What your view rests on: at least one.") }),
             &["task", "view", "evidence"]
         ),
-        tool(
-            "run_gate",
-            "Run the task's tests and build on a runner and get the result.",
-            json!({ "task": task }),
-            &["task"]
-        ),
-        tool(
-            "request_action",
-            "Ask for a privileged action, such as opening a pull request. The gateway decides.",
-            json!({ "action": { "type": "string" }, "detail": { "type": "string" } }),
-            &["action", "detail"]
-        ),
     ]);
     if role == Role::Reviewer {
         if let Some(list) = all.as_array_mut() {
@@ -1417,10 +1405,6 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             "Nothing to report: the model relay already charges every call this turn makes."
                 .to_owned(),
         ),
-        // Not built yet (spec section 15, phase 5): said plainly, so a worker does not pretend.
-        "run_gate" | "request_action" => Err(format!(
-            "`{tool}` is not available yet: say in the thread what you would have done, and ask the owner"
-        )),
         _ => Err(format!("there is no tool called `{tool}`")),
     }
 }
