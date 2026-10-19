@@ -76,7 +76,7 @@ endora_drain_cap_seconds: 300      # the most a shutdown waits; the unit's timeo
 ```
 
 The role installs `/etc/systemd/system/endora-drain.service`, and the deploy's own drain script
-as `/usr/local/lib/endora/hq-drain.sh` (`files/hq-drain.sh`; Endora's `scripts/hq-drain.sh` is a
+as `/usr/local/sbin/endora-hq-drain` (`files/hq-drain.sh`; Endora's `scripts/hq-drain.sh` is a
 link to it). The unit is a oneshot that does nothing when it starts and stays active, ordered
 `After=docker.service`. Units stop in the reverse of their start order, so at shutdown it is
 stopped, and its `ExecStop` runs the script's `drain` while Docker and HQ are still up. A drain

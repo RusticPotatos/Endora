@@ -114,7 +114,7 @@ the default 90 seconds would kill a five-minute wait. It is not `DefaultDependen
 for units that run before the system is up or after it is nearly down, and this one needs Docker)
 and it does not `Require` Docker (restarting Docker would then run the drain). The `-` before
 `ExecStop` means a drain that fails never holds a shutdown. It runs the deploy's own script, so a
-reboot has the guards a deploy has; the role brings its copy (`/usr/local/lib/endora/hq-drain.sh`)
+reboot has the guards a deploy has; the role brings its copy (`/usr/local/sbin/endora-hq-drain`)
 and the variable is its own switch, not `endora_enabled`'s, because the owner's NAS runs Endora
 with `make deploy` and has no checkout of the role's. The one file is the role's, and
 `scripts/hq-drain.sh` a link to it, so the two cannot drift. The owner's `ansible-nas`

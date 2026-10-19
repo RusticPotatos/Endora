@@ -133,16 +133,12 @@
   when: endora_drain_on_shutdown | bool
   become: true
   block:
-    - name: The drain's folder
-      ansible.builtin.file:
-        path: /usr/local/lib/endora
-        state: directory
-        mode: "0755"
-
+    # In a folder every host has: a dry run makes no folder, and a copy into one it did not
+    # make would fail.
     - name: The drain's script
       ansible.builtin.copy:
         src: hq-drain.sh
-        dest: /usr/local/lib/endora/hq-drain.sh
+        dest: /usr/local/sbin/endora-hq-drain
         mode: "0755"
 
     - name: The drain's unit
@@ -150,14 +146,17 @@
         src: endora-drain.service.j2
         dest: /etc/systemd/system/endora-drain.service
         mode: "0644"
+      register: endora_drain_unit_file
 
-    # Started, not run: the unit does nothing until its host shuts down and it is stopped.
+    # Started, not run: the unit does nothing until its host shuts down and it is stopped. A dry
+    # run that would write the unit has none to enable yet; the real run enables it.
     - name: Enable the drain
       ansible.builtin.systemd:
         name: endora-drain.service
         daemon_reload: true
         enabled: true
         state: started
+      when: not (ansible_check_mode and endora_drain_unit_file is changed)
 
 # Turned off: the unit is disabled and its files taken away. It is never stopped here: stopping
 # it runs its ExecStop, which would drain HQ for no restart at all.
@@ -189,7 +188,7 @@
 
     - name: Take the drain's script away
       ansible.builtin.file:
-        path: /usr/local/lib/endora/hq-drain.sh
+        path: /usr/local/sbin/endora-hq-drain
         state: absent
 
 # Only a node this role started is stopped: with the role disabled, an Endora deployed some
