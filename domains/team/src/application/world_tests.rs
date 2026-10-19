@@ -882,7 +882,7 @@ fn each_turn_records_its_situation_and_a_recall_starts_with_what_changed() {
 }
 
 #[test]
-fn the_house_models_briefing_keeps_to_its_budget_and_names_what_it_left_out() {
+fn a_briefing_on_the_mac_keeps_to_the_macs_budget_and_names_what_it_left_out() {
     let clock = Hands(AtomicI64::new(OCT_18));
     let hq = engine(&clock);
     let t = team(&hq);
@@ -907,10 +907,11 @@ fn the_house_models_briefing_keeps_to_its_budget_and_names_what_it_left_out() {
     let next = turn(&hq, t.dev);
     let briefed = hq.briefed(next.run).unwrap().unwrap();
     assert_eq!(briefed.situation, Situation::AfterGap);
+    // The node says the Mac is free, so Linus works on it: its own budget, not the NAS's.
     assert_eq!(
         briefed.budget,
-        1_800 + 1_200,
-        "the house's model, after a gap"
+        crate::domain::situations::MAC_BUDGET + crate::domain::situations::DEAR_EXTRA,
+        "the Mac, after a gap"
     );
     assert!(briefed.tokens <= briefed.budget, "{briefed:?}");
     assert!(!briefed.dropped.is_empty());

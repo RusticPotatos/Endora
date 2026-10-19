@@ -9,6 +9,16 @@ tagged release.
 
 ### Changed
 
+- **The Mac has limits of its own** ([ADR 0130](docs/adr/0130-the-macs-brain.md), amended;
+  [0131](docs/adr/0131-the-two-kinds-of-turn.md)). The first build gave the Mac the NAS's small
+  model's limits on what a turn is told of the team's world (a briefing's 1,800 tokens of it, a
+  map's 1,400 characters) because both are house models, though the Mac runs a large context.
+  **A turn on the Mac is now told up to 2,800 tokens of the world (the CEO's 2,500 stays) and a
+  map of up to 1,900 characters**, between the NAS's model's and Claude's (a lead's 4,000 and
+  2,400); after a gap, a handover or a recall, 1,200 more as for any model. The NAS's model keeps
+  1,800 and 1,400. The numbers are a starting point, tuned from the size each run records against
+  its budget; the reasoning is in ADR 0130. No migration. Scenarios:
+  `domains/team/features/the-macs-brain.feature`.
 - **Work leaves an area only by its lead's hand** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md),
   amended). Live, the CEO handed an engineering branch task to the Ops lead; the CEO may hand
   work to a lead only, and the Ops lead is one. `hand_to` now refuses a member outside the task's

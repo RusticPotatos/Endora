@@ -7,6 +7,7 @@
 //! composed within its size, how an address cited in a page is found, and the shapes of a
 //! proposal and a gap.
 
+use super::brain::Brain;
 use super::situations::Weight;
 use super::work::{GoalId, Member, MemberId, Millis, ProjectId, Role, RunId};
 use super::world::{DAY_MS, Snapshot};
@@ -16,10 +17,23 @@ use super::{Project, ProjectStatus};
 pub const GAP_MOST: usize = 200;
 /// The most proposals a member may have open at once.
 pub const PROPOSALS_OPEN_MOST: usize = 5;
-/// The most characters of a map's lines for a turn on the house's model.
+/// The most characters of a map's lines for a turn on the NAS's model.
 pub const MAP_CHARS_LOCAL: usize = 1_400;
+/// The most characters of a map's lines for a turn on the owner's Mac.
+pub const MAP_CHARS_MAC: usize = 1_900;
 /// The most characters of a map's lines for a turn on Claude.
 pub const MAP_CHARS: usize = 2_400;
+
+/// The most characters of a map's lines for a turn thinking with `brain`: each of the house's
+/// two models has its own, by the context it runs (ADR 0130, amended).
+#[must_use]
+pub const fn chars_for(brain: Brain) -> usize {
+    match brain {
+        Brain::Local => MAP_CHARS_LOCAL,
+        Brain::Mac => MAP_CHARS_MAC,
+        Brain::Sonnet | Brain::Haiku | Brain::Opus => MAP_CHARS,
+    }
+}
 /// The most characters of one line of a map.
 pub const MAP_LINE_MOST: usize = 190;
 /// The most sections of one page a map points at.
@@ -654,7 +668,17 @@ pub const fn night_of(at: Millis, offset_minutes: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::brain::Brain;
+
+    #[test]
+    fn the_macs_map_is_between_the_nas_models_and_claudes_and_each_model_has_its_own() {
+        let [nas, mac, claude] = [Brain::Local, Brain::Mac, Brain::Sonnet].map(chars_for);
+        assert!(nas < mac && mac < claude, "{nas} < {mac} < {claude}");
+        assert_eq!(chars_for(Brain::Local), MAP_CHARS_LOCAL);
+        assert_eq!(chars_for(Brain::Mac), MAP_CHARS_MAC);
+        for claude in [Brain::Sonnet, Brain::Haiku, Brain::Opus] {
+            assert_eq!(chars_for(claude), MAP_CHARS, "{claude:?}");
+        }
+    }
 
     fn member(id: i64, name: &str, role: Role) -> Member {
         Member {

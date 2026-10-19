@@ -82,6 +82,22 @@ Feature: The Mac as a work brain
     Then Ada's turn runs on "local"
     And Zed has no turn running
 
+  # The Mac runs a large context, so its model is told more of the world than the NAS's small
+  # one, and less than a lead has on Claude (ADR 0130, amended).
+  Scenario: A briefing on the Mac carries more of the world than one on the NAS's model
+    Given the node says the Mac is ready
+    And Ada has the task "Read the lab's disk use"
+    When Ada's turn starts
+    Then Ada's turn runs on "mac"
+    And Ada's briefing keeps to its budget of 2800 tokens
+
+  Scenario: The NAS's model keeps its small briefing
+    Given the node says the Mac is not ready: "on battery"
+    And Ada has the task "Read the lab's disk use"
+    When Ada's turn starts
+    Then Ada's turn runs on "local"
+    And Ada's briefing keeps to its budget of 1800 tokens
+
   Scenario: A node that has gone quiet counts as the Mac being away
     Given the node says the Mac is ready
     And 5 minutes pass without the node speaking

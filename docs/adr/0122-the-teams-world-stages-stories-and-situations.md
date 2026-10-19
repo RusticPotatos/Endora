@@ -117,7 +117,8 @@ token:
 | CEO | 2,500 | 3,700 |
 | Lead | 4,000 | 5,200 |
 | Developer, tester, researcher | 3,000 | 4,200 |
-| Anyone on the house's model | 1,800 | 3,000 |
+| Anyone on the NAS's model | 1,800 | 3,000 |
+| Anyone on the Mac, the CEO keeping its own ([0130](0130-the-macs-brain.md), amended) | 2,800 | 4,000 |
 
 Over budget, the optional pieces are left out first and then the recommended, the biggest first
 each time; the core never. **Each piece left out is named** on the briefing's last line, with how

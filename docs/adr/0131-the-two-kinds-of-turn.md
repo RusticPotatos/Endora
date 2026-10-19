@@ -111,6 +111,12 @@ and the table test and a scenario hold it.
   the Mac: owner active*), and are never run on the NAS. A member whose work brain is the house's
   model cannot do such work at all: its turn says *this work needs the Mac, and the member's
   work brain is the house's model*, and the owner sees why on the roster.
+- *Amended 2026-10-19:* **the two house models are not told the same amount of the world.** What
+  a turn is told of the team's world (the briefing's budget, 0122) and how long its map is (0126)
+  follow the context of the model it runs on, and not whether that model is in the house: the
+  NAS's small model keeps 1,800 tokens and 1,400 characters; the Mac, with a large context, has
+  2,800 and 1,900 (the CEO's 2,500 stays, its briefings being held short everywhere); Claude has
+  its role's own. The numbers and why are in 0130.
 - **Work costs nothing**, whoever the member is: a member who judges with Claude is not charged
   for the reading it does on the house's models. The pool is shared among every member by role
   weight and the price class of the Claude each judges with; members' shares and a project's cap

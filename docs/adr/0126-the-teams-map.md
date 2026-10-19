@@ -66,7 +66,7 @@ the house (and for a lead, the projects it leads); then the lab, the team and it
 then, wide and shallow, every other area and current project, and for the CEO every goal and role,
 each with the best (canon first) three sections of the pages that matter, by address. Each line
 says what the page is and who keeps it. It is composed within a size (1,400 characters for a member
-on the house's model, 2,400 for any other), leaves off the optional lines first and then the
+on the NAS's model, 1,900 on the Mac, 2,400 on Claude), leaves off the optional lines first and then the
 recommended ones, the last first, and **names what it left off** on its closing lines, which also
 say "looked and it is not here? say so with `report_gap`". It counts toward the member's memory
 budget (0122) as a core piece. The run records it among the pieces it was told.

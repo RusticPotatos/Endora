@@ -1245,7 +1245,8 @@ As built: the first of three builds of the team's memory; the map and asking the
   situations they are taught in, cited by handle. `tell_story` replaces `note_lesson`.
 - **Situations and budgets**: recalled, handover, fresh, after a gap, continuing (and resumed,
   named for later), decided from the record; the world's pieces composed within 2,500 (CEO),
-  4,000 (lead), 3,000 (others) or 1,800 (the house's model) tokens, 1,200 more after a gap, on a
+  4,000 (lead), 3,000 (others), 1,800 (the NAS's model) or 2,800 (the Mac, the CEO keeping its
+  own; [ADR 0130](../adr/0130-the-macs-brain.md), amended) tokens, 1,200 more after a gap, on a
   handover or a recall; what is left out is named on the last line; the run records it, and the
   replay shows it.
 - **Handover notes**: `hand_to` and a stuck task's hand-on or drop need `{done, not_done, next,
@@ -1409,8 +1410,8 @@ As built: the second of three builds of the team's memory; asking the past follo
   `propose_world` (any member) and `decide_proposal` (the steward; the owner from the World card,
   `POST /v1/hq/world/proposals/decide`); a decline says why; five open a member; the proposer is
   told once in its next briefing (`world_proposals`).
-- **The map**: the first piece of every briefing, core, within 1,400 characters (the house's
-  model) or 2,400; its role's page, area, task's project and the house first, then the lab, team
+- **The map**: the first piece of every briefing, core, within 1,400 characters (the NAS's
+  model), 1,900 (the Mac) or 2,400 (Claude); its role's page, area, task's project and the house first, then the lab, team
   and goal, then a line each for the rest, with the best three sections of each page that matters;
   what it left off is named, and how to say a thing is missing. Closed by `(End of your map.)`.
 - **Gaps and broken roads**: `report_gap {what, where_looked}` is one item for the member's lead
