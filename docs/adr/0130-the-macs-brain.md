@@ -10,6 +10,14 @@ Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). Builds
 everything below, and the owner's scenarios in `domains/team/features/the-macs-brain.feature` and
 `the-macs-brain-restart.feature`.
 
+Amended 2026-10-18 by [0131](0131-the-two-kinds-of-turn.md): the Mac is now a member's **work
+brain**, no longer its one brain. Its rules here (free, idle, one turn at a time, a turn that
+waits where it is and says why, never another model) stand for the turns that need the Mac: code
+and branch work and a tester's work. Reading, status and drafts may use the Mac when it is free
+and the NAS's model when it is not; judgment never runs on it. `start_queued` decides this per
+turn, from why the turn was asked for, and the Mac's one-turn rule counts turns started on it,
+not members.
+
 ## Context
 
 The owner's laptop (an Apple Silicon Mac) can run a far stronger coding model than the NAS can.

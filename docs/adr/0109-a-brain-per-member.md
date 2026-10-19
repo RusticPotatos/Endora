@@ -26,6 +26,12 @@ purpose, and lean briefings for the CEO. Amended 2026-10-17 by
 [0114](0114-evidence-acceptance-criteria-and-the-tester.md): the CEO's effort follows the kind of
 turn, `low`, `medium` or `high`.
 
+Amended 2026-10-18 by [0131](0131-the-two-kinds-of-turn.md): a member's brain is now two, a
+**work brain** (the Mac or the house's model) and a **judgment brain** (a Claude its role may
+use, if the owner gave it one); the brain a turn runs on is decided per turn by why it was asked
+for, and the paid share above is reckoned on the judgment brain alone. A wake refused for budget
+is no longer thrown away: its turn waits for budget.
+
 ## Context
 
 Every member thought with the house's model (qwen3:8b, thinking). The lead coordinates the

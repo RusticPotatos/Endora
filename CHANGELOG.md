@@ -24,6 +24,24 @@ tagged release.
 
 ### Added
 
+- **Two brains per member, and two kinds of turn** ([ADR 0131](docs/adr/0131-the-two-kinds-of-turn.md)).
+  A member has a **work brain** (the Mac or the house's model) and may have a **judgment brain**
+  (a Claude its role may use); the roster shows and sets both (*Work: Mac · Judgment: Sonnet*;
+  `POST /v1/members/{id}/work-brain` and `/judgment-brain`, through the node). What a turn is, and
+  so where it runs, is decided by HQ in code from why it was asked for (a table in
+  `domain/turns.rs`, with a test that fails until a new wake reason is classified), never by the
+  member: **judgment** (planning, reviews, deciding, accepting, a tester's verdict, a huddle, an
+  alarm; all of the CEO's) runs only on the member's Claude and **waits** for a judgment brain or
+  for budget; **work** costs nothing and runs on the Mac when it is free and otherwise on the
+  NAS's model, except code and branch work and a tester's work, which wait for the Mac and are
+  never given the NAS's. A wake out of budget is no longer thrown away: its turn is kept, waits
+  for budget, one per member and task, and is released when the pool's day turns, the owner tops
+  up the pool or gives the member an allowance; it survives an HQ restart. The top bar says
+  *N turns wait for budget*; the roster says what a member's turn waits for. Migration (idempotent,
+  two nullable columns): a member on the house's model or the Mac keeps it as its work brain and
+  has no judgment brain until set; a member on Claude keeps it as its judgment brain and works
+  with the Mac. On in the service (`Settings.turn_kinds`); the engine's older one-brain tests run
+  without it. Paid downtime (0119) now runs on the NAS and draws no money.
 - **The collection can declare every NAS-side setting** (`endora.homelab`, `endora` role).
   New variables, all empty by default (nothing rendered, nothing changed): `endora_workers`
   (the `workers` profile), `endora_lan_dns`, `endora_hq_tick_seconds`, `endora_hq_dir`,
