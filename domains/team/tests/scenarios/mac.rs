@@ -1,11 +1,11 @@
-//! The steps of `features/the-macs-brain*.feature` (ADR 0130): a member who thinks with the
+//! The steps of `features/the-macs-brain*.feature` (ADR 0130, ADR 0131): work that needs the
 //! owner's Mac, whose turn waits until the node says the Mac is free.
 
 use std::sync::atomic::Ordering;
 
 use cucumber::{given, then, when};
 use endora_team::application::{Engine, TeamStore};
-use endora_team::domain::{MemberId, RunStatus};
+use endora_team::domain::RunStatus;
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 use super::Office;
@@ -21,34 +21,26 @@ impl Office {
             .iter()
             .any(|r| r.member == id && r.status == RunStatus::Running)
     }
-
-    fn member_by_id(&self, id: MemberId) -> endora_team::domain::Member {
-        self.hq
-            .store()
-            .members()
-            .expect("the store answers")
-            .into_iter()
-            .find(|m| m.id == id)
-            .expect("hired")
-    }
-}
-
-#[given(expr = "{word} thinks with the Mac")]
-fn thinks_with_the_mac(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    w.hq.set_brain(id, "mac").expect("the Mac is a brain");
 }
 
 #[given("the node says the Mac is ready")]
 #[when("the node says the Mac is ready")]
 fn the_node_says_ready(w: &mut Office) {
+    w.mac_said = true;
     w.hq.tell_mac(true, "ready");
 }
 
 #[given(expr = "the node says the Mac is not ready: {string}")]
 #[when(expr = "the node says the Mac is not ready: {string}")]
 fn the_node_says_not_ready(w: &mut Office, why: String) {
+    w.mac_said = true;
     w.hq.tell_mac(false, &why);
+}
+
+/// The scenario is about the node saying nothing: until it does, the Mac is not assumed free.
+#[given("the node has said nothing about the Mac")]
+fn the_node_has_said_nothing(w: &mut Office) {
+    w.mac_said = true;
 }
 
 #[given(expr = "{int} minutes pass without the node speaking")]
@@ -81,6 +73,7 @@ fn turn_is_waiting(w: &mut Office, name: String, title: String, why: String) {
         format!("waiting for the Mac: {why}"),
         "{name}'s turn says something else"
     );
+    w.wakes_when_waiting = w.hq.wakes().expect("the store answers").len();
     // The owner's screen says the same.
     let shown = w.hq.snapshot().expect("the snapshot is built");
     let run = shown["runs"]
@@ -91,24 +84,6 @@ fn turn_is_waiting(w: &mut Office, name: String, title: String, why: String) {
         .expect("the waiting turn is on screen");
     assert_eq!(run["why"], format!("waiting for the Mac: {why}"));
     assert!(shown["mac"]["waiting"].as_u64().unwrap_or(0) >= 1);
-}
-
-#[then(expr = "{word} still thinks with {string}")]
-fn still_thinks_with(w: &mut Office, name: String, brain: String) {
-    let id = w.member(&name);
-    assert_eq!(w.member_by_id(id).brain.name(), brain);
-}
-
-#[then("a Mac turn is not paid from the team's pool")]
-fn not_paid_from_the_pool(w: &mut Office) {
-    let shown = w.hq.snapshot().expect("the snapshot is built");
-    let zed = shown["members"]
-        .as_array()
-        .expect("members")
-        .iter()
-        .find(|m| m["brain"] == "mac")
-        .expect("a member thinks with the Mac");
-    assert_eq!(zed["per_day"], 0, "a Mac member takes a share of the pool");
 }
 
 #[then("the pool has paid nothing")]
@@ -168,6 +143,8 @@ fn hq_restarts(w: &mut Office) {
 
 #[when(expr = "the owner comes back to the Mac under {word}'s turn {int} times")]
 fn the_owner_comes_back(w: &mut Office, name: String, times: u32) {
+    // The node's word about the Mac is the scenario's from here.
+    w.mac_said = true;
     for _ in 0..times {
         w.hq.tell_mac(true, "ready");
         let context = w.turn_of(&name);
@@ -175,7 +152,7 @@ fn the_owner_comes_back(w: &mut Office, name: String, times: u32) {
         // Mac is refused, so the turn fails.
         w.hq.tell_mac(false, "owner active");
         w.hq.runner().finish(context.run, false);
-        w.hq.tick().expect("the tick runs");
+        w.tick();
         w.clock.0.fetch_add(61_000, Ordering::SeqCst);
     }
 }

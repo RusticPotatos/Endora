@@ -206,8 +206,8 @@ pub enum Refused {
     KillSwitch,
     /// The owner paused the member.
     Paused,
-    /// The member's budget for today is spent. Only a team whose turns have no kinds turns a
-    /// wake away for it; with kinds (ADR 0131) the wake is kept as a turn that waits for budget.
+    /// The member's budget for today was spent. No longer raised (ADR 0131): such a wake is kept
+    /// as a turn that waits for budget. Kept so that wakes already on record still read.
     OutOfBudget,
     /// The member already has a wake held for this task.
     Duplicate,
@@ -336,9 +336,6 @@ pub struct WakeSituation {
     pub stopped: bool,
     /// Whether the member is paused.
     pub paused: bool,
-    /// Whether the member could still have a turn reserved today. Always true once turns have
-    /// kinds (ADR 0131): a turn of judgment out of budget is queued and waits for it.
-    pub can_afford_a_turn: bool,
     /// Whether the wake is about a task. A wake about none that cannot join the member's
     /// running turn starts a turn of its own; one about a task waits for that turn to end
     /// (ADR 0131).
@@ -380,7 +377,8 @@ pub enum WakeDecision {
 
 /// Decides what happens to a wake for `member`. A task has at most one live turn, so a wake
 /// for a member already working the task joins that turn, and one for any other member waits
-/// for it. Folding costs nothing, so it is decided before the budget is.
+/// for it. Money is not asked of a wake (ADR 0131): a turn of judgment that cannot be paid for
+/// is queued and waits for budget where turns start, so nothing a wake asked for is thrown away.
 #[must_use]
 pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     if situation.stopped {
@@ -428,9 +426,6 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
         }
         return WakeDecision::Hold;
     }
-    if !situation.can_afford_a_turn {
-        return WakeDecision::Refuse(Refused::OutOfBudget);
-    }
     WakeDecision::Queue
 }
 
@@ -442,7 +437,6 @@ mod tests {
         WakeSituation {
             stopped: false,
             paused: false,
-            can_afford_a_turn: true,
             about_a_task: true,
             live: Vec::new(),
             already_held: false,
@@ -544,24 +538,15 @@ mod tests {
     }
 
     #[test]
-    fn folding_costs_nothing_but_a_new_turn_needs_budget() {
-        let broke = WakeSituation {
-            can_afford_a_turn: false,
-            ..quiet()
-        };
+    fn a_wake_is_never_turned_away_for_money_and_wakes_already_on_record_still_read() {
+        // The decision does not read the budget at all (ADR 0131): whether the turn can be
+        // paid for is asked where turns start, and a turn that cannot waits there.
+        assert_eq!(decide(ME, &quiet()), WakeDecision::Queue);
         assert_eq!(
-            decide(ME, &broke),
-            WakeDecision::Refuse(Refused::OutOfBudget)
+            Refused::from_name("out_of_budget"),
+            Some(Refused::OutOfBudget),
+            "a wake turned away before kinds still reads"
         );
-        let folding = WakeSituation {
-            live: vec![LiveTurn {
-                run: RunId(7),
-                member: ME,
-                foldable: true,
-            }],
-            ..broke
-        };
-        assert_eq!(decide(ME, &folding), WakeDecision::Fold(RunId(7)));
     }
 
     #[test]

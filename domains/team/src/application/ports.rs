@@ -321,7 +321,9 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn delete_note(&self, note: i64) -> Stored<()>;
-    /// Sets what a member thinks with.
+    /// Sets a brain of a member's (ADR 0131), the one named going to the slot it belongs to: a
+    /// Claude is the brain it judges with, a house model the brain it works with. The other
+    /// slot is left as it is.
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.

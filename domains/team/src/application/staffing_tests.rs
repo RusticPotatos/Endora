@@ -48,6 +48,7 @@ struct Team {
     zed: MemberId,
     goal: GoalId,
     project: ProjectId,
+    plan: TaskId,
 }
 
 fn team(hq: &Hq<'_>) -> Team {
@@ -57,6 +58,14 @@ fn team(hq: &Hq<'_>) -> Team {
     hq.set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
     let seeded = hq.seed_wing().unwrap().expect("the wing is seeded");
+    // Kit's first turn, on the plan, is over: the Mac takes one turn at a time (ADR 0131), and
+    // these tests are about the staffing of the others.
+    hq.tell_mac(true, "ready");
+    hq.tick().unwrap();
+    for started in hq.runner().started() {
+        hq.runner().finish(started.run, true);
+    }
+    hq.tick().unwrap();
     Team {
         ceo,
         ada,
@@ -66,6 +75,7 @@ fn team(hq: &Hq<'_>) -> Team {
         zed: seeded.developers[1],
         goal: seeded.goal,
         project: seeded.project,
+        plan: seeded.task,
     }
 }
 
@@ -87,7 +97,10 @@ fn desk_of(hq: &Hq<'_>, kind: &str) -> Vec<DeskItem> {
         .collect()
 }
 
+/// The newest turn of `member`'s, after a tick or two to start it. The wing's members build
+/// with the Mac (ADR 0131), so the node says it is free.
 fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
+    hq.tell_mac(true, "ready");
     hq.tick().unwrap();
     hq.tick().unwrap();
     hq.runner()
@@ -95,6 +108,29 @@ fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
         .into_iter()
         .rfind(|c| c.member == member)
         .expect("a turn")
+}
+
+/// Every turn that has started is over, and what its end woke has started and is over too. The
+/// Mac takes one turn at a time (ADR 0131), so a test about the next member's turn begins clear.
+fn all_turns_over(hq: &Hq<'_>) {
+    for _ in 0..3 {
+        for started in hq.runner().started() {
+            hq.runner().finish(started.run, true);
+        }
+        hq.tell_mac(true, "ready");
+        hq.tick().unwrap();
+    }
+    for started in hq.runner().started() {
+        hq.runner().finish(started.run, true);
+    }
+}
+
+/// A new turn of `member`'s on `task`: woken (a mention), then started. Kit's first turn, on
+/// the plan, was over before a test began (see `team`), so a test that wants a briefing written
+/// after it changed the world, or a turn it can still use tools in, wakes him again.
+fn woken_turn(hq: &Hq<'_>, member: MemberId, task: TaskId) -> RunContext {
+    hq.wake(member, Some(task), WakeReason::Mentioned).unwrap();
+    turn(hq, member)
 }
 
 fn use_tool(hq: &Hq<'_>, context: &RunContext, tool: &str, args: &Value) -> Result<String, String> {
@@ -244,7 +280,7 @@ fn a_furloughed_member_is_never_woken_and_is_left_out_of_briefings_and_shares() 
         Receipt::Refused(Refused::Furloughed)
     );
     // Kit's turn: his team does not list Zed; the CEO's does not either.
-    let kit = turn(&hq, t.kit);
+    let kit = woken_turn(&hq, t.kit, t.plan);
     assert!(kit.told.contains("Rae"), "{}", kit.told);
     assert!(!kit.told.contains("Zed"), "{}", kit.told);
     hq.wake(t.ceo, None, WakeReason::QuestionAsked).unwrap();
@@ -299,7 +335,7 @@ fn a_lead_with_a_backlog_gets_a_furloughed_member_back_first() {
     let hq = engine(&clock);
     let t = team(&hq);
     hq.furlough(t.zed).unwrap();
-    let kit = turn(&hq, t.kit);
+    let kit = woken_turn(&hq, t.kit, t.plan);
     let tasks: Vec<TaskId> = (0..2)
         .map(|n| open_task(&hq, &t, &format!("Branch {n}")))
         .collect();
@@ -335,7 +371,7 @@ fn staff_are_requested_on_evidence_of_a_backlog_by_a_lead_alone() {
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock);
     let t = team(&hq);
-    let kit = turn(&hq, t.kit);
+    let kit = woken_turn(&hq, t.kit, t.plan);
     let ask = |args: Value| use_tool(&hq, &kit, "request_staff", &args);
     let tasks: Vec<TaskId> = (0..3)
         .map(|n| open_task(&hq, &t, &format!("Branch {n}")))
@@ -405,6 +441,8 @@ fn staff_are_requested_on_evidence_of_a_backlog_by_a_lead_alone() {
             "{role:?}"
         );
     }
+    // Kit's turn is over, and the Mac, which takes one turn at a time, is free for Rae's.
+    all_turns_over(&hq);
     hq.wake(t.rae, Some(four[0]), WakeReason::Mentioned)
         .unwrap();
     let rae = turn(&hq, t.rae);
@@ -417,6 +455,7 @@ fn staff_are_requested_on_evidence_of_a_backlog_by_a_lead_alone() {
     .unwrap_err();
     assert!(refused.contains("only a lead"), "{refused}");
     // Nor a lead for a project that is not hers.
+    all_turns_over(&hq);
     hq.wake(t.ada, Some(four[1]), WakeReason::Mentioned)
         .unwrap();
     let ada = turn(&hq, t.ada);
@@ -443,7 +482,7 @@ fn the_wings_seats_still_hold_when_staff_are_requested() {
             .unwrap();
         assert!(member(&hq, id).reports_to == Some(t.kit));
     }
-    let kit = turn(&hq, t.kit);
+    let kit = woken_turn(&hq, t.kit, t.plan);
     let tasks: Vec<String> = (0..10)
         .map(|n| format!("task {}", open_task(&hq, &t, &format!("Branch {n}"))))
         .collect();

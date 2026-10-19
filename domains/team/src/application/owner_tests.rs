@@ -173,7 +173,11 @@ fn the_owner_sets_what_a_member_thinks_with_within_its_roles_brains() {
             .unwrap()
             .brain
     };
-    assert_eq!(brain(lead), crate::domain::Brain::Local, "local unless set");
+    assert_eq!(
+        brain(lead),
+        crate::domain::Brain::Haiku,
+        "Haiku unless set (ADR 0131)"
+    );
     assert_eq!(
         hq.set_brain(lead, "claude-sonnet-5-5").unwrap(),
         crate::domain::Brain::Sonnet
@@ -190,7 +194,7 @@ fn the_owner_sets_what_a_member_thinks_with_within_its_roles_brains() {
     }
     assert_eq!(
         brain(dev),
-        crate::domain::Brain::Local,
+        crate::domain::Brain::Haiku,
         "a refusal changes nothing"
     );
     let researcher = hq.hire("Marie", Role::Researcher, 15, 1, 2).unwrap();

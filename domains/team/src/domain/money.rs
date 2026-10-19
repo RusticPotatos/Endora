@@ -1,8 +1,8 @@
 //! Money: the team pool, each member's share of it per day, and what one turn may spend.
 //!
-//! The day's pool is shared only among the members with a paid brain, by their roles'
-//! weights (ADR 0111): a member on the house's model costs nothing, takes no share, and is
-//! never turned away for money.
+//! The day's pool is shared among the members by their roles' weights and the price class of
+//! the Claude each judges with (ADR 0111, 0131). Only a turn of judgment is paid for: work, on
+//! the Mac or the house's model, costs nothing and is never turned away for money.
 //!
 //! Amounts are millionths of a dollar, so a model's per-token price adds up without rounding.
 
@@ -14,8 +14,6 @@ pub type Micros = i64;
 
 /// One dollar.
 pub const DOLLAR: Micros = 1_000_000;
-/// One cent: the least a turn can be given, and the unit the owner's downtime allowance is in.
-pub const CENT: Micros = DOLLAR / 100;
 /// The team pool for a month: $70 of the owner's $100 of API credits.
 pub const POOL_PER_MONTH: Micros = 70 * DOLLAR;
 /// The days a month's pool is spread over.
@@ -36,9 +34,9 @@ pub const fn pool_a_day(pool_per_month: Micros) -> Micros {
     pool_per_month / DAYS_A_MONTH
 }
 
-/// A member's claim on the pool (ADR 0113, amended): its role's weight times its brain's price
-/// class ([`Brain::price_class`]), so two members on Haiku do not dilute the lead on Sonnet as
-/// if they cost what it does. Nothing for a member on the house's model.
+/// A member's claim on the pool (ADR 0113, amended): its role's weight times the price class
+/// ([`Brain::price_class`]) of the Claude it judges with, so two members on Haiku do not dilute
+/// the lead on Sonnet as if they cost what it does.
 #[must_use]
 pub const fn claim(weight: u8, brain: Brain) -> i64 {
     weight as i64 * brain.price_class()

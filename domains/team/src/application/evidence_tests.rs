@@ -100,8 +100,10 @@ fn owners_task(hq: &Hq<'_>, t: &Team, to: MemberId, title: &str) -> TaskId {
     .unwrap()
 }
 
-/// The newest turn of `member`'s, after a tick or two to start it.
+/// The newest turn of `member`'s, after a tick or two to start it. A tester's work is the Mac's
+/// (ADR 0131), so the node says it is free.
 fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
+    hq.tell_mac(true, "ready");
     hq.tick().unwrap();
     hq.tick().unwrap();
     hq.runner()
@@ -831,16 +833,17 @@ fn work_sent_back_three_times_goes_to_a_huddle_on_its_fourth_submission_not_the_
             .unwrap()
             .contains("sent back 3 times")
     );
-    // Each is heard once, in one short turn of its own: Linus, mid-turn when it was called, is
-    // asked again once his turn ends.
+    // Each is heard once, in one short turn of its own. Linus was mid-turn, on the Mac, when it
+    // was called, and a huddle is a decision, which his work turn may not make (ADR 0131): he is
+    // asked as soon as that turn ends, and Grace after him.
     for (who, view) in [
-        (
-            grace,
-            "It still fails the second criterion. Sonarr restarts every hour.",
-        ),
         (
             t.dev,
             "The restarts come from its memory limit. Raising it would hold.",
+        ),
+        (
+            grace,
+            "It still fails the second criterion. Sonarr restarts every hour.",
         ),
     ] {
         let context = turn(&hq, who);

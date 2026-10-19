@@ -635,6 +635,8 @@ fn only_the_reviewer_gives_a_verdict_and_never_on_its_own_work() {
             },
         )
         .unwrap();
+    // The tester's work is the Mac's (ADR 0131), and the node says it is free.
+    hq.tell_mac(true, "ready");
     hq.tick().unwrap();
     let hers = hq
         .runner()

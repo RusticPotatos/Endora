@@ -51,7 +51,7 @@ fn looks(w: &mut Office) {
     w.clock
         .0
         .fetch_add(THRESHOLDS.look_every_ms, Ordering::SeqCst);
-    w.hq.tick().expect("the tick runs");
+    w.tick();
 }
 
 #[then(expr = "the owner's desk holds a finding {string}")]

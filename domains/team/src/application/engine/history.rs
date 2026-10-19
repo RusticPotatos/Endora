@@ -74,7 +74,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .unwrap_or_default()
                 .name()
                 .to_owned(),
-            brain: member.brain.name().to_owned(),
+            // The brain the turn ran on (ADR 0131), not the one its member judges with.
+            brain: run.brain.unwrap_or(member.brain).name().to_owned(),
             tier: history::tier_of(confidential),
             est_tokens: i64::try_from(situations::tokens(&body)).unwrap_or(i64::MAX),
             cut,

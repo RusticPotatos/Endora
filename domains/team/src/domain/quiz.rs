@@ -1,5 +1,5 @@
-//! The nightly quiz on the map (ADR 0126): each night, if a member on the house's model is free,
-//! it is asked a few questions that code makes from its own map, and code scores the answers
+//! The nightly quiz on the map (ADR 0126): each night, if a member is free, it is asked, in a
+//! turn on the house's own model, a few questions that code makes from its own map, and code scores the answers
 //! against the same facts. Nothing is at stake for the member; what is tested is whether the map
 //! carries: whether a model that has only the map can say which page says what, who keeps it, and
 //! where it is. A page that fails night after night is flagged to its steward.

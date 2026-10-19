@@ -1,8 +1,9 @@
-//! The nightly quiz on the map (ADR 0126). At night, if a member on the house's model is free, HQ
-//! wakes it for a downtime turn that carries a few questions code made from that member's own
-//! map; the member answers with `answer_quiz` and code scores the answers against the same
-//! facts. No paid turn is ever spent on it: when no such member is free, the night is recorded
-//! as skipped. A page that fails night after night is flagged to its steward and the World card.
+//! The nightly quiz on the map (ADR 0126). At night, if a member is free, HQ wakes it for a
+//! downtime turn, on the house's own model (ADR 0131), that carries a few questions code made
+//! from that member's own map; the member answers with `answer_quiz` and code scores the answers
+//! against the same facts. No paid turn is ever spent on it: when no member is free, the night
+//! is recorded as skipped. A page that fails night after night is flagged to its steward and
+//! the World card.
 
 use serde_json::{Value, json};
 
@@ -12,7 +13,7 @@ use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::map::{self, PageKey, QUIZ_OPEN_MS};
 use crate::domain::quiz::{self, Quiz, Status};
 use crate::domain::world::{DAY_MS, WorldRefusal};
-use crate::domain::{Brain, EventKind, Member, Millis, Receipt, Refusal, Role, RunId, WakeReason};
+use crate::domain::{EventKind, Member, Millis, Receipt, Refusal, Role, RunId, WakeReason};
 
 /// The quiz is asked from this hour of the owner's night...
 const FROM_HOUR: i64 = 1;
@@ -28,8 +29,8 @@ fn refused(r: WorldRefusal) -> EngineError {
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The look at the night's quiz (the lock held): quizzes asked and not answered in twelve
     /// hours are let go; and, once a night between one and six in the owner's time, one free
-    /// member on the house's model is woken for a downtime turn with a quiz on its map. Past six
-    /// with none asked, the night is recorded as skipped, with why.
+    /// member is woken for a downtime turn with a quiz on its map. Past six with none asked,
+    /// the night is recorded as skipped, with why.
     pub(super) fn quiz_look(&self, now: Millis) -> Done<()> {
         let off = self.settings.offset_minutes;
         let night = map::night_of(now, off);
@@ -51,10 +52,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         if hour >= UNTIL_HOUR {
-            return self.quiz_skipped(
-                night,
-                "the night passed with no member on the house's model free",
-            );
+            return self.quiz_skipped(night, "the night passed with no member free");
         }
         let Some(member) = self.quiz_candidate()? else {
             return Ok(());
@@ -111,9 +109,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
-    /// The member to ask: on the house's model (so it costs nothing), at work, not the CEO,
-    /// with no turn live, no wake held and no open work; the one whose last downtime was the
-    /// longest ago. None while any downtime turn is live: one at a time.
+    /// The member to ask: at work, not the CEO, with no turn live, no wake held and no open
+    /// work; the one whose last downtime was the longest ago. The quiz is a downtime turn, on
+    /// the NAS's own model, so it costs nothing (ADR 0131). None while any downtime turn is
+    /// live: one at a time.
     fn quiz_candidate(&self) -> Done<Option<Member>> {
         let seen = self.downtimes()?;
         if seen.live {
@@ -126,7 +125,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .into_iter()
-            .filter(|m| m.role != Role::Ceo && m.at_work() && m.brain == Brain::Local)
+            .filter(|m| m.role != Role::Ceo && m.at_work())
             .filter(|m| {
                 let busy = runs.iter().any(|r| r.member == m.id && r.status.live())
                     || wakes

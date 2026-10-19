@@ -57,8 +57,8 @@ fn engine(clock: &Hands) -> Hq<'_> {
     .with_docs(LIBRARY)
 }
 
-/// The CEO (Mara, seated as HQ seats it, on Opus), a lead on Sonnet, a developer on the
-/// house's model, and a reviewer when `with_reviewer`; a goal.
+/// The CEO (Mara, seated as HQ seats it, on Opus), a lead on Sonnet, a developer as hired (on
+/// Haiku), and a reviewer when `with_reviewer`; a goal.
 fn team(hq: &Hq<'_>, with_reviewer: bool) -> Team {
     let ceo = hq.seat_ceo("Mara").unwrap().expect("seated");
     let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
@@ -745,7 +745,7 @@ fn the_ceo_is_seated_once_with_opus_and_the_owner_may_rename_it() {
 }
 
 #[test]
-fn the_pool_is_split_between_the_paid_and_a_local_member_is_never_turned_away_for_money() {
+fn the_pool_is_split_by_what_each_member_judges_with_and_work_is_never_turned_away_for_money() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq, false);
@@ -758,11 +758,12 @@ fn the_pool_is_split_between_the_paid_and_a_local_member_is_never_turned_away_fo
         .collect();
     assert_eq!(
         per_day,
-        [1_719_298, 614_035, 0],
-        "35 on Opus to 25 on Sonnet, at half Opus's price, of $2.33; the local free"
+        [1_683_848, 601_374, 48_109],
+        "35 on Opus to 25 on Sonnet to 40 on Haiku, at their prices, of $2.33"
     );
 
-    // The developer, on the house's model, reserves nothing, and is never out of budget.
+    // The developer's work is done on the house's model: it reserves nothing, and is never
+    // out of budget, whatever the pool holds (ADR 0131).
     let a = task_for(&hq, t.goal, t.dev, "One");
     let dev = turn(&hq, t.dev);
     assert_eq!(hq.store().run(dev.run).unwrap().unwrap().reserved, 0);
@@ -770,8 +771,9 @@ fn the_pool_is_split_between_the_paid_and_a_local_member_is_never_turned_away_fo
     assert_eq!(hq.store().task(b).unwrap().unwrap().assignee, Some(t.dev));
     let _ = a;
 
-    // The CEO's turn may spend a dollar; the lead's forty cents.
+    // The CEO's turn may spend a dollar; the lead's decision forty cents.
     let task = task_for(&hq, t.goal, t.lead, "Plan");
+    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
     let lead = turn(&hq, t.lead);
     assert_eq!(
         hq.store().run(lead.run).unwrap().unwrap().reserved,
@@ -838,7 +840,7 @@ fn the_ceos_briefing_holds_the_house_the_team_the_strategy_the_areas_and_the_boa
         "You are Mara, the team's CEO.",
         "The house page (world:house), yours to keep",
         "No sections yet.",
-        "Your team: Ada (lead, Claude Sonnet), Linus (developer, Local).",
+        "Your team: Ada (lead, Claude Sonnet), Linus (developer, Claude Haiku).",
         "Goals and their strategy:",
         "- #1 Keep the home lab healthy (active)",
         "  No strategy yet: write it with set_strategy",
@@ -882,6 +884,8 @@ fn the_ceo_answers_a_question_at_low_effort_its_review_at_medium_and_the_lead_at
     let hq = engine(&clock);
     let t = team(&hq, false);
     let task = task_for(&hq, t.goal, t.lead, "Plan the week");
+    // The lead is asked to decide the plan: a turn of judgment, which is the one Claude takes.
+    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
     let lead = turn(&hq, t.lead);
     assert_eq!(lead.effort, Some(Effort::Medium), "the lead, on Sonnet");
     use_tool(
@@ -1015,7 +1019,7 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
     assert_ne!(quiet.run, first.run);
     for said in [
         "The house page (world:house), yours to keep",
-        "Your team: Ada (lead, Claude Sonnet), Linus (developer, Local).",
+        "Your team: Ada (lead, Claude Sonnet), Linus (developer, Claude Haiku).",
         "- #1 Keep the home lab healthy (active)",
         "money beyond the team's pool",
         "Nothing changed since your last turn",

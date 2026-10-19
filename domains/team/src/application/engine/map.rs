@@ -354,7 +354,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(facts)
     }
 
-    /// A member's map, composed within its size: a short one for a member on the house's model.
+    /// A member's map, composed within its size: a short one for a turn on the house's model.
     pub(super) fn map_for(&self, member: &Member, run: &Run) -> Done<map::MapText> {
         let cap = if member.brain.house() {
             map::MAP_CHARS_LOCAL

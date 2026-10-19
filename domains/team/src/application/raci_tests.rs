@@ -217,8 +217,10 @@ fn an_alarm_or_a_recovery_wakes_the_areas_lead_and_never_the_ceo() {
         wakes_of(&hq, o.ceo)
     );
     let ada: Vec<WakeReason> = wakes_of(&hq, o.ops).into_iter().map(|w| w.0).collect();
+    // The alarm that made the task (an emergency, ADR 0131), the one passed into it, and the
+    // recovery: three, all Ada's.
     assert!(
-        ada.iter().filter(|r| **r == WakeReason::Alarm).count() == 2,
+        ada.iter().filter(|r| **r == WakeReason::Alarm).count() == 3,
         "{ada:?}"
     );
     let now = hq.store().task(task).unwrap().unwrap();

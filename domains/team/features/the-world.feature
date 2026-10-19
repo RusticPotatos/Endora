@@ -34,6 +34,7 @@ Feature: The team's world: stages, stories and situations
     Then Ada's briefing says "Lessons of your area to retell as stories"
     When Ada retells "closed-too-soon": when "An alarm's task looks fixed after a restart.", tempting "Close it at once.", instead "Wait an hour with no new alarm, then close.", because "Task 667 came back two hours later."
     Then the story "closed-too-soon" is no longer marked to retell
+    When Ada's turn ends
     Given Dee has the task "Test the deluge restart"
     When Dee's turn starts
     Then Dee's briefing says "Story closed-too-soon: When: An alarm's task looks fixed after a restart."

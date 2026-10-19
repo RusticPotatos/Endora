@@ -1,7 +1,8 @@
 //! The two kinds of turn (ADR 0131): which brain a turn runs on is decided here, by code, from
 //! why it was asked for, and never by the member. Work (reading, building, checking, drafting)
-//! is done by the house's models; judgment (planning, deciding, accepting, reviewing, raising
-//! an alarm) only by the member's Claude brain. The language model proposes; this authorizes.
+//! is done by the house's models; judgment (planning, deciding, accepting, reviewing) only by
+//! the member's Claude, except an alarm, which acts at once when the money is gone. The language
+//! model proposes; this authorizes.
 
 use super::brain::Brain;
 use super::wakes::WakeReason;
@@ -15,7 +16,7 @@ pub enum TurnKind {
     Work,
     /// Planning, reviews, deciding, accepting, a tester's verdict, a ladder or a huddle, an
     /// alarm: anything that ends in a decision or a desk item. Only Claude does it, and a turn
-    /// that cannot have Claude waits.
+    /// that cannot have Claude waits (an alarm excepted).
     Judgment,
 }
 
@@ -30,7 +31,7 @@ impl TurnKind {
     }
 }
 
-/// Where the least a work turn may run is: the lowest brain it is allowed on, never a lower one.
+/// The lowest brain a work turn may run on: never a lower one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Allowed {
     /// The house's own model on the NAS, and never the Mac (the Mac is scarce, and this is not
@@ -38,9 +39,10 @@ pub enum Allowed {
     Local,
     /// The Mac when it is free, otherwise the NAS: reading the lab, status, a summary, a draft.
     Either,
-    /// The Mac, and only the Mac: code and branch work, and the work after a review. The turn
-    /// waits for the Mac and is never given the NAS's model: a small model sent back again and
-    /// again by a reviewer is how a team ends up in a carousel (ADR 0131).
+    /// The Mac, and only the Mac: code and branch work, a tester's work, and the work after a
+    /// review. The turn waits for the Mac and is never given the NAS's model: a small model
+    /// sent back again and again by a reviewer, or planning code, is how a team ends up in a
+    /// carousel (ADR 0131).
     Mac,
 }
 
@@ -89,8 +91,8 @@ pub const fn kind_of(reason: WakeReason, role: Role) -> TurnKind {
 }
 
 /// How far down the house a work turn asked for by `reason`, for a member in `role`, may go.
-/// `in_the_wing` is whether the member sits in the engineering wing (ADR 0115), whose
-/// developers build with the repo's tools. Meaningful for a work turn only.
+/// `in_the_wing` is whether the member sits in the engineering wing (ADR 0115), whose developers
+/// build with the repo's tools and whose lead plans their code. Meaningful for a work turn only.
 #[must_use]
 pub const fn allowed_for(reason: WakeReason, role: Role, in_the_wing: bool) -> Allowed {
     match reason {
@@ -100,9 +102,9 @@ pub const fn allowed_for(reason: WakeReason, role: Role, in_the_wing: bool) -> A
         // back, are code work whoever does them.
         WakeReason::CheckDone | WakeReason::SentBack => Allowed::Mac,
         _ => match (role, in_the_wing) {
-            // A wing developer builds with the repo's tools (repo_checkout, repo_submit); a
-            // tester reviews.
-            (Role::Developer, true) | (Role::Reviewer, _) => Allowed::Mac,
+            // A wing developer builds with the repo's tools (repo_checkout, repo_submit), its
+            // lead plans that code, and a tester reviews it: none of it on the NAS's model.
+            (Role::Developer | Role::Lead, true) | (Role::Reviewer, _) => Allowed::Mac,
             _ => Allowed::Either,
         },
     }
@@ -115,6 +117,9 @@ pub struct Need {
     pub kind: TurnKind,
     /// For work, how far down it may go.
     pub allowed: Allowed,
+    /// For judgment, whether it is an emergency: an alarm, which with no budget left runs at
+    /// once on the member's work brain instead of waiting, and is the only judgment that may.
+    pub emergency: bool,
 }
 
 impl Need {
@@ -130,16 +135,26 @@ impl Need {
         Self {
             kind,
             allowed: allowed_for(reason, role, in_the_wing),
+            emergency: matches!(kind, TurnKind::Judgment) && matches!(reason, WakeReason::Alarm),
         }
     }
 
-    /// What a turn needs when another wake joined it: judgment wins over work, and the
-    /// higher floor over the lower. A wake folded into a waiting turn never lowers it.
+    /// What a turn needs when another wake joined it: judgment wins over work, and the higher
+    /// floor over the lower. A wake folded into a waiting turn never lowers it, and a turn is
+    /// an emergency only if every wake of judgment in it is: an alarm folded into a decision
+    /// does not let the decision run on the house's model.
     #[must_use]
     pub fn and(self, other: Self) -> Self {
+        let emergency = match (self.kind, other.kind) {
+            (TurnKind::Judgment, TurnKind::Judgment) => self.emergency && other.emergency,
+            (TurnKind::Judgment, TurnKind::Work) => self.emergency,
+            (TurnKind::Work, TurnKind::Judgment) => other.emergency,
+            (TurnKind::Work, TurnKind::Work) => false,
+        };
         Self {
             kind: self.kind.max(other.kind),
             allowed: self.allowed.max(other.allowed),
+            emergency,
         }
     }
 }
@@ -147,8 +162,6 @@ impl Need {
 /// Why a turn waits instead of starting, as the owner reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wait {
-    /// It is judgment, and the member has no Claude brain (the owner has not given it one).
-    JudgmentBrain,
     /// It is judgment, and today's budget is spent: the pool's day, the member's share, or its
     /// project's month.
     Budget,
@@ -159,20 +172,13 @@ pub enum Wait {
 }
 
 /// The prefixes a waiting turn's words begin with.
-const WAITING: [&str; 3] = [
-    "waiting for the Mac: ",
-    "waiting for a judgment brain: ",
-    "waiting for budget: ",
-];
+const WAITING: [&str; 2] = ["waiting for the Mac: ", "waiting for budget: "];
 
 impl Wait {
     /// The turn's `why` while it waits.
     #[must_use]
     pub fn words(&self) -> String {
         match self {
-            Self::JudgmentBrain => {
-                "waiting for a judgment brain: the owner has not given this member one".to_owned()
-            }
             Self::Budget => "waiting for budget: the budget for it is spent".to_owned(),
             Self::Mac(why) => super::mac::waiting_words(why),
             Self::NeedsTheMac => super::mac::waiting_words(
@@ -192,7 +198,7 @@ pub fn is_waiting_words(said: &str) -> bool {
 /// Whether `said` is a turn waiting for budget.
 #[must_use]
 pub fn is_waiting_for_budget(said: &str) -> bool {
-    said.starts_with(WAITING[2])
+    said.starts_with(WAITING[1])
 }
 
 /// What decides where a turn runs, besides what it needs.
@@ -200,8 +206,8 @@ pub fn is_waiting_for_budget(said: &str) -> bool {
 pub struct Facts {
     /// The member's work brain: the Mac or the house's own model.
     pub work_brain: Brain,
-    /// The member's Claude brain, if the owner gave it one.
-    pub judgment_brain: Option<Brain>,
+    /// The Claude the member judges with.
+    pub judgment_brain: Brain,
     /// Why the Mac cannot take a turn now (see [`super::mac::wait_for`]); `None` when it can.
     pub mac_waits: Option<String>,
     /// Whether the budget lets a judgment turn start now.
@@ -213,35 +219,45 @@ pub struct Facts {
 pub enum Placed {
     /// It starts on this brain.
     On(Brain),
+    /// An emergency out of budget starts at once on this work brain, not Claude. The engine
+    /// tells the owner on the desk.
+    Fallback(Brain),
     /// It waits, and says why. It is never given a brain it is not allowed on.
     Waits(Wait),
 }
 
-/// Where a turn with `need` runs: judgment only on the member's Claude brain, work on the best
-/// free work brain it is allowed on. A turn that cannot go anywhere it is allowed waits; it is
-/// never sent anywhere else.
+/// The best free work brain: the Mac when the member works with it and it is free, else the
+/// NAS's model.
+fn best_free_work_brain(facts: &Facts) -> Brain {
+    match (&facts.mac_waits, facts.work_brain) {
+        (None, Brain::Mac) => Brain::Mac,
+        _ => Brain::Local,
+    }
+}
+
+/// Where a turn with `need` runs: judgment only on the member's Claude, work on the best free
+/// work brain it is allowed on. A turn that cannot go anywhere it is allowed waits; it is never
+/// sent anywhere else. The one exception is an emergency (an alarm) with no budget left, which
+/// runs at once on the best free work brain: the turn's actions stay gated by the same
+/// contracts, whoever thinks it.
 #[must_use]
 pub fn place(need: Need, facts: &Facts) -> Placed {
     if need.kind == TurnKind::Judgment {
-        let Some(claude) = facts.judgment_brain else {
-            return Placed::Waits(Wait::JudgmentBrain);
-        };
-        if !facts.can_afford {
-            return Placed::Waits(Wait::Budget);
+        if facts.can_afford {
+            return Placed::On(facts.judgment_brain);
         }
-        return Placed::On(claude);
+        if need.emergency {
+            return Placed::Fallback(best_free_work_brain(facts));
+        }
+        return Placed::Waits(Wait::Budget);
     }
-    let the_mac = facts.work_brain == Brain::Mac;
     match need.allowed {
         Allowed::Local => Placed::On(Brain::Local),
-        Allowed::Either => match (&facts.mac_waits, the_mac) {
-            (None, true) => Placed::On(Brain::Mac),
-            _ => Placed::On(Brain::Local),
-        },
-        Allowed::Mac => match (&facts.mac_waits, the_mac) {
-            (None, true) => Placed::On(Brain::Mac),
-            (Some(why), true) => Placed::Waits(Wait::Mac(why.clone())),
-            (_, false) => Placed::Waits(Wait::NeedsTheMac),
+        Allowed::Either => Placed::On(best_free_work_brain(facts)),
+        Allowed::Mac => match (&facts.mac_waits, facts.work_brain) {
+            (None, Brain::Mac) => Placed::On(Brain::Mac),
+            (Some(why), Brain::Mac) => Placed::Waits(Wait::Mac(why.clone())),
+            _ => Placed::Waits(Wait::NeedsTheMac),
         },
     }
 }
@@ -312,11 +328,13 @@ mod tests {
     }
 
     #[test]
-    fn building_in_the_wing_and_reviewing_need_the_mac_but_the_offices_turns_never_do() {
+    fn the_wings_developers_and_lead_and_every_tester_need_the_mac_but_the_offices_turns_never_do()
+    {
         for reason in WakeReason::all() {
-            let base = allowed_for(reason, Role::Lead, false);
+            let base = allowed_for(reason, Role::Researcher, false);
             for (role, in_the_wing) in [
                 (Role::Developer, true),
+                (Role::Lead, true),
                 (Role::Reviewer, true),
                 (Role::Reviewer, false),
             ] {
@@ -328,13 +346,19 @@ mod tests {
                 assert_eq!(allowed, Allowed::Mac, "{reason:?} for {role:?}");
             }
         }
-        // Outside the wing a developer reads the lab like anyone.
+        // Outside the wing a developer or a lead reads the lab like anyone.
+        for role in [Role::Developer, Role::Lead, Role::Researcher, Role::Ceo] {
+            assert_eq!(
+                allowed_for(W::Assigned, role, false),
+                Allowed::Either,
+                "{role:?}"
+            );
+        }
+        // A researcher in the wing's reach still only reads.
         assert_eq!(
-            allowed_for(W::Assigned, Role::Developer, false),
+            allowed_for(W::Assigned, Role::Researcher, true),
             Allowed::Either
         );
-        // A lead in the wing plans and decides; it does not build.
-        assert_eq!(allowed_for(W::Assigned, Role::Lead, true), Allowed::Either);
     }
 
     #[test]
@@ -371,63 +395,155 @@ mod tests {
         }
     }
 
-    fn facts(work: Brain, judgment: Option<Brain>, mac_waits: Option<&str>) -> Facts {
+    fn facts(work: Brain, mac_waits: Option<&str>) -> Facts {
         Facts {
             work_brain: work,
-            judgment_brain: judgment,
+            judgment_brain: Brain::Haiku,
             mac_waits: mac_waits.map(str::to_owned),
             can_afford: true,
         }
     }
 
-    const JUDGMENT: Need = Need {
-        kind: TurnKind::Judgment,
-        allowed: Allowed::Either,
-    };
+    fn judgment() -> Need {
+        Need::of(W::Decide, Role::Lead, false, false)
+    }
 
     fn work(allowed: Allowed) -> Need {
         Need {
             kind: TurnKind::Work,
             allowed,
+            emergency: false,
         }
     }
 
     #[test]
-    fn judgment_runs_only_on_the_claude_brain_and_never_on_the_house() {
-        let claude = facts(Brain::Mac, Some(Brain::Sonnet), None);
-        assert_eq!(place(JUDGMENT, &claude), Placed::On(Brain::Sonnet));
-        // The Mac is free and the NAS is idle, and still it waits for a brain it has no
-        // right to use.
-        let none = facts(Brain::Mac, None, None);
-        assert_eq!(place(JUDGMENT, &none), Placed::Waits(Wait::JudgmentBrain));
+    fn judgment_runs_only_on_the_claude_brain_and_waits_when_the_money_is_gone() {
+        let claude = Facts {
+            judgment_brain: Brain::Sonnet,
+            ..facts(Brain::Mac, None)
+        };
+        assert_eq!(place(judgment(), &claude), Placed::On(Brain::Sonnet));
+        // The Mac is free and the NAS is idle, and still it waits for a brain it has no right
+        // to use.
         let broke = Facts {
             can_afford: false,
             ..claude
         };
-        assert_eq!(place(JUDGMENT, &broke), Placed::Waits(Wait::Budget));
-        // A member with no Claude brain and no budget says the first thing: it is not about
-        // the money.
-        let neither = Facts {
+        assert_eq!(place(judgment(), &broke), Placed::Waits(Wait::Budget));
+    }
+
+    #[test]
+    fn no_judgment_but_an_alarm_ever_runs_on_the_house_for_want_of_money() {
+        // The mutation check of the rule: every kind of judgment, with the Mac free and the
+        // NAS idle and no money, waits. Only the alarm acts at once, and not on Claude.
+        let broke = Facts {
             can_afford: false,
-            ..none
+            ..facts(Brain::Mac, None)
+        };
+        let mut judged = 0;
+        for reason in WakeReason::all() {
+            for role in [
+                Role::Lead,
+                Role::Developer,
+                Role::Reviewer,
+                Role::Researcher,
+            ] {
+                let need = Need::of(reason, role, false, false);
+                if need.kind != TurnKind::Judgment {
+                    continue;
+                }
+                judged += 1;
+                let placed = place(need, &broke);
+                if reason == W::Alarm {
+                    assert_eq!(placed, Placed::Fallback(Brain::Mac), "{reason:?}");
+                    continue;
+                }
+                assert_eq!(
+                    placed,
+                    Placed::Waits(Wait::Budget),
+                    "{reason:?} for {role:?}"
+                );
+            }
+        }
+        assert!(judged >= 40, "the table has judgment in it: {judged}");
+        // A lead's standing review is judgment whatever woke it, and it waits too.
+        assert_eq!(
+            place(Need::of(W::Assigned, Role::Lead, true, false), &broke),
+            Placed::Waits(Wait::Budget)
+        );
+        // And so does the CEO, whose every turn is judgment.
+        assert_eq!(
+            place(Need::of(W::Assigned, Role::Ceo, false, false), &broke),
+            Placed::Waits(Wait::Budget)
+        );
+    }
+
+    #[test]
+    fn an_alarm_out_of_budget_runs_at_once_on_the_mac_if_it_is_free_else_the_nas() {
+        let alarm = Need::of(W::Alarm, Role::Lead, false, false);
+        assert!(alarm.emergency);
+        let broke = |work, mac_waits| Facts {
+            can_afford: false,
+            ..facts(work, mac_waits)
         };
         assert_eq!(
-            place(JUDGMENT, &neither),
-            Placed::Waits(Wait::JudgmentBrain)
+            place(alarm, &broke(Brain::Mac, None)),
+            Placed::Fallback(Brain::Mac)
+        );
+        assert_eq!(
+            place(alarm, &broke(Brain::Mac, Some("owner active"))),
+            Placed::Fallback(Brain::Local),
+            "it does not wait for the Mac"
+        );
+        assert_eq!(
+            place(alarm, &broke(Brain::Local, None)),
+            Placed::Fallback(Brain::Local)
+        );
+        // With money it is judged on Claude like the rest.
+        assert_eq!(
+            place(alarm, &facts(Brain::Mac, None)),
+            Placed::On(Brain::Haiku)
+        );
+        // Its floor does not hold it back: even a wing lead's alarm acts now.
+        let wing_lead = Need::of(W::Alarm, Role::Lead, false, true);
+        assert_eq!(
+            place(wing_lead, &broke(Brain::Mac, Some("owner active"))),
+            Placed::Fallback(Brain::Local)
+        );
+    }
+
+    #[test]
+    fn an_alarm_folded_into_a_decision_does_not_let_the_decision_run_on_the_house() {
+        let alarm = Need::of(W::Alarm, Role::Lead, false, false);
+        let decision = Need::of(W::Decide, Role::Lead, false, false);
+        let reading = Need::of(W::Mentioned, Role::Lead, false, false);
+        assert!(!alarm.and(decision).emergency);
+        assert!(!decision.and(alarm).emergency);
+        assert!(alarm.and(alarm).emergency);
+        // Reading that joined an alarm is part of the alarm's turn.
+        assert!(alarm.and(reading).emergency && reading.and(alarm).emergency);
+        assert!(!reading.and(reading).emergency);
+        let broke = Facts {
+            can_afford: false,
+            ..facts(Brain::Mac, None)
+        };
+        assert_eq!(
+            place(alarm.and(decision), &broke),
+            Placed::Waits(Wait::Budget)
         );
     }
 
     #[test]
     fn code_work_waits_for_the_mac_and_is_never_given_the_nas_model() {
-        let busy = facts(Brain::Mac, Some(Brain::Haiku), Some("owner active"));
+        let busy = facts(Brain::Mac, Some("owner active"));
         assert_eq!(
             place(work(Allowed::Mac), &busy),
             Placed::Waits(Wait::Mac("owner active".to_owned()))
         );
-        let free = facts(Brain::Mac, Some(Brain::Haiku), None);
+        let free = facts(Brain::Mac, None);
         assert_eq!(place(work(Allowed::Mac), &free), Placed::On(Brain::Mac));
         // A member whose work brain is the house's model cannot do it at all.
-        let local = facts(Brain::Local, Some(Brain::Haiku), None);
+        let local = facts(Brain::Local, None);
         assert_eq!(
             place(work(Allowed::Mac), &local),
             Placed::Waits(Wait::NeedsTheMac)
@@ -436,14 +552,14 @@ mod tests {
 
     #[test]
     fn reading_work_takes_the_mac_when_it_is_free_and_the_nas_otherwise() {
-        let free = facts(Brain::Mac, None, None);
+        let free = facts(Brain::Mac, None);
         assert_eq!(place(work(Allowed::Either), &free), Placed::On(Brain::Mac));
-        let busy = facts(Brain::Mac, None, Some("another turn is using the Mac"));
+        let busy = facts(Brain::Mac, Some("another turn is using the Mac"));
         assert_eq!(
             place(work(Allowed::Either), &busy),
             Placed::On(Brain::Local)
         );
-        let local = facts(Brain::Local, None, None);
+        let local = facts(Brain::Local, None);
         assert_eq!(
             place(work(Allowed::Either), &local),
             Placed::On(Brain::Local)
@@ -451,8 +567,17 @@ mod tests {
     }
 
     #[test]
+    fn work_is_free_whatever_the_budget() {
+        let broke = Facts {
+            can_afford: false,
+            ..facts(Brain::Mac, None)
+        };
+        assert_eq!(place(work(Allowed::Either), &broke), Placed::On(Brain::Mac));
+    }
+
+    #[test]
     fn the_offices_turns_stay_off_the_mac() {
-        let free = facts(Brain::Mac, None, None);
+        let free = facts(Brain::Mac, None);
         assert_eq!(place(work(Allowed::Local), &free), Placed::On(Brain::Local));
     }
 
@@ -482,7 +607,6 @@ mod tests {
     #[test]
     fn waiting_words_are_recognised_so_they_can_be_cleared() {
         for wait in [
-            Wait::JudgmentBrain,
             Wait::Budget,
             Wait::Mac("on battery".to_owned()),
             Wait::NeedsTheMac,

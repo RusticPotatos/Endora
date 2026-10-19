@@ -1,6 +1,6 @@
-//! The nightly quiz on the map (ADR 0126): asked of a free member on the house's model in a
-//! downtime turn, made by code from that member's own map and scored by code, with no paid turn;
-//! skipped, and recorded as skipped, when no such member is free; and a page that fails night
+//! The nightly quiz on the map (ADR 0126): asked of a free member in a downtime turn on the
+//! house's own model, made by code from that member's own map and scored by code, with no paid
+//! turn; skipped, and recorded as skipped, when no member is free; and a page that fails night
 //! after night flagged to its steward.
 
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -49,7 +49,7 @@ fn engine(clock: &Hands, quiz: bool) -> Hq<'_> {
     )
 }
 
-/// Mara the CEO, and Ada, Linus and Dee, all on the house's model.
+/// Mara the CEO, and Ada, Linus and Dee, as they are hired.
 fn team(hq: &Hq<'_>) -> Team {
     hq.seat_ceo("Mara").unwrap().unwrap();
     let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
@@ -110,7 +110,7 @@ fn end_all(hq: &Hq<'_>) {
 }
 
 #[test]
-fn a_free_member_on_the_house_model_is_quizzed_at_night_on_its_own_map_and_code_scores_it() {
+fn a_free_member_is_quizzed_at_night_on_its_own_map_and_code_scores_it() {
     let clock = Hands(AtomicI64::new(NIGHT));
     let hq = engine(&clock, true);
     team(&hq);
@@ -209,24 +209,19 @@ fn a_quiz_is_only_asked_when_the_service_asks_for_it() {
 }
 
 #[test]
-fn when_no_member_on_the_house_model_is_free_the_night_is_recorded_as_skipped() {
+fn when_no_member_is_free_the_night_is_recorded_as_skipped() {
     let clock = Hands(AtomicI64::new(NIGHT));
     let hq = engine(&clock, true);
     let t = team(&hq);
+    // The quiz is a downtime turn on the NAS, free whoever judges with what (ADR 0131), so the
+    // judgment brain no longer keeps a member from it; being away does.
     for member in [t.ada, t.linus, t.dee] {
-        let brain = match member {
-            m if m == t.linus => "claude-haiku-5-5",
-            _ => "claude-sonnet-5-5",
-        };
-        hq.set_brain(member, brain).unwrap();
+        hq.pause(member, true).unwrap();
     }
     // Overnight it waits for one to be free; nothing is recorded yet.
     hq.tick().unwrap();
     assert!(hq.store().quizzes().unwrap().is_empty());
-    assert!(
-        hq.runner().started().is_empty(),
-        "no paid turn is spent on it"
-    );
+    assert!(hq.runner().started().is_empty(), "no turn is spent on it");
     // Come morning, the night is recorded as skipped, with why, once.
     clock.0.fetch_add(4 * HOUR + 30 * 60_000, Ordering::SeqCst);
     hq.tick().unwrap();

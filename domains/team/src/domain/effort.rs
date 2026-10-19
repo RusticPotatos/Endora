@@ -68,7 +68,7 @@ pub const fn ceo_weight(
 }
 
 /// The effort for a turn of a member in `role` thinking with `brain`; `weight` says what a
-/// CEO's turn is for (see [`ceo_weight`]). `None` for a member on the house's model, whose
+/// CEO's turn is for (see [`ceo_weight`]). `None` for a turn on the house's model, whose
 /// relay takes no effort, and for a role left to its model's own.
 #[must_use]
 pub const fn effort_for(brain: Brain, role: Role, weight: Weight) -> Option<Effort> {

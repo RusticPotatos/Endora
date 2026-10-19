@@ -1,7 +1,7 @@
 //! Asking the past (ADR 0129): `ask_record`, a deterministic search of what the team said that
 //! wakes no one, and `consult`, a question to a member that takes one short turn of theirs. A
-//! member who is paused or on furlough is never woken: the record answers for them. The cost of
-//! a consulted turn counts against the asker's share when both think on a cloud model.
+//! member who is paused or on furlough is never woken: the record answers for them. A consulted
+//! turn is work on the house's own model (ADR 0131): it costs nothing, and nobody's share.
 
 use super::world::day_with_year;
 use super::{Author, Done, Engine, EngineError};
@@ -70,11 +70,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task,
             project,
         };
-        let chosen = record::choose(
-            self.store.search_record(&query)?,
-            &terms,
-            asker.brain.cloud(),
-        );
+        // What a turn is given depends on the brain it runs on (ADR 0131): a turn on the house's
+        // model may be given a passage from a turn that read Confidential data, a turn on Claude
+        // may not.
+        let on_the_cloud = turn.brain.unwrap_or(asker.brain).cloud();
+        let chosen = record::choose(self.store.search_record(&query)?, &terms, on_the_cloud);
         Ok(self.excerpts_said(&chosen))
     }
 
@@ -225,7 +225,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The consult a queued turn of a consulted member answers: the one it already has, or the
     /// oldest asked of the member that no turn has taken.
-    fn claim_consult(&self, run: &Run) -> Done<Option<Consult>> {
+    pub(super) fn claim_consult(&self, run: &Run) -> Done<Option<Consult>> {
         if let Some(own) = self.consult_of_run(run.id)? {
             return Ok(Some(own));
         }
@@ -237,40 +237,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         next.answer_run = Some(run.id);
         self.store.save_consult(&next)?;
         Ok(Some(next))
-    }
-
-    /// Who pays for a consulted turn about to start, once it has its consult: the asker when
-    /// both think on a cloud model (a consult of a cloud member counts against the asker's
-    /// share), otherwise the member consulted. `None` when no consult waits for the turn.
-    pub(super) fn consult_payer(&self, run: &Run) -> Done<Option<Member>> {
-        let Some(found) = self.claim_consult(run)? else {
-            return Ok(None);
-        };
-        let expert = self.member(found.expert)?;
-        let asker = self.member(found.asker)?;
-        Ok(Some(if expert.brain.cloud() && asker.brain.cloud() {
-            asker
-        } else {
-            expert
-        }))
-    }
-
-    /// Whose share a turn's money is booked to: the asker's for a consulted turn of a cloud
-    /// member consulted by a cloud member, else the turn's own member's.
-    pub(super) fn payer_of(&self, run: &Run) -> Done<MemberId> {
-        if run.task.is_some() {
-            return Ok(run.member);
-        }
-        let Some(found) = self.consult_of_run(run.id)? else {
-            return Ok(run.member);
-        };
-        let expert = self.member(found.expert)?;
-        let asker = self.member(found.asker)?;
-        Ok(if expert.brain.cloud() && asker.brain.cloud() {
-            asker.id
-        } else {
-            run.member
-        })
     }
 
     /// What a consulted member is told: the question under a fixed prefix, its own handover
@@ -378,7 +344,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// in the last ninety days, as testimony, posted in the asker's thread by HQ.
     fn answer_from_record(&self, found: &mut Consult, why: &str) -> Done<()> {
         let expert = self.member(found.expert)?;
-        let asker = self.member(found.asker)?;
         let terms = record::terms(&found.question);
         let query = Query {
             terms: terms.clone(),
@@ -387,14 +352,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task: None,
             project: None,
         };
+        // The asker reads the thread in a later turn that may judge on Claude (ADR 0131), so
+        // nothing a turn read in Confidence is posted into it.
         let chosen = if terms.is_empty() {
             Vec::new()
         } else {
-            record::choose(
-                self.store.search_record(&query)?,
-                &terms,
-                asker.brain.cloud(),
-            )
+            record::choose(self.store.search_record(&query)?, &terms, true)
         };
         let from = if chosen.is_empty() {
             format!(

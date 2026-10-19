@@ -16,9 +16,9 @@ use super::{Project, ProjectStatus};
 pub const GAP_MOST: usize = 200;
 /// The most proposals a member may have open at once.
 pub const PROPOSALS_OPEN_MOST: usize = 5;
-/// The most characters of a map's lines for a member on the house's model.
+/// The most characters of a map's lines for a turn on the house's model.
 pub const MAP_CHARS_LOCAL: usize = 1_400;
-/// The most characters of a map's lines for any other member.
+/// The most characters of a map's lines for a turn on Claude.
 pub const MAP_CHARS: usize = 2_400;
 /// The most characters of one line of a map.
 pub const MAP_LINE_MOST: usize = 190;
@@ -665,8 +665,8 @@ mod tests {
             slots: 2,
             look: 0,
             paused: false,
-            brain: Brain::Local,
-            work_brain: Brain::Local,
+            brain: Brain::Haiku,
+            work_brain: Brain::Mac,
             reports_to: None,
             furloughed_at: None,
             recalled_at: None,

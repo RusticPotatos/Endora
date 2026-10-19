@@ -118,8 +118,8 @@ impl Role {
     }
 
     /// The role's weight in the team's pool (ADR 0111): what a member in it is hired with as
-    /// its share. The day's pool is split among the members with a paid brain by these
-    /// weights; a member on the house's model costs nothing and takes no share.
+    /// its share. The day's pool is split among the members by these weights and the price
+    /// class of the Claude each judges with (ADR 0131); a member's work costs nothing.
     #[must_use]
     pub const fn share(self) -> u8 {
         match self {
@@ -156,13 +156,14 @@ pub struct Member {
     pub look: u8,
     /// Whether the owner has paused it.
     pub paused: bool,
-    /// What it thinks with, as the owner set it (ADR 0109): its Claude when it has one, which
-    /// is its *judgment brain* (ADR 0131), and otherwise the house's model it works with. It is
-    /// the brain the pool's shares and the data tier are reckoned on; the brain a turn runs on
-    /// is decided per turn (see [`super::turns`]).
+    /// What it judges with (ADR 0109, 0131): a Claude its role may use, Haiku until the owner
+    /// says otherwise. It is the brain the pool's shares are reckoned on. The brain a turn runs
+    /// on is decided per turn (see [`super::turns`]); for the member of a running turn, as the
+    /// engine returns it to the team protocol and the node, this is that brain instead, so the
+    /// data tier and the relays see what the turn is.
     pub brain: super::brain::Brain,
     /// What it does its work with (ADR 0131): the owner's Mac or the house's own model, never
-    /// Claude. Its turns of work run here; its turns of judgment never do.
+    /// Claude. Its turns of work run here, and cost nothing; its turns of judgment never do.
     pub work_brain: super::brain::Brain,
     /// The member it reports to (ADR 0113); `None` for the CEO, who reports to the board,
     /// and for a member hired before anyone was there to report to.
@@ -176,14 +177,11 @@ pub struct Member {
 }
 
 impl Member {
-    /// The Claude brain the member judges with (ADR 0131), if the owner gave it one. Judgment
-    /// turns run on it and nowhere else; with none, they wait.
+    /// The Claude the member judges with (ADR 0131). Its turns of judgment run on it and
+    /// nowhere else.
     #[must_use]
-    pub const fn judgment_brain(&self) -> Option<super::brain::Brain> {
-        if self.brain.cloud() {
-            return Some(self.brain);
-        }
-        None
+    pub const fn judgment_brain(&self) -> super::brain::Brain {
+        self.brain
     }
 
     /// Whether the member is on furlough now (ADR 0118): furloughed and not yet recalled.
@@ -631,11 +629,6 @@ pub enum Refusal {
     AlreadyVoted,
     /// A downtime turn makes no work: it is for the office and the notebook.
     InDowntime,
-    /// The owner's allowance for paid downtime is at most what the pool's day holds.
-    DowntimeOverPool {
-        /// The most it can be, in cents.
-        most_cents: i64,
-    },
     /// Stuck work was to be tried again, but nobody can be woken for it now: nothing was
     /// changed, and the item still waits.
     NotWoken(super::wakes::Refused),
@@ -830,11 +823,6 @@ impl fmt::Display for Refusal {
             ),
             Self::NobodyHasIt => f.write_str(
                 "it was not tried again, and still waits here: no member has this task to wake",
-            ),
-            Self::DowntimeOverPool { most_cents } => write!(
-                f,
-                "paid downtime is at most what the pool's day holds: {most_cents} cents, and at \
-                 least none"
             ),
             Self::NotAManager => f.write_str(
                 "a member reports to another member, never itself and never in a circle; the \
@@ -1046,8 +1034,8 @@ mod tests {
             slots: 2,
             look: 0,
             paused: false,
-            brain: crate::domain::brain::Brain::Local,
-            work_brain: crate::domain::brain::Brain::Local,
+            brain: crate::domain::brain::Brain::Haiku,
+            work_brain: crate::domain::brain::Brain::Mac,
             reports_to: None,
             furloughed_at: None,
             recalled_at: None,

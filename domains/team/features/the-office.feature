@@ -2,9 +2,10 @@ Feature: The open office
   The teams should look, work and interact as one (ADR 0119). The office is an
   open floor with a pod of desks for each team, and what stands on it is data
   the team may change: its plants, its lamps, its couches. The team decides
-  together what to change, in its downtime, which costs nothing unless the owner
-  says so. The owner is the landlord: they can undo, reset or veto. Nothing may
-  ever block a desk or a door.
+  together what to change, in its downtime, which costs nothing: it is work on
+  the house's own model, whatever a member judges with (ADR 0131). The owner is
+  the landlord: they can undo, reset or veto. Nothing may ever block a desk or a
+  door.
 
   Background:
     Given Mara is the CEO
@@ -45,20 +46,21 @@ Feature: The open office
     Then the office has no "fish tank"
     And the office has the default layout
 
-  Scenario: Downtime costs nothing unless the owner says so
+  Scenario: Downtime costs nothing, whatever a member judges with
     Given downtime is on
-    And Bo thinks with Claude
-    And Cy thinks with Claude
     When a tick passes
     Then Ada has a downtime turn that costs nothing
     And Bo has no downtime turn
     And Cy has no downtime turn
     When Ada tries to create a task in her downtime turn
     Then it is refused for "downtime"
-    When the owner allows 2 cents a day for paid members' downtime
-    And Ada's turn ends
+    And Ada's turn runs on "local"
+    When Ada's turn ends
     And a tick passes
-    Then Bo has a downtime turn charged to the pool, not to Bo's share
+    Then Bo has a downtime turn that costs nothing
+    When Bo's turn starts
+    Then Bo's turn runs on "local"
+    And the pool has paid nothing
 
   Scenario: Nothing may block a desk or a door
     When Bo proposes to add a "plant" at 30, 11

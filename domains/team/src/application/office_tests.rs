@@ -1,6 +1,6 @@
 //! The open office (ADR 0119): the office as data seeded once, proposals the team decides
 //! together by votes or by a quiet six hours, the owner's undo, reset and veto, and downtime:
-//! a turn with no task for a member with nothing to do, free unless the owner allows paid.
+//! a turn with no task for a member with nothing to do, on the NAS's own model, free (ADR 0131).
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -76,8 +76,19 @@ fn use_tool(hq: &Hq<'_>, context: &RunContext, tool: &str, args: &Value) -> Resu
     call(hq, &run, &who, tool, args)
 }
 
-/// A turn of `member`'s about no task, started by a mention, ready for tool calls.
+/// A turn of `member`'s about no task, started by a mention, ready for tool calls. The tester's
+/// work is the Mac's (ADR 0131), so for the tester the node says it is free; the others read on
+/// the NAS, and leave the Mac to her.
 fn mention_turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
+    let tester = hq
+        .store()
+        .members()
+        .unwrap()
+        .iter()
+        .any(|m| m.id == member && m.role == Role::Reviewer);
+    if tester {
+        hq.tell_mac(true, "ready");
+    }
     hq.wake(member, None, WakeReason::Mentioned).unwrap();
     hq.tick().unwrap();
     hq.runner()
@@ -183,7 +194,6 @@ fn the_snapshot_carries_the_items_the_catalog_and_the_open_proposals() {
     assert_eq!(open["votes"][0]["who"], "Bo");
     assert_eq!(open["votes"][0]["vote"], "yes");
     assert_eq!(shown["can_undo"], false);
-    assert_eq!(shown["downtime_paid_cents_per_day"], 0);
 }
 
 // ---- deciding together ---------------------------------------------------------------------
@@ -675,48 +685,34 @@ fn never_two_downtime_turns_back_to_back_across_midnight() {
 }
 
 #[test]
-fn paid_members_have_no_downtime_unless_the_owner_allows_it_and_then_within_the_allowance() {
+fn downtime_is_work_on_the_nas_for_nothing_whatever_the_member_judges_with() {
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock);
     let t = team(&hq);
-    // Bo and Cy think with Claude; Ada and Dee are on the house's model.
+    // Bo and Cy judge with Haiku and work with the Mac; the Mac is free; Ada and Dee are away.
+    // The office is not quality work, so it never uses the Mac (ADR 0131), and it is not paid
+    // for, so there is no allowance to ask the owner for (it was ADR 0119's, when Claude did
+    // it).
     hq.set_brain(t.bo, "claude-haiku-5-5").unwrap();
+    hq.set_brain(t.bo, "mac").unwrap();
     hq.set_brain(t.cy, "claude-haiku-5-5").unwrap();
-    for local in [t.ada, t.dee] {
-        hq.pause(local, true).unwrap();
+    hq.tell_mac(true, "ready");
+    for away in [t.ada, t.dee] {
+        hq.pause(away, true).unwrap();
     }
-    assert_eq!(hq.downtime_paid_cents().unwrap(), 0);
-    for _ in 0..3 {
-        end_all(&hq);
-    }
-    assert!(
-        downtime_turns(&hq).is_empty(),
-        "paid members are never woken for downtime"
-    );
-    // The owner allows two cents a day.
-    hq.set_downtime_paid_cents(2).unwrap();
     end_all(&hq);
     let turns = downtime_turns(&hq);
-    assert_eq!(turns.len(), 1);
+    assert_eq!(turns.len(), 1, "one at a time, once a day each");
     let run = run_of(&hq, &turns[0]);
-    assert!(run.asked_by_owner, "paid downtime is charged to the pool");
-    assert!(run.reserved <= 2 * money::CENT, "{}", run.reserved);
-    // It spends the whole allowance; the other paid member gets nothing today.
-    hq.report_usage(run.id, 2 * money::CENT).unwrap();
-    hq.runner().finish(run.id, true);
-    for _ in 0..3 {
-        end_all(&hq);
-    }
-    assert_eq!(downtime_turns(&hq).len(), 1, "the day's allowance is spent");
-    // Never a member's share: the pool paid it.
+    assert_eq!(run.reserved, 0, "it costs nothing");
+    assert_eq!(run.brain, Some(crate::domain::Brain::Local));
+    assert!(!run.asked_by_owner, "nobody's money, nobody's share");
     let day = money::day_of(START, 0);
-    assert_eq!(hq.store().share_committed(turns[0].member, day).unwrap(), 0);
-    let shown = hq.snapshot().unwrap()["office"].clone();
-    assert_eq!(shown["downtime_paid_cents_per_day"], 2);
-    assert_eq!(shown["downtime_paid_cents_used"], 2);
-    // The allowance cannot be more than the pool's day, nor negative.
-    assert!(hq.set_downtime_paid_cents(-1).is_err());
-    assert!(hq.set_downtime_paid_cents(100_000).is_err());
+    assert_eq!(hq.store().committed(None, day).unwrap(), 0);
+    assert!(
+        hq.snapshot().unwrap()["office"]["downtime_paid_cents_per_day"].is_null(),
+        "there is no allowance to show"
+    );
 }
 
 #[test]

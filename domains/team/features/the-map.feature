@@ -3,8 +3,8 @@ Feature: The team's map
   worked out from who leads it (ADR 0126). A member who does not keep a page proposes to
   it, and the steward decides, saying why. Every briefing opens with a short map of the
   pages that matter to that member. A member who looks and finds nothing says so, apart
-  from the broken roads HQ finds itself, and each night a member on the free model is
-  quizzed on the map, scored by code.
+  from the broken roads HQ finds itself, and each night a free member is quizzed on the
+  map, in a turn on the house's own model that costs nothing, scored by code.
 
   Background:
     Given Mara is the CEO
@@ -92,24 +92,25 @@ Feature: The team's map
     Given the nightly quiz is on
     And it is 2:00 in the morning
     When HQ looks at the night
-    Then a quiz is asked of a member on the house's model
+    Then a quiz is asked of a member, in a turn on the house's model that costs nothing
     When that member answers the quiz from its map
     Then the World shows last night's quiz with every question right
     And the World shows no page as failing the quiz
 
-  Scenario: With no member on the house's model free, the night is skipped and the World says so
+  Scenario: With no member free all night, the night is skipped and the World says so
     Given the nightly quiz is on
-    And Ada thinks with Claude
-    And Bo thinks with Claude
-    And Linus thinks with Claude
-    And it is 6:30 in the morning
+    And Ada has the task "Look at backups"
+    And Bo has the task "Look at the router"
+    And Linus has the task "Look at sonarr"
+    And it is 2:00 in the morning
     When HQ looks at the night
+    Then no quiz is asked
+    When it is 6:30 in the morning
+    And HQ looks at the night
     Then the World shows last night's quiz as skipped because "free"
 
   Scenario: A page that fails the quiz three nights running is flagged to its steward
     Given the nightly quiz is on
-    And Ada thinks with Claude
-    And Bo thinks with Claude
     And it is 2:00 in the morning
     When the night's quiz is answered wrongly three nights running
     Then the World shows "area/Ada" as failing the quiz
