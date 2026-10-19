@@ -23,7 +23,7 @@ ExecStart=/bin/true
 # deploy has. The `-` means a drain that fails never holds the shutdown. The test is for the day
 # the role takes this file away: systemd keeps the unit in memory until the next boot, and then
 # it should do nothing.
-ExecStop=-/bin/sh -c 'test -f /etc/systemd/system/endora-drain.service && exec sh /usr/local/lib/endora/hq-drain.sh drain'
+ExecStop=-/bin/sh -c 'test -f /etc/systemd/system/endora-drain.service && exec sh /usr/local/sbin/endora-hq-drain drain'
 # The drain waits up to its cap; systemd must wait longer, or it kills the wait.
 TimeoutStopSec={{ endora_drain_cap_seconds | int + 60 }}
 

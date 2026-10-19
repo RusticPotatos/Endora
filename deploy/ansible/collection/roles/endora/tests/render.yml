@@ -225,7 +225,7 @@
           # away, though systemd still holds it in memory until the next boot.
           - "drain | select('match', 'ExecStop=-/bin/sh -c ') | list | length == 1"
           - "drain | select('search', 'test -f /etc/systemd/system/endora-drain.service') | list | length == 1"
-          - "drain | select('search', 'exec sh /usr/local/lib/endora/hq-drain.sh drain') | list | length == 1"
+          - "drain | select('search', 'exec sh /usr/local/sbin/endora-hq-drain drain') | list | length == 1"
           - "drain | select('search', 'endora-render-test') | list | length == 0"
 
     - name: The shutdown drain is off by default, and turning it off never drains
@@ -244,8 +244,8 @@
           # The script goes with the unit, and is taken away with it.
           - "on_copy | length == 1"
           - "on_copy[0].src == 'hq-drain.sh'"
-          - "on_copy[0].dest == '/usr/local/lib/endora/hq-drain.sh'"
-          - "off_file | selectattr('path', 'equalto', '/usr/local/lib/endora/hq-drain.sh') | list | length == 1"
+          - "on_copy[0].dest == '/usr/local/sbin/endora-hq-drain'"
+          - "off_file | selectattr('path', 'equalto', '/usr/local/sbin/endora-hq-drain') | list | length == 1"
           # Stopping the unit runs its ExecStop, which drains HQ: turning the drain off must
           # not, so its tasks only disable the unit and take its file away.
           - "off_systemd | length == 2"
@@ -253,6 +253,14 @@
           # And turned on, it is enabled and started: started does nothing until shutdown.
           - "on_systemd | length == 1"
           - "on_systemd[0].state == 'started' and on_systemd[0].enabled"
+          # A dry run writes no unit, so there is none to enable: the enable waits for the real
+          # run then, and a first --check does not fail on it.
+          - "on_enable | length == 1"
+          - "'ansible_check_mode' in on_enable[0].when"
+          - "on_unit | length == 1 and on_unit[0].register == 'endora_drain_unit_file'"
+          - "'ansible.builtin.template' in on_unit[0]"
+          # And the script goes where a folder already is: a dry run makes no folder either.
+          - "on_file | length == 0"
       vars:
         tasks: "{{ lookup('file', '../tasks/main.yml') | from_yaml }}"
         # By key: a dotted module name would be read as nested attributes.
@@ -267,6 +275,12 @@
         on_copy: >-
           {{ drain_on[0].block | map('dict2items') | flatten
              | selectattr('key', 'equalto', 'ansible.builtin.copy')
+             | map(attribute='value') | list }}
+        on_enable: "{{ drain_on[0].block | selectattr('name', 'equalto', 'Enable the drain') | list }}"
+        on_unit: "{{ drain_on[0].block | selectattr('register', 'defined') | list }}"
+        on_file: >-
+          {{ drain_on[0].block | map('dict2items') | flatten
+             | selectattr('key', 'equalto', 'ansible.builtin.file')
              | map(attribute='value') | list }}
         off_file: >-
           {{ drain_off[0].block | map('dict2items') | flatten
