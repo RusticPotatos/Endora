@@ -141,6 +141,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(free.into_iter().next())
     }
 
+    /// Whether a turn is the quiz's: a downtime turn of the member the night's quiz was asked of,
+    /// while it is open. The one turn `answer_quiz` is offered in.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn in_quiz(&self, run: RunId) -> Done<bool> {
+        let Some(turn) = self.store.run(run)? else {
+            return Ok(false);
+        };
+        if !self.in_downtime(run)? {
+            return Ok(false);
+        }
+        Ok(self
+            .store
+            .quizzes()?
+            .iter()
+            .any(|q| q.status == Status::Asked && q.member == Some(turn.member)))
+    }
+
     /// A member's turn answers the quiz it was asked: one answer to each question, in order. Code
     /// scores them against the map and keeps the score. Returns how many were right and asked.
     ///

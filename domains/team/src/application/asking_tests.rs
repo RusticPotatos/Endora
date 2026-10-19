@@ -12,7 +12,7 @@ use super::engine::{Author, Called};
 use super::history_ports::HistoryStore;
 use super::history_tests::{Hands, Hq, NOON, end, engine, task_for, turn_of};
 use super::ports::{RunContext, TeamStore};
-use super::protocol::call;
+use super::protocol::{call, tools, tools_in};
 use crate::domain::consult::{Consult, Status};
 use crate::domain::{GoalId, MemberId, Role, TaskId, WakeReason};
 use std::sync::atomic::AtomicI64;
@@ -185,6 +185,61 @@ fn a_turn_on_claude_is_never_given_what_a_turn_that_read_confidential_data_said(
         at_home.contains("decided to cap sonarr") && at_home.contains("Capped sonarr's memory"),
         "{at_home}"
     );
+}
+
+/// The names of the tools the turn is offered, as `tools/list` would answer.
+fn offered(hq: &Hq<'_>, context: &RunContext) -> Vec<String> {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    tools_in(hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn answer_consult_is_offered_in_a_consulted_turn_and_in_no_other() {
+    // The tool count is a measured failure mode for the house's model (ADR 0085): a tool only a
+    // consulted member can use is not offered to the rest.
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (capped, _) = linus_capped_sonarr(&hq, &t, false);
+    let (_, ada) = ada_asks_in_a_turn(&hq, &t);
+    clock.0.fetch_add(60_000, Ordering::SeqCst);
+    use_tool(
+        &hq,
+        &ada,
+        "consult",
+        &json!({ "member": "Linus", "question": "Why did you cap sonarr at 512M?", "task": capped.0 }),
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let linus = turn_of(&hq, t.linus);
+    assert!(hq.in_consult(linus.run).unwrap());
+    let names = offered(&hq, &linus);
+    assert!(names.contains(&"answer_consult".to_owned()), "{names:?}");
+    for kept in ["my_turn", "read_world", "ask_record", "read_notebook"] {
+        assert!(names.contains(&kept.to_owned()), "{kept} in {names:?}");
+    }
+    // Ada's own turn, and every role's list, are not offered it.
+    assert!(
+        !offered(&hq, &ada).contains(&"answer_consult".to_owned()),
+        "the asker's turn"
+    );
+    for role in [Role::Ceo, Role::Lead, Role::Developer, Role::Reviewer] {
+        assert!(
+            !tools(role)
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "answer_consult"),
+            "{role:?}'s list"
+        );
+    }
+    // And a consulted turn is not offered the quiz's answer either.
+    assert!(!names.contains(&"answer_quiz".to_owned()), "{names:?}");
 }
 
 #[test]

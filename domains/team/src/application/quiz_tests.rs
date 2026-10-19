@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::engine::{Author, Engine, Settings};
 use super::map_ports::MapStore;
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
-use super::protocol::call;
+use super::protocol::{call, tools_in};
 use crate::domain::map::map_block;
 use crate::domain::quiz::{Graded, Kind, Quiz, Status};
 use crate::domain::{GoalId, MemberId, Priority, Role, TaskId};
@@ -165,6 +165,74 @@ fn a_free_member_is_quizzed_at_night_on_its_own_map_and_code_scores_it() {
     let quizzes = hq.store().quizzes().unwrap();
     assert_eq!(quizzes.len(), 2);
     assert_eq!(quizzes[1].night, quizzes[0].night + 1);
+}
+
+/// The names of the tools the turn is offered, as `tools/list` would answer.
+fn offered(hq: &Hq<'_>, context: &RunContext) -> Vec<String> {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    tools_in(hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn answer_quiz_is_offered_in_the_quiz_turn_and_in_no_other() {
+    // The tool count is a measured failure mode for the house's model (ADR 0085): a tool only one
+    // turn in a night can use is not offered to the rest.
+    let clock = Hands(AtomicI64::new(NIGHT));
+    let hq = engine(&clock, true);
+    let t = team(&hq);
+    hq.tick().unwrap();
+    let quiz = hq.store().quizzes().unwrap().remove(0);
+    let context = quiz_turn(&hq, &quiz);
+    let names = offered(&hq, &context);
+    assert!(names.contains(&"answer_quiz".to_owned()), "{names:?}");
+    // It has what its role has beside it.
+    for kept in ["my_turn", "read_world", "office", "note"] {
+        assert!(names.contains(&kept.to_owned()), "{kept} in {names:?}");
+    }
+    // Another member's turn, on an ordinary task, is not offered it, nor is a role's list.
+    let other = [t.ada, t.linus, t.dee]
+        .into_iter()
+        .find(|m| Some(*m) != quiz.member)
+        .unwrap();
+    task_for(&hq, t.goal, other, "Cap sonarr's memory");
+    hq.tick().unwrap();
+    let ordinary = hq
+        .runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.member == other)
+        .expect("the other member's turn started");
+    assert!(
+        !offered(&hq, &ordinary).contains(&"answer_quiz".to_owned()),
+        "an ordinary turn"
+    );
+    for role in [Role::Ceo, Role::Lead, Role::Developer, Role::Reviewer] {
+        let list = crate::application::protocol::tools(role);
+        assert!(
+            !list
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "answer_quiz"),
+            "{role:?}'s list"
+        );
+    }
+    // Answered, the quiz is over, and so is the tool, though the turn goes on.
+    let answers: Vec<String> = quiz
+        .questions
+        .iter()
+        .map(|q| q.expects[0].clone())
+        .collect();
+    use_tool(&hq, &context, "answer_quiz", &json!({ "answers": answers })).unwrap();
+    assert!(
+        !offered(&hq, &context).contains(&"answer_quiz".to_owned()),
+        "answered"
+    );
 }
 
 #[test]

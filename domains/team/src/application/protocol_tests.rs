@@ -172,12 +172,19 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     // A huddle on stuck work asks every member's view (ADR 0120), and every member shapes the
     // office (ADR 0119), and may play chess (ADR 0121); every member reads the world and tells stories (ADR 0122),
     // and proposes to a page it does not keep and reports what its map lacks (ADR 0126); and
-    // every member asks the record, consults and answers a consult (ADR 0129); and a developer
-    // asks for its kept branch to be checked again (ADR 0115).
-    assert_eq!(names.len(), 27, "{names:?}");
+    // every member asks the record and consults (ADR 0129); and a developer asks for its kept
+    // branch to be checked again (ADR 0115). The answers to a quiz and to a consult are the
+    // tools of those turns alone (ADR 0131, amended): two fewer than every turn was offered.
+    assert_eq!(names.len(), 25, "{names:?}");
     assert!(names.contains(&"recheck".to_owned()));
-    for tool in ["ask_record", "consult", "answer_consult"] {
+    for tool in ["ask_record", "consult"] {
         assert!(names.contains(&tool.to_owned()), "{tool}");
+    }
+    for tool in ["answer_quiz", "answer_consult"] {
+        assert!(
+            !names.contains(&tool.to_owned()),
+            "{tool} is for its own turn"
+        );
     }
     assert!(names.contains(&"read_world".to_owned()) && names.contains(&"tell_story".to_owned()));
     assert!(names.contains(&"huddle_view".to_owned()));
@@ -206,7 +213,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .collect();
     // With the office (ADR 0119), a huddle's view (ADR 0120), chess (ADR 0121) and the world
     // (ADR 0122).
-    assert_eq!(reviewers.len(), 26, "{reviewers:?}");
+    assert_eq!(reviewers.len(), 24, "{reviewers:?}");
     assert!(
         !reviewers.contains(&"create_task".to_owned()),
         "the tester passes or sends back, and never makes work"

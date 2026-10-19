@@ -583,6 +583,30 @@ pub fn tools(role: Role) -> Value {
     all
 }
 
+/// The tools one turn is offered (what `tools/list` answers): its member's role's, and, in the
+/// turn that is for it, the tool a special turn answers with (ADR 0131, amended): `answer_quiz`
+/// in the night's quiz turn, `answer_consult` in a consulted one, and neither anywhere else. The
+/// number of tools a model is offered is a measured failure mode for the house's model (ADR
+/// 0085). A store that cannot say what the turn is offers it the role's, as every other turn.
+#[must_use]
+pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+) -> Value {
+    let mut all = tools(member.role);
+    let Some(list) = all.as_array_mut() else {
+        return all;
+    };
+    if engine.in_quiz(run.id).unwrap_or(false) {
+        list.push(super::protocol_world::quiz_tool());
+    }
+    if engine.in_consult(run.id).unwrap_or(false) {
+        list.push(super::protocol_history::answer_consult_tool());
+    }
+    all
+}
+
 /// The CEO's tools (ADR 0111).
 fn ceos_tools() -> Value {
     let all = tools(Role::Lead);

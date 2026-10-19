@@ -2410,10 +2410,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // (ADR 0119).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
             told.push_str(&self.downtime_said(member)?);
+            // The quiz's answer is offered in the quiz's turn alone, so only that one is told of it.
             told.push_str(
                 "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc, \
-                 read_world, answer_quiz.\n",
+                 read_world",
             );
+            told.push_str(if self.in_quiz(run.id)? {
+                ", answer_quiz.\n"
+            } else {
+                ".\n"
+            });
             return Ok(told);
         }
         // The CEO's quiet briefing is held under half its whole one: its read_doc names the

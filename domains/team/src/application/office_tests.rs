@@ -749,6 +749,8 @@ fn a_downtime_briefing_says_what_the_office_has_and_what_may_be_done_and_makes_n
     ] {
         assert!(told.contains(said), "{said}\n---\n{told}");
     }
+    // It carries no quiz, so it is not told of the tool that answers one (ADR 0131, amended).
+    assert!(!told.contains("answer_quiz"), "{told}");
     assert!(told.len() < 3_500, "keep it short: {}", told.len());
     // No work is made in a downtime turn.
     let cy = &turns[0];

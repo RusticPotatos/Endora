@@ -1474,10 +1474,11 @@ mod tests {
         // (ADR 0120). It reads the world, tells stories (a lesson is one now), confirms and
         // retires what it stewards, and proposes canon (ADR 0122). And it may play chess (ADR 0121).
         // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
-        // keeps (ADR 0126). And it asks the record, consults and answers a consult (ADR 0129).
-        // And it asks for a kept branch to be checked again (ADR 0115). And it narrows what done
-        // means for work in its area (ADR 0133).
-        assert_eq!(names.len(), 42, "{names:?}");
+        // keeps (ADR 0126). And it asks the record and consults (ADR 0129); the answers to a
+        // consult and to the quiz are the tools of those turns alone (ADR 0131, amended). And it
+        // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
+        // for work in its area (ADR 0133).
+        assert_eq!(names.len(), 40, "{names:?}");
         assert!(names.contains(&"recheck"));
         assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"narrow_criteria"));
@@ -1507,6 +1508,13 @@ mod tests {
             !names.contains(&"report_usage"),
             "the relay charges for model use, not the worker"
         );
+        // A tool only a quiz turn or a consulted turn can use is offered in those turns alone.
+        for special in ["answer_quiz", "answer_consult"] {
+            assert!(
+                !names.contains(&special),
+                "{special} is for its own turn: {names:?}"
+            );
+        }
         let mine = json_of(
             app.clone()
                 .oneshot(speak(rpc(

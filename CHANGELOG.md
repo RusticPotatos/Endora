@@ -9,6 +9,15 @@ tagged release.
 
 ### Changed
 
+- **A tool only one kind of turn can use is offered in that turn alone**
+  ([ADR 0131](docs/adr/0131-the-two-kinds-of-turn.md), amended). `answer_quiz` (the nightly
+  quiz on a member's map) and `answer_consult` (a consulted member's answer) were offered to
+  every member in every turn, among 27 tools for a developer, where how many tools a small model
+  is offered is a measured failure mode. HQ's `tools/list` is now asked of the turn: the quiz's
+  answer is offered in the quiz's turn until it is answered, the consult's in a consulted turn,
+  and neither anywhere else (a role's list is two shorter). A downtime briefing names the quiz's
+  tool only when its turn carries a quiz. Calling either elsewhere is refused by the engine as
+  ever. No migration.
 - **The Mac has limits of its own** ([ADR 0130](docs/adr/0130-the-macs-brain.md), amended;
   [0131](docs/adr/0131-the-two-kinds-of-turn.md)). The first build gave the Mac the NAS's small
   model's limits on what a turn is told of the team's world (a briefing's 1,800 tokens of it, a
