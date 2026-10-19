@@ -574,6 +574,12 @@ pub enum Refusal {
     ForwardTheDraft,
     /// A recheck of a branch's checks is asked for by the work's lead or developer (ADR 0115).
     NotYourToRecheck,
+    /// Changing the lab (a branch submitted, or checked again) is the engineering wing's: its
+    /// lead and its developers (ADR 0120). `lead` is the wing's lead, if there is a wing.
+    BranchesAreTheWings {
+        /// The wing's lead, by name; none when there is no wing.
+        lead: Option<String>,
+    },
     /// A check of the branch is still waiting or running: one at a time (ADR 0115).
     CheckPending(i64),
     /// The CEO is never furloughed: the owner's own line to the team (ADR 0118).
@@ -933,6 +939,16 @@ impl fmt::Display for Refusal {
             Self::NotYourToRecheck => f.write_str(
                 "a recheck is asked for by the work's lead or developer: the tester judges what \
                  the checks found, and the CEO directs",
+            ),
+            Self::BranchesAreTheWings { lead: Some(lead) } => write!(
+                f,
+                "changing the lab is the engineering wing's: {lead} leads it and its developers \
+                 submit the branches. Ask for the change with propose_project, with its criteria \
+                 and evidence; the CEO decides and the wing builds it"
+            ),
+            Self::BranchesAreTheWings { lead: None } => f.write_str(
+                "changing the lab is the engineering wing's, and there is no wing: ask the owner \
+                 with ask_owner",
             ),
             Self::CheckPending(check) => write!(
                 f,

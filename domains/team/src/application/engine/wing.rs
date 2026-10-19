@@ -120,6 +120,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .running(id)
             .map_err(|_| EngineError::Unknown("running turn with that token"))?;
         let task = run.task.ok_or(EngineError::Unknown("task"))?;
+        // Changing the lab is the wing's (ADR 0120): refused before anything is kept.
+        self.may_change_the_lab(&self.member(run.member)?)?;
         if !s.branch.starts_with(wing::BRANCH_PREFIX) || s.head.len() < 7 {
             return Err(EngineError::Unknown("branch under hq/"));
         }
@@ -232,6 +234,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !matches!(member.role, Role::Lead | Role::Developer) {
             return Err(EngineError::Refused(Refusal::NotYourToRecheck));
         }
+        self.may_change_the_lab(&member)?;
         let work = self.work_of(task)?;
         let Some(branch) = self
             .store
@@ -896,6 +899,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(wing::FORK_RULES_LEAD);
         }
         Ok(wing::FORK_RULES)
+    }
+
+    /// Whether a member changes the lab (ADR 0120): a lead or a developer in the engineering
+    /// wing, who may submit a branch and ask for it to be checked again. What the node asks
+    /// before it offers or runs a submission, so nothing is kept for anyone else.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn changes_the_lab(&self, member: MemberId) -> Done<bool> {
+        let leads = self.wing_leads()?;
+        let members = self.store.members()?;
+        Ok(members
+            .iter()
+            .find(|m| m.id == member)
+            .is_some_and(|m| wing::changes_the_lab(m, &leads, &members)))
+    }
+
+    /// Refuses a member outside the wing who would change the lab, naming the wing's lead.
+    fn may_change_the_lab(&self, member: &crate::domain::Member) -> Done<()> {
+        let leads = self.wing_leads()?;
+        let members = self.store.members()?;
+        if wing::changes_the_lab(member, &leads, &members) {
+            return Ok(());
+        }
+        let lead = leads
+            .first()
+            .and_then(|id| members.iter().find(|m| m.id == *id))
+            .map(|m| m.name.clone());
+        Err(EngineError::Refused(Refusal::BranchesAreTheWings { lead }))
     }
 
     pub(super) fn wing_leads(&self) -> Done<Vec<MemberId>> {

@@ -48,6 +48,15 @@ pub const FORK_RULES_LEAD: &str = "The fork's own AGENTS.md, when it exists, is 
     rules; propose one if missing. Until it exists it is the first branch to propose: the draft \
     is docs/drafts/ansible-nas-AGENTS.md in Endora's library (read_doc).\n";
 
+/// Whether a member changes the lab: submits a branch or asks for one to be checked again. That
+/// is the wing's (ADR 0120: changing the lab, the Eng lead accountable and its members doing):
+/// a lead or a developer in it. A tester reads a branch and submits none, and a lead outside the
+/// wing writes the criteria for a change, never its branch.
+#[must_use]
+pub fn changes_the_lab(member: &Member, leads: &[MemberId], members: &[Member]) -> bool {
+    matches!(member.role, Role::Lead | Role::Developer) && in_wing(member, leads, members)
+}
+
 /// Whether a member is in the wing: it leads one of the wing's projects (`leads`), or reports,
 /// however far up, to one who does. The CEO is never in the wing.
 #[must_use]
@@ -307,6 +316,32 @@ mod tests {
         circular[2].reports_to = Some(MemberId(2));
         assert!(!in_wing(&circular[1], &leads, &circular), "a circle ends");
         assert!(!in_wing(&team[0], &[MemberId(1)], &team), "never the CEO");
+    }
+
+    // Changing the lab is the wing's (ADR 0120): its lead and its developers. Not a tester in
+    // it, who reads; and nobody outside it, a lead included (task 687: the Ops lead built and
+    // submitted a branch herself, and could neither accept it nor hand it on).
+    #[test]
+    fn only_the_wings_lead_and_developers_change_the_lab() {
+        let team = team();
+        let leads = [MemberId(4)];
+        let names: Vec<&str> = team
+            .iter()
+            .filter(|m| changes_the_lab(m, &leads, &team))
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(names, ["Kit", "Rae", "Zed"]);
+        let mut tester_in_the_wing = team.clone();
+        tester_in_the_wing[2].reports_to = Some(MemberId(4));
+        assert!(
+            !changes_the_lab(&tester_in_the_wing[2], &leads, &tester_in_the_wing),
+            "a tester reads a branch"
+        );
+        assert!(!changes_the_lab(&team[1], &leads, &team), "the Ops lead");
+        assert!(
+            !changes_the_lab(&team[4], &[], &team),
+            "no wing, no branches"
+        );
     }
 
     #[test]

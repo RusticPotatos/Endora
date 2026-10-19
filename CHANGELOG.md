@@ -989,6 +989,15 @@ tagged release.
 
 ### Fixed
 
+- **Branches are the wing's** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md),
+  amended). The RACI gave changing the lab to the engineering lead and its members, but any
+  lead was offered `repo_submit`. On task 687 the Ops lead built and submitted a branch
+  herself; a lead never accepts or hands on its own work, so the branch sat in review and the
+  CEO was asked twice. Now only a lead or a developer in the engineering wing submits a branch
+  or asks for a recheck. Anyone else is refused before anything is kept, and is told who leads
+  the wing and to ask for the change with `propose_project`. HQ tells the node whether a turn is
+  the wing's (`wing` on `/v1/team/turn`), and the node then neither offers nor runs the
+  submission. Reading a branch is unchanged.
 - **Evidence is read as the tools name it** ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)).
   Every result of Endora's tools ends "(receipt r12)", and a member's instructions say to cite it
   so; HQ read `receipt` and then wanted a bare number, so `receipt r12` was refused as "not

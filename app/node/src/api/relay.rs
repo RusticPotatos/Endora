@@ -100,6 +100,10 @@ pub(super) struct Turn {
     /// shape, held to the brain, and its sandbox may report its own tools. An older HQ says
     /// nothing: Endora's worker.
     pub(super) claude_code: bool,
+    /// Whether the member changes the lab, as HQ says (ADR 0120): only the engineering wing's
+    /// lead and developers are offered and run a branch's submission. An older HQ says nothing,
+    /// and its role alone decides, as before.
+    pub(super) wing: Option<bool>,
 }
 
 impl Turn {
@@ -250,6 +254,7 @@ pub(super) async fn turn_of(
             cloud: v["cloud"].as_bool().unwrap_or(false),
             brain: v["brain"].as_str().unwrap_or("local").to_owned(),
             claude_code: v["runtime"] == "claude-code",
+            wing: v["wing"].as_bool(),
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
             StatusCode::UNAUTHORIZED,

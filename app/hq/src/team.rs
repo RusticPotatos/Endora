@@ -140,11 +140,14 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
         // And of the turn's own brain: a turn of work on the house's models runs on the worker
         // (ADR 0131).
         let runtime = hq.runtime_of_turn(run.id).unwrap_or_default();
-        Ok::<_, endora_team::application::EngineError>(Some((run, member, runtime)))
+        // Whether the member changes the lab (ADR 0120): the node offers and runs a branch's
+        // submission only for the engineering wing's lead and developers.
+        let wing = hq.changes_the_lab(member.id)?;
+        Ok::<_, endora_team::application::EngineError>(Some((run, member, runtime, wing)))
     })
     .await;
     match found {
-        Ok(Ok(Some((run, member, runtime)))) => Json(json!({
+        Ok(Ok(Some((run, member, runtime, wing)))) => Json(json!({
             "run": run.id.0,
             "member": member.name,
             "role": member.role.name(),
@@ -157,6 +160,7 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             "runtime": runtime.name(),
             // The task the turn is on (ADR 0115): the node names the wing's branches by it.
             "task": run.task.map(|t| t.0),
+            "wing": wing,
         }))
         .into_response(),
         Ok(Ok(None)) => (
