@@ -219,12 +219,14 @@
           - "'Environment=DRAIN_CAP=120' in drain_short"
           - "'TimeoutStopSec=180' in drain_short"
           - "'Environment=HQ_CONTAINER=endora-hq' in drain"
-          # The checkout's own script, so the guards are the ones a deploy has; a failed drain
-          # (the `-`) never holds the shutdown; and the unit does nothing once the role has
-          # taken its file away, though systemd still holds it in memory until the next boot.
+          # The role's own copy of the deploy's script, so the guards are the ones a deploy has
+          # with no checkout on the host (Endora run by `make deploy`); a failed drain (the `-`)
+          # never holds the shutdown; and the unit does nothing once the role has taken its file
+          # away, though systemd still holds it in memory until the next boot.
           - "drain | select('match', 'ExecStop=-/bin/sh -c ') | list | length == 1"
           - "drain | select('search', 'test -f /etc/systemd/system/endora-drain.service') | list | length == 1"
-          - "drain | select('search', '/tmp/endora-render-test/endora/src/scripts/hq-drain.sh drain') | list | length == 1"
+          - "drain | select('search', 'exec sh /usr/local/lib/endora/hq-drain.sh drain') | list | length == 1"
+          - "drain | select('search', 'endora-render-test') | list | length == 0"
 
     - name: The shutdown drain is off by default, and turning it off never drains
       ansible.builtin.assert:
@@ -235,6 +237,15 @@
           - "'endora_drain_on_shutdown' in drain_on[0].when"
           - "drain_off | length == 1"
           - "'endora_drain_on_shutdown' in drain_off[0].when"
+          # Whether this role runs Endora or `make deploy` does, as on the NAS: the drain is its
+          # own switch.
+          - "'endora_enabled' not in drain_on[0].when"
+          - "'endora_enabled' not in drain_off[0].when"
+          # The script goes with the unit, and is taken away with it.
+          - "on_copy | length == 1"
+          - "on_copy[0].src == 'hq-drain.sh'"
+          - "on_copy[0].dest == '/usr/local/lib/endora/hq-drain.sh'"
+          - "off_file | selectattr('path', 'equalto', '/usr/local/lib/endora/hq-drain.sh') | list | length == 1"
           # Stopping the unit runs its ExecStop, which drains HQ: turning the drain off must
           # not, so its tasks only disable the unit and take its file away.
           - "off_systemd | length == 2"
@@ -252,6 +263,14 @@
         on_systemd: >-
           {{ drain_on[0].block | map('dict2items') | flatten
              | selectattr('key', 'equalto', 'ansible.builtin.systemd')
+             | map(attribute='value') | list }}
+        on_copy: >-
+          {{ drain_on[0].block | map('dict2items') | flatten
+             | selectattr('key', 'equalto', 'ansible.builtin.copy')
+             | map(attribute='value') | list }}
+        off_file: >-
+          {{ drain_off[0].block | map('dict2items') | flatten
+             | selectattr('key', 'equalto', 'ansible.builtin.file')
              | map(attribute='value') | list }}
         drain_on: "{{ tasks | selectattr('name', 'equalto', 'Drain HQ before this host shuts down') | list }}"
         drain_off: "{{ tasks | selectattr('name', 'equalto', 'No drain before this host shuts down') | list }}"

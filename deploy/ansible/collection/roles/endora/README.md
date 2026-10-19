@@ -66,22 +66,25 @@ Secrets are folders or files, never values.
 
 Endora ADR 0134: `make deploy` asks HQ to stop starting turns and to wait for the ones under way
 before it restarts anything. The same can happen when this host shuts down, so the NAS's 04:00
-security reboot does not cut a turn of ten or fifteen minutes:
+security reboot does not cut a turn of ten or fifteen minutes. It is its own switch: it works
+whether this role runs Endora (`endora_enabled`) or Endora's own `make deploy` does, as on a NAS
+with no checkout of the role's:
 
 ```yaml
-endora_hq: true
 endora_drain_on_shutdown: true     # off by default: it adds a wait to every shutdown
 endora_drain_cap_seconds: 300      # the most a shutdown waits; the unit's timeout is this and a minute
 ```
 
-The role installs `/etc/systemd/system/endora-drain.service`: a oneshot that does nothing when it
-starts and stays active, ordered `After=docker.service`. Units stop in the reverse of their start
-order, so at shutdown it is stopped, and its `ExecStop` runs Endora's `scripts/hq-drain.sh drain`
-from the checkout this role keeps, while Docker and HQ are still up. A drain that fails never
-holds the shutdown. Nothing is lifted afterwards: HQ lifts the drain itself when its container
-starts again at boot. Setting the variable back to false disables the unit and removes its file
-without stopping it (stopping it would run the drain). The variables are not compose settings, so
-they are not in `endora.env`; `tests/render.yml` renders the unit and checks it.
+The role installs `/etc/systemd/system/endora-drain.service`, and the deploy's own drain script
+as `/usr/local/lib/endora/hq-drain.sh` (`files/hq-drain.sh`; Endora's `scripts/hq-drain.sh` is a
+link to it). The unit is a oneshot that does nothing when it starts and stays active, ordered
+`After=docker.service`. Units stop in the reverse of their start order, so at shutdown it is
+stopped, and its `ExecStop` runs the script's `drain` while Docker and HQ are still up. A drain
+that fails never holds the shutdown. Nothing is lifted afterwards: HQ lifts the drain itself when
+its container starts again at boot. Setting the variable back to false disables the unit and
+removes its files without stopping it (stopping it would run the drain). The variables are not
+compose settings, so they are not in `endora.env`; `tests/render.yml` renders the unit and checks
+it.
 
 ## Parity with the compose file
 

@@ -137,7 +137,8 @@ endora_bench_cap_cents: ""
 # A drain before this host shuts down (Endora ADR 0134). On, a systemd unit asks HQ to stop
 # starting turns and waits for the ones under way, as the host shuts down and while Docker is
 # still up, so a reboot (your 04:00 security one) does not cut a turn in the middle of a step.
-# Needs endora_hq. Off by default: it adds a wait, up to the cap below, to every shutdown.
+# Its own switch: it works whether this role runs Endora or `make deploy` does. Off by
+# default: it adds a wait, up to the cap below, to every shutdown.
 endora_drain_on_shutdown: false
 # How long, in seconds, a shutdown waits for the turns under way. What is still running then is
 # cut and tried again after the boot. The unit's own timeout is this and a minute.

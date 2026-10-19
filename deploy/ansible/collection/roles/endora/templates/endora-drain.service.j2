@@ -19,11 +19,11 @@ RemainAfterExit=yes
 Environment=HQ_CONTAINER=endora-hq
 Environment=DRAIN_CAP={{ endora_drain_cap_seconds }}
 ExecStart=/bin/true
-# Endora's own script, from the checkout this role keeps, so the guards are the ones a deploy
-# has. The `-` means a drain that fails never holds the shutdown. The test is for the day the
-# role takes this file away: systemd keeps the unit in memory until the next boot, and then it
-# should do nothing.
-ExecStop=-/bin/sh -c 'test -f /etc/systemd/system/endora-drain.service && exec sh {{ endora_root }}/src/scripts/hq-drain.sh drain'
+# Endora's own script, the copy this role brings with the unit, so the guards are the ones a
+# deploy has. The `-` means a drain that fails never holds the shutdown. The test is for the day
+# the role takes this file away: systemd keeps the unit in memory until the next boot, and then
+# it should do nothing.
+ExecStop=-/bin/sh -c 'test -f /etc/systemd/system/endora-drain.service && exec sh /usr/local/lib/endora/hq-drain.sh drain'
 # The drain waits up to its cap; systemd must wait longer, or it kills the wait.
 TimeoutStopSec={{ endora_drain_cap_seconds | int + 60 }}
 

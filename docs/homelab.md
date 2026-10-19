@@ -399,10 +399,11 @@ away" digest: "A restart cut 1 turn: ...", naming it. Nothing waits on you eithe
 
 The `endora` role in the `endora.homelab` collection can install a systemd unit that runs the
 same drain as the NAS shuts down, so the 04:00 security reboot does not cut a turn. It is off by
-default, because it adds a wait, up to the cap, to every shutdown. In your ansible-nas variables:
+default, because it adds a wait, up to the cap, to every shutdown. It works whether the role runs
+Endora or `make deploy` does: the role brings its own copy of the drain script. In your
+ansible-nas variables:
 
 ```yaml
-endora_hq: true
 endora_drain_on_shutdown: true
 # endora_drain_cap_seconds: 300   # the most a shutdown waits for the turns under way
 ```

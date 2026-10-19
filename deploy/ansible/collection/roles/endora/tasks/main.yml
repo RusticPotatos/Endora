@@ -127,11 +127,24 @@
   when: endora_enabled is true
 
 # Endora ADR 0134: a unit that drains HQ as this host shuts down, while Docker is still up. Off
-# by default. It runs Endora's own script from the checkout above, so it needs the role on.
+# by default. Its own switch, not the role's: a node `make deploy` runs, with no checkout here,
+# drains the same way, with the copy of the deploy's script the role brings.
 - name: Drain HQ before this host shuts down
-  when: endora_enabled is true and endora_drain_on_shutdown | bool
+  when: endora_drain_on_shutdown | bool
   become: true
   block:
+    - name: The drain's folder
+      ansible.builtin.file:
+        path: /usr/local/lib/endora
+        state: directory
+        mode: "0755"
+
+    - name: The drain's script
+      ansible.builtin.copy:
+        src: hq-drain.sh
+        dest: /usr/local/lib/endora/hq-drain.sh
+        mode: "0755"
+
     - name: The drain's unit
       ansible.builtin.template:
         src: endora-drain.service.j2
@@ -146,10 +159,10 @@
         enabled: true
         state: started
 
-# Turned off, or the role off: the unit is disabled and its file taken away. It is never
-# stopped here: stopping it runs its ExecStop, which would drain HQ for no restart at all.
+# Turned off: the unit is disabled and its files taken away. It is never stopped here: stopping
+# it runs its ExecStop, which would drain HQ for no restart at all.
 - name: No drain before this host shuts down
-  when: not (endora_enabled is true and endora_drain_on_shutdown | bool)
+  when: not (endora_drain_on_shutdown | bool)
   become: true
   block:
     - name: Look for the drain's unit
@@ -173,6 +186,11 @@
       ansible.builtin.systemd:
         daemon_reload: true
       when: endora_drain_unit.stat.exists
+
+    - name: Take the drain's script away
+      ansible.builtin.file:
+        path: /usr/local/lib/endora/hq-drain.sh
+        state: absent
 
 # Only a node this role started is stopped: with the role disabled, an Endora deployed some
 # other way (its own `make deploy`) is left running. The data volume is never removed.
