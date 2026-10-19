@@ -172,6 +172,14 @@ Builds and test runs that take minutes run as tracked background jobs with a tim
 a hand-rolled polling loop that can outlive everyone watching it.
 *How you'll know:* nothing is still running that nobody knows about.
 
+### Plain text
+
+No emoji or pictographs in a project's own text. New code, comments and docs are plain ASCII
+where they can be (`->`, not an arrow character), and no em dashes: they read as machine
+written. What a user sees may use what the interface genuinely needs, and icons come from the
+platform's icon set, never character literals.
+*How you'll know:* a plain-text check passes, and nothing reads as generated.
+
 ### Risks first, then act
 
 Name the risks of a step before taking it. Look at what is there (`git status`) before anything
