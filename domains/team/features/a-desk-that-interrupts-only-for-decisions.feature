@@ -119,5 +119,5 @@ Feature: A desk that interrupts only for decisions
     And there is 1 finding of "Talk about work"
     When Ada talks about "Plan the backups" for 12 turns and changes nothing
     And HQ looks at how the team is doing
-    Then the digest holds 1 item: a finding "Talk about work"
+    Then the digest holds a finding "Talk about work" once
     And there are 2 findings of "Talk about work"

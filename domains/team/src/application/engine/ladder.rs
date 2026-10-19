@@ -419,7 +419,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let current = self.task(task)?;
         let lead = self.member(turn.member)?;
         let ours = self.area_lead(&current)?.is_some_and(|l| l.id == lead.id);
-        let on_it = matches!(self.rung_of(task)?, Some((Rung::Lead | Rung::Huddle, _)));
+        // Stuck work the ladder put to the lead, or talk over its budget that the lead was asked
+        // what to do about (ADR 0133): both are its to decide.
+        let on_it = matches!(self.rung_of(task)?, Some((Rung::Lead | Rung::Huddle, _)))
+            || self.asked_about_talk(task, lead.id)?;
         if !ours || !on_it || current.status.finished() {
             return Err(EngineError::Refused(Refusal::NotStuckForYou));
         }
@@ -471,6 +474,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store
             .set_setting(&format!("{HUDDLE_KEY}{}", task.0), "")?;
         self.set_rung(task, Rung::Decided)?;
+        // Decided, its talk is counted afresh (ADR 0133).
+        self.renew_coordination_budget(task)?;
         self.mark_progress(lead.id, task)?;
         let heard: Vec<i64> = huddle
             .as_ref()

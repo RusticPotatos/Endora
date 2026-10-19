@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Eighty-three records stand, every one accepted, and forty-nine earlier ones are archived into them
+Eighty-four records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -136,6 +136,12 @@ that established it.
   it. Leads and the CEO propose with task numbers and event ids HQ checks; the CEO decides, the
   board may overrule, and caps are the owner's. Each member reports to someone the owner may
   change, and the CEO plans once a week from patterns.
+- **A guard that gains authority is tried in shadow first; a runaway is stopped without asking**
+  ([0133](0133-caps-on-talk-and-runaway.md)). A guard that would hold the team's work records
+  what it would have held, where the owner reads it and judges it, and changes nothing until the
+  owner switches it on. The caps that exist because a runaway costs most when nobody is watching
+  (a member's day of turns on the house's own models, forty turns in ten minutes) are on from the
+  start: what they hold is kept, not lost, and the owner resumes in one tap.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -288,6 +294,7 @@ of an existing record and take the next number.
 | [0130](0130-the-macs-brain.md) | The Mac's brain | — |
 | [0131](0131-the-two-kinds-of-turn.md) | The two kinds of turn: the house's models work, Claude judges | — |
 | [0132](0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md) | Outcomes, and a desk that interrupts only for decisions | — |
+| [0133](0133-caps-on-talk-and-runaway.md) | Caps on talk and runaway | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

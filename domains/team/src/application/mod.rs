@@ -92,6 +92,12 @@ mod world_tests;
 mod guards_tests;
 
 #[cfg(test)]
+mod budget_tests;
+
+#[cfg(test)]
+mod caps_tests;
+
+#[cfg(test)]
 mod map_tests;
 
 #[cfg(test)]

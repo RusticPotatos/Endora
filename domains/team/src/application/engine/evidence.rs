@@ -10,7 +10,7 @@
 
 use serde_json::json;
 
-use super::{Author, Done, Engine, EngineError};
+use super::{Author, Done, Engine, EngineError, one_line};
 use crate::application::ports::{Cited, Clock, NewTask, Run, TeamStore, WorkerAdapter};
 use crate::domain::chain;
 use crate::domain::evidence::{
@@ -340,10 +340,91 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`Refusal::TooLong`] past [`evidence::MOST_CRITERIA`]; [`EngineError::Unknown`].
     pub fn set_criteria(&self, task: TaskId, criteria: &[Criterion]) -> Done<()> {
         let _held = self.held();
+        self.set_criteria_held_lock(task, criteria)
+    }
+
+    /// [`Self::set_criteria`], with the engine's lock already held.
+    fn set_criteria_held_lock(&self, task: TaskId, criteria: &[Criterion]) -> Done<()> {
         self.task(task)?;
         evidence::may_hand_on(criteria, false).map_err(EngineError::Refused)?;
         self.store.set_criteria(task, criteria)?;
         Ok(())
+    }
+
+    /// The lead of a task's area narrows or rewords what done means for it, in its turn (ADR
+    /// 0133): the ceremony finding tells a lead to, and the engine had the means and no tool. As
+    /// many criteria as the task has, or fewer, and at least one; it is posted in the thread and
+    /// recorded in the feed, and a tester's pass on the old ones needs checking again, as it does
+    /// for the owner's rewrite.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`Refusal::Finished`]; [`Refusal::OnlyTheAreasLead`] for anyone but
+    /// the lead of the task's area; [`Refusal::NarrowedToNothing`]; [`Refusal::NotNarrower`];
+    /// [`Refusal::TooLong`]; [`EngineError::Unknown`] for a task that does not exist.
+    pub fn narrow_criteria_in(
+        &self,
+        run: RunId,
+        task: TaskId,
+        criteria: &[Criterion],
+        why: &str,
+    ) -> Done<()> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        let current = self.task(task)?;
+        if current.status.finished() {
+            return Err(EngineError::Refused(Refusal::Finished));
+        }
+        let lead = self.member(turn.member)?;
+        if self.area_lead(&current)?.is_none_or(|l| l.id != lead.id) {
+            return Err(EngineError::Refused(Refusal::OnlyTheAreasLead));
+        }
+        if criteria.is_empty() {
+            return Err(EngineError::Refused(Refusal::NarrowedToNothing));
+        }
+        let had = current.criteria.len();
+        if had > 0 && criteria.len() > had {
+            return Err(EngineError::Refused(Refusal::NotNarrower {
+                had,
+                gave: criteria.len(),
+            }));
+        }
+        self.set_criteria_held_lock(task, criteria)?;
+        // Narrowed, its talk is counted afresh, and the question put to its lead is answered
+        // (ADR 0133).
+        self.renew_coordination_budget(task)?;
+        let texts = |all: &[Criterion]| all.iter().map(|c| c.text.clone()).collect::<Vec<_>>();
+        let said = |all: &[Criterion]| {
+            if all.is_empty() {
+                return "none".to_owned();
+            }
+            all.iter()
+                .enumerate()
+                .map(|(i, c)| format!("{}. {}", i + 1, c.text))
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        let why = one_line(why, 300);
+        let because = if why.is_empty() {
+            String::new()
+        } else {
+            format!(": {why}")
+        };
+        self.post_held_lock(
+            Author::Endora,
+            task,
+            &format!(
+                "{} narrowed what done means here{because}.\nWas: {}\nNow: {}",
+                lead.name,
+                said(&current.criteria),
+                said(criteria)
+            ),
+        )?;
+        self.emit(
+            EventKind::CriteriaChanged,
+            json!({ "task": task.0, "by": lead.id.0, "before": texts(&current.criteria),
+                    "after": texts(criteria), "why": why }),
+        )?;
+        self.mark_progress(lead.id, task)
     }
 
     /// How many times a task's work was sent back, by the tester or the lead.
@@ -648,6 +729,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<TaskId> {
         let _held = self.held();
         let turn = self.running(run)?;
+        let task_parent = task.parent;
         let served = match task.parent {
             Some(parent) => self.subtask_discipline(parent, serves)?,
             None => None,
@@ -680,6 +762,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         if let Some(own) = turn.task {
             self.mark_progress(turn.member, own)?;
+        }
+        // A lead splitting the task it was asked about has decided it: the talk is counted afresh
+        // (ADR 0133).
+        if let Some(parent) =
+            task_parent.filter(|p| self.asked_about_talk(*p, turn.member).unwrap_or(false))
+        {
+            self.renew_coordination_budget(parent)?;
         }
         Ok(id)
     }

@@ -48,7 +48,10 @@ The menu holds the everyday destinations; everything that configures lives in Se
   while you were away), Team (with how the team is doing: outcomes first), Work, Knowledge,
   Office (games, last). Something that needs your word goes on the desk; something you may want
   to look at, but nothing waits on, goes in the digest. Fun and decoration go in Office, never
-  above the desk.
+  above the desk. A switch for a guard that is tried in shadow sits on that guard's line of the
+  Guards card, in Work, and not in Settings; a turn that waits for tomorrow shows in the top bar
+  and in the outcomes, and is never a card. When HQ stops the team itself, that is a card on the
+  desk, because it needs your word.
 
 ## The repository
 

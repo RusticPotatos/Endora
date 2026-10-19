@@ -248,6 +248,7 @@ fn seen(label: Label) -> TurnSeen {
         criterion_met: false,
         new_evidence: false,
         asked: false,
+        spent: 0,
     }
 }
 
@@ -366,13 +367,20 @@ fn turns_that_wait_are_counted_by_what_they_wait_for_and_the_oldest_wait_is_said
         waits(4, "", NOON - 3 * HOUR),
         // Under way.
         run(5, 2, Some(7), None, None),
+        // A member that has taken its day's turns on the house's models (ADR 0133).
+        waits(
+            6,
+            "waiting for tomorrow: 60 turns a day is the most a member takes on the house's own models",
+            NOON - 45 * MINUTE,
+        ),
     ];
     assert_eq!(
         waiting(&runs, NOON),
         Waiting {
             budget: 2,
             mac: 1,
-            oldest_ms: Some(30 * MINUTE)
+            cap: 1,
+            oldest_ms: Some(45 * MINUTE)
         }
     );
     assert_eq!(waiting(&[], NOON), Waiting::default());
@@ -460,12 +468,13 @@ fn the_json_says_nothing_landed_plainly_and_what_was_not_measured_as_null() {
     let waits = Waiting {
         budget: 2,
         mac: 0,
+        cap: 1,
         oldest_ms: Some(5 * MINUTE),
     }
     .json();
     assert_eq!(
         waits,
-        json!({ "budget": 2, "mac": 0, "oldest_ms": 5 * MINUTE })
+        json!({ "budget": 2, "mac": 0, "cap": 1, "oldest_ms": 5 * MINUTE })
     );
     assert_eq!(Waiting::default().json()["oldest_ms"], Value::Null);
 }

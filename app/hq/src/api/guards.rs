@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use endora_team::application::engine::EngineError;
-use endora_team::domain::guards::Verdict;
+use endora_team::domain::guards::{Guard, GuardMode, Verdict};
 
 use super::{Failed, State, blocking};
 
@@ -16,6 +16,7 @@ use super::{Failed, State, blocking};
 pub(super) fn routes() -> Router<State> {
     Router::new()
         .route("/v1/guards/findings/{id}/verdict", post(verdict))
+        .route("/v1/guards/{guard}/mode", post(mode))
         .route("/v1/retractions", post(retract))
         .route("/v1/retractions/{id}/sweep", get(sweep))
         .route("/v1/retractions/{id}/forget", post(forget))
@@ -60,6 +61,24 @@ async fn forget(
     let hq = state.hq.clone();
     let forgot = blocking(move || hq.forget_swept(id, &req.targets)).await?;
     Ok(Json(json!({ "retraction": id, "forgot": forgot })))
+}
+
+#[derive(Deserialize)]
+struct Moded {
+    mode: String,
+}
+
+/// The owner switches a guard that is tried in shadow on, or back to shadow (ADR 0133).
+async fn mode(
+    Extract(state): Extract<State>,
+    Path(guard): Path<String>,
+    Json(req): Json<Moded>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let guard = Guard::from_name(&guard).ok_or(Failed(EngineError::Unknown("guard")))?;
+    let mode = GuardMode::from_name(&req.mode).ok_or(Failed(EngineError::Unknown("mode")))?;
+    blocking(move || hq.set_guard_mode(guard, mode)).await?;
+    Ok(Json(json!({ "guard": guard.name(), "mode": mode.name() })))
 }
 
 #[derive(Deserialize)]
@@ -124,6 +143,67 @@ mod tests {
             .await
             .unwrap()
             .status()
+    }
+
+    /// The owner switches the one guard that is tried in shadow (ADR 0133), signed by the node
+    /// like the rest: the Guards card reads the mode back, and a guard that only records has no
+    /// mode to switch.
+    #[tokio::test]
+    async fn the_owner_switches_the_budget_of_talk_on_and_back_and_no_other_guard_has_a_mode() {
+        let s = state();
+        let on = r#"{"mode":"on"}"#;
+        assert_eq!(
+            post(&s, "/v1/guards/coordination/mode", on, false).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            post(&s, "/v1/guards/the_moon/mode", on, true).await,
+            StatusCode::NOT_FOUND,
+            "no such guard"
+        );
+        assert_eq!(
+            post(
+                &s,
+                "/v1/guards/coordination/mode",
+                r#"{"mode":"off"}"#,
+                true
+            )
+            .await,
+            StatusCode::NOT_FOUND,
+            "no such mode"
+        );
+        assert_eq!(
+            post(&s, "/v1/guards/ceremony/mode", on, true).await,
+            StatusCode::BAD_REQUEST,
+            "it only records, so it has no shadow"
+        );
+        let mode = |s: &State| {
+            let shown = s.hq.snapshot().unwrap()["guards"]["precision"].clone();
+            shown
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["guard"] == "coordination")
+                .unwrap()["mode"]
+                .clone()
+        };
+        assert_eq!(mode(&s), "shadow", "it starts in shadow");
+        assert_eq!(
+            post(&s, "/v1/guards/coordination/mode", on, true).await,
+            StatusCode::OK
+        );
+        assert_eq!(mode(&s), "on");
+        assert_eq!(
+            post(
+                &s,
+                "/v1/guards/coordination/mode",
+                r#"{"mode":"shadow"}"#,
+                true
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(mode(&s), "shadow");
     }
 
     #[tokio::test]

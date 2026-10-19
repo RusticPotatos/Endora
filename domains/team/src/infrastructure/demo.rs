@@ -306,7 +306,11 @@ mod tests {
             SqliteTeamStore::in_memory().unwrap(),
             SimulatedRunner::new(4),
             &clock,
-            Settings::default(),
+            // The demo, as the service sets it up (ADR 0133).
+            Settings {
+                scripted: true,
+                ..Settings::default()
+            },
         );
         let goal = seed(&hq).unwrap();
         for _ in 0..30 {
@@ -344,6 +348,55 @@ mod tests {
             desk.iter().all(|d| d.kind != "stuck"),
             "the demo never gets stuck: {desk:?}"
         );
+    }
+
+    /// The scripted demo takes a turn as fast as its tick lets it: 1,539 turns in 3 h 40 min once.
+    /// It is exempt from the caps on a runaway (ADR 0133), and has to be: the very same team, not
+    /// scripted, is stopped by the tripwire within a minute or two of starting.
+    #[test]
+    fn the_scripted_demo_is_never_stopped_by_the_tripwire_and_the_same_team_not_scripted_is() {
+        struct Hands(AtomicI64);
+        impl Clock for &Hands {
+            fn now(&self) -> i64 {
+                self.0.load(Ordering::SeqCst)
+            }
+        }
+        let run = |scripted: bool| {
+            let clock = Hands(AtomicI64::new(1_792_166_400_000));
+            let hq = Engine::new(
+                SqliteTeamStore::in_memory().unwrap(),
+                SimulatedRunner::new(4),
+                &clock,
+                Settings {
+                    scripted,
+                    ..Settings::default()
+                },
+            );
+            let goal = seed(&hq).unwrap();
+            for _ in 0..200 {
+                hq.tell_mac(true, "the demo's Mac is always free");
+                hq.tick().unwrap();
+                act(&hq, hq.runner(), goal).unwrap();
+                clock.0.fetch_add(10_000, Ordering::SeqCst);
+                if hq.store().stopped().unwrap() {
+                    break;
+                }
+            }
+            let started = hq
+                .store()
+                .runs()
+                .unwrap()
+                .iter()
+                .filter(|r| r.started_at.is_some())
+                .count();
+            (hq.store().stopped().unwrap(), started)
+        };
+        let (stopped, started) = run(true);
+        assert!(!stopped, "the demo goes on");
+        assert!(started > 100, "and not slowly: {started} turns");
+        let (stopped, started) = run(false);
+        assert!(stopped, "the same team, not scripted, is stopped");
+        assert_eq!(started, 40);
     }
 
     #[test]

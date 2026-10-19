@@ -46,6 +46,36 @@ fn talks(w: &mut Office, name: String, title: String, turns: usize) {
     }
 }
 
+/// `turns` turns of the member's on the task, each a review asked for (judgment, so on its Claude
+/// and paid for), each only a post, each costing `dollars`.
+#[when(
+    regex = r#"^(\w+) reviews "(.+)" (\d+) times at \$(\d+(?:\.\d+)?) a turn and changes nothing$"#
+)]
+fn reviews_and_changes_nothing(
+    w: &mut Office,
+    name: String,
+    title: String,
+    turns: usize,
+    dollars: f64,
+) {
+    let member = w.member(&name);
+    let task = w.task(&title);
+    for i in 0..turns {
+        w.hq.wake(member, Some(task), WakeReason::ReviewRequested)
+            .expect("a wake has a receipt");
+        let context = w.turn_of(&name);
+        w.hq.report_usage(context.run, super::micros(dollars))
+            .expect("the ledger takes the spend");
+        w.use_tool(
+            &name,
+            "post",
+            &json!({ "task": task.0, "text": format!("Still reading it ({i}).") }),
+        )
+        .expect("a member may post in the task its turn is on");
+        super::turn_ends(w, name.clone());
+    }
+}
+
 #[when("HQ looks at how the team is doing")]
 fn looks(w: &mut Office) {
     w.clock
@@ -59,6 +89,16 @@ fn desk_holds_finding(w: &mut Office, what: String) {
     let found = w.waiting_on_desk("guard");
     assert!(
         found.iter().any(|d| d.text.starts_with(&what)),
+        "on the desk: {found:?}"
+    );
+}
+
+/// What the finding on the owner's desk says, in its own words.
+#[then(expr = "the finding says {string}")]
+fn the_finding_says(w: &mut Office, said: String) {
+    let found = w.waiting_on_desk("guard");
+    assert!(
+        found.iter().any(|d| d.text.contains(&said)),
         "on the desk: {found:?}"
     );
 }
@@ -111,6 +151,82 @@ fn has_task_done_when(w: &mut Office, name: String, title: String, criterion: St
         &[endora_team::domain::Criterion::new(&criterion, false)],
     );
     w.note(made).expect("the owner hands it out");
+}
+
+/// The owner's task for a member with two things that must hold.
+#[given(regex = r#"^(\w+) has the task "(.+)" that is done when both "(.+)" and "(.+)" hold$"#)]
+fn has_task_done_when_both(
+    w: &mut Office,
+    name: String,
+    title: String,
+    first: String,
+    second: String,
+) {
+    let to = w.member(&name);
+    let goal = w.goal();
+    let made = w.hq.add_task_with(
+        endora_team::application::Author::Owner,
+        endora_team::application::NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title,
+            description: String::new(),
+            assignee: Some(to),
+            priority: endora_team::domain::Priority::Normal,
+            waits_on: Vec::new(),
+        },
+        &[
+            endora_team::domain::Criterion::new(&first, false),
+            endora_team::domain::Criterion::new(&second, false),
+        ],
+    );
+    w.note(made).expect("the owner hands it out");
+}
+
+/// A member tries to narrow what done means for a task, in its running turn, as its worker would
+/// with the `narrow_criteria` tool; what was refused is what the member reads.
+#[when(regex = r#"^(\w+) tries to narrow what done means for "(.+)" to "(.+)"$"#)]
+fn tries_to_narrow(w: &mut Office, name: String, title: String, now: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "narrow_criteria",
+        &json!({ "task": task.0, "criteria": [{ "text": now }] }),
+    );
+}
+
+/// The same, widened: three criteria where there were two.
+#[when(regex = r#"^(\w+) tries to give "(.+)" three criteria$"#)]
+fn tries_to_widen(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "narrow_criteria",
+        &json!({ "task": task.0,
+                 "criteria": [{ "text": "one" }, { "text": "two" }, { "text": "three" }] }),
+    );
+}
+
+#[when(regex = r#"^(\w+) narrows what done means for "(.+)" to "(.+)"$"#)]
+fn narrows(w: &mut Office, name: String, title: String, now: String) {
+    tries_to_narrow(w, name, title, now);
+    assert_eq!(w.refused, None, "the lead of the area may narrow it");
+}
+
+#[then(regex = r#"^the task "(.+)" is done when "(.+)"$"#)]
+fn task_is_done_when(w: &mut Office, title: String, criterion: String) {
+    let task = w.task(&title);
+    let criteria: Vec<String> =
+        w.hq.store()
+            .task(task)
+            .expect("the store answers")
+            .expect("the task is there")
+            .criteria
+            .into_iter()
+            .map(|c| c.text)
+            .collect();
+    assert_eq!(criteria, [criterion]);
 }
 
 impl Office {

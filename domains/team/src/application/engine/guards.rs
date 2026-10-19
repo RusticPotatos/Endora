@@ -375,7 +375,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Puts a desk item away, saying how in the feed.
-    fn settle_desk_item(
+    pub(super) fn settle_desk_item(
         &self,
         item: crate::domain::DeskId,
         kind: &str,

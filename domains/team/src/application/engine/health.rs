@@ -1,12 +1,12 @@
-//! Process health (ADR 0124): detectors over run labels and the record, per project, that
-//! catch a team talking about work instead of doing it, a task bounced between its worker and
-//! its checkers, and a member woken again and again for nothing. Each fires a finding once a
-//! key, and each finding takes a verdict from the owner or the lead of its area, so every
-//! guard's precision is measured and its threshold can be tuned.
+//! Process health (ADR 0124): detectors over run labels and the record, per project and per
+//! piece of work outside one, that catch a team talking about work instead of doing it, a task
+//! bounced between its worker and its checkers, and a member woken again and again for nothing.
+//! Each fires a finding once a key, and each finding takes a verdict from the owner or the lead
+//! of its area, so every guard's precision is measured and its threshold can be tuned.
 
 use serde_json::{Value, json};
 
-use super::guards::guard_card;
+use super::guards::{Found, guard_card};
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::application::scorecard::Window;
@@ -15,7 +15,7 @@ use crate::domain::evidence::Ref;
 use crate::domain::guards::{self, Ceremony, Guard, THRESHOLDS, TurnKind, TurnSeen, Verdict};
 use crate::domain::ladder::Rung;
 use crate::domain::{
-    EventKind, MemberId, Millis, ProjectStatus, Refusal, RunId, TaskId, WakeReason,
+    EventKind, MemberId, Millis, ProjectStatus, Refusal, RunId, Task, TaskId, WakeReason,
 };
 
 /// Where HQ keeps when it last looked for process-health findings.
@@ -27,15 +27,44 @@ const CEREMONY_SEEN: &str = "guards_ceremony";
 pub(super) const TALK_SEEN: &str = "guards_talk";
 
 /// One ended turn, as the process-health look reads it.
-struct Seen {
+pub(super) struct Seen {
     /// The project of its task, if the task is in one.
-    project: Option<i64>,
+    pub(super) project: Option<i64>,
     /// The task it was on.
-    task: TaskId,
+    pub(super) task: TaskId,
+    /// The top of the task tree that task hangs from; the task itself when it is the top (ADR
+    /// 0133).
+    pub(super) root: TaskId,
     /// What it did.
-    turn: TurnSeen,
+    pub(super) turn: TurnSeen,
     /// When each act of its that succeeded was done.
-    acts: Vec<Millis>,
+    pub(super) acts: Vec<Millis>,
+}
+
+/// What a ceremony is the ceremony of: a project, or, for work outside any, the task tree it is
+/// kept under (ADR 0133).
+struct Subject {
+    /// The key its finding is kept under: one finding for a guard and what it is about.
+    key: String,
+    /// What the card and the finding call it.
+    title: String,
+    /// Its project, if it is a project's.
+    project: Option<i64>,
+    /// Its lead, if it is a project's; a tree's is its busiest task's area's lead.
+    lead: Option<MemberId>,
+}
+
+/// The top of the task tree `task` hangs from. A tree is a few deep at most, and a cycle in the
+/// record (there should be none) ends the walk where it began.
+fn root_of(tasks: &[Task], task: TaskId) -> TaskId {
+    let mut at = task;
+    for _ in 0..tasks.len() {
+        let Some(up) = tasks.iter().find(|t| t.id == at).and_then(|t| t.parent) else {
+            return at;
+        };
+        at = up;
+    }
+    at
 }
 
 /// The wakes that ask for a review round, or a huddle's view: coordination by their nature.
@@ -64,8 +93,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         self.store.set_setting(LOOKED_AT, &now.to_string())?;
-        let turns = self.turns_seen(now)?;
+        let turns = self.turns_seen(now, None)?;
         self.look_for_ceremony(now, &turns)?;
+        self.look_at_coordination(now, &turns)?;
         self.look_at_talk(now, &turns)
     }
 
@@ -121,8 +151,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// What each ended turn of the last week did, for the ceremony detector and the outcomes
-    /// line, with the project of its task if it has one.
-    fn turns_seen(&self, now: Millis) -> Done<Vec<Seen>> {
+    /// line, with the project of its task if it has one; only those on `only`, when a task is
+    /// named (ADR 0133: a task's budget of talk is asked about one task at a time).
+    pub(super) fn turns_seen(&self, now: Millis, only: Option<TaskId>) -> Done<Vec<Seen>> {
         let tasks = self.store.tasks()?;
         let wakes = self.store.wakes()?;
         let branches = self.store.branches()?;
@@ -133,6 +164,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .runs()?
             .into_iter()
             .filter(|r| r.started_at.is_some() && r.label.is_some())
+            .filter(|r| only.is_none_or(|task| r.task == Some(task)))
             .collect();
         runs.sort_by_key(|r| r.id);
         let mut seen_readings: Vec<(TaskId, String, String)> = Vec::new();
@@ -177,6 +209,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             turns.push(Seen {
                 project,
                 task,
+                root: root_of(&tasks, task),
                 turn: TurnSeen {
                     ended_at: ended,
                     label,
@@ -186,6 +219,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     criterion_met: self.store.cited(task)?.iter().any(|c| c.run == run.id),
                     new_evidence,
                     asked,
+                    spent: run.spent,
                 },
                 acts: receipts
                     .iter()
@@ -231,103 +265,183 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Each open project's ceremony over the day and the week (ADR 0124): over the line, a
-    /// finding, a notice on the owner's desk and the project's lead woken on its busiest task;
-    /// back under it in both, the finding clears. Kept for the scorecard either way.
+    /// Each open project's ceremony over the day and the week (ADR 0124), and each piece of work
+    /// outside a project, by the task tree it hangs from (ADR 0133): over the line, a finding, a
+    /// notice on the owner's digest and the lead woken on the busiest task; back under it in both,
+    /// the finding clears. Kept for the scorecard either way, for a project; a tree is on the
+    /// card only while it is over.
     fn look_for_ceremony(&self, now: Millis, turns: &[Seen]) -> Done<()> {
         let mut shown = Vec::new();
+        let mut looked_at = Vec::new();
         for project in self.store.projects()? {
             if matches!(project.status, ProjectStatus::Done | ProjectStatus::Dropped) {
                 continue;
             }
-            let mine: Vec<TurnSeen> = turns
+            let mine: Vec<&Seen> = turns
                 .iter()
                 .filter(|s| s.project == Some(project.id.0))
-                .map(|s| s.turn)
                 .collect();
-            let windows: Vec<(Ceremony, &str)> = guards::WINDOWS
+            let subject = Subject {
+                key: format!("ceremony:project:{}", project.id.0),
+                title: project.title.clone(),
+                project: Some(project.id.0),
+                lead: Some(project.lead),
+            };
+            looked_at.push(subject.key.clone());
+            shown.push(self.look_at_ceremony(now, &subject, &mine)?);
+        }
+        // Work outside any project (the owner's, a routine's) belongs to its task tree, the unit
+        // its lead can act on: the top task and everything under it. A lead's standing reviews
+        // are not talk about work.
+        let reports = self.report_task_ids()?;
+        let tasks = self.store.tasks()?;
+        let loose = |s: &&Seen| s.project.is_none() && !reports.contains(&s.task);
+        let mut roots: Vec<TaskId> = Vec::new();
+        for seen in turns.iter().filter(loose) {
+            if !roots.contains(&seen.root) {
+                roots.push(seen.root);
+            }
+        }
+        for root in roots {
+            // Work that is all over has nothing left for its lead to decide.
+            let open = tasks
                 .iter()
-                .map(|(ms, name)| (guards::ceremony(&mine, now, *ms), *name))
-                .collect();
-            let over = windows.iter().any(|(c, _)| c.over());
-            shown.push(json!({
-                "project": project.id.0, "title": project.title, "over": over,
-                "windows": windows.iter().map(|(c, name)| json!({
-                    "window": name, "coordination": c.coordination, "product": c.product,
-                    "over": c.over(), "said": c.said(name) })).collect::<Vec<_>>(),
-            }));
-            let key = format!("ceremony:project:{}", project.id.0);
-            if !over {
-                if let Some(open) = self
-                    .store
-                    .findings()?
-                    .into_iter()
-                    .find(|f| f.key == key && f.cleared_at.is_none())
-                {
-                    self.clear(&open)?;
-                }
+                .any(|t| !t.status.finished() && root_of(&tasks, t.id) == root);
+            if !open {
                 continue;
             }
-            let said: Vec<String> = windows.iter().map(|(c, name)| c.said(name)).collect();
-            let evidence = format!("{}: {}", project.title, said.join("; "));
-            let busiest = turns
+            let mine: Vec<&Seen> = turns
                 .iter()
-                .filter(|s| {
-                    s.project == Some(project.id.0)
-                        && guards::turn_kind(&s.turn) == TurnKind::Coordination
-                })
-                .map(|s| s.task)
-                .fold(Vec::<(TaskId, usize)>::new(), |mut acc, task| {
-                    match acc.iter_mut().find(|(t, _)| *t == task) {
-                        Some(found) => found.1 += 1,
-                        None => acc.push((task, 1)),
-                    }
-                    acc
-                })
-                .into_iter()
-                .filter(|(task, _)| {
-                    self.store
-                        .task(*task)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|t| !t.status.finished())
-                })
-                .max_by_key(|(_, n)| *n)
-                .map(|(task, _)| task);
-            // What it rests on is the week's talk, which contains the day's: a finding the owner
-            // judged is raised again once a dozen more turns of it have been had (ADR 0132).
-            let mark = i64::try_from(windows[1].0.coordination).unwrap_or(i64::MAX);
-            let Some(id) = self.find_on_the_desk(
-                Guard::Ceremony,
-                &key,
-                busiest,
-                Some(project.id.0),
-                &evidence,
-                mark,
-            )?
-            else {
-                continue;
+                .filter(loose)
+                .filter(|s| s.root == root)
+                .collect();
+            let title = self.store.task(root)?.map_or_else(
+                || format!("#{}", root.0),
+                |t| format!("#{} {}", root.0, t.title),
+            );
+            let subject = Subject {
+                key: format!("ceremony:tree:{}", root.0),
+                title,
+                project: None,
+                lead: None,
             };
-            let lead = self.member(project.lead)?;
-            let Some(task) = busiest.filter(|_| lead.at_work()) else {
-                continue;
-            };
-            self.post_held_lock(
-                Author::Endora,
-                task,
-                &format!(
-                    "Talking about work isn't work (finding {id}): {evidence}. {}, this is your \
-                     project: decide what moves it on evidence (narrow its criteria, merge its \
-                     tasks, drop what is not needed, or carry on and say why), and say whether \
-                     the finding was real with judge_finding.",
-                    lead.name
-                ),
-            )?;
-            self.wake_held_lock(lead.id, Some(task), WakeReason::Guard)?;
+            looked_at.push(subject.key.clone());
+            let entry = self.look_at_ceremony(now, &subject, &mine)?;
+            if entry["over"] == true {
+                shown.push(entry);
+            }
+        }
+        // A tree whose turns have all aged out of the week has nothing left to be found on.
+        for open in self.store.findings()? {
+            if open.guard == Guard::Ceremony
+                && open.cleared_at.is_none()
+                && open.key.starts_with("ceremony:tree:")
+                && !looked_at.contains(&open.key)
+            {
+                self.clear(&open)?;
+            }
         }
         self.store
             .set_setting(CEREMONY_SEEN, &Value::Array(shown).to_string())?;
         Ok(())
+    }
+
+    /// One ceremony's look: its turns over the day and the week, what they spent, and, over the
+    /// line, its finding and the lead it wakes. Returns what the Guards card shows of it.
+    fn look_at_ceremony(&self, now: Millis, subject: &Subject, mine: &[&Seen]) -> Done<Value> {
+        let seen: Vec<TurnSeen> = mine.iter().map(|s| s.turn).collect();
+        let windows: Vec<(Ceremony, &str)> = guards::WINDOWS
+            .iter()
+            .map(|(ms, name)| (guards::ceremony(&seen, now, *ms), *name))
+            .collect();
+        let over = windows.iter().any(|(c, _)| c.over());
+        let entry = json!({
+            "project": subject.project, "title": subject.title, "over": over,
+            "windows": windows.iter().map(|(c, name)| json!({
+                "window": name, "coordination": c.coordination, "product": c.product,
+                "over": c.over(), "said": c.said(name), "spent": c.spent })).collect::<Vec<_>>(),
+        });
+        if !over {
+            if let Some(open) = self
+                .store
+                .findings()?
+                .into_iter()
+                .find(|f| f.key == subject.key && f.cleared_at.is_none())
+            {
+                self.clear(&open)?;
+            }
+            return Ok(entry);
+        }
+        let said: Vec<String> = windows
+            .iter()
+            .map(|(c, name)| c.said_with_cost(name))
+            .collect();
+        let evidence = format!("{}: {}", subject.title, said.join("; "));
+        let busiest = mine
+            .iter()
+            .filter(|s| guards::turn_kind(&s.turn) == TurnKind::Coordination)
+            .map(|s| s.task)
+            .fold(Vec::<(TaskId, usize)>::new(), |mut acc, task| {
+                match acc.iter_mut().find(|(t, _)| *t == task) {
+                    Some(found) => found.1 += 1,
+                    None => acc.push((task, 1)),
+                }
+                acc
+            })
+            .into_iter()
+            .filter(|(task, _)| {
+                self.store
+                    .task(*task)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| !t.status.finished())
+            })
+            .max_by_key(|(_, n)| *n)
+            .map(|(task, _)| task);
+        // What it rests on is the week's talk, which contains the day's: a finding the owner
+        // judged is raised again once a dozen more turns of it have been had (ADR 0132).
+        let mark = i64::try_from(windows[1].0.coordination).unwrap_or(i64::MAX);
+        let Some(id) = self.find_on_the_desk(
+            Guard::Ceremony,
+            &subject.key,
+            busiest,
+            subject.project,
+            &evidence,
+            mark,
+        )?
+        else {
+            return Ok(entry);
+        };
+        let Some(task) = busiest else {
+            return Ok(entry);
+        };
+        // A project's lead is woken for its project; work outside one goes to the lead of its
+        // area, and where nobody leads it there is nobody to wake.
+        let lead = match subject.lead {
+            Some(lead) => Some(self.member(lead)?).filter(|m| m.at_work()),
+            None => self.area_lead(&self.task(task)?)?,
+        };
+        let Some(lead) = lead else {
+            return Ok(entry);
+        };
+        let whose = if subject.project.is_some() {
+            "your project"
+        } else {
+            "in your area"
+        };
+        self.post_held_lock(
+            Author::Endora,
+            task,
+            &format!(
+                "Talking about work isn't work (finding {id}): {evidence}. {}, this is {whose}: \
+                 decide what moves it on evidence. You may narrow its criteria (narrow_criteria), \
+                 merge its tasks, drop what is not needed, or carry on and say why. Then say \
+                 whether the finding was real with judge_finding.",
+                lead.name
+            ),
+        )?;
+        self.wake_held_lock(lead.id, Some(task), WakeReason::Guard)?;
+        Ok(entry)
     }
 
     /// A finding as a notice on the owner's desk (in the digest, ADR 0132): the rule and what it
@@ -342,9 +456,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         evidence: &str,
         mark: i64,
     ) -> Done<Option<i64>> {
+        let found = self.find_noticed(guard, key, task, project, evidence, mark)?;
+        Ok(found.how.is_news().then_some(found.id))
+    }
+
+    /// [`Self::find_on_the_desk`], answering with what the detection did to the finding, news or
+    /// not, for a caller that has more to do whether it opened or was refreshed (ADR 0133).
+    pub(super) fn find_noticed(
+        &self,
+        guard: Guard,
+        key: &str,
+        task: Option<TaskId>,
+        project: Option<i64>,
+        evidence: &str,
+        mark: i64,
+    ) -> Done<Found> {
         let found = self.find(guard, key, task, project, evidence, mark)?;
         if !found.how.is_news() {
-            return Ok(None);
+            return Ok(found);
         }
         let id = found.id;
         let desk = self.store.add_desk(
@@ -360,7 +489,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::DeskAdded,
             json!({ "item": desk.0, "kind": "guard", "task": task.map(|t| t.0) }),
         )?;
-        Ok(Some(id))
+        Ok(found)
     }
 
     // ---- the review carousel ------------------------------------------------------------------
@@ -732,17 +861,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn guards_shown(&self) -> Done<Value> {
         let findings = self.store.findings()?;
         let t = THRESHOLDS;
-        let precision: Vec<Value> = guards::precision(&findings)
-            .iter()
-            .map(|p| {
-                json!({ "guard": p.guard.name(), "plainly": p.guard.plainly(),
-                        "rule": p.guard.rule(), "fired": p.fired, "open": p.open,
-                        "real": p.real, "resolved": p.resolved,
-                        "false_positive": p.false_positive, "not_enough": p.not_enough,
-                        "fixed": p.fixed, "fix_judged": p.fix_judged,
-                        "precision": p.percent() })
-            })
-            .collect();
+        let mut precision: Vec<Value> = Vec::new();
+        for p in guards::precision(&findings) {
+            // A guard that is tried in shadow says which it is in now (ADR 0133); the rest only
+            // record, and have none.
+            let mode = if p.guard.has_shadow() {
+                Some(self.guard_mode(p.guard)?.name())
+            } else {
+                None
+            };
+            precision.push(json!({
+                "guard": p.guard.name(), "plainly": p.guard.plainly(),
+                "rule": p.guard.rule(), "fired": p.fired, "open": p.open,
+                "real": p.real, "resolved": p.resolved,
+                "false_positive": p.false_positive, "not_enough": p.not_enough,
+                "fixed": p.fixed, "fix_judged": p.fix_judged,
+                "precision": p.percent(), "mode": mode }));
+        }
         let ceremony: Value = self
             .store
             .setting(CEREMONY_SEEN)?
@@ -771,6 +906,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "sufficient_turns": t.sufficient_turns,
                 "retracted_percent": t.retracted_percent,
                 "retracted_shared_least": t.retracted_shared_least,
+                "coordination_budget": t.coordination_budget,
+                "coordination_window_ms": t.coordination_window_ms,
+                "free_turns_a_day": t.free_turns_a_day,
+                "runaway_turns": t.runaway_turns,
+                "runaway_window_ms": t.runaway_window_ms,
             },
             "precision": precision,
             "ceremony": ceremony,

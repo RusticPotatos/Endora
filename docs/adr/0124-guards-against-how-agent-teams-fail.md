@@ -104,6 +104,10 @@ pass's binding holds for any edit); the house log's timeline lines and thread po
 budget per task that refuses (only once the measure shows it is needed); model-assisted
 candidate matching for the sweep; the desk grouping for approvals (by design, not deferred).
 
+**Since built**: the "while you were away" digest ([0132](0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md)),
+and the ceremony budget per task, tried in shadow first, with a tripwire that stops a runaway
+team itself and a lead's tool to narrow criteria ([0133](0133-caps-on-talk-and-runaway.md)).
+
 ## Alternatives considered
 
 - **A model that diagnoses each finding.** Rejected: a model is never the enforcement boundary,

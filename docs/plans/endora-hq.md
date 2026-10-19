@@ -514,6 +514,10 @@ request, so it holds even if HQ itself misbehaves. Tripwires pull it automatical
 trying to gain privileges, reaching anything outside its allowlist, or touching a credential.
 Only the owner resumes, from their desk, after seeing what tripped it.
 
+*As built (2026-10-19, [ADR 0133](../adr/0133-caps-on-talk-and-runaway.md)):* the one tripwire
+built is for a team running away, forty turns started in ten minutes. The others are not
+tripwires yet: a refused act is the fence's notice, and the kill switch is pulled by the owner.
+
 ## 12. The event contract
 
 HQ describes itself as a **snapshot** (everything on screen now) followed by a **stream of
@@ -1310,6 +1314,44 @@ on the desk in 38.6 hours, 6 of them real decisions):
   `findings`, each added if missing (`seen_at`, `episodes`, `mark`).
 - Scenarios: `domains/team/features/what-the-work-came-to.feature` and
   `a-desk-that-interrupts-only-for-decisions.feature`.
+
+### Caps on talk and runaway (as built 2026-10-19, [ADR 0133](../adr/0133-caps-on-talk-and-runaway.md))
+
+As built, from the same review: one docs branch took 44 turns, 80 posts and $2.47 (28% of the
+spend) and the ceremony guard only noticed; the house's own models had no cap (the scripted demo
+ran 1,539 turns in 3 h 40 min); and only the owner could stop the team.
+
+- **The ceremony sees all work.** A project is looked at as before; work outside any project by
+  its top-level task tree (`Seen::root`), the unit its area's lead can act on, shown on the
+  Guards card only while over. Every finding, and each window on the card, says what its turns
+  spent (`Ceremony::spent`, from the turns' own recorded spend).
+- **A coordination budget per task** (`engine/budget.rs`): more than 20
+  (`THRESHOLDS.coordination_budget`) coordination turns in 24 h on a task, counted by the
+  ceremony's labels from its newest product change or its lead's last decision. **In shadow by
+  default** (`GuardMode`, the setting `guard_mode:coordination`; `POST /v1/guards/{guard}/mode`
+  in HQ, `POST /v1/hq/guards/{guard}/mode` through the node, a toggle on the Guards card): it
+  records *would have held coordination on #N (budget 20, 27 turns, $X)* and holds nothing. **On**,
+  the wakes that only ask for talk (`WakeReason::is_talk`) are held with the `Held` receipt, a
+  second from the same member is the first's duplicate, the tick lets them go once the budget is
+  back in hand (`release_held_talk`), and the task's lead is asked once, by a Guard wake and a post
+  naming `narrow_criteria`, `create_task` and `decide_stuck`; any of the three renews the count
+  (`coordination_since:<task>`). Nobody leading the area: nothing is held.
+- **`narrow_criteria {task, criteria}`**, offered to leads, refused to anyone but the area's lead:
+  at least one criterion, no more than the task had; posted in the thread, `task.criteria` in the
+  feed, a tester's pass on the old criteria needs re-checking.
+- **A daily cap on the house's own models** (`THRESHOLDS.free_turns_a_day`, 60): the member's
+  61st work turn is queued as *waiting for tomorrow* (`Wait::DayCap`), counted by the owner's days
+  and per member, a turn on a Claude brain not counted. The top bar (`pool.capped`), the outcomes'
+  waiting line (`waiting.cap`) and the roster say so.
+- **The runaway tripwire** (`engine/runaway.rs`, `domain/caps.rs`): when 40
+  (`runaway_turns`) turns have started in 10 minutes (`runaway_window_ms`) and another is about to,
+  HQ stops the team (`stopped` by `tripwire`, `snapshot.stopped_by`) and puts one interrupting
+  `tripwire` card on the desk with the turns started by each member; the owner resumes from the
+  card or the top bar, and what started before is not counted against what starts after
+  (`tripwire_since`).
+- Both caps are on from the start; `Settings.scripted` (HQ in demo mode) exempts the scripted demo
+  from both. No schema change.
+- Scenarios: `domains/team/features/caps-on-talk-and-runaway.feature` and `guards.feature`.
 
 ### The team's map (as built 2026-10-18, [ADR 0126](../adr/0126-the-teams-map.md))
 

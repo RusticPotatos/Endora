@@ -19,7 +19,7 @@ mod tests {
 
     /// Every kind the owner's desk has held, with whether it interrupts. A new kind is added here
     /// when it is added to the desk.
-    const KINDS: [(&str, bool); 18] = [
+    const KINDS: [(&str, bool); 19] = [
         ("goal", true),
         ("decision", true),
         ("approval", true),
@@ -35,6 +35,7 @@ mod tests {
         ("project_cap", true),
         ("project_budget", true),
         ("out_for_day", true),
+        ("tripwire", true),
         ("stuck", false),
         ("guard", false),
         ("notice", false),

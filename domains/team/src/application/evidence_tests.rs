@@ -1403,6 +1403,257 @@ fn a_pass_on_criteria_that_changed_since_needs_re_checking_and_does_not_count() 
     );
 }
 
+// ---- a lead narrows what done means (ADR 0133) --------------------------------------------------
+
+/// The owner's task for Linus with two things that must hold, handed in by Linus and passed by
+/// Grace on her own reading.
+fn passed_on_two_criteria(hq: &Hq<'_>, clock: &Hands, t: &Team) -> TaskId {
+    let task = hq
+        .add_task_with(
+            Author::Owner,
+            NewTask {
+                goal: t.goal,
+                project: None,
+                parent: None,
+                title: "Tidy the docs".to_owned(),
+                description: String::new(),
+                assignee: Some(t.dev),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[
+                Criterion::new("The links work", false),
+                Criterion::new("The headings are consistent", false),
+            ],
+        )
+        .unwrap();
+    let linus = turn(hq, t.dev);
+    use_tool(hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+    use_tool(
+        hq,
+        &linus,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "done",
+                 "evidence": [format!("task {}", task.0), format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    end(hq, clock, &linus);
+    let grace = turn(hq, t.tester.unwrap());
+    let mine = reading(hq, &grace, "homelab_status", "", false);
+    use_tool(
+        hq,
+        &grace,
+        "review",
+        &json!({ "task": task.0, "verdict": "approve", "notes": "Both hold.",
+                 "evidence": [format!("r{mine}"), format!("r{mine}")] }),
+    )
+    .unwrap();
+    end(hq, clock, &grace);
+    // Her pass asks Ada to accept it: that turn is over before the narrowing is tried.
+    let asked = turn(hq, t.lead);
+    end(hq, clock, &asked);
+    task
+}
+
+/// What the feed says of criteria that were changed.
+fn criteria_events(hq: &Hq<'_>) -> Vec<Value> {
+    hq.events_after(0)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "task.criteria")
+        .map(|e| e.data)
+        .collect()
+}
+
+/// The ceremony finding tells a lead to narrow a task's criteria, and the engine had the means and
+/// no tool to use it (ADR 0124 deferred it). The lead of a task's area narrows or rewords them:
+/// it is posted in the thread and recorded in the feed, and a tester's pass on the old ones needs
+/// checking again.
+#[test]
+fn a_lead_narrows_its_areas_criteria_and_it_is_posted_recorded_and_the_old_pass_stops_counting() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, true);
+    let task = passed_on_two_criteria(&hq, &clock, &t);
+    let tested = |hq: &Hq<'_>| {
+        hq.snapshot().unwrap()["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == task.0)
+            .unwrap()["evidence"]["cited"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["stage"] == "tested")
+            .unwrap()["needs_recheck"]
+            .clone()
+    };
+    assert_eq!(tested(&hq), json!(false));
+
+    hq.wake(t.lead, Some(task), WakeReason::Guard).unwrap();
+    let ada = turn(&hq, t.lead);
+    let said = use_tool(
+        &hq,
+        &ada,
+        "narrow_criteria",
+        &json!({ "task": task.0,
+                 "criteria": [{ "text": "The docs build with no broken link" }],
+                 "why": "the headings are a taste, not a need" }),
+    )
+    .unwrap();
+    assert!(said.contains("narrowed"), "{said}");
+
+    let now = hq.store().task(task).unwrap().unwrap().criteria;
+    assert_eq!(
+        now,
+        [Criterion::new("The docs build with no broken link", false)]
+    );
+    let thread = hq.store().thread(task).unwrap();
+    assert!(
+        thread.iter().any(|p| p.author == "endora"
+            && p.text.contains("Ada narrowed what done means")
+            && p.text.contains("the headings are a taste, not a need")
+            && p.text
+                .contains("Was: 1. The links work; 2. The headings are consistent")
+            && p.text
+                .contains("Now: 1. The docs build with no broken link")),
+        "{thread:?}"
+    );
+    let recorded = criteria_events(&hq);
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(
+        (
+            recorded[0]["task"].clone(),
+            recorded[0]["by"].clone(),
+            recorded[0]["before"].clone(),
+            recorded[0]["after"].clone()
+        ),
+        (
+            json!(task.0),
+            json!(t.lead.0),
+            json!(["The links work", "The headings are consistent"]),
+            json!(["The docs build with no broken link"])
+        )
+    );
+    assert_eq!(tested(&hq), json!(true), "the pass judged the old criteria");
+}
+
+/// Only the lead of a task's area narrows its criteria, and only to fewer, never to none: the
+/// tool is offered to leads alone, and the engine holds the rest to it.
+#[test]
+fn only_the_lead_of_the_tasks_area_narrows_and_never_to_more_or_to_none() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, true, true);
+    let bea = hq.hire("Bea", Role::Lead, 25, 2, 0).unwrap();
+    let task = passed_on_two_criteria(&hq, &clock, &t);
+    let one = json!([{ "text": "The docs build with no broken link" }]);
+    // What `who` is told when it tries to narrow the task in a turn that `why` woke.
+    let tries = |who: MemberId, why: WakeReason| {
+        hq.wake(who, Some(task), why).unwrap();
+        let context = turn(&hq, who);
+        let told = use_tool(
+            &hq,
+            &context,
+            "narrow_criteria",
+            &json!({ "task": task.0, "criteria": one }),
+        )
+        .unwrap_err();
+        end(&hq, &clock, &context);
+        told
+    };
+    let only = "only the lead of the task's area narrows its criteria";
+    // The worker, the tester, the CEO and a lead of another area are refused.
+    assert!(tries(t.dev, WakeReason::OwnerReplied).contains(only));
+    assert!(tries(t.tester.unwrap(), WakeReason::ReviewRequested).contains(only));
+    assert!(tries(t.ceo.unwrap(), WakeReason::Guard).contains(only));
+    assert!(
+        tries(bea, WakeReason::Guard).contains(only),
+        "not Bea's area"
+    );
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().criteria.len(),
+        2,
+        "nothing changed"
+    );
+    assert!(criteria_events(&hq).is_empty());
+
+    // Ada, whose area it is, may not widen it, nor leave it with nothing to meet.
+    hq.wake(t.lead, Some(task), WakeReason::Guard).unwrap();
+    let ada = turn(&hq, t.lead);
+    let three = json!([{ "text": "a" }, { "text": "b" }, { "text": "c" }]);
+    let widened = use_tool(
+        &hq,
+        &ada,
+        "narrow_criteria",
+        &json!({ "task": task.0, "criteria": three }),
+    )
+    .unwrap_err();
+    assert!(
+        widened.contains("the task has 2 and you gave 3"),
+        "{widened}"
+    );
+    let none = use_tool(
+        &hq,
+        &ada,
+        "narrow_criteria",
+        &json!({ "task": task.0, "criteria": [] }),
+    )
+    .unwrap_err();
+    assert!(none.contains("at least one"), "{none}");
+    // Rewording to as many is allowed.
+    use_tool(
+        &hq,
+        &ada,
+        "narrow_criteria",
+        &json!({ "task": task.0,
+                 "criteria": [{ "text": "Every link resolves" }, { "text": "Headings read alike" }] }),
+    )
+    .unwrap();
+    assert_eq!(criteria_events(&hq).len(), 1);
+
+    // Finished work has nothing to narrow.
+    hq.drop_task(task).unwrap();
+    let over = use_tool(
+        &hq,
+        &ada,
+        "narrow_criteria",
+        &json!({ "task": task.0, "criteria": one }),
+    )
+    .unwrap_err();
+    assert_eq!(over, Refusal::Finished.to_string());
+}
+
+/// The tool is a lead's: no other role is offered it, the CEO included.
+#[test]
+fn narrow_criteria_is_offered_to_leads_only() {
+    use crate::application::protocol::tools;
+    let offered = |role: Role| {
+        tools(role)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "narrow_criteria")
+    };
+    assert!(offered(Role::Lead));
+    for role in [Role::Developer, Role::Researcher, Role::Reviewer, Role::Ceo] {
+        assert!(!offered(role), "{role:?}");
+    }
+    let tool = tools(Role::Lead)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "narrow_criteria")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        tool["inputSchema"]["required"],
+        json!(["task", "criteria"]),
+        "narrow_criteria {{task, criteria}}"
+    );
+}
+
 // ---- why work was sent back (ADR 0132) --------------------------------------------------------
 
 /// Linus's task, handed in for review.

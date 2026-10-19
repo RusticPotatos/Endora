@@ -12,6 +12,7 @@
 //! and a guard that fires on everything is worse than none.
 
 use super::evidence::Label;
+use super::money::Micros;
 use super::work::{Millis, TaskStatus};
 
 /// A minute, in milliseconds.
@@ -57,6 +58,22 @@ pub struct Thresholds {
     /// How alike, both ways, a new question or decision for the owner must be to one waiting
     /// on the desk to be the same ask (in percent of each one's shingles the other holds).
     pub same_ask_percent: usize,
+    /// The most coordination turns one task may take within [`Self::coordination_window_ms`] with
+    /// nothing changing before the talk it asks for is held (ADR 0133): counted from the task's
+    /// newest product change, or from its lead's last decision about it, if later. The verdicts on
+    /// its findings tune it.
+    pub coordination_budget: usize,
+    /// How far back a task's coordination turns are counted against that budget.
+    pub coordination_window_ms: Millis,
+    /// The most turns a member starts in a day on the house's own models, the Mac or the NAS's
+    /// (ADR 0133): they cost nothing, so no budget stops a member that has run away with them.
+    /// Past it the member's work turns wait until the day turns.
+    pub free_turns_a_day: usize,
+    /// The most turns the whole team starts within [`Self::runaway_window_ms`] before HQ stops it
+    /// itself (ADR 0133): the one that would be the next is a runaway, and trips the wire.
+    pub runaway_turns: usize,
+    /// How far back the tripwire counts the turns the team started.
+    pub runaway_window_ms: Millis,
 }
 
 /// The thresholds HQ starts with (ADR 0124): loose enough to learn real numbers before they
@@ -76,6 +93,11 @@ pub const THRESHOLDS: Thresholds = Thresholds {
     retracted_shared_least: 2,
     look_every_ms: 5 * MINUTE,
     same_ask_percent: 60,
+    coordination_budget: 20,
+    coordination_window_ms: DAY,
+    free_turns_a_day: 60,
+    runaway_turns: 40,
+    runaway_window_ms: 10 * MINUTE,
 };
 
 /// Whether a new ask for the owner (`new`, a fingerprint) is the same as one waiting
@@ -408,6 +430,8 @@ pub struct TurnSeen {
     pub new_evidence: bool,
     /// It put a question up the chain or to the owner.
     pub asked: bool,
+    /// What it spent, as the ledger kept it (ADR 0133): a finding says what the talk cost.
+    pub spent: Micros,
 }
 
 /// What a turn was, to the ceremony detector.
@@ -439,13 +463,16 @@ pub const fn turn_kind(t: &TurnSeen) -> TurnKind {
     }
 }
 
-/// A project's ceremony over one window: its coordination turns and its product changes.
+/// The ceremony of a project, or of a piece of work outside one, over one window: its
+/// coordination turns, its product changes and what all its turns spent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ceremony {
     /// Coordination turns.
     pub coordination: usize,
     /// Turns that changed the product.
     pub product: usize,
+    /// What every turn that ended in the window spent, whatever it did (ADR 0133).
+    pub spent: Micros,
 }
 
 impl Ceremony {
@@ -472,9 +499,20 @@ impl Ceremony {
             }
         )
     }
+
+    /// As a finding says it: [`Self::said`], and what the window's turns spent (ADR 0133).
+    #[must_use]
+    pub fn said_with_cost(&self, window: &str) -> String {
+        format!(
+            "{} ({} spent)",
+            self.said(window),
+            super::projects::dollars(self.spent)
+        )
+    }
 }
 
-/// The ceremony of `turns` that ended within `ms` before `now`.
+/// The ceremony of `turns` that ended within `ms` before `now`, and what every one of them
+/// spent.
 #[must_use]
 pub fn ceremony(turns: &[TurnSeen], now: Millis, ms: Millis) -> Ceremony {
     let within = turns
@@ -483,8 +521,10 @@ pub fn ceremony(turns: &[TurnSeen], now: Millis, ms: Millis) -> Ceremony {
     let mut found = Ceremony {
         coordination: 0,
         product: 0,
+        spent: 0,
     };
     for t in within {
+        found.spent = found.spent.saturating_add(t.spent);
         match turn_kind(t) {
             TurnKind::Product => found.product += 1,
             TurnKind::Coordination => found.coordination += 1,
@@ -492,6 +532,41 @@ pub fn ceremony(turns: &[TurnSeen], now: Millis, ms: Millis) -> Ceremony {
         }
     }
     found
+}
+
+/// The talk a task has had with nothing coming of it (ADR 0133): its coordination turns within
+/// [`Thresholds::coordination_window_ms`] of `now` that came after its newest product change and
+/// after `since`, when its lead last decided it. A turn that changed the product, or the lead's
+/// deciding, starts the count again. `turns` are in the order they ran: which came after a change
+/// is the order, not the clock, which two turns can share to the millisecond.
+#[must_use]
+pub fn talk_turns(turns: &[TurnSeen], now: Millis, since: Millis) -> Vec<TurnSeen> {
+    let within: Vec<&TurnSeen> = turns
+        .iter()
+        .filter(|t| t.ended_at <= now && t.ended_at > since)
+        .filter(|t| now - t.ended_at < THRESHOLDS.coordination_window_ms)
+        .collect();
+    let after_the_change = within
+        .iter()
+        .rposition(|t| turn_kind(t) == TurnKind::Product)
+        .map_or(0, |changed| changed + 1);
+    within[after_the_change..]
+        .iter()
+        .filter(|t| turn_kind(t) == TurnKind::Coordination)
+        .map(|t| **t)
+        .collect()
+}
+
+/// How many turns of [`talk_turns`] a task has had.
+#[must_use]
+pub fn talk_without_progress(turns: &[TurnSeen], now: Millis, since: Millis) -> usize {
+    talk_turns(turns, now, since).len()
+}
+
+/// Whether that much talk is more than a task's budget (ADR 0133).
+#[must_use]
+pub const fn over_budget(talk: usize) -> bool {
+    talk > THRESHOLDS.coordination_budget
 }
 
 /// Whether a task is on the review carousel (ADR 0124): sent back at least
@@ -537,17 +612,22 @@ pub enum Guard {
     FencePush,
     /// The same ask for the owner from two tasks, put on one desk card.
     SameAsk,
+    /// A task that has taken more coordination turns than its budget with nothing changing
+    /// (ADR 0133). The one guard that changes what the team does, and so the one that is tried in
+    /// shadow before it acts ([`GuardMode`]).
+    Coordination,
 }
 
 impl Guard {
     /// Every guard, in the order the scorecard shows them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Stuck,
         Self::Ceremony,
         Self::Carousel,
         Self::RedundantWake,
         Self::FencePush,
         Self::SameAsk,
+        Self::Coordination,
     ];
 
     /// Stable lowercase name.
@@ -560,6 +640,7 @@ impl Guard {
             Self::RedundantWake => "redundant_wake",
             Self::FencePush => "fence_push",
             Self::SameAsk => "same_ask",
+            Self::Coordination => "coordination",
         }
     }
 
@@ -579,17 +660,38 @@ impl Guard {
             Self::RedundantWake => "Woken for nothing",
             Self::FencePush => "Pushing at the fence",
             Self::SameAsk => "The same ask twice",
+            Self::Coordination => "Coordination over budget",
         }
+    }
+
+    /// Whether the guard is tried in shadow before it acts (ADR 0133): it records what it would
+    /// have done and does nothing, until the owner switches it on. Only a guard that changes what
+    /// the team does can be: the rest only record, and have nothing to hold back.
+    #[must_use]
+    pub const fn has_shadow(self) -> bool {
+        matches!(self, Self::Coordination)
+    }
+
+    /// The mode a guard starts in: shadow for one that is tried first, on for the rest.
+    #[must_use]
+    pub const fn starts_in(self) -> GuardMode {
+        if self.has_shadow() {
+            return GuardMode::Shadow;
+        }
+        GuardMode::On
     }
 
     /// How much more evidence than was judged makes a finding worth raising again (ADR 0132),
     /// in the units of its [`Finding::mark`]: another [`Thresholds::ceremony_least`] turns of
-    /// talk for the ceremony, whose count creeps up with every turn; one more of the thing
-    /// counted for the rest, each of which is an event of its own.
+    /// talk for the ceremony, whose count creeps up with every turn, and another
+    /// [`Thresholds::coordination_budget`] for a task's budget of talk (ADR 0133), which creeps
+    /// the same way; one more of the thing counted for the rest, each of which is an event of
+    /// its own.
     #[must_use]
     pub const fn step(self) -> i64 {
         match self {
             Self::Ceremony => THRESHOLDS.ceremony_least as i64,
+            Self::Coordination => THRESHOLDS.coordination_budget as i64,
             Self::Stuck
             | Self::Carousel
             | Self::RedundantWake
@@ -626,7 +728,42 @@ impl Guard {
                 "a question or decision for the owner {}% alike, both ways, to one already waiting",
                 t.same_ask_percent
             ),
+            Self::Coordination => format!(
+                "more than {} coordination turns on one task in 24 h with nothing changed since \
+                 (a product change, or its lead's decision, starts the count again)",
+                t.coordination_budget
+            ),
         }
+    }
+}
+
+/// How a guard that changes what the team does behaves (ADR 0133). New authority is tried before
+/// it is given: in shadow a guard records what it would have done and does nothing, so its
+/// verdicts say how often it would have been right; on, it acts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardMode {
+    /// It records what it would have done, and holds nothing back.
+    Shadow,
+    /// It acts.
+    On,
+}
+
+impl GuardMode {
+    /// Stable lowercase name, as stored and shown.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Shadow => "shadow",
+            Self::On => "on",
+        }
+    }
+
+    /// The mode with this [`name`](Self::name), if there is one.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Shadow, Self::On]
+            .into_iter()
+            .find(|m| m.name() == name)
     }
 }
 
@@ -1096,15 +1233,152 @@ mod tests {
     }
 
     #[test]
-    fn talk_has_to_grow_by_a_dozen_turns_and_every_other_guard_by_one_thing() {
+    fn talk_has_to_grow_by_a_dozen_turns_a_budget_by_a_budget_and_every_other_guard_by_one_thing() {
         assert_eq!(Guard::Ceremony.step(), 12);
         assert_eq!(
             Guard::Ceremony.step(),
             i64::try_from(THRESHOLDS.ceremony_least).unwrap()
         );
-        for guard in Guard::ALL.into_iter().filter(|g| *g != Guard::Ceremony) {
+        assert_eq!(Guard::Coordination.step(), 20, "another budget of talk");
+        for guard in Guard::ALL
+            .into_iter()
+            .filter(|g| !matches!(g, Guard::Ceremony | Guard::Coordination))
+        {
             assert_eq!(guard.step(), 1, "{guard:?}");
         }
+    }
+
+    /// A task's budget of talk (ADR 0133): twenty coordination turns in a day with nothing
+    /// changed. The twenty-first is the one that exceeds it.
+    #[test]
+    fn the_budget_of_talk_is_twenty_coordination_turns_in_a_day_and_the_twenty_first_is_over_it() {
+        assert_eq!(
+            (
+                THRESHOLDS.coordination_budget,
+                THRESHOLDS.coordination_window_ms
+            ),
+            (20, DAY)
+        );
+        assert!(!over_budget(0) && !over_budget(20));
+        assert!(over_budget(21));
+        assert!(
+            Guard::Coordination
+                .rule()
+                .contains("more than 20 coordination turns")
+        );
+    }
+
+    fn talk_ago(now: Millis, ago: Millis) -> TurnSeen {
+        TurnSeen {
+            ended_at: now - ago,
+            ..seen(Label::TalkOnly)
+        }
+    }
+
+    fn change_ago(now: Millis, ago: Millis) -> TurnSeen {
+        TurnSeen {
+            ended_at: now - ago,
+            acted: true,
+            ..seen(Label::Advanced)
+        }
+    }
+
+    /// A product change starts a task's count again, and so does its lead's decision about it;
+    /// talk older than the window is out.
+    #[test]
+    fn talk_is_counted_from_the_newest_change_or_decision_and_within_the_day() {
+        let now = 10 * DAY;
+        // Four turns of talk, then a change, then three more.
+        let turns = [
+            talk_ago(now, 9_000),
+            talk_ago(now, 8_000),
+            talk_ago(now, 7_000),
+            talk_ago(now, 6_000),
+            change_ago(now, 5_000),
+            talk_ago(now, 4_000),
+            talk_ago(now, 3_000),
+            talk_ago(now, 2_000),
+        ];
+        assert_eq!(
+            talk_without_progress(&turns, now, 0),
+            3,
+            "only what came after the change"
+        );
+        assert_eq!(
+            talk_without_progress(&turns[..4], now, 0),
+            4,
+            "no change yet"
+        );
+        assert_eq!(
+            talk_without_progress(&turns, now, now - 3_500),
+            2,
+            "its lead decided it between the second and the third"
+        );
+        let old = [
+            talk_ago(now, DAY + 1),
+            talk_ago(now, DAY),
+            talk_ago(now, DAY - 1),
+        ];
+        assert_eq!(
+            talk_without_progress(&old, now, 0),
+            1,
+            "a day ago to the millisecond is out"
+        );
+        let later = TurnSeen {
+            ended_at: now + 1,
+            ..seen(Label::TalkOnly)
+        };
+        assert_eq!(talk_without_progress(&[later], now, 0), 0, "not yet");
+    }
+
+    /// Talk is what the ceremony guard calls coordination, by the same labels: a turn that took
+    /// a first reading, or nothing, is neither; a review round and a re-check are.
+    #[test]
+    fn only_coordination_turns_are_talk_by_the_ceremony_guards_own_labels() {
+        let now = 10 * DAY;
+        let at = |label: Label| TurnSeen {
+            ended_at: now - 1_000,
+            ..seen(label)
+        };
+        let turns = [
+            at(Label::Empty),
+            TurnSeen {
+                new_evidence: true,
+                ..at(Label::Checked)
+            },
+            at(Label::Advanced),
+            TurnSeen {
+                checking: true,
+                ..at(Label::Empty)
+            },
+            at(Label::Checked),
+            TurnSeen {
+                asked: true,
+                ..at(Label::Blocked)
+            },
+            at(Label::TalkOnly),
+        ];
+        assert_eq!(talk_without_progress(&turns, now, 0), 4);
+        assert_eq!(
+            talk_without_progress(&turns, now, 0),
+            ceremony(&turns, now, DAY).coordination,
+            "the same count the ceremony makes"
+        );
+    }
+
+    /// Only the guard that changes what the team does is tried in shadow first (ADR 0133).
+    #[test]
+    fn only_the_budget_of_talk_is_tried_in_shadow_first() {
+        assert!(Guard::Coordination.has_shadow());
+        assert_eq!(Guard::Coordination.starts_in(), GuardMode::Shadow);
+        for guard in Guard::ALL.into_iter().filter(|g| *g != Guard::Coordination) {
+            assert!(!guard.has_shadow(), "{guard:?}");
+            assert_eq!(guard.starts_in(), GuardMode::On, "{guard:?}");
+        }
+        for mode in ["shadow", "on"] {
+            assert_eq!(GuardMode::from_name(mode).map(GuardMode::name), Some(mode));
+        }
+        assert_eq!(GuardMode::from_name("off"), None);
     }
 
     #[test]
@@ -1144,6 +1418,7 @@ mod tests {
             criterion_met: false,
             new_evidence: false,
             asked: false,
+            spent: 0,
         }
     }
 
@@ -1222,6 +1497,51 @@ mod tests {
         assert_eq!(
             ceremony(&turns, 2_000, DAY).said("24 h"),
             "12 coordination turns, 4 product changes in 24 h"
+        );
+    }
+
+    /// A finding says what the talk cost (ADR 0133): what every turn that ended in the window
+    /// spent, whatever it did, in dollars and cents. The plain line the scorecard shows is as it
+    /// was.
+    #[test]
+    fn a_ceremonys_cost_is_what_the_windows_turns_spent_and_is_said_with_it() {
+        let paid = |at: Millis, spent: Micros| TurnSeen {
+            ended_at: at,
+            spent,
+            ..seen(Label::TalkOnly)
+        };
+        let product = TurnSeen {
+            acted: true,
+            label: Label::Advanced,
+            ..paid(9 * DAY + 3, 20_000)
+        };
+        let turns = [
+            paid(9 * DAY + 1, 50_000),
+            paid(9 * DAY + 2, 30_000),
+            product,
+            paid(5 * DAY, 100_000),
+            paid(2 * DAY, 900_000),
+        ];
+        let now = 10 * DAY;
+        let day = ceremony(&turns, now, DAY);
+        assert_eq!((day.coordination, day.product, day.spent), (2, 1, 100_000));
+        assert_eq!(
+            day.said_with_cost("24 h"),
+            "2 coordination turns, 1 product change in 24 h ($0.10 spent)"
+        );
+        assert_eq!(
+            day.said("24 h"),
+            "2 coordination turns, 1 product change in 24 h"
+        );
+        let week = ceremony(&turns, now, 7 * DAY);
+        assert_eq!(
+            (week.coordination, week.product, week.spent),
+            (3, 1, 200_000),
+            "the turn eight days old is in neither"
+        );
+        assert_eq!(
+            week.said_with_cost("7 d"),
+            "3 coordination turns, 1 product change in 7 d ($0.20 spent)"
         );
     }
 
@@ -1324,6 +1644,17 @@ mod tests {
             !same_ask(&first, &fingerprint("Install yamllint?")),
             "a short ask inside a long one is not the same ask"
         );
+    }
+
+    /// The caps on a runaway (ADR 0133) start well above the live record of 17 and 18 October
+    /// (201 turns in 39 hours between all the members) and well below the scripted demo's
+    /// 1,539 turns in 3 h 40 min: sixty a member a day, and forty a team in ten minutes, which is
+    /// four a minute and only turns that end at once can make.
+    #[test]
+    fn the_caps_on_a_runaway_start_where_adr_0133_says() {
+        let t = THRESHOLDS;
+        assert_eq!(t.free_turns_a_day, 60);
+        assert_eq!((t.runaway_turns, t.runaway_window_ms), (40, 10 * MINUTE));
     }
 
     #[test]

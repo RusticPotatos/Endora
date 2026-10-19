@@ -67,7 +67,7 @@ pub(super) fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
         .expect("a turn started")
 }
 
-fn wakes_for(hq: &Hq<'_>, task: TaskId, reason: WakeReason) -> usize {
+pub(super) fn wakes_for(hq: &Hq<'_>, task: TaskId, reason: WakeReason) -> usize {
     hq.store()
         .wakes()
         .unwrap()
@@ -489,6 +489,242 @@ fn talk_beside_enough_product_change_is_healthy() {
     assert!(hq.store().findings().unwrap().is_empty());
 }
 
+/// A lead on the owner's work outside any project, with no one above it: what "Give work" and a
+/// routine make, and what the ceremony guard could not see (ADR 0133).
+pub(super) fn loose_work(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(4),
+        clock,
+        Settings::default(),
+    );
+    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let goal = hq
+        .set_goal("Keep the home lab healthy", "", Author::Owner)
+        .unwrap();
+    let task = loose_task(&hq, goal, "Plan the backups", ada, None);
+    let first = turn(&hq, ada);
+    hq.claim_in(first.run, task).unwrap();
+    hq.runner().finish(first.run, true);
+    hq.tick().unwrap();
+    (hq, ada, task)
+}
+
+/// A task in no project, handed to `to`: the owner's, or a sub-task of `parent` made by `to`.
+pub(super) fn loose_task(
+    hq: &Hq<'_>,
+    goal: crate::domain::GoalId,
+    title: &str,
+    to: MemberId,
+    parent: Option<TaskId>,
+) -> TaskId {
+    let by = if parent.is_some() {
+        Author::Member(to)
+    } else {
+        Author::Owner
+    };
+    hq.add_task(
+        by,
+        NewTask {
+            goal,
+            project: None,
+            parent,
+            title: title.to_owned(),
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap()
+}
+
+/// One turn of `member`'s on `task`, woken to decide: judgment, so on its Claude and paid for. It
+/// only talks, and spends `cost`.
+pub(super) fn paid_talk(hq: &Hq<'_>, member: MemberId, task: TaskId, cost: i64) {
+    hq.wake(member, Some(task), WakeReason::Decide).unwrap();
+    let t = turn(hq, member);
+    hq.report_usage(t.run, cost).unwrap();
+    hq.post_in(t.run, task, "Still weighing how it should go.")
+        .unwrap();
+    hq.runner().finish(t.run, true);
+    hq.tick().unwrap();
+}
+
+/// The ceremony guard's notices on the owner's desk, waiting.
+fn ceremony_notices(hq: &Hq<'_>) -> Vec<String> {
+    hq.store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == "guard" && d.status == "waiting")
+        .filter(|d| d.text.starts_with("Talk about work (finding "))
+        .map(|d| d.text)
+        .collect()
+}
+
+/// Live, 17 and 18 October 2026: one docs branch took 44 turns, 80 posts and $2.47, 28% of all the
+/// spend, and the ceremony guard never saw it, because it counted only tasks inside a project and
+/// the owner's work and a routine's are in none. Work outside a project is grouped by its task
+/// tree, the unit its lead can act on, and the finding says what the talk cost.
+#[test]
+fn work_outside_a_project_that_only_talks_is_found_by_its_task_tree_and_says_what_it_cost() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, task) = loose_work(&clock);
+    for _ in 0..12 {
+        paid_talk(&hq, ada, task, 50_000);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+
+    let shown = guards(&hq)["ceremony"].clone();
+    let tree = shown
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| {
+            c["title"]
+                .as_str()
+                .is_some_and(|t| t.contains("Plan the backups"))
+        })
+        .unwrap_or_else(|| panic!("the tree is on the card: {shown}"));
+    assert_eq!(tree["over"], true, "{tree}");
+    assert_eq!(
+        tree["windows"][0]["said"],
+        "12 coordination turns, 0 product changes in 24 h"
+    );
+    assert_eq!(tree["windows"][0]["spent"], 600_000);
+
+    let found = hq.store().findings().unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].key, format!("ceremony:tree:{}", task.0));
+    assert_eq!((found[0].task, found[0].project), (Some(task.0), None));
+    let notices = ceremony_notices(&hq);
+    assert_eq!(notices.len(), 1, "one notice: {notices:?}");
+    assert!(
+        notices[0].contains("12 coordination turns, 0 product changes in 24 h ($0.60 spent)"),
+        "{}",
+        notices[0]
+    );
+    assert_eq!(
+        wakes_for(&hq, task, WakeReason::Guard),
+        1,
+        "the lead of its area is woken"
+    );
+    let said = hq.store().thread(task).unwrap();
+    assert!(
+        said.iter()
+            .rfind(|p| p.author == "endora")
+            .is_some_and(|p| {
+                p.text
+                    .starts_with("Talking about work isn't work (finding ")
+                    && p.text.contains("this is in your area")
+                    && p.text.contains("narrow its criteria (narrow_criteria)")
+            }),
+        "{said:?}"
+    );
+}
+
+/// Each tree stands alone: seven turns of talk in two pieces of work is not fourteen in one, and a
+/// sub-task's talk counts for the tree it hangs from.
+#[test]
+fn talk_in_two_separate_pieces_of_work_is_not_added_together_and_a_sub_task_counts_for_its_root() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, first) = loose_work(&clock);
+    let goal = hq.store().task(first).unwrap().unwrap().goal;
+    for _ in 0..7 {
+        one_turn(&hq, ada, first, false);
+    }
+    let second = loose_task(&hq, goal, "Look at the NAS fans", ada, None);
+    for _ in 0..7 {
+        one_turn(&hq, ada, second, false);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    assert!(
+        hq.store().findings().unwrap().is_empty(),
+        "fourteen turns in two trees is seven in each"
+    );
+    // Five turns on a sub-task of the first make twelve in its tree.
+    let part = loose_task(&hq, goal, "Draft the plan", ada, Some(first));
+    for _ in 0..5 {
+        one_turn(&hq, ada, part, false);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let found = hq.store().findings().unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0].key,
+        format!("ceremony:tree:{}", first.0),
+        "keyed by the root, not by the sub-task"
+    );
+    assert_eq!(
+        found[0].task,
+        Some(first.0),
+        "the busiest task in the tree: seven turns against five"
+    );
+}
+
+/// Work outside a project with no lead at work to look at it is still found, and says so on the
+/// owner's digest; nobody is woken, because nobody is there to decide it.
+#[test]
+fn a_tree_with_no_lead_at_work_is_found_and_wakes_nobody() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, linus, task) = team(&clock, false);
+    for _ in 0..12 {
+        one_turn(&hq, linus, task, false);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    assert_eq!(ceremony_notices(&hq).len(), 1);
+    assert_eq!(wakes_for(&hq, task, WakeReason::Guard), 0);
+}
+
+/// Work that is over has nothing left for its lead to decide: the finding clears at the next
+/// look, and its card in the digest with it.
+#[test]
+fn a_tree_whose_work_is_over_has_its_finding_and_its_card_cleared() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, task) = loose_work(&clock);
+    for _ in 0..12 {
+        one_turn(&hq, ada, task, false);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    assert_eq!(ceremony_notices(&hq).len(), 1);
+    hq.drop_task(task).unwrap();
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let found = hq.store().findings().unwrap();
+    assert!(found[0].cleared_at.is_some(), "{found:?}");
+    assert!(ceremony_notices(&hq).is_empty(), "its card went with it");
+    assert_eq!(
+        guards(&hq)["ceremony"],
+        serde_json::json!([]),
+        "and it is off the Guards card"
+    );
+}
+
+/// A project's finding says what its talk cost too (ADR 0133).
+#[test]
+fn a_projects_finding_states_the_spend_in_each_window() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, task) = project_work(&clock);
+    for _ in 0..12 {
+        paid_talk(&hq, ada, task, 50_000);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let notices = ceremony_notices(&hq);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains("in 24 h ($0.60 spent)") && notices[0].contains("in 7 d ($0.60 spent)"),
+        "{}",
+        notices[0]
+    );
+}
+
 fn outcomes(hq: &Hq<'_>) -> serde_json::Value {
     hq.snapshot().unwrap()["scorecard"]["outcomes"].clone()
 }
@@ -574,7 +810,7 @@ fn a_member_woken_for_nothing_again_and_again_is_parked_not_woken() {
 // ---- sub-task discipline and evidence that is enough -----------------------------------------
 
 /// `member` uses a tool of the team protocol in its running turn `t`.
-fn use_tool(
+pub(super) fn use_tool(
     hq: &Hq<'_>,
     t: &RunContext,
     tool: &str,

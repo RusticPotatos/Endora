@@ -23,6 +23,37 @@ Feature: Guards against how agent teams fail
     When the owner says the finding was real
     Then the guard "ceremony" is 100% real
 
+  # Seed: the ceremony counting only the tasks inside a project finds nothing here, and the
+  # desk step fails; the finding without the spend fails the cost step.
+  Scenario: Talking about work outside a project isn't work either, and the finding says what it cost
+    Given Linus is the developer
+    And Dee is the tester
+    When Linus is handed the task "Tidy the docs"
+    And Linus's turn starts
+    And Linus's turn ends
+    And Dee reviews "Tidy the docs" 12 times at $0.05 a turn and changes nothing
+    And HQ looks at how the team is doing
+    Then the owner's desk holds a finding "Talk about work"
+    And the finding says "12 coordination turns, 0 product changes in 24 h ($0.60 spent)"
+    And the guards card says "Tidy the docs"
+    And Ada is woken about it
+
+  # Seed: narrow_criteria open to every role fails the refusal step; shut to the lead fails the
+  # narrowing step; one that lets it widen fails the last.
+  Scenario: A lead narrows what done means for work in its area, and nobody else may
+    Given Linus is the developer
+    And Linus has the task "Tidy the docs" that is done when both "The links work" and "The headings are consistent" hold
+    When Linus's turn starts
+    And Linus tries to narrow what done means for "Tidy the docs" to "The links work"
+    Then it is refused, saying "only the lead of the task's area narrows its criteria"
+    When Linus's turn ends
+    And Ada is woken about "Tidy the docs"
+    And Ada tries to give "Tidy the docs" three criteria
+    Then it is refused, saying "the task has 2 and you gave 3"
+    When Ada narrows what done means for "Tidy the docs" to "The links work"
+    Then the task "Tidy the docs" is done when "The links work"
+    And HQ says in "Tidy the docs": "Ada narrowed what done means"
+
   # Seed: after_sent_back returning before the carousel's check fails the huddle step.
   Scenario: A task bounced three times goes to a huddle
     Given Grace is the tester
