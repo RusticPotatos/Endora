@@ -137,6 +137,47 @@ that cannot fail, or a comparison against model output on exact strings, costs f
 discover than to think about.
 *How you'll know:* the check was shown to fail on a broken input before it was trusted.
 
+### Every project has a map
+
+Each project says what each folder owns and where new code, settings and docs go. New things go
+where the map says; when nothing fits, the map is extended in the same change, never a new spot
+invented.
+*How you'll know:* nobody has to ask where something lives.
+
+### One problem at a time, and stop the loop
+
+What "done" means is written first: one to three checkable criteria. One task per problem; a
+sub-task says which criterion it serves. When the same attempt has failed three times, stop and
+report what was tried instead of trying it a fourth way.
+*How you'll know:* no thread grows long without the work changing.
+
+### "Can't tell" is an answer
+
+When something cannot be verified, say so, with what was missing. A guess presented as a reading
+is worse than an honest unknown, and a check that cannot see its inputs reports that it cannot
+tell, not a pass.
+*How you'll know:* every verdict is pass, fail or can't tell, never a pass by default.
+
+### Checks you can trust
+
+Zero warnings: none new, and fix the ones in code you touch. Judge a run by its exit code, not
+its output, and chain checks with `&&` so a failure stops the commit. A failing test is not
+believed until it fails alone, on a quiet machine, after a clean build. A change you can see is
+run and looked at, not only compiled. Real captured data beats an invented fixture.
+*How you'll know:* a green gate means working code, and a red one means a real failure.
+
+### Long jobs are tracked
+
+Builds and test runs that take minutes run as tracked background jobs with a timeout, never as
+a hand-rolled polling loop that can outlive everyone watching it.
+*How you'll know:* nothing is still running that nobody knows about.
+
+### Risks first, then act
+
+Name the risks of a step before taking it. Look at what is there (`git status`) before anything
+destructive. A pull request is opened only when asked.
+*How you'll know:* nothing irreversible happened by surprise.
+
 ## Layering
 
 1. **Global: this file.** The base every project shares.
