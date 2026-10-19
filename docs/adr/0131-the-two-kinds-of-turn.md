@@ -155,6 +155,12 @@ handed, so the alarm that makes a task is as much an emergency as one passed int
 
 ### A turn that waits is a wake, not a stall
 
+*Amended again, 2026-10-19 ([0134](0134-a-drain-before-every-restart.md)):* a turn held back
+because a restart is coming waits in the same way, with its own words ("waiting for a restart"),
+and is a wait to the stuck diagnosis like the rest. A turn a restart does cut is still the
+platform's interruption, tried again without counting against its member; a drain before the
+restart now gives it the chance to finish or to leave a handover note first.
+
 *Amended:* a turn that waits for budget or for the Mac **counts as a live wake in the stuck
 diagnosis**. In `domain/guards.rs` the held-health rule reads a fact, `waiting_turn`: a queued
 turn on the task whose words are a wait's, and work whose only turn waits is diagnosed **held**,

@@ -76,6 +76,11 @@ its card away; a lead's verdict is not, and leaves the card for the owner. `snap
 "N waiting on you" chip and the Desk tab's badge that count it, now hold only what interrupts. A
 kind nobody has classified interrupts: a decision is never quietly folded into a digest.
 
+*Added 2026-10-19 ([0134](0134-a-drain-before-every-restart.md)):* a restart that cut turns the
+drain before it could not wait for puts one more `notice` in the digest ("A restart cut N turns:
+...", naming each). A drain that cut nothing puts nothing there and nothing on the desk; it is one
+line in the Activity.
+
 ### One finding for a guard and what it is about
 
 A guard's detection is weighed against the newest finding for its key (stuck work: the task; the
