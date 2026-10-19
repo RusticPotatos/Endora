@@ -10,6 +10,11 @@ proposals, votes, history), the `office` tool, the downtime wake and its schedul
 undo, reset, veto and allowance. The owner's scenarios in
 `domains/team/features/the-office.feature`.
 
+Amended 2026-10-19 by [0131](0131-the-two-kinds-of-turn.md): a downtime turn is work on the
+house's own model, which costs nothing, so **every** member who is at work qualifies for it,
+whatever it judges with, and nobody's downtime is paid. The owner's allowance for paid members'
+downtime (`downtime_paid_cents_per_day`, its card line and its route, below) is removed.
+
 ## Context
 
 The owner, looking at the office on their phone, in their words:

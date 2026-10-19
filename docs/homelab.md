@@ -281,8 +281,11 @@ To turn it off: delete the file (no restart needed), and remove the line from `l
 
 ## The Mac's brain (ADR 0130)
 
-A team member can think with your Mac: a strong coding model running in `llama-server` on the
-laptop you use all day. Its work waits for the Mac and never falls back to another model, so the
+A team member can work with your Mac (ADR 0131): a strong coding model running in `llama-server`
+on the laptop you use all day. Every member works with it by default; the team's decisions are
+Claude's, not the Mac's. Work that needs it (code and branch work, the engineering wing lead's
+planning, a tester's work) waits for the Mac and never falls back to another model, while
+reading and status work use it when it is free and the NAS's model when it is not. So the
 Mac stays yours: the model is loaded only while the Mac is **plugged in** and **Mac busy** is
 off, and a turn runs on it only after you have been **idle** (ten minutes unless you change it),
 one at a time. On battery, or with Mac busy on, the model is unloaded and its memory (about
@@ -334,7 +337,8 @@ time, tells the node, and loads or unloads the model. It touches no other proces
 6. **The firewall prompt.** The first time `llama-server` listens on the network, macOS asks
    whether to allow incoming connections for it: allow it. If you answered no, or it never asked,
    open *System Settings › Network › Firewall › Options* and allow `llama-server`.
-7. Choose **Mac** as a member's brain (roster, tap the member, *Brain*), or when hiring.
+7. A member works with the **Mac** unless you choose the house's model instead (roster, tap the
+   member, *Work*), or when hiring (*works with*).
 
 The card says *Free: the team may use it* when all of it holds, and otherwise why: *Not heard
 from lately* (the helper is not running, or the node cannot be reached), *Mac busy is on*, *On
