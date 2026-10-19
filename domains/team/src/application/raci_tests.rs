@@ -317,6 +317,16 @@ fn on_an_areas_task_the_ceo_directs_and_the_lead_decides() {
     );
     let ada_wakes = wakes_of(&hq, o.ops);
     assert_eq!(ada_wakes.last().unwrap().0, WakeReason::Directed);
+    // The CEO reaching into Ada's task is a rescue on her roster line (ADR 0124), once, and her
+    // other wakes before it are not.
+    let rescues = hq.snapshot().unwrap()["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == o.ops.0)
+        .unwrap()["rescues"]
+        .clone();
+    assert_eq!(rescues, json!(1), "one direction, one rescue");
     end(&hq, &clock, &mara);
     let ada = turn(&hq, o.ops);
     assert!(
@@ -329,6 +339,16 @@ fn on_an_areas_task_the_ceo_directs_and_the_lead_decides() {
     // The task is still Ada's, as it was.
     let now = hq.store().task(task).unwrap().unwrap();
     assert_eq!((now.owner, now.status), (Some(o.ops), TaskStatus::Doing));
+    // A week and a day on, with the feed whole, the direction is no longer this week's.
+    clock.0.fetch_add(8 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+    let rescues = hq.snapshot().unwrap()["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == o.ops.0)
+        .unwrap()["rescues"]
+        .clone();
+    assert_eq!(rescues, json!(0), "counted over the week, not for ever");
 }
 
 #[test]

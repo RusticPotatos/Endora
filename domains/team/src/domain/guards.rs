@@ -1940,6 +1940,15 @@ mod tests {
             !same_ask(&first, &fingerprint("Install yamllint?")),
             "a short ask inside a long one is not the same ask"
         );
+        let short = fingerprint("Install yamllint on the dev node?");
+        assert!(
+            !same_ask(&short, &first),
+            "nor is a long ask that holds a short one waiting: each must hold the other's"
+        );
+        assert!(
+            !same_ask(&first, &short),
+            "whichever of the two is waiting and which is new"
+        );
     }
 
     /// The caps on a runaway (ADR 0133) start well above the live record of 17 and 18 October

@@ -832,6 +832,40 @@ fn propose(page: &str, heading: &str, task: TaskId) -> Value {
             "body": "Nightly, at 03:00.", "evidence": [format!("task {}", task.0)] })
 }
 
+/// A claim the owner retracted is not proposed to a page again (ADR 0124), in the proposer's own
+/// words around it; the refusal says when it was retracted, and nothing is proposed.
+#[test]
+fn a_retracted_claim_is_not_proposed_to_a_page_again() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let page = area(t.ada);
+    let (linus, task) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    use_tool(
+        &hq,
+        &linus,
+        "note",
+        &json!({ "text": "Backups Backups: how it goes Nightly, at 03:00.",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    let wrong = hq.notebook(t.linus).unwrap()[0].id;
+    hq.retract(&format!("note:{wrong}")).unwrap();
+    let refused = use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose(&page, "Backups", task),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("this says again what was retracted on"),
+        "{refused}"
+    );
+    assert!(hq.store().proposals().unwrap().is_empty());
+}
+
 #[test]
 fn a_member_proposes_to_a_page_and_its_steward_accepts_and_the_proposer_is_told() {
     let clock = Hands(AtomicI64::new(OCT_18));

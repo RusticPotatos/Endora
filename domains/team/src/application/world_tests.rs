@@ -1057,3 +1057,53 @@ fn the_owner_edits_a_members_section_and_the_members_text_stays_in_its_revisions
         "the member's text is kept"
     );
 }
+
+/// A claim the owner retracted is not written back into the world (ADR 0124): not as a section
+/// and not as a story, in the same words or around them. The refusal says when it was retracted.
+#[test]
+fn a_retracted_claim_is_not_written_into_the_world_again() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    task_for(&hq, t.goal, t.ceo, "Review");
+    let mara = turn(&hq, t.ceo);
+    let fresh = reading(&hq, &mara);
+    let section = json!({ "heading": "Backups", "headline": "Backups run at 03:00 every night.",
+                          "body": "The media share is copied to the second disk nightly.",
+                          "stage": "insight", "warrant": "read", "evidence": [fresh.clone()] });
+    let story = json!({ "handle": "restart-fixes-it", "moment": "The queue sticks overnight.",
+                        "reflex": "Restart sonarr every night.", "instead": "Clear the stuck item.",
+                        "because": "A nightly restart hides the cause.", "evidence": [fresh],
+                        "stage": "insight", "warrant": "read on the lab" });
+    use_tool(&hq, &mara, "write_world", &section).unwrap();
+    use_tool(&hq, &mara, "tell_story", &story).unwrap();
+    hq.retract("world:house#backups").unwrap();
+    hq.retract("story:restart-fixes-it").unwrap();
+
+    let said_again = |what: Result<String, String>| {
+        let refused = what.unwrap_err();
+        assert!(
+            refused.contains("this says again what was retracted on"),
+            "{refused}"
+        );
+    };
+    said_again(use_tool(&hq, &mara, "write_world", &section));
+    let mut again = story.clone();
+    again["handle"] = json!("restart-it-nightly");
+    said_again(use_tool(&hq, &mara, "tell_story", &again));
+    // Nothing was written by either.
+    assert!(
+        hq.store()
+            .sections()
+            .unwrap()
+            .iter()
+            .all(|s| !s.stage.current())
+    );
+    assert!(
+        hq.store()
+            .stories()
+            .unwrap()
+            .iter()
+            .all(|s| !s.stage.current())
+    );
+}

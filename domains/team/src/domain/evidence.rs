@@ -768,6 +768,41 @@ mod tests {
         assert_eq!(criteria_hash(&a).len(), 16);
     }
 
+    /// A change to any criterion changes the hash, not just the first: a pass on a task whose
+    /// second criterion was rewritten, or one was added or taken out, is not a pass on what is
+    /// now asked.
+    #[test]
+    fn criteria_hash_changes_with_any_criterion_added_removed_or_reordered() {
+        let two = [
+            Criterion::new("the links work", false),
+            Criterion::new("the headings are consistent", false),
+        ];
+        let hash = criteria_hash(&two);
+        assert_eq!(hash, criteria_hash(&two.clone()));
+        assert_ne!(
+            hash,
+            criteria_hash(&[
+                two[0].clone(),
+                Criterion::new("the headings are tidy", false)
+            ]),
+            "the second reworded"
+        );
+        assert_ne!(
+            hash,
+            criteria_hash(&[two[0].clone(), Criterion::new(&two[1].text, true)]),
+            "the second made live"
+        );
+        assert_ne!(hash, criteria_hash(&two[..1]), "one taken out");
+        let mut three = two.to_vec();
+        three.push(Criterion::new("the index is rebuilt", false));
+        assert_ne!(hash, criteria_hash(&three), "one added");
+        assert_ne!(
+            hash,
+            criteria_hash(&[two[1].clone(), two[0].clone()]),
+            "put the other way round"
+        );
+    }
+
     #[test]
     fn work_handed_to_another_member_says_what_done_means() {
         assert_eq!(may_hand_on(&[], true), Err(Refusal::NoCriteria));
