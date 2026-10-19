@@ -1634,6 +1634,34 @@ mod tests {
         );
     }
 
+    /// Every receipt the model is shown how to cite reads back as one in HQ: what the
+    /// instructions teach, and what the node appends to each result. Task 687's tester cited
+    /// "receipt r228" as she was taught and was refused for it three times.
+    #[test]
+    fn every_receipt_the_model_is_taught_to_cite_reads_back_as_evidence() {
+        use endora_team::domain::evidence::Ref;
+        let checkout_and_submit = ["repo_checkout".to_owned(), "repo_submit".to_owned()];
+        let told = [
+            instructions(true, &checkout_and_submit, true, true),
+            instructions(true, &["repo_checkout".to_owned()], false, true),
+        ]
+        .join("\n");
+        let taught: Vec<&str> = told
+            .match_indices("(receipt ")
+            .map(|(at, _)| {
+                let from = &told[at + 1..];
+                &from[..from.find(')').expect("the example is closed")]
+            })
+            .collect();
+        assert!(taught.len() >= 2, "{told}");
+        for cited in taught.into_iter().chain([" (receipt r41)"]) {
+            assert!(
+                matches!(Ref::parse(cited), Some(Ref::Receipt(_))),
+                "{cited:?} is taught but not read as a receipt"
+            );
+        }
+    }
+
     #[test]
     fn a_tester_is_told_the_wings_git_is_for_reading_and_a_developer_that_it_is_for_work() {
         let checkout_and_submit = ["repo_checkout".to_owned(), "repo_submit".to_owned()];

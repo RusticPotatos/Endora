@@ -1397,6 +1397,28 @@ fn passes_on_her_checkout(w: &mut Office, name: String, title: String) {
     );
 }
 
+/// The same pass, cited the way a model writes it back from the tools' results: her checkout as
+/// "receipt rN", and the check with what it showed after its id (task 687's tester, live).
+#[when(expr = "{word} passes {string} citing her checkout and the check as the tools name them")]
+fn passes_citing_as_named(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let (branch, _, own) = w.checkout.clone().expect("she checked the branch out");
+    let check = receipt_of(w, task, "check");
+    let evidence = vec![
+        vec![
+            format!("receipt r{own}"),
+            format!("r{check} check on {branch} (ok): no worse than develop"),
+        ];
+        criteria_of(w, task)
+    ];
+    w.use_tool(
+        &name,
+        "review",
+        &json!({ "task": task.0, "verdict": "approve", "notes": "the diff is what it says",
+                 "evidence": evidence }),
+    );
+}
+
 #[when(expr = "{word} accepts {string}")]
 fn lead_accepts(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);

@@ -989,6 +989,16 @@ tagged release.
 
 ### Fixed
 
+- **Evidence is read as the tools name it** ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)).
+  Every result of Endora's tools ends "(receipt r12)", and a member's instructions say to cite it
+  so; HQ read `receipt` and then wanted a bare number, so `receipt r12` was refused as "not
+  evidence". Task 687's tester was refused four times passing a branch, and the lead's citations
+  with hers, and the work sat in review. A reference is now read with its word and letter
+  together (`receipt r12`, `event e340`, `task #12`), in the tools' parentheses, and with words
+  after it saying what it showed (`r12 check on hq/… (ok)`); it must still lead, be whole and
+  name one kind, and what it cites is looked up and judged as before. A test reads every
+  receipt the instructions teach back through the parser, so the two cannot drift apart again,
+  and a scenario replays task 687's pass to the lead's acceptance.
 - **Claude Code's shell is the sandbox's whole Bash, and a refused call is kept as refused**
   ([ADR 0117](docs/adr/0117-claude-code-as-a-developer-runtime.md)). Six `Bash(prefix *)` rules
   under `dontAsk` denied any command holding a subshell group, a `for` loop or `$?`, and one

@@ -308,22 +308,30 @@ impl Ref {
     }
 
     /// A reference as a member wrote it, if it reads as one: `r12`, `receipt 12`, `#12`,
-    /// `task 12`, `e340`, `event 340`, case aside.
+    /// `task 12`, `e340`, `event 340`, case aside. Also as the tools name a receipt after every
+    /// result, `(receipt r12)`: the word with its letter (`event e340`, `task #12`), and with
+    /// words after it saying what it showed (`r12 check on hq/… (ok)`). It leads, is whole and
+    /// names one kind: `r12abc`, `receipt e12` and `the check, r12` are not references.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
-        let text = text.trim().to_ascii_lowercase();
-        let number = |rest: &str| rest.trim().parse::<i64>().ok().filter(|n| *n > 0);
-        for (prefix, make) in [
-            ("receipt", Self::Receipt as fn(i64) -> Self),
-            ("event", Self::Event),
-            ("task", |n| Self::Task(TaskId(n))),
-            ("r", Self::Receipt),
-            ("e", Self::Event),
-            ("#", |n| Self::Task(TaskId(n))),
+        let text = text
+            .trim()
+            .trim_start_matches('(')
+            .trim_start()
+            .to_ascii_lowercase();
+        for (word, letter, make) in [
+            ("receipt", "r", Self::Receipt as fn(i64) -> Self),
+            ("event", "e", Self::Event),
+            ("task", "#", |n| Self::Task(TaskId(n))),
         ] {
-            if let Some(rest) = text.strip_prefix(prefix) {
-                return number(rest).map(make);
-            }
+            let rest = match text.strip_prefix(word) {
+                Some(rest) => rest.trim_start().strip_prefix(letter).unwrap_or(rest),
+                None => match text.strip_prefix(letter) {
+                    Some(rest) => rest,
+                    None => continue,
+                },
+            };
+            return leading_number(rest).map(make);
         }
         None
     }
@@ -339,6 +347,22 @@ impl Ref {
     pub fn read(kept: &str) -> Vec<Self> {
         kept.split(',').filter_map(Self::parse).collect()
     }
+}
+
+/// The number a reference's text starts with, if it is whole: nothing after it, or a space or a
+/// mark that ends it (`r12 (ok)`, `task 7:`), never more of a word (`r12abc`, `r12.5`, `r12-r14`).
+fn leading_number(rest: &str) -> Option<i64> {
+    let rest = rest.trim_start();
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let (number, after) = rest.split_at(digits);
+    let ends = after
+        .chars()
+        .next()
+        .is_none_or(|c| c.is_whitespace() || "(),;:".contains(c));
+    if !ends {
+        return None;
+    }
+    number.parse::<i64>().ok().filter(|n| *n > 0)
 }
 
 /// What a reference was found to be in HQ's record, as the engine looked it up.
@@ -694,6 +718,42 @@ mod tests {
         let all = [Ref::Receipt(1), Ref::Task(TaskId(2)), Ref::Event(3)];
         assert_eq!(Ref::kept(&all), "r1,task 2,event 3");
         assert_eq!(Ref::read(&Ref::kept(&all)), all);
+    }
+
+    // Every result of Endora's tools ends "(receipt r12)" and the instructions say to cite it
+    // so; the models write it back as they read it. Task 687's tester was refused three times
+    // for "receipt r228" and once for "r228 check c7 …", and the lead's citations with her.
+    #[test]
+    fn a_reference_reads_as_the_tools_name_it_and_with_its_words_after_it() {
+        assert_eq!(Ref::parse("receipt r228"), Some(Ref::Receipt(228)));
+        assert_eq!(Ref::parse(" (receipt r41)"), Some(Ref::Receipt(41)));
+        assert_eq!(Ref::parse("Event e340"), Some(Ref::Event(340)));
+        assert_eq!(Ref::parse("task #687"), Some(Ref::Task(TaskId(687))));
+        assert_eq!(
+            Ref::parse("r228 check c7 hq/task-687-drift-check (ok): no worse than develop"),
+            Some(Ref::Receipt(228))
+        );
+        assert_eq!(
+            Ref::parse("task 687: the diff, document 15"),
+            Some(Ref::Task(TaskId(687)))
+        );
+        // A reference still leads, is whole, and names one kind.
+        for bad in [
+            "receipt",
+            "receipt r",
+            "receipt rx",
+            "receipt e12",
+            "event r340",
+            "task r7",
+            "r12abc",
+            "r12.5",
+            "task 7b",
+            "r12-r14",
+            "the check, r228",
+            "(r0)",
+        ] {
+            assert_eq!(Ref::parse(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
