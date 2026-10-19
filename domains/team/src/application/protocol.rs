@@ -837,10 +837,16 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let mut out = run.told.clone();
             if let Some(task) = run.task {
                 let thread = engine.store().thread(task).map_err(|e| e.to_string())?;
+                let members = engine.store().members().map_err(|e| e.to_string())?;
                 if !thread.is_empty() {
                     out.push_str("\n\nThe thread, newest last:\n");
                     for p in thread.iter().rev().take(12).rev() {
-                        let line = Engine::<S, W, C>::post_line(&p.author, &p.text, p.unsupported);
+                        let line = Engine::<S, W, C>::post_line(
+                            &members,
+                            &p.author,
+                            &p.text,
+                            p.unsupported,
+                        );
                         out.push_str(&format!("- {line}\n"));
                     }
                 }

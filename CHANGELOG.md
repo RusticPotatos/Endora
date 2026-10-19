@@ -9,6 +9,19 @@ tagged release.
 
 ### Changed
 
+- **What one member writes reaches another clean** ([ADR 0129](docs/adr/0129-the-teams-history-and-asking-the-past.md),
+  amended). The first build cleaned only a consult's question and what the record returns; a
+  thread post, a world line and a desk card went through raw. **A thread post is kept as written**
+  (a mention in it still wakes whoever it names), **and what another member is told of it, in its
+  briefing and in `my_turn`, is one line under its author's name** with control, direction
+  (bidi), zero-width and separator characters replaced and an `@` that would wake a member
+  written full-width; Endora's and the owner's posts are as written. The same for a question asked
+  of a member, and the thread lines on a card. **The one-line helpers every stored line goes
+  through now do it too** (the world's headings, headlines, warrants and story parts, a decision
+  for the board, a lead's reasons, a criterion's text, a huddle view), and **a question or an
+  approval on the owner's desk and a section's body are scrubbed**: the same characters replaced,
+  their line breaks kept. No migration. Scenario:
+  `domains/team/features/the-history.feature`.
 - **A tool only one kind of turn can use is offered in that turn alone**
   ([ADR 0131](docs/adr/0131-the-two-kinds-of-turn.md), amended). `answer_quiz` (the nightly
   quiz on a member's map) and `answer_consult` (a consulted member's answer) were offered to

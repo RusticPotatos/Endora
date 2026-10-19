@@ -20,6 +20,7 @@ use crate::domain::guards::Stopped;
 use crate::domain::lessons;
 use crate::domain::mac::{self, MacFacts};
 use crate::domain::money::{self, Micros};
+use crate::domain::record;
 use crate::domain::review::{self, SendBackReason};
 use crate::domain::routines::{self, FireStep, MINUTE_MS};
 use crate::domain::runs::{self, LONGEST_TURN_MS};
@@ -251,15 +252,11 @@ pub enum Fired {
     Skipped(String),
 }
 
-/// One line, at most `most` characters: what a member or an alarm says, as it is stored.
+/// One line, at most `most` characters: what a member or an alarm says, as it is stored,
+/// cleaned of what could turn text around or hide in it and of an `@` that would wake a member
+/// ([`record::clean`]), since the next to read it is another member or the owner.
 fn one_line(text: &str, most: usize) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(most)
-        .collect()
+    record::clean(text).chars().take(most).collect()
 }
 
 /// Where a member's question went.
@@ -1807,6 +1804,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             crate::domain::evidence::Checkers::Owner => {}
         }
+        let members = self.store.members()?;
         let thread: Vec<String> = self
             .store
             .thread(task.id)?
@@ -1814,7 +1812,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .rev()
             .take(12)
             .rev()
-            .map(|p| format!("- {}: {}", p.author, p.text))
+            .map(|p| Self::post_line(&members, &p.author, &p.text, false))
+            .map(|line| format!("- {line}"))
             .collect();
         let desk = self.store.add_desk(
             "ready_to_read",
@@ -2538,12 +2537,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 came_back.why
             ));
         }
+        let members = self.store.members()?;
         let new: Vec<String> = self
             .store
             .thread(task.id)?
             .into_iter()
             .filter(|p| p.at > since)
-            .map(|p| Self::post_line(&p.author, &p.text, p.unsupported))
+            .map(|p| Self::post_line(&members, &p.author, &p.text, p.unsupported))
             .collect();
         if new.is_empty() {
             told.push_str("Nothing new in the thread since your last turn.\n");
@@ -2560,7 +2560,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .map(|p| (p.author.as_str(), p.text.as_str()))
                 .collect();
             for (asker, question) in chain::unanswered(&posts, &member.name) {
-                told.push_str(&format!("{asker} asks you: {question}\n"));
+                told.push_str(&format!("{asker} asks you: {}\n", record::clean(&question)));
             }
             told.push_str(if member.role == Role::Ceo {
                 "Answer in the thread with post: whoever asked is woken when you do. Give your \
@@ -3436,8 +3436,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         cited: &[crate::domain::Ref],
     ) -> Done<Asked> {
         let _held = self.held();
-        // Room for the question and the worker's line saying what the turn actually did.
-        let text = cut(text.trim(), 1200);
+        // Room for the question and the worker's line saying what the turn actually did; what
+        // could turn text around or hide in it is replaced, since the owner or the member
+        // above reads it as it stands (ADR 0129).
+        let text = cut(record::scrub(text).trim(), 1200);
         let lab = self.lab_names();
         let turn = self.running(run)?;
         let task = self.task(
@@ -3785,7 +3787,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         serves: Option<&str>,
     ) -> Done<crate::domain::DeskId> {
         let _held = self.held();
-        let text = cut(text.trim(), 1200);
+        let text = cut(record::scrub(text).trim(), 1200);
         let turn = self.running(run)?;
         let task = turn
             .task

@@ -108,18 +108,12 @@ impl CallReceipt {
     }
 }
 
-/// Text cut to one line of at most `most` characters, with no control characters. A text that
+/// Text cut to one line of at most `most` characters, cleaned of what could turn text around or
+/// hide in it and of an `@` that would wake a member ([`super::record::clean`]). A text that
 /// does not fit ends in [`super::cut::CUT`], so a reader knows words were lost.
 #[must_use]
 pub fn short(text: &str, most: usize) -> String {
-    let one_line: String = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
-    super::cut::cut(&one_line, most)
+    super::cut::cut(&super::record::clean(text), most)
 }
 
 /// How long the home lab's "no new alarm since" waits from the work's last change, in minutes.

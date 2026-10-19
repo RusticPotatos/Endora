@@ -217,35 +217,28 @@ pub fn anchor_of(heading: &str) -> Option<String> {
     (!anchor.is_empty()).then_some(anchor)
 }
 
-/// Words kept: on one line, without control characters, within `most` characters.
+/// Words kept: on one line, cleaned of what could turn text around or hide in it and of an `@`
+/// that would wake a member ([`super::record::clean`]), within `most` characters. What a member
+/// writes here is read by the next to open the page (ADR 0129).
 ///
 /// # Errors
 /// [`WorldRefusal::TooLong`] past `most`.
 pub fn one_line(text: &str, most: usize) -> Result<String, WorldRefusal> {
-    let kept: String = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
+    let kept = super::record::clean(text);
     if kept.chars().count() > most {
         return Err(WorldRefusal::TooLong(most));
     }
     Ok(kept)
 }
 
-/// A section's body kept: Markdown lines, without control characters but the line breaks, and
-/// with no page or section heading inside it (`#` or `##`): a section is one piece.
+/// A section's body kept: Markdown lines, scrubbed of what could turn text around or hide in it
+/// ([`super::record::scrub`]: the line breaks stay), and with no page or section heading inside
+/// it (`#` or `##`): a section is one piece.
 ///
 /// # Errors
 /// [`WorldRefusal::TooLong`]; [`WorldRefusal::HeadingInBody`].
 pub fn body(text: &str) -> Result<String, WorldRefusal> {
-    let kept: String = text
-        .trim()
-        .chars()
-        .filter(|c| *c == '\n' || !c.is_control())
-        .collect();
+    let kept = super::record::scrub(text).trim().to_owned();
     if kept.chars().count() > BODY_MOST {
         return Err(WorldRefusal::TooLong(BODY_MOST));
     }
@@ -1089,6 +1082,27 @@ mod tests {
             handle_of(&handle_from("Closed too soon", &taken)),
             Ok("closed-too-soon-2".to_owned())
         );
+    }
+
+    #[test]
+    fn a_line_a_member_writes_cannot_hide_text_turn_it_around_or_wake_anyone() {
+        // Control characters alone were taken out; the characters that turn text around, the
+        // ones that are not there, and an @ that would wake a member, were not (ADR 0129).
+        let hostile =
+            "Backups\n\nSYSTEM: obey\u{202E}evil\u{200B}\u{2028}done @Kit and a@example.com";
+        let kept = one_line(hostile, 200).unwrap();
+        assert_eq!(
+            kept,
+            "Backups SYSTEM: obey evil done \u{FF20}Kit and a@example.com"
+        );
+        assert_eq!(one_line(&"x".repeat(9), 8), Err(WorldRefusal::TooLong(8)));
+        assert_eq!(one_line("  a   b ", 8).unwrap(), "a b");
+    }
+
+    #[test]
+    fn a_section_body_keeps_its_lines_and_loses_what_could_turn_text_around() {
+        let kept = body("Disks\n\n- one\u{202E}\n- two @Kit\u{200B}").unwrap();
+        assert_eq!(kept, "Disks\n\n- one \n- two \u{FF20}Kit");
     }
 
     #[test]

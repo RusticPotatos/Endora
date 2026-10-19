@@ -16,6 +16,7 @@ use crate::domain::chain;
 use crate::domain::evidence::{
     self, AfterNothing, CallReceipt, Checkers, Criterion, Found, Judged, Label, Ref, TurnFacts,
 };
+use crate::domain::record;
 use crate::domain::review::SendBackReason;
 use crate::domain::staffing;
 use crate::domain::{
@@ -606,7 +607,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .thread(task.id)?
             .iter()
             .filter(|p| p.text.starts_with(SENT_BACK) && members.iter().any(|m| m.name == p.author))
-            .map(|p| format!("- {}: {}", p.author, p.text.trim_start_matches(SENT_BACK)))
+            .map(|p| {
+                format!(
+                    "- {}: {}",
+                    p.author,
+                    record::clean(p.text.trim_start_matches(SENT_BACK))
+                )
+            })
             .collect();
         let desk = self.store.add_desk(
             "rounds",
@@ -1304,8 +1311,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(String::new())
     }
 
-    /// The members' posts that are unsupported, marked in a thread line.
-    pub(crate) fn post_line(author: &str, text: &str, unsupported: bool) -> String {
+    /// A post of a thread as another reads it, in a briefing, in `my_turn` or on a card: under its
+    /// author's name, unsupported ones marked. What a member wrote is cleaned of what could turn
+    /// text around or hide in it, of a line break that could forge a line, and of an `@` that
+    /// could wake someone ([`record::clean`]); what Endora and the owner wrote is as it was
+    /// written. The post itself is kept as written (ADR 0129).
+    pub(crate) fn post_line(
+        members: &[Member],
+        author: &str,
+        text: &str,
+        unsupported: bool,
+    ) -> String {
+        let text = if members.iter().any(|m| m.name == author) {
+            record::clean(text)
+        } else {
+            text.to_owned()
+        };
         if unsupported {
             return format!("{author} [unsupported]: {text}");
         }
