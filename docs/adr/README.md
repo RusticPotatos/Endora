@@ -114,6 +114,8 @@ that established it.
   unless it is off, Restricted, administration or the owner's own; Confidential only to local
   turns; acts only for the roles that act; an act that is on runs within limits and is told,
   an act that asks waits on the owner's desk, and the owner's yes runs exactly what was shown.
+  A turn on the house's own small model on the NAS is offered none of them
+  ([0131](0131-the-two-kinds-of-turn.md)).
 - **Each member has a brain the owner sets; a cloud turn reads only what the owner allowed**
   ([0109](0109-a-brain-per-member.md)). Local by default, or a Claude the role may use, paid
   from the team's pool. HQ tells the node which turns are cloud; the lead's may read scrubbed
@@ -136,6 +138,11 @@ that established it.
   it. Leads and the CEO propose with task numbers and event ids HQ checks; the CEO decides, the
   board may overrule, and caps are the owner's. Each member reports to someone the owner may
   change, and the CEO plans once a week from patterns.
+- **The ask says what done means, and nothing is asked for that serves nothing**
+  ([0124](0124-guards-against-how-agent-teams-fail.md), amended). The owner's work is refused
+  without at least one criterion; a routine's task carries criteria from its routine; a lead's
+  split of any task with criteria names the one each part serves; and a request for the owner's
+  yes names the criterion of its task it serves, or never reaches the desk.
 - **A guard that gains authority is tried in shadow first; a runaway is stopped without asking**
   ([0133](0133-caps-on-talk-and-runaway.md)). A guard that would hold the team's work records
   what it would have held, where the owner reads it and judges it, and changes nothing until the

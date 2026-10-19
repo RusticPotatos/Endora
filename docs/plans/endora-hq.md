@@ -1353,6 +1353,38 @@ ran 1,539 turns in 3 h 40 min); and only the owner could stop the team.
   from both. No schema change.
 - Scenarios: `domains/team/features/caps-on-talk-and-runaway.feature` and `guards.feature`.
 
+### Criteria first, and tools that fit the turn (as built 2026-10-19, [ADR 0124](../adr/0124-guards-against-how-agent-teams-fail.md) and [ADR 0131](../adr/0131-the-two-kinds-of-turn.md), amended)
+
+As built, from two live failures: the owner's "no literal passwords in role defaults" went to a
+lead with no definition of done and split into three blocked sub-tasks, none tied to what was
+asked; and a developer on the NAS's small model asked the owner to approve a web map search with
+coordinates it had made up.
+
+- **The owner's work says what done means.** `add_task_with` (Give work, `POST /v1/tasks`, a
+  project's hand-it-work button) refuses none with `OwnerNeedsCriteria`; the console asks for "at
+  least one line" and sends nothing without it. `add_task` stays the primitive HQ makes its own
+  tasks with, and work already open with none is untouched (no migration; its lead may give it
+  some with `narrow_criteria`).
+- **A routine's task carries criteria** (`routines::criteria_for`): the home lab's two live ones;
+  for any other routine *a reading of "its title" from this run, cited*, not live; none for a
+  lead's report and patterns and the CEO's review and planning, which close by being filed or
+  decided.
+- **`serves` at depth 0.** `subtask_discipline` no longer exempts the owner's and a routine's
+  tasks; a task with no criteria has none to name (work open from before, and the plan HQ hands a
+  project's lead). Who may hand what to whom is checked first.
+- **The bridge by where a turn thinks** (`bridge::Thinks`, `bridge::offered`, the node's
+  `bridge::offered_to` and `call`): a turn on the NAS's model (`local`, or one HQ says nothing of)
+  is listed the lab's contracts and no bridged tool, and is refused (403) one it names; the Mac
+  and Claude are offered as their role and the tier allow.
+- **A request for the owner's yes serves a criterion.** The bridge adds `serves` to every act's
+  schema (required of one that always asks); the node passes it to HQ; `ask_approval` reads it
+  with `guards::approval_serves` and refuses (400) one that names none, or sits on a task with no
+  criteria, before anything is put on the desk. The card's `serves` is kept in HQ's settings
+  (`approval_serves:<desk item>`).
+- Scenarios: `domains/team/features/what-done-means-comes-first.feature` and
+  `a-request-says-what-it-serves.feature`;
+  `domains/capabilities/features/tools-that-fit-the-turn.feature`. No schema change.
+
 ### The team's map (as built 2026-10-18, [ADR 0126](../adr/0126-the-teams-map.md))
 
 As built: the second of three builds of the team's memory; asking the past follows.

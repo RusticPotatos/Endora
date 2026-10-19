@@ -397,10 +397,10 @@ fn owners_ask(
     )
 }
 
-/// Live, 19 October: the owner's "no literal passwords in role defaults" went to a lead with no
-/// definition of done and split into three blocked sub-tasks, each defensible and none tied to
-/// what was asked. The owner's work says what done means now (ADR 0124, amended): at least one
-/// line, or it is refused with the way to give one, and nothing is made or woken.
+/// Live: the owner's "no literal passwords in role defaults" went to a lead with no definition of
+/// done and split into three blocked sub-tasks, each defensible and none tied to what was asked.
+/// The owner's work says what done means now (ADR 0124, amended): at least one line, or it is
+/// refused with the way to give one, and nothing is made or woken.
 #[test]
 fn the_owner_hands_out_work_only_with_what_done_means() {
     let clock = Hands(AtomicI64::new(OCT_17));

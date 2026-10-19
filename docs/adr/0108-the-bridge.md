@@ -36,6 +36,16 @@ other work. The tool the owner named that server's reader stays a read, Confiden
 turns only. Every other tool of that server counts as an act, as any tool server's does, and is
 kept off with the switches.
 
+Amended 2026-10-19 by [0131](0131-the-two-kinds-of-turn.md) and
+[0124](0124-guards-against-how-agent-teams-fail.md), after a developer on the house's own small
+model on the NAS asked the owner to approve a web map search with coordinates it had made up:
+**what the bridge offers a turn depends on where it thinks** (a turn on that model is offered
+the lab's contracts and no outside tool, and is refused one it names; the owner's Mac and Claude
+are offered as their role and the tier allow), and **an act that asks the owner says which of its
+task's criteria it serves**, or it is refused to the member and never reaches the desk.
+Scenarios: `domains/capabilities/features/tools-that-fit-the-turn.feature` and
+`domains/team/features/a-request-says-what-it-serves.feature`.
+
 ## Context
 
 The team keeps the home lab healthy through contracts (0106), and the owner has more than forty
@@ -82,7 +92,11 @@ listener, `GET /team-relay/contracts` and `POST /team-relay/contracts/{name}`):
    Confidential tool for that turn.
 3. **The profile by role**: lead and developer read and act; reviewer and researcher only
    read; a role not listed does nothing. A small table in code that a later owner setting can
-   replace.
+   replace. *Amended 2026-10-19:* **and by where the turn thinks** (`bridge::Thinks`, told by HQ
+   with the turn): a turn on the house's own model on the NAS, or one HQ says nothing of, is
+   offered no bridged tool at all, whatever its role, and a name it makes up is refused (403);
+   the Mac's and Claude's turns are offered what the profile allows. The lab's contracts (0106)
+   are not the bridge and stay with it.
 4. **The stance.** A read runs through Endora's own invoke path (the outbound secret check and
    redaction, the connection's settings) and keeps a stranger's mark when it is a third
    party's words. An act whose stance is **on** runs at once, at most three times an hour a
@@ -91,7 +105,11 @@ listener, `GET /team-relay/contracts` and `POST /team-relay/contracts/{name}`):
    **ask** runs nothing: it is stored on the node, put on the desk as an **approval** saying the
    tool, its arguments in plain words and the member's reason, and the member's turn ends as
    `ask_owner` ends it, with the same limit (one question or approval a member about a task at
-   a time). An act given arguments in a turn that has read a stranger's words asks too: a
+   a time). *Amended 2026-10-19:* the request also says which of its task's criteria it serves
+   (`serves`, its number or its words), and the card shows that criterion as it was asked. HQ,
+   which holds the criteria, reads it before anything is put on the desk or the turn is ended: a
+   request that names none, or sits on a task with no criteria, is refused to the member with the
+   reason (400) and never reaches the desk. An act given arguments in a turn that has read a stranger's words asks too: a
    stranger can choose what an act is given, while an act given nothing can only be done or
    not, and an on one is limited and told.
 5. **The approval runs exactly what was shown.** Approve on the card makes the node run the
@@ -102,7 +120,10 @@ listener, `GET /team-relay/contracts` and `POST /team-relay/contracts/{name}`):
 6. **Expiry.** An approval nobody decides within a day goes unrun, with a note in the thread.
 
 Every call, read, act, ask or refusal, leaves an audit line with the member and the run, as
-the contracts do. Every act needs a `why`, added to its schema by the bridge.
+the contracts do. Every act needs a `why`, added to its schema by the bridge, and one that
+always asks needs a `serves` as well (every act has the property, since a turn that has read a
+stranger's words asks before one); neither is passed to the tool, kept with what an approval
+will run, or said among its arguments.
 
 **Sonarr's and Radarr's stuck downloads.** Their queue read now gives each item's number,
 the app's tracking state and its own status messages (why it is stuck). Two actions join it,
@@ -134,6 +155,11 @@ standing facts such as what is being retired and what is the owner's own.
   while the node was down runs nothing until the owner taps again.
 - The name guard on tool servers' tools fails safe: a tool kept off by mistake is asked for in
   a thread, never quietly given.
+- A tool server's tools are Confidential, so they reach local turns only; since the amendment
+  that is the Mac's. A turn on the NAS's own model reads the lab through the contracts and
+  leaves anything outside to a member on the Mac, said in the thread.
+- A request for the owner's yes that serves nothing its task asked for costs the owner no card:
+  the member reads why it was refused, and its turn goes on.
 
 ## Alternatives considered
 

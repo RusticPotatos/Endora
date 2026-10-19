@@ -11,6 +11,15 @@ parked work climbs the ladder; a review carousel goes to a huddle at once; each 
 its goal's "not now"). Built: everything below, and the owner's scenarios in
 `domains/team/features/guards.feature`.
 
+Amended 2026-10-19, from the failure study this record began with and two live failures: two more
+ways a team fails (12 and 13 below), built under *Amended: criteria first*. The owner's work now
+says what done means, the exemption of the owner's and a routine's tasks from naming what a
+sub-task serves is gone (a task with no criteria is the one exception, having none to name), a
+routine's task carries criteria from its routine, and a request for the owner's yes says which
+criterion of its task it serves. Scenarios:
+`domains/team/features/what-done-means-comes-first.feature` and
+`a-request-says-what-it-serves.feature`.
+
 ## Context
 
 A team of models does not fail by going rogue. It fails the way a busy office does, one locally
@@ -41,6 +50,16 @@ or can see coming in HQ's record:
     the owner's desk, one for each of two tasks with one cause.
 11. **"Down" from a slow answer.** A home-lab read that timed out was "unavailable", which is an
     alarm.
+12. **An ask with no definition of done.** The owner's work needed no criteria, and a sub-task
+    under the owner's or a routine's task (depth 0, where a lead first splits work) did not have
+    to say which criterion it served. Live, the owner's "no literal passwords in role defaults"
+    went to a lead with nothing to check it against and split into three blocked sub-tasks, each
+    defensible and none tied to what was asked.
+13. **A request that serves nothing.** Live, a developer on the house's own small model on the
+    NAS asked the owner to approve a web map search, with coordinates it had made up, "to find
+    the NAS backup location", and it reached the owner's desk as an approval. The first half of
+    the answer is which tools a model is offered ([0131](0131-the-two-kinds-of-turn.md),
+    amended); the second is below.
 
 A guard that never fires looks the same as one that works, and one that fires on everything is
 worse than none (a published sweep elsewhere was half false positives). So every guard here is a
@@ -60,7 +79,9 @@ finding takes a verdict, so its precision is measured before anyone tunes it.
 | Ceremony | Per project, over 24 h and 7 d: coordination turns (talk only, a re-check with no new reading, a review round or huddle view, a question up the chain) against product change (an act, a branch, a criterion met) | 12 coordination turns and 4:1 | `domain::guards::ceremony`; `health_tick`, every 5 min |
 | Carousel | Sent back with no new evidence submitted between returns: straight to a huddle; a submission while it decides waits | 3 returns | `after_sent_back`; `review_asked` |
 | Redundant wakes | A wake that brings no news, to a member whose last turns on the task showed nothing: refused, the work parked | 3 turns | `wakes::decide` (`Refused::Redundant`) |
-| Sub-tasks | At most 5 open under one task, at most 3 deep; a sub-task of a member's task with criteria names which it serves (`serves`); the owner's and a routine's tasks (depth 0) need none | 5 open, depth 3 | `create_task_in` |
+| Sub-tasks | At most 5 open under one task, at most 3 deep; a sub-task of any task with criteria names which it serves (`serves`), the owner's and a routine's included (*amended*: depth 0 was exempt, and is where a lead first splits work). A task with no criteria has none to name: work open from before they were asked for, and the plan HQ hands a project's lead | 5 open, depth 3 | `create_task_in`, `subtask_discipline` |
+| Criteria first | The owner's work says what done means: at least one criterion, from Give work, a project's hand-it-work button or the API, or it is refused with the way to give one, and nothing is made. A routine's task carries criteria from its routine (the home lab's two live ones; a reading of what it is about, cited, for any other routine; none for a lead's report and patterns and the CEO's review and planning, which close by being filed or decided) | at least 1, at most 8 | `evidence::owner_may_hand_out`, `add_task_with`; `routines::criteria_for`, `fire_held_lock` |
+| A request for the owner's yes | A bridged act that asks the owner says which of its task's criteria it serves (`serves`); one that names none, or sits on a task with no criteria, is refused to the member with the reason (the turn goes on) and never reaches the desk; the owner's card shows the criterion it serves, as it was asked | — | `guards::approval_serves`, `ask_approval`; the node's `bridge::call` |
 | Enough evidence | On each turn on its own doing task, HQ dry-runs the evidence rule on the member's readings since the last send-back; enough, the briefing says submit now; re-checking turns after that (every reading one already taken) are talk only; on the third HQ submits it | 3 re-checks | `engine::discipline` |
 | Retract and sweep | The owner's "Not true" on a note, section or story keeps its fingerprint (lowercase, punctuation stripped, word pairs), takes it out, and lists what else holds enough of it to forget at once; a later note, section or story that says it again is refused, with the date; a note citing `n12` is built on it, and forgetting one names its descendants | 60% of the claim's pairs, 2 at least | `domain::retraction`; `retractions` (append-only), `note_parents`; `note_in`, `write_world_in`, `tell_story_in` |
 | Fence push | Refused acts in one turn, or the same refused act for different members within a day: a deduped desk notice naming the tool and the members; every briefing carries its goal's "not now" | 3 a turn; 2 members in 24 h | `after_refused_act`; the briefing |
@@ -83,17 +104,62 @@ longer holds; a desk notice clears with its finding.
 busiest task, with the finding in the thread; indeterminate work wakes its area's lead once; the
 ladder (0120) takes parked work as before.
 
+**Amended: criteria first.** Four rules, each a line of code with a test, none a model's word:
+
+- *The owner's work says what done means.* `add_task_with`, the owner's front door (Give work,
+  the HQ API's `POST /v1/tasks`, a project's hand-it-work button), refuses none with
+  `OwnerNeedsCriteria`: "the team starts from what done means: say at least one thing that must
+  be true when this is finished". It makes no task and wakes nobody. `add_task`, the primitive
+  under it, stays for the tasks HQ makes itself (a routine's, a started project's plan) and for
+  work already open. **Work already open with no criteria is untouched**: no migration changes a
+  row, and its lead may give it some with `narrow_criteria` (0133), which allows a task with none.
+- *A routine's task carries criteria from its routine* (`routines::criteria_for`). The home lab's
+  check keeps the two live ones (0114). Any other routine's task gets one: *a reading of "the
+  routine's title" from this run, cited*, not live (a routine need not be about the lab), so that
+  closing it takes a reading, and a routine that could never be closed would never fire again.
+  A lead's standing reviews (its daily report and weekly patterns) and the CEO's (its daily review
+  and weekly planning) get none: they are reports and decisions, closed by filing or deciding
+  them, no reading exists to cite, and nothing splits one. A criterion there would only make
+  closing them ask for evidence they do not have.
+- *`serves` everywhere.* The depth-0 exemption is gone from `subtask_discipline`, so a lead's
+  split of the owner's task, or of a routine's, names the criterion each part serves, as a split
+  of a member's task always did. The one exception is **a task with no criteria**, which has none
+  to name: it covers work open from before, and the plan HQ hands a project's lead when the CEO
+  accepts the project (made with no criteria, the lead's own to plan; its parts need no `serves`).
+  The refusal now says it applies "whoever asked for the task", and that a part which serves none
+  is not part of it. The authority checks (who may hand what to whom, and the CEO's) come before
+  it, so a member who may not make the task at all is told so rather than asked what it serves.
+- *A request for the owner's yes serves a criterion.* The bridge adds `serves` to every act's
+  schema, and requires it of one that always asks. The node passes it to HQ with the request, and
+  `ask_approval` reads it against the task's criteria by `guards::serves` (its number or its
+  words): a request that names none, or is on a task with no criteria, is refused with the
+  reason (`ApprovalServesWhich` lists the criteria; `ApprovalNothingToServe` says what a lead and
+  anyone else may do), before the member's turn is ended or anything is put on the desk. The
+  card's `serves` is the criterion's number and words as they were when asked. Models propose; HQ
+  decides.
+
 **Stored** in tables made if missing (`nudges`, `findings`, `closures`, `retractions`,
 `note_parents`, `desk_attached`) and in HQ's settings (`serves:<task>`, `enough:<task>:<member>`,
-`passed:<task>:<run>`, `guards_looked_at`, `guards_ceremony`). No existing row changes.
+`passed:<task>:<run>`, `guards_looked_at`, `guards_ceremony`, and, since the amendment,
+`approval_serves:<desk item>`). No existing row changes, and no migration.
 
 ## Consequences
 
 - Fewer turns spent on talk, polish and nudges that say nothing new; one more look for the lead
   where HQ cannot tell, and a few more refusals a member must read and act on.
 - The detectors run every five minutes over the week's runs; at home-lab size this is small.
-- A member's sub-task under its own task with criteria must say which it serves; the owner's and
-  a routine's tasks are exempt, so most of today's splitting is unchanged.
+- A member's sub-task under any task with criteria must say which it serves, and since the
+  amendment that includes the owner's tasks and a routine's: the splitting that was exempt is the
+  splitting a lead does first, so it is now the most asked about. A refusal tells the lead which
+  criteria there are; a part that serves none of them is not part of the task.
+- The owner types one more line with every ask, at least one criterion, and a project's
+  hand-it-work button asks for it. An ask with no line is refused with the way to give one, and
+  the console keeps what was typed.
+- An owner's routine (not the home lab's, not a standing review) is closed on a reading of what it
+  is about, cited, where it was closed on a word before. The lead of the task's area may reword
+  that criterion for one task with `narrow_criteria`.
+- A request for the owner's yes costs the member a clause, and a request that is not tied to its
+  task no longer costs the owner a card.
 - A retracted claim's fingerprint is compared on every note, section and story written; a
   paraphrase that shares too few word pairs passes, which is the price of no model in the loop.
 - The first month's precision is expected to be low; the verdicts are how it is learned.
@@ -102,11 +168,14 @@ ladder (0120) takes parked work as before.
 pass's binding holds for any edit); the house log's timeline lines and thread posts in the sweep
 (only notes, sections and stories now); a "while you were away" digest of ceremony; a ceremony
 budget per task that refuses (only once the measure shows it is needed); model-assisted
-candidate matching for the sweep; the desk grouping for approvals (by design, not deferred).
+candidate matching for the sweep; the desk grouping for approvals (by design, not deferred); a
+routine's own criteria, set by the owner when they make it (today it has its kind's: the form for
+a routine does not ask, and the lead may reword one task's).
 
 **Since built**: the "while you were away" digest ([0132](0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md)),
 and the ceremony budget per task, tried in shadow first, with a tripwire that stops a runaway
-team itself and a lead's tool to narrow criteria ([0133](0133-caps-on-talk-and-runaway.md)).
+team itself and a lead's tool to narrow criteria ([0133](0133-caps-on-talk-and-runaway.md)); and,
+in the amendment above, criteria first.
 
 ## Alternatives considered
 
@@ -116,3 +185,18 @@ team itself and a lead's tool to narrow criteria ([0133](0133-caps-on-talk-and-r
   exact comparison of model output is a mistake this project has made.
 - **Stricter thresholds from the start.** Rejected: a loose start with verdicts learns the real
   numbers; a strict one teaches the team to work around the guard.
+- **A criterion for every routine, standing reviews too.** Rejected: closing a routine's task that
+  has criteria asks for evidence per criterion, and a lead's report or the CEO's review is closed
+  by filing it or deciding it, with no reading to cite; the criterion would be one more refusal for
+  every daily turn and no more check on the work. Nothing splits one either.
+- **A live default criterion for the owner's own routines**, "a fresh reading of the lab". Rejected:
+  a routine need not be about the lab, and a task that cannot be closed keeps its routine from
+  firing again (it has one open task at a time).
+- **Criteria required of `add_task` itself, for the owner.** Rejected: it is the primitive HQ makes
+  its own tasks with, and work already open is to stay as it is. The owner's front door is
+  `add_task_with`, the one Give work and the API use, and that is where the rule lives.
+- **The node checking `serves` itself.** Rejected: HQ holds the task's criteria and the node would
+  have to ask for them to answer; HQ already refuses an approval it cannot take, and the node
+  passes the reason on. One place decides.
+- **Leaving the depth-0 exemption and asking leads to be careful.** Rejected: it was exactly the
+  split that went wrong, and "be careful" is a request to a model, not a rule.

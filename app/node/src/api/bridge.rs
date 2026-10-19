@@ -1161,10 +1161,10 @@ mod tests {
         assert_eq!(asked[0]["serves"], "1", "a number is as good as its digits");
     }
 
-    /// Live, 19 October: a developer on the house's model on the NAS asked the owner to approve a
-    /// web map search, with coordinates it had made up, "to find the NAS backup location", and it
-    /// reached the owner's desk as an approval. A turn on that model is offered the lab's
-    /// contracts and no outside tool, and is refused one it names (ADR 0131, amended).
+    /// Live: a developer on the house's model on the NAS asked the owner to approve a web map
+    /// search, with coordinates it had made up, "to find the NAS backup location", and it reached
+    /// the owner's desk as an approval. A turn on that model is offered the lab's contracts and
+    /// no outside tool, and is refused one it names (ADR 0131, amended).
     #[tokio::test]
     async fn a_turn_on_the_nas_model_is_offered_no_outside_tool_and_refused_one_it_names() {
         let (hq_url, to_hq) = hq_thinking("developer", false, "local");

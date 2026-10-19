@@ -144,11 +144,11 @@ fn an_approval_waits_on_the_desk_ends_the_turn_and_counts_as_a_question() {
     );
 }
 
-/// Live, 19 October: a developer on the house's small model asked the owner to approve a web
-/// map search "to find the NAS backup location", with coordinates it had made up, and it reached
-/// the desk. A request for the owner's yes says which of its task's criteria it serves (ADR 0124,
-/// amended); one that serves none is refused to the member with the reason, its turn goes on, and
-/// nothing reaches the desk.
+/// Live: a developer on the house's small model asked the owner to approve a web map search "to
+/// find the NAS backup location", with coordinates it had made up, and it reached the desk. A
+/// request for the owner's yes says which of its task's criteria it serves (ADR 0124, amended);
+/// one that serves none is refused to the member with the reason, its turn goes on, and nothing
+/// reaches the desk.
 #[test]
 fn a_request_that_serves_none_of_its_tasks_criteria_is_refused_and_never_reaches_the_desk() {
     let clock = Hands(AtomicI64::new(NOON));

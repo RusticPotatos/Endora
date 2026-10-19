@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended 2026-10-18 by
+Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended 2026-10-19 by
+[0124](0124-guards-against-how-agent-teams-fail.md): **the owner's work says what done means
+too** (at least one criterion, or Give work is refused), a routine's task carries criteria from
+its routine, and a sub-task of any task with criteria says which it serves. Amended 2026-10-18 by
 [0124](0124-guards-against-how-agent-teams-fail.md): a tester's pass keeps a hash of the
 criteria it judged and, once they change, reads "needs re-check" and does not count; a member
 whose evidence already meets the criteria is told to submit, its re-checking turns after that
@@ -75,8 +78,10 @@ propose and code decides, and the owner is the board.
    counts as evidence too, by number.
 2. **Acceptance criteria.** A task carries a short list (at most eight), each one line and
    possibly **live**: about the lab as it is now. Work a member hands another member must have
-   them (`create_task` refuses with `NoCriteria`); the owner's may (the screen asks, `live:`
-   marks one); the home lab's routine and alarm tasks get two standard live ones: "Every
+   them (`create_task` refuses with `NoCriteria`); the owner's must, since 0124's amendment (the
+   screen asks for at least one line, `live:` marks one, and work with none is refused;
+   work already open with none is as it was); the home lab's routine and alarm tasks get two
+   standard live ones: "Every
    container that alarmed is running and healthy, from a fresh homelab_status" and "No new alarm
    for the same containers since". Criteria are members' text: escaped on screen.
 3. **One evidence rule** (`domain::evidence::judge`, pure): each criterion needs at least one

@@ -909,9 +909,9 @@ fn a_sub_task_of_a_members_task_says_which_criterion_it_serves() {
 }
 
 /// The owner's task is split the way a member's is (ADR 0124, amended): each part says which
-/// criterion of it that part serves. Live, 19 October, the owner's "no literal passwords in role
-/// defaults" went to a lead and split into three blocked sub-tasks, each defensible and none tied
-/// to what was asked, because depth 0 (the owner's and a routine's tasks) was exempt.
+/// criterion of it that part serves. Live, the owner's "no literal passwords in role defaults"
+/// went to a lead and split into three blocked sub-tasks, each defensible and none tied to what
+/// was asked, because depth 0 (the owner's and a routine's tasks) was exempt.
 #[test]
 fn splitting_the_owners_task_says_which_criterion_each_part_serves() {
     let clock = Hands(AtomicI64::new(NOON));

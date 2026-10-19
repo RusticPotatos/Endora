@@ -11,11 +11,13 @@
 //! 2. **The data tier**: a Confidential tool's result is given only to a turn on a local
 //!    model, but for the few the owner allowed a lead thinking with Claude ([`may_see`]).
 //! 3. **The member's role**: reads for every role, acts only for the roles that act
-//!    ([`PROFILES`]).
+//!    ([`PROFILES`]). And **where the turn thinks** ([`Thinks`], ADR 0131 amended): a turn on
+//!    the house's own small model on the NAS is offered none of them ([`offered`]).
 //! 4. **The owner's stance**: an act that is on runs at once, within [`ACTS_AN_HOUR`] a tool
 //!    an hour across the team, and is told to the owner; an act that asks waits on the owner's
-//!    desk until they approve exactly what it would run. A turn that has read a stranger's
-//!    words (a third-party result) asks before any act it gives arguments to.
+//!    desk until they approve exactly what it would run, and says which of its task's criteria
+//!    it serves (ADR 0124 amended; HQ reads it). A turn that has read a stranger's words (a
+//!    third-party result) asks before any act it gives arguments to.
 //! 5. **Approvals** run exactly what was stored, only while the stance is not off, and expire
 //!    unrun after [`APPROVALS_LAST_MS`].
 //!

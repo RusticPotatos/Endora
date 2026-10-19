@@ -16,6 +16,11 @@ was never given; there is no switch, so the service runs the rules the tests run
 engineering wing's lead needs the Mac for its work like its developers and testers; an alarm
 acts at once when the money is gone; and a turn that waits is a wake, not a stall.
 
+Amended again 2026-10-19, from a live failure: **what the bridge offers a turn depends on where
+it thinks.** A turn on the house's own model on the NAS is given the lab's contracts and no
+outside tool (*What the bridge offers a turn*, below). Scenarios:
+`domains/capabilities/features/tools-that-fit-the-turn.feature`.
+
 ## Context
 
 Until now a member had **one** brain, and every turn it took ran on it: a member on Sonnet did
@@ -147,6 +152,33 @@ the owner's desk, however long it waits. Held work is not hidden: the roster say
 member waits for and the top bar counts the turns waiting for budget. A scenario holds both
 cases (budget; the Mac) and that the CEO is never woken for them.
 
+### What the bridge offers a turn
+
+*Amended 2026-10-19.* The bridge ([0108](0108-the-bridge.md)) offers a turn Endora's capabilities
+and the tools of the tool servers the owner installed, as its role and the data tier allow. It
+is also the one place a model has to choose well among many outside tools, and the failure study
+named a small local model as developer the likeliest way to a carousel. Live (the Context above
+has it), a developer on the NAS's model asked the owner to approve
+`brave-search__brave_place_search` with coordinates it had made up, "to find the NAS backup
+location": a tool server's tool asks by default, so it reached the owner's desk as an approval.
+
+What a turn is offered depends on **where it thinks**, which the node reads from what HQ says of
+the turn when it asks whose a token is (`cloud`, and `brain`, the turn's own, above):
+`capabilities::bridge::Thinks`.
+
+| Where the turn thinks | The bridge |
+|---|---|
+| The house's own model on the NAS (`local`, or a turn HQ says nothing of) | **The lab's contracts only.** No bridged tool is listed, and one named anyway is refused (403), with the way on: say what is needed in the task's thread, so the lead can hand the step to a member on the Mac |
+| The owner's Mac (`mac`) | As its role allows (0108's profile), and the data tier as for any local model |
+| A Claude | As its role and the data tier allow, as ever (a tool server's tools are Confidential and stay with local turns) |
+
+Not the bridge: the contracts of [0106](0106-team-contracts.md) (`homelab_status`, the logs,
+`restart_container`, the map, the docs, the wing's git), which a turn on the NAS's model still
+has. The node knows a turn's brain and not its kind. A work turn is on the NAS's model when the
+Mac is busy and the work does not need it; a judgment turn is there only for an alarm out of
+budget (above), and that turn has the contracts, which is what an alarm needs, and no outside
+tool. Unknown is the NAS's: what is not known to be a stronger model is not given the bridge.
+
 ### What the owner sees
 
 The roster line says both brains and, for a member whose turn waits, what it waits for (the same
@@ -205,6 +237,12 @@ record have no brain and read as their member's.
   consult is work on the NAS too, free whoever asks and whoever is asked, and the nightly quiz
   is open to every free member.
 - `Refused::OutOfBudget` is no longer raised, and stays readable in the record.
+- A turn on the NAS's model has the lab's contracts and no outside tool (amended 2026-10-19).
+  Work that needs the download queues (`sonarr_queue` and `radarr_queue` are bridged reads), the
+  weather or a tool server's tool is for a turn on the Mac or on Claude; a lead outside the wing
+  whose turn lands on the NAS's model while the Mac is busy reads the lab and not the queues. If
+  that costs more than it saves, the lever is the Mac as the floor for that work, as it is for
+  the wing's, and not the bridge.
 
 ## Alternatives considered
 
@@ -221,3 +259,11 @@ record have no brain and read as their member's.
   re-asks each tick; a second queue would need its own release.
 - **A switch, off in the older tests.** The first build had one. Rejected on review: the path
   that runs must be the path that is tested.
+- **Offering the NAS's model the bridge's reads and withholding its acts** (amended
+  2026-10-19). Rejected: the failure is choosing among many outside tools, and a read is chosen
+  as badly as an act, with a receipt that then counts as evidence. None is the simple rule, and
+  the Mac or Claude takes the step.
+- **Leaving the owner's desk to catch a request a small model invented** (amended 2026-10-19).
+  Rejected: that is what happened, and the owner's attention is what a desk spends. The other
+  half of the answer is [0124](0124-guards-against-how-agent-teams-fail.md)'s: nothing reaches
+  the desk that serves none of its task's criteria, whoever asks.
