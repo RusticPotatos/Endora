@@ -238,6 +238,48 @@ fn a_lead_decides_its_own_plan_with_no_tester_and_nobodys_leave() {
 }
 
 #[test]
+fn work_closed_as_superseded_names_the_task_that_carries_it_on() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let w = wing(&hq, true);
+    let plan = task_for(&hq, &w, w.kit, "Plan the clean-up");
+    let next = task_for(&hq, &w, w.devs[0], "Tidy the deluge role");
+    let kit = turn_on(&hq, w.kit, plan);
+    use_tool(&hq, &kit, "claim", &json!({ "task": plan.0 })).unwrap();
+    let close = |successor: serde_json::Value| {
+        use_tool(
+            &hq,
+            &kit,
+            "set_status",
+            &json!({ "task": plan.0, "status": "done", "reason": "overtaken",
+                     "why": "superseded", "successor": successor,
+                     "evidence": [format!("task {}", plan.0)] }),
+        )
+    };
+    let status = || hq.store().task(plan).unwrap().unwrap().status;
+    // Superseded says what superseded it, and what that is must be there; refused before
+    // anything moves.
+    for (successor, said) in [
+        (json!(null), "names the task that carries it on"),
+        (json!(plan.0), "cannot be its own successor"),
+        (json!(9_999), "task"),
+    ] {
+        let refused = close(successor.clone()).unwrap_err();
+        assert!(refused.contains(said), "{successor}: {refused}");
+        assert_ne!(status(), TaskStatus::Done, "{successor}: nothing moved");
+    }
+    close(json!(next.0)).unwrap();
+    assert_eq!(status(), TaskStatus::Done);
+    let closed = crate::application::guard_ports::GuardStore::closure(hq.store(), plan)
+        .unwrap()
+        .expect("why it closed");
+    assert_eq!(
+        (closed.closure.name(), closed.successor, closed.by.as_str()),
+        ("superseded", Some(next), "Kit")
+    );
+}
+
+#[test]
 fn stuck_work_goes_to_its_lead_first_and_the_lead_decides_it() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);

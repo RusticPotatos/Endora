@@ -448,7 +448,7 @@ pub fn tools(role: Role) -> Value {
         tool(
             "set_status",
             "Move your task on (todo, doing, in_review, blocked), with a reason. Submitting it (in_review) cites evidence for each of its criteria, and a live criterion a reading from this turn; the tester then re-checks it and its lead accepts it. Done is set only that way, except a routine's check: close that as done, with its evidence, once you have looked. Done met its criteria unless you say why otherwise: superseded (name the successor task) or not_needed.",
-            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on" } }),
+            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on, which superseded needs" } }),
             &["task", "status", "reason"]
         ),
         tool(
@@ -891,10 +891,23 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let reason = text_arg(args, "reason")?;
             let cited = evidence_lists(args)?;
             // Done says why when it is not "met its criteria" (ADR 0124): checked first, so a
-            // reason not in the set changes nothing.
+            // reason not in the set, a superseded that names no successor (or itself, or a task
+            // that is not there) changes nothing.
             let why = match (to, args["why"].as_str()) {
                 (TaskStatus::Done, Some(w)) if w != "met_criteria" => {
-                    Some(closure_arg(args, TaskStatus::Done)?)
+                    let (closure, successor) = closure_arg(args, TaskStatus::Done)?;
+                    crate::domain::closure::may_close(task, closure, successor)
+                        .map_err(|r| r.to_string())?;
+                    if let Some(next) = successor {
+                        let there = engine.store().task(next).map_err(|e| e.to_string())?;
+                        if there.is_none() {
+                            return Err(format!(
+                                "there is no task #{} to carry the work on",
+                                next.0
+                            ));
+                        }
+                    }
+                    Some((closure, successor))
                 }
                 _ => None,
             };

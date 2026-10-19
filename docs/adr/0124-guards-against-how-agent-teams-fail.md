@@ -21,8 +21,10 @@ criterion of its task it serves. Scenarios:
 `a-request-says-what-it-serves.feature`.
 
 Amended again 2026-10-19, from a review of the live record and two audits (*hygiene*): a turn the
-platform cut short is not its member's failure (*Amended: a deploy under a turn*). Scenario:
-`domains/team/features/a-deploy-under-a-turn.feature`.
+platform cut short is not its member's failure (*Amended: a deploy under a turn*), and two holes in
+the closure contract are shut (*Amended: the closure contract*). Scenarios:
+`domains/team/features/a-deploy-under-a-turn.feature`, and in `guards.feature` and
+`the-engineering-wing.feature`.
 
 ## Context
 
@@ -79,7 +81,7 @@ finding takes a verdict, so its precision is measured before anyone tunes it.
 | Stopped diagnosis | Each open task, read when asked: **working** (a turn or a held wake), **parked** (its member idle, still owed), **held** (blocked with a named reason and a live check-back or answer to come, or waiting on open work), **indeterminate** (nobody holds it, or its last turn failed for good) | — | `domain::guards::diagnose`; the tick's steps 5 and 5b; `climb_stuck` |
 | Receipted nudges | A recovery wake is recorded under task + member + reason + what HQ saw (status, posts not HQ's, citations, newest receipt, newest wake not HQ's own) before it is sent; a key is never sent twice | — | `nudges` table (append-only); `engine::guards::nudge_once` |
 | Stuck | Parked work nudged once and still parked: a finding; on the desk once, closing itself when the work moves | — | ladder, `guards_tick` |
-| Closure reasons | Done: met criteria, superseded (successor), not needed. Dropped: obsolete, duplicate of #N, won't do, blocked for good, optional successor. A task waiting on a dropped one stays blocked; its holder is told at once (`wait_dropped`) | — | `domain::closure`; `closures` table; `after_closing` |
+| Closure reasons | Done: met criteria, superseded (*names its successor*, never itself), not needed. Dropped: obsolete, duplicate of #N, won't do, blocked for good, optional successor. A task waiting on a dropped one stays blocked; its holder is told at once (`wait_dropped`); *a task is not made to wait on work already done or dropped* | — | `domain::closure` (`may_close`); `closures` table; `after_closing`; `add_task` |
 | Ceremony | Per project, over 24 h and 7 d: coordination turns (talk only, a re-check with no new reading, a review round or huddle view, a question up the chain) against product change (an act, a branch, a criterion met) | 12 coordination turns and 4:1 | `domain::guards::ceremony`; `health_tick`, every 5 min |
 | Carousel | Sent back with no new evidence submitted between returns: straight to a huddle; a submission while it decides waits | 3 returns | `after_sent_back`; `review_asked` |
 | Redundant wakes | A wake that brings no news, to a member whose last turns on the task showed nothing: refused, the work parked | 3 turns | `wakes::decide` (`Refused::Redundant`) |
@@ -162,6 +164,19 @@ free): it gets four starts, not three, and only the first loss is free. While it
 has a live turn, so the stopped diagnosis reads *working* and nothing is found, nudged, climbed
 or put on a desk. The run's reason says `interrupted: …`, and the feed's `run.ended` says
 `"interrupted": true`. An older runner that says neither why nor how is the worker's, as before.
+
+**Amended: the closure contract.** Two holes in it, found in an audit of the record. *Superseded
+named nothing:* work closed as done, superseded, was meant to name the task that carries it on
+(the tool's own description said so), and was not made to. `closure::may_close` now refuses it
+with no successor, and a successor that is the task itself, and `set_status` checks it, and that
+the successor is there, before anything moves, as it checks a reason not in the set; the engine's
+`done_because_in` checks it too. *A wait on finished work:* `add_task` accepted any `waits_on`,
+and a task waiting on work already dropped was stuck by construction (what it waits for will not
+happen: `wait_dropped` told its holder only when the dropping came after). It now refuses a
+`waits_on` that holds a task already done (nothing to wait for) or dropped
+(`GuardRefusal::WaitsOnFinished`, which says to leave it out or wait on the task that carries the
+work on), and a task that is not there; a wait on open work is as ever. Closings already
+recorded are read as they were: nothing is migrated.
 
 **Stored** in tables made if missing (`nudges`, `findings`, `closures`, `retractions`,
 `note_parents`, `desk_attached`) and in HQ's settings (`serves:<task>`, `enough:<task>:<member>`,

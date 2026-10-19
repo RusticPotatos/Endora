@@ -310,6 +310,73 @@ fn work_waiting_on_a_dropped_task_stays_blocked_and_its_member_is_told_why() {
     );
 }
 
+/// A task made to wait on work already done has nothing to wait for, and one made to wait on work
+/// already dropped waits for what will not happen: neither is made.
+#[test]
+fn a_task_may_not_be_made_to_wait_on_work_that_is_already_done_or_dropped() {
+    use super::engine::EngineError;
+    use crate::domain::Refusal;
+    use crate::domain::closure::{Closure, DropWhy};
+    use crate::domain::guards::GuardRefusal;
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, first) = team(&clock, true);
+    let goal = hq.store().task(first).unwrap().unwrap().goal;
+    let new = |title: &str, waits_on: Vec<TaskId>| {
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: title.to_owned(),
+                description: String::new(),
+                assignee: Some(dev),
+                priority: Priority::Normal,
+                waits_on,
+            },
+        )
+    };
+    let done = new("Read the logs", Vec::new()).unwrap();
+    hq.store().set_task_status(done, TaskStatus::Done).unwrap();
+    let dropped = new("Try the old way", Vec::new()).unwrap();
+    hq.drop_task_because(dropped, Closure::Dropped(DropWhy::Obsolete), None)
+        .unwrap();
+    let tasks = hq.store().tasks().unwrap().len();
+    for (wait, status) in [(done, TaskStatus::Done), (dropped, TaskStatus::Dropped)] {
+        assert_eq!(
+            new("Restore from the backup", vec![first, wait]),
+            Err(EngineError::Refused(Refusal::Guard(
+                GuardRefusal::WaitsOnFinished { task: wait, status }
+            ))),
+            "waiting on #{wait}, {}",
+            status.name()
+        );
+    }
+    assert_eq!(hq.store().tasks().unwrap().len(), tasks, "nothing was made");
+    let said = GuardRefusal::WaitsOnFinished {
+        task: dropped,
+        status: TaskStatus::Dropped,
+    }
+    .to_string();
+    assert!(
+        said.contains("was dropped") && said.contains("carries its work on"),
+        "{said}"
+    );
+    let said = GuardRefusal::WaitsOnFinished {
+        task: done,
+        status: TaskStatus::Done,
+    }
+    .to_string();
+    assert!(said.contains("is done already"), "{said}");
+    // Work still open is waited on, as ever; and a task that does not exist is not.
+    let waiting = new("Restore from the backup", vec![first]).unwrap();
+    assert_eq!(
+        hq.store().task(waiting).unwrap().unwrap().waits_on,
+        vec![first]
+    );
+    assert!(new("After nothing", vec![TaskId(9_999)]).is_err());
+}
+
 // ---- process health -------------------------------------------------------------------------
 
 /// A lead on its own project's task, with no one above it (so no hand-up), and the task.

@@ -4,9 +4,9 @@
 use std::sync::atomic::Ordering;
 
 use cucumber::{given, then, when};
-use endora_team::application::TeamStore;
-use endora_team::domain::WakeReason;
+use endora_team::application::{Author, NewTask, TeamStore};
 use endora_team::domain::guards::THRESHOLDS;
+use endora_team::domain::{Priority, TaskId, TaskStatus, WakeReason};
 use serde_json::json;
 
 use super::Office;
@@ -372,5 +372,79 @@ fn huddle_called_because(w: &mut Office, title: String, why: String) {
             .iter()
             .any(|d| d["why"].as_str().is_some_and(|w| w.contains(&why))),
         "huddles on {title}: {called:?}"
+    );
+}
+
+// --- The closure contract (ADR 0124, amended) -----------------------------------------------
+
+/// The owner hands a member a task that waits on another.
+#[when(regex = r#"^the owner hands (\w+) the task "(.+)", waiting on "(.+)"$"#)]
+fn owner_hands_a_task_that_waits(w: &mut Office, name: String, title: String, waits_on: String) {
+    let to = w.member(&name);
+    let goal = w.goal();
+    let wait = w.task(&waits_on);
+    w.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title,
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: vec![wait],
+        },
+    );
+}
+
+/// The wing's lead closes his plan as done, saying it was superseded, and by what if he does.
+fn closes_the_plan_superseded(w: &mut Office, name: &str, successor: Option<TaskId>) {
+    let plan = w.wing.as_ref().expect("the scenario has the wing").task;
+    let member = w.member(name);
+    let held =
+        w.hq.store()
+            .task(plan)
+            .expect("the store answers")
+            .expect("the plan");
+    if held.owner != Some(member) {
+        w.use_tool(name, "claim", &json!({ "task": plan.0 }))
+            .expect("the lead takes his plan");
+    }
+    // One list of evidence for each of the plan's criteria: the plan itself will do.
+    let cited = vec![vec![format!("task {}", plan.0)]; held.criteria.len().max(1)];
+    w.use_tool(
+        name,
+        "set_status",
+        &json!({ "task": plan.0, "status": "done", "reason": "the branches overtook the plan",
+                 "why": "superseded", "successor": successor.map(|t| t.0),
+                 "evidence": cited }),
+    );
+}
+
+#[when(regex = r"^(\w+) closes the plan as superseded, naming no successor$")]
+fn closes_the_plan_without_a_successor(w: &mut Office, name: String) {
+    closes_the_plan_superseded(w, &name, None);
+}
+
+#[when(regex = r#"^(\w+) closes the plan as superseded by "(.+)"$"#)]
+fn closes_the_plan_superseded_by(w: &mut Office, name: String, successor: String) {
+    let successor = w.task(&successor);
+    closes_the_plan_superseded(w, &name, Some(successor));
+}
+
+#[then(regex = r"^the plan is (still open|done)$")]
+fn the_plan_is(w: &mut Office, which: String) {
+    let plan = w.wing.as_ref().expect("the scenario has the wing").task;
+    let status =
+        w.hq.store()
+            .task(plan)
+            .expect("the store answers")
+            .expect("the plan")
+            .status;
+    assert_eq!(
+        status == TaskStatus::Done,
+        which == "done",
+        "the plan is {status:?}"
     );
 }

@@ -98,3 +98,16 @@ Feature: Guards against how agent teams fail
     And Linus is woken and reads sonarr's logs again
     Then the task "Find why sonarr restarts" is in_review
     And HQ says in "Find why sonarr restarts": "HQ submits it for Linus, on that evidence."
+
+  # Live, work waiting on a dropped task is told at once and stays blocked. Now it is not made to
+  # wait on one in the first place.
+  # Seed: the waits check skipped for dropped work fails the refusal step.
+  Scenario: Work is not made to wait on what was dropped
+    Given Ada has the task "Try the old way"
+    And Ada has the task "Read the logs"
+    When the owner drops the task "Try the old way"
+    And the owner hands Ada the task "Restore from the backup", waiting on "Try the old way"
+    Then it is refused: "#1 was dropped, so what a task waits on it for will not happen: leave it out of waits_on, or wait on the task that carries its work on"
+    And the team has 2 tasks
+    When the owner hands Ada the task "Restore from the backup", waiting on "Read the logs"
+    Then it is not refused

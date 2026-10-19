@@ -16,7 +16,7 @@ use super::scorecard;
 use crate::domain::chain::{self, Decision};
 use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
-use crate::domain::guards::Stopped;
+use crate::domain::guards::{GuardRefusal, Stopped};
 use crate::domain::lessons;
 use crate::domain::mac::{self, MacFacts};
 use crate::domain::money::{self, Micros};
@@ -874,6 +874,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store
             .goal(task.goal)?
             .ok_or(EngineError::Unknown("goal"))?;
+        // A task waits only on work still to be done: waiting on what is done has nothing to
+        // wait for, and on what was dropped waits for what will not happen (ADR 0124, amended).
+        for wait in &task.waits_on {
+            let found = self.task(*wait)?;
+            if found.status.finished() {
+                return Err(EngineError::Refused(Refusal::Guard(
+                    GuardRefusal::WaitsOnFinished {
+                        task: *wait,
+                        status: found.status,
+                    },
+                )));
+            }
+        }
         let (parent_depth, project) = match task.parent {
             // A sub-task goes in its parent's project, whatever it was asked to go in.
             Some(parent) => {

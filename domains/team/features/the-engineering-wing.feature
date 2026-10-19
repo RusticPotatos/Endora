@@ -137,3 +137,15 @@ Feature: The engineering wing and the git flow
     Then it is refused: "Ada is outside Kit's area: only Kit, who leads it, or the owner hands its work out of it. Ask Kit in the task's thread (the CEO directs: direct, with evidence), and Kit decides"
     And the task "Tidy the deluge role" is still held by Rae
     And Ada has never been woken
+
+  # Work closed as superseded says what overtook it: a lead who closes his plan so, naming
+  # nothing, is refused and the plan stays open (ADR 0124, amended).
+  # Seed: superseded accepted with no successor fails the refusal step.
+  Scenario: The lead closes his plan as superseded only by naming the work that carries it on
+    Given Kit hands Rae the task "Tidy the deluge role" in the wing
+    When Kit closes the plan as superseded, naming no successor
+    Then it is refused: "work done as superseded names the task that carries it on: give its number as `successor`"
+    And the plan is still open
+    When Kit closes the plan as superseded by "Tidy the deluge role"
+    Then it is not refused
+    And the plan is done

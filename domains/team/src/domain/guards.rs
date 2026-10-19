@@ -118,6 +118,18 @@ pub fn same_ask(waiting: &[String], new: &[String]) -> bool {
 pub enum GuardRefusal {
     /// A closing reason not in the set for the status it closes to.
     NotAClosure(TaskStatus),
+    /// Work closed as superseded names the task that carries it on.
+    NoSuccessor,
+    /// A task is not its own successor.
+    SuccessorIsItself(super::work::TaskId),
+    /// A task is made to wait on work already finished: done, so there is nothing to wait for,
+    /// or dropped, so what it waited for will not happen.
+    WaitsOnFinished {
+        /// The finished task.
+        task: super::work::TaskId,
+        /// How it finished.
+        status: TaskStatus,
+    },
     /// The parent already has as many open sub-tasks as one task may.
     TooManySubtasks {
         /// The parent.
@@ -172,6 +184,29 @@ impl core::fmt::Display for GuardRefusal {
                 status.name(),
                 super::closure::Closure::names(*status).join(", ")
             ),
+            Self::NoSuccessor => f.write_str(
+                "work done as superseded names the task that carries it on: give its number as \
+                 `successor`",
+            ),
+            Self::SuccessorIsItself(task) => write!(
+                f,
+                "#{task} cannot be its own successor: name the task that carries the work on"
+            ),
+            Self::WaitsOnFinished { task, status } => {
+                if *status == TaskStatus::Dropped {
+                    return write!(
+                        f,
+                        "#{task} was dropped, so what a task waits on it for will not happen: \
+                         leave it out of waits_on, or wait on the task that carries its work on"
+                    );
+                }
+                write!(
+                    f,
+                    "#{task} is {} already, so there is nothing to wait for: leave it out of \
+                     waits_on",
+                    status.name()
+                )
+            }
             Self::TooManySubtasks { parent, open } => write!(
                 f,
                 "#{parent} already has {open} open sub-tasks, and {} is the most: finish or \

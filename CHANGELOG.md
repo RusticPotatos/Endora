@@ -9,6 +9,15 @@ tagged release.
 
 ### Changed
 
+- **Two holes in the closure contract are shut** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),
+  amended). **Work closed as done, superseded, must name the task that carries it on:** it was
+  meant to (the tool says so) and was not made to; it is refused with no successor, with the
+  task itself, or with a task that is not there, and refused before anything moves. **A task is
+  not made to wait on work already done or dropped:** a wait on done work has nothing to wait
+  for, and a wait on dropped work was stuck by construction; the refusal says to leave it out, or
+  to wait on the task that carries the work on. Closings already recorded are read as they were.
+  No migration. Scenarios: `domains/team/features/guards.feature` and
+  `the-engineering-wing.feature`.
 - **What one member writes reaches another clean** ([ADR 0129](docs/adr/0129-the-teams-history-and-asking-the-past.md),
   amended). The first build cleaned only a consult's question and what the record returns; a
   thread post, a world line and a desk card went through raw. **A thread post is kept as written**
