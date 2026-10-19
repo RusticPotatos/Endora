@@ -813,7 +813,7 @@ if (failures.length) {
   // How often the CEO stepped into a member's work (ADR 0124), on the roster.
   if (!office.includes("the CEO stepped in 2 times")) fail("hq: the roster does not count the CEO's rescues");
   // The same ask from another task is put with a card (ADR 0124), and the card says so.
-  if (!office.includes("question · EL-7 · also on EL-9: one answer reaches each")) fail("hq: a card does not say which other tasks share its ask");
+  if (!office.includes('question · <button class="hq-link" data-act="hq:pick:task:7">EL-7</button> · also on <button class="hq-link" data-act="hq:pick:task:9">EL-9</button>: one answer reaches each')) fail("hq: a card does not say which other tasks share its ask, as links that open them");
   for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b>: 3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2",
     "<b>Stuck work</b>: 0 found · 0 open · not judged yet", "&lt;u&gt;Upkeep&lt;/u&gt;: 14 coordination turns, 1 product change in 24 h · talking more than working",
     "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep"]) {
@@ -1217,6 +1217,22 @@ if (failures.length) {
     if (many[0].includes("R2 Bo") || !many[0].includes("R3 Bo") || !many[0].includes("Show all 7")) fail("hq: a task's turns are not cut to the last five");
     if (!(many[0].indexOf("R3 Bo") < many[0].indexOf("R7 Bo"))) fail("hq: the last five turns are not oldest first");
     if (!many[1].includes("R1 Bo") || !many[1].includes("Show the last 5")) fail("hq: show all does not show every turn");
+  }
+  // Finding a task: every EL- number on the screen opens its task, and the Work tab finds one by
+  // its number or a few words of its title (the board alone made a task hard to find).
+  {
+    const link = runInContext("hqKeyLink(687)", context);
+    if (!link.includes('data-act="hq:pick:task:687"') || !link.includes("EL-687")) fail("hq: a task number is not a link to its task");
+    if (runInContext("hqKeyLink(0)", context) !== "") fail("hq: no task still made a link");
+    const title = runInContext("hqTask(7).title", context);
+    const words = title.split(/\s+/).slice(0, 2).join(" ").toLowerCase();
+    for (const [q, want] of [["EL-7", 7], ["el-7", 7], ["7", 7], [words, 7], ["no such words anywhere", null], ["", null]]) {
+      const got = runInContext(`hqFindTask(${JSON.stringify(q)})`, context);
+      if (got !== want) fail(`hq: finding "${q}" gave ${got}, not ${want}`);
+    }
+    const hq = runInContext("viewHQ()", context);
+    if (!hq.includes('id="hq-find"') || !hq.includes('data-act="hq:find:task:go"')) fail("hq: the Work tab has no way to find a task");
+    if (runInContext("HQ.snap.desk.some((d) => d.task)", context) && !hq.includes('data-act="hq:pick:task:')) fail("hq: a desk card's task number does not open it");
   }
   // The open office (the pixel canvas, ADR 0119): one pod of desks for each team, side by side
   // with no walls, laid out from the snapshot alone (a third team makes a third pod); a desk for
