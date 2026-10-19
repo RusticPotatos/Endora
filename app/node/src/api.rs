@@ -563,11 +563,11 @@ pub fn app(state: AppState) -> Router {
         // removes a member.
         .route("/v1/hq/members/{id}/furlough", post(hq_furlough))
         .route("/v1/hq/members/{id}/recall", post(hq_recall))
-        // The owner as landlord of the office (ADR 0119): only these four routes.
+        // The owner as landlord of the office (ADR 0119): only these three routes. (Downtime is
+        // work on the house's own model and costs nothing, so there is no allowance, ADR 0131.)
         .route("/v1/hq/office/undo", post(hq_office_undo))
         .route("/v1/hq/office/reset", post(hq_office_reset))
         .route("/v1/hq/office/proposals/{id}/veto", post(hq_office_veto))
-        .route("/v1/hq/office/downtime", post(hq_office_downtime))
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/hq/pool/top-up", post(hq_pool_top_up))
         // A member's notebook (ADR 0118): the owner reads it and writes, edits and deletes notes.

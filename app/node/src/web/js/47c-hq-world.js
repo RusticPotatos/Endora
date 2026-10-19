@@ -218,7 +218,7 @@ function hqMapWatch(w) {
     <ul class="hq-team hq-world">${gapRows || `<li class="hq-empty">None open.</li>`}</ul>
     <h3>Broken roads</h3><p class="hq-note">An address a page cites that leads nowhere, found by HQ.</p>
     <ul class="hq-team hq-world">${roadRows || `<li class="hq-empty">None.</li>`}</ul>
-    <h3>Last night's map check</h3><p class="hq-note">A member on the house's model is asked a few questions made from its own map; HQ scores them by code.</p>
+    <h3>Last night's map check</h3><p class="hq-note">A free member is asked, in a turn on the house's model that costs nothing, a few questions made from its own map; HQ scores them by code.</p>
     <p>${night}</p>${failing ? `<ul class="hq-team hq-world">${failing}</ul>` : ""}`;
 }
 
