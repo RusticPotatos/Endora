@@ -469,6 +469,70 @@ fn a_check_that_passes_is_a_receipt_that_wakes_the_submitter_and_the_tester() {
 /// missing, a collection absent) cost a recreated branch each time: task 674 existed only to
 /// check the same commit again, and 679's probe branch (no file in it) only to get a check run.
 /// A lead or a developer on the work now asks for the kept branch to be checked again.
+/// Task 687: the Ops lead built and submitted a branch herself; she could neither accept her own
+/// work nor hand it on, and the CEO was asked twice. Changing the lab is the wing's (ADR 0120):
+/// outside it a submission and a recheck are refused, naming the wing's lead and the way to ask
+/// for the change, and nothing is kept. The wing's own developer still submits.
+#[test]
+fn branch_work_outside_the_wing_is_refused_and_names_the_wings_lead() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let task = hq
+        .add_task_with(
+            Author::Owner,
+            NewTask {
+                goal: t.lab,
+                project: None,
+                parent: None,
+                title: "Add the drift check".to_owned(),
+                description: String::new(),
+                assignee: Some(t.ada),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[Criterion::new("The check is no worse than develop", false)],
+        )
+        .unwrap();
+    let ada = turn(&hq, t.ada);
+    let refused = hq
+        .record_branch(
+            &ada.token,
+            &Submission {
+                branch: format!("hq/task-{}-add-the-drift-check", task.0),
+                ..submission(true)
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        super::EngineError::Refused(Refusal::BranchesAreTheWings {
+            lead: Some("Kit".to_owned())
+        })
+    );
+    let said = refused.to_string();
+    assert!(
+        said.contains("engineering wing")
+            && said.contains("Kit")
+            && said.contains("propose_project"),
+        "{said}"
+    );
+    assert!(hq.store().branches().unwrap().is_empty(), "nothing is kept");
+    assert!(hq.next_check().unwrap().is_none(), "nothing is checked");
+    let again = use_tool(
+        &hq,
+        &ada,
+        "recheck",
+        &json!({ "task": task.0, "why": "the check image has its tools now" }),
+    )
+    .unwrap_err();
+    assert!(again.contains("engineering wing"), "{again}");
+    all_turns_over(&hq);
+    // The wing's developer, on the wing's work, is not touched by it.
+    let (_, _, recorded) = submitted(&hq, &t, true);
+    assert!(recorded.check > 0);
+}
+
 #[test]
 fn a_kept_branch_is_checked_again_without_a_new_submission() {
     let clock = Hands(AtomicI64::new(OCT_17));

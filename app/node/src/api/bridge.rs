@@ -805,6 +805,7 @@ mod tests {
             cloud: true,
             brain: "claude-haiku-5-5".to_owned(),
             claude_code: false,
+            wing: None,
         };
         let tool = catalog(&state)
             .into_iter()

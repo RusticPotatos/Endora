@@ -1122,6 +1122,30 @@ mod tests {
         (run, task)
     }
 
+    /// As [`a_turn_starts`], for a developer in the engineering wing: it reports to the lead of
+    /// a wing project, and only the wing changes the lab (ADR 0120), so a branch is submitted
+    /// from its turns alone.
+    fn a_wing_turn_starts(st: &State) -> (RunId, TaskId) {
+        let (run, task) = a_turn_starts(st);
+        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 1).unwrap();
+        let wing = st
+            .hq
+            .set_goal(endora_team::domain::wing::WING_GOAL, "", Author::Owner)
+            .unwrap();
+        st.hq
+            .add_project(
+                wing,
+                endora_team::domain::wing::WING_PROJECT,
+                "",
+                lead,
+                None,
+            )
+            .unwrap();
+        let dev = st.hq.store().runs().unwrap()[0].member;
+        st.hq.set_reports_to(dev, lead).unwrap();
+        (run, task)
+    }
+
     fn status_of(st: &State, run: RunId) -> RunStatus {
         st.hq.store().run(run).unwrap().unwrap().status
     }
@@ -1816,6 +1840,9 @@ mod tests {
         assert_eq!(found["run"], turn.run.0);
         assert_eq!(found["cloud"], true);
         assert_eq!(found["brain"], "claude-sonnet-5-5");
+        // Changing the lab is the engineering wing's (ADR 0120); Ada leads no branch work, so
+        // the node neither offers nor runs a submission for her.
+        assert_eq!(found["wing"], false, "{found}");
         let left = found["left"].as_i64().unwrap();
         assert_eq!(left, 400_000, "{found}");
         let spend = |micros: i64| {
@@ -3796,7 +3823,7 @@ mod tests {
     #[tokio::test]
     async fn a_branch_the_node_took_is_checked_on_the_runner_and_reported_with_the_jobs_token() {
         let st = state(false);
-        let (run, task) = a_turn_starts(&st);
+        let (run, task) = a_wing_turn_starts(&st);
         let app = app(st.clone());
         let handed = json_of(
             app.clone()
@@ -3973,7 +4000,7 @@ mod tests {
     #[tokio::test]
     async fn the_node_asks_hq_which_head_of_a_kept_branch_a_turn_may_check_out() {
         let st = state(false);
-        let (_, task) = a_turn_starts(&st);
+        let (_, task) = a_wing_turn_starts(&st);
         let app = app(st.clone());
         let handed = json_of(
             app.clone()
@@ -4062,7 +4089,7 @@ mod tests {
     #[tokio::test]
     async fn an_approved_push_names_its_branch_for_the_node_and_its_outcome_is_told_once() {
         let st = state(false);
-        let (run, task) = a_turn_starts(&st);
+        let (run, task) = a_wing_turn_starts(&st);
         let token = st.hq.store().runs().unwrap()[0].id;
         assert_eq!(token, run);
         let context = {

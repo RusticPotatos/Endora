@@ -75,6 +75,11 @@ fn offered(switches: Switches) -> Vec<Contract> {
 /// log) only to a turn on the house's model, or to the lead's on Claude, as the owner decided
 /// (ADR 0109); and an act never to the CEO, which takes no step on the house (ADR 0111).
 fn may_see(contract: &Contract, turn: &Turn) -> bool {
+    // Changing the lab is the engineering wing's (ADR 0120): a lead outside it reads a branch
+    // and submits none, so nothing is kept for it.
+    if contract.name == REPO_SUBMIT && turn.wing == Some(false) {
+        return false;
+    }
     contract.offered_to(&turn.role, turn.cloud)
 }
 
@@ -303,7 +308,12 @@ async fn called(
         return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
     };
     if !may_see(&contract, &turn) {
-        let why = if name == REPO_SUBMIT && turn.role == "reviewer" {
+        let why = if name == REPO_SUBMIT && turn.wing == Some(false) && turn.role != "reviewer" {
+            "changing the lab is the engineering wing's: its lead and developers submit the \
+             branches. Ask for the change with propose_project, with its criteria and evidence; \
+             the CEO decides and the wing builds it. Read a branch with repo_checkout"
+                .to_owned()
+        } else if name == REPO_SUBMIT && turn.role == "reviewer" {
             "a tester reads a branch by checking it out (repo_checkout) and submits none: only a \
              lead or a developer submits one"
                 .to_owned()
@@ -2535,6 +2545,14 @@ mod tests {
                             "cloud": false, "task": 3 })
                     .to_string(),
                 ),
+                // The Ops lead: a lead, outside the engineering wing (ADR 0120).
+                "/v1/team/turn" if body["token"] == "ada" => (
+                    200,
+                    "application/json",
+                    json!({ "run": 10, "member": "Ada", "role": "lead", "left": 40_000,
+                            "cloud": true, "task": 4, "wing": false })
+                    .to_string(),
+                ),
                 "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
                 "/v1/team/branch" => {
                     *told.lock().unwrap() = Some(body);
@@ -2635,6 +2653,39 @@ mod tests {
                 .unwrap()
                 .contains("reads a branch by checking it out"),
             "{why}"
+        );
+        // A lead outside the wing is offered no submission, and one she asks for is refused
+        // before the node keeps anything or tells HQ of a branch (task 687, ADR 0120).
+        let (_, listed) =
+            answer(&state, ask("GET", "/team-relay/contracts", Some("ada"), "")).await;
+        let names: Vec<&str> = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&REPO_CHECKOUT) && !names.contains(&REPO_SUBMIT),
+            "outside the wing, checkout and never submit: {names:?}"
+        );
+        let (refused, why) = answer(
+            &state,
+            ask(
+                "POST",
+                "/team-relay/contracts/repo_submit",
+                Some("ada"),
+                r#"{"branch":"hq/task-4-x","why":"drift check","bundle":"AAAA"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(refused, StatusCode::FORBIDDEN, "{why}");
+        assert!(
+            why["error"].as_str().unwrap().contains("engineering wing"),
+            "{why}"
+        );
+        assert!(
+            last_branch.lock().unwrap().is_none(),
+            "HQ was told of no branch"
         );
         // The tester checks the fork out like anyone: a bundle, and a receipt of hers.
         let (status, said) = answer(

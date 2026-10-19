@@ -116,6 +116,17 @@ Feature: The engineering wing and the git flow
     And Kit accepts "Add the drift check"
     Then the task "Add the drift check" is done
 
+  # Task 687: the Ops lead built and submitted a branch herself, could neither accept her own
+  # work nor hand it on, and the CEO was asked twice. Changing the lab is the wing's (ADR 0120):
+  # outside it a submission is refused, naming the wing's lead and how to ask for the change.
+  Scenario: The Ops lead's change to the lab is the wing's to build
+    Given Kit's planning turn is over
+    And Ada has the task "Add the drift check"
+    When Ada's turn starts
+    And Ada tries to submit the branch "hq/task-2-add-the-drift-check"
+    Then it is refused: "changing the lab is the engineering wing's: Kit leads it and its developers submit the branches. Ask for the change with propose_project, with its criteria and evidence; the CEO decides and the wing builds it"
+    And no branch is kept
+
   # Task 670 sat 44 minutes in review, was set blocked out of the tester's reach, and climbed
   # to the CEO five times for a review that had simply not happened.
   Scenario: Work left in review is never blocked, and its lead is woken

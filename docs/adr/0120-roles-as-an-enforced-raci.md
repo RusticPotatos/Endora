@@ -8,7 +8,9 @@ stopped diagnosis calls parked (held work waits for what will bring it back; wor
 about gets one look from its lead); work sent back three times with no new evidence between goes
 to a huddle at once, and is not reviewed again before the lead decides; a lead's drop says why;
 each briefing carries its goal's "not now". Amended again 2026-10-19 (hygiene, from a review of
-the live record): work leaves an area only by its lead's hand (below). Amends
+the live record): work leaves an area only by its lead's hand (below). Amended again
+2026-10-19, from task 687: changing the lab is the wing's in code (*Branches are the wing's*,
+below). Amends
 [0111](0111-the-ceo-and-the-chain-of-command.md) (what the CEO does, what wakes it, what it
 reads, its briefings; the house log's lines), [0113](0113-projects-budgets-and-reports-to.md)
 (leads propose projects, the CEO decides them and proposes none; the CEO's planning) and
@@ -86,6 +88,20 @@ alarms; "engineering" the area that works in branches.
   `staffing::lead_of`). The CEO's way to have an area's work moved elsewhere is `direct`; the
   lead decides. Scenario: "The CEO cannot hand the wing's branch work to the Ops lead", in
   `domains/team/features/the-engineering-wing.feature`.
+- **Branches are the wing's** (amended 2026-10-19). The table gave changing the lab to the
+  engineering lead and its members, but `repo_submit` was offered to any lead. Live, on task
+  687, the Ops lead built and submitted a branch herself; a lead never accepts its own work and
+  never hands on its own task, so it sat in review while the CEO was asked twice. Now only a
+  lead or a developer **in the wing** (`wing::changes_the_lab`: it leads a wing project or
+  reports up to one who does) submits a branch or asks for a recheck. HQ refuses anyone else
+  before anything is kept (`Refusal::BranchesAreTheWings`: "changing the lab is the engineering
+  wing's: Kit leads it and its developers submit the branches. Ask for the change with
+  propose_project, with its criteria and evidence; the CEO decides and the wing builds it").
+  HQ's answer to the node's `/v1/team/turn` says `wing`, and the node neither offers nor runs
+  `repo_submit` for a turn outside it, so the fork's mirror keeps nothing for it. An older HQ
+  says nothing, and the role decides as before. Reading is unchanged: `repo_checkout` stays a
+  lead's, a developer's and the tester's. Scenario: "The Ops lead's change to the lab is the
+  wing's to build", in `domains/team/features/the-engineering-wing.feature`.
 - **Leads propose; the CEO decides** (`decide_project`: yes, no, not now). The CEO no longer
   proposes projects. It keeps `propose_goal`, `ask_owner` (the board), `read_doc`, the house
   log and the notebook.

@@ -1141,6 +1141,37 @@ fn submits_branch(w: &mut Office, name: String, branch: String) {
     .expect("the node's receipt of the submission");
 }
 
+/// The member's turn hands the node a branch; HQ's word on it is kept, a refusal included.
+#[when(expr = "{word} tries to submit the branch {string}")]
+fn tries_to_submit(w: &mut Office, name: String, branch: String) {
+    let context = w.turn_of(&name);
+    let recorded = w.hq.record_branch(
+        &context.token,
+        &Submission {
+            branch,
+            head: SUBMITTED_HEAD.to_owned(),
+            base: SUBMITTED_BASE.to_owned(),
+            files: 1,
+            plus: 4,
+            minus: 1,
+            stat: " roles/stats/files/prometheus/alert_rules.yml | 5 ++--".to_owned(),
+            diff: "-old\n+new".to_owned(),
+            can_push: true,
+        },
+    );
+    w.note(recorded);
+}
+
+#[then("no branch is kept")]
+fn no_branch_kept(w: &mut Office) {
+    assert!(
+        w.hq.store()
+            .branches()
+            .expect("the store answers")
+            .is_empty()
+    );
+}
+
 /// The dev node's runner takes the check and reports with the job's own token.
 #[when(expr = "the check of {string} passes")]
 fn check_passes(w: &mut Office, branch: String) {
