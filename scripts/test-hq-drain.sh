@@ -152,4 +152,11 @@ fresh
 hq nonsense
 expect "an unknown word is refused" "$([ $STATUS -eq 2 ]; echo $?)"
 
+echo "one script"
+
+# The NAS's shutdown runs the copy the endora role brings; a deploy runs this. One file, or a
+# reboot and a deploy would drain by different rules.
+expect "the deploy's script is the role's, by a link" \
+  "$([ -L "$SCRIPT" ] && [ "$(cd "$HERE" && readlink hq-drain.sh)" = ../deploy/ansible/collection/roles/endora/files/hq-drain.sh ]; echo $?)"
+
 exit "$FAILED"
