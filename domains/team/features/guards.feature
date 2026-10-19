@@ -23,6 +23,21 @@ Feature: Guards against how agent teams fail
     When the owner says the finding was real
     Then the guard "ceremony" is 100% real
 
+  # Seed: the ceremony counting only the tasks inside a project finds nothing here, and the
+  # desk step fails; the finding without the spend fails the cost step.
+  Scenario: Talking about work outside a project isn't work either, and the finding says what it cost
+    Given Linus is the developer
+    And Dee is the tester
+    When Linus is handed the task "Tidy the docs"
+    And Linus's turn starts
+    And Linus's turn ends
+    And Dee reviews "Tidy the docs" 12 times at $0.05 a turn and changes nothing
+    And HQ looks at how the team is doing
+    Then the owner's desk holds a finding "Talk about work"
+    And the finding says "12 coordination turns, 0 product changes in 24 h ($0.60 spent)"
+    And the guards card says "Tidy the docs"
+    And Ada is woken about it
+
   # Seed: after_sent_back returning before the carousel's check fails the huddle step.
   Scenario: A task bounced three times goes to a huddle
     Given Grace is the tester

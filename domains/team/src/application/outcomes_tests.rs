@@ -248,6 +248,7 @@ fn seen(label: Label) -> TurnSeen {
         criterion_met: false,
         new_evidence: false,
         asked: false,
+        spent: 0,
     }
 }
 

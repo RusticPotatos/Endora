@@ -46,6 +46,36 @@ fn talks(w: &mut Office, name: String, title: String, turns: usize) {
     }
 }
 
+/// `turns` turns of the member's on the task, each a review asked for (judgment, so on its Claude
+/// and paid for), each only a post, each costing `dollars`.
+#[when(
+    regex = r#"^(\w+) reviews "(.+)" (\d+) times at \$(\d+(?:\.\d+)?) a turn and changes nothing$"#
+)]
+fn reviews_and_changes_nothing(
+    w: &mut Office,
+    name: String,
+    title: String,
+    turns: usize,
+    dollars: f64,
+) {
+    let member = w.member(&name);
+    let task = w.task(&title);
+    for i in 0..turns {
+        w.hq.wake(member, Some(task), WakeReason::ReviewRequested)
+            .expect("a wake has a receipt");
+        let context = w.turn_of(&name);
+        w.hq.report_usage(context.run, super::micros(dollars))
+            .expect("the ledger takes the spend");
+        w.use_tool(
+            &name,
+            "post",
+            &json!({ "task": task.0, "text": format!("Still reading it ({i}).") }),
+        )
+        .expect("a member may post in the task its turn is on");
+        super::turn_ends(w, name.clone());
+    }
+}
+
 #[when("HQ looks at how the team is doing")]
 fn looks(w: &mut Office) {
     w.clock
@@ -59,6 +89,16 @@ fn desk_holds_finding(w: &mut Office, what: String) {
     let found = w.waiting_on_desk("guard");
     assert!(
         found.iter().any(|d| d.text.starts_with(&what)),
+        "on the desk: {found:?}"
+    );
+}
+
+/// What the finding on the owner's desk says, in its own words.
+#[then(expr = "the finding says {string}")]
+fn the_finding_says(w: &mut Office, said: String) {
+    let found = w.waiting_on_desk("guard");
+    assert!(
+        found.iter().any(|d| d.text.contains(&said)),
         "on the desk: {found:?}"
     );
 }

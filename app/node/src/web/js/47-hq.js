@@ -1949,7 +1949,8 @@ function hqGuards(s) {
     const fixes = p.fix_judged ? ` · fixes worked ${p.fixed} of ${p.fix_judged}` : "";
     return `<li><b>${esc(p.plainly)}</b>: ${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}</li>`;
   }).join("");
-  const ceremony = (g.ceremony || []).map((c) => `<li${c.over ? ` class="hq-refused"` : ""}>${esc(c.title)}: ${(c.windows || []).map((w) => esc(w.said)).join(" · ")}${c.over ? " · talking more than working" : ""}</li>`).join("");
+  // What each window's turns spent is said beside it (ADR 0133).
+  const ceremony = (g.ceremony || []).map((c) => `<li${c.over ? ` class="hq-refused"` : ""}>${esc(c.title)}: ${(c.windows || []).map((w) => esc(w.said) + (w.spent ? ` (${hqDollars(w.spent)} spent)` : "")).join(" · ")}${c.over ? " · talking more than working" : ""}</li>`).join("");
   const finding = (f) => {
     const said = f.verdict ? `Judged ${esc(verdicts[f.verdict] || f.verdict)}${f.judged_by ? ` by ${esc(f.judged_by)}` : ""}${f.fix_worked == null ? "" : f.fix_worked ? ", and its fix worked" : ", and its fix did not work"}.` : "Not judged yet.";
     const judge = Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("");
@@ -1965,7 +1966,7 @@ function hqGuards(s) {
   const t = g.thresholds || {};
   return `<section class="hq-card"><h2>Guards</h2>
     <ul class="hq-team">${lines}</ul>
-    ${ceremony ? `<details open><summary>Talk against work, each project</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
+    ${ceremony ? `<details open><summary>Talk against work, each project and each piece of work over the line</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
     <details><summary>Findings</summary><ul class="hq-team hq-findings">${findings || `<li class="hq-empty">No findings.</li>`}</ul></details>
     <p class="hq-note">Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn.</p></section>`;
 }

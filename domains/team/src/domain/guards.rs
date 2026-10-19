@@ -12,6 +12,7 @@
 //! and a guard that fires on everything is worse than none.
 
 use super::evidence::Label;
+use super::money::Micros;
 use super::work::{Millis, TaskStatus};
 
 /// A minute, in milliseconds.
@@ -408,6 +409,8 @@ pub struct TurnSeen {
     pub new_evidence: bool,
     /// It put a question up the chain or to the owner.
     pub asked: bool,
+    /// What it spent, as the ledger kept it (ADR 0133): a finding says what the talk cost.
+    pub spent: Micros,
 }
 
 /// What a turn was, to the ceremony detector.
@@ -439,13 +442,16 @@ pub const fn turn_kind(t: &TurnSeen) -> TurnKind {
     }
 }
 
-/// A project's ceremony over one window: its coordination turns and its product changes.
+/// The ceremony of a project, or of a piece of work outside one, over one window: its
+/// coordination turns, its product changes and what all its turns spent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ceremony {
     /// Coordination turns.
     pub coordination: usize,
     /// Turns that changed the product.
     pub product: usize,
+    /// What every turn that ended in the window spent, whatever it did (ADR 0133).
+    pub spent: Micros,
 }
 
 impl Ceremony {
@@ -472,9 +478,20 @@ impl Ceremony {
             }
         )
     }
+
+    /// As a finding says it: [`Self::said`], and what the window's turns spent (ADR 0133).
+    #[must_use]
+    pub fn said_with_cost(&self, window: &str) -> String {
+        format!(
+            "{} ({} spent)",
+            self.said(window),
+            super::projects::dollars(self.spent)
+        )
+    }
 }
 
-/// The ceremony of `turns` that ended within `ms` before `now`.
+/// The ceremony of `turns` that ended within `ms` before `now`, and what every one of them
+/// spent.
 #[must_use]
 pub fn ceremony(turns: &[TurnSeen], now: Millis, ms: Millis) -> Ceremony {
     let within = turns
@@ -483,8 +500,10 @@ pub fn ceremony(turns: &[TurnSeen], now: Millis, ms: Millis) -> Ceremony {
     let mut found = Ceremony {
         coordination: 0,
         product: 0,
+        spent: 0,
     };
     for t in within {
+        found.spent = found.spent.saturating_add(t.spent);
         match turn_kind(t) {
             TurnKind::Product => found.product += 1,
             TurnKind::Coordination => found.coordination += 1,
@@ -1144,6 +1163,7 @@ mod tests {
             criterion_met: false,
             new_evidence: false,
             asked: false,
+            spent: 0,
         }
     }
 
@@ -1222,6 +1242,51 @@ mod tests {
         assert_eq!(
             ceremony(&turns, 2_000, DAY).said("24 h"),
             "12 coordination turns, 4 product changes in 24 h"
+        );
+    }
+
+    /// A finding says what the talk cost (ADR 0133): what every turn that ended in the window
+    /// spent, whatever it did, in dollars and cents. The plain line the scorecard shows is as it
+    /// was.
+    #[test]
+    fn a_ceremonys_cost_is_what_the_windows_turns_spent_and_is_said_with_it() {
+        let paid = |at: Millis, spent: Micros| TurnSeen {
+            ended_at: at,
+            spent,
+            ..seen(Label::TalkOnly)
+        };
+        let product = TurnSeen {
+            acted: true,
+            label: Label::Advanced,
+            ..paid(9 * DAY + 3, 20_000)
+        };
+        let turns = [
+            paid(9 * DAY + 1, 50_000),
+            paid(9 * DAY + 2, 30_000),
+            product,
+            paid(5 * DAY, 100_000),
+            paid(2 * DAY, 900_000),
+        ];
+        let now = 10 * DAY;
+        let day = ceremony(&turns, now, DAY);
+        assert_eq!((day.coordination, day.product, day.spent), (2, 1, 100_000));
+        assert_eq!(
+            day.said_with_cost("24 h"),
+            "2 coordination turns, 1 product change in 24 h ($0.10 spent)"
+        );
+        assert_eq!(
+            day.said("24 h"),
+            "2 coordination turns, 1 product change in 24 h"
+        );
+        let week = ceremony(&turns, now, 7 * DAY);
+        assert_eq!(
+            (week.coordination, week.product, week.spent),
+            (3, 1, 200_000),
+            "the turn eight days old is in neither"
+        );
+        assert_eq!(
+            week.said_with_cost("7 d"),
+            "3 coordination turns, 1 product change in 7 d ($0.20 spent)"
         );
     }
 
