@@ -53,6 +53,9 @@ mod evidence_tests;
 mod scorecard_tests;
 
 #[cfg(test)]
+mod outcomes_tests;
+
+#[cfg(test)]
 mod wing_tests;
 
 #[cfg(test)]

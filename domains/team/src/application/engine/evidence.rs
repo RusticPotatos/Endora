@@ -16,6 +16,7 @@ use crate::domain::chain;
 use crate::domain::evidence::{
     self, AfterNothing, CallReceipt, Checkers, Criterion, Found, Judged, Label, Ref, TurnFacts,
 };
+use crate::domain::review::SendBackReason;
 use crate::domain::{
     EventKind, Member, MemberId, Millis, Refusal, Role, RunId, RunStatus, Task, TaskId, TaskStatus,
     WakeReason,
@@ -705,6 +706,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// review, and a pass through the draft's path closed it as done, with the gate true, and
     /// offered its push, with no evidence judged and no lead's acceptance.
     ///
+    /// A send-back may name its `reason` when it is one HQ counts (ADR 0132).
+    ///
     /// # Errors
     /// What [`Engine::review_in`] refuses, [`Refusal::ForwardTheDraft`], and what
     /// [`evidence::judge`] refuses for a pass.
@@ -715,10 +718,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         pass: bool,
         notes: &str,
         cited: &[Vec<Ref>],
+        reason: Option<SendBackReason>,
     ) -> Done<()> {
         let current = self.task(task)?;
         if !pass {
-            return self.review_in(run, task, false, notes);
+            return self.review_in(run, task, false, notes, reason);
         }
         let _held = self.held();
         let turn = self.running(run)?;
@@ -805,6 +809,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         accept: bool,
         notes: &str,
         cited: &[Vec<Ref>],
+        reason: Option<SendBackReason>,
     ) -> Done<()> {
         let _held = self.held();
         let turn = self.running(run)?;
@@ -829,6 +834,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 &format!("{SENT_BACK}{notes}"),
             )?;
             self.emit_status(&current, TaskStatus::Doing)?;
+            self.emit_sent_back(task, lead.id, "lead", reason)?;
             self.mark_progress(lead.id, task)?;
             if let Some(owner) = worker {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;

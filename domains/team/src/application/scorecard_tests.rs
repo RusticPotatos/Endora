@@ -11,8 +11,8 @@ use crate::domain::{
 };
 
 /// 2026-10-17 12:00 UTC.
-const NOON: i64 = 1_792_238_400_000;
-const MINUTE: i64 = 60_000;
+pub(super) const NOON: i64 = 1_792_238_400_000;
+pub(super) const MINUTE: i64 = 60_000;
 
 fn today() -> Window {
     Window::day(day_of(NOON, 0), 0)
@@ -22,7 +22,7 @@ fn week() -> Window {
     Window::days_ending(day_of(NOON, 0), 7, 0)
 }
 
-fn run(
+pub(super) fn run(
     id: i64,
     member: i64,
     task: Option<i64>,
@@ -61,7 +61,7 @@ fn run(
     }
 }
 
-fn spending(mut run: Run, spent: i64) -> Run {
+pub(super) fn spending(mut run: Run, spent: i64) -> Run {
     run.spent = spent;
     run
 }
@@ -85,7 +85,7 @@ fn task(id: i64, status: TaskStatus) -> Task {
     }
 }
 
-fn event(id: i64, at: i64, kind: &str, data: Value) -> Event {
+pub(super) fn event(id: i64, at: i64, kind: &str, data: Value) -> Event {
     Event {
         id,
         at,

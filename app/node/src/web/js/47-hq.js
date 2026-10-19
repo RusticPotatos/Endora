@@ -1343,6 +1343,9 @@ function hqChips(s) {
   // Turns of judgment that wait for budget are kept, not dropped (ADR 0131).
   if (pool.waiting > 0) chips.push(`<span class="hq-chip" title="They start when the day turns, you top up the pool, or you give the member an allowance">${pool.waiting} ${pool.waiting === 1 ? "turn waits" : "turns wait"} for budget</span>`);
   if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${HQ.mac.busy ? "busy" : HQ.mac.ready ? "free" : "away"}</span>`);
+  // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
+  const outcomes = s.scorecard && s.scorecard.outcomes;
+  if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} landed this week</span>`);
   chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:desk:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
@@ -1824,6 +1827,31 @@ function hqSpan(ms) {
 // Whether today's pool (the base day and the owner's top-up) has nothing left (ADR 0113 rule 6).
 function hqPoolSpent(s) { const p = s.pool; return !!p && p.per_day != null && (p.per_day - (p.committed || 0)) <= 0; }
 
+// What the work came to (ADR 0132), over the last day and the last week: the changes that
+// landed, what one cost, talk against work, how often the desk interrupted, how much the memory
+// is used, and what waits now. HQ computed every number; this only renders them. A week that
+// landed nothing says "none landed", never a cost of nought.
+function hqOutcomes(o) {
+  if (!o || !o.day || !o.week) return "";
+  const landed = (w) => `${w.landed} landed · ${w.submitted} submitted · ${w.checks_passed} checks passed`;
+  const cost = (w) => (w.per_landed == null ? "none landed" : `${hqDollars(w.per_landed)} each`);
+  const talk = (w) => (w.talk ? `${w.talk.coordination} : ${w.talk.product} turns · ${w.talk.posts} posts : ${w.talk.acts} acts` : "not measured yet");
+  const desk = (w) => `${w.interrupts} interrupts (${w.interrupts_a_day} a day) · ${w.digest} in the digest`;
+  const memory = (w) => {
+    const m = w.memory, c = m.consults;
+    return `${m.reinvented} reinvented · ${m.record_asked} asks of the record · ${c.asked} consults (${c.answered} answered, ${c.from_record} from the record)`;
+  };
+  const rows = [["Landed", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
+    .map(([k, f]) => `<tr><th>${k}</th><td>${esc(f(o.day))}</td><td>${esc(f(o.week))}</td></tr>`).join("");
+  const w = o.waiting || {};
+  const waits = w.budget || w.mac
+    ? `${w.budget || 0} waiting for budget · ${w.mac || 0} for the Mac · the oldest has waited ${hqSpan(w.oldest_ms)}`
+    : "nothing waits for budget or the Mac";
+  return `<h3>Outcomes</h3>
+    <table class="hq-score"><thead><tr><th></th><th>1 day</th><th>7 days</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="hq-note">${esc(waits)}</p>`;
+}
+
 // How the team is doing: the numbers HQ computed from its own record for today and the last
 // seven days, by the owner's days (the engine's `scorecard`). This only renders them: every
 // share, median and cost arrives computed; nothing a model wrote is in it, but every name goes
@@ -1877,6 +1905,7 @@ function hqScorecard(s) {
   const poolRow = pl ? `<tr><th>Pool</th><td>${esc(`pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`)}</td><td></td></tr>` : "";
   const topUp = pl ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button></div>` : "";
   return `<section class="hq-card"><h2>How the team is doing</h2>
+    ${hqOutcomes(card.outcomes)}
     <table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${rows}${poolRow}</tbody></table>
     ${topUp}
     ${areas ? `<details open><summary>Each area</summary>${areas}</details>` : ""}

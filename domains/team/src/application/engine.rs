@@ -20,7 +20,7 @@ use crate::domain::guards::Stopped;
 use crate::domain::lessons;
 use crate::domain::mac::{self, MacFacts};
 use crate::domain::money::{self, Micros};
-use crate::domain::review;
+use crate::domain::review::{self, SendBackReason};
 use crate::domain::routines::{self, FireStep, MINUTE_MS};
 use crate::domain::runs::{self, LONGEST_TURN_MS};
 use crate::domain::turns;
@@ -49,6 +49,7 @@ mod map;
 mod memory;
 mod notebook;
 mod office;
+mod outcomes;
 mod planning;
 mod projects;
 mod proposals;
@@ -1815,11 +1816,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The tester's tool reaches it for a send-back alone ([`Self::test_in`]): a pass is judged
     /// there, on evidence, and never closes a draft for the owner (ADR 0114, amended).
     ///
+    /// A send-back may name its `reason` when it is one HQ counts (ADR 0132); a pass has none.
+    ///
     /// # Errors
     /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYours`] for a member who
     /// is not a reviewer; [`Refusal::NotAStep`] for a task not in review; [`Refusal::OwnWork`];
     /// [`Refusal::GateNotPassed`] for work that needs the gate.
-    pub fn review_in(&self, run: RunId, task: TaskId, approve: bool, notes: &str) -> Done<()> {
+    pub fn review_in(
+        &self,
+        run: RunId,
+        task: TaskId,
+        approve: bool,
+        notes: &str,
+        reason: Option<SendBackReason>,
+    ) -> Done<()> {
         let _held = self.held();
         let run = self.running(run)?;
         self.reach(&run, task, true)?;
@@ -1853,6 +1863,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 &format!("Sent back: {notes}"),
             )?;
             self.emit_status(&current, TaskStatus::Doing)?;
+            self.emit_sent_back(task, reviewer.id, "tester", reason)?;
             if let Some(owner) = worker {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
             }
@@ -1889,6 +1900,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "task": current.id.0, "goal": current.goal.0,
                     "owner": current.owner.map(|o| o.0), "status": to.name(),
                     "priority": current.priority.name() }),
+        )
+    }
+
+    /// Says in the feed that `by`, a `tester` or a `lead` (`via`), sent a task back from review,
+    /// and why if the reason is one HQ counts (ADR 0132). Every send-back is told, with the
+    /// reason null when none was named, so the feed can count them all.
+    fn emit_sent_back(
+        &self,
+        task: TaskId,
+        by: MemberId,
+        via: &str,
+        reason: Option<SendBackReason>,
+    ) -> Done<()> {
+        self.emit(
+            EventKind::SentBack,
+            json!({ "task": task.0, "by": by.0, "via": via,
+                    "reason": reason.map(SendBackReason::name) }),
         )
     }
 
@@ -4804,6 +4832,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(json!({
             "today": scorecard::score(&record, &scorecard::Window::day(day, offset)).json(),
             "week": scorecard::score(&record, &scorecard::Window::days_ending(day, 7, offset)).json(),
+            // What the work came to, over the last day and week: landed changes, what one cost,
+            // talk against work, interruptions and what waits (ADR 0132).
+            "outcomes": self.outcomes_shown(runs, &events)?,
             // Today's pool: the base day and the owner's top-up (ADR 0113 rule 6).
             "pool": { "base": money::pool_a_day(self.settings.pool_per_month),
                       "topped_up": self.topup_of(day)? },

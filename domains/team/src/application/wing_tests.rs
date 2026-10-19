@@ -1247,6 +1247,58 @@ fn the_wings_branch_reaches_the_owner_only_on_approval() {
     );
 }
 
+/// A change the owner approved and the node pushed is a landed change (ADR 0132), and the screen's
+/// outcomes say so; the branch submitted and the check passed before it are counted too, and an
+/// approval the node has not yet pushed is not a change that landed.
+#[test]
+fn what_the_node_pushed_on_the_owners_word_is_a_landed_change_in_the_outcomes() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let outcomes = |hq: &Hq<'_>| hq.snapshot().unwrap()["scorecard"]["outcomes"].clone();
+    let nothing = outcomes(&hq);
+    assert_eq!(nothing["week"]["landed"], 0);
+    assert_eq!(
+        nothing["week"]["per_landed"],
+        Value::Null,
+        "nothing landed, so no cost to give"
+    );
+    let (task, _rae, _) = submitted(&hq, &t, true);
+    let handed = hq.next_check().unwrap().expect("a check waits");
+    hq.check_done(handed.id, &handed.token, true, "syntax ok", "")
+        .unwrap();
+    let before = outcomes(&hq);
+    assert_eq!(before["week"]["submitted"], 1);
+    assert_eq!(before["week"]["checks_passed"], 1);
+    assert_eq!(before["week"]["landed"], 0);
+
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    let item = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.kind == "push")
+        .unwrap();
+    hq.decide(item.id, "approve").unwrap();
+    hq.push_asked(item.id).unwrap().expect("the node is asked");
+    assert_eq!(
+        outcomes(&hq)["week"]["landed"],
+        0,
+        "approved, and not yet pushed"
+    );
+    hq.push_outcome(item.id, true, "Pushed hq/task-3 to the fork.")
+        .unwrap();
+    let after = outcomes(&hq);
+    assert_eq!(after["day"]["landed"], 1);
+    assert_eq!(after["week"]["landed"], 1);
+    assert_eq!(
+        after["week"]["per_landed"], 0,
+        "the house's own models cost nothing: one landed for nothing"
+    );
+}
+
 #[test]
 fn without_a_deploy_key_the_desk_offers_the_bundle_instead() {
     let clock = Hands(AtomicI64::new(OCT_17));

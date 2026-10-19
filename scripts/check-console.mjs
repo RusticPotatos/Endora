@@ -717,6 +717,17 @@ if (failures.length) {
           alarms: { count: 0, tasks: 0, closed_median_ms: null, open: 0 },
           desk: { approvals: 0, questions: 0, stuck: 0, notices: 0, other: 0, waiting: 0 },
           cache: { input: 0, read: 0, share: null } },
+        // What the work came to (ADR 0132), over the last day and the last week: computed there,
+        // only rendered here. The week landed nothing for the $8.85 it spent, and talk against
+        // work has not been measured for it yet.
+        outcomes: {
+          day: { from: 0, until: 86400000, since: null, landed: 1, submitted: 2, checks_passed: 2, spent: 880000, per_landed: 880000,
+            talk: { coordination: 12, product: 1, posts: 40, acts: 6 }, interrupts: 3, interrupts_a_day: 3, digest: 4,
+            memory: { reinvented: 1, record_asked: 5, consults: { asked: 2, answered: 1, from_record: 1 } } },
+          week: { from: -518400000, until: 86400000, since: 43200000, landed: 0, submitted: 6, checks_passed: 5, spent: 8850000, per_landed: null,
+            talk: null, interrupts: 19, interrupts_a_day: 2.7, digest: 22,
+            memory: { reinvented: 0, record_asked: 0, consults: { asked: 0, answered: 0, from_record: 0 } } },
+          waiting: { budget: 2, mac: 1, oldest_ms: 540000 }, talk_at: 3600000 },
         // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
         pool: { base: 2333333, topped_up: 2333333 },
         teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }],
@@ -777,6 +788,35 @@ if (failures.length) {
     if (!office.includes(said)) fail(`hq: the scorecard does not say ${said}`);
   }
   if (office.includes("<i>Dee</i>: 1 turns")) fail("hq: a member's name became markup on the scorecard");
+  // Outcomes (ADR 0132) head the card: what the work came to over a day and a week, with a week
+  // that landed nothing said plainly ("none landed", never $0), and the number landed in the top
+  // bar. The activity table stays below them.
+  for (const said of ["<h3>Outcomes</h3>", "<th>1 day</th><th>7 days</th>",
+    "1 landed · 2 submitted · 2 checks passed", "0 landed · 6 submitted · 5 checks passed",
+    "$0.88 each", "none landed", "12 : 1 turns · 40 posts : 6 acts", "not measured yet",
+    "3 interrupts (3 a day) · 4 in the digest", "19 interrupts (2.7 a day) · 22 in the digest",
+    "1 reinvented · 5 asks of the record · 2 consults (1 answered, 1 from the record)",
+    "2 waiting for budget · 1 for the Mac · the oldest has waited 9 min",
+    '<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">0 landed this week</span>']) {
+    if (!office.includes(said)) fail(`hq: the outcomes do not say ${said}`);
+  }
+  if (office.indexOf("<h3>Outcomes</h3>") > office.indexOf("<th>Today</th><th>7 days</th>")) fail("hq: the outcomes do not head the card");
+  if (office.includes("$0.00 each")) fail("hq: nothing landed is shown as costing nothing");
+  {
+    const landed = runInContext(`(() => { const o = HQ.snap.scorecard.outcomes, kept = o.week.landed; o.week.landed = 3;
+      const html = hqChips(HQ.snap); o.week.landed = kept; return html; })()`, context);
+    if (!landed.includes(">3 landed this week</span>")) fail("hq: the top bar does not count what landed this week");
+    // An HQ that does not serve outcomes yet shows neither the section nor the chip.
+    const none = runInContext(`(() => { const c = HQ.snap.scorecard, kept = c.outcomes; delete c.outcomes;
+      const html = hqScorecard(HQ.snap) + hqChips(HQ.snap); c.outcomes = kept; return html; })()`, context);
+    if (none.includes("Outcomes") || none.includes("landed this week")) fail("hq: outcomes are shown that HQ did not serve");
+    // Nothing waiting is said so; a landed change that cost nothing is $0.00 (it was free), not "none".
+    const calm = runInContext(`(() => { const o = HQ.snap.scorecard.outcomes, kept = [o.waiting, o.day.per_landed, o.day.spent];
+      o.waiting = { budget: 0, mac: 0, oldest_ms: null }; o.day.per_landed = 0; o.day.spent = 0;
+      const html = hqScorecard(HQ.snap); [o.waiting, o.day.per_landed, o.day.spent] = kept; return html; })()`, context);
+    if (!calm.includes("nothing waits for budget or the Mac")) fail("hq: a calm team's waiting is not said so");
+    if (!calm.includes("$0.00 each")) fail("hq: a change that landed for nothing is not said to have cost nothing");
+  }
   // The owner's one-day top-up (ADR 0113 rule 6): the button, and today's pool line.
   for (const said of ['data-act="hq:pool:topup:go">Top up today</button>', "pool $2.33 + $2.33 top-up"]) {
     if (!office.includes(said)) fail(`hq: the scorecard does not show the top-up (${said})`);

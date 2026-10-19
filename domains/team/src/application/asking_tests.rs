@@ -526,3 +526,44 @@ fn a_consulted_turn_is_free_work_on_the_house_model_whoever_asks_and_whoever_is_
         assert_eq!(hq.store().share_committed(member, day).unwrap(), 0);
     }
 }
+
+/// A member who searches the record leaves a line in the feed saying so and how many passages it
+/// found (ADR 0132): how much the team's memory is used is counted from these.
+#[test]
+fn asking_the_record_is_kept_in_the_feed_with_how_many_passages_it_found() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (_capped, _) = linus_capped_sonarr(&hq, &t, false);
+    let (task, ada) = ada_asks_in_a_turn(&hq, &t);
+    use_tool(
+        &hq,
+        &ada,
+        "ask_record",
+        &json!({ "question": "Why did we cap sonarr's memory?" }),
+    )
+    .unwrap();
+    use_tool(
+        &hq,
+        &ada,
+        "ask_record",
+        &json!({ "question": "Who ordered the zebra barbecue?" }),
+    )
+    .unwrap();
+    let asked: Vec<Value> = hq
+        .events_after(0)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "record.asked")
+        .map(|e| e.data)
+        .collect();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(
+        asked[0]["found"].as_i64().unwrap() >= 1,
+        "it found the post: {}",
+        asked[0]
+    );
+    assert_eq!(asked[1]["found"], 0, "and nothing about the zebras");
+    assert_eq!(asked[0]["member"], t.ada.0);
+    assert_eq!(asked[0]["task"], task.0);
+}
