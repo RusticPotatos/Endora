@@ -5,8 +5,9 @@
 //! last words to HQ through the gateway. A branch is judged against its base: when any check
 //! fails, the same checks run on the commit the branch was cut from (the node names it with
 //! the bundle), and the branch passes if none is worse than it was there. A fork whose own
-//! develop already has findings is not failed for them. The sandbox stays offline: the bundle comes from the
-//! node, and nothing else is reached.
+//! develop already has findings is not failed for them; but a base on which a check could not
+//! run (a missing tool, a kill, a timeout) was not read, and excuses nothing. The sandbox
+//! stays offline: the bundle comes from the node, and nothing else is reached.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -147,6 +148,13 @@ fn findings(output: &str) -> Option<u32> {
     })
 }
 
+/// Whether a check says nothing about the code it ran on, because the box could not run it:
+/// its tool was not found (127) or not executable (126), it was killed or never started (no
+/// exit code), or it ran out of time. A broken box is not a finding, and nothing excuses it.
+fn broken(o: &Outcome) -> bool {
+    o.timed_out || matches!(o.code, None | Some(126 | 127))
+}
+
 /// Pass or fail, and the line HQ keeps: "syntax ok, ansible-lint 2 findings, yamllint ok".
 #[must_use]
 pub fn summarise(outcomes: &[Outcome]) -> (bool, String) {
@@ -159,6 +167,7 @@ pub fn summarise(outcomes: &[Outcome]) -> (bool, String) {
             let said = match (passed, o.timed_out, o.name) {
                 (true, _, _) => "ok".to_owned(),
                 (false, true, _) => "timed out".to_owned(),
+                (false, false, _) if broken(o) => "could not run".to_owned(),
                 (false, false, "ansible-lint") => findings(&o.output).map_or_else(
                     || "failed".to_owned(),
                     |n| format!("{n} finding{}", if n == 1 { "" } else { "s" }),
@@ -213,6 +222,9 @@ fn said(o: &Outcome) -> String {
     if o.timed_out {
         return "timed out".to_owned();
     }
+    if broken(o) {
+        return "could not run".to_owned();
+    }
     let unit = match o.name {
         "ansible-lint" => "finding",
         "yamllint" => "error",
@@ -224,12 +236,32 @@ fn said(o: &Outcome) -> String {
     )
 }
 
+/// Why develop's outcomes cannot excuse a branch: the first of its checks that said nothing
+/// ([`broken`]), in a few words. `None` when every one of them was read.
+fn unread(base: &[Outcome]) -> Option<String> {
+    let o = base.iter().find(|o| broken(o))?;
+    let how = match (o.timed_out, o.code) {
+        (true, _) => "timed out".to_owned(),
+        (false, Some(127)) => "exited 127 (not found)".to_owned(),
+        (false, Some(code)) => format!("exited {code} (not executable)"),
+        (false, None) => "could not run or was killed".to_owned(),
+    };
+    Some(format!("{} {how} on develop", o.name))
+}
+
+/// The line for a failure that develop cannot excuse, and why.
+fn unchecked(plain: &str, why: &str) -> String {
+    format!("{plain} (develop could not be checked: {why})")
+}
+
 /// Pass or fail against the branch's base ("no worse than develop"), and the line HQ keeps.
 /// A branch with no failure passes as it is, in [`summarise`]'s words, without the base being
 /// asked for. Otherwise each check is held to what the base did: its count no higher, or,
-/// where no count can be read, a failure only where the base passed. A timeout on the branch
-/// always fails. `base` is the base's outcomes, or why it could not be checked, in which case
-/// the failure stands as it is and the line says so.
+/// where no count can be read, a failure only where the base passed. A check that could not run
+/// on the branch ([`broken`]: a timeout, a missing tool) always fails, as does any failure when
+/// a check of the base could not run: a base that was not read excuses nothing, so a box
+/// without its tools, broken on both sides, passes no branch. `base` is the base's outcomes, or
+/// why it could not be checked, in which case the failure stands as it is and the line says so.
 #[must_use]
 pub fn judge(branch: &[Outcome], base: Result<&[Outcome], String>) -> (bool, String) {
     let (clean, plain) = summarise(branch);
@@ -238,13 +270,11 @@ pub fn judge(branch: &[Outcome], base: Result<&[Outcome], String>) -> (bool, Str
     }
     let base = match base {
         Ok(base) => base,
-        Err(why) => {
-            return (
-                false,
-                format!("{plain} (develop could not be checked: {why})"),
-            );
-        }
+        Err(why) => return (false, unchecked(&plain, &why)),
     };
+    if let Some(why) = unread(base) {
+        return (false, unchecked(&plain, &why));
+    }
     let mut worse: Vec<&str> = Vec::new();
     let parts: Vec<String> = branch
         .iter()
@@ -253,7 +283,7 @@ pub fn judge(branch: &[Outcome], base: Result<&[Outcome], String>) -> (bool, Str
                 return format!("{} ok", o.name);
             }
             let theirs = base.iter().find(|b| b.name == o.name);
-            let no_worse = !o.timed_out
+            let no_worse = !broken(o)
                 && theirs.is_some_and(|b| match (measure(o), measure(b)) {
                     (Some(mine), Some(theirs)) => mine <= theirs,
                     _ => !passed(b),
@@ -704,12 +734,114 @@ mod tests {
             timed_out: true,
             output: String::new(),
         };
+        // Develop's yamllint was read (14 errors) and the branch's ran out of time: worse.
+        let (ok, said) = judge(&branch, Ok(&ran(0, 25, 14)));
+        assert!(!ok);
+        assert!(said.contains("yamllint timed out"), "{said}");
+        assert!(said.ends_with("worse than develop on yamllint"), "{said}");
+        // Out of time on develop too: develop was not read, so it excuses nothing, and the line
+        // says that rather than that the branch is worse than a develop nobody saw.
         let mut base = ran(0, 25, 14);
         base[2] = branch[2].clone();
         let (ok, said) = judge(&branch, Ok(&base));
         assert!(!ok);
-        assert!(said.contains("yamllint timed out"), "{said}");
-        assert!(said.ends_with("worse than develop on yamllint"), "{said}");
+        assert!(
+            said.contains("yamllint timed out")
+                && said.contains("develop could not be checked: yamllint timed out on develop"),
+            "{said}"
+        );
+    }
+
+    /// A check whose tool was not there, as the shell reports it.
+    fn gone(name: &'static str, code: i32) -> Outcome {
+        out(name, code, &format!("bash: {name}: command not found"))
+    }
+
+    /// Live (checks c1 and c2): the box lacked its tools, so every check exited 127 on the
+    /// branch and on develop. With no count to compare, "develop failed too" read as "no
+    /// worse", and a box with no tools would have passed every branch it was given.
+    #[test]
+    fn a_check_box_without_its_tools_fails_on_both_and_passes_nothing() {
+        let all_127 = || {
+            vec![
+                gone("syntax", 127),
+                gone("ansible-lint", 127),
+                gone("yamllint", 127),
+            ]
+        };
+        let (ok, said) = judge(&all_127(), Ok(&all_127()));
+        assert!(!ok, "{said}");
+        assert!(
+            said.contains("develop could not be checked") && said.contains("exited 127"),
+            "{said}"
+        );
+        assert!(!said.contains("no worse than develop"), "{said}");
+        // Not executable (126), killed or never started (no code), or timed out: the same. One
+        // broken check on develop is enough, even where the branch's own failure is a finding.
+        let timed_out = Outcome {
+            name: "yamllint",
+            code: None,
+            timed_out: true,
+            output: String::new(),
+        };
+        let killed = Outcome {
+            name: "ansible-lint",
+            code: None,
+            timed_out: false,
+            output: "could not run: no shell".to_owned(),
+        };
+        for broken_base in [
+            ran_with(gone("ansible-lint", 126)),
+            ran_with(timed_out),
+            ran_with(killed),
+            ran_with(gone("syntax", 127)),
+        ] {
+            let (ok, said) = judge(&ran(0, 25, 14), Ok(&broken_base));
+            assert!(!ok, "a base that was not read excuses nothing: {said}");
+            // The branch's own findings are still said, as they were found.
+            assert!(
+                said.starts_with("syntax ok, ansible-lint 25 findings, yamllint failed (develop could not be checked: "),
+                "{said}"
+            );
+        }
+        // A base read properly still excuses what it also had (nothing changed there).
+        assert!(judge(&ran(0, 25, 14), Ok(&ran(0, 25, 14))).0);
+    }
+
+    #[test]
+    fn a_branch_check_that_could_not_run_is_no_finding_for_a_failing_base_to_excuse() {
+        // The branch's ansible-lint never ran (127), while develop's ran and found 25: with no
+        // count of its own, the branch used to be "no worse" because develop also failed.
+        let mut branch = ran(0, 0, 0);
+        branch[1] = gone("ansible-lint", 127);
+        let (ok, said) = judge(&branch, Ok(&ran(0, 25, 0)));
+        assert!(!ok, "{said}");
+        assert!(
+            said.contains("ansible-lint could not run") && said.ends_with("on ansible-lint"),
+            "{said}"
+        );
+        // Killed with no code: the same.
+        branch[1] = Outcome {
+            name: "ansible-lint",
+            code: None,
+            timed_out: false,
+            output: String::new(),
+        };
+        assert!(!judge(&branch, Ok(&ran(0, 25, 0))).0);
+        // And in the plain line of a branch that is checked on its own.
+        assert_eq!(
+            summarise(&[gone("syntax", 127), lint(2), yaml(0)]).1,
+            "syntax could not run, ansible-lint 2 findings, yamllint ok"
+        );
+    }
+
+    /// Develop as it stands in the other tests (25 findings, 14 errors), with the check of the
+    /// same name as `with` replaced by it.
+    fn ran_with(with: Outcome) -> Vec<Outcome> {
+        let mut all = ran(0, 25, 14);
+        let at = all.iter().position(|o| o.name == with.name).unwrap();
+        all[at] = with;
+        all
     }
 
     #[test]

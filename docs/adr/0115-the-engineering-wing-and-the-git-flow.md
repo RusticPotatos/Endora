@@ -108,7 +108,13 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    than on the base, syntax failing only where the base's did, a timeout always a fail. The line
    then says both ("ansible-lint 25 findings (develop 25), …: no worse than develop") and the
    report holds the base's outcomes; a clean branch costs no second run, and a base that cannot
-   be found leaves the plain pass or fail, said in the line. HQ keeps the
+   be found leaves the plain pass or fail, said in the line. *Amended 2026-10-19:* a check that
+   **could not run** (its tool not found or not executable, exit 127 or 126; killed; out of
+   time) is no finding. A base on which any check could not run was not read and excuses
+   nothing: the failure stands and the line says "develop could not be checked: …", so a box
+   without its tools (every check at 127 on both sides, as c1 and c2 were) passes no branch,
+   where "develop failed too" had read as "no worse". A branch's own check that could not run
+   is never excused by a failing base either. HQ keeps the
    result as a **receipt** on the task and a document with the report, and as the task's
    **gate** (0114: code work closes only once it passed); a pass wakes the submitter and the
    tester, and **a branch that fails its checks is sent back** by HQ itself, the tester

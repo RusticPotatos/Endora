@@ -802,6 +802,15 @@ tagged release.
   as done: it is kept as refused now, so a receipt cannot show a refused call as one that ran.
   Ships with the workbench image (the worker's command line) and the node.
 
+- **A check box that cannot run its checks passes nothing** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)).
+  "No worse than develop" counted a failure with no readable count as no worse whenever develop
+  failed too, so a box with no tools (every check exiting 127 on the branch and on develop, as
+  the first two checks did live) would have passed every branch. A check that could not run (a
+  missing or non-executable tool, a kill, a timeout) is no finding now: a develop on which one
+  could not run is "could not be checked" and excuses nothing, and a branch's own check that
+  could not run is never excused. The result line says "could not run". Ships with the
+  workbench image (the check job).
+
 - **Live sound no longer falls behind the picture over time, and no longer dips every few
   minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
   backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a
