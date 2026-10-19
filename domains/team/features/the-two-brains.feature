@@ -112,7 +112,7 @@ Feature: Two brains per member
     Then Ada's turn starts on "Read the lab's disk use"
     And Ada's turn runs on "local"
 
-  Scenario: Code work for a member who works only on the house's model waits for the Mac
+  Scenario: Code work for a member who works on the house's model runs on the free Mac
     Given Mara is the CEO
     And the goal "Keep the home lab healthy"
     And the engineering wing
@@ -121,8 +121,8 @@ Feature: Two brains per member
     And the node says the Mac is ready
     And Kit hands Rae the task "Tidy the deluge role" in the wing
     When a tick passes
-    Then Rae's turn on "Tidy the deluge role" is waiting for the Mac: "this work needs the Mac, and the member's work brain is the house's model"
-    And Rae has no turn running
+    Then Rae's turn starts on "Tidy the deluge role"
+    And Rae's turn runs on "mac"
 
   Scenario: Reading the lab with the Mac busy runs on the house's model
     Given Sam is the researcher
