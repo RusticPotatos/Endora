@@ -289,6 +289,11 @@ const RUNTIME_COLUMNS: [(&str, &str); 2] = [
 /// turns had one); a member's is filled in at open, see [`give_two_brains`].
 const TURN_COLUMNS: [(&str, &str); 2] = [("members", "work_brain TEXT"), ("runs", "brain TEXT")];
 
+/// The column a store made before the platform's interruptions were told from a worker's
+/// failures (ADR 0124, amended) gains: no turn was interrupted. Adding a column changes no row.
+const INTERRUPTION_COLUMNS: [(&str, &str); 1] =
+    [("runs", "interrupted INTEGER NOT NULL DEFAULT 0")];
+
 /// Gives every member two brains (ADR 0131), once. A member on the house's model or the Mac keeps
 /// it as its **work brain**, and a member on Claude gets the Mac to work with. A member that has
 /// no Claude to judge with (the house's model in its `brain`, or nothing it knows) is given the
@@ -432,6 +437,7 @@ impl SqliteTeamStore {
             .chain(STAFFING_COLUMNS)
             .chain(RUNTIME_COLUMNS)
             .chain(TURN_COLUMNS)
+            .chain(INTERRUPTION_COLUMNS)
         {
             add_column(&conn, table, column)?;
         }
@@ -592,13 +598,14 @@ fn run_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
             .get::<_, Option<String>>(23)?
             .as_deref()
             .and_then(Brain::from_name),
+        interrupted: u8::try_from(row.get::<_, i64>(24)?).unwrap_or(u8::MAX),
     })
 }
 
 const RUN_COLUMNS: &str = "id, member, task, wake, status, attempts, queued_at, started_at, \
     retry_at, ended_at, reserved, spent, told, end_reason, moved_forward, input_tokens, \
     cache_read_tokens, cache_write_tokens, output_tokens, posted, blocked, label, \
-    asked_by_owner, brain";
+    asked_by_owner, brain, interrupted";
 
 const RECEIPT_SELECT: &str = "SELECT id, run, member, task, tool, args, excerpt, ok, act, \
     confidential, at_ms, sandbox FROM call_receipts";
@@ -1461,7 +1468,7 @@ impl TeamStore for SqliteTeamStore {
                 "UPDATE runs SET status = ?2, attempts = ?3, started_at = ?4, retry_at = ?5,
                     ended_at = ?6, reserved = ?7, spent = ?8, told = ?9, end_reason = ?10,
                     moved_forward = ?11, posted = ?12, blocked = ?13, label = ?14,
-                    asked_by_owner = ?15, brain = ?16
+                    asked_by_owner = ?15, brain = ?16, interrupted = ?17
                  WHERE id = ?1",
                 params![
                     run.id.0,
@@ -1479,7 +1486,8 @@ impl TeamStore for SqliteTeamStore {
                     run.blocked,
                     run.label.map(crate::domain::Label::name),
                     run.asked_by_owner,
-                    run.brain.map(Brain::name)
+                    run.brain.map(Brain::name),
+                    run.interrupted
                 ],
             )
             .map_err(backend)?;
@@ -3725,6 +3733,47 @@ CREATE TABLE IF NOT EXISTS projects (
         };
         let id = store.add_call_receipt(&reported).unwrap();
         assert!(store.call_receipt(id).unwrap().unwrap().sandbox);
+    }
+
+    #[test]
+    fn a_store_made_before_interruptions_were_told_from_failures_gains_the_column_at_none() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // Today's schema and columns, before the interruptions: what the live store has.
+        conn.execute_batch(SCHEMA).unwrap();
+        for (table, column) in PROJECT_COLUMNS
+            .into_iter()
+            .chain(EVIDENCE_COLUMNS)
+            .chain(OWNER_COLUMNS)
+            .chain(STAFFING_COLUMNS)
+            .chain(RUNTIME_COLUMNS)
+            .chain(TURN_COLUMNS)
+        {
+            add_column(&conn, table, column).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
+                (1, 'Jane Doe', 'developer', 40, 2);
+             INSERT INTO wakes (id, member, task, reason, receipt, at_ms) VALUES
+                (1, 1, NULL, 'assigned', 'started', 0);
+             INSERT INTO runs (id, member, task, wake, status, attempts, queued_at, started_at)
+                VALUES (1, 1, NULL, 1, 'retry_waiting', 2, 0, 0);",
+        )
+        .unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        let old = store.run(RunId(1)).unwrap().unwrap();
+        assert_eq!(
+            (old.attempts, old.interrupted),
+            (2, 0),
+            "no old turn was interrupted"
+        );
+        let mut cut = old;
+        cut.interrupted = 1;
+        store.save_run(&cut).unwrap();
+        assert_eq!(store.run(RunId(1)).unwrap().unwrap().interrupted, 1);
+        // Opened again, the column is there already and nothing changes.
+        let again = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
+        assert_eq!(again.run(RunId(1)).unwrap().unwrap().interrupted, 1);
     }
 
     #[test]

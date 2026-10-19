@@ -254,7 +254,10 @@ Every 30 seconds, in this order:
 1. Timers that are due raise their wakes; **routines** that are due fire (a task for their
    member, or skipped while their last task is open); **check-backs** that are due wake their
    member on their task, if it is still open.
-2. Runs whose container is gone become `failed`, with one retry.
+2. Runs whose container is gone become `failed`, with one retry. A run the platform cut short
+   (HQ lost it when it restarted, the runner found its container gone, or it was killed from
+   outside before its full time) is tried again without that start counting, once, and says
+   `interrupted` ([ADR 0124](../adr/0124-guards-against-how-agent-teams-fail.md), amended).
 3. Retries whose time has come are queued again (at most two, a minute apart).
 4. Queued runs start where a member has a free slot, budget can be reserved, and a runner is
    available.
@@ -1283,6 +1286,10 @@ showing it, every number in `domain::guards::THRESHOLDS`, every finding judged.
 - **Small ones**: a tester's pass bound to the criteria it judged ("needs re-check"); the CEO's
   rescues per member on the roster; a home-lab read that timed out is `unverified`, never
   `unavailable`; HQ's `/health` gives the tick's age.
+- **A deploy under a turn** (amended 2026-10-19): a turn the platform cut short (HQ restarted, the
+  container vanished or was killed from outside) is the platform's, not its member's: tried
+  again once without counting against its retries, and nothing is found, nudged or climbed
+  while it waits (`runs.interrupted`; scenario `a-deploy-under-a-turn.feature`).
 - The owner: `POST /v1/hq/retractions`, `GET /v1/hq/retractions/{id}/sweep`,
   `POST /v1/hq/retractions/{id}/forget`, through the node and its audit log.
 - Scenarios: `domains/team/features/guards.feature`.

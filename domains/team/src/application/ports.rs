@@ -6,7 +6,9 @@ use std::time::Duration;
 use crate::domain::office;
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{CallReceipt, Criterion, Label, Ref};
-use crate::domain::{CheckBack, CheckBackStatus, Goal, Liveness, Project, Routine, RoutineId};
+use crate::domain::{
+    CheckBack, CheckBackStatus, Exit, Goal, Liveness, Project, Routine, RoutineId,
+};
 use crate::domain::{
     Event, GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, Role, RunId,
     RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
@@ -177,6 +179,10 @@ pub struct Run {
     pub ended_at: Option<Millis>,
     /// What it has reserved from the budget for its current attempt.
     pub reserved: Micros,
+    /// How many times the platform interrupted its turn (HQ or the runner restarted under it,
+    /// or its container vanished): the first is tried again without counting against its
+    /// retries ([`crate::domain::runs::MOST_QUIET`]).
+    pub interrupted: u8,
     /// What it has reported spending, across attempts.
     pub spent: Micros,
     /// What the member was told at the start of its latest attempt.
@@ -1110,6 +1116,12 @@ pub trait WorkerAdapter {
     /// Why a turn that finished badly did, in the runner's words, when it said.
     fn why_ended(&self, _run: RunId) -> Option<String> {
         None
+    }
+    /// How a turn that finished badly ended, when the runner said: the exit code of its worker,
+    /// or that its container was gone before the runner saw it end. What tells the platform's
+    /// interruption of a turn from its worker's failure.
+    fn exit_of(&self, _run: RunId) -> Exit {
+        Exit::Unsaid
     }
     /// Asks the turn to stop, then ends it after the grace period.
     fn stop(&self, run: RunId, grace: Duration);

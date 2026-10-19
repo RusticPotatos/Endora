@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::application::ports::{RunContext, StartError, WorkerAdapter};
-use crate::domain::{Liveness, RunId};
+use crate::domain::{Exit, Liveness, RunId};
 
 /// How many turns a runner takes at once unless HQ is told otherwise.
 pub const DEFAULT_CAPACITY: usize = 2;
@@ -41,8 +41,9 @@ struct State {
     waiting: VecDeque<RunContext>,
     /// The runs handed out, each with its current lease.
     handed: HashMap<RunId, u64>,
-    /// How each reported turn ended: well or not, and why in the runner's words if it said.
-    ended: VecDeque<(RunId, bool, Option<String>)>,
+    /// How each reported turn ended: well or not, why in the runner's words if it said, and how
+    /// its container ended if the runner said that.
+    ended: VecDeque<(RunId, bool, Option<String>, Exit)>,
     stops: VecDeque<RunId>,
     /// The next lease to give. Seeded from the clock, so an HQ that restarts never hands out
     /// a lease an earlier one already gave.
@@ -102,13 +103,22 @@ impl RemoteRunner {
     /// already stopped, or one from an earlier attempt (its lease is not the current one) is
     /// not wanted, changes nothing, and says so.
     pub fn ended(&self, run: RunId, lease: u64, succeeded: bool) -> bool {
-        self.report(run, lease, succeeded, None)
+        self.report(run, lease, succeeded, None, Exit::Unsaid)
     }
 
     /// As [`Self::ended`], with why in the runner's words: the worker's exit code's meaning
     /// and its last words on stderr, which the engine keeps on the run's record (to
-    /// [`LONGEST_REASON`] characters) and says in its activity. Empty words are none.
-    pub fn report(&self, run: RunId, lease: u64, succeeded: bool, why: Option<&str>) -> bool {
+    /// [`LONGEST_REASON`] characters) and says in its activity. Empty words are none. And with
+    /// how the container ended, when the runner said, which is what tells the platform's
+    /// interruption of a turn from its worker's failure.
+    pub fn report(
+        &self,
+        run: RunId,
+        lease: u64,
+        succeeded: bool,
+        why: Option<&str>,
+        exit: Exit,
+    ) -> bool {
         let mut state = self.state();
         if state.handed.get(&run) != Some(&lease) {
             return false;
@@ -118,7 +128,7 @@ impl RemoteRunner {
             .map(str::trim)
             .filter(|w| !w.is_empty())
             .map(|w| crate::domain::cut::cut(w, LONGEST_REASON));
-        state.ended.push_back((run, succeeded, why));
+        state.ended.push_back((run, succeeded, why, exit));
         if state.ended.len() > KEPT {
             state.ended.pop_front();
         }
@@ -138,14 +148,14 @@ impl WorkerAdapter for RemoteRunner {
         let mut state = self.state();
         state.waiting.retain(|t| t.run != run.run);
         state.handed.remove(&run.run);
-        state.ended.retain(|(r, _, _)| *r != run.run);
+        state.ended.retain(|(r, _, _, _)| *r != run.run);
         state.waiting.push_back(run.clone());
         Ok(())
     }
 
     fn status(&self, run: RunId) -> Liveness {
         let state = self.state();
-        if let Some((_, succeeded, _)) = state.ended.iter().find(|(r, _, _)| *r == run) {
+        if let Some((_, succeeded, _, _)) = state.ended.iter().find(|(r, _, _, _)| *r == run) {
             return Liveness::Finished {
                 succeeded: *succeeded,
             };
@@ -160,8 +170,16 @@ impl WorkerAdapter for RemoteRunner {
         self.state()
             .ended
             .iter()
-            .find(|(r, _, _)| *r == run)
-            .and_then(|(_, _, why)| why.clone())
+            .find(|(r, _, _, _)| *r == run)
+            .and_then(|(_, _, why, _)| why.clone())
+    }
+
+    fn exit_of(&self, run: RunId) -> Exit {
+        self.state()
+            .ended
+            .iter()
+            .find(|(r, _, _, _)| *r == run)
+            .map_or(Exit::Unsaid, |(_, _, _, exit)| *exit)
     }
 
     /// A turn still waiting is dropped: the runner never had it. Any other is passed on for
@@ -175,7 +193,7 @@ impl WorkerAdapter for RemoteRunner {
             return;
         }
         state.handed.remove(&run);
-        state.ended.retain(|(r, _, _)| *r != run);
+        state.ended.retain(|(r, _, _, _)| *r != run);
         state.stops.push_back(run);
         if state.stops.len() > KEPT {
             state.stops.pop_front();
@@ -261,15 +279,16 @@ mod tests {
             RunId(1),
             a.lease,
             false,
-            Some("the turn failed: exit 1: worker: the model answered 500")
+            Some("the turn failed: exit 1: worker: the model answered 500"),
+            Exit::Code(1)
         ));
         assert!(
             runner.ended(RunId(2), b.lease, false),
             "an older runner's report"
         );
-        assert!(runner.report(RunId(3), c.lease, false, Some("  \n")));
+        assert!(runner.report(RunId(3), c.lease, false, Some("  \n"), Exit::Unsaid));
         let long = "x".repeat(LONGEST_REASON + 100);
-        assert!(runner.report(RunId(4), d.lease, false, Some(&long)));
+        assert!(runner.report(RunId(4), d.lease, false, Some(&long), Exit::Unsaid));
         assert_eq!(
             runner.why_ended(RunId(1)).as_deref(),
             Some("the turn failed: exit 1: worker: the model answered 500")
@@ -290,6 +309,39 @@ mod tests {
             "and the cut is shown"
         );
         assert_eq!(runner.why_ended(RunId(9)), None, "never had");
+    }
+
+    #[test]
+    fn how_a_container_ended_is_kept_with_the_report_and_forgotten_when_the_turn_starts_again() {
+        let runner = RemoteRunner::default();
+        for run in 1..=3 {
+            runner.start(&turn(run, "t")).unwrap();
+        }
+        let (a, b, c) = (
+            runner.next().unwrap(),
+            runner.next().unwrap(),
+            runner.next().unwrap(),
+        );
+        assert!(runner.report(RunId(1), a.lease, false, Some("gone"), Exit::Vanished));
+        assert!(runner.report(RunId(2), b.lease, false, Some("killed"), Exit::Code(137)));
+        assert!(
+            runner.ended(RunId(3), c.lease, false),
+            "an older runner's report"
+        );
+        assert_eq!(runner.exit_of(RunId(1)), Exit::Vanished);
+        assert_eq!(runner.exit_of(RunId(2)), Exit::Code(137));
+        assert_eq!(
+            runner.exit_of(RunId(3)),
+            Exit::Unsaid,
+            "it said nothing of it"
+        );
+        assert_eq!(runner.exit_of(RunId(9)), Exit::Unsaid, "never had");
+        runner.start(&turn(1, "again")).unwrap();
+        assert_eq!(
+            runner.exit_of(RunId(1)),
+            Exit::Unsaid,
+            "a turn tried again starts afresh"
+        );
     }
 
     #[test]

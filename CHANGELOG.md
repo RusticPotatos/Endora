@@ -9,6 +9,20 @@ tagged release.
 
 ### Changed
 
+- **A deploy under a turn is the platform's interruption, not the member's failure**
+  ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md), amended). Live, a deploy
+  cut a developer's turn short; HQ read its task as stopped by accident, the lead was asked to
+  look, and the CEO handed the work to another area's lead. HQ now tells whose it was that a turn
+  did not finish: **the platform's** when HQ lost the turn (it restarted), the runner found its
+  container gone, or it was killed from outside before its full time (exit 137 or 143); **the
+  worker's** for every other exit and for a kill at the turn's full time. A turn the platform
+  cut short is tried again a minute later as the same member, **the first interruption does not
+  count against its retries** (four starts, not three), and nothing is found, nudged, climbed or
+  put on a desk while it waits; its reason says `interrupted: …`. HQ reads the runner's report
+  as it always was (an exit code, or its words with none for a container gone): **the runner
+  and the worker are unchanged and need no redeploy.** Migration (idempotent): one column,
+  `runs.interrupted`, added if missing, at none for every old run. Scenarios:
+  `domains/team/features/a-deploy-under-a-turn.feature`.
 - **What done means comes first** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),
   amended; [0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)). Live, the
   owner's "no literal passwords in role defaults" went to a lead with no definition of done and

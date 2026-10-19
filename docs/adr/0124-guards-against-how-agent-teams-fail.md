@@ -20,6 +20,10 @@ criterion of its task it serves. Scenarios:
 `domains/team/features/what-done-means-comes-first.feature` and
 `a-request-says-what-it-serves.feature`.
 
+Amended again 2026-10-19, from a review of the live record and two audits (*hygiene*): a turn the
+platform cut short is not its member's failure (*Amended: a deploy under a turn*). Scenario:
+`domains/team/features/a-deploy-under-a-turn.feature`.
+
 ## Context
 
 A team of models does not fail by going rogue. It fails the way a busy office does, one locally
@@ -138,15 +142,41 @@ ladder (0120) takes parked work as before.
   card's `serves` is the criterion's number and words as they were when asked. Models propose; HQ
   decides.
 
+**Amended: a deploy under a turn.** A deploy restarts HQ, the node and the runner in turn. Live,
+one cut a developer's turn short, HQ read the task as stopped by accident (*its last turn failed:
+the runner stopped it, not its member*), its lead was asked to look, and the CEO handed the work
+to another area's lead ([0120](0120-roles-as-an-enforced-raci.md), amended). So HQ tells whose it
+was that a turn did not finish well (`domain::runs::fault_of`), from what it was told and nothing
+a model says:
+
+- *The platform's*: HQ lost the turn (`Liveness::Gone`: HQ restarted, and with it the memory of
+  what the runner was handed); the runner says the container was gone before it saw it end (no
+  exit code, with its words: the runner has always said so, and is unchanged); or the container
+  was killed from outside before its full time (exit 137 or 143).
+- *The worker's*: every other exit (1, 3, none given), and a kill at the turn's full time, which
+  is the turn's own timeout.
+
+A turn the platform cut short is tried again a minute later, as the same member on the same run,
+and **the first interruption does not count against its retries** (`runs::own_attempts`, one
+free): it gets four starts, not three, and only the first loss is free. While it waits, the task
+has a live turn, so the stopped diagnosis reads *working* and nothing is found, nudged, climbed
+or put on a desk. The run's reason says `interrupted: …`, and the feed's `run.ended` says
+`"interrupted": true`. An older runner that says neither why nor how is the worker's, as before.
+
 **Stored** in tables made if missing (`nudges`, `findings`, `closures`, `retractions`,
 `note_parents`, `desk_attached`) and in HQ's settings (`serves:<task>`, `enough:<task>:<member>`,
 `passed:<task>:<run>`, `guards_looked_at`, `guards_ceremony`, and, since the amendment,
-`approval_serves:<desk item>`). No existing row changes, and no migration.
+`approval_serves:<desk item>`). No existing row changes, and no migration; the deploy
+amendment adds one column to `runs`, `interrupted`, at none for every turn from before, added only
+if missing.
 
 ## Consequences
 
 - Fewer turns spent on talk, polish and nudges that say nothing new; one more look for the lead
   where HQ cannot tell, and a few more refusals a member must read and act on.
+- A deploy that restarts HQ under a turn costs the member nothing the first time: one more start,
+  and no finding, recovery wake or look from its lead. A run interrupted at every start is tried
+  four times before it fails, not three.
 - The detectors run every five minutes over the week's runs; at home-lab size this is small.
 - A member's sub-task under any task with criteria must say which it serves, and since the
   amendment that includes the owner's tasks and a routine's: the splitting that was exempt is the

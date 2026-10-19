@@ -27,9 +27,9 @@ use crate::domain::turns;
 use crate::domain::wakes::{self, LiveTurn};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
-    Brain, CheckBackStatus, EventKind, Firing, GoalId, GoalStatus, Liveness, Member, MemberId,
-    Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId, RunStatus,
-    Task, TaskId, TaskStatus, WakeDecision, WakeReason, WakeSituation,
+    Brain, CheckBackStatus, EventKind, Fault, Firing, GoalId, GoalStatus, Liveness, Member,
+    MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId,
+    RunStatus, Task, TaskId, TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 use crate::domain::{docs, house};
 
@@ -2306,9 +2306,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.end(run, status, why)
     }
 
-    /// A failed turn: tried again a minute later, at most twice; then failed for good.
-    fn fail(&self, mut run: Run, why: &str) -> Done<bool> {
+    /// A failed turn: tried again a minute later, at most twice; then failed for good. A turn the
+    /// platform cut short (HQ or the runner restarted under it, its container vanished) did
+    /// nothing wrong: the first time, its start does not count against its retries, and it says
+    /// it was interrupted (ADR 0124, amended).
+    fn fail(&self, mut run: Run, why: &str, fault: Fault) -> Done<bool> {
         let now = self.clock.now();
+        let why = match fault {
+            Fault::Worker => why.to_owned(),
+            Fault::Platform => {
+                run.interrupted = run.interrupted.saturating_add(1);
+                format!("interrupted: {why}")
+            }
+        };
+        let why = why.as_str();
         // A turn on the owner's Mac that failed because the Mac went away (the owner came back,
         // the laptop left its charger) did nothing wrong: it is tried again when the Mac is
         // free, and the failure is not counted against it (ADR 0130).
@@ -2316,7 +2327,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if on_the_mac && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some() {
             run.attempts = run.attempts.saturating_sub(1);
         }
-        let Some(due) = runs::retry_after_failure(run.attempts, now) else {
+        let own = runs::own_attempts(run.attempts, run.interrupted);
+        let Some(due) = runs::retry_after_failure(own, now) else {
             self.end(run, RunStatus::Failed, why)?;
             return Ok(false);
         };
@@ -2333,7 +2345,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.emit(
             EventKind::RunEnded,
             json!({ "run": run.id.0, "member": run.member.0, "task": run.task.map(|t| t.0),
-                    "result": RunStatus::RetryWaiting.name(), "why": why }),
+                    "result": RunStatus::RetryWaiting.name(), "why": why,
+                    "interrupted": fault == Fault::Platform }),
         )?;
         Ok(true)
     }
@@ -3035,14 +3048,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         .runner
                         .why_ended(run.id)
                         .unwrap_or_else(|| "the turn failed".to_owned());
-                    if self.fail(run, &why)? {
+                    // Whose it was: a container the runner found gone, or killed from outside
+                    // before its full time, was cut short by the platform (ADR 0124, amended).
+                    let ran = run.started_at.map_or(0, |started| now - started);
+                    let fault = runs::fault_of(self.runner.exit_of(run.id), ran);
+                    if self.fail(run, &why, fault)? {
                         report.retrying += 1;
                     } else {
                         report.ended += 1;
                     }
                 }
+                // HQ lost the turn: it restarted, and with it the memory of what the runner
+                // was handed. Nothing its member did.
                 Liveness::Gone => {
-                    if self.fail(run, "its container is gone")? {
+                    if self.fail(run, "its container is gone", Fault::Platform)? {
                         report.retrying += 1;
                     } else {
                         report.ended += 1;
@@ -3327,7 +3346,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 effort: self.effort_of(&on, &run)?,
             };
             if let Err(why) = self.runner.start(&context) {
-                self.fail(run, &format!("could not start: {}", why.0))?;
+                self.fail(run, &format!("could not start: {}", why.0), Fault::Worker)?;
                 continue;
             }
             self.store

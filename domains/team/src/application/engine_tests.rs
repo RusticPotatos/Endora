@@ -4,6 +4,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::engine::{Author, Engine, EngineError, Settings};
+use super::guard_ports::GuardStore;
 use super::ports::{Clock, NewTask, TeamStore};
 use crate::domain::money::MOST_A_TURN;
 use crate::domain::runs::{LONGEST_TURN_MS, RETRY_AFTER_MS};
@@ -322,7 +323,9 @@ fn naming_a_member_in_a_thread_wakes_them_but_not_the_writer() {
 }
 
 #[test]
-fn a_turn_whose_container_vanishes_is_retried_twice_a_minute_apart_then_fails() {
+fn a_turn_whose_container_vanishes_is_tried_once_more_for_free_then_as_any_failure_then_fails() {
+    // The first loss is the platform's (a restart under it) and does not count against the
+    // member's retries; every loss after it does, as a failure always did (ADR 0124, amended).
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
@@ -338,18 +341,169 @@ fn a_turn_whose_container_vanishes_is_retried_twice_a_minute_apart_then_fails() 
         RunStatus::RetryWaiting,
         "not before its minute"
     );
-    clock.forward(RETRY_AFTER_MS);
-    let report = hq.tick().unwrap();
-    assert_eq!((report.requeued, report.started), (1, 1), "second attempt");
-    hq.tick().unwrap(); // vanishes again: one retry left
-    clock.forward(RETRY_AFTER_MS);
-    hq.tick().unwrap(); // third attempt starts
+    for attempt in 2..=4 {
+        clock.forward(RETRY_AFTER_MS);
+        let report = hq.tick().unwrap();
+        assert_eq!(
+            (report.requeued, report.started),
+            (1, 1),
+            "attempt {attempt}"
+        );
+        hq.tick().unwrap(); // vanishes again
+        let expected = if attempt < 4 {
+            RunStatus::RetryWaiting
+        } else {
+            RunStatus::Failed
+        };
+        assert_eq!(status_of(&hq, run), expected, "after attempt {attempt}");
+    }
+    let ended = hq.store().run(crate::domain::RunId(run)).unwrap().unwrap();
+    assert_eq!(
+        (ended.attempts, ended.interrupted, ended.end_reason.as_str()),
+        (4, 4, "interrupted: its container is gone")
+    );
+}
+
+#[test]
+fn a_worker_that_fails_is_still_held_to_its_two_retries() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    hq.runner().script(t.dev, Script::Fails);
+    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.tick().unwrap(); // started; fails at once
+    let run = hq.store().runs().unwrap()[0].id.0;
+    for attempt in 2..=3 {
+        assert_eq!(
+            hq.tick().unwrap().retrying,
+            1,
+            "after attempt {}",
+            attempt - 1
+        );
+        clock.forward(RETRY_AFTER_MS);
+        let report = hq.tick().unwrap();
+        assert_eq!(
+            (report.requeued, report.started),
+            (1, 1),
+            "attempt {attempt}"
+        );
+    }
     assert_eq!(hq.tick().unwrap().ended, 1);
     assert_eq!(status_of(&hq, run), RunStatus::Failed);
     let ended = hq.store().run(crate::domain::RunId(run)).unwrap().unwrap();
     assert_eq!(
-        (ended.attempts, ended.end_reason.as_str()),
-        (3, "its container is gone")
+        (ended.attempts, ended.interrupted, ended.end_reason.as_str()),
+        (3, 0, "the turn failed"),
+        "its worker's failure is its own, however it ended"
+    );
+}
+
+#[test]
+fn a_turn_the_platform_interrupted_is_tried_again_as_the_same_member_and_raises_nothing() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    hq.runner().script(t.dev, Script::Vanishes);
+    let task = task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.claim(t.dev, task).unwrap();
+    hq.tick().unwrap(); // started, and its container is gone
+    hq.tick().unwrap(); // HQ finds it so
+    let run = hq.store().runs().unwrap()[0].clone();
+    assert_eq!(run.status, RunStatus::RetryWaiting);
+    assert_eq!((run.attempts, run.interrupted), (1, 1));
+    assert!(
+        run.end_reason.starts_with("interrupted: "),
+        "{}",
+        run.end_reason
+    );
+    let said = hq
+        .store()
+        .events_after(0)
+        .unwrap()
+        .into_iter()
+        .rfind(|e| e.kind == "run.ended")
+        .unwrap();
+    assert_eq!(said.data["result"], "retry_waiting");
+    assert_eq!(said.data["interrupted"], true, "the activity says so");
+    // The deploy takes its time: the retry waits, and HQ's look at stuck work finds the task
+    // working, not stopped by accident, so nothing is found, nudged or climbed.
+    hq.runner().script(t.dev, Script::StaysRunning);
+    let wakes = hq.wakes().unwrap().len();
+    clock.forward(RETRY_AFTER_MS);
+    hq.tick().unwrap(); // the retry starts, as the same member, on the same turn
+    let again = hq.store().run(run.id).unwrap().unwrap();
+    assert_eq!(
+        (again.id, again.member, again.status),
+        (run.id, t.dev, RunStatus::Running)
+    );
+    assert_eq!((again.attempts, again.interrupted), (2, 1));
+    let started: Vec<_> = hq
+        .runner()
+        .started()
+        .iter()
+        .map(|c| (c.run, c.member))
+        .collect();
+    assert_eq!(started, [(run.id, t.dev), (run.id, t.dev)]);
+    // Long enough for stranded work to be looked at, short of a turn's longest.
+    clock.forward(super::engine::STRANDED_AFTER_MS + 1);
+    hq.tick().unwrap();
+    clock.forward(super::engine::STRANDED_AFTER_MS + 1);
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store().run(run.id).unwrap().unwrap().status,
+        RunStatus::Running
+    );
+    assert_eq!(
+        hq.diagnosis(task).unwrap().map(|d| d.stopped),
+        Some(crate::domain::guards::Stopped::Working)
+    );
+    assert_eq!(hq.wakes().unwrap().len(), wakes, "nobody was woken");
+    assert!(hq.store().findings().unwrap().is_empty(), "no finding");
+    assert!(
+        hq.store().desk().unwrap().is_empty(),
+        "nothing for the owner"
+    );
+    assert!(!hq.store().task(task).unwrap().unwrap().nudged);
+}
+
+#[test]
+fn a_container_killed_from_outside_is_an_interruption_and_a_kill_at_full_time_is_a_timeout() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    hq.runner().script(t.dev, Script::Killed);
+    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.tick().unwrap(); // started; killed at once, exit 137
+    let run = hq.store().runs().unwrap()[0].id;
+    assert_eq!(hq.tick().unwrap().retrying, 1);
+    let cut = hq.store().run(run).unwrap().unwrap();
+    assert_eq!(
+        (cut.status, cut.attempts, cut.interrupted),
+        (RunStatus::RetryWaiting, 1, 1)
+    );
+    assert!(
+        cut.end_reason.starts_with("interrupted: "),
+        "{}",
+        cut.end_reason
+    );
+    // A turn the runner killed after the whole time a turn may take is its own timeout.
+    hq.runner().script(t.dev, Script::StaysRunning);
+    clock.forward(RETRY_AFTER_MS);
+    hq.tick().unwrap();
+    clock.forward(LONGEST_TURN_MS);
+    hq.runner()
+        .finish_badly(run, crate::domain::Exit::Code(137));
+    assert_eq!(hq.tick().unwrap().retrying, 1);
+    let late = hq.store().run(run).unwrap().unwrap();
+    assert_eq!(
+        (late.attempts, late.interrupted),
+        (2, 1),
+        "not an interruption"
+    );
+    assert!(
+        !late.end_reason.starts_with("interrupted: "),
+        "{}",
+        late.end_reason
     );
 }
 

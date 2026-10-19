@@ -63,6 +63,7 @@ fn turn() -> Run {
         output_tokens: 300,
         asked_by_owner: false,
         brain: Some(Brain::Haiku),
+        interrupted: 0,
     }
 }
 

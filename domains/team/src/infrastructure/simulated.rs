@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::application::ports::{RunContext, StartError, WorkerAdapter};
-use crate::domain::{Liveness, MemberId, RunId};
+use crate::domain::{Exit, Liveness, MemberId, RunId};
 
 /// How a member's scripted turn goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,9 @@ pub enum Script {
     Fails,
     /// Its container disappears without a word.
     Vanishes,
+    /// It is killed from outside, as Docker does to a container it stops (SIGKILL, exit 137),
+    /// and the runner says so.
+    Killed,
     /// It cannot even start.
     WillNotStart,
 }
@@ -28,6 +31,7 @@ pub enum Script {
 struct State {
     scripts: HashMap<MemberId, Script>,
     turns: HashMap<RunId, Liveness>,
+    exits: HashMap<RunId, Exit>,
     started: Vec<RunContext>,
     stopped: Vec<RunId>,
 }
@@ -67,6 +71,15 @@ impl SimulatedRunner {
             .insert(run, Liveness::Finished { succeeded });
     }
 
+    /// Ends a running turn badly, saying how its worker's container ended, as a runner does.
+    pub fn finish_badly(&self, run: RunId, exit: Exit) {
+        let mut state = self.state();
+        state
+            .turns
+            .insert(run, Liveness::Finished { succeeded: false });
+        state.exits.insert(run, exit);
+    }
+
     /// Makes a running turn's container disappear.
     pub fn vanish(&self, run: RunId) {
         self.state().turns.insert(run, Liveness::Gone);
@@ -97,10 +110,15 @@ impl WorkerAdapter for SimulatedRunner {
             Script::WillNotStart => return Err(StartError("the runner said no".to_owned())),
             Script::StaysRunning => Liveness::Running,
             Script::Succeeds => Liveness::Finished { succeeded: true },
-            Script::Fails => Liveness::Finished { succeeded: false },
+            Script::Fails | Script::Killed => Liveness::Finished { succeeded: false },
             Script::Vanishes => Liveness::Gone,
         };
         state.turns.insert(run.run, liveness);
+        // A new attempt starts afresh: nothing of how the last one ended is kept.
+        state.exits.remove(&run.run);
+        if script == Script::Killed {
+            state.exits.insert(run.run, Exit::Code(137));
+        }
         state.started.push(run.clone());
         Ok(())
     }
@@ -111,6 +129,14 @@ impl WorkerAdapter for SimulatedRunner {
             .get(&run)
             .copied()
             .unwrap_or(Liveness::Gone)
+    }
+
+    fn exit_of(&self, run: RunId) -> Exit {
+        self.state()
+            .exits
+            .get(&run)
+            .copied()
+            .unwrap_or(Exit::Unsaid)
     }
 
     fn stop(&self, run: RunId, _grace: Duration) {

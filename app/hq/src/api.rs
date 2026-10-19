@@ -2407,6 +2407,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_container_the_runner_found_gone_or_killed_is_the_platforms_and_a_workers_exit_is_its_own()
+     {
+        let st = state(false);
+        let (run, _) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let next = || {
+            call(
+                "POST",
+                "/v1/runner/next",
+                Some(RUNNER),
+                &json!({ "free": 1 }).to_string(),
+            )
+        };
+        let report = |lease: u64, body: serde_json::Value| {
+            let mut body = body;
+            body["lease"] = json!(lease);
+            call(
+                "POST",
+                &format!("/v1/runner/{}/ended", run.0),
+                Some(RUNNER),
+                &body.to_string(),
+            )
+        };
+        // The retry waits a minute, which the system clock cannot skip: it is made due by hand.
+        let due_now = || {
+            let mut waiting = st.hq.store().run(run).unwrap().unwrap();
+            waiting.retry_at = Some(0);
+            st.hq.store().save_run(&waiting).unwrap();
+            st.hq.tick().unwrap();
+        };
+        let lease = |app: &axum::Router| {
+            let app = app.clone();
+            async move {
+                json_of(app.oneshot(next()).await.unwrap()).await["lease"]
+                    .as_u64()
+                    .unwrap()
+            }
+        };
+
+        // The runner found the worker's container gone before it saw it end: a runner says why
+        // and no exit code. HQ takes that for the platform's, and the member loses nothing.
+        let first = lease(&app).await;
+        let said = app
+            .clone()
+            .oneshot(report(
+                first,
+                json!({ "succeeded": false, "code": null,
+                        "why": "its container was gone before it was seen to end" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(said.status(), StatusCode::NO_CONTENT);
+        assert_eq!(st.hq.tick().unwrap().retrying, 1);
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!(
+            (kept.status, kept.attempts, kept.interrupted),
+            (RunStatus::RetryWaiting, 1, 1)
+        );
+        assert!(
+            kept.end_reason.starts_with("interrupted: "),
+            "{}",
+            kept.end_reason
+        );
+
+        // Killed from outside (Docker stopping it): the same, the second time without the
+        // allowance, which was the first's.
+        due_now();
+        let second = lease(&app).await;
+        let said = app
+            .clone()
+            .oneshot(report(
+                second,
+                json!({ "succeeded": false, "code": 137, "why": "killed (exit 137)" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(said.status(), StatusCode::NO_CONTENT);
+        assert_eq!(st.hq.tick().unwrap().retrying, 1);
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!((kept.attempts, kept.interrupted), (2, 2));
+
+        // Its worker's own exit, or the runner saying nothing at all, is not an interruption.
+        due_now();
+        let third = lease(&app).await;
+        let said = app
+            .clone()
+            .oneshot(report(
+                third,
+                json!({ "succeeded": false, "code": 1, "why": "exit 1: worker: the model answered 500" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(said.status(), StatusCode::NO_CONTENT);
+        st.hq.tick().unwrap();
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!(
+            (kept.attempts, kept.interrupted),
+            (3, 2),
+            "its worker's failure"
+        );
+        assert!(
+            !kept.end_reason.starts_with("interrupted: "),
+            "{}",
+            kept.end_reason
+        );
+        due_now();
+        let fourth = lease(&app).await;
+        let said = app
+            .clone()
+            .oneshot(report(fourth, json!({ "succeeded": false })))
+            .await
+            .unwrap();
+        assert_eq!(said.status(), StatusCode::NO_CONTENT);
+        st.hq.tick().unwrap();
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!(
+            (kept.status, kept.attempts, kept.interrupted),
+            (RunStatus::Failed, 4, 2),
+            "an older runner's bare report is a failure, as ever"
+        );
+    }
+
+    #[tokio::test]
     async fn the_owner_gives_a_member_a_cloud_brain_and_the_runner_and_the_node_hear_it() {
         let st = state(false);
         let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();

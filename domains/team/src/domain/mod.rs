@@ -49,7 +49,7 @@ pub use money::Micros;
 pub use notebook::Note;
 pub use projects::{Evidence, Pause, Project, ProjectStatus};
 pub use routines::{CheckBack, CheckBackStatus, Firing, Routine};
-pub use runs::{Liveness, RunStatus};
+pub use runs::{Exit, Fault, Liveness, RunStatus};
 pub use runtime::Runtime;
 pub use wakes::{Receipt, Refused, WakeDecision, WakeReason, WakeSituation};
 pub use wing::{Branch, Check, Document, HireRequest};
