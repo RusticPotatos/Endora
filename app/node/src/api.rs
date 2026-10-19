@@ -520,6 +520,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/goals/{id}/strategy", post(hq_goal_strategy))
         // What a member thinks with (ADR 0109).
         .route("/v1/hq/members/{id}/brain", post(hq_set_brain))
+        .route("/v1/hq/members/{id}/work-brain", post(hq_set_work_brain))
+        .route(
+            "/v1/hq/members/{id}/judgment-brain",
+            post(hq_set_judgment_brain),
+        )
         // What runs a member's turns (ADR 0117).
         .route("/v1/hq/members/{id}/runtime", post(hq_set_runtime))
         // The owner renames a member, and keeps the CEO's house log with it (ADR 0111).

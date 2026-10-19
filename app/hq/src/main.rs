@@ -288,6 +288,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The nightly quiz on the map (ADR 0126): a free member on the house's model, in a
         // downtime turn, scored by code. The scripted demo has none.
         quiz: !demo_mode,
+        // A turn has a kind (ADR 0131): work on the member's work brain, judgment only on its
+        // Claude. The scripted demo's members think with one brain.
+        turn_kinds: !demo_mode,
         ..Settings::default()
     };
     let hq: Arc<Hq> = Arc::new(

@@ -339,6 +339,58 @@ pub(super) async fn hq_set_brain(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqWorkBrain {
+    work_brain: String,
+}
+
+/// The owner sets what a member does its work with (ADR 0131): the Mac or the house's model.
+/// HQ decides what is allowed; the node records what was set.
+pub(super) async fn hq_set_work_brain(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqWorkBrain>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/work-brain"),
+        Some(json!({ "work_brain": req.work_brain })),
+    )
+    .await?;
+    // HQ answers with one of its own brains' names, never what was asked.
+    let brain = answer.0["work_brain"].as_str().unwrap_or("").to_owned();
+    record(&state, &format!("you set member {id} to work with {brain}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqJudgmentBrain {
+    judgment_brain: String,
+}
+
+/// The owner sets the Claude a member judges with (ADR 0131), or `none` to take it away.
+pub(super) async fn hq_set_judgment_brain(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqJudgmentBrain>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/judgment-brain"),
+        Some(json!({ "judgment_brain": req.judgment_brain })),
+    )
+    .await?;
+    let brain = answer.0["judgment_brain"]
+        .as_str()
+        .unwrap_or("no one")
+        .to_owned();
+    record(
+        &state,
+        &format!("you set member {id} to judge with {brain}"),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqRuntime {
     runtime: String,
 }
@@ -939,6 +991,68 @@ mod tests {
             audit
                 .iter()
                 .any(|a| a == "HQ: you set member 5 to run on claude-code"),
+            "{audit:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owner_sets_both_of_a_members_brains_through_the_node_and_both_are_recorded() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            if path.ends_with("/work-brain") {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "member": 1, "work_brain": "mac" }).to_string(),
+                );
+            }
+            (
+                200,
+                "application/json",
+                json!({ "member": 1, "judgment_brain": null }).to_string(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let work = hq_set_work_brain(
+            State(state.clone()),
+            Path(1),
+            Json(HqWorkBrain {
+                work_brain: "mac".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(work.0["work_brain"], "mac");
+        let judges = hq_set_judgment_brain(
+            State(state.clone()),
+            Path(1),
+            Json(HqJudgmentBrain {
+                judgment_brain: "none".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(judges.0["judgment_brain"].is_null());
+        let paths: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(
+            paths,
+            ["/v1/members/1/work-brain", "/v1/members/1/judgment-brain"]
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit.contains(&"HQ: you set member 1 to work with mac".to_owned()),
+            "{audit:?}"
+        );
+        assert!(
+            audit.contains(&"HQ: you set member 1 to judge with no one".to_owned()),
             "{audit:?}"
         );
     }

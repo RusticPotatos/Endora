@@ -1335,6 +1335,8 @@ function hqChips(s) {
     const left = Math.max(0, pool.per_day - (pool.committed || 0));
     chips.push(`<span class="hq-chip" title="Today's money for the whole team">Pool ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left</span>`);
   }
+  // Turns of judgment that wait for budget are kept, not dropped (ADR 0131).
+  if (pool.waiting > 0) chips.push(`<span class="hq-chip" title="They start when the day turns, you top up the pool, or you give the member an allowance">${pool.waiting} ${pool.waiting === 1 ? "turn waits" : "turns wait"} for budget</span>`);
   if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${HQ.mac.busy ? "busy" : HQ.mac.ready ? "free" : "away"}</span>`);
   chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:desk:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
@@ -1474,6 +1476,19 @@ function hqBrainTag(brain) {
   return b.includes("opus") ? "Opus" : b.includes("sonnet") ? "Sonnet" : b.includes("haiku") ? "Haiku" : b === "mac" ? "Mac" : "Local";
 }
 
+// A member's two brains (ADR 0131), in a few words: "Work: Mac · Judgment: Sonnet".
+function hqBrainsTag(m) {
+  if (!m.work_brain) return hqBrainTag(m.brain);
+  return `Work: ${hqBrainTag(m.work_brain)} · Judgment: ${m.judgment_brain ? hqBrainTag(m.judgment_brain) : "none"}`;
+}
+
+// What a member's turn waits for, in the owner's words, if one waits (ADR 0131): for budget,
+// for the Mac, or for a judgment brain the owner has not given it.
+function hqWaitingFor(m) {
+  const turn = ((HQ.snap && HQ.snap.runs) || []).find((r) => r.member === m.id && r.status === "queued" && /^waiting for /.test(r.why || ""));
+  return turn ? turn.why : "";
+}
+
 // The lead a member works under: the nearest lead up whom it reports to, or none when the
 // chain reaches the CEO (or nobody) first.
 function hqLeadOf(m, members) {
@@ -1492,6 +1507,7 @@ function hqLeadOf(m, members) {
 // it), closed until then.
 function hqRosterLine(m, members) {
   const on = (m.running || []).map((r) => r.task ? "#" + r.task : "a look round").join(", ");
+  const waits = hqWaitingFor(m);
   const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today of ${hqDollars(m.per_day)}`;
   const open = !!HQ.roster[m.id];
   const controls = open ? `<div class="hq-controls">
@@ -1499,7 +1515,7 @@ function hqRosterLine(m, members) {
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div>${hqNotebook(m)}</div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
-      <span>${esc(hqRole(m.role))} · <span class="hq-tag">${hqBrainTag(m.brain)}</span> · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : "between turns") + " · "}${money}${m.rescues ? ` · the CEO stepped in ${Number(m.rescues)} ${m.rescues === 1 ? "time" : "times"}` : ""}</span></button>${controls}</li>`;
+      <span>${esc(hqRole(m.role))} · <span class="hq-tag">${esc(hqBrainsTag(m))}</span> · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : waits ? esc(waits) : "between turns") + " · "}${money}${m.rescues ? ` · the CEO stepped in ${Number(m.rescues)} ${m.rescues === 1 ? "time" : "times"}` : ""}</span></button>${controls}</li>`;
 }
 
 // A member's notebook (ADR 0118), in its panel: each note as text (a member wrote it, so it is
@@ -1702,6 +1718,15 @@ function hqDocuments(t) {
 // What a member thinks with (ADR 0109): the house's own model, or a Claude its role may use,
 // as HQ lists them for it. The one it has is pressed; each other is a tap away.
 function hqBrains(m) {
+  // Two brains (ADR 0131): what it works with, and the Claude it judges with.
+  if (m.work_brains) {
+    const pick = (act, current, b) => `<button class="hq-btn${b.name === current ? " ok" : ""}" aria-pressed="${b.name === current ? "true" : "false"}"
+      data-act="hq:${act}:${m.id}:${esc(b.name)}">${esc(b.label)}</button>`;
+    const none = { name: "none", label: "None" };
+    const judges = m.judgment_brain || "none";
+    return `<div class="hq-row" role="group" aria-label="What ${esc(m.name)} works with">Work: ${m.work_brains.map((b) => pick("workbrain", m.work_brain, b)).join("")}</div>
+      <div class="hq-row" role="group" aria-label="The Claude ${esc(m.name)} judges with">Judgment: ${[none, ...(m.judgment_brains || [])].map((b) => pick("judge", judges, b)).join("")}</div>`;
+  }
   const brains = m.brains || [];
   if (brains.length < 2) return "";
   const btn = (b) => `<button class="hq-btn${b.name === m.brain ? " ok" : ""}" aria-pressed="${b.name === m.brain ? "true" : "false"}"
@@ -2064,7 +2089,7 @@ function hqSelected() {
     return `<div class="hq-sel">${esc(m.name)} · ${esc(hqRole(m.role))}</div><dl class="hq-kv">
       <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc((HQ.people[m.id] || {}).doing || "starting") : "Waiting for a wake"}</dd>
       <dt>Run</dt><dd>${run ? "R" + run.run + (t ? " · " + hqKey(t.id) : "") : "none"}</dd>
-      <dt>Brain</dt><dd>${esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
+      <dt>Brain</dt><dd>${m.work_brain ? esc(hqBrainsTag(m)) : esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
       <dt>Budget</dt><dd>${hqMemberMoney(m)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}${hqTurns((r) => r.member === m.id, "member-" + m.id)}`;
   }
   if (sel.type === "item") {
@@ -2195,6 +2220,23 @@ async function hqDispatch(verb, noun, id, arg) {
     if (!m || !b || m.brain === arg) return true;
     if (arg !== "local" && arg !== "mac" && !confirm(`${m.name} will think with ${b.label}: each turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results stay home, but for what you allowed the lead). Go ahead?`)) return true;
     try { await api("POST", `/v1/hq/members/${id}/brain`, { brain: arg }); flash(`${m.name} thinks with ${b.label}.`, "ok"); }
+    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // Two brains (ADR 0131): what a member works with (the Mac or the house's model, free), and
+  // the Claude it judges with, which is paid from the pool and reads what it is shown.
+  if (noun === "workbrain") {
+    const m = hqMember(Number(id)), b = ((m && m.work_brains) || []).find((x) => x.name === arg);
+    if (!m || !b || m.work_brain === arg) return true;
+    try { await api("POST", `/v1/hq/members/${id}/work-brain`, { work_brain: arg }); flash(`${m.name} works with ${b.label}.`, "ok"); }
+    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  if (noun === "judge") {
+    const m = hqMember(Number(id)), b = arg === "none" ? { label: "no one" } : ((m && m.judgment_brains) || []).find((x) => x.name === arg);
+    if (!m || !b || (m.judgment_brain || "none") === arg) return true;
+    if (arg !== "none" && !confirm(`${m.name} will judge with ${b.label}: each decision turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results stay home, but for what you allowed the lead). Go ahead?`)) return true;
+    try { await api("POST", `/v1/hq/members/${id}/judgment-brain`, { judgment_brain: arg }); flash(arg === "none" ? `${m.name} no longer has a judgment brain; its decisions wait.` : `${m.name} judges with ${b.label}.`, "ok"); }
     catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }

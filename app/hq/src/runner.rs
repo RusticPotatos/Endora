@@ -112,21 +112,30 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             // runs on the worker.
             let runtime = member
                 .as_ref()
-                .and_then(|m| hq.runtime_of(m.id).ok())
+                .and_then(|_| hq.runtime_of_turn(handed.turn.run).ok())
                 .unwrap_or_default();
-            (handed, member, runtime)
+            // What it thinks with (ADR 0131): the brain this turn was started on, decided by
+            // its kind; its member's own for a turn from before turns had one.
+            let on = hq
+                .store()
+                .run(handed.turn.run)
+                .ok()
+                .flatten()
+                .and_then(|r| r.brain)
+                .or_else(|| member.as_ref().map(|m| m.brain));
+            (handed, member, runtime, on)
         }))
     })
     .await;
     match handed {
-        Ok(Ok(Some((handed, member, runtime)))) => Json(json!({
+        Ok(Ok(Some((handed, member, runtime, on)))) => Json(json!({
             "run": handed.turn.run.0,
             "lease": handed.lease,
             "token": handed.turn.token,
             "member": member.as_ref().map_or("", |m| m.name.as_str()),
             "role": member.as_ref().map_or("", |m| m.role.name()),
             // What the member thinks with: the runner points the worker at the matching relay.
-            "brain": member.as_ref().map_or("local", |m| m.brain.name()),
+            "brain": on.map_or("local", endora_team::domain::Brain::name),
             "task": handed.turn.task.map(|t| t.0),
             "effort": handed.turn.effort.map(endora_team::domain::Effort::name),
             // What runs the turn in the workbench (ADR 0117): `worker` or `claude-code`.

@@ -84,6 +84,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/goals/{id}/strategy", post(goal_strategy))
         // What a member thinks with (ADR 0109): the owner's, through the node.
         .route("/v1/members/{id}/brain", post(set_brain))
+        .route("/v1/members/{id}/work-brain", post(set_work_brain))
+        .route("/v1/members/{id}/judgment-brain", post(set_judgment_brain))
         // What runs a member's turns (ADR 0117): the worker, or Claude Code for a developer.
         .route("/v1/members/{id}/runtime", post(set_runtime))
         // The owner renames a member, and reads and edits the CEO's house log (ADR 0111).
@@ -583,6 +585,40 @@ async fn set_brain(
     let hq = state.hq.clone();
     let brain = blocking(move || hq.set_brain(MemberId(id), &req.brain)).await?;
     Ok(Json(json!({ "member": id, "brain": brain.name() })))
+}
+
+#[derive(Deserialize)]
+struct WorkBrainAsked {
+    work_brain: String,
+}
+
+/// The owner sets what a member does its work with (ADR 0131): `mac` or `local`.
+async fn set_work_brain(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<WorkBrainAsked>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let brain = blocking(move || hq.set_work_brain(MemberId(id), &req.work_brain)).await?;
+    Ok(Json(json!({ "member": id, "work_brain": brain.name() })))
+}
+
+#[derive(Deserialize)]
+struct JudgmentBrainAsked {
+    judgment_brain: String,
+}
+
+/// The owner sets the Claude a member judges with (ADR 0131), or `none` to take it away.
+async fn set_judgment_brain(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<JudgmentBrainAsked>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let brain = blocking(move || hq.set_judgment_brain(MemberId(id), &req.judgment_brain)).await?;
+    Ok(Json(
+        json!({ "member": id, "judgment_brain": brain.map(endora_team::domain::Brain::name) }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -2308,6 +2344,156 @@ mod tests {
         assert_eq!(found["cloud"], true, "the node's check point is told");
         assert_eq!(found["brain"], "claude-sonnet-5-5");
         assert_eq!(found["role"], "lead");
+    }
+
+    #[tokio::test]
+    async fn the_owner_sets_both_brains_and_a_turn_of_work_is_handed_out_on_the_work_brain() {
+        let mut engine = endora_team::application::engine::Engine::new(
+            SqliteTeamStore::in_memory().unwrap(),
+            Runner::Remote(RemoteRunner::default()),
+            SystemClock,
+            Settings::default(),
+        );
+        engine.set_turn_kinds(true);
+        let st = State {
+            hq: Arc::new(engine),
+            token: Arc::new(TOKEN.to_owned()),
+            runner_token: Some(Arc::new(RUNNER.to_owned())),
+            demo: false,
+            tick_seconds: 30,
+            last_tick: Arc::default(),
+        };
+        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let app = app(st.clone());
+        let set = |path: &str, token: Option<&str>, body: serde_json::Value| {
+            call(
+                "POST",
+                &format!("/v1/members/{}/{path}", lead.0),
+                token,
+                &body.to_string(),
+            )
+        };
+        let stranger = app
+            .clone()
+            .oneshot(set(
+                "work-brain",
+                Some(RUNNER),
+                json!({ "work_brain": "mac" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            stranger.status(),
+            StatusCode::UNAUTHORIZED,
+            "the node's alone"
+        );
+        // Claude never does the work; the house's models do.
+        let claude = app
+            .clone()
+            .oneshot(set(
+                "work-brain",
+                Some(TOKEN),
+                json!({ "work_brain": "claude-sonnet-5-5" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(claude.status(), StatusCode::BAD_REQUEST);
+        let mac = json_of(
+            app.clone()
+                .oneshot(set(
+                    "work-brain",
+                    Some(TOKEN),
+                    json!({ "work_brain": "mac" }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(mac["work_brain"], "mac");
+        // Judgment is Claude's, and Opus is the CEO's alone.
+        for refused in ["claude-opus-5-5", "local"] {
+            let res = app
+                .clone()
+                .oneshot(set(
+                    "judgment-brain",
+                    Some(TOKEN),
+                    json!({ "judgment_brain": refused }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{refused}");
+        }
+        let sonnet = json_of(
+            app.clone()
+                .oneshot(set(
+                    "judgment-brain",
+                    Some(TOKEN),
+                    json!({ "judgment_brain": "claude-sonnet-5-5" }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(sonnet["judgment_brain"], "claude-sonnet-5-5");
+
+        // A task handed to the lead is work, and the Mac has not said it is free: the house's
+        // own model does it, on the worker, and the node's relay is told so.
+        let goal = st
+            .hq
+            .set_goal("Keep the lab tidy", "a test", Author::Owner)
+            .unwrap();
+        st.hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: None,
+                    parent: None,
+                    title: "Look round".to_owned(),
+                    description: String::new(),
+                    assignee: Some(lead),
+                    priority: Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+        st.hq.tick().unwrap();
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    &json!({ "free": 1 }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(handed["brain"], "local", "work, and the Mac is not free");
+        assert_eq!(handed["runtime"], "worker");
+        let token = handed["token"].as_str().unwrap();
+        let found = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/team/turn",
+                    Some(TOKEN),
+                    &json!({ "token": token }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            found["cloud"], false,
+            "nothing of a work turn reaches Anthropic"
+        );
+        assert_eq!(found["brain"], "local");
+        let shown = st.hq.snapshot().unwrap();
+        let jane = &shown["members"][0];
+        assert_eq!(jane["work_brain"], "mac");
+        assert_eq!(jane["judgment_brain"], "claude-sonnet-5-5");
     }
 
     #[tokio::test]

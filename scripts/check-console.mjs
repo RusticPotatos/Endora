@@ -1180,6 +1180,27 @@ if (failures.length) {
     if (!runInContext('hqMemberMoney({ brain: "mac" })', context).includes("costs nothing")) fail("mac: a Mac member is said to cost money");
     if (!runInContext("hqHireForm(HQ.snap)", context).includes('<option value="mac">Mac</option>')) fail("mac: the hire form does not offer the Mac");
     if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes('<span class="hq-tag">Mac</span> · between turns · costs nothing')) fail("mac: a Mac member's roster line is wrong");
+    // Two brains per member (ADR 0131): the roster line says both, the controls set each, and a
+    // turn that waits says what for; the top bar counts the turns waiting for budget.
+    {
+      const zed = `{ id: 9, name: "Zed", role: "developer", brain: "claude-haiku-5-5", work_brain: "mac", judgment_brain: "claude-haiku-5-5",
+        work_brains: [{ name: "mac", label: "Mac" }, { name: "local", label: "Local" }], judgment_brains: [{ name: "claude-haiku-5-5", label: "Claude Haiku" }],
+        running: [], spent: 0, held: 0, per_day: 100 }`;
+      const line = runInContext(`HQ.roster[9] = true; hqRosterLine(${zed}, [])`, context);
+      if (!line.includes("Work: Mac · Judgment: Haiku")) fail("brains: the roster line does not say both brains");
+      for (const act of ["hq:workbrain:9:mac", "hq:workbrain:9:local", "hq:judge:9:none", "hq:judge:9:claude-haiku-5-5"]) {
+        if (!line.includes(`data-act="${act}"`)) fail(`brains: the controls lack ${act}`);
+      }
+      if (!/aria-pressed="true"[^>]*data-act="hq:workbrain:9:mac"/.test(line) || !/aria-pressed="true"[^>]*data-act="hq:judge:9:claude-haiku-5-5"/.test(line)) fail("brains: the brains a member has are not marked");
+      const none = runInContext(`hqRosterLine({ id: 10, name: "Sam", role: "researcher", brain: "mac", work_brain: "mac", judgment_brain: null, work_brains: [], judgment_brains: [], running: [], spent: 0, per_day: 0 }, [])`, context);
+      if (!none.includes("Work: Mac · Judgment: none")) fail("brains: a member with no judgment brain is not said to have none");
+      const waiting = runInContext(`HQ.snap.runs = [{ id: 90, member: 9, task: 7, status: "queued", why: "waiting for budget: the budget for it is spent" }];
+        const shown = hqRosterLine(${zed}, []); HQ.snap.runs = []; shown`, context);
+      if (!waiting.includes("waiting for budget: the budget for it is spent")) fail("brains: a turn waiting for budget does not say so on the roster");
+      const chip = (n) => runInContext(`hqChips(Object.assign({}, HQ.snap, { pool: Object.assign({}, HQ.snap.pool, { waiting: ${n} }) }))`, context);
+      if (!chip(2).includes("2 turns wait for budget") || !chip(1).includes("1 turn waits for budget")) fail("brains: the top bar does not count the turns waiting for budget");
+      if (chip(0).includes("for budget")) fail("brains: the top bar mentions a wait with none waiting");
+    }
     // The buttons: the switch, the settings (the key only when typed), the token (asked first
     // when it replaces one, shown once and forgotten with the next action).
     runInContext(`var macCalls = [], macKeepApi = api, macKeepGet = document.getElementById, macKeepConfirm = confirm;
