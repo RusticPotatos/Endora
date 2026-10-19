@@ -1,8 +1,10 @@
 //! The engineering wing's git (ADR 0115): how the team's code reaches the owner's fork of
 //! ansible-nas, and nothing else. The node keeps a bare mirror of the fork under its data
 //! folder, refreshed over plain HTTPS without a credential, and hands a turn's sandbox a bundle
-//! of a branch to work on (`repo_checkout`). The sandbox sends its work back as a bundle of one
-//! `hq/*` branch (`repo_submit`), which is accepted only when it applies on top of the fork's
+//! of a branch to work on (`repo_checkout`): the fork's, or the team's own kept submission,
+//! which only HQ's record says a turn may have. The sandbox sends its work back as a bundle of
+//! one `hq/task-<N>-*` branch (`repo_submit`), which is accepted only when it is named for its
+//! task, applies on top of the fork's
 //! default branch, is small, and every commit is HQ's own. The owner alone lets a branch leave
 //! the house: on their approval the node pushes the stored submission to the fork with a
 //! deploy key, never with force, never to the default branch. HQ opens no pull request and
@@ -116,6 +118,27 @@ pub fn hq_branch(name: &str) -> Result<&str, String> {
         return Err(format!("{name:?} is not a plain branch name"));
     }
     Ok(bare)
+}
+
+/// A branch name as a turn on `task` may submit it: `hq/task-<task>-<slug>`, a plain name under
+/// `hq/` that begins with its own task. A submission is kept as `refs/submissions/<name>`, so a
+/// name that carries its task is a key no other task can write: a later submission of the
+/// same name from another task used to overwrite the kept branch (the push was then refused,
+/// or the check's bundle gone). A sub-task that goes on with its parent's branch submits it
+/// under its own name.
+///
+/// # Errors
+/// Why not, as the model reads it.
+pub fn task_branch(name: &str, task: i64) -> Result<&str, String> {
+    let bare = hq_branch(name)?;
+    let prefix = format!("{BRANCH_PREFIX}task-{task}-");
+    if bare.len() > prefix.len() && bare.starts_with(&prefix) {
+        return Ok(bare);
+    }
+    Err(format!(
+        "this turn is on task #{task}: its branch is named hq/task-{task}-<slug>, e.g. {}; not {name:?}",
+        branch_for(task, "tidy roles")
+    ))
 }
 
 /// Whether `url` names a remote without a credential in it: a `scheme://user:secret@host`
@@ -413,6 +436,72 @@ impl Mirror {
         })
     }
 
+    /// The team's own submission of `branch`, as a checkout hands it back (ADR 0115, amended).
+    /// A submission is kept as `refs/submissions/<branch>` and reaches the fork's heads only
+    /// when the owner's approved push lands, so [`Self::bundle`] cannot hand it out. This is one
+    /// bundle of the default branch and the stored submission, whole history behind each: the
+    /// sandbox clones the first and fetches the second as a head of its own, so what it makes
+    /// of it can be submitted again. Only at `head`, the one HQ's record names: a branch
+    /// submitted again since is refused, never swapped for the newer. The caller has asked HQ
+    /// whether this turn may have it; the node decides nothing about whose it is.
+    ///
+    /// # Errors
+    /// Not under `hq/`; no stored submission; a head that is not the stored one; git failing; a
+    /// bundle past [`BUNDLE_MOST`].
+    pub fn kept_bundle(&self, branch: &str, head: &str, now: i64) -> Result<Bundle, String> {
+        let branch = hq_branch(branch)?;
+        // The work is on the node: a fork that cannot be reached now leaves the base as it was
+        // last fetched, and does not take the checkout with it.
+        if let Err(why) = self.refresh(now) {
+            if !self.dir.join("HEAD").exists() {
+                return Err(why);
+            }
+        }
+        let kept = format!("refs/submissions/{branch}");
+        let stored = git(
+            &self.dir,
+            &["rev-parse", "--verify", &format!("{kept}^{{commit}}")],
+            &[],
+        )
+        .map(text)
+        .map_err(|_| format!("no submission of {branch} is stored"))?;
+        let head = head.trim();
+        if head.len() < 7 {
+            return Err("name the head to check out: at least seven hex digits of it".to_owned());
+        }
+        if !stored.starts_with(head) {
+            return Err(format!(
+                "{branch} was submitted again: HQ recorded {} and the node keeps {}. Ask again",
+                &head[..12.min(head.len())],
+                &stored[..12.min(stored.len())]
+            ));
+        }
+        self.head_of(&self.base)?;
+        let bytes = git(
+            &self.dir,
+            &[
+                "bundle",
+                "create",
+                "-",
+                &format!("refs/heads/{}", self.base),
+                &kept,
+            ],
+            &[],
+        )?;
+        if bytes.len() > BUNDLE_MOST {
+            return Err(format!(
+                "the bundle of {branch} is {} MB, more than the {} MB a checkout may be",
+                bytes.len() >> 20,
+                BUNDLE_MOST >> 20
+            ));
+        }
+        Ok(Bundle {
+            branch: branch.to_owned(),
+            head: stored,
+            bytes,
+        })
+    }
+
     /// Where a submission of `branch` at `head` is kept, if it is.
     #[must_use]
     pub fn stored(&self, task: i64, branch: &str, head: &str) -> Option<PathBuf> {
@@ -429,7 +518,8 @@ impl Mirror {
     }
 
     /// Takes a submitted bundle of `branch` for `task`: it must hold exactly that one branch,
-    /// under `hq/`, apply on top of the mirror's default branch (a fast-forward), change at
+    /// named for the task (`hq/task-<task>-<slug>`), apply on top of the mirror's default
+    /// branch (a fast-forward), change at
     /// most [`FILES_MOST`] files and [`DIFF_MOST`] bytes, and every commit of it must be HQ's
     /// (authored [`AUTHOR_EMAIL`], carrying the [`TRAILER`]). What passes is kept: the bundle
     /// under the task, and the branch as `refs/submissions/<branch>` in the mirror.
@@ -443,7 +533,7 @@ impl Mirror {
         task: i64,
         now: i64,
     ) -> Result<Submitted, String> {
-        let branch = hq_branch(branch)?.to_owned();
+        let branch = task_branch(branch, task)?.to_owned();
         if bytes.is_empty() {
             return Err("the bundle is empty".to_owned());
         }
@@ -1057,6 +1147,141 @@ mod tests {
             s.mirror.stored(3, "hq/task-3-a", "0000000").is_none(),
             "nothing refused is kept"
         );
+        let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// Live (2026-10-18): a submitted `hq/` branch is kept as `refs/submissions/<name>`, but
+    /// `repo_checkout` looked only at the fork's heads, so a member or the tester could never
+    /// have it back, and recreated the work (task 670's re-cut, 675's `-v2`).
+    #[test]
+    fn a_kept_submission_is_handed_out_with_its_base_and_only_at_its_recorded_head() {
+        let s = scene("kept");
+        s.branch("hq/task-3-tidy", "roles/deluge/README.md", TRAILED, HQ);
+        let taken = s
+            .mirror
+            .submit(&s.delta("hq/task-3-tidy"), "hq/task-3-tidy", 3, 0)
+            .unwrap();
+        // The fork has no such branch (the owner has not pushed it): the old path is closed.
+        assert!(s.mirror.bundle(Some("hq/task-3-tidy"), 0).is_err());
+        let kept = s
+            .mirror
+            .kept_bundle("hq/task-3-tidy", &taken.head, 0)
+            .unwrap();
+        assert_eq!(
+            (kept.branch.as_str(), kept.head.as_str()),
+            ("hq/task-3-tidy", taken.head.as_str())
+        );
+        let file = s.root.join("kept.bundle");
+        std::fs::write(&file, &kept.bytes).unwrap();
+        // Both refs, whole history: the base to start from, and the kept submission.
+        let heads = run(&s.root, &["bundle", "list-heads", file.to_str().unwrap()]);
+        assert!(
+            heads.contains("refs/heads/main") && heads.contains("refs/submissions/hq/task-3-tidy"),
+            "{heads}"
+        );
+        // As the sandbox unpacks it: clone the base, fetch the kept ref as a head, check it out.
+        run(
+            &s.root,
+            &["clone", "-q", "-b", "main", file.to_str().unwrap(), "kept"],
+        );
+        let there = s.root.join("kept");
+        run(
+            &there,
+            &[
+                "fetch",
+                "-q",
+                file.to_str().unwrap(),
+                "refs/submissions/hq/task-3-tidy:refs/heads/hq/task-3-tidy",
+            ],
+        );
+        run(&there, &["checkout", "-q", "hq/task-3-tidy"]);
+        assert_eq!(run(&there, &["rev-parse", "HEAD"]), taken.head);
+        assert_eq!(run(&there, &["rev-parse", "main"]), taken.base);
+        // One more commit on it, bundled from main, is taken by the mirror: it can be submitted
+        // again, which moves the kept ref.
+        std::fs::write(there.join("roles/deluge/more.yml"), "---\n").unwrap();
+        run(&there, &["add", "."]);
+        commit(&there, TRAILED, HQ);
+        let out = s.root.join("again.bundle");
+        run(
+            &there,
+            &[
+                "bundle",
+                "create",
+                out.to_str().unwrap(),
+                "main..hq/task-3-tidy",
+            ],
+        );
+        let again = s
+            .mirror
+            .submit(&std::fs::read(&out).unwrap(), "hq/task-3-tidy", 3, 1)
+            .unwrap();
+        assert_eq!(again.files, 2);
+        // HQ's record named the first head: the ref moved since, so that head is refused, and
+        // the new one is handed out. An abbreviation of a head is the head.
+        let stale = s
+            .mirror
+            .kept_bundle("hq/task-3-tidy", &taken.head, 1)
+            .unwrap_err();
+        assert!(stale.contains("submitted again"), "{stale}");
+        assert!(
+            s.mirror
+                .kept_bundle("hq/task-3-tidy", &again.head[..12], 1)
+                .is_ok()
+        );
+        // Nothing else is handed out this way: no submission of that name, no head, not hq/.
+        for (branch, head) in [
+            ("hq/task-9-none", again.head.as_str()),
+            ("hq/task-3-tidy", ""),
+            ("hq/task-3-tidy", "abc"),
+            ("main", again.head.as_str()),
+        ] {
+            assert!(
+                s.mirror.kept_bundle(branch, head, 1).is_err(),
+                "{branch} {head:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// A kept ref is keyed by the branch's name alone, so a later submission of the same name
+    /// from another task overwrote it (the push was then refused, or the check's bundle gone).
+    /// A branch is named for the task it is submitted on, so no task can reach another's.
+    #[test]
+    fn a_submission_is_named_for_its_task_so_no_task_overwrites_anothers_kept_branch() {
+        let s = scene("named");
+        s.branch("hq/task-4-tidy", "a.yml", TRAILED, HQ);
+        let delta = s.delta("hq/task-4-tidy");
+        for task in [9, 40, 1] {
+            let why = s
+                .mirror
+                .submit(&delta, "hq/task-4-tidy", task, 0)
+                .unwrap_err();
+            assert!(
+                why.contains(&format!("hq/task-{task}-<slug>")) && why.contains("hq/task-4-tidy"),
+                "task {task}: {why}"
+            );
+        }
+        // A bare task number is no name, and a longer number does not borrow a shorter one's.
+        s.branch("hq/task-12", "b.yml", TRAILED, HQ);
+        assert!(
+            s.mirror
+                .submit(&s.delta("hq/task-12"), "hq/task-12", 12, 0)
+                .is_err()
+        );
+        s.branch("hq/task-12-tidy", "b.yml", TRAILED, HQ);
+        assert!(
+            s.mirror
+                .submit(&s.delta("hq/task-12-tidy"), "hq/task-12-tidy", 1, 0)
+                .is_err()
+        );
+        let taken = s
+            .mirror
+            .submit(&s.delta("hq/task-12-tidy"), "hq/task-12-tidy", 12, 0)
+            .unwrap();
+        assert_eq!(taken.branch, "hq/task-12-tidy");
+        assert_eq!(branch_for(4, "Tidy"), "hq/task-4-tidy");
+        assert!(task_branch("hq/task-4-tidy", 4).is_ok());
         let _ = std::fs::remove_dir_all(&s.root);
     }
 

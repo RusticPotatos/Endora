@@ -327,7 +327,7 @@ async fn called(
         ANSIBLE_NAS_DOC => ansible_nas_doc(&state2, &args),
         CONTAINER_LOGS => container_logs(&state2, &args),
         RESTART_CONTAINER => restart_container(&state2, &turn, &args),
-        REPO_CHECKOUT => repo_checkout(&state2, &args),
+        REPO_CHECKOUT => repo_checkout(&state2, &turn, &args),
         REPO_SUBMIT => repo_submit(&state2, &turn, &args),
         _ => Err((
             StatusCode::NOT_FOUND,
@@ -634,8 +634,11 @@ const NO_FORK: &str = "the lab's ansible-nas fork is not configured on the node 
 
 /// `repo_checkout` (ADR 0115): a bundle of the fork's default branch, or of one of the team's
 /// `hq/` branches, as base64 in the text the worker reads (the worker unpacks it; the model
-/// never sees the bundle).
-fn repo_checkout(state: &AppState, args: &serde_json::Value) -> Result<Done, Refused> {
+/// never sees the bundle). A team branch the fork has is handed out from the fork. One it
+/// does not have is the team's own submission, kept on the node until the owner's push: HQ is
+/// asked whether this turn may have it, and the kept branch is handed out at the head HQ
+/// recorded (see [`kept_checkout`]).
+fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Result<Done, Refused> {
     let now = state.clock.now().unix_millis();
     let Some(mirror) = state.lab.mirror(now) else {
         return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
@@ -644,6 +647,13 @@ fn repo_checkout(state: &AppState, args: &serde_json::Value) -> Result<Done, Ref
         .as_str()
         .map(str::trim)
         .filter(|b| !b.is_empty());
+    if let Some(named) = branch.and_then(|b| repo::hq_branch(b).ok()) {
+        // Best effort: the fork may be unreachable while the node still keeps the work.
+        let _ = mirror.refresh(now);
+        if mirror.head_of(named).is_err() {
+            return kept_checkout(state, &mirror, turn, named, now);
+        }
+    }
     let bundle = mirror
         .bundle(branch, now)
         .map_err(|why| (StatusCode::BAD_GATEWAY, why))?;
@@ -655,6 +665,68 @@ fn repo_checkout(state: &AppState, args: &serde_json::Value) -> Result<Done, Ref
     );
     let text = json!({
         "branch": bundle.branch, "head": bundle.head, "base": mirror.base(),
+        "bundle": repo::to_base64(&bundle.bytes),
+    })
+    .to_string();
+    Ok(Done { text, said })
+}
+
+/// The team's own kept submission of `branch`, for the turn that asked (ADR 0115, amended): HQ
+/// is asked, naming the turn by its token, whether the branch is this turn's (its work, or its
+/// member's) and which head it recorded; the node hands out that head and no other, with the
+/// base behind it. HQ's refusal is the turn's. A branch HQ never recorded is not there; a head
+/// the node no longer keeps (the branch was submitted again) is refused, not swapped.
+fn kept_checkout(
+    state: &AppState,
+    mirror: &Mirror,
+    turn: &Turn,
+    branch: &str,
+    now: i64,
+) -> Result<Done, Refused> {
+    let Some(hq) = state.hq.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HQ is not set up on this node".to_owned(),
+        ));
+    };
+    let kept = match hq.post(
+        "/v1/team/branch/checkout",
+        &json!({ "token": turn.token, "branch": branch }),
+    ) {
+        Ok(kept) => kept,
+        Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!(
+                    "the fork has no branch {branch}, and the team has not submitted one of that name: check out {} to start from it",
+                    mirror.base()
+                ),
+            ));
+        }
+        Err(endora_infrastructure::HqError::Answered { message, .. }) => {
+            return Err((StatusCode::FORBIDDEN, message));
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("HQ could not say whose {branch} is: {e}"),
+            ));
+        }
+    };
+    let head = kept["head"].as_str().unwrap_or("");
+    let bundle = mirror
+        .kept_bundle(branch, head, now)
+        .map_err(|why| (StatusCode::CONFLICT, why))?;
+    let said = format!(
+        "checked out the team's kept branch {} at {} (task #{}'s, on top of {}; {} KB)",
+        bundle.branch,
+        &bundle.head[..12.min(bundle.head.len())],
+        kept["task"].as_i64().unwrap_or(0),
+        mirror.base(),
+        bundle.bytes.len() >> 10
+    );
+    let text = json!({
+        "branch": bundle.branch, "head": bundle.head, "base": mirror.base(), "kept": true,
         "bundle": repo::to_base64(&bundle.bytes),
     })
     .to_string();
@@ -1429,6 +1501,25 @@ mod tests {
                 "POST",
                 &format!("/team-relay/contracts/{name}"),
                 Some("good"),
+                &args.to_string(),
+            ),
+        )
+        .await
+    }
+
+    /// One call of a contract as the turn whose token is `token`.
+    async fn as_turn(
+        state: &AppState,
+        token: &str,
+        name: &str,
+        args: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        answer(
+            state,
+            ask(
+                "POST",
+                &format!("/team-relay/contracts/{name}"),
+                Some(token),
                 &args.to_string(),
             ),
         )
@@ -2438,6 +2529,338 @@ mod tests {
             "{audit:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Live (2026-10-18): `repo_checkout` of a submitted `hq/` branch was refused, "the fork has
+    /// no branch", three times, though the node was keeping it: a submission lives under
+    /// `refs/submissions/`, and only the owner's push puts a branch on the fork. Real git, a
+    /// local bare fork, and HQ played by a fake that applies its rule: a kept branch is its own
+    /// task's.
+    #[tokio::test]
+    async fn the_team_checks_out_its_own_kept_branch_and_only_its_own() {
+        use super::super::relay::tests::fake;
+        let (root, fork) = a_fork("kept");
+        let recorded: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let first_head: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let (told, first) = (recorded.clone(), first_head.clone());
+        let (hq_url, seen) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let said =
+                |status: u16, v: serde_json::Value| (status, "application/json", v.to_string());
+            match (path, body["token"].as_str()) {
+                // Kit leads task 7; Zed is a developer on task 9.
+                ("/v1/team/turn", Some("kit" | "late")) => said(
+                    200,
+                    json!({ "run": 7, "member": "Kit", "role": "lead", "left": 40_000,
+                            "cloud": true, "task": 7 }),
+                ),
+                ("/v1/team/turn", Some("zed")) => said(
+                    200,
+                    json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
+                            "cloud": true, "task": 9 }),
+                ),
+                ("/v1/team/turn", _) => said(404, json!({})),
+                ("/v1/team/branch", _) => {
+                    let mut first = first.lock().unwrap();
+                    if first.is_empty() {
+                        *first = body["head"].as_str().unwrap_or("").to_owned();
+                    }
+                    *told.lock().unwrap() = Some(body);
+                    said(200, json!({ "branch": 1, "document": 5, "check": 9 }))
+                }
+                // HQ's rule, played here (the engine's tests hold the real one): the head it
+                // recorded, to the branch's own task, and to no other.
+                ("/v1/team/branch/checkout", token) => {
+                    let branch = told.lock().unwrap().clone().unwrap_or_default();
+                    if body["branch"] != branch["branch"] {
+                        return said(404, json!({ "error": "no branch of that name" }));
+                    }
+                    match token {
+                        Some("kit") => said(
+                            200,
+                            json!({ "head": branch["head"], "base": branch["base"], "task": 7 }),
+                        ),
+                        // HQ's record names a head the node no longer keeps.
+                        Some("late") => said(
+                            200,
+                            json!({ "head": first.lock().unwrap().clone(),
+                                    "base": branch["base"], "task": 7 }),
+                        ),
+                        _ => said(
+                            400,
+                            json!({ "error": "hq/task-7-add-pages is task #7's: check out the branch of your own work" }),
+                        ),
+                    }
+                }
+                ("/v1/team/receipt", _) => said(200, json!({ "receipt": 41 })),
+                _ => said(200, json!({})),
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        state.lab = Arc::new(
+            LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new()).with_repo(
+                root.join("data"),
+                fork.to_str().unwrap(),
+                "main",
+                fork.to_str().unwrap(),
+            ),
+        );
+        // Kit checks out the fork, makes the docs-only branch, and submits it.
+        let (status, said) = as_turn(&state, "kit", REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        let (payload, _) = text.rsplit_once(" (receipt ").unwrap();
+        let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert!(
+            handed["kept"].is_null() || handed["kept"] == false,
+            "the fork's own branch is not a kept one"
+        );
+        let file = root.join("checkout.bundle");
+        std::fs::write(
+            &file,
+            repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        git_in(
+            &root,
+            &["clone", "-q", "-b", "main", file.to_str().unwrap(), "work"],
+        );
+        let work = root.join("work");
+        git_in(
+            &work,
+            &["checkout", "-q", "-b", "hq/task-7-add-pages", "main"],
+        );
+        std::fs::create_dir_all(work.join("website/docs/applications")).unwrap();
+        std::fs::write(work.join("website/docs/applications/foo.md"), "# Foo\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(
+            &work,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "add the page\n\nMade-by: Endora HQ (Kit) for task #7",
+            ],
+        );
+        let head = git_in(&work, &["rev-parse", "HEAD"]);
+        let delta = root.join("delta.bundle");
+        git_in(
+            &work,
+            &[
+                "bundle",
+                "create",
+                delta.to_str().unwrap(),
+                "main..hq/task-7-add-pages",
+            ],
+        );
+        let delta = repo::to_base64(&std::fs::read(&delta).unwrap());
+        // A branch is named for the turn's task: task 7's turn cannot overwrite task 9's.
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-9-add-pages", "why": "x", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
+        assert!(
+            said["error"].as_str().unwrap().contains("hq/task-7-<slug>"),
+            "{said}"
+        );
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "adds a page", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        // The fork has no such branch, but the team's own task may have it back: the kept
+        // submission, with the base behind it.
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "to go on" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        let (payload, receipt) = text.rsplit_once(" (receipt ").unwrap();
+        assert!(receipt.starts_with("r41"), "{receipt}");
+        let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(handed["kept"], true);
+        assert_eq!(
+            (
+                handed["branch"].as_str(),
+                handed["head"].as_str(),
+                handed["base"].as_str()
+            ),
+            (
+                Some("hq/task-7-add-pages"),
+                Some(head.as_str()),
+                Some("main")
+            )
+        );
+        let kept = root.join("kept.bundle");
+        std::fs::write(
+            &kept,
+            repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let heads = git_in(&root, &["bundle", "list-heads", kept.to_str().unwrap()]);
+        assert!(
+            heads.contains("refs/heads/main")
+                && heads.contains("refs/submissions/hq/task-7-add-pages"),
+            "{heads}"
+        );
+        git_in(
+            &root,
+            &["clone", "-q", "-b", "main", kept.to_str().unwrap(), "again"],
+        );
+        git_in(
+            &root.join("again"),
+            &[
+                "fetch",
+                "-q",
+                kept.to_str().unwrap(),
+                "refs/submissions/hq/task-7-add-pages:refs/heads/hq/task-7-add-pages",
+            ],
+        );
+        git_in(
+            &root.join("again"),
+            &["checkout", "-q", "hq/task-7-add-pages"],
+        );
+        assert_eq!(git_in(&root.join("again"), &["rev-parse", "HEAD"]), head);
+        assert!(root.join("again/website/docs/applications/foo.md").exists());
+        // HQ was asked, with the turn's own token and the branch, and the receipt says what
+        // was checked out: the branch, its head, and that it is the team's kept one.
+        let asked: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/branch/checkout")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(
+            asked.len(),
+            1,
+            "asked once, for the kept one only: {asked:?}"
+        );
+        assert_eq!(
+            asked[0],
+            json!({ "token": "kit", "branch": "hq/task-7-add-pages" })
+        );
+        let receipt: serde_json::Value = serde_json::from_str(
+            &seen
+                .lock()
+                .unwrap()
+                .iter()
+                .rfind(|(p, _, _)| p == "/v1/team/receipt")
+                .unwrap()
+                .2,
+        )
+        .unwrap();
+        let excerpt = receipt["excerpt"].as_str().unwrap();
+        assert!(
+            excerpt.starts_with("checked out the team's kept branch hq/task-7-add-pages at ")
+                && excerpt.contains(&head[..12]),
+            "{excerpt}"
+        );
+        assert_eq!(receipt["act"], false);
+        assert!(
+            receipt["args"]
+                .as_str()
+                .unwrap()
+                .contains("hq/task-7-add-pages"),
+            "{receipt}"
+        );
+        // Another task's turn is refused, with HQ's words; a branch nobody submitted is not
+        // there; and a head HQ recorded that the node no longer keeps is not handed out.
+        let (status, said) = as_turn(
+            &state,
+            "zed",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "to look" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"].as_str().unwrap().contains("task #7's"),
+            "{said}"
+        );
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-nothing", "why": "x" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{said}");
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("has not submitted"),
+            "{said}"
+        );
+        git_in(&work, &["checkout", "-q", "hq/task-7-add-pages"]);
+        std::fs::write(work.join("website/docs/applications/bar.md"), "# Bar\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(
+            &work,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "another page\n\nMade-by: Endora HQ (Kit) for task #7",
+            ],
+        );
+        git_in(
+            &work,
+            &[
+                "bundle",
+                "create",
+                delta_path(&root).as_str(),
+                "main..hq/task-7-add-pages",
+            ],
+        );
+        let again = repo::to_base64(&std::fs::read(delta_path(&root)).unwrap());
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "one more page", "bundle": again }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let (status, said) = as_turn(
+            &state,
+            "late",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "x" }),
+        )
+        .await;
+        assert!(
+            status == StatusCode::CONFLICT
+                && said["error"].as_str().unwrap().contains("submitted again"),
+            "{status}: {said}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Where a test puts a second bundle of a branch.
+    fn delta_path(root: &std::path::Path) -> String {
+        root.join("delta-two.bundle").to_str().unwrap().to_owned()
     }
 
     #[tokio::test]

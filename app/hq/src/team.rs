@@ -447,6 +447,36 @@ pub(crate) async fn branch(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub(crate) struct CheckoutAsked {
+    /// The turn's own token.
+    token: String,
+    /// The branch the turn asked `repo_checkout` for.
+    branch: String,
+}
+
+/// For the node's `repo_checkout` (ADR 0115, amended): whether this turn may have a branch the
+/// team submitted and the node keeps, and at which head. HQ's record decides, never the name:
+/// the head and base it recorded and its task, for the branch's own work and the member who
+/// submitted it; 400 with whose it is for anyone else; 404 for a name HQ never recorded or a
+/// token that opens no running turn. Signed by the node.
+pub(crate) async fn branch_checkout(
+    Extract(state): Extract<State>,
+    Json(req): Json<CheckoutAsked>,
+) -> Response {
+    let hq = state.hq.clone();
+    let kept =
+        tokio::task::spawn_blocking(move || hq.checkout_branch(&req.token, &req.branch)).await;
+    match kept {
+        Ok(Ok(kept)) => Json(json!({
+            "head": kept.head, "base": kept.base, "task": kept.task.0,
+        }))
+        .into_response(),
+        Ok(Err(e)) => refused(&e),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 /// For the node's team listener (ADR 0115): the check a job token names, so the node hands
 /// that job's sandbox the right bundle and nothing else. 404 for a token that names none.
 pub(crate) async fn check(Extract(state): Extract<State>, Json(req): Json<TokenAsked>) -> Response {

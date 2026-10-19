@@ -27,6 +27,14 @@ finished task. The worker checks the fork out into `/work/repo` before Claude Co
 `repo_submit` reaches it through the worker's MCP bridge, so the bundles are still the worker's
 to carry.
 
+Amended 2026-10-19, after the wing's first 39 hours (six branches submitted, none reached the
+owner; the diagnosis found every blocker on the path): **a member may check out the team's own
+kept branch** (decision 2) and **a branch is named for its task** (decision 4); the check's
+base compare is hardened (decision 5); the tester may check a branch out for her own reading,
+a lead or a developer may ask for a **recheck**, work in review is never demoted to blocked, a
+draft never closes work, and a new head sends work back for a new review (decision 6). Each is
+marked where it lands.
+
 Amended 2026-10-18: the check job has every collection and role the fork needs, offline. The
 image builds `endora.homelab` from the Endora source it was built from, into the same path as
 the other baked collections, because the fork pins it to a git commit the sandbox cannot fetch;
@@ -64,19 +72,35 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    with no credential, refreshed at most every five minutes, and hands the turn a **bundle** of
    the base branch, or of one of the team's `hq/*` branches to review, as base64 in the
    contract's result (32 MB cap; the fork is about 6 MB; a bundle carries the branch's whole
-   history, since a shallow one cannot be cloned alone). The worker, in the workbench only,
-   unpacks it into `/work/repo` with git set up the team's way: commits authored
+   history, since a shallow one cannot be cloned alone). *Amended 2026-10-19:* a team branch
+   the fork does not have is the team's own **submission**, kept as `refs/submissions/…` on
+   the node until the owner's push, and a member could never have it back (three refusals of
+   a branch the node was keeping; each ended in the work recreated). The node now asks HQ
+   (`POST /v1/team/branch/checkout`, naming the turn by its token), whose **record** decides,
+   never the branch's name: the newest branch recorded under that name must be for the
+   turn's own work (its task, the tasks under it, the tasks above it) or have been submitted
+   by the turn's member, and HQ answers with the head and base it recorded. The node hands
+   out one bundle of the base and that kept ref, at that head only (a branch submitted again
+   since is refused, not swapped), and the checkout's receipt names the branch and its head.
+   A branch the fork has is handed out from the fork as before. The worker, in the
+   workbench only, unpacks it into `/work/repo` with git set up the team's way: commits authored
    `Endora HQ <hq@endora.invalid>`, no remote at all, and a `prepare-commit-msg` hook that adds
    the trailer `Made-by: Endora HQ (<members>) for task #N` when a commit lacks it. The model
    reads where the checkout is and what its base is; it never sees a bundle. The sandbox stays
-   offline.
+   offline. For a kept branch the worker clones the base, fetches the kept ref as a head of
+   its own and checks it out, with the base still a head behind it, so it can be added to and
+   submitted again; and it empties `/work/repo` rather than replacing the folder, so a shell
+   standing in it (Claude Code's) is not left in a folder that is gone.
 3. **The work**: branches named `hq/task-<N>-<slug>` (the slug from the task's title, `[a-z0-9-]`,
    at most 40), cut from the base. The model never pushes: no remote and no credential exist in
    the sandbox.
 4. **Submit** (`repo_submit`, an automatic act, Internal, a lead's or a developer's). The worker
    bundles the branch from the base (`git bundle create base..hq/…`; uncommitted changes refuse
    it) and sends it as base64. The node takes it only when: it holds exactly that one branch,
-   under `hq/`; it applies to the mirror and **sits on top of the base** (a fast-forward; a
+   under `hq/` and **named for the turn's own task**, `hq/task-<N>-<slug>` (amended
+   2026-10-19: the kept ref is keyed by the name alone, so a name that carries its task is a
+   key no other task can write; a sub-task that goes on with its parent's branch submits it
+   under its own name); it applies to the mirror and **sits on top of the base** (a fast-forward; a
    branch behind the fork's base is sent back to rebase); it changes at most **200 files** and
    **1 MB** of diff; **every commit is HQ's** (the author and the trailer); and it **touches
    nothing of the owner's values**: `group_vars/*.yml`, `host_vars/`, any inventory or anything

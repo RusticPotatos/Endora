@@ -337,10 +337,14 @@ pub(crate) fn instructions(
         told.push_str(
             "\n\nThe wing's git: repo_checkout brings the lab's ansible-nas fork into /work/repo \
              with git set up (your commits are authored Endora HQ and carry the trailer for \
-             you). Work on a branch named hq/task-N-<slug> for your task, commit in small steps \
-             with the shell, then repo_submit that branch: Endora keeps it, writes its diff as \
-             a document on the task and runs the lab's checks; the result comes back as a \
-             receipt. Then submit the task for review, citing that receipt. You never push: \
+             you). Work on a branch named hq/task-N-<slug> for your task (N is your task's \
+             number), commit in small steps with the shell, then repo_submit that branch: \
+             Endora keeps it, writes its diff as a document on the task and runs the lab's \
+             checks; the result comes back as a receipt. A branch of your work that is \
+             submitted stays kept on the node, and repo_checkout with its name (branch: \
+             hq/task-N-<slug>) brings it back whole in a later turn, on top of its base: go on \
+             from it, never recreate it. Then submit the task for review, citing that \
+             receipt. You never push: \
              the owner pushes an accepted branch to the fork and merges it there. Never edit, \
              cite or copy from group_vars/*.yml, host_vars or any inventory: they hold the \
              owner's own values, and a branch touching them is refused.",
@@ -382,6 +386,47 @@ pub(crate) fn member_of(briefing: &str) -> Option<String> {
     let (name, _) = first.split_once(',')?;
     let name = name.trim();
     (!name.is_empty() && name.chars().count() <= 40).then(|| name.to_owned())
+}
+
+/// What the node handed over for `repo_checkout`, read from its text.
+pub(crate) struct Handed {
+    /// The branch to be on: the fork's, or the team's kept one.
+    pub(crate) branch: String,
+    /// The branch the wing works from; the branch itself when the node names none.
+    pub(crate) base: String,
+    /// Whether it is the team's own kept submission (ADR 0115, amended), bundled with its base
+    /// and unpacked as a head of its own on top of it.
+    pub(crate) kept: bool,
+    /// The bundle's bytes.
+    pub(crate) bundle: Vec<u8>,
+    /// The node's receipt after the text, as the model reads it (` (receipt r12)`), or nothing.
+    pub(crate) receipt: String,
+}
+
+/// The node's answer to `repo_checkout`: its text is the bundle as JSON, with the receipt
+/// after it. `None` when it is not that, or holds no bundle.
+pub(crate) fn handed_over(said: &str) -> Option<Handed> {
+    use base64::Engine as _;
+    let (payload, receipt) = said
+        .rsplit_once(" (receipt ")
+        .map_or((said, String::new()), |(p, r)| {
+            (p, format!(" (receipt {r}"))
+        });
+    let handed: Value = serde_json::from_str(payload).ok()?;
+    let bundle = base64::engine::general_purpose::STANDARD
+        .decode(handed["bundle"].as_str()?)
+        .ok()?;
+    let branch = handed["branch"].as_str().unwrap_or("main").to_owned();
+    let base = handed["base"]
+        .as_str()
+        .map_or_else(|| branch.clone(), str::to_owned);
+    Some(Handed {
+        branch,
+        base,
+        kept: handed["kept"] == true,
+        bundle,
+        receipt,
+    })
 }
 
 /// Runs one call of the wing's git (ADR 0115) in the sandbox: a checkout asks the node for the
@@ -443,32 +488,41 @@ pub(crate) fn in_the_repo(
         did.note(&call.name, &args, outcome);
         return Ok(refused(said));
     }
-    // The node's text is the bundle as JSON, with the receipt after it.
-    let (payload, receipt) = said
-        .rsplit_once(" (receipt ")
-        .map_or((said.as_str(), String::new()), |(p, r)| {
-            (p, format!(" (receipt {r}"))
-        });
-    let handed: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
-    use base64::Engine as _;
-    let bundle = handed["bundle"]
-        .as_str()
-        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok());
-    let Some(bundle) = bundle else {
+    let Some(handed) = handed_over(&said) else {
         did.note(&call.name, &args, Outcome::Failed);
         return Ok(refused(
             "the node's checkout could not be read as a bundle".to_owned(),
         ));
     };
-    let branch = handed["branch"].as_str().unwrap_or("main");
-    let base = handed["base"].as_str().unwrap_or(branch);
-    match repo::checkout(dir, &bundle, branch, base, member, task) {
+    let Handed {
+        branch,
+        base,
+        kept,
+        bundle,
+        receipt,
+    } = handed;
+    match repo::checkout(dir, &bundle, &branch, &base, kept, member, task) {
         Ok(out) => {
             did.note(&call.name, &args, Outcome::Done);
             let slug = task.map_or_else(|| "N-<slug>".to_owned(), |t| format!("{t}-<slug>"));
-            Ok(Reply {
-                text: format!(
-                    "Checked out {} at {} into {} ({} files){receipt}. Your base is {base}: \
+            let at = &out.head[..12.min(out.head.len())];
+            let text = if kept {
+                format!(
+                    "Checked out the team's kept branch {} at {at} into {} ({} files){receipt}. \
+                     It sits on top of {base}, which is a branch here too. Go on from it: edit, \
+                     `git add -A && git commit -m \"what and why\"` in /work/repo, then \
+                     repo_submit this branch again; if {base} has moved on, `git rebase {base}` \
+                     first. Git is set up: your commits are authored Endora HQ and the trailer \
+                     is added for you. Never edit, cite or copy from group_vars/*.yml, \
+                     host_vars or any inventory: they hold the owner's own values, and a branch \
+                     touching them is refused.",
+                    out.branch,
+                    out.path.display(),
+                    out.files
+                )
+            } else {
+                format!(
+                    "Checked out {} at {at} into {} ({} files){receipt}. Your base is {base}: \
                      branch from it and your submission must sit on top of it. Git is set up: \
                      your commits are authored Endora HQ and the trailer is added for you. Work \
                      on a branch of your own: `cd /work/repo && git checkout -b hq/task-{slug} \
@@ -477,10 +531,12 @@ pub(crate) fn in_the_repo(
                      group_vars/*.yml, host_vars or any inventory: they hold the owner's own \
                      values, and a branch touching them is refused.",
                     out.branch,
-                    &out.head[..12.min(out.head.len())],
                     out.path.display(),
                     out.files
-                ),
+                )
+            };
+            Ok(Reply {
+                text,
                 refused: false,
                 asked: false,
             })
@@ -1469,6 +1525,37 @@ mod tests {
         fn now(&self) -> i64 {
             1_792_166_400_000
         }
+    }
+
+    #[test]
+    fn the_nodes_checkout_is_read_with_whether_it_is_a_kept_branch_and_its_receipt() {
+        use base64::Engine as _;
+        let bundle = base64::engine::general_purpose::STANDARD.encode(b"a bundle, as bytes");
+        let fork =
+            json!({ "branch": "develop", "head": "abc", "base": "develop", "bundle": bundle })
+                .to_string();
+        let handed = handed_over(&format!("{fork} (receipt r41)")).expect("a checkout");
+        assert_eq!(
+            (handed.branch.as_str(), handed.base.as_str(), handed.kept),
+            ("develop", "develop", false)
+        );
+        assert_eq!(handed.bundle, b"a bundle, as bytes");
+        assert_eq!(handed.receipt, " (receipt r41)");
+        // The team's own kept branch says so, and says which base it sits on.
+        let kept = json!({ "branch": "hq/task-7-x", "head": "abc", "base": "develop", "kept": true,
+                           "bundle": bundle })
+        .to_string();
+        let handed = handed_over(&kept).expect("a kept checkout");
+        assert_eq!(
+            (handed.branch.as_str(), handed.base.as_str(), handed.kept),
+            ("hq/task-7-x", "develop", true)
+        );
+        assert!(handed.receipt.is_empty());
+        // No bundle, or no JSON, is no checkout; no base is the branch itself.
+        assert!(handed_over("not json at all").is_none());
+        assert!(handed_over(&json!({ "branch": "develop" }).to_string()).is_none());
+        let bare = json!({ "branch": "develop", "bundle": bundle }).to_string();
+        assert_eq!(handed_over(&bare).unwrap().base, "develop");
     }
 
     #[test]

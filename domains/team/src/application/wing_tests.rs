@@ -268,6 +268,104 @@ fn a_submitted_branch_is_recorded_with_its_document_and_a_check_is_queued_once()
     assert!(use_tool(&hq, &again, "read_document", &json!({ "document": 999 })).is_err());
 }
 
+/// Live (2026-10-18, tasks 670 and 674): Rae and Kit asked the node for the branch it was
+/// keeping and were refused, because the node could not tell whose it was, and recreated the
+/// work. HQ's record can: a kept branch is handed to the work it is for (its task, the tasks
+/// under it, the tasks above it) and to the member who submitted it, at the head HQ recorded;
+/// to no one else, whatever the name says.
+#[test]
+fn a_kept_branch_may_be_checked_out_by_its_own_work_and_its_own_member_and_no_one_else() {
+    const NAME: &str = "hq/task-3-tidy-the-deluge-role";
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, rae, _) = submitted(&hq, &t, true);
+    // The member who submitted it, in the turn that did: the head and base HQ recorded.
+    let kept = hq.checkout_branch(&rae.token, NAME).unwrap();
+    assert_eq!(
+        (kept.head.as_str(), kept.base.as_str(), kept.task),
+        ("a1b2c3d4e5f60718293a4b5c", "0123456789abcdef01234567", task)
+    );
+    // Only a running turn's token asks, and only for a branch HQ recorded.
+    assert!(hq.checkout_branch("forged", NAME).is_err());
+    assert_eq!(
+        hq.checkout_branch(&rae.token, "hq/task-9-none"),
+        Err(super::EngineError::Unknown("branch of that name")),
+        "the team never submitted it"
+    );
+    // Others, each in a turn of their own on the task they are woken on.
+    let zed = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.name == "Zed")
+        .unwrap()
+        .id;
+    let sibling = |title: &str, to: MemberId| {
+        hq.add_task_with(
+            Author::Member(t.kit),
+            NewTask {
+                goal: t.goal,
+                project: None,
+                parent: Some(t.plan),
+                title: title.to_owned(),
+                description: String::new(),
+                assignee: Some(to),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[Criterion::new("Done", false)],
+        )
+        .unwrap()
+    };
+    let under = hq
+        .add_task_with(
+            Author::Member(t.kit),
+            NewTask {
+                goal: t.goal,
+                project: None,
+                parent: Some(task),
+                title: "Check the role's defaults".to_owned(),
+                description: String::new(),
+                assignee: Some(zed),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[Criterion::new("Checked", false)],
+        )
+        .unwrap();
+    let elsewhere = sibling("Sort the cables", zed);
+    let raes_other = sibling("Write the role's readme", t.rae);
+    let ask = |member: MemberId, on: TaskId| {
+        all_turns_over(&hq);
+        let context = woken_turn(&hq, member, on);
+        hq.checkout_branch(&context.token, NAME)
+    };
+    // The tester, on the task: the same work.
+    assert_eq!(ask(t.dee, task).map(|k| k.task), Ok(task));
+    // The lead, on the task above it: the branch is for work under hers.
+    assert_eq!(ask(t.kit, t.plan).map(|k| k.task), Ok(task));
+    // Zed, on a task under it: the branch is for the work above his.
+    assert_eq!(ask(zed, under).map(|k| k.task), Ok(task));
+    // Rae, on another task: the branch is hers, whatever task she is on.
+    assert_eq!(ask(t.rae, raes_other).map(|k| k.task), Ok(task));
+    // Zed, on a task of another piece of work: refused, and told whose it is.
+    let refused = ask(zed, elsewhere).unwrap_err();
+    assert_eq!(
+        refused,
+        super::EngineError::Refused(Refusal::NotYourBranch {
+            branch: NAME.to_owned(),
+            task
+        })
+    );
+    let said = refused.to_string();
+    assert!(
+        said.contains(NAME) && said.contains(&format!("task #{}'s", task.0)),
+        "{said}"
+    );
+}
+
 #[test]
 fn a_check_that_passes_is_a_receipt_that_wakes_the_submitter_and_the_tester() {
     let clock = Hands(AtomicI64::new(OCT_17));

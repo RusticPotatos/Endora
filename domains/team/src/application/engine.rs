@@ -72,7 +72,7 @@ pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
 pub use proposals::PageProposing;
 pub use raci::DIRECTION_MOST;
-pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
+pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
 pub use world::{RETELL_AT_ONCE, StoryTelling, WorldWrite};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its

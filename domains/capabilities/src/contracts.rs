@@ -154,21 +154,21 @@ pub fn all() -> Vec<Contract> {
         },
         Contract {
             name: REPO_CHECKOUT,
-            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches to review. Git is set up there (commits are authored Endora HQ with the trailer added for you). Free; the sandbox stays offline.",
+            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches. A branch your team submitted comes back whole before the owner has pushed it, on top of its base, to go on from or to review: your own work's (its task, the tasks under and above it) or one you submitted yourself. Git is set up there (commits are authored Endora HQ with the trailer added for you). Free; the sandbox stays offline.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
-                "branch": { "type": "string", "description": "The fork's default branch unless you name a team branch, hq/task-N-slug." },
+                "branch": { "type": "string", "description": "The fork's default branch unless you name a team branch, hq/task-N-slug (a submitted one of your work)." },
                 "why": { "type": "string", "description": "Why, in a few words." },
             }, "required": ["why"] }),
         },
         Contract {
             name: REPO_SUBMIT,
-            description: "Send your branch (hq/task-N-slug, committed in /work/repo) to Endora, which keeps it, writes its diff as a document on your task and runs the lab's checks (ansible syntax, ansible-lint, yamllint) on the dev node, judged against the fork's develop (it passes when no check is worse than on develop); the result comes back as a receipt. Refused unless it sits on the fork's default branch, changes at most 200 files and 1 MB, and every commit is HQ's. Nothing is pushed: the owner pushes an accepted branch.",
+            description: "Send your branch (hq/task-N-slug, N being your task's number, committed in /work/repo) to Endora, which keeps it, writes its diff as a document on your task and runs the lab's checks (ansible syntax, ansible-lint, yamllint) on the dev node, judged against the fork's develop (it passes when no check is worse than on develop); the result comes back as a receipt. Refused unless it is named for your task, sits on the fork's default branch, changes at most 200 files and 1 MB, and every commit is HQ's. Nothing is pushed: the owner pushes an accepted branch.",
             kind: Kind::AutomaticAct,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
-                "branch": { "type": "string", "description": "Your branch, hq/task-N-slug." },
+                "branch": { "type": "string", "description": "Your branch, hq/task-N-slug, N being your task's number." },
                 "why": { "type": "string", "description": "What the branch does, in a sentence the tester reads." },
             }, "required": ["branch", "why"] }),
         },

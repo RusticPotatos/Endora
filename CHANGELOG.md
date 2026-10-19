@@ -811,6 +811,20 @@ tagged release.
   could not run is never excused. The result line says "could not run". Ships with the
   workbench image (the check job).
 
+- **A member can check out the team's own submitted branch, and a branch is named for its task**
+  ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)). In 39 hours of live
+  use the wing submitted six branches and none reached the owner; `repo_checkout` of a branch
+  the node was keeping was refused three times ("the fork has no branch"), because a
+  submission is kept as `refs/submissions/…` and reaches the fork's heads only after the
+  owner's push. Each refusal ended with the work recreated from develop. The node now asks HQ
+  (`POST /v1/team/branch/checkout`), whose record says whether the branch is the turn's work
+  (its task, the tasks under and above it) or its member's, and at which head; the node hands
+  out the base and the kept ref, at that head only, and the worker clones the base, fetches the
+  kept ref as a head and checks it out, so it can be added to and submitted again (and
+  `/work/repo` is emptied, not replaced, so a shell standing in it is not left in a folder
+  that is gone). `repo_submit` now requires `hq/task-<the turn's task>-<slug>`, so no task's
+  kept branch can be overwritten by another's. Ships with the node, HQ and the workbench image.
+
 - **Live sound no longer falls behind the picture over time, and no longer dips every few
   minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
   backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a

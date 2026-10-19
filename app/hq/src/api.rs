@@ -153,9 +153,13 @@ pub fn app(state: State) -> Router {
             "/v1/team/approval/{id}/outcome",
             post(crate::team::approval_outcome),
         )
-        // The wing's git flow (ADR 0115): a branch the node took, the check a job token names,
-        // and what came of a push the owner approved.
+        // The wing's git flow (ADR 0115): a branch the node took, which kept branch a turn may
+        // check out, the check a job token names, and what came of a push the owner approved.
         .route("/v1/team/branch", post(crate::team::branch))
+        .route(
+            "/v1/team/branch/checkout",
+            post(crate::team::branch_checkout),
+        )
         .route("/v1/team/check", post(crate::team::check))
         .route(
             "/v1/team/push/{id}/outcome",
@@ -3682,6 +3686,95 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn the_node_asks_hq_which_head_of_a_kept_branch_a_turn_may_check_out() {
+        let st = state(false);
+        let (_, task) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    r#"{"free":2}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let token = handed["token"].as_str().unwrap().to_owned();
+        let branch = json!({ "token": token, "branch": "hq/task-1-sort-the-cables",
+                             "head": "a1b2c3d4e5f60718", "base": "0123456789abcdef", "files": 1,
+                             "plus": 2, "minus": 0, "stat": " a | 2 ++", "diff": "+x\n+y",
+                             "can_push": true });
+        let res = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                "/v1/team/branch",
+                Some(TOKEN),
+                &branch.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let checkout = |signed: Option<&str>, token: &str, name: &str| {
+            call(
+                "POST",
+                "/v1/team/branch/checkout",
+                signed,
+                &json!({ "token": token, "branch": name }).to_string(),
+            )
+        };
+        // Signed by the node, naming the turn by its own token: the head HQ recorded, the base
+        // it sits on, and the task it is for.
+        let res = app
+            .clone()
+            .oneshot(checkout(Some(TOKEN), &token, "hq/task-1-sort-the-cables"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            json_of(res).await,
+            json!({ "head": "a1b2c3d4e5f60718", "base": "0123456789abcdef", "task": task.0 })
+        );
+        // Not by a worker, and not for a branch HQ never recorded or a turn that is not running.
+        for (signed, who, name, status) in [
+            (
+                Some(token.as_str()),
+                token.as_str(),
+                "hq/task-1-sort-the-cables",
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                None,
+                token.as_str(),
+                "hq/task-1-sort-the-cables",
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                Some(TOKEN),
+                token.as_str(),
+                "hq/task-1-none",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                Some(TOKEN),
+                "forged",
+                "hq/task-1-sort-the-cables",
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(checkout(signed, who, name))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), status, "{signed:?} {who} {name}");
+        }
     }
 
     #[tokio::test]

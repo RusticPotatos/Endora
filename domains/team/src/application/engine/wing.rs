@@ -62,6 +62,18 @@ pub struct Recorded {
     pub check: i64,
 }
 
+/// A kept branch a turn may check out (ADR 0115, amended): the head HQ recorded for it, the
+/// base it sits on, and the task it is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptBranch {
+    /// The head HQ recorded: the node hands out the kept submission only at this head.
+    pub head: String,
+    /// The default branch's head it sits on.
+    pub base: String,
+    /// The task it was submitted for.
+    pub task: TaskId,
+}
+
 /// What seeding the wing made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WingSeeded {
@@ -178,6 +190,74 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             document,
             check,
         })
+    }
+
+    /// Whether a turn may have a branch the team submitted and the node keeps (ADR 0115,
+    /// amended): the node asks, naming the turn by its own token, before it hands a kept
+    /// submission out. HQ's record decides, never the name (a name is the model's): the newest
+    /// branch recorded under it must be for the turn's own work (its task, the tasks under it,
+    /// the tasks above it) or have been submitted by the turn's member. What is handed back is
+    /// the head HQ recorded, the base it sits on, and its task: the node checks out that head
+    /// only, and refuses it if the kept branch has moved. Two risks are fenced: half-done work
+    /// leaking across areas, and one member laundering another's unreviewed branch under a task
+    /// of its own.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a token that opens no running turn, or a name HQ never
+    /// recorded; [`Refusal::NotYourBranch`] for another task's.
+    pub fn checkout_branch(&self, token: &str, name: &str) -> Done<KeptBranch> {
+        let _held = self.held();
+        let Some(id) = self.store.run_of_token(token)? else {
+            return Err(EngineError::Unknown("running turn with that token"));
+        };
+        let run = self
+            .running(id)
+            .map_err(|_| EngineError::Unknown("running turn with that token"))?;
+        let Some(branch) = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| b.name == name)
+            .max_by_key(|b| b.id)
+        else {
+            return Err(EngineError::Unknown("branch of that name"));
+        };
+        if branch.member != run.member && !self.in_the_work_of(&run, branch.task)? {
+            return Err(EngineError::Refused(Refusal::NotYourBranch {
+                branch: branch.name,
+                task: branch.task,
+            }));
+        }
+        Ok(KeptBranch {
+            head: branch.head,
+            base: branch.base,
+            task: branch.task,
+        })
+    }
+
+    /// Whether `task` is in the work of a turn: the task the turn is on, a task under it at any
+    /// depth, or one of the tasks above it. A turn on no task has no work.
+    fn in_the_work_of(&self, run: &crate::application::ports::Run, task: TaskId) -> Done<bool> {
+        let Some(own) = run.task else {
+            return Ok(false);
+        };
+        if self.work_of(own)?.contains(&task) {
+            return Ok(true);
+        }
+        let tasks = self.store.tasks()?;
+        let parent_of = |id: TaskId| tasks.iter().find(|t| t.id == id).and_then(|t| t.parent);
+        let (mut above, mut seen) = (parent_of(own), vec![own]);
+        while let Some(id) = above {
+            if id == task {
+                return Ok(true);
+            }
+            if seen.contains(&id) {
+                break;
+            }
+            seen.push(id);
+            above = parent_of(id);
+        }
+        Ok(false)
     }
 
     /// The next check job for the runner: the oldest waiting, now running. A check running
