@@ -288,6 +288,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The nightly quiz on the map (ADR 0126): a free member, in a downtime turn on the
         // house's model, scored by code. The scripted demo has none.
         quiz: !demo_mode,
+        // The caps on a runaway (ADR 0133) are on for a real team from the start. The scripted
+        // demo takes a turn as fast as its tick lets it, costs nothing, and is exempt.
+        scripted: demo_mode,
         ..Settings::default()
     };
     let hq: Arc<Hq> = Arc::new(

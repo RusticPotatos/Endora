@@ -297,7 +297,9 @@ function hqTell(e, live, older) {
     "desk.added": ["you", d.kind === "push" ? `On your desk: push ${d.branch || "a branch"}${on}` : d.kind === "hire" ? `On your desk: ${d.name ? d.name + ", " : ""}a ${hqRole(d.role)} to hire${on}` : `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
     "desk.decided": ["you", `You decided: ${String(d.decision || "").replace(/_/g, " ")}`],
     "budget.crossed": ["bad", `${name} crossed its limit; R${d.run} stopped`],
-    "stopped": ["bad", "You pulled the kill switch: every run stopped, nothing new starts"],
+    "stopped": ["bad", d.by === "tripwire"
+      ? `The runaway tripwire stopped the team: ${d.turns || "too many"} turns started in ${Math.round((d.window_ms || 600000) / 60000)} minutes (${(d.members || []).map((m) => `${m.name} ${m.turns}`).join(", ")}); nothing new starts until you resume`
+      : "You pulled the kill switch: every run stopped, nothing new starts"],
     "resumed": ["you", "You resumed the engine"],
     // Routines and check-backs (ADR 0107): how the team keeps working.
     "routine.changed": ["you", `Routine ${d.title}: ${d.enabled ? "on" : "off"}`],
@@ -1268,6 +1270,7 @@ const HQ_DESK_HELP = {
   canon: "Canon = settled truth only you can change. Make it canon once you are sure it is true; Not canon leaves it as a note.",
   out_for_day: "This member has used twice its share and is stopped. Give it today lets this member keep working today up to the amount (type one, or leave it empty for as offered); Wait stops them until tomorrow's budget.",
   guard: "A guard noticed a possible problem. Real = the guard was right; False positive = it was wrong; Can't tell; Resolved = the cause is fixed. Your verdicts tune the guards.",
+  tripwire: "The team started far more turns in ten minutes than real work does, so HQ stopped it. Resume lets it work again; Seen leaves it stopped for you to look first. The activity log shows what they were doing.",
   push: "Push it sends the accepted branch to your fork; Decline does not. Without a push key on the node, download the bundle and push it yourself.",
 };
 
@@ -1310,6 +1313,8 @@ const HQ_DESK_CHOICES = {
   out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
   // A guard's finding (ADR 0124): the owner's verdict is how HQ measures each guard.
   guard: [["real", "Real", "ok"], ["false_positive", "False positive", "no"], ["not_enough", "Can't tell", ""], ["resolved", "Resolved", "ok"]],
+  // The runaway tripwire stopped the team (ADR 0133): resume it, or look first.
+  tripwire: [["resume", "Resume the team", "ok"], ["seen", "Seen", ""]],
 };
 
 function hqDeskChoices(d) {
@@ -1347,6 +1352,8 @@ function hqChips(s) {
   }
   // Turns of judgment that wait for budget are kept, not dropped (ADR 0131).
   if (pool.waiting > 0) chips.push(`<span class="hq-chip" title="They start when the day turns, you top up the pool, or you give the member an allowance">${pool.waiting} ${pool.waiting === 1 ? "turn waits" : "turns wait"} for budget</span>`);
+  // A member's day of turns on the house's own models is capped (ADR 0133): the rest wait.
+  if (pool.capped > 0) chips.push(`<span class="hq-chip" title="A member takes at most a day's turns on the house's own models; the rest start when the day turns">${pool.capped} ${pool.capped === 1 ? "turn waits" : "turns wait"} for tomorrow</span>`);
   if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${HQ.mac.busy ? "busy" : HQ.mac.ready ? "free" : "away"}</span>`);
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
@@ -1453,6 +1460,7 @@ function viewHQ() {
     <div class="hq-bar">
       <h1>Endora HQ</h1>
       ${s.demo ? `<span class="hq-demo">Demo · scripted team</span>` : ""}
+      ${s.stopped && s.stopped_by === "tripwire" ? `<span class="hq-tag" role="status">Stopped by the runaway tripwire</span>` : ""}
       <span class="hq-grow"></span>
       <div class="hq-row">
         <button class="hq-btn tall" data-act="hq:work" aria-expanded="${HQ.working ? "true" : "false"}">Give work</button>
@@ -1869,8 +1877,10 @@ function hqOutcomes(o) {
   const rows = [["Landed", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
     .map(([k, f]) => `<tr><th>${k}</th><td>${esc(f(o.day))}</td><td>${esc(f(o.week))}</td></tr>`).join("");
   const w = o.waiting || {};
-  const waits = w.budget || w.mac
-    ? `${w.budget || 0} waiting for budget · ${w.mac || 0} for the Mac · the oldest has waited ${hqSpan(w.oldest_ms)}`
+  // Turns that wait for the day to turn (ADR 0133) are said when there are any, so a calm team's
+  // line stays short, and a day of turns alone is never "nothing waits".
+  const waits = w.budget || w.mac || w.cap
+    ? `${w.budget || 0} waiting for budget · ${w.mac || 0} for the Mac${w.cap ? ` · ${w.cap} for tomorrow` : ""} · the oldest has waited ${hqSpan(w.oldest_ms)}`
     : "nothing waits for budget or the Mac";
   return `<h3>Outcomes</h3>
     <table class="hq-score"><thead><tr><th></th><th>1 day</th><th>7 days</th></tr></thead><tbody>${rows}</tbody></table>
@@ -1979,7 +1989,8 @@ function hqGuards(s) {
     <ul class="hq-team">${lines}</ul>
     ${ceremony ? `<details open><summary>Talk against work, each project and each piece of work over the line</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
     <details><summary>Findings</summary><ul class="hq-team hq-findings">${findings || `<li class="hq-empty">No findings.</li>`}</ul></details>
-    <p class="hq-note">Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn.</p></section>`;
+    <p class="hq-note">Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn${t.coordination_budget == null ? "" : ` · a budget of ${Number(t.coordination_budget)} turns of talk a day on a task`}.</p>
+    ${t.free_turns_a_day == null ? "" : `<p class="hq-note">Caps, always on: ${Number(t.free_turns_a_day)} turns a day for a member on the house's own models · the team is stopped when ${Number(t.runaway_turns)} turns start in ${Math.round(Number(t.runaway_window_ms) / 60000)} minutes.</p>`}</section>`;
 }
 
 // The house log (ADR 0111): the CEO's own document of the house, which it and the lead read

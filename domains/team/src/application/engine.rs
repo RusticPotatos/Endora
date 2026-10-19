@@ -59,6 +59,7 @@ mod quiz;
 mod raci;
 mod replay;
 mod retract;
+mod runaway;
 mod runtime;
 mod staffing;
 mod wing;
@@ -149,6 +150,12 @@ pub struct Settings {
     /// Whether a free member is quizzed on the map overnight (ADR 0126), in a downtime turn on
     /// the house's model, free. Off unless the service turns it on.
     pub quiz: bool,
+    /// Whether the team is the scripted demo (ADR 0133): its members are code that takes a turn
+    /// as fast as the tick lets it and costs nothing, so the caps on a runaway (a member's day of
+    /// turns on the house's own models, and the tripwire that stops the team) do not apply to
+    /// it. Off for everything else, so the caps are on wherever a team is real, and in every
+    /// test that is not about the demo.
+    pub scripted: bool,
 }
 
 impl Default for Settings {
@@ -160,6 +167,7 @@ impl Default for Settings {
             downtime: false,
             games: false,
             quiz: false,
+            scripted: false,
         }
     }
 }
@@ -2149,7 +2157,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Store`] if the store fails.
     pub fn stop_all(&self, why: &str) -> Done<()> {
         let _held = self.held();
+        self.stop_all_held_lock("owner", why, json!({}))
+    }
+
+    /// Stops every turn at once and turns every wake away, as `by` (the owner, or the runaway
+    /// tripwire, ADR 0133) and for `why`; `evidence`, an object, is told in the feed with it. The
+    /// lock is held.
+    fn stop_all_held_lock(&self, by: &str, why: &str, evidence: serde_json::Value) -> Done<()> {
         self.store.set_stopped(true)?;
+        self.store.set_setting(runaway::STOPPED_BY, by)?;
+        let reason = if by == "owner" {
+            "the kill switch"
+        } else {
+            "the runaway tripwire"
+        };
         for run in self.store.runs()? {
             if !run.status.live() {
                 continue;
@@ -2157,9 +2178,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if run.status == RunStatus::Running {
                 self.runner.stop(run.id, self.settings.grace);
             }
-            self.end(run, RunStatus::Stopped, "the kill switch")?;
+            self.end(run, RunStatus::Stopped, reason)?;
         }
-        self.emit(EventKind::Stopped, json!({ "by": "owner", "why": why }))
+        let mut told = json!({ "by": by, "why": why });
+        if let (Some(told), Some(more)) = (told.as_object_mut(), evidence.as_object()) {
+            told.extend(more.clone());
+        }
+        self.emit(EventKind::Stopped, told)
     }
 
     /// Lets the team work again. Only the owner does this.
@@ -2168,8 +2193,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Store`] if the store fails.
     pub fn resume(&self) -> Done<()> {
         let _held = self.held();
-        self.store.set_stopped(false)?;
-        self.emit(EventKind::Resumed, json!({ "by": "owner" }))
+        self.resume_held_lock()
     }
 
     // ---- runs --------------------------------------------------------------------------------
@@ -3061,8 +3085,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.release_held_talk()?;
 
         // 4. Queued turns start where a member has a free slot, budget can be reserved, and a
-        //    runner has room: urgent work first, then the oldest.
+        //    runner has room: urgent work first, then the oldest. The tripwire may stop the team
+        //    here (ADR 0133): then nothing else in this tick is done, as when the owner stops it.
         report.started = self.start_queued(now)?;
+        if self.store.stopped()? {
+            return Ok(report);
+        }
 
         // 5. Doing, with no turn: parked work (ADR 0124) gets one nudge, then climbs the
         //    ladder; work held on purpose is left alone, and work HQ cannot tell about gets
@@ -3173,6 +3201,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // What deciding a turn's kind reads, once for the tick (ADR 0131).
         let wakes = self.store.wakes()?;
         let known = self.known_for_kinds()?;
+        // What the caps on a runaway read, once for the tick and kept up as turns start (ADR
+        // 0133). A scripted team, the demo, has none.
+        let mut starts = self.starts_read(now)?;
         let mut started = 0;
         for mut run in queued {
             // A turn queued for work that has since finished (dropped, or done) is ended, not
@@ -3245,6 +3276,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 judgment_brain: member.judgment_brain(),
                 mac_waits: mac::wait_for(self.mac_facts().as_ref(), now, on_the_mac),
                 can_afford: asked.is_some(),
+                free_turns_today: starts.free_turns_of(&run),
             };
             let (brain, amount, fell_back) = match turns::place(need, &facts) {
                 turns::Placed::On(brain) => (brain, asked.unwrap_or(0), false),
@@ -3258,6 +3290,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     continue;
                 }
             };
+            // The tripwire (ADR 0133): the team has started as many turns as it may in ten
+            // minutes, and this would be one more. HQ stops the team itself, as the owner's
+            // switch does, and this turn never starts.
+            if let Some(ran) = starts.runaway(now) {
+                self.trip(&ran)?;
+                return Ok(started);
+            }
             // The turn is briefed, told how hard to try and answered by the brain it runs on.
             let on = Member {
                 brain,
@@ -3275,6 +3314,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 run.end_reason.clear();
             }
             self.store.save_run(&run)?;
+            starts.started(member.id, brain, now);
             let context = RunContext {
                 run: run.id,
                 member: member.id,
@@ -3980,6 +4020,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("guard", "real" | "false_positive" | "not_enough" | "resolved" | "dismiss") => {
                 self.desk_verdict(item, decision)?;
             }
+            // The runaway tripwire's card (ADR 0133): resume the team, which answers the card
+            // itself, or leave it stopped and have the card seen.
+            ("tripwire", "resume") => return self.resume_held_lock(),
+            ("tripwire", "seen" | "dismiss") => {}
             ("push", "seen" | "dismiss")
             | ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
@@ -4726,8 +4770,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .iter()
             .filter(|r| r.status == RunStatus::Running)
             .count();
+        let stopped = self.store.stopped()?;
+        // Who stopped the team, while it is stopped: the owner, or the runaway tripwire (ADR
+        // 0133).
+        let stopped_by = if stopped {
+            self.store
+                .setting(runaway::STOPPED_BY)?
+                .filter(|by| !by.is_empty())
+        } else {
+            None
+        };
         Ok(json!({
-            "stopped": self.store.stopped()?,
+            "stopped": stopped,
+            "stopped_by": stopped_by,
             "last_event": self.store.last_event()?,
             "counts": { "ticks": ticks, "running": running, "queued": queued, "held": held,
                         "folded": folded, "open_tasks": tasks.iter().filter(|t| !t.status.finished()).count() },
@@ -4737,7 +4792,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                       "spent": pool_spent, "held": (pool_committed - pool_spent).max(0),
                       // Turns of judgment that wait for budget (ADR 0131): none is dropped.
                       "waiting": runs.iter().filter(|r| r.status == RunStatus::Queued
-                          && turns::is_waiting_for_budget(&r.end_reason)).count() },
+                          && turns::is_waiting_for_budget(&r.end_reason)).count(),
+                      // Turns of work that wait for the day to turn, their member having taken
+                      // its day's turns on the house's own models (ADR 0133).
+                      "capped": runs.iter().filter(|r| r.status == RunStatus::Queued
+                          && turns::is_waiting_for_cap(&r.end_reason)).count() },
             "members": members,
             "goals": goals.iter().map(|g| json!({
                 "id": g.id.0, "title": g.title, "reason": g.reason, "status": g.status.name(),

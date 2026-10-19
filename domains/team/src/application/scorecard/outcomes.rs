@@ -179,6 +179,9 @@ pub struct Waiting {
     pub budget: usize,
     /// Turns waiting for the Mac.
     pub mac: usize,
+    /// Turns waiting for the day to turn: their member has started as many turns today on the
+    /// house's own models as it may (ADR 0133).
+    pub cap: usize,
     /// How long the oldest has waited.
     pub oldest_ms: Option<Millis>,
 }
@@ -187,7 +190,8 @@ impl Waiting {
     /// For the screen.
     #[must_use]
     pub fn json(&self) -> Value {
-        json!({ "budget": self.budget, "mac": self.mac, "oldest_ms": self.oldest_ms })
+        json!({ "budget": self.budget, "mac": self.mac, "cap": self.cap,
+                "oldest_ms": self.oldest_ms })
     }
 }
 
@@ -298,6 +302,10 @@ pub fn waiting(runs: &[Run], now: Millis) -> Waiting {
         mac: waits
             .iter()
             .filter(|r| crate::domain::mac::is_waiting_words(&r.end_reason))
+            .count(),
+        cap: waits
+            .iter()
+            .filter(|r| turns::is_waiting_for_cap(&r.end_reason))
             .count(),
         oldest_ms: waits.iter().map(|r| now - r.queued_at).max(),
     }

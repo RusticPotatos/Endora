@@ -2,6 +2,7 @@
 
 pub mod areas;
 pub mod brain;
+pub mod caps;
 pub mod chain;
 pub mod chess;
 pub mod closure;

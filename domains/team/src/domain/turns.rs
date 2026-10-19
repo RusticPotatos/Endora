@@ -169,10 +169,17 @@ pub enum Wait {
     Mac(String),
     /// It needs the Mac, and the member works on the house's own model only.
     NeedsTheMac,
+    /// It is work on the house's own models, which cost nothing, and the member has started as
+    /// many turns on them today as it may (ADR 0133): it waits until the day turns.
+    DayCap,
 }
 
 /// The prefixes a waiting turn's words begin with.
-const WAITING: [&str; 2] = ["waiting for the Mac: ", "waiting for budget: "];
+const WAITING: [&str; 3] = [
+    "waiting for the Mac: ",
+    "waiting for budget: ",
+    "waiting for tomorrow: ",
+];
 
 impl Wait {
     /// The turn's `why` while it waits.
@@ -183,6 +190,11 @@ impl Wait {
             Self::Mac(why) => super::mac::waiting_words(why),
             Self::NeedsTheMac => super::mac::waiting_words(
                 "this work needs the Mac, and the member's work brain is the house's model",
+            ),
+            Self::DayCap => format!(
+                "{}{} turns a day is the most a member takes on the house's own models",
+                WAITING[2],
+                super::guards::THRESHOLDS.free_turns_a_day
             ),
         }
     }
@@ -201,6 +213,13 @@ pub fn is_waiting_for_budget(said: &str) -> bool {
     said.starts_with(WAITING[1])
 }
 
+/// Whether `said` is a turn waiting for the day to turn, a member having started its day's turns
+/// on the house's own models (ADR 0133).
+#[must_use]
+pub fn is_waiting_for_cap(said: &str) -> bool {
+    said.starts_with(WAITING[2])
+}
+
 /// What decides where a turn runs, besides what it needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
@@ -212,6 +231,9 @@ pub struct Facts {
     pub mac_waits: Option<String>,
     /// Whether the budget lets a judgment turn start now.
     pub can_afford: bool,
+    /// How many turns the member has started today on the house's own models, the one being
+    /// placed aside (ADR 0133).
+    pub free_turns_today: usize,
 }
 
 /// Where a turn goes.
@@ -250,6 +272,12 @@ pub fn place(need: Need, facts: &Facts) -> Placed {
             return Placed::Fallback(best_free_work_brain(facts));
         }
         return Placed::Waits(Wait::Budget);
+    }
+    // Work runs on the house's own models, which cost nothing, so no budget stops a member that
+    // has run away with them: past its day's turns it waits until the day turns (ADR 0133). A
+    // judgment turn is on Claude, and bounded by money; an alarm acts at once, and is above.
+    if facts.free_turns_today >= super::guards::THRESHOLDS.free_turns_a_day {
+        return Placed::Waits(Wait::DayCap);
     }
     match need.allowed {
         Allowed::Local => Placed::On(Brain::Local),
@@ -401,6 +429,7 @@ mod tests {
             judgment_brain: Brain::Haiku,
             mac_waits: mac_waits.map(str::to_owned),
             can_afford: true,
+            free_turns_today: 0,
         }
     }
 
@@ -610,13 +639,87 @@ mod tests {
             Wait::Budget,
             Wait::Mac("on battery".to_owned()),
             Wait::NeedsTheMac,
+            Wait::DayCap,
         ] {
             assert!(is_waiting_words(&wait.words()), "{wait:?}");
         }
         assert!(is_waiting_for_budget(&Wait::Budget.words()));
         assert!(!is_waiting_for_budget(&Wait::NeedsTheMac.words()));
+        assert!(is_waiting_for_cap(&Wait::DayCap.words()));
+        assert!(!is_waiting_for_cap(&Wait::Budget.words()));
+        assert!(!is_waiting_for_budget(&Wait::DayCap.words()));
+        assert!(
+            Wait::DayCap.words().starts_with("waiting for "),
+            "the roster line shows every wait that begins so"
+        );
         assert!(!is_waiting_words(
             "backing off: its last turns moved nothing"
         ));
+    }
+
+    /// A member takes sixty turns a day on the house's own models (ADR 0133): they cost nothing,
+    /// so no budget stops a member that has run away with them. The sixty-first, whichever of the
+    /// house's brains it would run on, waits until the day turns.
+    #[test]
+    fn the_sixty_first_turn_of_the_day_on_the_house_waits_for_tomorrow() {
+        let taken = |n| Facts {
+            free_turns_today: n,
+            ..facts(Brain::Mac, None)
+        };
+        for allowed in [Allowed::Local, Allowed::Either, Allowed::Mac] {
+            assert!(
+                matches!(place(work(allowed), &taken(59)), Placed::On(_)),
+                "the sixtieth, {allowed:?}"
+            );
+            assert_eq!(
+                place(work(allowed), &taken(60)),
+                Placed::Waits(Wait::DayCap),
+                "{allowed:?}"
+            );
+            assert_eq!(
+                place(work(allowed), &taken(500)),
+                Placed::Waits(Wait::DayCap),
+                "{allowed:?}"
+            );
+        }
+        // The cap is the longer wait: with the Mac busy as well, it is what the turn says.
+        let both = Facts {
+            free_turns_today: 60,
+            ..facts(Brain::Mac, Some("owner active"))
+        };
+        assert_eq!(
+            place(work(Allowed::Mac), &both),
+            Placed::Waits(Wait::DayCap)
+        );
+        let local = Facts {
+            free_turns_today: 60,
+            ..facts(Brain::Local, None)
+        };
+        assert_eq!(
+            place(work(Allowed::Either), &local),
+            Placed::Waits(Wait::DayCap)
+        );
+    }
+
+    /// Judgment runs on Claude and is bounded by money; an alarm acts at once. Neither is a turn
+    /// on the house's own models that the cap is for.
+    #[test]
+    fn judgment_and_an_alarm_that_acts_at_once_are_not_capped() {
+        let capped = Facts {
+            free_turns_today: 500,
+            ..facts(Brain::Mac, None)
+        };
+        assert_eq!(place(judgment(), &capped), Placed::On(Brain::Haiku));
+        let broke = Facts {
+            can_afford: false,
+            ..capped
+        };
+        let alarm = Need::of(W::Alarm, Role::Lead, false, false);
+        assert_eq!(place(alarm, &broke), Placed::Fallback(Brain::Mac));
+        assert_eq!(
+            place(judgment(), &broke),
+            Placed::Waits(Wait::Budget),
+            "money, not the cap, is what a decision waits for"
+        );
     }
 }

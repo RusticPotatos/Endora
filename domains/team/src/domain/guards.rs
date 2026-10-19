@@ -65,6 +65,15 @@ pub struct Thresholds {
     pub coordination_budget: usize,
     /// How far back a task's coordination turns are counted against that budget.
     pub coordination_window_ms: Millis,
+    /// The most turns a member starts in a day on the house's own models, the Mac or the NAS's
+    /// (ADR 0133): they cost nothing, so no budget stops a member that has run away with them.
+    /// Past it the member's work turns wait until the day turns.
+    pub free_turns_a_day: usize,
+    /// The most turns the whole team starts within [`Self::runaway_window_ms`] before HQ stops it
+    /// itself (ADR 0133): the one that would be the next is a runaway, and trips the wire.
+    pub runaway_turns: usize,
+    /// How far back the tripwire counts the turns the team started.
+    pub runaway_window_ms: Millis,
 }
 
 /// The thresholds HQ starts with (ADR 0124): loose enough to learn real numbers before they
@@ -86,6 +95,9 @@ pub const THRESHOLDS: Thresholds = Thresholds {
     same_ask_percent: 60,
     coordination_budget: 20,
     coordination_window_ms: DAY,
+    free_turns_a_day: 60,
+    runaway_turns: 40,
+    runaway_window_ms: 10 * MINUTE,
 };
 
 /// Whether a new ask for the owner (`new`, a fingerprint) is the same as one waiting
@@ -1632,6 +1644,17 @@ mod tests {
             !same_ask(&first, &fingerprint("Install yamllint?")),
             "a short ask inside a long one is not the same ask"
         );
+    }
+
+    /// The caps on a runaway (ADR 0133) start well above the live record of 17 and 18 October
+    /// (201 turns in 39 hours between all the members) and well below the scripted demo's
+    /// 1,539 turns in 3 h 40 min: sixty a member a day, and forty a team in ten minutes, which is
+    /// four a minute and only turns that end at once can make.
+    #[test]
+    fn the_caps_on_a_runaway_start_where_adr_0133_says() {
+        let t = THRESHOLDS;
+        assert_eq!(t.free_turns_a_day, 60);
+        assert_eq!((t.runaway_turns, t.runaway_window_ms), (40, 10 * MINUTE));
     }
 
     #[test]

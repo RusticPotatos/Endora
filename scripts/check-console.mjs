@@ -680,10 +680,16 @@ if (failures.length) {
                { id: 12, kind: "stuck", task: 7, at: 10, text: "Stuck: x", finding: { id: 4, guard: "stuck", episodes: 1, seen_at: 10 } }],
       // The guards (ADR 0124): each one's precision, each project's talk against its work, and
       // the findings, in words a member's work produced, so every word escaped.
-      guards: { thresholds: { ceremony_ratio: 4, ceremony_least: 12, carousel_returns: 3, redundant_wakes: 3, fence_refusals_in_a_turn: 3 },
+      // Caps on talk and runaway (ADR 0133): the budget of talk is a guard tried in shadow (it has
+      // a mode; the others only record and have none), work outside any project is listed by its
+      // tree with what its turns spent, and the caps are told beside the thresholds.
+      guards: { thresholds: { ceremony_ratio: 4, ceremony_least: 12, carousel_returns: 3, redundant_wakes: 3, fence_refusals_in_a_turn: 3,
+                              coordination_budget: 20, coordination_window_ms: 86400000, free_turns_a_day: 60, runaway_turns: 40, runaway_window_ms: 600000 },
         precision: [{ guard: "ceremony", plainly: "Talk about work", rule: "r", fired: 3, open: 1, real: 1, resolved: 1, false_positive: 1, not_enough: 0, fixed: 1, fix_judged: 2, precision: 66 },
-                    { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null }],
-        ceremony: [{ project: 1, title: "<u>Upkeep</u>", over: true, windows: [{ window: "24 h", said: "14 coordination turns, 1 product change in 24 h", over: true }] }],
+                    { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null },
+                    { guard: "coordination", plainly: "Coordination over budget", rule: "r", fired: 1, open: 1, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null, mode: "shadow" }],
+        ceremony: [{ project: 1, title: "<u>Upkeep</u>", over: true, windows: [{ window: "24 h", said: "14 coordination turns, 1 product change in 24 h", over: true }] },
+                   { project: null, title: "#12 <i>Plan the backups</i>", over: true, windows: [{ window: "24 h", said: "21 coordination turns, 0 product changes in 24 h", over: true, spent: 1230000 }] }],
         findings: [{ id: 3, guard: "ceremony", plainly: "Talk about work", task: 7, project: 1, rule: "at least 12 coordination turns", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, seen_at: 5000, episodes: 3, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
                    { id: 4, guard: "stuck", plainly: "Stuck work", task: 7, project: null, rule: "parked", evidence: "#7 x", opened_at: 2, seen_at: 2, episodes: 1, cleared_at: 3, verdict: null, fix_worked: null, judged_by: "" }] },
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
@@ -732,7 +738,7 @@ if (failures.length) {
           week: { from: -518400000, until: 86400000, since: 43200000, landed: 0, submitted: 6, checks_passed: 5, spent: 8850000, per_landed: null,
             talk: null, interrupts: 19, interrupts_a_day: 2.7, digest: 22,
             memory: { reinvented: 0, record_asked: 0, consults: { asked: 0, answered: 0, from_record: 0 } } },
-          waiting: { budget: 2, mac: 1, oldest_ms: 540000 }, talk_at: 3600000 },
+          waiting: { budget: 2, mac: 1, cap: 0, oldest_ms: 540000 }, talk_at: 3600000 },
         // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
         pool: { base: 2333333, topped_up: 2333333 },
         teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }],
@@ -762,7 +768,16 @@ if (failures.length) {
     hqTell({ id: 51, at: 0, kind: "member.reports_to", data: { member: 2, name: "Bo", reports_to: 1, manager: "Ada" } }, false);
     hqTell({ id: 52, at: 0, kind: "run.ended", data: { run: 10, member: 2, task: 7, result: "succeeded", label: "talk only" } }, false);
     hqTell({ id: 53, at: 0, kind: "huddle.called", data: { task: 7, lead: 1, members: [1, 2] } }, false);
-    hqTell({ id: 54, at: 0, kind: "huddle.decided", data: { task: 7, lead: 1, decision: "hand_to" } }, false);`, context);
+    hqTell({ id: 54, at: 0, kind: "huddle.decided", data: { task: 7, lead: 1, decision: "hand_to" } }, false);
+    // Caps on talk and runaway (ADR 0133): a wake held for a task's budget of talk, the owner
+    // switching that guard, a lead narrowing what done means, and who stopped the team.
+    hqTell({ id: 56, at: 0, kind: "wake.held", data: { member: 2, task: 7, reason: "mentioned", why: "coordination_budget" } }, false);
+    hqTell({ id: 57, at: 0, kind: "wake.held", data: { member: 2, task: 7, reason: "mentioned" } }, false);
+    hqTell({ id: 58, at: 0, kind: "guard.mode", data: { guard: "coordination", mode: "on" } }, false);
+    hqTell({ id: 59, at: 0, kind: "guard.mode", data: { guard: "coordination", mode: "shadow" } }, false);
+    hqTell({ id: 60, at: 0, kind: "task.criteria", data: { task: 7, by: 1, before: ["a"], after: ["The plan names three backups"], why: "too wide" } }, false);
+    hqTell({ id: 61, at: 0, kind: "stopped", data: { by: "tripwire", why: "stopped by the runaway tripwire", turns: 40, window_ms: 600000, members: [{ member: 1, name: "Ada", turns: 22 }, { member: 2, name: "Bo", turns: 18 }] } }, false);
+    hqTell({ id: 62, at: 0, kind: "stopped", data: { by: "owner", why: "trying it" } }, false);`, context);
   // The activity log shows ten lines at first (the Work tab is not the place for a wall of
   // them); this block reads all of them.
   if (runInContext("HQ.logShown", context) !== 10) fail("hq: the activity log does not start at ten lines");
@@ -773,7 +788,14 @@ if (failures.length) {
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min",
     "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now judges with claude-sonnet-5-5", "Ada now works with the owner&#39;s Mac",
     "Mara joined the team as CEO", "Mara noted in the house log: - 17 Oct: The NAS has 16 GB.",
-    "Huddle on EL-7: Ada, Bo", "Ada decided EL-7: hand to"]) {
+    "Huddle on EL-7: Ada, Bo", "Ada decided EL-7: hand to",
+    // Caps on talk and runaway (ADR 0133).
+    "Bo waits: talk on EL-7 is over its budget, and its lead decides (mentioned)",
+    "Bo waits: EL-7 is being worked (mentioned)",
+    "You switched the coordination guard on", "You put the coordination guard back in shadow",
+    "Ada narrowed what done means for EL-7: The plan names three backups (too wide)",
+    "The runaway tripwire stopped the team: 40 turns started in 10 minutes (Ada 22, Bo 18); nothing new starts until you resume",
+    "You pulled the kill switch: every run stopped, nothing new starts"]) {
     if (!office.includes(line)) fail(`hq: the activity log does not say "${line}"`);
   }
   if (office.includes("R9 Bo finished · $0.12 spent · cached")) fail("hq: a run that cached nothing claims a cache");
@@ -821,6 +843,15 @@ if (failures.length) {
       const html = hqScorecard(HQ.snap); [o.waiting, o.day.per_landed, o.day.spent] = kept; return html; })()`, context);
     if (!calm.includes("nothing waits for budget or the Mac")) fail("hq: a calm team's waiting is not said so");
     if (!calm.includes("$0.00 each")) fail("hq: a change that landed for nothing is not said to have cost nothing");
+    // Turns that wait for the day to turn (ADR 0133) are counted beside the rest when there are
+    // any; they alone are never "nothing waits"; none is not said at all.
+    const waitingLine = (waiting) => runInContext(`(() => { const o = HQ.snap.scorecard.outcomes, kept = o.waiting;
+      o.waiting = ${JSON.stringify(waiting)};
+      const html = hqScorecard(HQ.snap); o.waiting = kept; return html; })()`, context);
+    if (!waitingLine({ budget: 2, mac: 1, cap: 3, oldest_ms: 540000 }).includes("2 waiting for budget · 1 for the Mac · 3 for tomorrow · the oldest has waited 9 min")) fail("hq: the outcomes do not count the turns waiting for tomorrow");
+    const onlyTomorrow = waitingLine({ budget: 0, mac: 0, cap: 2, oldest_ms: 540000 });
+    if (onlyTomorrow.includes("nothing waits") || !onlyTomorrow.includes("2 for tomorrow")) fail("hq: turns waiting only for tomorrow are said to be nothing waiting");
+    if (waitingLine({ budget: 2, mac: 1, cap: 0, oldest_ms: 540000 }).includes("for tomorrow")) fail("hq: the outcomes mention tomorrow with no turn waiting for it");
   }
   // The owner's one-day top-up (ADR 0113 rule 6): the button, and today's pool line.
   for (const said of ['data-act="hq:pool:topup:go">Top up today</button>', "pool $2.33 + $2.33 top-up"]) {
@@ -866,6 +897,52 @@ if (failures.length) {
     if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
   }
   if (office.includes("<img src=g") || office.includes("<u>Upkeep</u>")) fail("hq: a guard's finding became markup");
+  // The budget of talk is tried in shadow before it acts (ADR 0133): its row says which it is in
+  // and offers the other way; a guard that only records offers no switch. What a piece of work's
+  // turns spent is said beside them, for work outside any project too, and the caps are told
+  // beside the thresholds, but only when HQ serves them.
+  {
+    for (const said of ['<b>Coordination over budget</b> <span class="hq-tag">shadow</span>: 1 found · 1 open · not judged yet',
+      "In shadow: it records what it would have held, and holds nothing, until you switch it on.",
+      'aria-pressed="false" data-act="hq:guardmode:coordination:on">Switch it on</button>',
+      "#12 &lt;i&gt;Plan the backups&lt;/i&gt;: 21 coordination turns, 0 product changes in 24 h ($1.23 spent) · talking more than working",
+      "a budget of 20 turns of talk a day on a task",
+      "Caps, always on: 60 turns a day for a member on the house's own models · the team is stopped when 40 turns start in 10 minutes."]) {
+      if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
+    }
+    if (office.includes("hq:guardmode:ceremony") || office.includes("hq:guardmode:stuck")) fail("hq: a guard that only records is offered a switch");
+    if (office.includes("<i>Plan the backups</i>")) fail("hq: the title of work outside a project became markup");
+    if (office.includes("14 coordination turns, 1 product change in 24 h (")) fail("hq: a window that spent nothing is given a cost");
+    // The same card with the guard switched on, with no mode served, and with no caps served.
+    const guardsWith = (change) => runInContext(`(() => { const g = HQ.snap.guards, kept = JSON.stringify([g.precision[2], g.thresholds]);
+      ${change}
+      const html = hqGuards(HQ.snap); [g.precision[2], g.thresholds] = JSON.parse(kept); return html; })()`, context);
+    const on = guardsWith('g.precision[2].mode = "on";');
+    for (const said of ['<b>Coordination over budget</b> <span class="hq-tag">on</span>',
+      "On: it holds talk on a task over its budget, and asks the task's lead to decide it.",
+      'aria-pressed="true" data-act="hq:guardmode:coordination:shadow">Put it back in shadow</button>']) {
+      if (!on.includes(said)) fail(`hq: a guard switched on does not say ${said}`);
+    }
+    if (on.includes("In shadow:") || on.includes("hq:guardmode:coordination:on")) fail("hq: a guard switched on still offers to switch on");
+    if (guardsWith("delete g.precision[2].mode;").includes("guardmode")) fail("hq: a guard with no mode is offered a switch");
+    const older = guardsWith("delete g.thresholds.free_turns_a_day; delete g.thresholds.coordination_budget;");
+    if (older.includes("Caps, always on") || older.includes("a budget of") || older.includes("NaN")) fail("hq: an HQ that does not serve the caps has them shown");
+  }
+  // The switch itself: giving the guard authority is asked first, putting it back in shadow is
+  // not, and each goes to the node's route for that guard.
+  {
+    runInContext(`var __modeCalls = [], __modeSaved = [api, loadHQ, render, flash, confirm];
+      api = async (m, p, b) => { __modeCalls.push(m + " " + p + " " + JSON.stringify(b)); return {}; };
+      loadHQ = async () => {}; render = () => {}; flash = () => {};`, context);
+    await runInContext(`confirm = () => false; hqDispatch("hq", "guardmode", "coordination", "on")`, context);
+    await runInContext(`confirm = () => true; hqDispatch("hq", "guardmode", "coordination", "on")`, context);
+    await runInContext(`confirm = () => false; hqDispatch("hq", "guardmode", "coordination", "shadow")`, context);
+    const sent = JSON.stringify(runInContext("__modeCalls", context));
+    runInContext(`[api, loadHQ, render, flash, confirm] = __modeSaved;`, context);
+    if (sent !== JSON.stringify(['POST /v1/hq/guards/coordination/mode {"mode":"on"}', 'POST /v1/hq/guards/coordination/mode {"mode":"shadow"}'])) {
+      fail(`hq: the guard's switch asked the node ${sent}`);
+    }
+  }
   // A finding seen again says when, and a finding opened again says how often (ADR 0132); one
   // seen once, and found once, says neither.
   if (!/finding 3 · [^)]*open · seen again \d\d:\d\d · found 3 times\)/.test(office)) fail("hq: a finding seen again does not say when and how often");
@@ -898,6 +975,38 @@ if (failures.length) {
     const old = runInContext(`(() => { const kept = HQ.snap.digest; delete HQ.snap.digest;
       const html = viewHQ(); HQ.snap.digest = kept; return html; })()`, context);
     if (old.includes("While you were away")) fail("hq: an HQ with no digest shows a card");
+  }
+  // The runaway tripwire (ADR 0133). When it has stopped the team the header says so, and one card
+  // on the desk interrupts, offering to resume; the owner's own kill switch says nothing of the
+  // kind. A member's day of turns on the house's own models is capped: the turns over it wait,
+  // and the top bar, the roster and the scorecard say so.
+  {
+    const wire = { id: 29, kind: "tripwire", text: "Stopped by the runaway tripwire: the team started 40 turns in 10 minutes, and another was about to start. Turns started, by member: <b>Ada</b> 22, Bo 18." };
+    const stoppedBy = (by, desk) => runInContext(`(() => { const s = HQ.snap, kept = [s.stopped, s.stopped_by, s.desk];
+      s.stopped = true; s.stopped_by = ${JSON.stringify(by)}; if (${JSON.stringify(desk)}) s.desk = s.desk.concat([${JSON.stringify(wire)}]);
+      const html = viewHQ(); [s.stopped, s.stopped_by, s.desk] = kept; return html; })()`, context);
+    const wired = stoppedBy("tripwire", true);
+    const yours = wired.split('id="hq-panel-desk"')[1].split('role="tabpanel"')[0].split("<h2>Your desk")[1];
+    for (const said of ['<div class="hq-need tripwire">', 'data-act="hq:decide:29:resume">Resume the team</button>', 'data-act="hq:decide:29:seen">Seen</button>',
+      '<p class="hq-help">The team started far more turns in ten minutes than real work does', "Turns started, by member: &lt;b&gt;Ada&lt;/b&gt; 22, Bo 18."]) {
+      if (!yours.includes(said)) fail(`hq: the tripwire's card on the desk does not say ${said}`);
+    }
+    if (yours.includes("<b>Ada</b> 22")) fail("hq: a tripwire card's words became markup");
+    if (!wired.includes('<span class="hq-tag" role="status">Stopped by the runaway tripwire</span>') || !wired.includes('data-act="hq:resume">Resume</button>')) fail("hq: the header does not say the tripwire stopped the team, with a way to resume");
+    if (wired.split("<h2>While you were away")[1].split("<h2>Your desk")[0].includes("tripwire")) fail("hq: the tripwire's card is in the digest, which does not interrupt");
+    const owners = stoppedBy("owner", false);
+    if (owners.includes("Stopped by the runaway tripwire") || !owners.includes('data-act="hq:resume">Resume</button>')) fail("hq: the owner's own kill switch is called the tripwire");
+    if (office.includes("Stopped by the runaway tripwire")) fail("hq: a running team is said to be stopped by the tripwire");
+    // Turns that wait for the day to turn.
+    const capped = (n) => runInContext(`hqChips(Object.assign({}, HQ.snap, { pool: Object.assign({}, HQ.snap.pool, { capped: ${n} }) }))`, context);
+    if (!capped(2).includes("2 turns wait for tomorrow") || !capped(1).includes("1 turn waits for tomorrow")) fail("hq: the top bar does not count the turns waiting for tomorrow");
+    if (capped(0).includes("for tomorrow") || office.includes("for tomorrow</span>")) fail("hq: the top bar mentions tomorrow with no turn waiting for it");
+    const rostered = runInContext(`(() => { const s = HQ.snap, kept = s.runs;
+      s.runs = [{ id: 91, member: 3, task: 7, status: "queued", why: "waiting for tomorrow: 60 turns a day is the most a member takes on the house's own models" }];
+      const html = hqRosterLine(s.members[2], s.members); s.runs = kept; return html; })()`, context);
+    if (!rostered.includes("waiting for tomorrow: 60 turns a day is the most a member takes on the house&#39;s own models")) fail("hq: the roster does not say a member's turn waits for tomorrow");
+    const tags = runInContext("HQ_DESK_HELP.tripwire", context);
+    if (!tags.includes("Resume lets it work again") || !tags.includes("Seen leaves it stopped")) fail("hq: the tripwire's help does not say what its choices do");
   }
   // Retract and sweep (ADR 0124): "Not true" on a note, a section and a story; what else says
   // it is listed to tick and forget, its words text.

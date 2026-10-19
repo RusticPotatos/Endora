@@ -95,6 +95,9 @@ mod guards_tests;
 mod budget_tests;
 
 #[cfg(test)]
+mod caps_tests;
+
+#[cfg(test)]
 mod map_tests;
 
 #[cfg(test)]
