@@ -156,8 +156,14 @@ pub struct Member {
     pub look: u8,
     /// Whether the owner has paused it.
     pub paused: bool,
-    /// What it thinks with, as the owner set it (ADR 0109).
+    /// What it thinks with, as the owner set it (ADR 0109): its Claude when it has one, which
+    /// is its *judgment brain* (ADR 0131), and otherwise the house's model it works with. It is
+    /// the brain the pool's shares and the data tier are reckoned on; the brain a turn runs on
+    /// is decided per turn (see [`super::turns`]).
     pub brain: super::brain::Brain,
+    /// What it does its work with (ADR 0131): the owner's Mac or the house's own model, never
+    /// Claude. Its turns of work run here; its turns of judgment never do.
+    pub work_brain: super::brain::Brain,
     /// The member it reports to (ADR 0113); `None` for the CEO, who reports to the board,
     /// and for a member hired before anyone was there to report to.
     pub reports_to: Option<MemberId>,
@@ -170,6 +176,16 @@ pub struct Member {
 }
 
 impl Member {
+    /// The Claude brain the member judges with (ADR 0131), if the owner gave it one. Judgment
+    /// turns run on it and nowhere else; with none, they wait.
+    #[must_use]
+    pub const fn judgment_brain(&self) -> Option<super::brain::Brain> {
+        if self.brain.cloud() {
+            return Some(self.brain);
+        }
+        None
+    }
+
     /// Whether the member is on furlough now (ADR 0118): furloughed and not yet recalled.
     #[must_use]
     pub const fn furloughed(&self) -> bool {
@@ -1031,6 +1047,7 @@ mod tests {
             look: 0,
             paused: false,
             brain: crate::domain::brain::Brain::Local,
+            work_brain: crate::domain::brain::Brain::Local,
             reports_to: None,
             furloughed_at: None,
             recalled_at: None,

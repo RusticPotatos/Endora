@@ -198,6 +198,7 @@ mod tests {
             look: 0,
             paused: false,
             brain: Brain::Local,
+            work_brain: Brain::Local,
             reports_to: to.map(MemberId),
             furloughed_at: furloughed.then_some(5),
             recalled_at: None,

@@ -249,6 +249,7 @@ mod tests {
             look: 0,
             paused: false,
             brain: crate::domain::Brain::Local,
+            work_brain: crate::domain::Brain::Local,
             reports_to: reports_to.map(MemberId),
             furloughed_at: None,
             recalled_at: None,

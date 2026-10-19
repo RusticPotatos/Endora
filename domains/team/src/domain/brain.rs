@@ -120,6 +120,36 @@ impl Brain {
         ALL.into_iter().filter(|b| b.allowed_for(role)).collect()
     }
 
+    /// The brains a member may do its work with (ADR 0131), in the order the owner is offered
+    /// them: the house's models, the Mac first.
+    #[must_use]
+    pub const fn work_choices() -> [Self; 2] {
+        [Self::Mac, Self::Local]
+    }
+
+    /// The brains a member in `role` may be given to judge with (ADR 0131): the Claude models
+    /// the role may use, in the order the owner is offered them.
+    #[must_use]
+    pub fn judgment_choices(role: Role) -> Vec<Self> {
+        Self::choices(role)
+            .into_iter()
+            .filter(|b| b.cloud())
+            .collect()
+    }
+
+    /// The work brain the owner asked for by `name`.
+    ///
+    /// # Errors
+    /// [`Refusal::NotABrain`] for a name that is not one of the house's models.
+    pub fn for_work(role: Role, name: &str) -> Result<Self, Refusal> {
+        Self::from_name(name.trim())
+            .filter(|b| b.house())
+            .ok_or_else(|| Refusal::NotABrain {
+                role,
+                asked: name.chars().take(60).collect(),
+            })
+    }
+
     /// The brain the owner asked for by `name`, for a member in `role`.
     ///
     /// # Errors

@@ -23,6 +23,7 @@ use crate::domain::money::{self, Micros};
 use crate::domain::review;
 use crate::domain::routines::{self, FireStep, MINUTE_MS};
 use crate::domain::runs::{self, LONGEST_TURN_MS};
+use crate::domain::turns;
 use crate::domain::wakes::{self, LiveTurn};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
@@ -92,6 +93,15 @@ pub const CEO_LOOKS_BACK_MS: Millis = 7 * 24 * 60 * 60 * 1000;
 /// newest, and how many earlier ones there were.
 pub const CEO_NEWS_MOST: usize = 20;
 
+/// What deciding the kind of a queued turn reads besides its wakes (ADR 0131), read once a tick.
+#[derive(Default)]
+struct Known {
+    /// The tasks that are a lead's standing review (its report on its area, its patterns).
+    reports: std::collections::HashSet<TaskId>,
+    /// Who sits in the engineering wing.
+    wing: Vec<MemberId>,
+}
+
 /// An alarm the event carries, as the CEO reads it: Endora's, fired into a routine, or passed
 /// into the open task of one.
 fn alarm_in(event: &crate::domain::Event) -> Option<&str> {
@@ -144,6 +154,11 @@ pub struct Settings {
     /// Whether a free member on the house's model is quizzed on the map overnight (ADR 0126),
     /// in a downtime turn, free. Off unless the service turns it on.
     pub quiz: bool,
+    /// Whether a turn has a kind that decides the brain it runs on (ADR 0131): work on the
+    /// member's work brain, judgment only on its Claude, a wake out of budget kept as a turn
+    /// that waits. Off unless the service turns it on: a scripted demo, and the engine's older
+    /// tests (whose members think with one brain and run every turn on it), have none.
+    pub turn_kinds: bool,
 }
 
 impl Default for Settings {
@@ -155,6 +170,7 @@ impl Default for Settings {
             downtime: false,
             games: false,
             quiz: false,
+            turn_kinds: false,
         }
     }
 }
@@ -336,6 +352,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// pool, which costs nothing. The service turns it on at start.
     pub fn set_games(&mut self, on: bool) {
         self.settings.games = on;
+    }
+
+    /// Gives turns a kind, or takes it away (ADR 0131): whether a turn of work runs on its
+    /// member's work brain, a turn of judgment only on its Claude, and a wake out of budget is
+    /// kept as a turn that waits. The service turns it on at start; a scenario, when it is
+    /// about the two brains.
+    pub fn set_turn_kinds(&mut self, on: bool) {
+        self.settings.turn_kinds = on;
     }
 
     /// The containers Endora's home lab has now, as the node says them: what each question to
@@ -574,6 +598,58 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "member": member.0, "name": found.name, "brain": brain.name() }),
         )?;
         Ok(brain)
+    }
+
+    /// The owner sets what a member does its work with (ADR 0131), by its name: `mac` or
+    /// `local`, the house's own models. Claude never does the work. A member with no Claude
+    /// brain thinks with it too. The next turn of work starts with it.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
+    /// a name that is not one of the house's models; a store failure.
+    pub fn set_work_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        let brain = Brain::for_work(found.role, brain).map_err(EngineError::Refused)?;
+        self.store.set_work_brain(member, brain)?;
+        self.emit(
+            EventKind::BrainSet,
+            json!({ "member": member.0, "name": found.name, "work_brain": brain.name() }),
+        )?;
+        Ok(brain)
+    }
+
+    /// The owner sets the Claude a member judges with (ADR 0131), by its name, or `none` to
+    /// take it away: its turns of judgment then wait until the owner gives it one. The next
+    /// turn of judgment starts with it. Removing it leaves the member thinking with its work
+    /// brain.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
+    /// a name that is not a Claude its role may use; a store failure.
+    pub fn set_judgment_brain(&self, member: MemberId, brain: &str) -> Done<Option<Brain>> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        let judged = if brain.trim() == "none" {
+            None
+        } else {
+            let claude = Brain::for_role(found.role, brain).map_err(EngineError::Refused)?;
+            if !claude.cloud() {
+                return Err(EngineError::Refused(Refusal::NotABrain {
+                    role: found.role,
+                    asked: brain.chars().take(60).collect(),
+                }));
+            }
+            Some(claude)
+        };
+        self.store
+            .set_brain(member, judged.unwrap_or(found.work_brain))?;
+        self.emit(
+            EventKind::BrainSet,
+            json!({ "member": member.0, "name": found.name,
+                    "judgment_brain": judged.map(Brain::name) }),
+        )?;
+        Ok(judged)
     }
 
     /// The owner renames a member: one to 40 characters on one line, and no other member's
@@ -981,7 +1057,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.wake_held_lock(member, task, reason)
     }
 
-    fn live_turns(&self, member: MemberId, task: Option<TaskId>) -> Done<Vec<LiveTurn>> {
+    /// The live turns a wake about `task` meets. A wake of judgment (`judgment`) may join any
+    /// of them but a work turn already running on the house's models: it would be judged by a
+    /// brain that must not judge (ADR 0131).
+    fn live_turns(
+        &self,
+        member: MemberId,
+        task: Option<TaskId>,
+        judgment: bool,
+    ) -> Done<Vec<LiveTurn>> {
         Ok(self
             .store
             .runs()?
@@ -995,8 +1079,53 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .map(|run| LiveTurn {
                 run: run.id,
                 member: run.member,
+                foldable: !(judgment
+                    && run.status == RunStatus::Running
+                    && run.brain.is_some_and(Brain::house)),
             })
             .collect())
+    }
+
+    /// What a turn asked for by `reason`, about `task`, for `member`, needs (ADR 0131): decided
+    /// here from why and what it is about, and never by the member.
+    fn need_of_wake(
+        &self,
+        member: &Member,
+        task: Option<TaskId>,
+        reason: WakeReason,
+    ) -> Done<turns::Need> {
+        // The leads' standing reviews are judgment whatever woke them; the CEO's are by role.
+        let a_review = match task {
+            Some(task) if member.role == Role::Lead => self.report_task_ids()?.contains(&task),
+            _ => false,
+        };
+        // A developer in the engineering wing builds with the repo's tools.
+        let in_the_wing =
+            member.role == Role::Developer && self.wing_members()?.contains(&member.id);
+        Ok(turns::Need::of(reason, member.role, a_review, in_the_wing))
+    }
+
+    /// What a queued turn needs: the strictest of the wakes that asked for it, its own and
+    /// every one folded into it since. A wake of judgment that joined a turn waiting for a
+    /// brain makes it a turn of judgment.
+    fn need_of_run(
+        &self,
+        run: &Run,
+        member: &Member,
+        wakes: &[Wake],
+        known: &Known,
+    ) -> turns::Need {
+        let a_review =
+            member.role == Role::Lead && run.task.is_some_and(|t| known.reports.contains(&t));
+        let in_the_wing = member.role == Role::Developer && known.wing.contains(&member.id);
+        wakes
+            .iter()
+            .filter(|w| w.id == run.wake || w.run == Some(run.id))
+            .map(|w| turns::Need::of(w.reason, member.role, a_review, in_the_wing))
+            .reduce(turns::Need::and)
+            .unwrap_or_else(|| {
+                turns::Need::of(WakeReason::Recovery, member.role, a_review, in_the_wing)
+            })
     }
 
     /// Whether a member has a task of its own that is not over: handed to it, or taken.
@@ -1038,9 +1167,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             stopped: self.store.stopped()?,
             paused: member.paused,
             furloughed: member.furloughed(),
+            // Whether the money is there is not asked of a wake once turns have kinds
+            // (ADR 0131): the turn is queued, and waits for budget where it starts.
+            can_afford_a_turn: if self.settings.turn_kinds {
+                true
             // Downtime is free on the house's model, and on Claude only within the owner's
             // allowance for it (ADR 0119): never out of the member's own share.
-            can_afford_a_turn: if reason == WakeReason::Downtime {
+            } else if reason == WakeReason::Downtime {
                 self.downtime_reservation(member)?.is_some()
             } else if reason == WakeReason::Consulted {
                 // Whose share pays is known when the turn starts, with its consult (ADR 0129);
@@ -1050,7 +1183,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.affordable(member, project, self.asked_by_owner())?
                     .is_some()
             },
-            live: self.live_turns(member.id, task)?,
+            about_a_task: task.is_some(),
+            live: self.live_turns(
+                member.id,
+                task,
+                self.settings.turn_kinds
+                    && self.need_of_wake(member, task, reason)?.kind == turns::TurnKind::Judgment,
+            )?,
             already_held,
             nothing_to_do,
             // A wake that brings nothing new, to a member its last turns showed nothing for,
@@ -2202,7 +2341,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // A turn on the owner's Mac that failed because the Mac went away (the owner came back,
         // the laptop left its charger) did nothing wrong: it is tried again when the Mac is
         // free, and the failure is not counted against it (ADR 0130).
-        let on_the_mac = self.member(run.member)?.brain == Brain::Mac;
+        let on_the_mac = match run.brain {
+            Some(brain) => brain == Brain::Mac,
+            None => self.member(run.member)?.brain == Brain::Mac,
+        };
         if on_the_mac && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some() {
             run.attempts = run.attempts.saturating_sub(1);
         }
@@ -3085,13 +3227,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| r.status == RunStatus::Queued)
             .collect();
         queued.sort_by_key(|r| (priority(r), r.queued_at, r.id));
-        let on_the_mac: std::collections::HashSet<MemberId> = self
+        // A turn started before turns had a brain of their own ran on its member's.
+        let legacy_on_the_mac: std::collections::HashSet<MemberId> = self
             .store
             .members()?
             .into_iter()
             .filter(|m| m.brain == Brain::Mac)
             .map(|m| m.id)
             .collect();
+        let uses_the_mac = |r: &Run| {
+            r.brain.map_or_else(
+                || legacy_on_the_mac.contains(&r.member),
+                |b| b == Brain::Mac,
+            )
+        };
+        // What deciding a turn's kind reads, once for the tick (and only when turns have kinds).
+        let wakes = self.store.wakes()?;
+        let known = if self.settings.turn_kinds {
+            Known {
+                reports: self.report_task_ids()?,
+                wing: self.wing_members()?,
+            }
+        } else {
+            Known::default()
+        };
         let mut started = 0;
         for mut run in queued {
             // A turn queued for work that has since finished (dropped, or done) is ended, not
@@ -3140,11 +3299,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.held_by_owner(project)? {
                 continue;
             }
-            // A member on the owner's Mac (ADR 0130) takes a turn only while the Mac is free,
-            // and only one at a time. Otherwise its turn waits where it is, and says why: it is
-            // never given another brain.
-            if member.brain == Brain::Mac {
-                let another = running.iter().any(|r| on_the_mac.contains(&r.member));
+            // Without turn kinds (a team whose members think with one brain), a member on the
+            // owner's Mac (ADR 0130) takes a turn only while the Mac is free, and only one at a
+            // time. Otherwise its turn waits where it is, and says why: it is never given
+            // another brain.
+            if !self.settings.turn_kinds && member.brain == Brain::Mac {
+                let another = running.iter().any(&uses_the_mac);
                 if let Some(why) = mac::wait_for(self.mac_facts().as_ref(), now, another) {
                     let said = mac::waiting_words(&why);
                     if run.end_reason != said {
@@ -3164,33 +3324,75 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 };
                 payer = paying;
             }
-            let amount = if consulted {
+            let asked = if consulted {
                 let Some(amount) = self.affordable(&payer, None, false)? else {
                     self.end(run, RunStatus::Stopped, "its asker's share is spent")?;
                     continue;
                 };
-                amount
+                Some(amount)
             } else if downtime {
                 // Free on the house's model; on Claude, the owner's allowance for the day.
                 let Some(amount) = self.downtime_reservation(&member)? else {
                     self.end(run, RunStatus::Stopped, "no allowance left for downtime")?;
                     continue;
                 };
-                amount
+                Some(amount)
+            } else if !self.settings.turn_kinds
+                || (self.need_of_run(&run, &member, &wakes, &known).kind
+                    == turns::TurnKind::Judgment
+                    && member.judgment_brain().is_some())
+            {
+                // The brain that pays: the member's one, or the Claude it judges with.
+                self.affordable(&member, project, run.asked_by_owner)?
             } else {
-                let Some(amount) = self.affordable(&member, project, run.asked_by_owner)? else {
-                    continue;
-                };
-                amount
+                // Work on the house's models costs nothing; a judgment turn with no brain to
+                // judge on is placed below, where it waits.
+                Some(0)
             };
-            run.told = self.briefing(&member, &run)?;
+            // What the turn needs is decided here, from why it was asked for (ADR 0131), and
+            // never by the member: judgment runs only on the member's Claude brain, work on the
+            // best free work brain it is allowed on. A turn that has nowhere it may run waits
+            // where it is, and says why. It is never given another brain.
+            let (brain, kind) = if self.settings.turn_kinds {
+                let need = self.need_of_run(&run, &member, &wakes, &known);
+                let another = running.iter().any(&uses_the_mac);
+                let facts = turns::Facts {
+                    work_brain: member.work_brain,
+                    judgment_brain: member.judgment_brain(),
+                    mac_waits: mac::wait_for(self.mac_facts().as_ref(), now, another),
+                    can_afford: asked.is_some(),
+                };
+                match turns::place(need, &facts) {
+                    turns::Placed::On(brain) => (Some(brain), Some(need.kind)),
+                    turns::Placed::Waits(wait) => {
+                        let said = wait.words();
+                        if run.end_reason != said {
+                            run.end_reason = said;
+                            self.store.save_run(&run)?;
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                (None, None)
+            };
+            let Some(amount) = asked else {
+                continue;
+            };
+            // The turn is briefed, told how hard to try and answered by the brain it runs on.
+            let on = Member {
+                brain: brain.unwrap_or(member.brain),
+                ..member.clone()
+            };
+            run.brain = brain;
+            run.told = self.briefing(&on, &run)?;
             self.store
                 .reserve(run.id, payer.id, self.today(), amount, now)?;
             run.status = RunStatus::Running;
             run.attempts = run.attempts.saturating_add(1);
             run.started_at = Some(now);
             run.reserved = amount;
-            if mac::is_waiting_words(&run.end_reason) {
+            if turns::is_waiting_words(&run.end_reason) {
                 run.end_reason.clear();
             }
             self.store.save_run(&run)?;
@@ -3200,7 +3402,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 task: run.task,
                 told: run.told.clone(),
                 token: self.store.issue_token(run.id)?,
-                effort: self.effort_of(&member, &run)?,
+                effort: self.effort_of(&on, &run)?,
             };
             if let Err(why) = self.runner.start(&context) {
                 self.fail(run, &format!("could not start: {}", why.0))?;
@@ -3211,7 +3413,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.emit(
                 EventKind::RunStarted,
                 json!({ "run": run.id.0, "member": member.id.0, "task": run.task.map(|t| t.0),
-                        "reserved": amount, "reason": self.reason_for(&run)? }),
+                        "reserved": amount, "reason": self.reason_for(&run)?,
+                        "kind": kind.map(turns::TurnKind::label),
+                        "brain": brain.map(Brain::name) }),
             )?;
             started += 1;
         }
@@ -3236,7 +3440,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         else {
             return Ok(None);
         };
-        let member = self.member(run.member)?;
+        let mut member = self.member(run.member)?;
+        // The turn is answered by the brain it was started on (ADR 0131), so the data tier,
+        // the model relays and the tools all see what the turn is, not what its member
+        // otherwise has.
+        if let Some(brain) = run.brain {
+            member.brain = brain;
+        }
         Ok(Some((run, member)))
     }
 
@@ -4529,6 +4739,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "brains": Brain::choices(m.role).into_iter()
                     .map(|b| json!({ "name": b.name(), "label": b.label() }))
                     .collect::<Vec<_>>(),
+                // Two brains (ADR 0131): what it does its work with (the Mac or the house's
+                // model), and the Claude it judges with, if the owner gave it one.
+                "work_brain": m.work_brain.name(), "work_brain_label": m.work_brain.label(),
+                "work_brains": Brain::work_choices().into_iter()
+                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
+                    .collect::<Vec<_>>(),
+                "judgment_brain": m.judgment_brain().map(Brain::name),
+                "judgment_brain_label": m.judgment_brain().map(Brain::label),
+                "judgment_brains": Brain::judgment_choices(m.role).into_iter()
+                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
+                    .collect::<Vec<_>>(),
                 // What runs its turns (ADR 0117), and whether Claude Code may.
                 "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
                 "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
@@ -4613,7 +4834,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "last_tick_at": last_tick_at,
             "pool": { "per_day": pool_day, "base_per_day": money::pool_a_day(pool),
                       "topped_up": topped_up, "committed": pool_committed,
-                      "spent": pool_spent, "held": (pool_committed - pool_spent).max(0) },
+                      "spent": pool_spent, "held": (pool_committed - pool_spent).max(0),
+                      // Turns of judgment that wait for budget (ADR 0131): none is dropped.
+                      "waiting": runs.iter().filter(|r| r.status == RunStatus::Queued
+                          && turns::is_waiting_for_budget(&r.end_reason)).count() },
             "members": members,
             "goals": goals.iter().map(|g| json!({
                 "id": g.id.0, "title": g.title, "reason": g.reason, "status": g.status.name(),
@@ -4630,6 +4854,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "spent": r.spent,
                 // Why its last attempt ended, for one waiting to be tried again.
                 "why": r.end_reason,
+                // The brain it runs or ran on (ADR 0131), once started.
+                "brain": r.brain.map(Brain::name),
                 "input_tokens": r.input_tokens + r.cache_read_tokens + r.cache_write_tokens,
                 "output_tokens": r.output_tokens,
             })).collect::<Vec<_>>(),
@@ -4685,10 +4911,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The owner's Mac as the team's screen reads it (ADR 0130): whether a turn may start on it
     /// now and why not, how many turns wait for it, and whether one runs.
     fn mac_shown(&self, live: &[Run], members: &[Member]) -> serde_json::Value {
-        let on_the_mac = |run: &Run| {
-            members
+        // A turn on the Mac is one that was started there; one that waits for it says so.
+        let on_the_mac = |run: &Run| match run.brain {
+            Some(brain) => brain == Brain::Mac,
+            None => members
                 .iter()
-                .any(|m| m.id == run.member && m.brain == Brain::Mac)
+                .any(|m| m.id == run.member && m.brain == Brain::Mac),
         };
         let running = live
             .iter()
@@ -4696,7 +4924,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .count();
         let waiting = live
             .iter()
-            .filter(|r| r.status == RunStatus::Queued && on_the_mac(r))
+            .filter(|r| r.status == RunStatus::Queued && mac::is_waiting_words(&r.end_reason))
             .count();
         let why = mac::wait_for(self.mac_facts().as_ref(), self.clock.now(), false);
         json!({ "ready": why.is_none(), "why": why.unwrap_or_else(|| "ready".to_owned()),

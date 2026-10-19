@@ -96,3 +96,6 @@ mod history_tests;
 
 #[cfg(test)]
 mod asking_tests;
+
+#[cfg(test)]
+mod turn_kinds_tests;

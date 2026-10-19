@@ -203,6 +203,10 @@ pub struct Run {
     /// Whether it exists because the owner asked (ADR 0113, amended): what it spends is
     /// counted against the pool's day only, never the member's share.
     pub asked_by_owner: bool,
+    /// The brain its latest attempt runs or ran on (ADR 0131), decided when it started; `None`
+    /// before it has, and for turns before turns had a kind, which ran on their member's
+    /// brain.
+    pub brain: Option<crate::domain::Brain>,
 }
 
 /// One item on the owner's desk.
@@ -322,6 +326,11 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
+    /// Sets what a member does its work with (ADR 0131): the Mac or the house's own model.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_work_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
     /// What runs a member's turns, as the owner set it (ADR 0117): the worker for a member
     /// never set, or one the store does not know.
     ///

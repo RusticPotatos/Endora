@@ -4,7 +4,6 @@
 use std::sync::atomic::Ordering;
 
 use cucumber::{given, then, when};
-use endora_team::application::engine::Settings;
 use endora_team::application::{Engine, TeamStore};
 use endora_team::domain::{MemberId, RunStatus};
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
@@ -136,12 +135,12 @@ fn the_teams_file() -> String {
 }
 
 /// An HQ over the file at `path`, as the service starts one, with the clock the steps move.
-fn hq_over(w: &Office, path: &str) -> super::Hq {
+pub(super) fn hq_over(w: &Office, path: &str) -> super::Hq {
     Engine::new(
         SqliteTeamStore::open(path).expect("the team's file opens"),
         SimulatedRunner::new(4),
         w.clock.clone(),
-        Settings::default(),
+        w.settings(),
     )
 }
 
@@ -160,7 +159,7 @@ fn hq_restarts(w: &mut Office) {
         SqliteTeamStore::in_memory().expect("an in-memory store"),
         SimulatedRunner::new(4),
         w.clock.clone(),
-        Settings::default(),
+        w.settings(),
     );
     w.hq = hq_over(w, &path);
 }

@@ -57,6 +57,7 @@ fn run(
         cache_write_tokens: 0,
         output_tokens: 0,
         asked_by_owner: false,
+        brain: None,
     }
 }
 

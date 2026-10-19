@@ -666,6 +666,7 @@ mod tests {
             look: 0,
             paused: false,
             brain: Brain::Local,
+            work_brain: Brain::Local,
             reports_to: None,
             furloughed_at: None,
             recalled_at: None,

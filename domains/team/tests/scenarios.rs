@@ -46,6 +46,10 @@ mod history;
 #[path = "scenarios/mac.rs"]
 mod mac;
 
+/// Two brains per member and the kinds of turn (ADR 0131), in their own file.
+#[path = "scenarios/brains.rs"]
+mod brains;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 
@@ -94,6 +98,21 @@ struct Office {
     wakes_at_ask: usize,
     /// The file HQ keeps its team in, when a scenario is about HQ restarting (ADR 0130).
     file: Option<String>,
+    /// The pool for a month, when a scenario is about money (ADR 0131).
+    pool_per_month: Micros,
+    /// Whether turns have a kind that decides the brain they run on (ADR 0131).
+    turn_kinds: bool,
+}
+
+impl Office {
+    /// The settings this scenario's HQ starts with.
+    fn settings(&self) -> Settings {
+        Settings {
+            pool_per_month: self.pool_per_month,
+            turn_kinds: self.turn_kinds,
+            ..Settings::default()
+        }
+    }
 }
 
 impl Default for Office {
@@ -120,6 +139,8 @@ impl Default for Office {
             answer: None,
             wakes_at_ask: 0,
             file: None,
+            pool_per_month: endora_team::domain::money::POOL_PER_MONTH,
+            turn_kinds: false,
         }
     }
 }
