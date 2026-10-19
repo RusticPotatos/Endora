@@ -6,6 +6,7 @@
 
 use serde_json::{Value, json};
 
+use super::guards::guard_card;
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::application::scorecard::Window;
@@ -293,12 +294,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 })
                 .max_by_key(|(_, n)| *n)
                 .map(|(task, _)| task);
+            // What it rests on is the week's talk, which contains the day's: a finding the owner
+            // judged is raised again once a dozen more turns of it have been had (ADR 0132).
+            let mark = i64::try_from(windows[1].0.coordination).unwrap_or(i64::MAX);
             let Some(id) = self.find_on_the_desk(
                 Guard::Ceremony,
                 &key,
                 busiest,
                 Some(project.id.0),
                 &evidence,
+                mark,
             )?
             else {
                 continue;
@@ -325,7 +330,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// A finding as a notice on the owner's desk: the rule and what it fired on.
+    /// A finding as a notice on the owner's desk (in the digest, ADR 0132): the rule and what it
+    /// fired on. Returned as its id when it is news, a finding that opened or opened again; a
+    /// finding seen again is refreshed, its notice with it, and a judged one is left alone.
     pub(super) fn find_on_the_desk(
         &self,
         guard: Guard,
@@ -333,20 +340,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         task: Option<TaskId>,
         project: Option<i64>,
         evidence: &str,
+        mark: i64,
     ) -> Done<Option<i64>> {
-        let Some(id) = self.find(guard, key, task, project, evidence)? else {
+        let found = self.find(guard, key, task, project, evidence, mark)?;
+        if !found.how.is_news() {
             return Ok(None);
-        };
+        }
+        let id = found.id;
         let desk = self.store.add_desk(
             "guard",
             task,
             None,
             None,
-            &format!(
-                "{} (finding {id}): {evidence}\nThe rule: {}. Say whether it was real.",
-                guard.plainly(),
-                guard.rule()
-            ),
+            &guard_card(guard, id, evidence),
             self.clock.now(),
         )?;
         self.store.set_finding_desk(id, desk.0)?;
@@ -398,12 +404,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "sent back {} times with no new evidence between",
             returns.len()
         );
+        // It rests on how many times the work has been sent back (ADR 0132).
         self.find(
             Guard::Carousel,
             &format!("carousel:{}", task.0),
             Some(task),
             current.project.map(|p| p.0),
             &format!("#{} {}: {why}", task.0, current.title),
+            i64::try_from(returns.len()).unwrap_or(i64::MAX),
         )?;
         let Some(lead) = self.area_lead(&current)? else {
             return Ok(());
@@ -489,6 +497,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ),
         )?;
         let project = self.task(task)?.project.map(|p| p.0);
+        // One finding for each task put with a card; it rests on nothing that grows.
         self.find(
             Guard::SameAsk,
             &format!("same_ask:{}:{}", open.id.0, task.0),
@@ -498,6 +507,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "#{}'s {kind} is the same ask as #{main}'s, on the desk as item {}",
                 task.0, open.id.0
             ),
+            0,
         )?;
         Ok(open.id)
     }
@@ -571,6 +581,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let who = mine.first().map(|r| name(r.member)).unwrap_or_default();
             let mut tools: Vec<String> = mine.iter().map(|r| r.tool.clone()).collect();
             tools.dedup();
+            // A refusal rests on the newest refused act it counts: a later one is new (ADR 0132).
+            let newest = mine.iter().map(|r| r.id).max().unwrap_or(0);
             self.find_on_the_desk(
                 Guard::FencePush,
                 &format!("fence:run:{}", run.0),
@@ -581,20 +593,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     mine.len(),
                     tools.join(", ")
                 ),
+                newest,
             )?;
         }
         let mut who: Vec<MemberId> = Vec::new();
+        let mut newest = 0;
         for r in self.store.runs()? {
             if r.started_at.is_none_or(|s| now - s >= t.fence_window_ms) {
                 continue;
             }
             for receipt in self.store.call_receipts_of(r.id)? {
-                if receipt.act
-                    && !receipt.ok
-                    && receipt.tool == tool
-                    && !who.contains(&receipt.member)
-                {
-                    who.push(receipt.member);
+                if receipt.act && !receipt.ok && receipt.tool == tool {
+                    newest = newest.max(receipt.id);
+                    if !who.contains(&receipt.member) {
+                        who.push(receipt.member);
+                    }
                 }
             }
         }
@@ -609,6 +622,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "{tool} was refused for {} within a day: the team keeps trying it",
                     named.join(", ")
                 ),
+                newest,
             )?;
         }
         Ok(())
@@ -625,14 +639,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "{name} on #{} {}: {} turns in a row showed nothing",
             task.0, current.title, THRESHOLDS.redundant_wakes
         );
+        // It rests on how many turns the member has had on the task: a new run of nothing after
+        // a judged one has had turns since (ADR 0132).
+        let had = self
+            .store
+            .runs()?
+            .iter()
+            .filter(|r| r.member == member && r.task == Some(task))
+            .count();
         let found = self.find(
             Guard::RedundantWake,
             &format!("redundant:{}:{}", task.0, member.0),
             Some(task),
             current.project.map(|p| p.0),
             &evidence,
+            i64::try_from(had).unwrap_or(i64::MAX),
         )?;
-        if found.is_none() {
+        if !found.how.is_news() {
             return Ok(());
         }
         self.post_held_lock(
@@ -733,6 +756,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 json!({ "id": f.id, "guard": f.guard.name(), "plainly": f.guard.plainly(),
                         "task": f.task, "project": f.project, "rule": f.rule,
                         "evidence": f.evidence, "opened_at": f.opened_at,
+                        "seen_at": f.seen_at, "episodes": f.episodes,
                         "cleared_at": f.cleared_at, "verdict": f.verdict.map(Verdict::name),
                         "fix_worked": f.fix_worked, "judged_by": f.judged_by })
             })

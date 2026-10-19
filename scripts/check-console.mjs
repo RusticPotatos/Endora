@@ -649,11 +649,10 @@ if (failures.length) {
                              check: { id: 7, status: "done", ok: true, summary: "syntax ok, ansible-lint ok, yamllint ok" } }] }],
       runs: [{ id: 3, member: 2, task: 7, status: "running" }],
       recent_runs: [{ id: 2, member: 2, task: 7, status: "succeeded", label: "talk only" }, { id: 1, member: 2, task: 7, status: "succeeded", label: "checked" }],
-      desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
+      desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" },
              { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" },
              { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" },
              { id: 15, kind: "question", task: 7, also: [9], text: "Linus asks: steel or titanium?" },
-             { id: 16, kind: "notice", task: 7, text: "Linus restarted sonarr: it was unhealthy. It is now running." },
              { id: 17, kind: "approval", task: 7, text: "Linus asks to run sonarr_remove_and_search with item: 102.",
                approval: { tool: "sonarr_remove_and_search", member: "Linus", why: "<script>alert(2)</script> it is stuck",
                            args: [["item", "102"], ["note", "<img src=y onerror=alert(3)>"]] } },
@@ -671,16 +670,22 @@ if (failures.length) {
              { id: 26, kind: "recall", task: 9, member: 6, text: "Recall member 8 to report to member 6.\\nZed is on furlough; Kit asks: four branches wait\\nEvidence: task 9" },
              // A member at twice its share (ADR 0113): an allowance for today, or wait.
              { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." },
-             // A guard's finding (ADR 0124): the owner's verdict on it.
-             { id: 28, kind: "guard", task: 7, project: 1, text: "Talk about work (finding 3): <b>Upkeep</b>: 14 coordination turns, 1 product change in 24 h" }],
+             ],
+      // While you were away (ADR 0132): stuck work, a guard's finding (ADR 0124: the owner's
+      // verdict on it) and a notice. None needs a decision, so none is on the desk; each keeps the
+      // choices it has always had. Newest first, as HQ serves them.
+      digest: [{ id: 28, kind: "guard", task: 7, project: 1, at: 30, text: "Talk about work (finding 3): <b>Upkeep</b>: 14 coordination turns, 1 product change in 24 h",
+                 finding: { id: 3, guard: "ceremony", episodes: 2, seen_at: 31 } },
+               { id: 16, kind: "notice", task: 7, at: 20, text: "Linus restarted sonarr: it was unhealthy. It is now running." },
+               { id: 12, kind: "stuck", task: 7, at: 10, text: "Stuck: x", finding: { id: 4, guard: "stuck", episodes: 1, seen_at: 10 } }],
       // The guards (ADR 0124): each one's precision, each project's talk against its work, and
       // the findings, in words a member's work produced, so every word escaped.
       guards: { thresholds: { ceremony_ratio: 4, ceremony_least: 12, carousel_returns: 3, redundant_wakes: 3, fence_refusals_in_a_turn: 3 },
         precision: [{ guard: "ceremony", plainly: "Talk about work", rule: "r", fired: 3, open: 1, real: 1, resolved: 1, false_positive: 1, not_enough: 0, fixed: 1, fix_judged: 2, precision: 66 },
                     { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null }],
         ceremony: [{ project: 1, title: "<u>Upkeep</u>", over: true, windows: [{ window: "24 h", said: "14 coordination turns, 1 product change in 24 h", over: true }] }],
-        findings: [{ id: 3, guard: "ceremony", plainly: "Talk about work", task: 7, project: 1, rule: "at least 12 coordination turns", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
-                   { id: 4, guard: "stuck", plainly: "Stuck work", task: 7, project: null, rule: "parked", evidence: "#7 x", opened_at: 2, cleared_at: 3, verdict: null, fix_worked: null, judged_by: "" }] },
+        findings: [{ id: 3, guard: "ceremony", plainly: "Talk about work", task: 7, project: 1, rule: "at least 12 coordination turns", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, seen_at: 5000, episodes: 3, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
+                   { id: 4, guard: "stuck", plainly: "Stuck work", task: 7, project: null, rule: "parked", evidence: "#7 x", opened_at: 2, seen_at: 2, episodes: 1, cleared_at: 3, verdict: null, fix_worked: null, judged_by: "" }] },
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
@@ -861,6 +866,39 @@ if (failures.length) {
     if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
   }
   if (office.includes("<img src=g") || office.includes("<u>Upkeep</u>")) fail("hq: a guard's finding became markup");
+  // A finding seen again says when, and a finding opened again says how often (ADR 0132); one
+  // seen once, and found once, says neither.
+  if (!/finding 3 · [^)]*open · seen again \d\d:\d\d · found 3 times\)/.test(office)) fail("hq: a finding seen again does not say when and how often");
+  if (/finding 4 · [^)]*(seen again|found \d+ times)/.test(office)) fail("hq: a finding seen once claims to have been seen again");
+  // "While you were away" (ADR 0132): stuck work, a finding and a notice are one card at the top
+  // of the Desk tab, newest first, with a count and the choices each always had; the desk's own
+  // count is what needs the owner's word, and an empty digest shows no card.
+  {
+    const deskTab = office.split('id="hq-panel-desk"')[1].split('role="tabpanel"')[0];
+    const yours = deskTab.split("<h2>Your desk")[1];
+    const digest = deskTab.split("<h2>While you were away")[1].split("<h2>Your desk")[0];
+    for (const said of ['<h2>While you were away <span class="hq-count">3</span></h2>', "Nothing here needs you before the team can go on",
+      "flagged 2 times", "hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry", "hq:decide:12:drop"]) {
+      if (!deskTab.includes(said)) fail(`hq: the digest does not say ${said}`);
+    }
+    if (deskTab.indexOf("While you were away") > deskTab.indexOf("Looking at")) fail("hq: the digest is not at the top of the Desk tab");
+    const order = ["hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
+    if (order.some((at) => at < 0) || order[0] > order[1] || order[1] > order[2]) fail(`hq: the digest is not newest first: ${order}`);
+    if (!yours.startsWith(` <span class="hq-count">15</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
+    for (const act of ["hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry"]) {
+      if (yours.includes(act)) fail(`hq: ${act} is on the desk as well as in the digest`);
+    }
+    if (digest.includes("<b>Upkeep</b>") || !digest.includes("&lt;b&gt;Upkeep&lt;/b&gt;")) fail("hq: a digest item's words became markup");
+    for (const kind of ["goal", "approval", "decision", "push", "out_for_day"]) {
+      if (!yours.includes(`<div class="hq-need ${kind}">`)) fail(`hq: a ${kind} no longer interrupts`);
+    }
+    const none = runInContext(`(() => { const kept = HQ.snap.digest; HQ.snap.digest = [];
+      const html = viewHQ(); HQ.snap.digest = kept; return html; })()`, context);
+    if (none.includes("While you were away")) fail("hq: an empty digest shows a card");
+    const old = runInContext(`(() => { const kept = HQ.snap.digest; delete HQ.snap.digest;
+      const html = viewHQ(); HQ.snap.digest = kept; return html; })()`, context);
+    if (old.includes("While you were away")) fail("hq: an HQ with no digest shows a card");
+  }
   // Retract and sweep (ADR 0124): "Not true" on a note, a section and a story; what else says
   // it is listed to tick and forget, its words text.
   for (const act of ["hq:notebook:2:untrue-4", "hq:world:section:untrue-0", "hq:world:story:untrue-0"]) {

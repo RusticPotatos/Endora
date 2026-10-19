@@ -54,6 +54,10 @@ mod brains;
 #[path = "scenarios/outcomes.rs"]
 mod outcomes;
 
+/// A desk that interrupts only for decisions (ADR 0132), in its own file.
+#[path = "scenarios/desk.rs"]
+mod desk;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

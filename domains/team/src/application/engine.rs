@@ -36,6 +36,7 @@ use crate::domain::{docs, house};
 mod allowance;
 mod areas;
 mod consult;
+mod digest;
 mod discipline;
 mod evidence;
 mod games;
@@ -4010,6 +4011,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .iter()
                 .any(|d| d.kind == "stuck" && d.status == "waiting" && d.task == Some(task.id));
             if on_the_desk {
+                // Still stuck, and in the digest already: its finding is seen again, and not
+                // raised again (ADR 0132).
+                if let Some(found) = self
+                    .diagnosis(task.id)?
+                    .filter(|d| d.stopped == Stopped::Parked)
+                {
+                    self.found_stuck(task, found.why)?;
+                }
                 continue;
             }
             let last = runs
@@ -4743,22 +4752,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .and_then(|id| tasks.iter().find(|t| t.id == id))
                     .is_some_and(|t| !t.status.finished()),
             })).collect::<Vec<_>>(),
-            "desk": self.store.desk()?.iter().filter(|d| d.status == "waiting").map(|d| {
-                let mut item = json!({
-                    "id": d.id.0, "kind": d.kind, "task": d.task.map(|t| t.0),
-                    "goal": d.goal.map(|g| g.0), "project": d.project.map(|p| p.0),
-                    "text": d.text, "at": d.at,
-                    // The same ask from other tasks, put with this card (ADR 0124).
-                    "also": self.store.attached(d.id.0).unwrap_or_default().iter()
-                        .map(|(t, _)| t.0).collect::<Vec<_>>(),
-                });
-                // The CEO's decision for the board, in its three parts (ADR 0111).
-                if let Some(decided) = (d.kind == "decision").then(|| Decision::read(&d.text)).flatten() {
-                    item["decision"] = json!({ "decision": decided.decision,
-                        "recommendation": decided.recommendation, "why": decided.why });
-                }
-                item
-            }).collect::<Vec<_>>(),
+            // What waits on the owner and needs their word (ADR 0132); the rest waits below.
+            "desk": self.desk_shown()?,
+            // "While you were away": stuck work, findings and notices, newest first (ADR 0132).
+            "digest": self.digest_shown()?,
             "house_log": self.store.setting(HOUSE_LOG)?.unwrap_or_default(),
             // The team's world (ADR 0122): its pages by stage, and its stories.
             "world": self.world_shown()?,

@@ -13,11 +13,11 @@ use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::closure::{Closed, Closure, DoneWhy, DropWhy, not_a_closure};
 use crate::domain::guards::{
-    self, Diagnosis, Finding, Guard, Stopped, THRESHOLDS, TaskFacts, Verdict,
+    self, Diagnosis, Finding, Guard, Raised, Stopped, THRESHOLDS, TaskFacts, Verdict,
 };
 use crate::domain::turns;
 use crate::domain::{
-    CheckBackStatus, EventKind, MemberId, RunStatus, Task, TaskId, TaskStatus, WakeReason,
+    CheckBackStatus, EventKind, Label, MemberId, RunStatus, Task, TaskId, TaskStatus, WakeReason,
 };
 
 /// The wakes that are HQ's own recovery, left out of what a nudge "saw": a nudge must not make
@@ -27,6 +27,30 @@ const OWN_WAKES: [WakeReason; 3] = [
     WakeReason::AssignmentRecovery,
     WakeReason::Guard,
 ];
+
+/// What a guard's detection came to (ADR 0132): the finding it concerned, and what was done to
+/// it.
+pub(super) struct Found {
+    /// The finding.
+    pub(super) id: i64,
+    /// What the detection did to it.
+    pub(super) how: Raised,
+}
+
+/// The key of a task's stuck finding: one is kept for the task.
+pub(super) fn stuck_key(task: TaskId) -> String {
+    format!("stuck:{}", task.0)
+}
+
+/// The desk notice a finding puts up: the guard, the finding and what it fired on, the rule, and
+/// what the owner is asked.
+pub(super) fn guard_card(guard: Guard, finding: i64, evidence: &str) -> String {
+    format!(
+        "{} (finding {finding}): {evidence}\nThe rule: {}. Say whether it was real.",
+        guard.plainly(),
+        guard.rule()
+    )
+}
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the stopped diagnosis ----------------------------------------------------------------
@@ -202,8 +226,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- findings -----------------------------------------------------------------------------
 
-    /// A guard's finding, opened once a key (ADR 0124): kept, in the feed, and returned as its
-    /// id; `None` while one with its key is open.
+    /// A guard's detection, weighed against the finding for its key (ADR 0132): one finding for a
+    /// guard and what it is about, however often it sees it. `mark` is the evidence the detection
+    /// rests on, a count that only grows with new evidence (see [`Guard::step`]). The finding is
+    /// opened, opened again, renewed, refreshed or left alone as [`guards::reconcile`] says, and
+    /// what it did, with the finding's id, is returned: only news (`Open`, `Renew`, `Reopen`) is
+    /// for the callers to tell anyone of.
     pub(super) fn find(
         &self,
         guard: Guard,
@@ -211,7 +239,45 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         task: Option<TaskId>,
         project: Option<i64>,
         evidence: &str,
-    ) -> Done<Option<i64>> {
+        mark: i64,
+    ) -> Done<Found> {
+        let latest = self.store.latest_finding(key)?;
+        let how = guards::reconcile(latest.as_ref(), mark, guard.step());
+        let Some(latest) = latest else {
+            let id = self.open(guard, key, task, project, evidence, mark)?;
+            return Ok(Found { id, how });
+        };
+        match how {
+            Raised::Hold => {}
+            Raised::Refresh => self.see_again(&latest, evidence, mark)?,
+            Raised::Reopen => {
+                self.store
+                    .reopen_finding(latest.id, evidence, self.clock.now(), mark)?;
+                self.told_found(guard, latest.id, task, project, evidence, "reopened")?;
+            }
+            Raised::Renew | Raised::Open => {
+                // A judged finding that is still open closes before its successor opens.
+                if latest.cleared_at.is_none() {
+                    self.clear(&latest)?;
+                }
+                let id = self.open(guard, key, task, project, evidence, mark)?;
+                return Ok(Found { id, how });
+            }
+        }
+        Ok(Found { id: latest.id, how })
+    }
+
+    /// A new finding for a key: kept, and told in the feed.
+    fn open(
+        &self,
+        guard: Guard,
+        key: &str,
+        task: Option<TaskId>,
+        project: Option<i64>,
+        evidence: &str,
+        mark: i64,
+    ) -> Done<i64> {
+        let now = self.clock.now();
         let finding = Finding {
             id: 0,
             guard,
@@ -220,22 +286,64 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             project,
             rule: guard.rule(),
             evidence: evidence.to_owned(),
-            opened_at: self.clock.now(),
+            opened_at: now,
             cleared_at: None,
             verdict: None,
             fix_worked: None,
             judged_by: String::new(),
             desk: None,
+            seen_at: now,
+            episodes: 1,
+            mark,
         };
-        let Some(id) = self.store.open_finding(&finding)? else {
-            return Ok(None);
-        };
+        let id = self
+            .store
+            .open_finding(&finding)?
+            .ok_or(EngineError::Unknown("a finding to open"))?;
+        self.told_found(guard, id, task, project, evidence, "opened")?;
+        Ok(id)
+    }
+
+    /// Says in the feed that a finding opened (or opened again).
+    fn told_found(
+        &self,
+        guard: Guard,
+        id: i64,
+        task: Option<TaskId>,
+        project: Option<i64>,
+        evidence: &str,
+        how: &str,
+    ) -> Done<()> {
         self.emit(
             EventKind::GuardFound,
             json!({ "finding": id, "guard": guard.name(), "task": task.map(|t| t.0),
-                    "project": project, "evidence": evidence }),
-        )?;
-        Ok(Some(id))
+                    "project": project, "evidence": evidence, "how": how }),
+        )
+    }
+
+    /// An open finding seen again (ADR 0132): what it fired on and when are refreshed, no oftener
+    /// than HQ looks unless the evidence changed, and the desk notice it put up, if it still
+    /// waits, says the new words. A finding nobody has judged rests on the most it has seen; one
+    /// that was judged keeps resting on what was judged, so that evidence that has grown since is
+    /// told from evidence that has not.
+    fn see_again(&self, open: &Finding, evidence: &str, mark: i64) -> Done<()> {
+        let now = self.clock.now();
+        let changed = open.evidence != evidence;
+        if !changed && now - open.seen_at < THRESHOLDS.look_every_ms {
+            return Ok(());
+        }
+        let mark = open.verdict.is_none().then_some(mark);
+        self.store.refresh_finding(open.id, evidence, now, mark)?;
+        // A stuck finding's card is the stuck work's own, in its own words.
+        if changed && open.guard != Guard::Stuck {
+            if let Some(desk) = open.desk {
+                self.store.set_desk_text(
+                    crate::domain::DeskId(desk),
+                    &guard_card(open.guard, open.id, evidence),
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// A finding whose condition no longer holds clears, and so does its desk notice if the
@@ -246,26 +354,42 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::GuardCleared,
             json!({ "finding": finding.id, "guard": finding.guard.name(), "task": finding.task }),
         )?;
+        self.settle_card_of(finding, "cleared")
+    }
+
+    /// Puts away the desk notice a finding put up, if it still waits, as `decision`: cleared by
+    /// HQ when the condition went, or the owner's own verdict (ADR 0132).
+    fn settle_card_of(&self, finding: &Finding, decision: &str) -> Done<()> {
         let Some(desk) = finding.desk else {
             return Ok(());
         };
-        let waiting = self
+        let Some(card) = self
             .store
             .desk()?
-            .iter()
-            .any(|d| d.id.0 == desk && d.status == "waiting");
-        if waiting {
-            self.close_desk_item(crate::domain::DeskId(desk), "guard")?;
-        }
-        Ok(())
+            .into_iter()
+            .find(|d| d.id.0 == desk && d.status == "waiting")
+        else {
+            return Ok(());
+        };
+        self.settle_desk_item(card.id, &card.kind, decision)
+    }
+
+    /// Puts a desk item away, saying how in the feed.
+    fn settle_desk_item(
+        &self,
+        item: crate::domain::DeskId,
+        kind: &str,
+        decision: &str,
+    ) -> Done<()> {
+        self.store.set_desk_status(item, decision)?;
+        self.emit(
+            EventKind::DeskDecided,
+            json!({ "item": item.0, "kind": kind, "decision": decision }),
+        )
     }
 
     fn close_desk_item(&self, item: crate::domain::DeskId, kind: &str) -> Done<()> {
-        self.store.set_desk_status(item, "cleared")?;
-        self.emit(
-            EventKind::DeskDecided,
-            json!({ "item": item.0, "kind": kind, "decision": "cleared" }),
-        )
+        self.settle_desk_item(item, kind, "cleared")
     }
 
     /// The owner or a lead gives a finding its verdict (ADR 0124), and says whether its fix
@@ -291,13 +415,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
-    /// The owner gives a finding its verdict, from the screen.
+    /// The owner gives a finding its verdict, from the screen. The owner has acted on it, so the
+    /// desk notice it put up, if it still waits, is put away as the verdict (ADR 0132); a lead's
+    /// verdict is not the owner's and leaves the notice for them.
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a finding that does not exist.
     pub fn judge_finding(&self, id: i64, verdict: Verdict, fix_worked: Option<bool>) -> Done<()> {
         let _held = self.held();
-        self.judge_held_lock(id, verdict, fix_worked, "owner")
+        self.judge_held_lock(id, verdict, fix_worked, "owner")?;
+        let Some(finding) = self.store.findings()?.into_iter().find(|f| f.id == id) else {
+            return Ok(());
+        };
+        self.settle_card_of(&finding, verdict.name())
     }
 
     // ---- the tick's look ----------------------------------------------------------------------
@@ -465,15 +595,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.closed(task, closure, successor, &by)
     }
 
-    /// Stuck work, as a finding (ADR 0124): opened when the tick marks it stuck.
-    pub(super) fn found_stuck(&self, task: &Task, why: &str) -> Done<()> {
+    /// Stuck work, as a finding (ADR 0124): opened when the tick marks it stuck, refreshed each
+    /// time it is seen so, and raised again only when it has moved since (ADR 0132). What it
+    /// rests on is how many of the task's turns advanced it: work that stops again with no turn
+    /// having moved it is the same stuck work.
+    pub(super) fn found_stuck(&self, task: &Task, why: &str) -> Done<Found> {
+        let advanced = self
+            .store
+            .runs()?
+            .iter()
+            .filter(|r| r.task == Some(task.id) && r.label == Some(Label::Advanced))
+            .count();
         self.find(
             Guard::Stuck,
-            &format!("stuck:{}", task.id.0),
+            &stuck_key(task.id),
             Some(task.id),
             task.project.map(|p| p.0),
             &format!("#{} {}: {why}", task.id.0, task.title),
-        )?;
-        Ok(())
+            i64::try_from(advanced).unwrap_or(i64::MAX),
+        )
     }
 }

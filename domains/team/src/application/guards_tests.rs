@@ -86,7 +86,7 @@ fn climbed(hq: &Hq<'_>) -> usize {
 
 /// Linus takes his task, marks it blocked on what he named, and ends his turn; with a
 /// check-back if `coming_back`.
-fn blocked(hq: &Hq<'_>, dev: MemberId, task: TaskId, coming_back: bool) {
+pub(super) fn blocked(hq: &Hq<'_>, dev: MemberId, task: TaskId, coming_back: bool) {
     let t = turn(hq, dev);
     hq.claim_in(t.run, task).unwrap();
     hq.set_status_in(
@@ -313,7 +313,7 @@ fn work_waiting_on_a_dropped_task_stays_blocked_and_its_member_is_told_why() {
 // ---- process health -------------------------------------------------------------------------
 
 /// A lead on its own project's task, with no one above it (so no hand-up), and the task.
-fn project_work(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
+pub(super) fn project_work(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
     let hq = Engine::new(
         SqliteTeamStore::in_memory().unwrap(),
         SimulatedRunner::new(4),
@@ -351,7 +351,7 @@ fn project_work(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
 
 /// One turn of `member`'s on `task`, woken by a mention: it talks, or (with `act`) it also
 /// restarts something and the node records the act.
-fn one_turn(hq: &Hq<'_>, member: MemberId, task: TaskId, act: bool) {
+pub(super) fn one_turn(hq: &Hq<'_>, member: MemberId, task: TaskId, act: bool) {
     hq.wake(member, Some(task), WakeReason::Mentioned).unwrap();
     let t = turn(hq, member);
     if act {
@@ -378,7 +378,7 @@ fn one_turn(hq: &Hq<'_>, member: MemberId, task: TaskId, act: bool) {
     hq.tick().unwrap();
 }
 
-fn guards(hq: &Hq<'_>) -> serde_json::Value {
+pub(super) fn guards(hq: &Hq<'_>) -> serde_json::Value {
     hq.snapshot().unwrap()["guards"].clone()
 }
 

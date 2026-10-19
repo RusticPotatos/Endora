@@ -435,7 +435,9 @@
   .hq-need { background: var(--hq-panel-2); border-left: 3px solid var(--hq-violet); border-radius: 0 4px 4px 0; padding: 8px 10px; }
   .hq-need.stuck { border-left-color: var(--hq-red); }
   .hq-need.ready_to_merge, .hq-need.ready_to_read { border-left-color: var(--hq-green); }
-  .hq-need.notice { border-left-color: var(--hq-muted); }
+  .hq-need.notice, .hq-need.guard { border-left-color: var(--hq-muted); }
+  /* "While you were away": what does not need a word, quieter than the desk below it. */
+  .hq-digest { border-style: dashed; }
   .hq-need.project_cap { border-left-color: var(--hq-amber); }
   .hq-need.project_budget { border-left-color: var(--hq-red); }
   .hq-need.hire { border-left-color: var(--hq-amber); }
