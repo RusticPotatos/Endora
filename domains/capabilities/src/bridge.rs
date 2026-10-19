@@ -11,11 +11,14 @@
 //! 2. **The data tier**: a Confidential tool's result is given only to a turn on a local
 //!    model, but for the few the owner allowed a lead thinking with Claude ([`may_see`]).
 //! 3. **The member's role**: reads for every role, acts only for the roles that act
-//!    ([`PROFILES`]).
+//!    ([`PROFILES`]). And **where the turn thinks** ([`Thinks`], ADR 0131 amended): a turn on
+//!    the house's own small model on the NAS is offered none that can end on the owner's desk,
+//!    and the reads and the acts the owner lets run on their own it keeps ([`offered`]).
 //! 4. **The owner's stance**: an act that is on runs at once, within [`ACTS_AN_HOUR`] a tool
 //!    an hour across the team, and is told to the owner; an act that asks waits on the owner's
-//!    desk until they approve exactly what it would run. A turn that has read a stranger's
-//!    words (a third-party result) asks before any act it gives arguments to.
+//!    desk until they approve exactly what it would run, and says which of its task's criteria
+//!    it serves (ADR 0124 amended; HQ reads it). A turn that has read a stranger's words (a
+//!    third-party result) asks before any act it gives arguments to.
 //! 5. **Approvals** run exactly what was stored, only while the stance is not off, and expire
 //!    unrun after [`APPROVALS_LAST_MS`].
 //!
@@ -197,6 +200,15 @@ impl Bridged {
         json!({ "name": self.name, "description": self.description,
                 "inputSchema": self.input, "kind": self.kind.name() })
     }
+
+    /// Whether a call of it can end on the owner's desk as an approval: it is an act that asks,
+    /// or one that runs on its own but takes arguments, and so asks once the turn has read a
+    /// stranger's words (the policy's own answer, [`way`]). A read never does, whatever its stance
+    /// starts as.
+    #[must_use]
+    pub fn can_end_on_the_owners_desk(&self) -> bool {
+        run_as(self, true) == Way::AskTheOwner
+    }
 }
 
 /// Why a candidate is not offered, or `None` when it may be.
@@ -254,11 +266,18 @@ pub fn bridge(c: &Candidate) -> Result<Bridged, &'static str> {
     if c.kind == Kind::Act {
         input["properties"]["why"] = json!({ "type": "string",
             "description": "Why, in a sentence the owner reads." });
+        // Every act may end on the owner's desk (a turn that has read a stranger's words asks
+        // before one), and nothing reaches the desk that serves none of its task's criteria.
+        input["properties"]["serves"] = json!({ "type": "string",
+            "description": "Which of your task's criteria this serves: its number (1, 2…) or its words. Needed whenever the call asks the owner." });
         let mut required: Vec<Value> = input["required"].as_array().cloned().unwrap_or_default();
         required.push(json!("why"));
+        if c.stance == Stance::Ask {
+            required.push(json!("serves"));
+        }
         input["required"] = Value::Array(required);
         description.push_str(if c.stance == Stance::Ask {
-            " An action that asks the owner first: calling it puts exactly this on their desk and ends your turn; you are woken when they decide. Say why."
+            " An action that asks the owner first: calling it puts exactly this on their desk and ends your turn; you are woken when they decide. Say why, and which of your task's criteria it serves (serves): a request that serves none is refused and never reaches the desk."
         } else {
             " An action: it runs at once, a few times an hour at most across the team, and the owner is told, with your reason. Say why."
         });
@@ -326,13 +345,98 @@ pub fn way(tool: &Bridged, role: &str, marked: bool) -> Result<Way, String> {
             if role.is_empty() { "member" } else { role }
         ));
     }
+    Ok(run_as(tool, marked))
+}
+
+/// How a call goes once the stance is not off and the role may make it: a read reads, an act that
+/// asks waits on the owner's desk, and so does an act given arguments in a turn that has read a
+/// stranger's words (`marked`); any other act runs.
+fn run_as(tool: &Bridged, marked: bool) -> Way {
     if tool.kind == Kind::Read {
-        return Ok(Way::Read);
+        return Way::Read;
     }
     if tool.stance == Stance::Ask || (marked && tool.takes_arguments) {
-        return Ok(Way::AskTheOwner);
+        return Way::AskTheOwner;
     }
-    Ok(Way::Act)
+    Way::Act
+}
+
+/// What HQ names the owner's Mac by when it tells the node whose turn a token is (`Brain::Mac`,
+/// ADR 0130).
+pub const MAC_BRAIN: &str = "mac";
+
+/// Where a turn thinks, as far as the bridge cares (ADR 0131, amended). The bridge offers
+/// outside tools, and a model has to choose among them well. The house's own small model on the
+/// NAS does not: live, a developer on it asked the owner to approve a web map search, with
+/// coordinates it had made up, "to find the NAS backup location", and the request reached the
+/// owner's desk. So it is kept from what can end there (an act that asks the owner, which is every
+/// tool of a server the owner has not reviewed, or that asks once a stranger's words are read),
+/// and given what the owner trusts to run without asking: the reads (the download queues the Ops
+/// lead checks the lab with among them) and an act that runs on its own and takes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Thinks {
+    /// The node's own model on the NAS.
+    OnTheNas,
+    /// The owner's Mac: a stronger model in the house.
+    OnTheMac,
+    /// A Claude, through the node's relay.
+    OnClaude,
+}
+
+impl Thinks {
+    /// From what HQ says of a turn when the node asks whose it is: whether it is on a cloud
+    /// model (`cloud`) and its brain's name (`brain`). Neither a cloud model nor the Mac is the
+    /// NAS's, a turn HQ says nothing of included: what is not known to be a stronger model is
+    /// not given the bridge.
+    #[must_use]
+    pub fn of(on_a_cloud_model: bool, brain: &str) -> Self {
+        if on_a_cloud_model {
+            return Self::OnClaude;
+        }
+        if brain == MAC_BRAIN {
+            return Self::OnTheMac;
+        }
+        Self::OnTheNas
+    }
+
+    /// Why `tool` is kept from a turn thinking so, as the member reads it, or `None` when it is
+    /// offered as its role allows. Only the NAS's model is kept from anything, and only from a
+    /// tool that can end on the owner's desk ([`Bridged::can_end_on_the_owners_desk`]).
+    #[must_use]
+    pub fn keeps_from(self, tool: &Bridged) -> Option<&'static str> {
+        match self {
+            Self::OnTheNas if tool.can_end_on_the_owners_desk() => Some(
+                "a turn on the house's own model on the NAS is given only the tools that cannot \
+                 end on the owner's desk",
+            ),
+            Self::OnTheNas | Self::OnTheMac | Self::OnClaude => None,
+        }
+    }
+}
+
+/// Who asks for the bridge's tools: a turn's role, and where it thinks.
+#[derive(Debug, Clone, Copy)]
+pub struct Asker<'a> {
+    /// The member's role, as HQ names it.
+    pub role: &'a str,
+    /// Where the turn thinks.
+    pub thinks: Thinks,
+}
+
+/// The tools of `tools` a turn is offered (ADR 0108, 0131): what its role may use and what its
+/// model may see, less, when it thinks on the NAS's own model, whatever can end on the owner's
+/// desk ([`Thinks::keeps_from`]).
+#[must_use]
+pub fn offered(tools: Vec<Bridged>, asker: Asker<'_>) -> Vec<Bridged> {
+    let cloud = asker.thinks == Thinks::OnClaude;
+    tools
+        .into_iter()
+        .filter(|b| {
+            asker.thinks.keeps_from(b).is_none()
+                && may(asker.role, b.kind)
+                && may_see(b.tier, &b.id, asker.role, cloud)
+        })
+        .collect()
 }
 
 /// The Confidential results a lead's turn on a cloud model may be given, by the owner's
@@ -356,14 +460,20 @@ pub fn may_see(tier: Tier, id: &str, role: &str, on_a_cloud_model: bool) -> bool
     }
 }
 
-/// A call's arguments in plain words, one `name: value` a line, in the order given; `why`
-/// is left out (it is said apart). Text stays text: the screen escapes it.
+/// What the bridge adds to every act's arguments, which are the bridge's and not the tool's: the
+/// member's reason, and which of its task's criteria the call serves. Neither is passed to the
+/// tool, kept with what an approval will run, or said among its arguments.
+pub const THE_BRIDGES_OWN: [&str; 2] = ["why", "serves"];
+
+/// A call's arguments in plain words, one `name: value` a line, in the order given; what the
+/// bridge added ([`THE_BRIDGES_OWN`]) is left out (it is said apart). Text stays text: the
+/// screen escapes it.
 #[must_use]
 pub fn plain_words(args: &Value) -> Vec<(String, String)> {
     args.as_object()
         .into_iter()
         .flatten()
-        .filter(|(k, _)| k.as_str() != "why")
+        .filter(|(k, _)| !THE_BRIDGES_OWN.contains(&k.as_str()))
         .map(|(k, v)| {
             let said = match v {
                 Value::String(s) => s.clone(),
@@ -749,7 +859,11 @@ mod tests {
         let act = bridge(&act).unwrap();
         assert_eq!(act.name, "wiki__add_page");
         assert_eq!(act.tier, Tier::Confidential);
-        assert_eq!(act.input["required"], json!(["name", "why"]));
+        assert_eq!(
+            act.input["required"],
+            json!(["name", "why", "serves"]),
+            "one that asks the owner says what it serves as well as why"
+        );
         assert!(act.takes_arguments);
         assert!(act.description.contains("asks the owner first"));
         assert_eq!(tool_name("a server.do it!"), "a_server__do_it_");
@@ -845,14 +959,186 @@ mod tests {
     }
 
     #[test]
-    fn arguments_are_said_plainly_without_the_reason() {
+    fn arguments_are_said_plainly_without_the_reason_or_the_criterion_served() {
         assert_eq!(
-            plain_words(&json!({ "item": 102, "why": "stuck", "name": "<b>x</b>" })),
+            plain_words(&json!({ "item": 102, "why": "stuck", "serves": "1", "name": "<b>x</b>" })),
             [
                 ("item".to_owned(), "102".to_owned()),
                 ("name".to_owned(), "<b>x</b>".to_owned())
             ]
         );
+    }
+
+    /// Live: a developer on the house's model on the NAS asked the owner to approve a web map
+    /// search with coordinates it had invented, "to find the NAS backup location", and the request
+    /// reached the owner's desk. A trusted read would not have: so what is kept from a turn on the
+    /// NAS's model is what can end on the owner's desk, and the reads the owner trusts stay, the
+    /// download queues the Ops lead checks the lab with among them.
+    #[test]
+    fn a_turn_on_the_nas_model_keeps_its_trusted_reads_and_is_kept_from_what_can_end_on_the_desk() {
+        let with_arguments = |id: &str, kind, stance| Candidate {
+            input_schema: Some(json!({ "type": "object",
+                "properties": { "query": { "type": "string" } } })),
+            ..candidate(id, kind, stance)
+        };
+        let tools: Vec<Bridged> = [
+            // Trusted reads: the owner's defaults, and a server's reader the owner named (a
+            // server's tools start out asking, but a read never reaches the desk).
+            candidate("weather", Kind::Read, Stance::Auto),
+            candidate("sonarr_queue", Kind::Read, Stance::Auto),
+            candidate("radarr_queue", Kind::Read, Stance::Auto),
+            candidate("home-assistant.GetLiveContext", Kind::Read, Stance::Ask),
+            // An act that runs on its own and takes nothing: no stranger can steer it.
+            candidate("sonarr_retry_import", Kind::Act, Stance::Auto),
+            // What asks the owner: a server's tool the owner has said nothing about (a web map
+            // search, a web search), and an act the owner left asking.
+            with_arguments("brave-search.brave_place_search", Kind::Act, Stance::Ask),
+            with_arguments("brave-search.brave_web_search", Kind::Act, Stance::Ask),
+            with_arguments("sonarr_remove_and_search", Kind::Act, Stance::Ask),
+            // The owner let this one run on its own, but it takes arguments, so it asks once a
+            // turn has read a stranger's words (0108).
+            with_arguments("wiki.update_page", Kind::Act, Stance::Auto),
+        ]
+        .iter()
+        .map(|c| bridge(c).unwrap())
+        .collect();
+        let ids = |role, thinks| -> Vec<String> {
+            offered(tools.clone(), Asker { role, thinks })
+                .into_iter()
+                .map(|b| b.id)
+                .collect()
+        };
+        let trusted_reads = [
+            "weather",
+            "sonarr_queue",
+            "radarr_queue",
+            "home-assistant.GetLiveContext",
+        ];
+        // The NAS's model: the trusted reads, whoever reads, and for a role that acts the act
+        // that runs on its own with nothing to steer it. Nothing that can end on the desk.
+        for role in ["ceo", "reviewer", "researcher"] {
+            assert_eq!(ids(role, Thinks::OnTheNas), trusted_reads, "{role}");
+        }
+        for role in ["lead", "developer"] {
+            assert_eq!(
+                ids(role, Thinks::OnTheNas),
+                [trusted_reads.as_slice(), &["sonarr_retry_import"]].concat(),
+                "{role}"
+            );
+        }
+        // The Mac is a stronger model in the house: a developer is offered what its role allows,
+        // what asks included, and a reviewer only what reads. Nothing changed for it.
+        assert_eq!(ids("developer", Thinks::OnTheMac).len(), tools.len());
+        assert_eq!(ids("reviewer", Thinks::OnTheMac), trusted_reads);
+        // On Claude the tier keeps what is Confidential at home, as it always did.
+        assert_eq!(ids("developer", Thinks::OnClaude), ["weather"]);
+        assert_eq!(
+            ids("lead", Thinks::OnClaude),
+            ["weather", "sonarr_queue", "radarr_queue"]
+        );
+    }
+
+    /// What can end on the owner's desk is what asks, and what asks once a turn has read a
+    /// stranger's words; a read never does. It is the answer [`way`] gives, asked of the tool.
+    #[test]
+    fn a_tool_can_end_on_the_owners_desk_when_it_asks_or_asks_after_a_strangers_words() {
+        let tool = |kind, stance, takes_arguments: bool| Bridged {
+            takes_arguments,
+            ..bridge(&candidate("sonarr_retry_import", kind, stance)).unwrap()
+        };
+        for stance in [Stance::Auto, Stance::Ask] {
+            assert!(
+                !tool(Kind::Read, stance, true).can_end_on_the_owners_desk(),
+                "a read never reaches the desk, whatever its stance starts as"
+            );
+        }
+        assert!(tool(Kind::Act, Stance::Ask, false).can_end_on_the_owners_desk());
+        assert!(tool(Kind::Act, Stance::Ask, true).can_end_on_the_owners_desk());
+        assert!(
+            !tool(Kind::Act, Stance::Auto, false).can_end_on_the_owners_desk(),
+            "given nothing, a stranger cannot steer it"
+        );
+        assert!(
+            tool(Kind::Act, Stance::Auto, true).can_end_on_the_owners_desk(),
+            "given arguments, it asks once a stranger's words were read"
+        );
+        // And it is the policy's own answer: some way a role that acts may call it ends there.
+        for kind in [Kind::Read, Kind::Act] {
+            for stance in [Stance::Auto, Stance::Ask] {
+                for args in [false, true] {
+                    let tool = tool(kind, stance, args);
+                    let asks = [false, true]
+                        .iter()
+                        .any(|marked| way(&tool, "developer", *marked) == Ok(Way::AskTheOwner));
+                    assert_eq!(
+                        tool.can_end_on_the_owners_desk(),
+                        asks,
+                        "{kind:?} {stance:?} arguments: {args}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn where_a_turn_thinks_is_told_from_what_hq_says_of_it_and_unknown_is_the_nas() {
+        assert_eq!(Thinks::of(false, "local"), Thinks::OnTheNas);
+        assert_eq!(Thinks::of(false, "mac"), Thinks::OnTheMac);
+        assert_eq!(Thinks::of(true, "claude-haiku-5-5"), Thinks::OnClaude);
+        assert_eq!(
+            Thinks::of(false, ""),
+            Thinks::OnTheNas,
+            "a turn HQ says nothing of is not known to be a stronger model"
+        );
+        assert_eq!(
+            Thinks::of(false, "a-model-added-tomorrow"),
+            Thinks::OnTheNas
+        );
+        // Only the NAS's model is kept from anything, and only from what can end on the desk.
+        let asks = bridge(&candidate(
+            "brave-search.brave_place_search",
+            Kind::Act,
+            Stance::Ask,
+        ))
+        .unwrap();
+        let read = bridge(&candidate("sonarr_queue", Kind::Read, Stance::Auto)).unwrap();
+        let why = Thinks::OnTheNas.keeps_from(&asks).expect("kept");
+        assert!(why.contains("owner's desk"), "{why}");
+        assert_eq!(
+            Thinks::OnTheNas.keeps_from(&read),
+            None,
+            "a trusted read stays"
+        );
+        for tool in [&asks, &read] {
+            assert_eq!(Thinks::OnTheMac.keeps_from(tool), None);
+            assert_eq!(Thinks::OnClaude.keeps_from(tool), None);
+        }
+    }
+
+    /// An act that may end on the owner's desk says which of its task's criteria it serves; the
+    /// bridge adds the property to every act, and requires it of one that always asks.
+    #[test]
+    fn an_act_says_which_criterion_it_serves_and_one_that_asks_must() {
+        let asks = bridge(&candidate("wiki.add_page", Kind::Act, Stance::Ask)).unwrap();
+        assert_eq!(asks.input["required"], json!(["why", "serves"]));
+        assert_eq!(asks.input["properties"]["serves"]["type"], "string");
+        assert!(
+            asks.input["properties"]["serves"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("criteria"),
+            "{}",
+            asks.input
+        );
+        assert!(asks.description.contains("serves"), "{}", asks.description);
+        // One that runs on its own may be made to ask (after a stranger's words), so it takes
+        // `serves` too, but a call that does not ask does not need it.
+        let on = bridge(&candidate("sonarr_retry_import", Kind::Act, Stance::Auto)).unwrap();
+        assert_eq!(on.input["required"], json!(["why"]));
+        assert_eq!(on.input["properties"]["serves"]["type"], "string");
+        // A read asks nothing of the kind.
+        let read = bridge(&candidate("nas_status", Kind::Read, Stance::Auto)).unwrap();
+        assert!(read.input["properties"]["serves"].is_null());
     }
 
     #[test]

@@ -16,6 +16,13 @@ was never given; there is no switch, so the service runs the rules the tests run
 engineering wing's lead needs the Mac for its work like its developers and testers; an alarm
 acts at once when the money is gone; and a turn that waits is a wake, not a stall.
 
+Amended again 2026-10-19, from a live failure: **what the bridge offers a turn depends on where
+it thinks.** A turn on the house's own model on the NAS is kept from the tools that can end on
+the owner's desk, and keeps the ones the owner trusts to run without asking (*What the bridge
+offers a turn*, below). The first build kept every bridged tool from it; the evidence supports
+less than that, and the amendment is narrowed to it. Scenarios:
+`domains/capabilities/features/tools-that-fit-the-turn.feature`.
+
 ## Context
 
 Until now a member had **one** brain, and every turn it took ran on it: a member on Sonnet did
@@ -147,6 +154,48 @@ the owner's desk, however long it waits. Held work is not hidden: the roster say
 member waits for and the top bar counts the turns waiting for budget. A scenario holds both
 cases (budget; the Mac) and that the CEO is never woken for them.
 
+### What the bridge offers a turn
+
+*Amended 2026-10-19, and narrowed the same day on review.* The bridge
+([0108](0108-the-bridge.md)) offers a turn Endora's capabilities and the tools of the tool
+servers the owner installed, as its role and the data tier allow. It is also the place a model
+has to choose well among many outside tools, and the failure study named a small local model as
+developer the likeliest way to a carousel. Live (the Context above has it), a developer on the
+NAS's model asked the owner to approve `brave-search__brave_place_search` with coordinates it had
+made up, "to find the NAS backup location": a tool server's tool asks by default, so **the
+request reached the owner's desk as an approval**. A trusted read would not have: it runs without
+asking, and the audit log is where it is recorded.
+
+What a turn is offered depends on **where it thinks**, which the node reads from what HQ says of
+the turn when it asks whose a token is (`cloud`, and `brain`, the turn's own, above):
+`capabilities::bridge::Thinks`.
+
+| Where the turn thinks | The bridge |
+|---|---|
+| The house's own model on the NAS (`local`, or a turn HQ says nothing of) | **As its role and the data tier allow, less whatever can end on the owner's desk.** A tool that asks the owner is not listed, and is refused (403) if named, with the way on: say what is needed in the task's thread, so the lead can hand the step to a member on the Mac. Kept, so the Ops lead's lab checks stand: every read (the download queues, the weather, a tool server's reader the owner named), and an act the owner lets run on its own that takes no arguments |
+| The owner's Mac (`mac`) | As its role allows (0108's profile), and the data tier as for any local model |
+| A Claude | As its role and the data tier allow, as ever (a tool server's tools are Confidential and stay with local turns) |
+
+**What can end on the owner's desk** is the policy's own answer (`bridge::way`, asked of the tool
+as `Bridged::can_end_on_the_owners_desk`), and not a list of names:
+
+- an act whose stance is **ask**: a built-in outward act the owner left asking, and every tool of
+  a tool server the owner has said nothing about, which starts out asking (0108). A web or search
+  tool of such a server is one, and is kept from the NAS's model. The owner reviews a server's
+  tool by naming it the server's reader, which then reads, and a read does not ask;
+- an act that runs on its own but **takes arguments**, because it asks once the turn has read a
+  stranger's words (0108), and a read of the queues is one. It is kept as well, so that no turn on
+  the NAS's model can reach the owner's desk through the bridge at all;
+- never a read, whatever stance it starts as, and never an act that runs on its own and takes
+  nothing (`sonarr_retry_import`): a stranger cannot steer what it is not given.
+
+Not the bridge: the contracts of [0106](0106-team-contracts.md) (`homelab_status`, the logs,
+`restart_container`, the map, the docs, the wing's git), which a turn on the NAS's model has in
+full. The node knows a turn's brain and not its kind. A work turn is on the NAS's model when the
+Mac is busy and the work does not need it; a judgment turn is there only for an alarm out of
+budget (above), and that turn has the contracts and the trusted reads as the rest do. Unknown is
+the NAS's: what is not known to be a stronger model is kept from what can end on the desk.
+
 ### What the owner sees
 
 The roster line says both brains and, for a member whose turn waits, what it waits for (the same
@@ -205,6 +254,12 @@ record have no brain and read as their member's.
   consult is work on the NAS too, free whoever asks and whoever is asked, and the nightly quiz
   is open to every free member.
 - `Refused::OutOfBudget` is no longer raised, and stays readable in the record.
+- A turn on the NAS's model keeps the lab's contracts and the reads the owner trusts, and is
+  kept from what can end on the owner's desk (amended 2026-10-19). A lead whose turn lands on the
+  NAS's model while the Mac is busy still reads the download queues, which the first build kept
+  from it: the cost named there is gone. What it cannot do on the NAS's model is what a tool
+  server's unreviewed tool, or an outward act, would have asked the owner for; that step waits for
+  a member on the Mac, said in the thread.
 
 ## Alternatives considered
 
@@ -221,3 +276,20 @@ record have no brain and read as their member's.
   re-asks each tick; a second queue would need its own release.
 - **A switch, off in the older tests.** The first build had one. Rejected on review: the path
   that runs must be the path that is tested.
+- **Offering the NAS's model no bridged tool at all** (amended 2026-10-19; the first build did
+  this). Rejected on review: the live failure was a request that reached the owner's desk, not a
+  trusted read, and keeping every tool from the model cost the Ops lead the download queues its
+  lab checks need, when the Mac was busy, for no gain. What is kept from it is what can end on the
+  desk.
+- **Keeping from the NAS's model by name, or by what a tool does ("a web or search tool").**
+  Rejected: the node cannot tell what a server's tool does, and a server's account of it is not
+  evidence (0054). The policy already knows which tools ask, and a server the owner has not
+  reviewed is exactly one whose tools do.
+- **Keeping from it only the stance "ask".** Rejected in part: an act that runs on its own but
+  takes arguments asks once a stranger's words have been read, which the queues' results are, so
+  stance alone would leave a way to the desk. The question asked is the one that matters: can a
+  call end there.
+- **Leaving the owner's desk to catch a request a small model invented** (amended 2026-10-19).
+  Rejected: that is what happened, and the owner's attention is what a desk spends. The other
+  half of the answer is [0124](0124-guards-against-how-agent-teams-fail.md)'s: nothing reaches
+  the desk that serves none of its task's criteria, whoever asks.

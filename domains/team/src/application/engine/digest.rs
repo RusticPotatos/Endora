@@ -30,6 +30,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             item["decision"] = json!({ "decision": decided.decision,
                 "recommendation": decided.recommendation, "why": decided.why });
         }
+        // The criterion of its task a request for the owner's yes serves, as it was asked
+        // (ADR 0124, amended). An approval from before it was asked for has none to show.
+        if d.kind == "approval" {
+            let kept = self
+                .store
+                .setting(&super::discipline::approval_serves_key(d.id))?;
+            if let Some(served) = kept.and_then(|k| serde_json::from_str::<Value>(&k).ok()) {
+                item["serves"] = served;
+            }
+        }
         Ok(item)
     }
 

@@ -1640,7 +1640,7 @@ fn the_wing_is_told_the_forks_agents_md_is_its_rules_and_its_lead_that_the_draft
             priority: Priority::Normal,
             waits_on: Vec::new(),
         },
-        &[],
+        &[Criterion::new("The lab's state is in the thread", false)],
     )
     .unwrap();
     let ada = turn(&hq, t.ada);

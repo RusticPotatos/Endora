@@ -339,11 +339,17 @@ pub(crate) async fn notice(
 pub(crate) struct ApprovalAsked {
     run: i64,
     text: String,
+    /// Which of the turn's task's criteria the request serves: its number or its words
+    /// (ADR 0124, amended).
+    #[serde(default)]
+    serves: Option<String>,
 }
 
 /// For the node's bridge (ADR 0108): an action a member proposed that waits for the owner's
-/// yes, as an approval on the desk, saying exactly what would run. It ends the member's turn
-/// as a question does. Signed by the node; nothing else may ask.
+/// yes, as an approval on the desk, saying exactly what would run and which criterion of its
+/// task it serves (ADR 0124, amended; a request that serves none is refused, with the reason,
+/// and reaches no desk). It ends the member's turn as a question does. Signed by the node;
+/// nothing else may ask.
 pub(crate) async fn approval(
     Extract(state): Extract<State>,
     Json(req): Json<ApprovalAsked>,
@@ -357,7 +363,11 @@ pub(crate) async fn approval(
     }
     let hq = state.hq.clone();
     let asked = tokio::task::spawn_blocking(move || {
-        hq.ask_approval(endora_team::domain::RunId(req.run), &req.text)
+        hq.ask_approval(
+            endora_team::domain::RunId(req.run),
+            &req.text,
+            req.serves.as_deref(),
+        )
     })
     .await;
     match asked {

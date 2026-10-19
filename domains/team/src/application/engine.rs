@@ -859,7 +859,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Creates a task. A member hands work only to members below it; the task records how
-    /// many hands it passed through. Its assignee is woken, unless it waits on something.
+    /// many hands it passed through. Its assignee is woken, unless it waits on something. It
+    /// says nothing of what done means: the owner's front door is [`Self::add_task_with`], which
+    /// asks for it (ADR 0124, amended), and this is what that, a routine and a started project
+    /// make their tasks with.
     ///
     /// # Errors
     /// [`EngineError::Refused`] if a member hands work up or across;
@@ -3743,12 +3746,36 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// stored once the owner approves, and tells HQ what came of it
     /// ([`Self::approval_outcome`]).
     ///
+    /// A request says which of its task's criteria it `serves` (ADR 0124, amended): its number
+    /// or its words. One that serves none, or asked on a task with no criteria, is refused with
+    /// the reason, the turn goes on, and nothing reaches the desk. The card shows the criterion
+    /// it serves.
+    ///
     /// # Errors
-    /// As [`Self::ask_owner`].
-    pub fn ask_approval(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
+    /// As [`Self::ask_owner`]; [`Refusal::Guard`] with what the request serves.
+    pub fn ask_approval(
+        &self,
+        run: RunId,
+        text: &str,
+        serves: Option<&str>,
+    ) -> Done<crate::domain::DeskId> {
         let _held = self.held();
         let text = cut(text.trim(), 1200);
-        self.ask_held_lock(run, "approval", &|_| text.clone())
+        let turn = self.running(run)?;
+        let task = turn
+            .task
+            .ok_or(EngineError::Unknown("task for this turn"))?;
+        // Already waiting on the owner: said before asking what this request serves.
+        if self.waiting_question(turn.member, task)? {
+            return Err(EngineError::Refused(Refusal::AlreadyAsked));
+        }
+        let (n, served) = self.approval_serves(task, serves)?;
+        let desk = self.ask_held_lock(run, "approval", &|_| text.clone())?;
+        self.store.set_setting(
+            &discipline::approval_serves_key(desk),
+            &json!({ "n": n, "text": served }).to_string(),
+        )?;
+        Ok(desk)
     }
 
     /// A question or an approval on the desk from `run`'s member about its task, worded by
@@ -4483,14 +4510,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 waits_on: Vec::new(),
             },
         )?;
-        if routine.on_lab_trouble {
-            // The home lab's check says what done means: the lab as it is now (ADR 0114).
-            self.store
-                .set_criteria(task, &crate::domain::Criterion::lab())?;
-        }
         // A lead's report or patterns turn is not work on the board (ADR 0120).
-        if let Some(kind) = self.report_kind(routine.id, routine.assignee)? {
+        let report = self.report_kind(routine.id, routine.assignee)?;
+        if let Some(kind) = report {
             self.store.mark_report_task(task, routine.assignee, kind)?;
+        }
+        // What done means for it (ADR 0114, 0124): the home lab's check is the lab as it is now,
+        // a standing review (a lead's report and patterns, the CEO's review and planning) is
+        // closed by filing or deciding it and has none, and any other routine's is a reading of
+        // what it is about, cited.
+        let standing_review = report.is_some() || self.member(routine.assignee)?.role == Role::Ceo;
+        let criteria =
+            routines::criteria_for(routine.on_lab_trouble, standing_review, &routine.title);
+        if !criteria.is_empty() {
+            self.store.set_criteria(task, &criteria)?;
         }
         // An alarm made the task: the member is woken for it as it is for an alarm passed into
         // an open task (ADR 0131). The wake joins the turn the task's making queued, and makes

@@ -1333,8 +1333,8 @@ function hqWorkForm(s) {
   return `<div class="hq-work" role="group" aria-label="Give the team work">
     <label for="hq-work-title">What should the team do?</label>
     <input id="hq-work-title" maxlength="200" autocomplete="off" value="${esc(draft.title || "")}" placeholder="e.g. Check why the backups are slow" />
-    <label for="hq-work-done">What does done mean? (optional)</label>
-    <textarea id="hq-work-done" rows="3" placeholder="One per line, or separated by ;">${esc(draft.done || "")}</textarea>
+    <label for="hq-work-done">What does done mean? (at least one line)</label>
+    <textarea id="hq-work-done" rows="3" required aria-required="true" placeholder="One per line, or separated by ;">${esc(draft.done || "")}</textarea>
     <p class="hq-note" style="margin:0">Start one with <code>live:</code> to have it checked against the lab as it is now.</p>
     <label for="hq-work-lead">Who leads it?</label>
     <select id="hq-work-lead">${options || `<option value="">Nobody leads yet</option>`}</select>
@@ -1411,7 +1411,7 @@ function hqNeed(s, d) {
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${seen}${demoNote}</p>
       ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
-      ${d.kind === "approval" ? hqApproval(d.approval) : ""}
+      ${d.kind === "approval" ? hqApproval(d.approval, d.serves) : ""}
       ${d.kind === "decision" ? hqDecision(d.decision) : ""}
       ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
       ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
@@ -2086,11 +2086,13 @@ async function hqMacAct(what, arg) {
 }
 
 // What an approval will run, from what the node stored: the tool, its arguments one a line,
-// and the member's reason. Every word is the member's or a tool's, so all of it is escaped.
-function hqApproval(a) {
+// which criterion of its task it serves, as HQ kept it when it was asked (ADR 0124), and the
+// member's reason. Every word is the member's or a tool's, so all of it is escaped.
+function hqApproval(a, serves) {
   if (!a) return "";
   const args = (a.args || []).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
-  return `<dl class="hq-kv"><dt>Runs</dt><dd>${esc(a.tool)}</dd>${args}</dl>
+  const served = serves && serves.text ? `<dt>Serves</dt><dd>${serves.n ? `criterion ${Number(serves.n)}: ` : ""}${esc(serves.text)}</dd>` : "";
+  return `<dl class="hq-kv"><dt>Runs</dt><dd>${esc(a.tool)}</dd>${args}${served}</dl>
     <p class="hq-who">${esc(a.member || "A member")} says why: ${esc(a.why)}</p>`;
 }
 
@@ -2423,7 +2425,11 @@ async function hqDispatch(verb, noun, id, arg) {
         await api("POST", `/v1/hq/projects/${id}/cap`, { cap: said.trim() || null }); flash("Cap set.", "ok");
       } else if (arg === "work") {
         const title = (prompt(`What should ${hqName(p.lead)} do in ${p.title}?`) || "").trim(); if (!title) return true;
-        await api("POST", "/v1/hq/tasks", { goal: p.goal, project: p.id, title, assignee: p.lead }); flash("Handed to the team.", "ok");
+        // The team starts from what done means (ADR 0124), here as in the Give work form: one line
+        // is enough, and "live:" before it marks it as about the lab now.
+        const done = (prompt(`What does done mean for it? One line (start with live: if it is about the lab as it is now).`) || "").trim();
+        if (!done) { flash("Say what done means: at least one line, so the team knows when it is finished.", "warn"); return true; }
+        await api("POST", "/v1/hq/tasks", { goal: p.goal, project: p.id, title, assignee: p.lead, criteria: [done] }); flash("Handed to the team.", "ok");
       } else {
         if (arg === "drop" && !confirm(`Drop ${p.title}? Its open tasks are dropped with it.`)) return true;
         const done = await api("POST", `/v1/hq/projects/${id}`, { action: arg }); flash(`${p.title} is ${done.status}.`, "ok");
@@ -2525,9 +2531,11 @@ async function hqDispatch(verb, noun, id, arg) {
     if (!title) { flash("Say what the team should do.", "warn"); return true; }
     const s = HQ.snap || {}, goal = (s.goals || []).find((g) => g.status === "active");
     if (!goal) { flash("Set the team a goal first.", "warn"); return true; }
-    // What done means, if the owner says (ADR 0114): one a line or separated by semicolons,
-    // "live:" before one about the lab as it is now.
+    // What done means, at least one line (ADR 0114, 0124): one a line or separated by semicolons,
+    // "live:" before one about the lab as it is now. The team starts from it, so nothing is sent
+    // without it, and the form stays open with what was typed.
     const criteria = field("hq-work-done").split(/[;\n]/).map((c) => c.trim()).filter(Boolean);
+    if (!criteria.length) { flash("Say what done means: at least one line, so the team knows when it is finished.", "warn"); return true; }
     const lead = Number(field("hq-work-lead"));
     try { await api("POST", "/v1/hq/tasks", { goal: goal.id, title, assignee: lead || null, criteria }); flash("Handed to the team.", "ok"); }
     catch (e) { flash("Couldn't hand it over: " + e.message, "err"); return true; }

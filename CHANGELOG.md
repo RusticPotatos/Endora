@@ -9,6 +9,42 @@ tagged release.
 
 ### Changed
 
+- **What done means comes first** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),
+  amended; [0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)). Live, the
+  owner's "no literal passwords in role defaults" went to a lead with no definition of done and
+  split into three blocked sub-tasks, each defensible and none tied to what was asked. **The
+  owner's work now says what done means:** Give work, `POST /v1/tasks` and a project's
+  hand-it-work button need at least one criterion, and are refused with the way to give one
+  (nothing is made, nobody is woken); the form asks "What does done mean? (at least one line)"
+  and keeps what was typed. **A routine's task carries criteria from its routine:** the home
+  lab's two live ones as ever; for any other routine, *a reading of "its title" from this run,
+  cited*, so closing its task takes a reading; none for a lead's report and patterns or the
+  CEO's review and planning, which are closed by being filed or decided. **A lead's split names
+  what each part serves everywhere:** the depth-0 exemption of the owner's and a routine's tasks
+  is gone, and a task with no criteria (work already open, and the plan HQ hands a project's
+  lead) has none to name. **Work already open with no criteria is untouched**: no migration, no
+  row changes, and its lead may give it some with `narrow_criteria`. Scenarios:
+  `domains/team/features/what-done-means-comes-first.feature`.
+- **The tools fit the turn** ([ADR 0131](docs/adr/0131-the-two-kinds-of-turn.md) and
+  [0108](docs/adr/0108-the-bridge.md), amended). Live, a developer on the house's own small
+  model on the NAS asked the owner to approve a web map search with coordinates it had made up,
+  "to find the NAS backup location", and the request reached the owner's desk as an approval.
+  **What the bridge offers a turn depends on where it thinks:** a turn on the NAS's model (or one
+  HQ says nothing of) is kept from the tools that can end on the owner's desk (an act that asks
+  the owner, which is every tool of a tool server the owner has not reviewed, web and search tools
+  among them, or that takes arguments and so asks once a stranger's words are read), and is
+  refused one it names. It keeps the lab's contracts and what the owner trusts to run without
+  asking: every read, the download queues the Ops lead checks the lab with among them, and an act
+  that runs on its own and takes nothing. The owner's Mac and Claude are offered as their role and
+  the data tier allow, as before.
+  **A request for the owner's yes says what it serves:** a bridged act that asks the owner names
+  which of its task's criteria it serves (`serves`); HQ refuses one that names none, or sits on a
+  task with no criteria, with the reason (400), the member's turn goes on, and nothing reaches the
+  desk. The owner's card says which criterion it serves, as it was asked. HQ's settings gain
+  `approval_serves:<desk item>`; no migration. **Deploy together:** a node from before asks HQ for
+  an approval without `serves`, and HQ now refuses it; approvals already waiting are decided as
+  ever. Scenarios: `domains/capabilities/features/tools-that-fit-the-turn.feature` and
+  `domains/team/features/a-request-says-what-it-serves.feature`.
 - **A desk that interrupts only for decisions** ([ADR 0132](docs/adr/0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md)).
   Over 17 and 18 October thirty items reached the owner's desk in 38.6 hours and six were real
   decisions or approvals; the rest were stuck work, a guard's finding or a notice. Those three

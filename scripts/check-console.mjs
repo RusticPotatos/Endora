@@ -655,7 +655,9 @@ if (failures.length) {
              { id: 15, kind: "question", task: 7, also: [9], text: "Linus asks: steel or titanium?" },
              { id: 17, kind: "approval", task: 7, text: "Linus asks to run sonarr_remove_and_search with item: 102.",
                approval: { tool: "sonarr_remove_and_search", member: "Linus", why: "<script>alert(2)</script> it is stuck",
-                           args: [["item", "102"], ["note", "<img src=y onerror=alert(3)>"]] } },
+                           args: [["item", "102"], ["note", "<img src=y onerror=alert(3)>"]] },
+               // Which criterion of its task the request serves (ADR 0124): the member's own words.
+               serves: { n: 2, text: "The <u>queue</u> is clear" } },
              { id: 18, kind: "decision", task: 7, text: "Decision: Give sonarr 2 GB?\\nRecommendation: Yes.\\nWhy: It ran out.",
                decision: { decision: "Give sonarr 2 GB?", recommendation: "Yes, <i>until the upgrade</i>.", why: "It was killed for memory three times." } },
              { id: 19, kind: "project_cap", project: 2, goal: 1, text: "A cap for project #2 Backups: $5.00 a month.\\nThe CEO recommends: <u>they fail</u>" },
@@ -1093,9 +1095,10 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: an approval does not offer ${act}`);
   }
   if (office.includes("hq:decide:17:seen") || office.includes('id="hq-answer-17"')) fail("hq: an approval was offered something other than yes or no");
-  for (const said of ["sonarr_remove_and_search", '<dt>item</dt><dd>102</dd>', "Linus says why"]) {
+  for (const said of ["sonarr_remove_and_search", '<dt>item</dt><dd>102</dd>', "Linus says why", "<dt>Serves</dt><dd>criterion 2: The &lt;u&gt;queue&lt;/u&gt; is clear</dd>"]) {
     if (!office.includes(said)) fail(`hq: the approval card does not show ${said}`);
   }
+  if (office.includes("<u>queue</u>")) fail("hq: the criterion an approval serves became markup");
   if (office.includes("<img src=y") || office.includes("<script>alert(2)")) fail("hq: an approval's arguments or reason became markup");
   if (!office.includes("&lt;img src=y onerror=alert(3)&gt;")) fail("hq: an approval's argument is not shown as text");
   // The owner replies on the task they are looking at, and writes each active goal's notes.
@@ -1810,6 +1813,10 @@ if (failures.length) {
     for (const said of ["What should the team do?", "What does done mean?", "Who leads it?", 'id="hq-work-title"', 'id="hq-work-done"', 'data-act="hq:work:send:go"', 'data-act="hq:work:cancel:go"', "live:"]) {
       if (!form.includes(said)) fail(`hq: the give-work form does not show ${said}`);
     }
+    // What done means is asked for, never optional (ADR 0124): the team starts from it.
+    const giving = form.split('aria-label="Give the team work"')[1].split('hq:work:cancel:go')[0];
+    if (giving.includes("(optional)")) fail("hq: the give-work form still calls what done means optional");
+    if (!giving.includes("at least one line") || !/<textarea id="hq-work-done"[^>]*\brequired\b/.test(giving)) fail("hq: the give-work form does not require a line of what done means");
     if (!form.includes('<option value="6" selected>Kit — Engineering</option>') || !form.includes('<option value="1">Ada — Ops</option>')) fail("hq: the leads are not offered by name and area, with Engineering's chosen");
     const fields = { "hq-work-title": "Fix the <b>backups</b>", "hq-work-done": "backups run nightly; live: disk is under 80%\nreport sent\n\n", "hq-work-lead": "6" };
     const realGet = context.document.getElementById;
@@ -1823,6 +1830,19 @@ if (failures.length) {
     await runInContext('dispatch("hq:work:send:go")', context);
     if (sent.some(([path]) => path === "/v1/hq/tasks")) fail("hq: work with no words was sent");
     fields["hq-work-title"] = "Fix the <b>backups</b>";
+    // No line of what done means (or only blank ones): nothing is sent, and the form says why.
+    const doneLines = fields["hq-work-done"];
+    runInContext('var __flashed = [], __flashSaved = flash; flash = (t, k) => __flashed.push([t, k]);', context);
+    for (const none of ["", " \n ; \n"]) {
+      fields["hq-work-done"] = none;
+      await runInContext('dispatch("hq:work:send:go")', context);
+    }
+    if (sent.some(([path]) => path === "/v1/hq/tasks")) fail("hq: work with no line of what done means was sent");
+    const told = JSON.parse(runInContext("JSON.stringify(__flashed)", context));
+    if (told.length !== 2 || !told.every(([text, kind]) => /what done means/.test(text) && kind === "warn")) fail(`hq: a missing definition of done is not said: ${JSON.stringify(told)}`);
+    runInContext("flash = __flashSaved;", context);
+    if (!runInContext("HQ.working", context)) fail("hq: the form closed on work it did not send");
+    fields["hq-work-done"] = doneLines;
     await runInContext('dispatch("hq:work:send:go")', context);
     const post = sent.find(([path]) => path === "/v1/hq/tasks");
     if (!post || post[1] !== "POST") fail(`hq: the form does not post a task: ${JSON.stringify(sent)}`);
@@ -1838,6 +1858,22 @@ if (failures.length) {
     await runInContext('dispatch("hq:work")', context);
     await runInContext('dispatch("hq:work:cancel:go")', context);
     if (runInContext("viewHQ()", context).includes('id="hq-work-title"')) fail("hq: Cancel leaves the form open");
+    // A project's "hand it work" button asks the same two things, what to do and what done
+    // means, and sends nothing without the second.
+    {
+      const handedOut = () => sent.filter(([path]) => path === "/v1/hq/tasks");
+      const before = handedOut().length;
+      const asking = (answers) => () => answers.shift() ?? "";
+      context.prompt = asking(["Back up the <b>NAS</b>", ""]);
+      await runInContext('dispatch("hq:project:2:work")', context);
+      if (handedOut().length !== before) fail("hq: a project's work was handed out with no line of what done means");
+      context.prompt = asking(["Back up the <b>NAS</b>", "live: the last backup is under a day old"]);
+      await runInContext('dispatch("hq:project:2:work")', context);
+      const handed = handedOut();
+      const body = handed.length === before + 1 ? JSON.parse(handed[handed.length - 1][2]) : {};
+      if (body.project !== 2 || JSON.stringify(body.criteria) !== JSON.stringify(["live: the last backup is under a day old"])) fail(`hq: a project's work does not carry what done means: ${JSON.stringify(handed.slice(before))}`);
+      delete context.prompt;
+    }
     context.fetch = realFetch;
     context.document.getElementById = realGet;
     runInContext("clearInterval(HQ.polling); HQ.polling = null; HQ_ART_READY = null;", context);

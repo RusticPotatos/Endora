@@ -368,12 +368,13 @@ struct TaskRequest {
     #[serde(default)]
     project: Option<i64>,
     /// What done means, a line each; `live:` before one marks it about the lab now
-    /// (ADR 0114). The owner's tasks may have none.
+    /// (ADR 0114). At least one: the owner's work says what done means too (ADR 0124, amended),
+    /// and is refused, with the way to give one, when it does not.
     #[serde(default)]
     criteria: Vec<String>,
 }
 
-/// The owner hands the team a piece of work.
+/// The owner hands the team a piece of work, and says what done means.
 async fn add_task(
     Extract(state): Extract<State>,
     Json(req): Json<TaskRequest>,
@@ -1915,14 +1916,62 @@ mod tests {
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
         let app = app(st.clone());
-        let body = json!({ "run": turn.run.0, "text": "Ada asks to run sonarr_retry_import. Why: stuck." })
-            .to_string();
+        let text = "Ada asks to run sonarr_retry_import. Why: stuck.";
+        let body = json!({ "run": turn.run.0, "text": text, "serves": "1" }).to_string();
         let res = app
             .clone()
             .oneshot(call("POST", "/v1/team/approval", Some(&turn.token), &body))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "only the node asks");
+        // A request serves one of its task's criteria (ADR 0124, amended). The demo's task has
+        // none: refused with the way out, and nothing reaches the desk.
+        let task = turn.task.expect("the turn is on a task");
+        let res = app
+            .clone()
+            .oneshot(call("POST", "/v1/team/approval", Some(TOKEN), &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"].as_str().unwrap().contains("has no criteria"),
+            "{said}"
+        );
+        st.hq
+            .set_criteria(
+                task,
+                &[endora_team::domain::Criterion::new(
+                    "The queue is clear",
+                    false,
+                )],
+            )
+            .unwrap();
+        // It serves none of them: refused with the criteria listed, the desk still empty.
+        let without = json!({ "run": turn.run.0, "text": text }).to_string();
+        let res = app
+            .clone()
+            .oneshot(call("POST", "/v1/team/approval", Some(TOKEN), &without))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("does asking the owner serve? Give serves (its number or its words): 1. The queue is clear"),
+            "{said}"
+        );
+        assert!(
+            st.hq
+                .store()
+                .desk()
+                .unwrap()
+                .iter()
+                .all(|d| d.kind != "approval"),
+            "it never reached the desk"
+        );
         let asked = json_of(
             app.clone()
                 .oneshot(call("POST", "/v1/team/approval", Some(TOKEN), &body))
@@ -1931,6 +1980,26 @@ mod tests {
         )
         .await;
         let item = asked["item"].as_i64().unwrap();
+        // The owner's card says which criterion the request serves.
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let card = snap["desk"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == item)
+            .cloned()
+            .expect("the approval is on the desk");
+        assert_eq!(
+            card["serves"],
+            json!({ "n": 1, "text": "The queue is clear" }),
+            "{card}"
+        );
         // Asked again for the same turn: it has ended, and the refusal says so.
         let again = app
             .clone()
@@ -1989,7 +2058,9 @@ mod tests {
                     "POST",
                     "/v1/tasks",
                     Some(TOKEN),
-                    &json!({ "goal": goal, "title": "Look at the music stack" }).to_string(),
+                    &json!({ "goal": goal, "title": "Look at the music stack",
+                        "criteria": ["The stack's state is in the thread"] })
+                    .to_string(),
                 ))
                 .await
                 .unwrap(),
@@ -2039,6 +2110,66 @@ mod tests {
         assert_eq!(thread[0]["author"], "owner", "{snap}");
         let res = app.oneshot(note("x")).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_owner_hands_out_work_only_with_what_done_means() {
+        let st = state(false);
+        let app = app(st.clone());
+        let goal = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/goals",
+                    Some(TOKEN),
+                    r#"{"title":"Keep the home lab healthy"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["goal"]
+            .as_i64()
+            .unwrap();
+        let give =
+            |body: serde_json::Value| call("POST", "/v1/tasks", Some(TOKEN), &body.to_string());
+        // Give work with no line, or only blank ones, is refused with the way to give one.
+        for none in [
+            json!({ "goal": goal, "title": "Fix the backups" }),
+            json!({ "goal": goal, "title": "Fix the backups", "criteria": [] }),
+            json!({ "goal": goal, "title": "Fix the backups", "criteria": ["  ", ""] }),
+        ] {
+            let res = app.clone().oneshot(give(none.clone())).await.unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{none}");
+            let said = json_of(res).await;
+            let words = said["error"].as_str().unwrap();
+            assert!(
+                words.contains("what done means") && words.contains("live:"),
+                "{said}"
+            );
+        }
+        assert!(
+            st.hq.store().tasks().unwrap().is_empty(),
+            "a refusal makes nothing"
+        );
+        // With one line it is handed out, and `live:` marks a line about the lab now.
+        let res = app
+            .clone()
+            .oneshot(give(json!({ "goal": goal, "title": "Fix the backups",
+                "criteria": ["The backups finish by 6 am", "live: the disk is under 80% full"] })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let task = json_of(res).await["task"].as_i64().unwrap();
+        let kept = st.hq.store().task(TaskId(task)).unwrap().unwrap().criteria;
+        assert_eq!(
+            kept.iter()
+                .map(|c| (c.text.as_str(), c.live))
+                .collect::<Vec<_>>(),
+            [
+                ("The backups finish by 6 am", false),
+                ("the disk is under 80% full", true)
+            ]
+        );
     }
 
     /// The runner's three routes, each with a body it might send.
@@ -3160,7 +3291,9 @@ mod tests {
         );
         let (status, _) = post(
             "/v1/tasks".to_owned(),
-            json!({ "goal": goal.0, "title": "Fix sonarr", "project": id }).to_string(),
+            json!({ "goal": goal.0, "title": "Fix sonarr", "project": id,
+                "criteria": ["Sonarr is running and healthy"] })
+            .to_string(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);

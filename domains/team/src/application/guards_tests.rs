@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use super::engine::{Author, Engine, STRANDED_AFTER_MS, Settings};
 use super::guard_ports::GuardStore;
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
-use crate::domain::{MemberId, Priority, Role, TaskId, TaskStatus, WakeReason};
+use crate::domain::{Criterion, MemberId, Priority, Role, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 pub(super) struct Hands(pub(super) AtomicI64);
@@ -820,8 +820,8 @@ pub(super) fn use_tool(
     super::protocol::call(hq, &run, &member, tool, args)
 }
 
-/// A member's sub-task of a member's task says which of its parent's criteria it serves; the
-/// owner's task needs no such thing.
+/// A member's sub-task of a member's task says which of its parent's criteria it serves; a task
+/// with no criteria has none to name.
 #[test]
 fn a_sub_task_of_a_members_task_says_which_criterion_it_serves() {
     let clock = Hands(AtomicI64::new(NOON));
@@ -837,7 +837,8 @@ fn a_sub_task_of_a_members_task_says_which_criterion_it_serves() {
     // Linus's first task is put away, so his next turn is on what Ada hands him.
     hq.drop_task(linus_first).unwrap();
     let goal = hq.store().task(linus_first).unwrap().unwrap().goal;
-    // The owner's task (depth 0) is split with no `serves`.
+    // The owner's task, with no criteria (work from before they were asked for), is split with
+    // no `serves`: there is no criterion of it to name.
     let owners = hq
         .add_task(
             Author::Owner,
@@ -905,6 +906,176 @@ fn a_sub_task_of_a_members_task_says_which_criterion_it_serves() {
         hq.serves_said(&task).unwrap(),
         format!("It serves #{fix}'s criterion 1: The cause is found. Keep to that.\n")
     );
+}
+
+/// The owner's task is split the way a member's is (ADR 0124, amended): each part says which
+/// criterion of it that part serves. Live, the owner's "no literal passwords in role defaults"
+/// went to a lead and split into three blocked sub-tasks, each defensible and none tied to what
+/// was asked, because depth 0 (the owner's and a routine's tasks) was exempt.
+#[test]
+fn splitting_the_owners_task_says_which_criterion_each_part_serves() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, _dev, linus_first) = team(&clock, true);
+    let ada = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == Role::Lead)
+        .unwrap()
+        .id;
+    hq.drop_task(linus_first).unwrap();
+    let goal = hq.store().task(linus_first).unwrap().unwrap().goal;
+    let ask = hq
+        .add_task_with(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Remove literal passwords from the role defaults".to_owned(),
+                description: String::new(),
+                assignee: Some(ada),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[
+                Criterion::new("No role default holds a password", false),
+                Criterion::new("Each role reads its secret from the vault", false),
+            ],
+        )
+        .unwrap();
+    let a = turn(&hq, ada);
+    assert_eq!(a.task, Some(ask));
+    let part = |title: &str, serves: Option<&str>| {
+        use_tool(
+            &hq,
+            &a,
+            "create_task",
+            &serde_json::json!({ "title": title, "description": "a part", "assignee": "Linus",
+                "criteria": [{ "text": "the part is done" }], "serves": serves }),
+        )
+    };
+    let refused = part("Find the literal passwords", None).unwrap_err();
+    assert!(
+        refused.contains(&format!("which of #{ask}'s criteria does this serve?"))
+            && refused.contains(
+                "1. No role default holds a password; 2. Each role reads its secret from the vault"
+            ),
+        "{refused}"
+    );
+    assert!(
+        part("Find the literal passwords", Some("the moon base")).is_err(),
+        "no criterion of the task"
+    );
+    assert!(
+        hq.store()
+            .tasks()
+            .unwrap()
+            .iter()
+            .all(|t| t.parent != Some(ask)),
+        "nothing was made by a refusal"
+    );
+    part("Find the literal passwords", Some("1")).unwrap();
+    // By its words too, case and spacing aside.
+    part(
+        "Move the secrets to the vault",
+        Some("each role reads  its secret from the vault"),
+    )
+    .unwrap();
+    let parts: Vec<_> = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.parent == Some(ask))
+        .collect();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(
+        hq.serves_said(&parts[0]).unwrap(),
+        format!(
+            "It serves #{ask}'s criterion 1: No role default holds a password. Keep to that.\n"
+        )
+    );
+    assert!(
+        hq.serves_said(&parts[1])
+            .unwrap()
+            .contains("criterion 2: Each role reads its secret from the vault")
+    );
+}
+
+/// A routine's task has criteria now, and is split the same way (the home lab's, with its two
+/// live ones). Work already open with none, and the plan HQ hands a project's lead, have no
+/// criterion to name, so their parts need no `serves`: the one exception, because there is
+/// nothing to serve.
+#[test]
+fn a_routines_task_is_split_the_same_way_and_a_task_with_no_criteria_has_none_to_serve() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, linus_first) = team(&clock, true);
+    let ada = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == Role::Lead)
+        .unwrap()
+        .id;
+    // Linus's task came from the owner before criteria were asked for: it has none.
+    assert!(
+        hq.store()
+            .task(linus_first)
+            .unwrap()
+            .unwrap()
+            .criteria
+            .is_empty()
+    );
+    let l = turn(&hq, dev);
+    assert_eq!(l.task, Some(linus_first));
+    use_tool(
+        &hq,
+        &l,
+        "create_task",
+        &serde_json::json!({ "title": "Read the queue", "description": "What is in it?" }),
+    )
+    .expect("a task with no criteria has none to serve");
+    hq.runner().finish(l.run, true);
+    hq.tick().unwrap();
+
+    // The home lab's routine: its task has the two live criteria, so a part names one.
+    let goal = hq.store().task(linus_first).unwrap().unwrap().goal;
+    hq.add_routine(
+        Author::Endora,
+        super::ports::NewRoutine {
+            title: "Check the home lab".to_owned(),
+            description: String::new(),
+            goal,
+            project: None,
+            assignee: ada,
+            every_ms: 6 * 60 * 60 * 1000,
+            on_lab_trouble: true,
+        },
+    )
+    .unwrap();
+    hq.alarm("sonarr became unhealthy").unwrap();
+    let a = turn(&hq, ada);
+    let check = a.task.expect("the lead is on the routine's task");
+    let part = |serves: Option<&str>| {
+        use_tool(
+            &hq,
+            &a,
+            "create_task",
+            &serde_json::json!({ "title": "Look at sonarr", "description": "Why is it unhealthy?",
+                "assignee": "Linus", "criteria": [{ "text": "the cause is in the thread" }],
+                "serves": serves }),
+        )
+    };
+    let refused = part(None).unwrap_err();
+    assert!(
+        refused.contains(&format!("which of #{check}'s criteria does this serve?"))
+            && refused.contains("1. Every container that alarmed is running and healthy"),
+        "{refused}"
+    );
+    part(Some("1")).unwrap();
 }
 
 /// No task holds more than five open sub-tasks, and work goes no deeper than three; the

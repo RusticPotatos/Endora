@@ -102,6 +102,14 @@ pub(super) struct Turn {
     pub(super) claude_code: bool,
 }
 
+impl Turn {
+    /// Where the turn thinks, as the bridge tells it apart (ADR 0131, amended): the house's own
+    /// model on the NAS, the owner's Mac, or a Claude. A turn HQ says nothing of is the NAS's.
+    pub(super) fn thinks(&self) -> endora_capabilities::bridge::Thinks {
+        endora_capabilities::bridge::Thinks::of(self.cloud, &self.brain)
+    }
+}
+
 /// A turn's calls to Anthropic, one at a time, by token. HQ knows only what has been
 /// charged, so two calls side by side would each be capped by the whole of what is left; one
 /// at a time, each is capped by what the one before left.

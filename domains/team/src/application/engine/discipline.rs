@@ -10,11 +10,17 @@ use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::evidence::{self, Judged, Label, Ref};
 use crate::domain::guards::{self, GuardRefusal, THRESHOLDS};
-use crate::domain::{MemberId, Millis, Refusal, RunId, Task, TaskId, TaskStatus};
+use crate::domain::{DeskId, MemberId, Millis, Refusal, RunId, Task, TaskId, TaskStatus};
 
 /// Where HQ keeps which of its parent's criteria a sub-task serves.
 pub(super) fn serves_key(task: TaskId) -> String {
     format!("serves:{}", task.0)
+}
+
+/// Where HQ keeps which criterion of its task an approval on the desk serves, as it was asked
+/// (ADR 0124, amended): its number and its words, as JSON.
+pub(super) fn approval_serves_key(desk: DeskId) -> String {
+    format!("approval_serves:{}", desk.0)
 }
 
 /// Where HQ keeps that a member was told its evidence is enough: the turn told, how many
@@ -30,9 +36,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- sub-task discipline ------------------------------------------------------------------
 
     /// Whether `parent` may take one more sub-task (ADR 0124): at most five open under it, no
-    /// deeper than three, and, under a member's task with criteria, naming which one it
-    /// serves. The owner's tasks and a routine's (depth 0) need no `serves`. Returns the
-    /// criterion served, if one is.
+    /// deeper than three, and, under any task with criteria, the owner's and a routine's
+    /// included (amended: depth 0 was exempt, and it is where a lead first splits work), naming
+    /// which one it serves. A task with no criteria has none to name: work already open from
+    /// before they were asked for, and the plan HQ hands a project's lead, which HQ makes with
+    /// none. Returns the criterion served, if one is.
     pub(super) fn subtask_discipline(
         &self,
         parent: TaskId,
@@ -46,7 +54,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|t| t.parent == Some(parent) && !t.status.finished())
             .count();
         guards::room_for_a_subtask(parent, open, above.depth).map_err(refused)?;
-        if above.depth == 0 || above.criteria.is_empty() {
+        if above.criteria.is_empty() {
             return Ok(None);
         }
         match serves.and_then(|s| guards::serves(&above.criteria, s)) {
@@ -56,6 +64,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 criteria: above.criteria.iter().map(|c| c.text.clone()).collect(),
             })),
         }
+    }
+
+    /// Which of `task`'s criteria a request for the owner's yes serves (ADR 0124, amended): its
+    /// number, counted from 1, and its words as they are now. A request that names none, or on a
+    /// task with none, is refused with the reason.
+    pub(super) fn approval_serves(
+        &self,
+        task: TaskId,
+        said: Option<&str>,
+    ) -> Done<(usize, String)> {
+        let criteria = self.task(task)?.criteria;
+        let n = guards::approval_serves(task, &criteria, said).map_err(refused)?;
+        let words = criteria
+            .get(n.saturating_sub(1))
+            .map(|c| c.text.clone())
+            .unwrap_or_default();
+        Ok((n, words))
     }
 
     /// What a briefing says of the criterion a sub-task serves; empty when it serves none.

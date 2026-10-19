@@ -169,6 +169,21 @@ impl Criterion {
         ]
     }
 
+    /// What done means for a routine's task when its routine says nothing else (ADR 0124,
+    /// amended): a reading of what the routine is about, from this run, cited. It is not about
+    /// the lab as it is now, so any reading the run took of this work, cited, shows it: a
+    /// routine need not be about the lab, and one that cannot be closed would never fire again.
+    #[must_use]
+    pub fn reading_of(routine: &str) -> Self {
+        Self::new(
+            &format!(
+                "A reading of \"{}\" from this run, cited",
+                routine.trim().replace('"', "'")
+            ),
+            false,
+        )
+    }
+
     /// As they are kept: a JSON list.
     #[must_use]
     pub fn kept(all: &[Self]) -> String {
@@ -242,7 +257,8 @@ pub fn criteria_hash(criteria: &[Criterion]) -> String {
 }
 
 /// Whether a member handing work to `assignee` gave criteria enough: work handed to another
-/// member says what done means; the owner's, and a member's own, need not.
+/// member says what done means; a member's own need not. (The owner's does: see
+/// [`owner_may_hand_out`].)
 ///
 /// # Errors
 /// [`Refusal::NoCriteria`] when work handed on has none, [`Refusal::TooLong`] past
@@ -253,6 +269,24 @@ pub fn may_hand_on(criteria: &[Criterion], to_another: bool) -> Result<(), Refus
     }
     if to_another && criteria.is_empty() {
         return Err(Refusal::NoCriteria);
+    }
+    Ok(())
+}
+
+/// Whether the owner gave criteria enough with the work they hand out: at least one line saying
+/// what done means, and no more than [`MOST_CRITERIA`] (ADR 0124, amended). Their own work
+/// needed none before, and a team that is handed "fix the backups" with no definition of done
+/// has nothing to check a part against.
+///
+/// # Errors
+/// [`Refusal::OwnerNeedsCriteria`] when there are none, [`Refusal::TooLong`] past
+/// [`MOST_CRITERIA`].
+pub fn owner_may_hand_out(criteria: &[Criterion]) -> Result<(), Refusal> {
+    if criteria.len() > MOST_CRITERIA {
+        return Err(Refusal::TooLong(MOST_CRITERIA));
+    }
+    if criteria.is_empty() {
+        return Err(Refusal::OwnerNeedsCriteria);
     }
     Ok(())
 }
@@ -743,12 +777,53 @@ mod tests {
     #[test]
     fn work_handed_to_another_member_says_what_done_means() {
         assert_eq!(may_hand_on(&[], true), Err(Refusal::NoCriteria));
-        assert!(may_hand_on(&[], false).is_ok(), "the owner's, or one's own");
+        assert!(may_hand_on(&[], false).is_ok(), "one's own");
         assert!(may_hand_on(&[Criterion::new("x", false)], true).is_ok());
         let many = vec![Criterion::new("x", false); MOST_CRITERIA + 1];
         assert_eq!(
             may_hand_on(&many, true),
             Err(Refusal::TooLong(MOST_CRITERIA))
+        );
+    }
+
+    #[test]
+    fn the_owner_hands_out_work_that_says_what_done_means_in_at_least_one_line() {
+        assert_eq!(
+            owner_may_hand_out(&[]),
+            Err(Refusal::OwnerNeedsCriteria),
+            "the owner's work needs a definition of done, as a member's handed on does"
+        );
+        assert!(owner_may_hand_out(&[Criterion::new("the backups finish by 6 am", false)]).is_ok());
+        let many = vec![Criterion::new("x", false); MOST_CRITERIA + 1];
+        assert_eq!(
+            owner_may_hand_out(&many),
+            Err(Refusal::TooLong(MOST_CRITERIA))
+        );
+        let words = Refusal::OwnerNeedsCriteria.to_string();
+        assert!(words.contains("what done means"), "{words}");
+        assert!(
+            words.contains("live:"),
+            "it says how to mark a live one: {words}"
+        );
+    }
+
+    #[test]
+    fn a_routines_default_criterion_is_a_reading_of_what_it_is_about_cited() {
+        let made = Criterion::reading_of("Look at the download queues");
+        assert_eq!(
+            made.text,
+            "A reading of \"Look at the download queues\" from this run, cited"
+        );
+        assert!(!made.live, "a routine need not be about the lab");
+        assert_eq!(made.after, None);
+        assert_eq!(
+            Criterion::reading_of("Check \"sonarr\"").text,
+            "A reading of \"Check 'sonarr'\" from this run, cited",
+            "a title's own quotes do not break the sentence"
+        );
+        assert!(
+            Criterion::reading_of(&"x".repeat(500)).text.chars().count() <= CRITERION_MOST,
+            "held to one criterion's length"
         );
     }
 

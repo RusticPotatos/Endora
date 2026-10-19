@@ -492,6 +492,9 @@ pub enum Refusal {
     NotAManager,
     /// Work handed to another member says what done means (ADR 0114).
     NoCriteria,
+    /// Work the owner hands out says what done means too, in at least one line (ADR 0124,
+    /// amended): an ask with no definition of done lets a team wander.
+    OwnerNeedsCriteria,
     /// A criterion with nothing cited for it; `0` for work with no criteria.
     NoEvidenceFor {
         /// Which criterion, from 1.
@@ -789,6 +792,11 @@ impl fmt::Display for Refusal {
             Self::NoCriteria => f.write_str(
                 "work handed to another member says what done means: give `criteria`, a short \
                  list (each { text, live }; live for anything about the lab as it is now)",
+            ),
+            Self::OwnerNeedsCriteria => f.write_str(
+                "the team starts from what done means: say at least one thing that must be \
+                 true when this is finished (\"What does done mean?\"; start a line with live: \
+                 to have it checked against the lab as it is now)",
             ),
             Self::NoEvidenceFor { criterion: 0, .. } => f.write_str(
                 "this needs evidence: cite at least one receipt (r12), task or event from HQ's \
