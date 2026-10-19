@@ -86,7 +86,7 @@ fn climbed(hq: &Hq<'_>) -> usize {
 
 /// Linus takes his task, marks it blocked on what he named, and ends his turn; with a
 /// check-back if `coming_back`.
-fn blocked(hq: &Hq<'_>, dev: MemberId, task: TaskId, coming_back: bool) {
+pub(super) fn blocked(hq: &Hq<'_>, dev: MemberId, task: TaskId, coming_back: bool) {
     let t = turn(hq, dev);
     hq.claim_in(t.run, task).unwrap();
     hq.set_status_in(
@@ -313,7 +313,7 @@ fn work_waiting_on_a_dropped_task_stays_blocked_and_its_member_is_told_why() {
 // ---- process health -------------------------------------------------------------------------
 
 /// A lead on its own project's task, with no one above it (so no hand-up), and the task.
-fn project_work(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
+pub(super) fn project_work(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
     let hq = Engine::new(
         SqliteTeamStore::in_memory().unwrap(),
         SimulatedRunner::new(4),
@@ -351,7 +351,7 @@ fn project_work(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
 
 /// One turn of `member`'s on `task`, woken by a mention: it talks, or (with `act`) it also
 /// restarts something and the node records the act.
-fn one_turn(hq: &Hq<'_>, member: MemberId, task: TaskId, act: bool) {
+pub(super) fn one_turn(hq: &Hq<'_>, member: MemberId, task: TaskId, act: bool) {
     hq.wake(member, Some(task), WakeReason::Mentioned).unwrap();
     let t = turn(hq, member);
     if act {
@@ -378,7 +378,7 @@ fn one_turn(hq: &Hq<'_>, member: MemberId, task: TaskId, act: bool) {
     hq.tick().unwrap();
 }
 
-fn guards(hq: &Hq<'_>) -> serde_json::Value {
+pub(super) fn guards(hq: &Hq<'_>) -> serde_json::Value {
     hq.snapshot().unwrap()["guards"].clone()
 }
 
@@ -487,6 +487,52 @@ fn talk_beside_enough_product_change_is_healthy() {
     let ceremony = guards(&hq)["ceremony"][0].clone();
     assert_eq!(ceremony["over"], false, "{ceremony}");
     assert!(hq.store().findings().unwrap().is_empty());
+}
+
+fn outcomes(hq: &Hq<'_>) -> serde_json::Value {
+    hq.snapshot().unwrap()["scorecard"]["outcomes"].clone()
+}
+
+/// Talk against work on the outcomes line is what the process-health look measured, with the
+/// ceremony guard's own labels (ADR 0132): it agrees with the guard's card for the same window,
+/// and says it has not been measured until the look has been made.
+#[test]
+fn talk_against_work_on_the_outcomes_is_the_ceremony_guards_own_count() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (unlooked, _, _) = team(&clock, true);
+    assert_eq!(
+        outcomes(&unlooked)["day"]["talk"],
+        serde_json::Value::Null,
+        "not measured before the first look"
+    );
+    assert_eq!(outcomes(&unlooked)["talk_at"], serde_json::Value::Null);
+    let (hq, ada, task) = project_work(&clock);
+    for i in 0..13 {
+        one_turn(&hq, ada, task, i % 6 == 0);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let ceremony = guards(&hq)["ceremony"][0]["windows"].clone();
+    let shown = outcomes(&hq);
+    for (window, said) in [("day", &ceremony[0]), ("week", &ceremony[1])] {
+        let talk = &shown[window]["talk"];
+        assert_eq!(
+            talk["coordination"], said["coordination"],
+            "{window}: {talk}"
+        );
+        assert_eq!(talk["product"], said["product"], "{window}: {talk}");
+    }
+    let talk = &shown["day"]["talk"];
+    assert_eq!(talk["product"], 3, "three of the thirteen turns acted");
+    assert_eq!(talk["acts"], 3, "and each act counts once");
+    let posts = hq
+        .store()
+        .thread(task)
+        .unwrap()
+        .iter()
+        .filter(|p| p.author == "Ada")
+        .count();
+    assert_eq!(talk["posts"], posts, "a member's posts, not Endora's");
 }
 
 /// A member woken on a task again and again with nothing coming of it is not woken once more

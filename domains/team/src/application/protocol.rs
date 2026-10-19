@@ -8,10 +8,38 @@ use serde_json::{Value, json};
 
 use super::engine::{Engine, EngineError, Proposal};
 use super::ports::{Clock, NewTask, Run, TeamStore, WorkerAdapter};
+use crate::domain::review::SendBackReason;
 use crate::domain::{
     Criterion, GoalId, Member, Micros, Priority, ProjectId, Ref, Refusal, Role, RunStatus, TaskId,
     TaskStatus,
 };
+
+/// A send-back's `reason` parameter (ADR 0132): the kind of failure HQ counts, so that a fall in
+/// it shows the memory builds working.
+fn reason_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": SendBackReason::ALL.map(SendBackReason::name),
+        "description": "For send_back only, when the work repeats something the team, the lab or the fork already has: exists_already. Say where it is in the notes. Leave it out for any other reason.",
+    })
+}
+
+/// The `reason` argument of a verdict: the reason a send-back names, if it names one.
+fn reason_arg(args: &Value, sending_back: bool) -> Result<Option<SendBackReason>, String> {
+    let Some(said) = args["reason"]
+        .as_str()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    else {
+        return Ok(None);
+    };
+    if !sending_back {
+        return Err("`reason` only goes with send_back".to_owned());
+    }
+    SendBackReason::from_name(said)
+        .map(Some)
+        .ok_or_else(|| format!("`reason` must be {}", SendBackReason::names()))
+}
 
 /// What counts as evidence, as every tool that takes it says (ADR 0114).
 const WHAT_COUNTS: &str = "Evidence is ids from HQ's record: receipts (r12) of your Endora \
@@ -123,6 +151,7 @@ fn accept_tool() -> Value {
             "task": { "type": "integer", "description": "the task's number" },
             "verdict": { "type": "string", "enum": ["accept", "send_back"] },
             "notes": { "type": "string" },
+            "reason": reason_schema(),
             "evidence": per_criterion("For accept: what shows each criterion holds."),
         }, "required": ["task", "verdict", "notes"] },
     })
@@ -474,7 +503,7 @@ pub fn tools(role: Role) -> Value {
             list.push(tool(
                 "review",
                 "You are the tester. Your verdict on work in review, after re-checking it yourself: take your own readings to confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of your own this turn (its lead then accepts it); send_back returns it to its owner with exactly what does not hold. Sending back is a finished test too. Never your own work. You pass or send back; you never create or assign work.",
-                json!({ "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" }, "evidence": per_criterion("For approve: your readings and what else shows each criterion holds.") }),
+                json!({ "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" }, "reason": reason_schema(), "evidence": per_criterion("For approve: your readings and what else shows each criterion holds.") }),
                 &["task", "verdict", "notes"],
             ));
         }
@@ -1235,8 +1264,9 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             if notes.chars().count() > LONGEST_POST {
                 return Err(format!("notes are at most {LONGEST_POST} characters"));
             }
+            let reason = reason_arg(args, !approve)?;
             let cited = evidence_lists(args)?;
-            match engine.test_in(run.id, task, approve, notes, &cited) {
+            match engine.test_in(run.id, task, approve, notes, &cited, reason) {
                 Ok(()) if approve => Ok(format!("Task {} is approved.", task.0)),
                 Ok(()) => Ok(format!(
                     "Task {} is sent back to its owner, who is woken to put it right.",
@@ -1270,8 +1300,9 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 _ => return Err("`verdict` must be accept or send_back".to_owned()),
             };
             let notes = text_arg(args, "notes")?;
+            let reason = reason_arg(args, !accept)?;
             let cited = evidence_lists(args)?;
-            match engine.accept_in(run.id, task, accept, notes, &cited) {
+            match engine.accept_in(run.id, task, accept, notes, &cited, reason) {
                 Ok(()) if accept => Ok(format!("Task {} is accepted: it is done.", task.0)),
                 Ok(()) => Ok(format!(
                     "Task {} is sent back to its member, who is woken to put it right.",

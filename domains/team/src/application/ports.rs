@@ -745,6 +745,12 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_desk_status(&self, id: crate::domain::DeskId, status: &str) -> Stored<()>;
+    /// Rewords a desk item that still waits: a finding seen again says what it fired on now
+    /// (ADR 0132). An item the owner has decided keeps the words it was decided on.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_desk_text(&self, id: crate::domain::DeskId, text: &str) -> Stored<()>;
     /// Everything on the desk, oldest first.
     ///
     /// # Errors

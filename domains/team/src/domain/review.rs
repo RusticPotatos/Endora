@@ -93,6 +93,44 @@ pub fn may_approve(
 /// The start of the post that holds a draft for the owner, in the task's thread.
 pub const DRAFT: &str = "Draft for the owner: ";
 
+/// Why work was sent back, when the reason is one HQ counts (ADR 0132). A send-back always says
+/// what does not hold, in its notes; a reason names the kind of failure the measures count, so
+/// that a fall in it shows a memory build working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendBackReason {
+    /// It repeats what the team, the lab or the fork already has: the notes say where it is.
+    ExistsAlready,
+}
+
+impl SendBackReason {
+    /// Every reason a tester or a lead may give.
+    pub const ALL: [Self; 1] = [Self::ExistsAlready];
+
+    /// Stable lowercase name, as the tools take it and the feed keeps it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ExistsAlready => "exists_already",
+        }
+    }
+
+    /// The reason with this [`name`](Self::name), if there is one.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.name() == name)
+    }
+
+    /// Every name, for a refusal to list: `exists_already`.
+    #[must_use]
+    pub fn names() -> String {
+        Self::ALL
+            .iter()
+            .map(|r| r.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// Whether a word could be a container's name: letters, digits, `_`, `.` and `-`, starting
 /// with a letter or digit, at least one letter, at most 64 characters.
 fn container_like(word: &str) -> bool {
@@ -358,5 +396,16 @@ mod tests {
             Err(Refusal::GateNotPassed)
         );
         assert_eq!(may_approve(true, true, Some(other), me), Ok(()));
+    }
+
+    #[test]
+    fn a_send_back_names_its_reason_from_a_short_set_the_measures_count() {
+        assert_eq!(SendBackReason::ExistsAlready.name(), "exists_already");
+        for reason in SendBackReason::ALL {
+            assert_eq!(SendBackReason::from_name(reason.name()), Some(reason));
+        }
+        assert_eq!(SendBackReason::from_name("boring"), None);
+        assert_eq!(SendBackReason::from_name(""), None);
+        assert_eq!(SendBackReason::names(), "exists_already");
     }
 }

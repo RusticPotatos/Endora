@@ -1402,3 +1402,148 @@ fn a_pass_on_criteria_that_changed_since_needs_re_checking_and_does_not_count() 
         "the pass does not count"
     );
 }
+
+// ---- why work was sent back (ADR 0132) --------------------------------------------------------
+
+/// Linus's task, handed in for review.
+fn handed_in(hq: &Hq<'_>, clock: &Hands, t: &Team) -> TaskId {
+    let task = owners_task(hq, t, t.dev, "Look at sonarr");
+    let linus = turn(hq, t.dev);
+    use_tool(hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+    use_tool(
+        hq,
+        &linus,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "done",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    end(hq, clock, &linus);
+    task
+}
+
+/// What the feed says of work sent back.
+fn sent_back_events(hq: &Hq<'_>) -> Vec<Value> {
+    hq.events_after(0)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "task.sent_back")
+        .map(|e| e.data)
+        .collect()
+}
+
+/// A tester who sends work back because the team already had it says so, and the feed keeps the
+/// reason: it is how the memory builds are measured, work reinvented against work found.
+#[test]
+fn a_tester_can_send_work_back_because_it_already_exists_and_the_feed_keeps_the_reason() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, true);
+    let task = handed_in(&hq, &clock, &t);
+    let grace = turn(&hq, t.tester.unwrap());
+    use_tool(
+        &hq,
+        &grace,
+        "review",
+        &json!({ "task": task.0, "verdict": "send_back", "reason": "exists_already",
+                 "notes": "The restart role is in roles/deluge already." }),
+    )
+    .unwrap();
+    let sent = sent_back_events(&hq);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["reason"], "exists_already");
+    assert_eq!(sent[0]["task"], task.0);
+    assert_eq!(sent[0]["by"], t.tester.unwrap().0);
+    assert_eq!(sent[0]["via"], "tester");
+    assert!(
+        thread(&hq, task)
+            .iter()
+            .any(|p| p == "Sent back: The restart role is in roles/deluge already."),
+        "the thread keeps the notes as they were: {:?}",
+        thread(&hq, task)
+    );
+}
+
+/// A send-back with no reason named is still recorded, with none: the feed counts every one.
+#[test]
+fn a_send_back_with_no_reason_is_kept_with_none() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, true);
+    let task = handed_in(&hq, &clock, &t);
+    let grace = turn(&hq, t.tester.unwrap());
+    use_tool(
+        &hq,
+        &grace,
+        "review",
+        &json!({ "task": task.0, "verdict": "send_back", "notes": "No reading shows it." }),
+    )
+    .unwrap();
+    let sent = sent_back_events(&hq);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["reason"], Value::Null);
+}
+
+/// Only a reason HQ counts is taken, and a reason belongs to a send-back alone.
+#[test]
+fn a_reason_must_be_one_hq_knows_and_goes_with_a_send_back_alone() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, true);
+    let task = handed_in(&hq, &clock, &t);
+    let grace = turn(&hq, t.tester.unwrap());
+    let unknown = use_tool(
+        &hq,
+        &grace,
+        "review",
+        &json!({ "task": task.0, "verdict": "send_back", "reason": "boring",
+                 "notes": "Not for me." }),
+    )
+    .unwrap_err();
+    assert!(
+        unknown.contains("`reason` must be exists_already"),
+        "{unknown}"
+    );
+    let mine = reading(&hq, &grace, "homelab_status", "", false);
+    let on_a_pass = use_tool(
+        &hq,
+        &grace,
+        "review",
+        &json!({ "task": task.0, "verdict": "approve", "reason": "exists_already",
+                 "notes": "Holds.", "evidence": [format!("r{mine}")] }),
+    )
+    .unwrap_err();
+    assert!(
+        on_a_pass.contains("only goes with send_back"),
+        "{on_a_pass}"
+    );
+    assert!(sent_back_events(&hq).is_empty(), "nothing was sent back");
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::InReview,
+        "both were refused, so the work stayed where it was"
+    );
+}
+
+/// The lead's send-back says why in the same words, and the feed says it was the lead's.
+#[test]
+fn a_lead_can_send_work_back_because_it_already_exists_too() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, false);
+    let task = handed_in(&hq, &clock, &t);
+    let ada = turn(&hq, t.lead);
+    use_tool(
+        &hq,
+        &ada,
+        "accept",
+        &json!({ "task": task.0, "verdict": "send_back", "reason": "exists_already",
+                 "notes": "This is the media stack's restart job again." }),
+    )
+    .unwrap();
+    let sent = sent_back_events(&hq);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["reason"], "exists_already");
+    assert_eq!(sent[0]["via"], "lead");
+    assert_eq!(sent[0]["by"], t.lead.0);
+}

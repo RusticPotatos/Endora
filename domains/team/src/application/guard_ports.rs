@@ -37,6 +37,34 @@ pub trait GuardStore {
     /// [`super::ports::StoreError`] if the store fails.
     fn open_finding(&self, finding: &Finding) -> Stored<Option<i64>>;
 
+    /// The newest finding with this key, open or cleared, judged or not (ADR 0132).
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn latest_finding(&self, key: &str) -> Stored<Option<Finding>>;
+
+    /// Says an open finding was seen again at `seen_at`, with what it fired on now. Its mark
+    /// rises to `mark` if one is given and it is higher, and is left alone otherwise: what a
+    /// judged finding rests on is what was judged (ADR 0132).
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn refresh_finding(
+        &self,
+        id: i64,
+        evidence: &str,
+        seen_at: Millis,
+        mark: Option<i64>,
+    ) -> Stored<()>;
+
+    /// Opens a cleared finding again, as itself (ADR 0132): its episode begins at `at`, it counts
+    /// one more, and its mark rises to `mark` if that is higher. Returns whether it was cleared
+    /// to open.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn reopen_finding(&self, id: i64, evidence: &str, at: Millis, mark: i64) -> Stored<bool>;
+
     /// Says a finding's condition cleared at `at`.
     ///
     /// # Errors

@@ -9,7 +9,7 @@ use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::consult::{self, Consult, Status};
 use crate::domain::history::HistoryRefusal;
 use crate::domain::record::{self, Excerpt, Query};
-use crate::domain::{Member, MemberId, Receipt, Ref, Refusal, RunId, TaskId, WakeReason, money};
+use crate::domain::{EventKind, Member, Receipt, Ref, Refusal, RunId, TaskId, WakeReason, money};
 
 fn refused(r: HistoryRefusal) -> EngineError {
     EngineError::Refused(Refusal::History(r))
@@ -75,6 +75,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // may not.
         let on_the_cloud = turn.brain.unwrap_or(asker.brain).cloud();
         let chosen = record::choose(self.store.search_record(&query)?, &terms, on_the_cloud);
+        // How much the memory is used is counted from these (ADR 0132).
+        self.emit(
+            EventKind::RecordAsked,
+            serde_json::json!({ "run": run.0, "member": asker.id.0,
+                                "task": turn.task.map(|t| t.0), "found": chosen.len() }),
+        )?;
         Ok(self.excerpts_said(&chosen))
     }
 
@@ -448,29 +454,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         self.store.set_setting(&key, &(made + 1).to_string())?;
         Ok(None)
-    }
-
-    /// The consults as the HQ screen could show them: who asked whom, and how it was answered.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn consults_shown(&self) -> Done<serde_json::Value> {
-        let off = self.settings.offset_minutes;
-        let name = |id: MemberId| self.member(id).map(|m| m.name).unwrap_or_default();
-        Ok(serde_json::Value::Array(
-            self.store
-                .consults()?
-                .iter()
-                .rev()
-                .take(50)
-                .map(|c| {
-                    serde_json::json!({ "id": c.id, "asker": name(c.asker), "expert": name(c.expert),
-                        "task": c.thread.0, "question": c.question, "status": c.status.name(),
-                        "why": c.why, "at": c.at, "day": day_with_year(c.at, off),
-                        "answer_run": c.answer_run.map(|r| r.0) })
-                })
-                .collect(),
-        ))
     }
 }
 

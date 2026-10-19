@@ -1844,7 +1844,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_node_tells_the_owner_of_a_contracts_fix_as_a_notice_on_the_desk() {
+    async fn the_node_tells_the_owner_of_a_contracts_fix_as_a_notice_in_the_digest() {
         let st = state(true);
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
@@ -1876,7 +1876,17 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        let shown = snap["desk"]
+        // A notice needs no decision, so it waits in the digest and does not interrupt (ADR 0132).
+        assert!(
+            snap["desk"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|d| d["id"] != item),
+            "a notice is not on the desk: {}",
+            snap["desk"]
+        );
+        let shown = snap["digest"]
             .as_array()
             .unwrap()
             .iter()

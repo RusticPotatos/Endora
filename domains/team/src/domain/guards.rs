@@ -582,6 +582,22 @@ impl Guard {
         }
     }
 
+    /// How much more evidence than was judged makes a finding worth raising again (ADR 0132),
+    /// in the units of its [`Finding::mark`]: another [`Thresholds::ceremony_least`] turns of
+    /// talk for the ceremony, whose count creeps up with every turn; one more of the thing
+    /// counted for the rest, each of which is an event of its own.
+    #[must_use]
+    pub const fn step(self) -> i64 {
+        match self {
+            Self::Ceremony => THRESHOLDS.ceremony_least as i64,
+            Self::Stuck
+            | Self::Carousel
+            | Self::RedundantWake
+            | Self::FencePush
+            | Self::SameAsk => 1,
+        }
+    }
+
     /// The rule that fires it, as a finding states it, with its numbers from [`THRESHOLDS`].
     #[must_use]
     pub fn rule(self) -> String {
@@ -683,6 +699,66 @@ pub struct Finding {
     pub judged_by: String,
     /// The desk notice it put up, if it put one.
     pub desk: Option<i64>,
+    /// When the condition was last seen to hold: when the finding opened, and again each time
+    /// it was detected since (ADR 0132).
+    pub seen_at: Millis,
+    /// How many times it has opened: once, and once more each time the same finding opened again
+    /// after it cleared (ADR 0132).
+    pub episodes: u32,
+    /// The evidence it rests on, as a count that only grows with new evidence (ADR 0132): what
+    /// was judged is what stands here, so that a later detection can be told from the same
+    /// evidence again. What it counts depends on the guard (see [`Guard::step`]).
+    pub mark: i64,
+}
+
+/// What a guard's detection does to the finding for its key (ADR 0132). There is one finding for
+/// a guard and what it is about, however often the guard sees it: a new detection refreshes the
+/// finding that is open, opens again the one that cleared unjudged, and leaves alone one that was
+/// judged until there is new evidence, so the owner is told once and the same thing is not raised
+/// again and again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Raised {
+    /// No finding yet for this key, or the one that was judged has cleared and the evidence has
+    /// grown since: a new finding.
+    Open,
+    /// A judged finding is still open and its evidence has grown: it closes, and a new one opens.
+    Renew,
+    /// A finding that cleared with nobody having judged it, seen again: the same one opens again.
+    Reopen,
+    /// The finding is open: its evidence and time are refreshed, and nothing else happens.
+    Refresh,
+    /// The finding was judged and there is nothing new since: nothing happens.
+    Hold,
+}
+
+impl Raised {
+    /// Whether the detection is news: a finding opens, or opens again, and whoever is told of
+    /// findings may be told.
+    #[must_use]
+    pub const fn is_news(self) -> bool {
+        matches!(self, Self::Open | Self::Renew | Self::Reopen)
+    }
+}
+
+/// What a detection with this `mark` does to the key's `latest` finding (ADR 0132); `step` is
+/// how much the mark must have grown past the judged finding's for the evidence to count as new
+/// ([`Guard::step`]).
+#[must_use]
+pub fn reconcile(latest: Option<&Finding>, mark: i64, step: i64) -> Raised {
+    let Some(latest) = latest else {
+        return Raised::Open;
+    };
+    // What was judged is what the finding's mark stands at (it is not refreshed after), so the
+    // evidence is new when it is a step beyond that.
+    let new = mark >= latest.mark.saturating_add(step.max(1));
+    match (latest.cleared_at.is_some(), latest.verdict.is_some()) {
+        (false, false) => Raised::Refresh,
+        (false, true) if new => Raised::Renew,
+        (false, true) => Raised::Refresh,
+        (true, false) => Raised::Reopen,
+        (true, true) if new => Raised::Open,
+        (true, true) => Raised::Hold,
+    }
 }
 
 /// How one guard has done: how often it fired, and how often it was right (ADR 0124).
@@ -927,6 +1003,107 @@ mod tests {
             fix_worked: fix,
             judged_by: String::new(),
             desk: None,
+            seen_at: 0,
+            episodes: 1,
+            mark: 0,
+        }
+    }
+
+    /// The finding for a key, open or cleared, judged or not, resting on `mark`.
+    fn kept(open: bool, verdict: Option<Verdict>, mark: i64) -> Finding {
+        Finding {
+            cleared_at: (!open).then_some(50),
+            mark,
+            ..finding(Guard::Stuck, verdict, None)
+        }
+    }
+
+    #[test]
+    fn a_detection_with_no_finding_before_it_opens_one() {
+        assert_eq!(reconcile(None, 4, 1), Raised::Open);
+    }
+
+    /// One finding is open for a key, and a new detection of it only refreshes it, whether the
+    /// owner has judged it or not: it is not raised again while it stands.
+    #[test]
+    fn a_detection_while_a_finding_is_open_only_refreshes_it() {
+        assert_eq!(reconcile(Some(&kept(true, None, 3)), 3, 1), Raised::Refresh);
+        assert_eq!(
+            reconcile(Some(&kept(true, None, 3)), 9, 1),
+            Raised::Refresh,
+            "nobody has looked yet: more evidence is just more evidence"
+        );
+        let resolved = kept(true, Some(Verdict::Resolved), 3);
+        assert_eq!(reconcile(Some(&resolved), 3, 1), Raised::Refresh);
+    }
+
+    /// A judged finding that is still open is raised again once its evidence has grown by its
+    /// guard's step past what was judged: not by one more turn of talk, but by a dozen.
+    #[test]
+    fn a_judged_finding_still_open_is_renewed_once_its_evidence_has_grown_by_its_step() {
+        let judged = kept(true, Some(Verdict::Real), 14);
+        assert_eq!(
+            reconcile(Some(&judged), 25, 12),
+            Raised::Refresh,
+            "eleven more turns of talk is not a dozen"
+        );
+        assert_eq!(reconcile(Some(&judged), 26, 12), Raised::Renew);
+        let not_sure = kept(true, Some(Verdict::NotEnough), 2);
+        assert_eq!(reconcile(Some(&not_sure), 2, 1), Raised::Refresh);
+        assert_eq!(reconcile(Some(&not_sure), 3, 1), Raised::Renew);
+    }
+
+    /// A finding that cleared with nobody having judged it, and is seen again, is the same
+    /// finding opening again: one finding for the task, however often it stops and starts.
+    #[test]
+    fn a_finding_that_cleared_unjudged_opens_again_as_itself() {
+        assert_eq!(reconcile(Some(&kept(false, None, 3)), 3, 1), Raised::Reopen);
+        assert_eq!(
+            reconcile(Some(&kept(false, None, 3)), 1, 1),
+            Raised::Reopen,
+            "whatever the evidence is now"
+        );
+    }
+
+    /// The owner judged it, and it cleared: it is not raised again for the same evidence, and is
+    /// for new.
+    #[test]
+    fn a_finding_judged_and_cleared_stays_quiet_until_its_evidence_has_grown_by_its_step() {
+        for verdict in [
+            Verdict::Real,
+            Verdict::FalsePositive,
+            Verdict::NotEnough,
+            Verdict::Resolved,
+        ] {
+            let done = kept(false, Some(verdict), 14);
+            assert_eq!(reconcile(Some(&done), 14, 12), Raised::Hold, "{verdict:?}");
+            assert_eq!(reconcile(Some(&done), 25, 12), Raised::Hold, "{verdict:?}");
+            assert_eq!(reconcile(Some(&done), 26, 12), Raised::Open, "{verdict:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_finding_that_opens_is_news() {
+        for (how, news) in [
+            (Raised::Open, true),
+            (Raised::Renew, true),
+            (Raised::Reopen, true),
+            (Raised::Refresh, false),
+            (Raised::Hold, false),
+        ] {
+            assert_eq!(how.is_news(), news, "{how:?}");
+        }
+    }
+
+    #[test]
+    fn talk_has_to_grow_by_a_dozen_turns_and_every_other_guard_by_one_thing() {
+        assert_eq!(Guard::Ceremony.step(), 12);
+        assert_eq!(
+            Guard::Ceremony.step(),
+            i64::try_from(THRESHOLDS.ceremony_least).unwrap()
+        );
+        for guard in Guard::ALL.into_iter().filter(|g| *g != Guard::Ceremony) {
+            assert_eq!(guard.step(), 1, "{guard:?}");
         }
     }
 

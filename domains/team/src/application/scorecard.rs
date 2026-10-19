@@ -13,6 +13,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
 
+pub mod outcomes;
+
 use super::ports::{DeskItem, Run};
 use crate::domain::money::{self, DAY_MS, Micros};
 use crate::domain::{Event, MemberId, Millis, Task, TaskId, TaskStatus};
@@ -27,6 +29,16 @@ pub struct Window {
 }
 
 impl Window {
+    /// The `ms` before `now`, `now` itself included: the day and the week the guards look over
+    /// (ADR 0124), ending at the moment HQ looks.
+    #[must_use]
+    pub const fn rolling(now: Millis, ms: Millis) -> Self {
+        Self {
+            from: now - ms + 1,
+            until: now + 1,
+        }
+    }
+
     /// One day, as the owner's clock counts them ([`money::day_of`]).
     #[must_use]
     pub const fn day(day: i64, offset_minutes: i64) -> Self {

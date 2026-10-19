@@ -1343,6 +1343,9 @@ function hqChips(s) {
   // Turns of judgment that wait for budget are kept, not dropped (ADR 0131).
   if (pool.waiting > 0) chips.push(`<span class="hq-chip" title="They start when the day turns, you top up the pool, or you give the member an allowance">${pool.waiting} ${pool.waiting === 1 ? "turn waits" : "turns wait"} for budget</span>`);
   if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${HQ.mac.busy ? "busy" : HQ.mac.ready ? "free" : "away"}</span>`);
+  // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
+  const outcomes = s.scorecard && s.scorecard.outcomes;
+  if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} landed this week</span>`);
   chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:desk:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
@@ -1381,6 +1384,43 @@ document.body.addEventListener("input", (ev) => {
   else if (id === "hq-work-lead") HQ.workDraft.lead = ev.target.value;
 });
 
+// One card of the desk or of the digest: what it says and is about, what its choices do, and the
+// choices. A finding the guards keep seeing says how often it was found and when it was last
+// seen (ADR 0132). Every word goes through esc: they are a member's or a guard's.
+function hqNeed(s, d) {
+  const choices = hqDeskChoices(d);
+  // In the demo nothing behind a card is real: say so on the card, not only in the header.
+  const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
+    : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
+  const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
+  const f = d.finding;
+  const seen = f ? `${f.episodes > 1 ? ` · flagged ${Number(f.episodes)} times` : ""}${f.seen_at > d.at ? ` · last seen ${hqClock(f.seen_at)}` : ""}` : "";
+  return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(shown)}</p>
+      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${seen}${demoNote}</p>
+      ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
+      ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
+      ${d.kind === "approval" ? hqApproval(d.approval) : ""}
+      ${d.kind === "decision" ? hqDecision(d.decision) : ""}
+      ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
+      ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
+      ${d.kind === "project_cap" || d.kind === "project_budget" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="${d.kind === "project_cap" ? "Dollars a month (empty: as asked)" : "The new cap, in dollars a month"}" aria-label="The cap, in dollars a month" />` : ""}
+      ${d.kind === "out_for_day" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="Dollars for today (empty: as offered)" aria-label="The allowance, in dollars for today" />` : ""}
+      ${d.kind === "out_for_day" && hqPoolSpent(s) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up the pool first</button></div>` : ""}
+      <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
+}
+
+// "While you were away" (ADR 0132): stuck work, a guard's finding and a notice, newest first, in
+// one card at the top of the Desk tab. None needs a decision before the team can go on, so none
+// interrupts; each is the owner's to act on when they like, with the choices it always had, and
+// acting on one takes it out. Shown only when there is something in it.
+function hqDigest(s) {
+  const items = s.digest || [];
+  if (!items.length) return "";
+  return `<section class="hq-card hq-digest" aria-live="polite"><h2>While you were away <span class="hq-count">${items.length}</span></h2>
+    <p class="hq-note">Nothing here needs you before the team can go on. Each is yours to act on when you like, and acting on one takes it out of this list.</p>
+    <div class="hq-needs">${items.map((d) => hqNeed(s, d)).join("")}</div></section>`;
+}
+
 function viewHQ() {
   if (HQ.error) return `<div class="hq"><h1>Endora HQ</h1><section class="hq-card"><p class="hq-empty">${esc(HQ.error)}</p></section></div>`;
   const s = HQ.snap;
@@ -1394,25 +1434,7 @@ function viewHQ() {
   const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Waiting", c.held || 0],
     ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
-  const desk = (s.desk || []).map((d) => {
-    const choices = hqDeskChoices(d);
-    // In the demo nothing behind a card is real: say so on the card, not only in the header.
-    const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
-      : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
-    const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
-    return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(shown)}</p>
-      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
-      ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
-      ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
-      ${d.kind === "approval" ? hqApproval(d.approval) : ""}
-      ${d.kind === "decision" ? hqDecision(d.decision) : ""}
-      ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
-      ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
-      ${d.kind === "project_cap" || d.kind === "project_budget" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="${d.kind === "project_cap" ? "Dollars a month (empty: as asked)" : "The new cap, in dollars a month"}" aria-label="The cap, in dollars a month" />` : ""}
-      ${d.kind === "out_for_day" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="Dollars for today (empty: as offered)" aria-label="The allowance, in dollars for today" />` : ""}
-      ${d.kind === "out_for_day" && hqPoolSpent(s) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up the pool first</button></div>` : ""}
-      <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
-  }).join("");
+  const desk = (s.desk || []).map((d) => hqNeed(s, d)).join("");
   // The latest thirty, newest first, and "Show older" for the rest: first what is kept here,
   // then what HQ still has.
   const log = HQ.log.slice(0, HQ.logShown).map(hqLogLine).join("");
@@ -1445,6 +1467,7 @@ function viewHQ() {
         ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
       </div>
       ${hqPanel("desk", `
+        ${hqDigest(s)}
         <section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
@@ -1824,6 +1847,31 @@ function hqSpan(ms) {
 // Whether today's pool (the base day and the owner's top-up) has nothing left (ADR 0113 rule 6).
 function hqPoolSpent(s) { const p = s.pool; return !!p && p.per_day != null && (p.per_day - (p.committed || 0)) <= 0; }
 
+// What the work came to (ADR 0132), over the last day and the last week: the changes that
+// landed, what one cost, talk against work, how often the desk interrupted, how much the memory
+// is used, and what waits now. HQ computed every number; this only renders them. A week that
+// landed nothing says "none landed", never a cost of nought.
+function hqOutcomes(o) {
+  if (!o || !o.day || !o.week) return "";
+  const landed = (w) => `${w.landed} landed · ${w.submitted} submitted · ${w.checks_passed} checks passed`;
+  const cost = (w) => (w.per_landed == null ? "none landed" : `${hqDollars(w.per_landed)} each`);
+  const talk = (w) => (w.talk ? `${w.talk.coordination} : ${w.talk.product} turns · ${w.talk.posts} posts : ${w.talk.acts} acts` : "not measured yet");
+  const desk = (w) => `${w.interrupts} interrupts (${w.interrupts_a_day} a day) · ${w.digest} in the digest`;
+  const memory = (w) => {
+    const m = w.memory, c = m.consults;
+    return `${m.reinvented} reinvented · ${m.record_asked} asks of the record · ${c.asked} consults (${c.answered} answered, ${c.from_record} from the record)`;
+  };
+  const rows = [["Landed", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
+    .map(([k, f]) => `<tr><th>${k}</th><td>${esc(f(o.day))}</td><td>${esc(f(o.week))}</td></tr>`).join("");
+  const w = o.waiting || {};
+  const waits = w.budget || w.mac
+    ? `${w.budget || 0} waiting for budget · ${w.mac || 0} for the Mac · the oldest has waited ${hqSpan(w.oldest_ms)}`
+    : "nothing waits for budget or the Mac";
+  return `<h3>Outcomes</h3>
+    <table class="hq-score"><thead><tr><th></th><th>1 day</th><th>7 days</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="hq-note">${esc(waits)}</p>`;
+}
+
 // How the team is doing: the numbers HQ computed from its own record for today and the last
 // seven days, by the owner's days (the engine's `scorecard`). This only renders them: every
 // share, median and cost arrives computed; nothing a model wrote is in it, but every name goes
@@ -1877,6 +1925,7 @@ function hqScorecard(s) {
   const poolRow = pl ? `<tr><th>Pool</th><td>${esc(`pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`)}</td><td></td></tr>` : "";
   const topUp = pl ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button></div>` : "";
   return `<section class="hq-card"><h2>How the team is doing</h2>
+    ${hqOutcomes(card.outcomes)}
     <table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${rows}${poolRow}</tbody></table>
     ${topUp}
     ${areas ? `<details open><summary>Each area</summary>${areas}</details>` : ""}
@@ -1905,7 +1954,11 @@ function hqGuards(s) {
     const said = f.verdict ? `Judged ${esc(verdicts[f.verdict] || f.verdict)}${f.judged_by ? ` by ${esc(f.judged_by)}` : ""}${f.fix_worked == null ? "" : f.fix_worked ? ", and its fix worked" : ", and its fix did not work"}.` : "Not judged yet.";
     const judge = Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("");
     const fixed = f.verdict ? `<button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:yes">Fix worked</button><button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:no">Fix didn't work</button>` : "";
-    return `<li><p><b>${esc(f.plainly)}</b> (finding ${Number(f.id)}${f.task ? ` · ${hqKeyLink(f.task)}` : ""}${f.cleared_at ? " · cleared" : " · open"}): ${esc(f.evidence)}</p>
+    // One finding is kept for a task and a guard (ADR 0132): seen again, it says when; opened
+    // again, how often.
+    const again = f.seen_at > f.opened_at ? ` · seen again ${hqClock(f.seen_at)}` : "";
+    const times = f.episodes > 1 ? ` · found ${Number(f.episodes)} times` : "";
+    return `<li><p><b>${esc(f.plainly)}</b> (finding ${Number(f.id)}${f.task ? ` · ${hqKeyLink(f.task)}` : ""}${f.cleared_at ? " · cleared" : " · open"}${again}${times}): ${esc(f.evidence)}</p>
       <p class="hq-note">The rule: ${esc(f.rule)}. ${said}</p><div class="hq-row">${judge}${fixed}</div></li>`;
   };
   const findings = (g.findings || []).map(finding).join("");

@@ -6,8 +6,11 @@
 
 use serde_json::{Value, json};
 
+use super::guards::guard_card;
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
+use crate::application::scorecard::Window;
+use crate::application::scorecard::outcomes::talk_work;
 use crate::domain::evidence::Ref;
 use crate::domain::guards::{self, Ceremony, Guard, THRESHOLDS, TurnKind, TurnSeen, Verdict};
 use crate::domain::ladder::Rung;
@@ -19,6 +22,22 @@ use crate::domain::{
 const LOOKED_AT: &str = "guards_looked_at";
 /// Where HQ keeps each project's ceremony as it last looked: the scorecard's line.
 const CEREMONY_SEEN: &str = "guards_ceremony";
+/// Where HQ keeps the whole team's talk against work as it last looked, for the outcomes line
+/// (ADR 0132): the same labels as the ceremony, over the same day and week.
+pub(super) const TALK_SEEN: &str = "guards_talk";
+
+/// One ended turn, as the process-health look reads it.
+struct Seen {
+    /// The project of its task, if the task is in one.
+    project: Option<i64>,
+    /// The task it was on.
+    task: TaskId,
+    /// What it did.
+    turn: TurnSeen,
+    /// When each act of its that succeeded was done.
+    acts: Vec<Millis>,
+}
+
 /// The wakes that ask for a review round, or a huddle's view: coordination by their nature.
 const CHECKING: [WakeReason; 3] = [
     WakeReason::ReviewRequested,
@@ -45,7 +64,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         self.store.set_setting(LOOKED_AT, &now.to_string())?;
-        self.look_for_ceremony(now)
+        let turns = self.turns_seen(now)?;
+        self.look_for_ceremony(now, &turns)?;
+        self.look_at_talk(now, &turns)
     }
 
     /// Carousel and redundant-wake findings whose work moved on clear themselves.
@@ -99,8 +120,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// What each ended turn did, for the ceremony detector, with the project of its task.
-    fn turns_seen(&self, now: Millis) -> Done<Vec<(i64, TaskId, TurnSeen)>> {
+    /// What each ended turn of the last week did, for the ceremony detector and the outcomes
+    /// line, with the project of its task if it has one.
+    fn turns_seen(&self, now: Millis) -> Done<Vec<Seen>> {
         let tasks = self.store.tasks()?;
         let wakes = self.store.wakes()?;
         let branches = self.store.branches()?;
@@ -136,9 +158,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if now - ended >= week {
                 continue;
             }
-            let Some(project) = tasks.iter().find(|t| t.id == task).and_then(|t| t.project) else {
-                continue;
-            };
+            let project = tasks
+                .iter()
+                .find(|t| t.id == task)
+                .and_then(|t| t.project)
+                .map(|p| p.0);
             let reason = wakes.iter().find(|w| w.id == run.wake).map(|w| w.reason);
             let started = run.started_at.unwrap_or(ended);
             let asked =
@@ -150,10 +174,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }) || self.store.thread(task)?.iter().any(|p| {
                     p.text.starts_with("Question for ") && started <= p.at && p.at <= ended
                 });
-            turns.push((
-                project.0,
+            turns.push(Seen {
+                project,
                 task,
-                TurnSeen {
+                turn: TurnSeen {
                     ended_at: ended,
                     label,
                     checking: reason.is_some_and(|r| CHECKING.contains(&r)),
@@ -163,16 +187,54 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     new_evidence,
                     asked,
                 },
-            ));
+                acts: receipts
+                    .iter()
+                    .filter(|r| r.ok && r.act)
+                    .map(|r| r.at)
+                    .collect(),
+            });
         }
         Ok(turns)
+    }
+
+    /// The whole team's talk against work over the day and the week, with the ceremony guard's
+    /// own labels, kept for the outcomes line (ADR 0132): turns that coordinated against turns
+    /// that changed the product, the posts members wrote and the acts that succeeded. A lead's
+    /// report and patterns turns are the lead's standing reviews, not talk about work.
+    fn look_at_talk(&self, now: Millis, turns: &[Seen]) -> Done<()> {
+        let reports = self.report_task_ids()?;
+        let mine: Vec<&Seen> = turns
+            .iter()
+            .filter(|s| !reports.contains(&s.task))
+            .collect();
+        let seen: Vec<TurnSeen> = mine.iter().map(|s| s.turn).collect();
+        let acts: Vec<Millis> = mine.iter().flat_map(|s| s.acts.iter().copied()).collect();
+        let week = guards::WINDOWS[1].0;
+        let members: std::collections::HashSet<String> =
+            self.store.members()?.into_iter().map(|m| m.name).collect();
+        let mut posts = Vec::new();
+        for task in self.store.tasks()? {
+            if reports.contains(&task.id) {
+                continue;
+            }
+            posts.extend(
+                self.store
+                    .thread(task.id)?
+                    .into_iter()
+                    .filter(|p| members.contains(&p.author) && now - p.at < week)
+                    .map(|p| p.at),
+            );
+        }
+        let over = |ms: Millis| talk_work(&seen, &posts, &acts, &Window::rolling(now, ms)).json();
+        let kept = json!({ "at": now, "day": over(guards::WINDOWS[0].0), "week": over(week) });
+        self.store.set_setting(TALK_SEEN, &kept.to_string())?;
+        Ok(())
     }
 
     /// Each open project's ceremony over the day and the week (ADR 0124): over the line, a
     /// finding, a notice on the owner's desk and the project's lead woken on its busiest task;
     /// back under it in both, the finding clears. Kept for the scorecard either way.
-    fn look_for_ceremony(&self, now: Millis) -> Done<()> {
-        let turns = self.turns_seen(now)?;
+    fn look_for_ceremony(&self, now: Millis, turns: &[Seen]) -> Done<()> {
         let mut shown = Vec::new();
         for project in self.store.projects()? {
             if matches!(project.status, ProjectStatus::Done | ProjectStatus::Dropped) {
@@ -180,8 +242,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             let mine: Vec<TurnSeen> = turns
                 .iter()
-                .filter(|(p, _, _)| *p == project.id.0)
-                .map(|(_, _, t)| *t)
+                .filter(|s| s.project == Some(project.id.0))
+                .map(|s| s.turn)
                 .collect();
             let windows: Vec<(Ceremony, &str)> = guards::WINDOWS
                 .iter()
@@ -210,10 +272,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let evidence = format!("{}: {}", project.title, said.join("; "));
             let busiest = turns
                 .iter()
-                .filter(|(p, _, t)| {
-                    *p == project.id.0 && guards::turn_kind(t) == TurnKind::Coordination
+                .filter(|s| {
+                    s.project == Some(project.id.0)
+                        && guards::turn_kind(&s.turn) == TurnKind::Coordination
                 })
-                .map(|(_, task, _)| *task)
+                .map(|s| s.task)
                 .fold(Vec::<(TaskId, usize)>::new(), |mut acc, task| {
                     match acc.iter_mut().find(|(t, _)| *t == task) {
                         Some(found) => found.1 += 1,
@@ -231,12 +294,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 })
                 .max_by_key(|(_, n)| *n)
                 .map(|(task, _)| task);
+            // What it rests on is the week's talk, which contains the day's: a finding the owner
+            // judged is raised again once a dozen more turns of it have been had (ADR 0132).
+            let mark = i64::try_from(windows[1].0.coordination).unwrap_or(i64::MAX);
             let Some(id) = self.find_on_the_desk(
                 Guard::Ceremony,
                 &key,
                 busiest,
                 Some(project.id.0),
                 &evidence,
+                mark,
             )?
             else {
                 continue;
@@ -263,7 +330,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// A finding as a notice on the owner's desk: the rule and what it fired on.
+    /// A finding as a notice on the owner's desk (in the digest, ADR 0132): the rule and what it
+    /// fired on. Returned as its id when it is news, a finding that opened or opened again; a
+    /// finding seen again is refreshed, its notice with it, and a judged one is left alone.
     pub(super) fn find_on_the_desk(
         &self,
         guard: Guard,
@@ -271,20 +340,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         task: Option<TaskId>,
         project: Option<i64>,
         evidence: &str,
+        mark: i64,
     ) -> Done<Option<i64>> {
-        let Some(id) = self.find(guard, key, task, project, evidence)? else {
+        let found = self.find(guard, key, task, project, evidence, mark)?;
+        if !found.how.is_news() {
             return Ok(None);
-        };
+        }
+        let id = found.id;
         let desk = self.store.add_desk(
             "guard",
             task,
             None,
             None,
-            &format!(
-                "{} (finding {id}): {evidence}\nThe rule: {}. Say whether it was real.",
-                guard.plainly(),
-                guard.rule()
-            ),
+            &guard_card(guard, id, evidence),
             self.clock.now(),
         )?;
         self.store.set_finding_desk(id, desk.0)?;
@@ -336,12 +404,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "sent back {} times with no new evidence between",
             returns.len()
         );
+        // It rests on how many times the work has been sent back (ADR 0132).
         self.find(
             Guard::Carousel,
             &format!("carousel:{}", task.0),
             Some(task),
             current.project.map(|p| p.0),
             &format!("#{} {}: {why}", task.0, current.title),
+            i64::try_from(returns.len()).unwrap_or(i64::MAX),
         )?;
         let Some(lead) = self.area_lead(&current)? else {
             return Ok(());
@@ -427,6 +497,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ),
         )?;
         let project = self.task(task)?.project.map(|p| p.0);
+        // One finding for each task put with a card; it rests on nothing that grows.
         self.find(
             Guard::SameAsk,
             &format!("same_ask:{}:{}", open.id.0, task.0),
@@ -436,6 +507,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "#{}'s {kind} is the same ask as #{main}'s, on the desk as item {}",
                 task.0, open.id.0
             ),
+            0,
         )?;
         Ok(open.id)
     }
@@ -509,6 +581,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let who = mine.first().map(|r| name(r.member)).unwrap_or_default();
             let mut tools: Vec<String> = mine.iter().map(|r| r.tool.clone()).collect();
             tools.dedup();
+            // A refusal rests on the newest refused act it counts: a later one is new (ADR 0132).
+            let newest = mine.iter().map(|r| r.id).max().unwrap_or(0);
             self.find_on_the_desk(
                 Guard::FencePush,
                 &format!("fence:run:{}", run.0),
@@ -519,20 +593,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     mine.len(),
                     tools.join(", ")
                 ),
+                newest,
             )?;
         }
         let mut who: Vec<MemberId> = Vec::new();
+        let mut newest = 0;
         for r in self.store.runs()? {
             if r.started_at.is_none_or(|s| now - s >= t.fence_window_ms) {
                 continue;
             }
             for receipt in self.store.call_receipts_of(r.id)? {
-                if receipt.act
-                    && !receipt.ok
-                    && receipt.tool == tool
-                    && !who.contains(&receipt.member)
-                {
-                    who.push(receipt.member);
+                if receipt.act && !receipt.ok && receipt.tool == tool {
+                    newest = newest.max(receipt.id);
+                    if !who.contains(&receipt.member) {
+                        who.push(receipt.member);
+                    }
                 }
             }
         }
@@ -547,6 +622,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "{tool} was refused for {} within a day: the team keeps trying it",
                     named.join(", ")
                 ),
+                newest,
             )?;
         }
         Ok(())
@@ -563,14 +639,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "{name} on #{} {}: {} turns in a row showed nothing",
             task.0, current.title, THRESHOLDS.redundant_wakes
         );
+        // It rests on how many turns the member has had on the task: a new run of nothing after
+        // a judged one has had turns since (ADR 0132).
+        let had = self
+            .store
+            .runs()?
+            .iter()
+            .filter(|r| r.member == member && r.task == Some(task))
+            .count();
         let found = self.find(
             Guard::RedundantWake,
             &format!("redundant:{}:{}", task.0, member.0),
             Some(task),
             current.project.map(|p| p.0),
             &evidence,
+            i64::try_from(had).unwrap_or(i64::MAX),
         )?;
-        if found.is_none() {
+        if !found.how.is_news() {
             return Ok(());
         }
         self.post_held_lock(
@@ -671,6 +756,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 json!({ "id": f.id, "guard": f.guard.name(), "plainly": f.guard.plainly(),
                         "task": f.task, "project": f.project, "rule": f.rule,
                         "evidence": f.evidence, "opened_at": f.opened_at,
+                        "seen_at": f.seen_at, "episodes": f.episodes,
                         "cleared_at": f.cleared_at, "verdict": f.verdict.map(Verdict::name),
                         "fix_worked": f.fix_worked, "judged_by": f.judged_by })
             })

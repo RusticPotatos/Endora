@@ -13,6 +13,7 @@
 
 use serde_json::{Value, json};
 
+use super::guards::stuck_key;
 use super::{Author, Done, Engine, EngineError, one_line};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::ladder::{self, Decision, Rung};
@@ -356,8 +357,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Stuck work on the owner's desk: only when no rung is left to take it, and once while it
-    /// waits there (ADR 0124: it closes itself when the work moves again).
+    /// Stuck work in the owner's digest (ADR 0132): only when no rung is left to take it, and once
+    /// while it waits there (ADR 0124: it closes itself when the work moves again). Not when the
+    /// owner has judged the task's stuck finding and nothing has moved since: `found_stuck` makes
+    /// a new finding, which has not been judged, once the work has moved and stopped again.
     pub(super) fn stuck_on_the_desk(&self, task: &Task, why: &str) -> Done<()> {
         let there = self
             .store
@@ -365,6 +368,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .iter()
             .any(|d| d.kind == "stuck" && d.status == "waiting" && d.task == Some(task.id));
         if there {
+            return Ok(());
+        }
+        let finding = self.store.latest_finding(&stuck_key(task.id))?;
+        if finding.as_ref().is_some_and(|f| f.verdict.is_some()) {
             return Ok(());
         }
         let item = self.store.add_desk(
@@ -375,6 +382,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &format!("Stuck: {}. {why}", task.title),
             self.clock.now(),
         )?;
+        // The card says which finding it is, and how often the work was found stuck.
+        if let Some(open) = finding.filter(|f| f.cleared_at.is_none()) {
+            self.store.set_finding_desk(open.id, item.0)?;
+        }
         self.emit(
             EventKind::DeskAdded,
             json!({ "item": item.0, "kind": "stuck", "task": task.id.0 }),

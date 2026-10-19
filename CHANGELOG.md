@@ -9,6 +9,25 @@ tagged release.
 
 ### Changed
 
+- **A desk that interrupts only for decisions** ([ADR 0132](docs/adr/0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md)).
+  Over 17 and 18 October thirty items reached the owner's desk in 38.6 hours and six were real
+  decisions or approvals; the rest were stuck work, a guard's finding or a notice. Those three
+  kinds no longer become a card each: they wait in **one "While you were away" card**, the first
+  on the Desk tab when it has anything in it, with a count, newest first, each keeping its own
+  choices on the same endpoints (try again or drop; real, false positive, can't tell or
+  resolved; seen). Acting on one takes it out, and the owner's verdict on a finding from the
+  Guards card puts its card away too. Every other kind (a decision, an approval, a question, a
+  push, a project's cap or budget, a member out for the day, a recall, canon, a goal, a hire, a
+  furlough, work sent back three times, a write-up to read) interrupts as before, and so does a
+  kind nobody has classified. The snapshot's `desk`, the "N waiting on you" chip and the Desk
+  badge now hold only what interrupts; the rest is the snapshot's new `digest`. **One finding
+  for a guard and what it is about:** a new detection refreshes the finding that is open (its
+  evidence and time, and the words on its card), opens a cleared one again as itself, and leaves
+  a judged one alone until the evidence has grown by a step past what was judged (a new episode
+  after the work has moved, for stuck work; another dozen turns of talk, for the ceremony). The
+  Guards card says when a finding was seen again and how often it was found. Migration
+  (idempotent): three columns added to `findings` if missing (`seen_at`, `episodes`, `mark`),
+  no row changed. Scenarios: `domains/team/features/a-desk-that-interrupts-only-for-decisions.feature`.
 - **The HQ screen is tidied into tabs** (console only, no API change). Desk (what is looked at
   and what waits on you), Team (roster, hiring, how the team is doing), Work (projects, goal,
   activity, guards, routines), Knowledge (the world, house log, notes) and Office (games,
@@ -24,6 +43,23 @@ tagged release.
 
 ### Added
 
+- **Outcomes beside activity** ([ADR 0132](docs/adr/0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md)).
+  Over 17 and 18 October, 201 turns and $8.85 delivered no change the owner accepted, and nothing
+  on the HQ screen said so. The Team tab's "How the team is doing" card now opens with
+  **Outcomes** over the last day and the last week, and the top bar says **N landed this week**
+  (`snapshot.scorecard.outcomes`). **Landed**: tasks whose branch the node pushed to the fork on
+  the owner's approval, each once (an approval not yet pushed, and a push that failed, are not
+  landed), with the branches submitted and the checks passed. **Cost of one**: the window's
+  spend over what landed, "none landed" when nothing did, never $0. **Talk : work**: the ceremony
+  guard's own labels over the same turns, so the card and the guard agree, with the posts written
+  and the acts that succeeded (kept by the five-minute process-health look). **Desk**:
+  interruptions a day, and what went to the digest instead. **Waiting now**: turns waiting for
+  budget and for the Mac, and the oldest wait. **Memory**: work sent back as `exists_already`,
+  searches of the record, and consults asked, answered and answered from the record. A tester or
+  a lead may name `reason: exists_already` on a send-back; every send-back (`task.sent_back`)
+  and every `ask_record` (`record.asked`) is told in the feed. `consults_shown`, which nothing
+  called, is removed. No schema change. Scenarios:
+  `domains/team/features/what-the-work-came-to.feature`.
 - **Two brains per member, and two kinds of turn** ([ADR 0131](docs/adr/0131-the-two-kinds-of-turn.md)).
   Every member has a **work brain** (the Mac or the house's model) and a **judgment brain** (a
   Claude its role may use: Haiku until the owner says otherwise); the roster shows and sets both

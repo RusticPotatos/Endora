@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Eighty-two records stand, every one accepted, and forty-nine earlier ones are archived into them
+Eighty-three records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -287,6 +287,7 @@ of an existing record and take the next number.
 | [0129](0129-the-teams-history-and-asking-the-past.md) | The team's history, and asking the past | — |
 | [0130](0130-the-macs-brain.md) | The Mac's brain | — |
 | [0131](0131-the-two-kinds-of-turn.md) | The two kinds of turn: the house's models work, Claude judges | — |
+| [0132](0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md) | Outcomes, and a desk that interrupts only for decisions | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

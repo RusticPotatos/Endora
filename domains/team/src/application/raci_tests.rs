@@ -291,7 +291,7 @@ fn on_an_areas_task_the_ceo_directs_and_the_lead_decides() {
         );
     }
     assert_eq!(
-        hq.accept_in(mara.run, task, false, "no", &[]),
+        hq.accept_in(mara.run, task, false, "no", &[], None),
         Err(EngineError::Refused(Refusal::CeoDirects("Ada".to_owned())))
     );
     // A direction needs evidence, and then goes to the lead, who is woken.

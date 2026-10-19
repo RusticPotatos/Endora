@@ -141,6 +141,11 @@ pub enum EventKind {
     GuardCleared,
     /// The owner or a lead gave a guard's finding its verdict.
     GuardJudged,
+    /// A tester or a lead sent work back from review, with the reason if it was one HQ counts
+    /// (ADR 0132).
+    SentBack,
+    /// A member searched the record with `ask_record`, and how many passages it found (ADR 0132).
+    RecordAsked,
 }
 
 impl EventKind {
@@ -216,6 +221,8 @@ impl EventKind {
             Self::GuardFound => "guard.found",
             Self::GuardCleared => "guard.cleared",
             Self::GuardJudged => "guard.judged",
+            Self::SentBack => "task.sent_back",
+            Self::RecordAsked => "record.asked",
         }
     }
 }
