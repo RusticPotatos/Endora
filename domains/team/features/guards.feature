@@ -111,3 +111,18 @@ Feature: Guards against how agent teams fail
     And the team has 2 tasks
     When the owner hands Ada the task "Restore from the backup", waiting on "Read the logs"
     Then it is not refused
+
+  # A turn that ended before turns were labelled may have been the talk that puts the project over,
+  # or the change that keeps it under. HQ says it cannot tell; it neither blames nor clears.
+  # Seed: Ceremony::over reading an unread turn as talk fails the card step; as a change, the
+  # same; either way a finding opens on a count HQ does not have and fails the desk step.
+  Scenario: A guard that cannot tell says so, and opens no finding
+    Given the project "Home lab upkeep" led by Ada
+    And Ada has the task "Plan the backups" in the project "Home lab upkeep"
+    When Ada talks about "Plan the backups" for 12 turns and changes nothing
+    And one of Ada's turns on "Plan the backups" ended before turns were labelled
+    And HQ looks at how the team is doing
+    Then the guards card says "11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read"
+    And the guards card cannot tell whether "Home lab upkeep" is talking more than working
+    And the owner's desk holds no finding
+    And Ada is not woken by a guard

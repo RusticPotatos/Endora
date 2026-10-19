@@ -4,6 +4,7 @@
 use std::sync::atomic::Ordering;
 
 use cucumber::{given, then, when};
+use endora_team::application::guard_ports::GuardStore;
 use endora_team::application::{Author, NewTask, TeamStore};
 use endora_team::domain::guards::THRESHOLDS;
 use endora_team::domain::{Priority, TaskId, TaskStatus, WakeReason};
@@ -74,6 +75,59 @@ fn reviews_and_changes_nothing(
         .expect("a member may post in the task its turn is on");
         super::turn_ends(w, name.clone());
     }
+}
+
+/// The member's newest turn on the task, as one that ended before turns were labelled.
+#[when(regex = r#"^one of (\w+)'s turns on "(.+)" ended before turns were labelled$"#)]
+fn a_turn_ended_before_labels(w: &mut Office, name: String, title: String) {
+    let member = w.member(&name);
+    let task = w.task(&title);
+    let mut run =
+        w.hq.store()
+            .runs()
+            .expect("the store answers")
+            .into_iter()
+            .rfind(|r| r.member == member && r.task == Some(task) && r.label.is_some())
+            .expect("a labelled turn");
+    run.label = None;
+    w.hq.store().save_run(&run).expect("the store takes it");
+}
+
+/// The Guards card's ceremony entry for the project says HQ cannot tell, rather than over or under.
+#[then(expr = "the guards card cannot tell whether {string} is talking more than working")]
+fn guards_card_cannot_tell(w: &mut Office, title: String) {
+    let card = w.guards();
+    let entry = card["ceremony"]
+        .as_array()
+        .expect("each ceremony")
+        .iter()
+        .find(|c| c["title"] == title.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("no ceremony for {title}: {card}"));
+    assert_eq!(entry["cannot_tell"], json!(true), "{entry}");
+    assert_eq!(entry["over"], json!(false), "{entry}");
+}
+
+#[then("the owner's desk holds no finding")]
+fn desk_holds_no_finding(w: &mut Office) {
+    let found = w.waiting_on_desk("guard");
+    assert!(found.is_empty(), "on the desk: {found:?}");
+    let open = w.hq.store().findings().expect("the store answers");
+    assert!(
+        open.iter().all(|f| f.cleared_at.is_some()),
+        "a finding stands: {open:?}"
+    );
+}
+
+#[then(expr = "{word} is not woken by a guard")]
+fn not_woken_by_a_guard(w: &mut Office, name: String) {
+    let member = w.member(&name);
+    let woken =
+        w.hq.wakes()
+            .expect("the store answers")
+            .iter()
+            .any(|x| x.member == member && x.reason == WakeReason::Guard);
+    assert!(!woken, "{name} was woken by a guard");
 }
 
 #[when("HQ looks at how the team is doing")]

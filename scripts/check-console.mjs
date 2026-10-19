@@ -595,7 +595,7 @@ if (failures.length) {
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
                 { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }], reports_to: 1, rescues: 2,
                   brain: "local", brains: [{ name: "local", label: "Local" }, { name: "claude-haiku-5-5", label: "<b>Haiku</b>" }] },
-                { id: 3, name: "Cy", role: "researcher", look: 1, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
+                { id: 3, name: "Cy", role: "researcher", look: 1, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], rescues: null, brain: "local", brains: [] },
                 { id: 4, name: "<i>Dee</i>", role: "reviewer", look: 2, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
                 { id: 5, name: "Mara", role: "ceo", look: 3, paused: false, slots: 1, per_day: 1361110, committed: 0, spent: 0, held: 0, running: [],
                   brain: "claude-opus-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-opus-5-5", label: "Claude Opus" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }] },
@@ -691,6 +691,7 @@ if (failures.length) {
                     { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null },
                     { guard: "coordination", plainly: "Coordination over budget", rule: "r", fired: 1, open: 1, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null, mode: "shadow" }],
         ceremony: [{ project: 1, title: "<u>Upkeep</u>", over: true, windows: [{ window: "24 h", said: "14 coordination turns, 1 product change in 24 h", over: true }] },
+                   { project: 2, title: "Backups", over: false, cannot_tell: true, windows: [{ window: "24 h", said: "11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read", over: false, verdict: "cannot_tell" }] },
                    { project: null, title: "#12 <i>Plan the backups</i>", over: true, windows: [{ window: "24 h", said: "21 coordination turns, 0 product changes in 24 h", over: true, spent: 1230000 }] }],
         findings: [{ id: 3, guard: "ceremony", plainly: "Talk about work", task: 7, project: 1, rule: "at least 12 coordination turns", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, seen_at: 5000, episodes: 3, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
                    { id: 4, guard: "stuck", plainly: "Stuck work", task: 7, project: null, rule: "parked", evidence: "#7 x", opened_at: 2, seen_at: 2, episodes: 1, cleared_at: 3, verdict: null, fix_worked: null, judged_by: "" }] },
@@ -890,12 +891,17 @@ if (failures.length) {
   }
   if (office.includes('data-act="hq:fixed:4:yes"')) fail("hq: a finding nobody judged asks whether its fix worked");
   // How often the CEO stepped into a member's work (ADR 0124), on the roster.
-  if (!office.includes("the CEO stepped in 2 times")) fail("hq: the roster does not count the CEO's rescues");
+  if (!office.includes("the CEO stepped in 2 times this week")) fail("hq: the roster does not count the CEO's rescues");
+  // HQ that cannot tell (the pruned feed lost part of the week) says so, and never says nought.
+  // (Once, for the one member whose count is null: a snapshot that says nothing of it says nothing.)
+  if (office.split("how often the CEO stepped in this week: HQ cannot tell").length - 1 !== 1) fail("hq: the roster does not say it cannot tell the CEO's rescues, once, for the one it cannot tell");
   // The same ask from another task is put with a card (ADR 0124), and the card says so.
   if (!office.includes('question · <button class="hq-link" data-act="hq:pick:task:7">EL-7</button> · also on <button class="hq-link" data-act="hq:pick:task:9">EL-9</button>: one answer reaches each')) fail("hq: a card does not say which other tasks share its ask, as links that open them");
   for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b>: 3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2",
     "<b>Stuck work</b>: 0 found · 0 open · not judged yet", "&lt;u&gt;Upkeep&lt;/u&gt;: 14 coordination turns, 1 product change in 24 h · talking more than working",
-    "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep"]) {
+    "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep",
+    // A window HQ cannot tell the ceremony of says so, and is not marked as talking more.
+    "Backups: 11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read · cannot tell whether it is talking more than working: some turns have no label"]) {
     if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
   }
   if (office.includes("<img src=g") || office.includes("<u>Upkeep</u>")) fail("hq: a guard's finding became markup");

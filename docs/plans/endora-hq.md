@@ -1291,6 +1291,11 @@ showing it, every number in `domain::guards::THRESHOLDS`, every finding judged.
   container vanished or was killed from outside) is the platform's, not its member's: tried
   again once without counting against its retries, and nothing is found, nudged or climbed
   while it waits (`runs.interrupted`; scenario `a-deploy-under-a-turn.feature`).
+- **Guards say can't tell** (amended 2026-10-19): a ceremony window that depends on a turn HQ
+  cannot read (one that ended before turns were labelled) is neither found nor cleared, and the
+  Guards card says so; the CEO's rescues are counted over the last week, and when the pruned
+  event feed no longer reaches back that far the roster says HQ cannot tell rather than show a
+  count that is too low (scenario `guards.feature`).
 - The owner: `POST /v1/hq/retractions`, `GET /v1/hq/retractions/{id}/sweep`,
   `POST /v1/hq/retractions/{id}/forget`, through the node and its audit log.
 - Scenarios: `domains/team/features/guards.feature`.

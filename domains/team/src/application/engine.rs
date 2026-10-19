@@ -4776,8 +4776,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
                     .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
                     .collect::<Vec<_>>(),
-                // How often the CEO reached into its work (ADR 0124).
-                "rescues": rescues.get(&m.id.0).copied().unwrap_or(0),
+                // How often the CEO reached into its work this week (ADR 0124); null when the
+                // pruned feed no longer holds the week, and HQ cannot tell.
+                "rescues": rescues.as_ref().map(|r| r.get(&m.id.0).copied().unwrap_or(0)),
             }));
         }
         let why = |task: &Task| {

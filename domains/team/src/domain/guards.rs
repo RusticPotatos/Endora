@@ -362,6 +362,25 @@ pub const fn enough_said(live: bool) -> &'static str {
 /// The two windows the process-health detectors look over: a day, and a week.
 pub const WINDOWS: [(Millis, &str); 2] = [(DAY, "24 h"), (7 * DAY, "7 d")];
 
+/// How far back the CEO's stepping in on a member's work is counted: a week, the longest of the
+/// guards' windows (ADR 0124, amended).
+pub const RESCUE_WINDOW_MS: Millis = 7 * DAY;
+
+/// Whether the event feed still reaches back to `from`, the start of a window counted over it.
+/// The node prunes the feed to the newest events it keeps, so a count over events is a whole
+/// count only if nothing inside the window was pruned. `oldest_kept` is the oldest event the feed
+/// holds: its place in the feed and when it happened; `None` for an empty feed. The first event
+/// ever is place 1, so an oldest kept event after it means events were pruned; then the feed
+/// reaches the window if that event is no newer than the window's start. A feed never pruned
+/// holds everything there was.
+#[must_use]
+pub const fn feed_reaches(from: Millis, oldest_kept: Option<(i64, Millis)>) -> bool {
+    match oldest_kept {
+        None => true,
+        Some((place, at)) => place <= 1 || at <= from,
+    }
+}
+
 // ---- the stopped diagnosis ------------------------------------------------------------------
 
 /// Whether open work is moving, and if it stopped, whether on purpose (ADR 0124).
@@ -565,23 +584,75 @@ pub struct Ceremony {
     pub product: usize,
     /// What every turn that ended in the window spent, whatever it did (ADR 0133).
     pub spent: Micros,
+    /// Turns that ended in the window and that HQ cannot read: they have no label (they ended
+    /// before turns were labelled), so whether each talked or changed the product is not known.
+    pub unread: usize,
+}
+
+/// What a window's ceremony comes to (ADR 0124, amended): over the line, under it, or that HQ
+/// cannot tell, which it never takes for either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Over {
+    /// Talk about work rather than work, whatever the turns HQ cannot read were.
+    Yes,
+    /// Not, whatever the turns HQ cannot read were.
+    No,
+    /// It depends on what the turns HQ cannot read were.
+    CannotTell,
+}
+
+impl Over {
+    /// Whether the window is over the line, for certain.
+    #[must_use]
+    pub const fn is_yes(self) -> bool {
+        matches!(self, Self::Yes)
+    }
+
+    /// Stable lowercase name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Yes => "over",
+            Self::No => "under",
+            Self::CannotTell => "cannot_tell",
+        }
+    }
 }
 
 impl Ceremony {
     /// Whether the window is talk about work rather than work: at least
     /// [`Thresholds::ceremony_least`] coordination turns, and [`Thresholds::ceremony_ratio`]
-    /// of them or more for each product change.
+    /// of them or more for each product change. Turns HQ cannot read ([`Self::unread`]) may each
+    /// have been talk, a change or neither, so it is over only if it is over whatever they were
+    /// (taken all for changes), under only if it is under whatever they were (all for talk), and
+    /// otherwise it cannot be told: never read as either on a count HQ does not have.
     #[must_use]
-    pub const fn over(&self) -> bool {
-        self.coordination >= THRESHOLDS.ceremony_least
-            && self.coordination >= THRESHOLDS.ceremony_ratio * self.product
+    pub const fn over(&self) -> Over {
+        if self.holds(self.coordination, self.product + self.unread) {
+            return Over::Yes;
+        }
+        if !self.holds(self.coordination + self.unread, self.product) {
+            return Over::No;
+        }
+        Over::CannotTell
+    }
+
+    /// Whether `coordination` turns against `product` changes are talk about work.
+    const fn holds(&self, coordination: usize, product: usize) -> bool {
+        coordination >= THRESHOLDS.ceremony_least
+            && coordination >= THRESHOLDS.ceremony_ratio * product
     }
 
     /// As the scorecard and a finding say it.
     #[must_use]
     pub fn said(&self, window: &str) -> String {
+        let unread = match self.unread {
+            0 => String::new(),
+            1 => ", 1 turn it cannot read".to_owned(),
+            n => format!(", {n} turns it cannot read"),
+        };
         format!(
-            "{} coordination turns, {} product {} in {window}",
+            "{} coordination turns, {} product {} in {window}{unread}",
             self.coordination,
             self.product,
             if self.product == 1 {
@@ -607,6 +678,18 @@ impl Ceremony {
 /// spent.
 #[must_use]
 pub fn ceremony(turns: &[TurnSeen], now: Millis, ms: Millis) -> Ceremony {
+    ceremony_with_unread(turns, &[], now, ms)
+}
+
+/// As [`ceremony`], and the turns HQ cannot read (`unread`, when each ended) that ended in the
+/// same window.
+#[must_use]
+pub fn ceremony_with_unread(
+    turns: &[TurnSeen],
+    unread: &[Millis],
+    now: Millis,
+    ms: Millis,
+) -> Ceremony {
     let within = turns
         .iter()
         .filter(|t| t.ended_at <= now && now - t.ended_at < ms);
@@ -614,6 +697,10 @@ pub fn ceremony(turns: &[TurnSeen], now: Millis, ms: Millis) -> Ceremony {
         coordination: 0,
         product: 0,
         spent: 0,
+        unread: unread
+            .iter()
+            .filter(|at| **at <= now && now - **at < ms)
+            .count(),
     };
     for t in within {
         found.spent = found.spent.saturating_add(t.spent);
@@ -1567,20 +1654,24 @@ mod tests {
         let c = ceremony(&turns, 2_000, DAY);
         assert_eq!(
             (c.coordination, c.product, c.over()),
-            (11, 0, false),
+            (11, 0, Over::No),
             "too few"
         );
         turns.extend(talk(1, 1_500));
-        assert!(ceremony(&turns, 2_000, DAY).over());
+        assert_eq!(ceremony(&turns, 2_000, DAY).over(), Over::Yes);
         turns.extend(vec![product; 3]);
         let c = ceremony(&turns, 2_000, DAY);
         assert_eq!(
             (c.coordination, c.product, c.over()),
-            (12, 3, true),
+            (12, 3, Over::Yes),
             "12:3 is 4:1"
         );
         turns.push(product);
-        assert!(!ceremony(&turns, 2_000, DAY).over(), "12:4 is under");
+        assert_eq!(
+            ceremony(&turns, 2_000, DAY).over(),
+            Over::No,
+            "12:4 is under"
+        );
         assert_eq!(
             ceremony(&turns, 1_000 + DAY, DAY).coordination,
             1,
@@ -1590,6 +1681,76 @@ mod tests {
             ceremony(&turns, 2_000, DAY).said("24 h"),
             "12 coordination turns, 4 product changes in 24 h"
         );
+    }
+
+    /// A window with turns HQ cannot read is over only if it is over whatever they were, under
+    /// only if it is under whatever they were, and otherwise HQ cannot tell (ADR 0124, amended).
+    #[test]
+    fn a_window_with_turns_hq_cannot_read_is_over_under_or_cannot_be_told() {
+        let window = |coordination, product, unread| Ceremony {
+            coordination,
+            product,
+            spent: 0,
+            unread,
+        };
+        // Nothing unread: as it always was.
+        assert_eq!(window(12, 3, 0).over(), Over::Yes);
+        assert_eq!(window(12, 4, 0).over(), Over::No);
+        assert_eq!(window(11, 0, 0).over(), Over::No);
+        // Over even if all three unread turns changed the product (12 against 3).
+        assert_eq!(window(12, 0, 3).over(), Over::Yes);
+        // 12 against 3 is over; one unread turn that changed the product makes it 12 against 4,
+        // and one that talked makes it 13 against 3: it depends on what it was.
+        assert_eq!(window(12, 3, 1).over(), Over::CannotTell);
+        // Short of the line by one turn that may have talked.
+        assert_eq!(window(11, 0, 1).over(), Over::CannotTell);
+        // Under even if every unread turn talked (7 of 12), or changed nothing at all.
+        assert_eq!(window(5, 5, 2).over(), Over::No);
+        assert_eq!(window(10, 0, 1).over(), Over::No);
+        assert!(window(12, 0, 3).over().is_yes() && !window(12, 3, 1).over().is_yes());
+        assert_eq!(
+            [Over::Yes, Over::No, Over::CannotTell].map(Over::name),
+            ["over", "under", "cannot_tell"]
+        );
+    }
+
+    /// The turns HQ cannot read are counted in the window they ended in, and said.
+    #[test]
+    fn the_turns_hq_cannot_read_are_counted_in_their_window_and_said() {
+        let turns = vec![
+            TurnSeen {
+                ended_at: 1_900,
+                ..seen(Label::TalkOnly)
+            };
+            2
+        ];
+        let c = ceremony_with_unread(&turns, &[1_000, 1_500, 2_000 - DAY - 1], 2_000, DAY);
+        assert_eq!((c.coordination, c.product, c.unread), (2, 0, 2));
+        assert_eq!(
+            c.said("24 h"),
+            "2 coordination turns, 0 product changes in 24 h, 2 turns it cannot read"
+        );
+        let one = ceremony_with_unread(&turns, &[1_000], 2_000, DAY);
+        assert_eq!(
+            one.said("24 h"),
+            "2 coordination turns, 0 product changes in 24 h, 1 turn it cannot read"
+        );
+        assert_eq!(ceremony(&turns, 2_000, DAY).unread, 0);
+    }
+
+    /// A count over the event feed is a whole count only if nothing inside its window was pruned.
+    #[test]
+    fn the_feed_reaches_a_window_unless_events_inside_it_were_pruned() {
+        let from = 10_000;
+        // Nothing in it at all, or never pruned (the first event ever is place 1): all there was.
+        assert!(feed_reaches(from, None));
+        assert!(feed_reaches(from, Some((1, from + 5_000))));
+        // Pruned, and the oldest kept event is no newer than the window's start: it reaches.
+        assert!(feed_reaches(from, Some((500, from))));
+        assert!(feed_reaches(from, Some((500, from - 1))));
+        // Pruned, and the oldest kept event is inside the window: some of it is gone.
+        assert!(!feed_reaches(from, Some((500, from + 1))));
+        assert!(!feed_reaches(from, Some((2, from + 5_000))));
     }
 
     /// A finding says what the talk cost (ADR 0133): what every turn that ended in the window

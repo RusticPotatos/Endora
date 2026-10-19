@@ -541,6 +541,88 @@ fn a_project_that_only_talks_about_its_work_is_a_finding_for_its_lead() {
     );
 }
 
+/// The newest turn of `member`'s on `task`, as one that ended before turns were labelled: HQ
+/// cannot read what it did.
+fn forget_the_label_of_the_newest_turn(hq: &Hq<'_>, member: MemberId, task: TaskId) {
+    let mut run = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .rfind(|r| r.member == member && r.task == Some(task) && r.label.is_some())
+        .expect("a labelled turn");
+    run.label = None;
+    hq.store().save_run(&run).unwrap();
+}
+
+/// A window HQ cannot tell the ceremony of (a turn it cannot read may have been the talk that
+/// puts it over, or the change that keeps it under) opens no finding: it says so on the Guards
+/// card, and waits for what it does not know.
+#[test]
+fn a_ceremony_that_depends_on_a_turn_hq_cannot_read_is_not_found() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, task) = project_work(&clock);
+    for _ in 0..11 {
+        one_turn(&hq, ada, task, false);
+    }
+    // The twelfth ended before turns were labelled.
+    one_turn(&hq, ada, task, false);
+    forget_the_label_of_the_newest_turn(&hq, ada, task);
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let ceremony = guards(&hq)["ceremony"][0].clone();
+    assert_eq!(ceremony["over"], false, "{ceremony}");
+    assert_eq!(ceremony["cannot_tell"], true, "{ceremony}");
+    assert_eq!(ceremony["windows"][0]["verdict"], "cannot_tell");
+    assert_eq!(
+        ceremony["windows"][0]["said"],
+        "11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read"
+    );
+    assert!(
+        hq.store().findings().unwrap().is_empty(),
+        "nothing is found on a count HQ does not have"
+    );
+    assert_eq!(wakes_for(&hq, task, WakeReason::Guard), 0, "no lead woken");
+    assert!(ceremony_notices(&hq).is_empty());
+}
+
+/// A finding that stands is not cleared because a turn behind it can no longer be read: HQ does
+/// not know that it ended, and does not raise it again either.
+#[test]
+fn a_standing_ceremony_finding_is_neither_cleared_nor_raised_again_while_hq_cannot_tell() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, task) = project_work(&clock);
+    for _ in 0..12 {
+        one_turn(&hq, ada, task, false);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    assert_eq!(guards(&hq)["ceremony"][0]["over"], true);
+    assert_eq!(ceremony_notices(&hq).len(), 1);
+    let open = |hq: &Hq<'_>| {
+        hq.store()
+            .findings()
+            .unwrap()
+            .iter()
+            .filter(|f| f.cleared_at.is_none())
+            .count()
+    };
+    assert_eq!(open(&hq), 1);
+    // One of the twelve can no longer be read: now it depends on what it was.
+    forget_the_label_of_the_newest_turn(&hq, ada, task);
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let ceremony = guards(&hq)["ceremony"][0].clone();
+    assert_eq!(
+        (ceremony["over"].clone(), ceremony["cannot_tell"].clone()),
+        (false.into(), true.into()),
+        "{ceremony}"
+    );
+    assert_eq!(open(&hq), 1, "not cleared on a count HQ does not have");
+    assert_eq!(ceremony_notices(&hq).len(), 1, "and not raised again");
+    assert_eq!(wakes_for(&hq, task, WakeReason::Guard), 1, "nor the lead");
+}
+
 /// The same talk beside enough real change (four acts to twelve turns of talk) is healthy.
 #[test]
 fn talk_beside_enough_product_change_is_healthy() {

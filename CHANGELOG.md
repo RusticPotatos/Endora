@@ -9,6 +9,15 @@ tagged release.
 
 ### Changed
 
+- **A guard that cannot tell says so** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),
+  amended). **Talk against work:** a turn that ended before turns were labelled has no label, and
+  was counted as nothing; such turns are now counted apart ("1 turn it cannot read"), and a window
+  that is over only if they talked, or under only if they changed the product, is neither: no
+  finding is opened, none that stands is cleared, and the Guards card says it cannot tell.
+  **The CEO's stepping in:** it was counted over the whole event feed, which the node prunes to
+  its newest 20,000, and a count over a pruned feed was shown as if whole; it is now counted over
+  the last week, and when the feed no longer reaches back that far the roster says HQ cannot tell,
+  and why. No migration. Scenario: `domains/team/features/guards.feature`.
 - **Two holes in the closure contract are shut** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),
   amended). **Work closed as done, superseded, must name the task that carries it on:** it was
   meant to (the tool says so) and was not made to; it is refused with no successor, with the

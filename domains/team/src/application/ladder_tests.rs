@@ -335,6 +335,79 @@ fn stuck_work_goes_to_its_lead_first_and_the_lead_decides_it() {
     );
 }
 
+/// Stuck work of `dev`'s that its lead says needs the CEO: it climbs to the CEO, and counts as
+/// a rescue of `dev`'s (ADR 0124).
+fn climb_to_the_ceo(hq: &Hq<'_>, clock: &Hands, w: &Wing, dev: MemberId, title: &str) -> TaskId {
+    let task = task_for(hq, w, dev, title);
+    stuck(hq, clock);
+    let kit = turn_on(hq, w.kit, task);
+    use_tool(
+        hq,
+        &kit,
+        "decide_stuck",
+        &json!({ "task": task.0, "decision": "needs_ceo",
+                 "detail": "it needs a paid runner beyond the caps",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    // His turn is over: the Mac takes one turn at a time (ADR 0131).
+    hq.runner().finish(kit.run, true);
+    hq.tick().unwrap();
+    task
+}
+
+/// What the roster says of how often the CEO stepped in on `member`'s work: a number, or null.
+fn rescues_of(hq: &Hq<'_>, member: MemberId) -> serde_json::Value {
+    hq.snapshot().unwrap()["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == member.0)
+        .unwrap()["rescues"]
+        .clone()
+}
+
+#[test]
+fn the_ceos_stepping_in_is_counted_over_the_week_not_for_ever() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let w = wing(&hq, true);
+    climb_to_the_ceo(&hq, &clock, &w, w.devs[0], "Fix the lint");
+    assert_eq!(rescues_of(&hq, w.devs[0]), json!(1));
+    // Eight days on, with the feed whole, it is a week since: nought, and a number still.
+    later(&clock, 8 * 24 * 60 * 60 * 1000);
+    hq.tick().unwrap();
+    assert_eq!(rescues_of(&hq, w.devs[0]), json!(0));
+}
+
+#[test]
+fn the_ceos_stepping_in_cannot_be_told_where_the_feed_lost_events_inside_the_week() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let w = wing(&hq, true);
+    climb_to_the_ceo(&hq, &clock, &w, w.devs[0], "Fix the lint");
+    assert_eq!(rescues_of(&hq, w.devs[0]), json!(1));
+    // The feed is pruned to its newest events: some of this week's are gone, so the count over
+    // them is not a count. It says it cannot tell, and does not say nought.
+    hq.prune_events(3).unwrap();
+    assert_eq!(rescues_of(&hq, w.devs[0]), json!(null));
+}
+
+#[test]
+fn the_ceos_stepping_in_is_told_when_the_pruned_feed_still_reaches_back_a_week() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let w = wing(&hq, true);
+    // The wing was seeded eight days before the climb, so the feed holds events older than the
+    // week.
+    later(&clock, 8 * 24 * 60 * 60 * 1000);
+    climb_to_the_ceo(&hq, &clock, &w, w.devs[0], "Fix the lint");
+    // Only the oldest event goes: the feed still holds the week and more, so the count is whole.
+    let events = i64::try_from(hq.events_after(0).unwrap().len()).unwrap();
+    hq.prune_events(events - 1).unwrap();
+    assert_eq!(rescues_of(&hq, w.devs[0]), json!(1));
+}
+
 #[test]
 fn a_lead_that_says_it_needs_the_ceo_or_the_board_sends_it_up_and_only_then() {
     for (decision, with_ceo, to_the_desk) in [
