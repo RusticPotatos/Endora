@@ -1374,8 +1374,10 @@ coordinates it had made up.
   project's lead). Who may hand what to whom is checked first.
 - **The bridge by where a turn thinks** (`bridge::Thinks`, `bridge::offered`, the node's
   `bridge::offered_to` and `call`): a turn on the NAS's model (`local`, or one HQ says nothing of)
-  is listed the lab's contracts and no bridged tool, and is refused (403) one it names; the Mac
-  and Claude are offered as their role and the tier allow.
+  is kept from the tools that can end on the owner's desk (`Bridged::can_end_on_the_owners_desk`:
+  an act that asks, or that takes arguments and so asks once a stranger's words are read), is
+  refused (403) one it names, and keeps the lab's contracts, every read and the acts that run on
+  their own and take nothing; the Mac and Claude are offered as their role and the tier allow.
 - **A request for the owner's yes serves a criterion.** The bridge adds `serves` to every act's
   schema (required of one that always asks); the node passes it to HQ; `ask_approval` reads it
   with `guards::approval_serves` and refuses (400) one that names none, or sits on a task with no

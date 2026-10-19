@@ -114,7 +114,8 @@ that established it.
   unless it is off, Restricted, administration or the owner's own; Confidential only to local
   turns; acts only for the roles that act; an act that is on runs within limits and is told,
   an act that asks waits on the owner's desk, and the owner's yes runs exactly what was shown.
-  A turn on the house's own small model on the NAS is offered none of them
+  A turn on the house's own small model on the NAS is offered none that can end on the owner's
+  desk, and keeps the reads and the acts the owner lets run on their own
   ([0131](0131-the-two-kinds-of-turn.md)).
 - **Each member has a brain the owner sets; a cloud turn reads only what the owner allowed**
   ([0109](0109-a-brain-per-member.md)). Local by default, or a Claude the role may use, paid

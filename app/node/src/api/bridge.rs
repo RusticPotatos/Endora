@@ -108,8 +108,9 @@ pub(super) fn catalog(state: &AppState) -> Vec<Bridged> {
         .collect()
 }
 
-/// The tools a turn is offered: none when it thinks on the house's own model on the NAS (ADR
-/// 0131, amended); otherwise what its role may use, and what its model may see.
+/// The tools a turn is offered: what its role may use, and what its model may see, less, when it
+/// thinks on the house's own model on the NAS, whatever can end on the owner's desk (ADR 0131,
+/// amended).
 pub(super) fn offered_to(state: &AppState, turn: &Turn) -> Vec<Bridged> {
     bridge::offered(
         catalog(state),
@@ -120,14 +121,15 @@ pub(super) fn offered_to(state: &AppState, turn: &Turn) -> Vec<Bridged> {
     )
 }
 
-/// Why a turn on the NAS's own model is refused an outside tool it names, as the model reads
-/// it, and what to do instead: a small model is a poor judge of which outside tool to reach for,
-/// so the step is left to a member who thinks on the Mac, by saying what is needed in the thread.
+/// Why a turn on the NAS's own model is refused a tool it names that can end on the owner's
+/// desk, as the model reads it, and what to do instead: a small model is a poor judge of what to
+/// ask the owner for, so the step is left to a member who thinks on the Mac, by saying what is
+/// needed in the thread.
 fn kept_from_the_bridge(name: &str, why: &str) -> String {
     format!(
-        "{name} is an outside tool, and {why}: say what you need in the task's thread (post), so \
-         that the lead can hand the step to a member who thinks on the Mac, rather than leaving \
-         it undone"
+        "{name} is not for this turn, because {why}: say what you need in the task's thread \
+         (post), so that the lead can hand the step to a member who thinks on the Mac, rather \
+         than leaving it undone"
     )
 }
 
@@ -160,9 +162,10 @@ pub(super) fn call(
     tool: &Bridged,
     args: &serde_json::Value,
 ) -> Result<Called, Refused> {
-    // Where the turn thinks comes first: the model on the NAS is offered no outside tool, so a
-    // name it made up or was shown elsewhere is refused whatever it is (ADR 0131, amended).
-    if let Some(why) = turn.thinks().kept_from_the_bridge() {
+    // Where the turn thinks comes first: the model on the NAS is offered no tool that can end on
+    // the owner's desk, so a name it made up or was shown elsewhere is refused if it is one
+    // (ADR 0131, amended). Its trusted reads are called as any turn's are.
+    if let Some(why) = turn.thinks().keeps_from(tool) {
         return Err((StatusCode::FORBIDDEN, kept_from_the_bridge(&tool.name, why)));
     }
     if !bridge::may_see(tool.tier, &tool.id, &turn.role, turn.cloud) {
@@ -559,8 +562,8 @@ mod tests {
     }
 
     /// The same, the turn thinking on `brain` as HQ names it: `local` is the house's own model
-    /// on the NAS (ADR 0131), which is offered no outside tool. An approval is taken only when
-    /// it says which criterion it serves, as HQ takes one (ADR 0124).
+    /// on the NAS (ADR 0131), which is kept from the tools that can end on the owner's desk. An
+    /// approval is taken only when it says which criterion it serves, as HQ takes one (ADR 0124).
     fn hq_thinking(role: &'static str, cloud: bool, brain: &'static str) -> (String, Seen) {
         fake(Arc::new(move |path, body| {
             let reply = match path {
@@ -1162,46 +1165,82 @@ mod tests {
     }
 
     /// Live: a developer on the house's model on the NAS asked the owner to approve a web map
-    /// search, with coordinates it had made up, "to find the NAS backup location", and it reached
-    /// the owner's desk as an approval. A turn on that model is offered the lab's contracts and
-    /// no outside tool, and is refused one it names (ADR 0131, amended).
+    /// search, with coordinates it had made up, "to find the NAS backup location", and the
+    /// request reached the owner's desk. A turn on that model is kept from what can end there; the
+    /// reads the owner trusts stay, the Ops lead's download queues among them (ADR 0131,
+    /// amended).
     #[tokio::test]
-    async fn a_turn_on_the_nas_model_is_offered_no_outside_tool_and_refused_one_it_names() {
-        let (hq_url, to_hq) = hq_thinking("developer", false, "local");
+    async fn a_turn_on_the_nas_model_keeps_its_trusted_reads_and_is_refused_what_can_end_on_the_desk()
+     {
+        let (hq_url, to_hq) = hq_thinking("lead", false, "local");
         let (sonarr_url, to_sonarr) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
-        let contracts: Vec<&str> = endora_capabilities::contracts::all()
-            .iter()
-            .map(|c| c.name)
-            .collect();
         let listed = tools(&state).await;
-        assert!(
-            !listed.is_empty() && listed.iter().all(|(n, _)| contracts.contains(&n.as_str())),
-            "the lab's contracts and nothing else: {listed:?}"
-        );
-        for named in [
-            "sonarr_queue",
-            "sonarr_retry_import",
-            "sonarr_remove_and_search",
-            "weather",
-        ] {
+        let names: Vec<&str> = listed.iter().map(|(n, _)| n.as_str()).collect();
+        // The lab's contracts are not the bridge, and stay.
+        for contract in endora_capabilities::contracts::all()
+            .iter()
+            .filter(|c| c.offered_to("lead", false))
+        {
+            assert!(
+                names.contains(&contract.name),
+                "{}: {names:?}",
+                contract.name
+            );
+        }
+        // The trusted reads, and the act that runs on its own and takes nothing, stay.
+        for kept in ["sonarr_queue", "weather", "sonarr_retry_import"] {
+            assert!(names.contains(&kept), "{kept}: {names:?}");
+        }
+        // What asks the owner does not: the download removal starts out asking.
+        assert!(!names.contains(&"sonarr_remove_and_search"), "{names:?}");
+        let (status, read) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
+        assert_eq!(status, StatusCode::OK, "the lead reads the queue: {read}");
+        assert!(paths(&to_sonarr)[0].starts_with("/api/v3/queue?"));
+        let (status, ran) = send(
+            &state,
+            "POST",
+            "/team-relay/contracts/sonarr_retry_import",
+            r#"{"why":"two downloads are stuck"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{ran}");
+        let before = paths(&to_sonarr).len();
+        let ask = r#"{"item":102,"why":"to find the NAS backup location","serves":"1"}"#;
+        // Naming it anyway is refused, and so is the same act once the owner lets it run on its
+        // own: it takes arguments, so it asks once a turn has read a stranger's words (0108),
+        // and the queue just read was one.
+        for stance in [None, Some(endora_capabilities::Stance::Auto)] {
+            if let Some(stance) = stance {
+                state
+                    .config
+                    .set_stance("sonarr_remove_and_search", stance)
+                    .unwrap();
+                assert!(
+                    !tools(&state)
+                        .await
+                        .iter()
+                        .any(|(n, _)| n == "sonarr_remove_and_search"),
+                    "an act that asks after a stranger's words is kept too"
+                );
+            }
             let (status, said) = send(
                 &state,
                 "POST",
-                &format!("/team-relay/contracts/{named}"),
-                r#"{"why":"to find the NAS backup location","serves":"1"}"#,
+                "/team-relay/contracts/sonarr_remove_and_search",
+                ask,
             )
             .await;
-            assert_eq!(status, StatusCode::FORBIDDEN, "{named}: {said}");
+            assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
             assert!(
-                said["error"].as_str().unwrap().contains("no outside tool"),
+                said["error"].as_str().unwrap().contains("owner's desk"),
                 "{said}"
             );
         }
         // A name that is no tool at all is still not found, as ever.
         let (status, _) = send(&state, "POST", "/team-relay/contracts/no_such_tool", "{}").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert!(to_sonarr.lock().unwrap().is_empty(), "nothing ran");
+        assert_eq!(paths(&to_sonarr).len(), before, "the refused ran nothing");
         assert!(
             sent_to(&to_hq, "/v1/team/approval").is_empty(),
             "nothing reached HQ, so nothing reached the desk"
@@ -1222,17 +1261,17 @@ mod tests {
         let (hq_url, _) = fake(Arc::new(|path, body| {
             let reply = match path {
                 "/v1/team/turn" if body.contains("\"good\"") => json!({ "run": 7,
-                    "member": "Linus", "role": "developer", "left": 40_000, "cloud": false }),
+                    "member": "Linus", "role": "lead", "left": 40_000, "cloud": false }),
                 _ => json!({ "ok": true }),
             };
             (200, "application/json", reply.to_string())
         }));
         let state = bridged(&hq_url, &sonarr_url);
+        let unknown = tools(&state).await;
         assert!(
-            tools(&state)
-                .await
-                .iter()
-                .all(|(n, _)| contracts.contains(&n.as_str()))
+            unknown.iter().any(|(n, _)| n == "sonarr_queue")
+                && !unknown.iter().any(|(n, _)| n == "sonarr_remove_and_search"),
+            "kept from what asks, given what it trusts: {unknown:?}"
         );
     }
 

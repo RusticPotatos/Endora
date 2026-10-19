@@ -28,11 +28,15 @@ tagged release.
 - **The tools fit the turn** ([ADR 0131](docs/adr/0131-the-two-kinds-of-turn.md) and
   [0108](docs/adr/0108-the-bridge.md), amended). Live, a developer on the house's own small
   model on the NAS asked the owner to approve a web map search with coordinates it had made up,
-  "to find the NAS backup location", and it reached the owner's desk as an approval. **What the
-  bridge offers a turn depends on where it thinks:** a turn on the NAS's model (or one HQ says
-  nothing of) is listed the lab's contracts and no bridged tool, and is refused one it names; the
-  owner's Mac and Claude are offered as their role and the data tier allow, as before. A judgment
-  turn is on the NAS's model only for an alarm out of budget, and that turn has the contracts.
+  "to find the NAS backup location", and the request reached the owner's desk as an approval.
+  **What the bridge offers a turn depends on where it thinks:** a turn on the NAS's model (or one
+  HQ says nothing of) is kept from the tools that can end on the owner's desk (an act that asks
+  the owner, which is every tool of a tool server the owner has not reviewed, web and search tools
+  among them, or that takes arguments and so asks once a stranger's words are read), and is
+  refused one it names. It keeps the lab's contracts and what the owner trusts to run without
+  asking: every read, the download queues the Ops lead checks the lab with among them, and an act
+  that runs on its own and takes nothing. The owner's Mac and Claude are offered as their role and
+  the data tier allow, as before.
   **A request for the owner's yes says what it serves:** a bridged act that asks the owner names
   which of its task's criteria it serves (`serves`); HQ refuses one that names none, or sits on a
   task with no criteria, with the reason (400), the member's turn goes on, and nothing reaches the

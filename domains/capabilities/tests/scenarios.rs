@@ -81,6 +81,24 @@ fn a_servers_asking_act(w: &mut Bridge, server: String, tool: String) {
     w.add(&id, Kind::Act, Stance::Ask);
 }
 
+#[given(expr = "Endora has the act {string}, asking the owner first")]
+fn endoras_asking_act(w: &mut Bridge, id: String) {
+    w.add(&id, Kind::Act, Stance::Ask);
+}
+
+#[given(expr = "Endora has the act {string}, switched on")]
+fn endoras_act(w: &mut Bridge, id: String) {
+    w.add(&id, Kind::Act, Stance::Auto);
+}
+
+#[given(expr = "Endora has the act {string}, switched on, and given an item")]
+fn endoras_act_given_an_item(w: &mut Bridge, id: String) {
+    w.add(&id, Kind::Act, Stance::Auto);
+    w.candidates.last_mut().expect("just added").input_schema = Some(serde_json::json!({
+        "type": "object", "properties": { "item": { "type": "integer" } }
+    }));
+}
+
 #[when("the team's tools are drawn up")]
 fn drawn_up(w: &mut Bridge) {
     w.offered = w.candidates.iter().filter_map(|c| bridge(c).ok()).collect();
@@ -111,16 +129,17 @@ fn drawn_up_for(w: &mut Bridge, role: String, where_: String) {
     );
 }
 
+/// A call by name, resolved against every tool Endora has, as the node does, so that one this
+/// turn may not use is refused with the reason and not as unknown.
 #[when(regex = r#"^a (\w+) thinking on (the NAS's model|the Mac|Claude) calls "(.+)" anyway$"#)]
 fn calls_while_thinking(w: &mut Bridge, _role: String, where_: String, name: String) {
-    assert!(
-        w.candidates
-            .iter()
-            .filter_map(|c| bridge(c).ok())
-            .any(|b| b.name == name),
-        "Endora has no tool called {name}"
-    );
-    w.refused = thinks(&where_).kept_from_the_bridge().map(str::to_owned);
+    let tool = w
+        .candidates
+        .iter()
+        .filter_map(|c| bridge(c).ok())
+        .find(|b| b.name == name)
+        .unwrap_or_else(|| panic!("Endora has no tool called {name}"));
+    w.refused = thinks(&where_).keeps_from(&tool).map(str::to_owned);
 }
 
 #[then(expr = "{string} is not among them")]
@@ -146,6 +165,11 @@ fn calls(w: &mut Bridge, id: String) {
 #[then(expr = "it is refused: {string}")]
 fn refused(w: &mut Bridge, why: String) {
     assert_eq!(w.refused.as_deref(), Some(why.as_str()));
+}
+
+#[then("it is not refused")]
+fn not_refused(w: &mut Bridge) {
+    assert_eq!(w.refused, None);
 }
 
 /// cucumber's command line, less what `cargo test` passes every test binary (`--test-threads`,

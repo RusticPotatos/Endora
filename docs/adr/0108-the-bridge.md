@@ -39,10 +39,11 @@ kept off with the switches.
 Amended 2026-10-19 by [0131](0131-the-two-kinds-of-turn.md) and
 [0124](0124-guards-against-how-agent-teams-fail.md), after a developer on the house's own small
 model on the NAS asked the owner to approve a web map search with coordinates it had made up:
-**what the bridge offers a turn depends on where it thinks** (a turn on that model is offered
-the lab's contracts and no outside tool, and is refused one it names; the owner's Mac and Claude
-are offered as their role and the tier allow), and **an act that asks the owner says which of its
-task's criteria it serves**, or it is refused to the member and never reaches the desk.
+**what the bridge offers a turn depends on where it thinks** (a turn on that model is kept from
+the tools that can end on the owner's desk, and refused one it names, and keeps the lab's
+contracts and the reads and acts the owner trusts to run without asking; the owner's Mac and
+Claude are offered as their role and the tier allow), and **an act that asks the owner says which
+of its task's criteria it serves**, or it is refused to the member and never reaches the desk.
 Scenarios: `domains/capabilities/features/tools-that-fit-the-turn.feature` and
 `domains/team/features/a-request-says-what-it-serves.feature`.
 
@@ -94,9 +95,11 @@ listener, `GET /team-relay/contracts` and `POST /team-relay/contracts/{name}`):
    read; a role not listed does nothing. A small table in code that a later owner setting can
    replace. *Amended 2026-10-19:* **and by where the turn thinks** (`bridge::Thinks`, told by HQ
    with the turn): a turn on the house's own model on the NAS, or one HQ says nothing of, is
-   offered no bridged tool at all, whatever its role, and a name it makes up is refused (403);
-   the Mac's and Claude's turns are offered what the profile allows. The lab's contracts (0106)
-   are not the bridge and stay with it.
+   offered what its role allows less whatever can end on the owner's desk (an act that asks, or
+   that takes arguments and so asks once a stranger's words are read), and a name it makes up of
+   one is refused (403); the reads and the acts that run on their own and take nothing stay. The
+   Mac's and Claude's turns are offered what the profile allows. The lab's contracts (0106) are
+   not the bridge and stay with it.
 4. **The stance.** A read runs through Endora's own invoke path (the outbound secret check and
    redaction, the connection's settings) and keeps a stranger's mark when it is a third
    party's words. An act whose stance is **on** runs at once, at most three times an hour a
@@ -155,9 +158,11 @@ standing facts such as what is being retired and what is the owner's own.
   while the node was down runs nothing until the owner taps again.
 - The name guard on tool servers' tools fails safe: a tool kept off by mistake is asked for in
   a thread, never quietly given.
-- A tool server's tools are Confidential, so they reach local turns only; since the amendment
-  that is the Mac's. A turn on the NAS's own model reads the lab through the contracts and
-  leaves anything outside to a member on the Mac, said in the thread.
+- A tool server's tools are Confidential, so they reach local turns only. A turn on the NAS's own
+  model is not offered one that asks (which is every tool of a server the owner has not
+  reviewed, its web and search tools among them), but still reads, as the Mac's does: the owner's
+  named readers, the download queues, and the lab through the contracts. The rest is left to a
+  member on the Mac, said in the thread.
 - A request for the owner's yes that serves nothing its task asked for costs the owner no card:
   the member reads why it was refused, and its turn goes on.
 
