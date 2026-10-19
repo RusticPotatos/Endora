@@ -18,3 +18,5 @@ dependencies:
 build_ignore:
   - check.sh
   - "roles/*/tests"
+  - "*__pycache__"
+  - "*.pyc"

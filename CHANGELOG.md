@@ -18,6 +18,10 @@ tagged release.
 
 ### Changed
 
+- **Compiled Python is no longer tracked.** Four `__pycache__/*.pyc` files had been committed
+  under the `endora.homelab` collection's roles, and the repository ignored none. They are
+  untracked, `__pycache__/` and `*.pyc` are ignored, and the collection's own `build_ignore`
+  leaves them out of a built collection (a build with the files on disk holds none).
 - **A guard that cannot tell says so** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),
   amended). **Talk against work:** a turn that ended before turns were labelled has no label, and
   was counted as nothing; such turns are now counted apart ("1 turn it cannot read"), and a window
