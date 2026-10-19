@@ -846,6 +846,13 @@ tagged release.
   take her pass on that real receipt, where they had recorded a `read_document` one by hand
   that the real tool never makes.
 
+- **Work in review is never demoted to blocked** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)).
+  HQ's sweep of stranded work nudged the tester once, and at the next quiet window set the
+  task `blocked`: task 670 was blocked 44 minutes after it entered review, out of the tester's
+  reach (she passes work in review) and settable back by its holder alone, and it climbed to
+  the CEO five times for a review that had simply not happened. It stays in review now, and
+  its lead is woken to decide it up the same ladder.
+
 - **Live sound no longer falls behind the picture over time, and no longer dips every few
   minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
   backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a

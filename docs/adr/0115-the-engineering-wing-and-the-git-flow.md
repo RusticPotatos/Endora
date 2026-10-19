@@ -165,6 +165,11 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    branch out (HQ lets her, as the work's tester) is a witnessed receipt on the task that
    names the branch and its head, which she cites with the check's. Her briefing says so, and
    her turn, a turn of judgment on her Haiku (0131), runs in the same sandbox as the others.
+   *Amended 2026-10-19:* **work in review is never demoted to `blocked`** by HQ's sweep of
+   stranded work. After one nudge of the tester and a quiet window it was set `blocked` (task
+   670, 44 minutes after it entered review), out of the tester's reach (she passes work in
+   review) and settable back by its holder alone; it climbed to the CEO five times. It stays
+   in review and its lead is woken to decide it, up the same ladder (0120).
    **Then** the push
    is the owner's: a desk card, "Push hq/… to your fork (N files, checks passed)", with Approve
    and Decline. On Approve, HQ names the branch to the node, which pushes the **stored

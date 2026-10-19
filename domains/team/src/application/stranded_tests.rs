@@ -232,6 +232,87 @@ fn work_left_in_review_with_no_review_coming_wakes_the_reviewer() {
     );
 }
 
+/// Live (task 670): work in review whose tester came and ended without a verdict was demoted to
+/// `blocked` at the next quiet window, 44 minutes after it entered review. A blocked task is out
+/// of the tester's reach (she passes only work in review), and only its holder could put it
+/// back: three attempts to set it back were refused and it climbed to the CEO five times. The
+/// work was fine; the review had not happened. It stays in review, and its lead is woken.
+///
+/// Given work in review whose tester was woken once and ended without a verdict,
+/// when it goes on sitting, window after window,
+/// then it stays in review, its lead is woken to decide it, and it is never blocked.
+#[test]
+fn work_in_review_with_no_verdict_stays_in_review_and_its_lead_is_woken() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task) = stranded(&clock);
+    let lead = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == Role::Lead)
+        .unwrap()
+        .id;
+    let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+    hq.store().claim(task, dev).unwrap();
+    hq.store()
+        .set_task_status(task, TaskStatus::InReview)
+        .unwrap();
+    // The tester's work and the lead's decision wait for the Mac (ADR 0131): the node says free,
+    // and what started ends without a word about the task.
+    let all_over = || {
+        for _ in 0..3 {
+            hq.tell_mac(true, "ready");
+            hq.tick().unwrap();
+            for started in hq.runner().started() {
+                hq.runner().finish(started.run, true);
+            }
+        }
+    };
+    let status = || hq.store().task(task).unwrap().unwrap().status;
+    let reasons = |member: MemberId| -> Vec<WakeReason> {
+        hq.wakes()
+            .unwrap()
+            .into_iter()
+            .filter(|w| w.member == member && w.task == Some(task))
+            .map(|w| w.reason)
+            .collect()
+    };
+    // The first quiet window: the tester is woken, comes, and ends without a verdict.
+    later(&clock, STRANDED_AFTER_MS + 1_000);
+    all_over();
+    assert_eq!(reasons(dee), [WakeReason::ReviewRequested]);
+    assert!(reasons(lead).is_empty(), "the lead is not asked yet");
+    // The second: it was nudged once and nobody came back to it, so its lead decides it. The
+    // task is still in review, where the tester can pass it and the lead accept it.
+    later(&clock, STRANDED_AFTER_MS + 1_000);
+    all_over();
+    assert_eq!(status(), TaskStatus::InReview, "never blocked");
+    assert_eq!(reasons(lead), [WakeReason::Decide]);
+    let thread = hq.store().thread(task).unwrap();
+    assert!(
+        thread
+            .iter()
+            .any(|p| p.text.contains("in review") && p.text.contains("no verdict")),
+        "the lead is told what is stuck: {thread:?}"
+    );
+    // However long it sits, it is never put out of the tester's reach.
+    for _ in 0..4 {
+        later(&clock, STRANDED_AFTER_MS + 1_000);
+        all_over();
+        assert_eq!(status(), TaskStatus::InReview);
+    }
+    assert!(
+        hq.store()
+            .task(task)
+            .unwrap()
+            .unwrap()
+            .owner
+            .is_some_and(|o| o == dev),
+        "and it is still its member's"
+    );
+}
+
 /// Found by checking HQ against the design it borrows (2026-10-17): a task waiting on one
 /// that was dropped was released as if the wait were done, though the work it waited for
 /// never happened. A dropped wait releases nothing; the waiting task's member is told why in
