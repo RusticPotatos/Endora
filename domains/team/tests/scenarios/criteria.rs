@@ -1,7 +1,7 @@
 //! The steps of `features/what-done-means-comes-first.feature` (ADR 0124, amended): the owner's
 //! work says what done means, and a lead's split of it says which criterion each part serves.
 
-use cucumber::when;
+use cucumber::{then, when};
 use endora_team::application::{Author, NewTask};
 use endora_team::domain::{Criterion, Priority};
 use serde_json::json;
@@ -52,6 +52,24 @@ impl Office {
                      "criteria": [{ "text": done }], "serves": serves }),
         );
     }
+
+    /// `name`, in its running turn, asks the owner to approve running `tool`, as the node does
+    /// for it when a bridged act asks, saying which criterion of its task the request serves if
+    /// it does.
+    fn asks_for_a_yes(&mut self, name: &str, tool: &str, why: &str, serves: Option<&str>) {
+        let context = self.turn_of(name);
+        let (run, _) = self
+            .hq
+            .turn_of(&context.token)
+            .expect("the store answers")
+            .expect("a running turn");
+        let asked = self.hq.ask_approval(
+            run.id,
+            &format!("{name} asks to run {tool}. Why: {why}."),
+            serves,
+        );
+        self.note(asked);
+    }
 }
 
 #[when(regex = r#"^the owner gives (\w+) the work "([^"]+)" with no criteria$"#)]
@@ -82,4 +100,31 @@ fn hands_a_part_serving(
     serves: String,
 ) {
     w.hands_a_part(&by, &to, &part, &of, &done, Some(&serves));
+}
+
+#[when(regex = r#"^(\w+) asks the owner to approve "([^"]+)" because "([^"]+)"$"#)]
+fn asks_for_a_yes(w: &mut Office, name: String, tool: String, why: String) {
+    w.asks_for_a_yes(&name, &tool, &why, None);
+}
+
+#[when(
+    regex = r#"^(\w+) asks the owner to approve "([^"]+)" because "([^"]+)", serving "([^"]+)"$"#
+)]
+fn asks_for_a_yes_serving(w: &mut Office, name: String, tool: String, why: String, serves: String) {
+    w.asks_for_a_yes(&name, &tool, &why, Some(&serves));
+}
+
+#[then(regex = r#"^the owner's desk holds an approval of "([^"]+)", serving "([^"]+)"$"#)]
+fn the_desk_holds_an_approval(w: &mut Office, tool: String, criterion: String) {
+    let snapshot = w.hq.snapshot().expect("the snapshot is built");
+    let card = snapshot["desk"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|d| {
+            d["kind"] == "approval" && d["text"].as_str().is_some_and(|text| text.contains(&tool))
+        })
+        .unwrap_or_else(|| panic!("no approval of {tool} on the desk: {}", snapshot["desk"]));
+    assert_eq!(card["serves"]["text"], json!(criterion), "{card}");
 }

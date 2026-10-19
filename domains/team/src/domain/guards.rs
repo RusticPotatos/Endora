@@ -139,6 +139,18 @@ pub enum GuardRefusal {
         /// The parent's criteria, in order.
         criteria: Vec<String>,
     },
+    /// An approval asked for says which of its task's criteria it serves.
+    ApprovalServesWhich {
+        /// The task the turn is on.
+        task: super::work::TaskId,
+        /// Its criteria, in order.
+        criteria: Vec<String>,
+    },
+    /// The task has no criteria, so an approval asked for has nothing to serve.
+    ApprovalNothingToServe {
+        /// The task the turn is on.
+        task: super::work::TaskId,
+    },
     /// What a member writes says again what the owner retracted.
     Retracted {
         /// What was retracted.
@@ -186,6 +198,26 @@ impl core::fmt::Display for GuardRefusal {
                     listed.join("; ")
                 )
             }
+            Self::ApprovalServesWhich { task, criteria } => {
+                let listed: Vec<String> = criteria
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| format!("{}. {c}", i + 1))
+                    .collect();
+                write!(
+                    f,
+                    "which of #{task}'s criteria does asking the owner serve? Give serves (its \
+                     number or its words): {}. A request that serves none of them never reaches \
+                     the owner's desk",
+                    listed.join("; ")
+                )
+            }
+            Self::ApprovalNothingToServe { task } => write!(
+                f,
+                "#{task} has no criteria, so there is nothing for asking the owner to serve: a \
+                 lead says what done means with narrow_criteria, and anyone else asks its lead \
+                 in the task's thread, or asks the owner in words with ask_owner"
+            ),
             Self::Retracted { target, on } => write!(
                 f,
                 "this says again what was retracted on {on} ({target}): the owner said it is \
@@ -253,6 +285,30 @@ pub fn serves(criteria: &[super::evidence::Criterion], said: &str) -> Option<usi
         .iter()
         .position(|c| squeezed(&c.text) == said)
         .map(|i| i + 1)
+}
+
+/// Which of its task's `criteria` (counted from 1) a request for the owner's yes serves, by
+/// number or words as [`serves`] reads them (ADR 0124, amended): a request that serves none, or
+/// for a task with no criteria at all, never reaches the owner's desk. Live, a developer on the
+/// house's small model asked the owner to approve a web map search "to find the NAS backup
+/// location", with coordinates it had invented; it served nothing its task asked for.
+///
+/// # Errors
+/// [`GuardRefusal::ApprovalNothingToServe`] for a task with no criteria,
+/// [`GuardRefusal::ApprovalServesWhich`] (listing them) for a `said` that names none.
+pub fn approval_serves(
+    task: super::work::TaskId,
+    criteria: &[super::evidence::Criterion],
+    said: Option<&str>,
+) -> Result<usize, GuardRefusal> {
+    if criteria.is_empty() {
+        return Err(GuardRefusal::ApprovalNothingToServe { task });
+    }
+    said.and_then(|said| serves(criteria, said))
+        .ok_or_else(|| GuardRefusal::ApprovalServesWhich {
+            task,
+            criteria: criteria.iter().map(|c| c.text.clone()).collect(),
+        })
 }
 
 /// What a member whose evidence already meets its task's criteria is told (ADR 0124): submit
@@ -1626,6 +1682,42 @@ mod tests {
             asked.contains("whoever asked for the task")
                 && asked.contains("a part that serves none is not part of it"),
             "{asked}"
+        );
+    }
+
+    #[test]
+    fn a_request_for_the_owners_yes_serves_a_criterion_of_its_task_or_is_refused_saying_which() {
+        use super::super::evidence::Criterion;
+        use super::super::work::TaskId;
+        let c = [
+            Criterion::new("The cause is found", false),
+            Criterion::new("Sonarr is running", true),
+        ];
+        let task = TaskId(7);
+        assert_eq!(approval_serves(task, &c, Some("2")), Ok(2));
+        assert_eq!(
+            approval_serves(task, &c, Some("the cause is  FOUND")),
+            Ok(1),
+            "by its words, case and spacing aside"
+        );
+        for said in [None, Some(""), Some("  "), Some("3"), Some("the moon base")] {
+            let refused = approval_serves(task, &c, said).unwrap_err().to_string();
+            assert!(
+                refused.contains("which of #7's criteria does asking the owner serve?")
+                    && refused.contains("1. The cause is found; 2. Sonarr is running")
+                    && refused.contains("never reaches the owner's desk"),
+                "{said:?}: {refused}"
+            );
+        }
+        // A task with no criteria has nothing to serve, however the request is worded.
+        let nothing = approval_serves(task, &[], Some("1")).unwrap_err();
+        assert_eq!(nothing, GuardRefusal::ApprovalNothingToServe { task });
+        let words = nothing.to_string();
+        assert!(
+            words.contains("#7 has no criteria")
+                && words.contains("narrow_criteria")
+                && words.contains("ask_owner"),
+            "{words}"
         );
     }
 

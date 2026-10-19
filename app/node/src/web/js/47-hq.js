@@ -1411,7 +1411,7 @@ function hqNeed(s, d) {
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${seen}${demoNote}</p>
       ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
-      ${d.kind === "approval" ? hqApproval(d.approval) : ""}
+      ${d.kind === "approval" ? hqApproval(d.approval, d.serves) : ""}
       ${d.kind === "decision" ? hqDecision(d.decision) : ""}
       ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
       ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
@@ -2086,11 +2086,13 @@ async function hqMacAct(what, arg) {
 }
 
 // What an approval will run, from what the node stored: the tool, its arguments one a line,
-// and the member's reason. Every word is the member's or a tool's, so all of it is escaped.
-function hqApproval(a) {
+// which criterion of its task it serves, as HQ kept it when it was asked (ADR 0124), and the
+// member's reason. Every word is the member's or a tool's, so all of it is escaped.
+function hqApproval(a, serves) {
   if (!a) return "";
   const args = (a.args || []).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
-  return `<dl class="hq-kv"><dt>Runs</dt><dd>${esc(a.tool)}</dd>${args}</dl>
+  const served = serves && serves.text ? `<dt>Serves</dt><dd>${serves.n ? `criterion ${Number(serves.n)}: ` : ""}${esc(serves.text)}</dd>` : "";
+  return `<dl class="hq-kv"><dt>Runs</dt><dd>${esc(a.tool)}</dd>${args}${served}</dl>
     <p class="hq-who">${esc(a.member || "A member")} says why: ${esc(a.why)}</p>`;
 }
 

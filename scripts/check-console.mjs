@@ -655,7 +655,9 @@ if (failures.length) {
              { id: 15, kind: "question", task: 7, also: [9], text: "Linus asks: steel or titanium?" },
              { id: 17, kind: "approval", task: 7, text: "Linus asks to run sonarr_remove_and_search with item: 102.",
                approval: { tool: "sonarr_remove_and_search", member: "Linus", why: "<script>alert(2)</script> it is stuck",
-                           args: [["item", "102"], ["note", "<img src=y onerror=alert(3)>"]] } },
+                           args: [["item", "102"], ["note", "<img src=y onerror=alert(3)>"]] },
+               // Which criterion of its task the request serves (ADR 0124): the member's own words.
+               serves: { n: 2, text: "The <u>queue</u> is clear" } },
              { id: 18, kind: "decision", task: 7, text: "Decision: Give sonarr 2 GB?\\nRecommendation: Yes.\\nWhy: It ran out.",
                decision: { decision: "Give sonarr 2 GB?", recommendation: "Yes, <i>until the upgrade</i>.", why: "It was killed for memory three times." } },
              { id: 19, kind: "project_cap", project: 2, goal: 1, text: "A cap for project #2 Backups: $5.00 a month.\\nThe CEO recommends: <u>they fail</u>" },
@@ -1093,9 +1095,10 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: an approval does not offer ${act}`);
   }
   if (office.includes("hq:decide:17:seen") || office.includes('id="hq-answer-17"')) fail("hq: an approval was offered something other than yes or no");
-  for (const said of ["sonarr_remove_and_search", '<dt>item</dt><dd>102</dd>', "Linus says why"]) {
+  for (const said of ["sonarr_remove_and_search", '<dt>item</dt><dd>102</dd>', "Linus says why", "<dt>Serves</dt><dd>criterion 2: The &lt;u&gt;queue&lt;/u&gt; is clear</dd>"]) {
     if (!office.includes(said)) fail(`hq: the approval card does not show ${said}`);
   }
+  if (office.includes("<u>queue</u>")) fail("hq: the criterion an approval serves became markup");
   if (office.includes("<img src=y") || office.includes("<script>alert(2)")) fail("hq: an approval's arguments or reason became markup");
   if (!office.includes("&lt;img src=y onerror=alert(3)&gt;")) fail("hq: an approval's argument is not shown as text");
   // The owner replies on the task they are looking at, and writes each active goal's notes.

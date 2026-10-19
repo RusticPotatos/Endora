@@ -310,8 +310,9 @@ pub(crate) fn instructions(
              - After a fix, check back to confirm it held: call check_back with the minutes to \
              wait and what you will look at.\n\
              - Endora's other tools say whether they read or act; an action that needs the \
-             owner's approval goes on their desk and ends your turn, and you are woken when they \
-             decide.\n\
+             owner's approval says which of your task's criteria it serves (serves), then goes \
+             on their desk and ends your turn, and you are woken when they decide. One that \
+             serves none of them is refused, and never reaches the desk.\n\
              - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
              never try to work around a refusal.\n\
              - A question about the home lab goes to the team's reviewer first, who checks every \
@@ -1866,6 +1867,15 @@ mod tests {
         );
         assert!(told.contains("goes to the team's reviewer first"), "{told}");
         assert!(told.contains("owner's approval"), "{told}");
+        // A request for the owner's yes says which of the task's criteria it serves, or it is
+        // refused and never reaches the desk (ADR 0124, amended).
+        assert!(
+            told.contains(
+                "an action that needs the owner's approval says which of your task's criteria it \
+                 serves (serves), then goes on their desk and ends your turn"
+            ),
+            "{told}"
+        );
         assert!(rules[1..].iter().all(|r| r.starts_with("- ")));
         assert!(told.contains("restart_container"));
         assert!(

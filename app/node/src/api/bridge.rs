@@ -108,15 +108,27 @@ pub(super) fn catalog(state: &AppState) -> Vec<Bridged> {
         .collect()
 }
 
-/// The tools a turn is offered: what its role may use, and what its model may see.
+/// The tools a turn is offered: none when it thinks on the house's own model on the NAS (ADR
+/// 0131, amended); otherwise what its role may use, and what its model may see.
 pub(super) fn offered_to(state: &AppState, turn: &Turn) -> Vec<Bridged> {
-    catalog(state)
-        .into_iter()
-        .filter(|b| {
-            bridge::may(&turn.role, b.kind)
-                && bridge::may_see(b.tier, &b.id, &turn.role, turn.cloud)
-        })
-        .collect()
+    bridge::offered(
+        catalog(state),
+        bridge::Asker {
+            role: &turn.role,
+            thinks: turn.thinks(),
+        },
+    )
+}
+
+/// Why a turn on the NAS's own model is refused an outside tool it names, as the model reads
+/// it, and what to do instead: a small model is a poor judge of which outside tool to reach for,
+/// so the step is left to a member who thinks on the Mac, by saying what is needed in the thread.
+fn kept_from_the_bridge(name: &str, why: &str) -> String {
+    format!(
+        "{name} is an outside tool, and {why}: say what you need in the task's thread (post), so \
+         that the lead can hand the step to a member who thinks on the Mac, rather than leaving \
+         it undone"
+    )
 }
 
 /// Why a cloud turn is refused a Confidential tool, as the model reads it, and what to do
@@ -148,6 +160,11 @@ pub(super) fn call(
     tool: &Bridged,
     args: &serde_json::Value,
 ) -> Result<Called, Refused> {
+    // Where the turn thinks comes first: the model on the NAS is offered no outside tool, so a
+    // name it made up or was shown elsewhere is refused whatever it is (ADR 0131, amended).
+    if let Some(why) = turn.thinks().kept_from_the_bridge() {
+        return Err((StatusCode::FORBIDDEN, kept_from_the_bridge(&tool.name, why)));
+    }
     if !bridge::may_see(tool.tier, &tool.id, &turn.role, turn.cloud) {
         return Err((StatusCode::FORBIDDEN, confidential(&tool.name)));
     }
@@ -155,9 +172,14 @@ pub(super) fn call(
     let marked = store.marked(turn.run).map_err(|_| broken())?;
     let way = bridge::way(tool, &turn.role, marked).map_err(|why| (StatusCode::FORBIDDEN, why))?;
     let why = one_line(args["why"].as_str().unwrap_or(""));
+    // What the member says of the call, and not the tool's arguments: the reason, and which of
+    // its task's criteria it serves.
+    let serves = serves_said(&args["serves"]);
     let mut given = args.clone();
     if let Some(object) = given.as_object_mut() {
-        object.remove("why");
+        for own in bridge::THE_BRIDGES_OWN {
+            object.remove(own);
+        }
     }
     let member = who(turn);
     if way != Way::Read && why.is_empty() {
@@ -232,14 +254,23 @@ pub(super) fn call(
                 )
                 .map_err(|_| broken())?;
             let text = asked_as(&member, &tool.name, &given, &why);
+            // HQ holds the task's criteria: it reads what the call serves, refuses one that
+            // serves none with the reason, and shows the owner the one it serves (ADR 0124).
             let item = match hq.post(
                 "/v1/team/approval",
-                &json!({ "run": turn.run, "text": text }),
+                &json!({ "run": turn.run, "text": text, "serves": serves }),
             ) {
                 Ok(answer) => answer["item"].as_i64(),
                 Err(e) => {
                     let _ = store.settle(id, "waiting", "refused");
-                    return Err((StatusCode::CONFLICT, e.to_string()));
+                    // A request HQ refuses for what it says is the member's to put right.
+                    let status = match e {
+                        endora_infrastructure::HqError::Answered { status: 400, .. } => {
+                            StatusCode::BAD_REQUEST
+                        }
+                        _ => StatusCode::CONFLICT,
+                    };
+                    return Err((status, e.to_string()));
                 }
             };
             let Some(item) = item else {
@@ -260,6 +291,24 @@ pub(super) fn call(
                 ),
             })
         }
+    }
+}
+
+/// Which of its task's criteria a call says it serves: the member's words on one line, kept as
+/// they are written (a criterion's own full stop is part of matching it), or a number as its
+/// digits (models write `1` as often as `"1"`). Empty when it says none.
+fn serves_said(said: &serde_json::Value) -> String {
+    match said {
+        serde_json::Value::String(words) => words
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(300)
+            .collect(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => String::new(),
     }
 }
 
@@ -503,12 +552,21 @@ mod tests {
     use tower::ServiceExt as _;
 
     /// HQ knowing one turn (token `good`, run 7, Linus's, in `role`, on a cloud model when
-    /// `cloud`), taking approvals as desk item 40.
+    /// `cloud`, else on the owner's Mac, which is offered the bridge), taking approvals as desk
+    /// item 40.
     fn hq(role: &'static str, cloud: bool) -> (String, Seen) {
+        hq_thinking(role, cloud, if cloud { "claude-haiku-5-5" } else { "mac" })
+    }
+
+    /// The same, the turn thinking on `brain` as HQ names it: `local` is the house's own model
+    /// on the NAS (ADR 0131), which is offered no outside tool. An approval is taken only when
+    /// it says which criterion it serves, as HQ takes one (ADR 0124).
+    fn hq_thinking(role: &'static str, cloud: bool, brain: &'static str) -> (String, Seen) {
         fake(Arc::new(move |path, body| {
             let reply = match path {
                 "/v1/team/turn" if body.contains("\"good\"") => {
-                    json!({ "run": 7, "member": "Linus", "role": role, "left": 40_000, "cloud": cloud })
+                    json!({ "run": 7, "member": "Linus", "role": role, "left": 40_000,
+                            "cloud": cloud, "brain": brain })
                 }
                 "/v1/team/turn" => {
                     return (
@@ -517,7 +575,22 @@ mod tests {
                         r#"{"error":"no such turn"}"#.to_owned(),
                     );
                 }
-                "/v1/team/approval" => json!({ "item": 40 }),
+                "/v1/team/approval"
+                    if serde_json::from_str::<serde_json::Value>(body)
+                        .is_ok_and(|asked| asked["serves"] == "1") =>
+                {
+                    json!({ "item": 40 })
+                }
+                "/v1/team/approval" => {
+                    return (
+                        400,
+                        "application/json",
+                        json!({ "error": "which of #3's criteria does asking the owner serve? \
+                            Give serves (its number or its words): 1. The queue is clear. A \
+                            request that serves none of them never reaches the owner's desk" })
+                        .to_string(),
+                    );
+                }
                 "/v1/snapshot" => {
                     let asked = |id: i64, why: &str| {
                         json!({ "id": id, "kind": "approval", "task": 3,
@@ -908,18 +981,20 @@ mod tests {
             &state,
             "POST",
             "/team-relay/contracts/sonarr_remove_and_search",
-            &json!({ "item": 102, "why": "it is stuck importing" }).to_string(),
+            &json!({ "item": 102, "why": "it is stuck importing", "serves": "1" }).to_string(),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{said}");
         assert_eq!(said["text"], ON_THE_DESK);
         assert_eq!(said["asked_owner"], true, "the worker ends its turn");
         assert!(to_sonarr.lock().unwrap().is_empty(), "nothing ran");
+        // HQ is told which criterion it serves, and the desk's words say neither it nor why as
+        // an argument of the call.
         let asked = sent_to(&to_hq, "/v1/team/approval");
         assert_eq!(
             asked,
             [
-                json!({ "run": 7, "text": "Linus asks to run sonarr_remove_and_search with item: 102. Why: it is stuck importing." })
+                json!({ "run": 7, "serves": "1", "text": "Linus asks to run sonarr_remove_and_search with item: 102. Why: it is stuck importing." })
             ]
         );
 
@@ -1076,11 +1151,157 @@ mod tests {
             &state,
             "POST",
             "/team-relay/contracts/sonarr_remove_and_search",
-            &json!({ "item": 102, "why": "stuck" }).to_string(),
+            &json!({ "item": 102, "why": "stuck", "serves": 1 }).to_string(),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{said}");
         assert_eq!(said["asked_owner"], true, "{said}");
-        assert_eq!(sent_to(&to_hq, "/v1/team/approval").len(), 1);
+        let asked = sent_to(&to_hq, "/v1/team/approval");
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0]["serves"], "1", "a number is as good as its digits");
+    }
+
+    /// Live, 19 October: a developer on the house's model on the NAS asked the owner to approve a
+    /// web map search, with coordinates it had made up, "to find the NAS backup location", and it
+    /// reached the owner's desk as an approval. A turn on that model is offered the lab's
+    /// contracts and no outside tool, and is refused one it names (ADR 0131, amended).
+    #[tokio::test]
+    async fn a_turn_on_the_nas_model_is_offered_no_outside_tool_and_refused_one_it_names() {
+        let (hq_url, to_hq) = hq_thinking("developer", false, "local");
+        let (sonarr_url, to_sonarr) = sonarr();
+        let state = bridged(&hq_url, &sonarr_url);
+        let contracts: Vec<&str> = endora_capabilities::contracts::all()
+            .iter()
+            .map(|c| c.name)
+            .collect();
+        let listed = tools(&state).await;
+        assert!(
+            !listed.is_empty() && listed.iter().all(|(n, _)| contracts.contains(&n.as_str())),
+            "the lab's contracts and nothing else: {listed:?}"
+        );
+        for named in [
+            "sonarr_queue",
+            "sonarr_retry_import",
+            "sonarr_remove_and_search",
+            "weather",
+        ] {
+            let (status, said) = send(
+                &state,
+                "POST",
+                &format!("/team-relay/contracts/{named}"),
+                r#"{"why":"to find the NAS backup location","serves":"1"}"#,
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{named}: {said}");
+            assert!(
+                said["error"].as_str().unwrap().contains("no outside tool"),
+                "{said}"
+            );
+        }
+        // A name that is no tool at all is still not found, as ever.
+        let (status, _) = send(&state, "POST", "/team-relay/contracts/no_such_tool", "{}").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(to_sonarr.lock().unwrap().is_empty(), "nothing ran");
+        assert!(
+            sent_to(&to_hq, "/v1/team/approval").is_empty(),
+            "nothing reached HQ, so nothing reached the desk"
+        );
+        // The refusals are in the audit log and told to HQ as receipts, like any refused call.
+        assert!(
+            audit(&state)
+                .iter()
+                .any(|a| a.contains("was refused sonarr_remove_and_search")),
+            "{:?}",
+            audit(&state)
+        );
+        assert!(
+            !sent_to(&to_hq, "/v1/team/receipt").is_empty(),
+            "a refused call is a receipt too"
+        );
+        // A turn HQ describes without a brain is not known to be a stronger model: the same.
+        let (hq_url, _) = fake(Arc::new(|path, body| {
+            let reply = match path {
+                "/v1/team/turn" if body.contains("\"good\"") => json!({ "run": 7,
+                    "member": "Linus", "role": "developer", "left": 40_000, "cloud": false }),
+                _ => json!({ "ok": true }),
+            };
+            (200, "application/json", reply.to_string())
+        }));
+        let state = bridged(&hq_url, &sonarr_url);
+        assert!(
+            tools(&state)
+                .await
+                .iter()
+                .all(|(n, _)| contracts.contains(&n.as_str()))
+        );
+    }
+
+    /// An act that asks says which of its task's criteria it serves, or HQ refuses it to the
+    /// member with the reason, and it is never on the desk (ADR 0124, amended).
+    #[tokio::test]
+    async fn an_act_that_asks_without_saying_what_it_serves_is_refused_and_never_reaches_the_desk()
+    {
+        let (hq_url, to_hq) = hq("developer", false);
+        let (sonarr_url, to_sonarr) = sonarr();
+        let state = bridged(&hq_url, &sonarr_url);
+        let ask = |serves: serde_json::Value| {
+            let mut call = json!({ "item": 102, "why": "it is stuck importing" });
+            if !serves.is_null() {
+                call["serves"] = serves;
+            }
+            call.to_string()
+        };
+        for serves in [
+            serde_json::Value::Null,
+            json!(""),
+            json!("the moon base"),
+            json!(7),
+        ] {
+            let (status, said) = send(
+                &state,
+                "POST",
+                "/team-relay/contracts/sonarr_remove_and_search",
+                &ask(serves.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{serves}: {said}");
+            assert!(
+                said["error"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("which of #3's criteria does asking the owner serve?"),
+                "the member reads HQ's reason: {said}"
+            );
+            assert!(said.get("asked_owner").is_none(), "{said}");
+        }
+        assert!(
+            BridgeStore::new(state.store.db())
+                .unwrap()
+                .waiting()
+                .unwrap()
+                .is_empty(),
+            "nothing is waiting for the owner's yes"
+        );
+        assert!(to_sonarr.lock().unwrap().is_empty(), "nothing ran");
+        let snap = hq_snapshot(State(state.clone())).await.unwrap().0;
+        assert!(
+            snap["desk"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|d| d["approval"].is_null()),
+            "no approval card was made from them"
+        );
+        // Said right, the same request is asked, and what HQ is told of it is that.
+        let (status, said) = send(
+            &state,
+            "POST",
+            "/team-relay/contracts/sonarr_remove_and_search",
+            &ask(json!("1")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert_eq!(said["asked_owner"], true);
+        assert_eq!(sent_to(&to_hq, "/v1/team/approval").len(), 5);
     }
 }

@@ -1916,14 +1916,62 @@ mod tests {
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
         let app = app(st.clone());
-        let body = json!({ "run": turn.run.0, "text": "Ada asks to run sonarr_retry_import. Why: stuck." })
-            .to_string();
+        let text = "Ada asks to run sonarr_retry_import. Why: stuck.";
+        let body = json!({ "run": turn.run.0, "text": text, "serves": "1" }).to_string();
         let res = app
             .clone()
             .oneshot(call("POST", "/v1/team/approval", Some(&turn.token), &body))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "only the node asks");
+        // A request serves one of its task's criteria (ADR 0124, amended). The demo's task has
+        // none: refused with the way out, and nothing reaches the desk.
+        let task = turn.task.expect("the turn is on a task");
+        let res = app
+            .clone()
+            .oneshot(call("POST", "/v1/team/approval", Some(TOKEN), &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"].as_str().unwrap().contains("has no criteria"),
+            "{said}"
+        );
+        st.hq
+            .set_criteria(
+                task,
+                &[endora_team::domain::Criterion::new(
+                    "The queue is clear",
+                    false,
+                )],
+            )
+            .unwrap();
+        // It serves none of them: refused with the criteria listed, the desk still empty.
+        let without = json!({ "run": turn.run.0, "text": text }).to_string();
+        let res = app
+            .clone()
+            .oneshot(call("POST", "/v1/team/approval", Some(TOKEN), &without))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("does asking the owner serve? Give serves (its number or its words): 1. The queue is clear"),
+            "{said}"
+        );
+        assert!(
+            st.hq
+                .store()
+                .desk()
+                .unwrap()
+                .iter()
+                .all(|d| d.kind != "approval"),
+            "it never reached the desk"
+        );
         let asked = json_of(
             app.clone()
                 .oneshot(call("POST", "/v1/team/approval", Some(TOKEN), &body))
@@ -1932,6 +1980,26 @@ mod tests {
         )
         .await;
         let item = asked["item"].as_i64().unwrap();
+        // The owner's card says which criterion the request serves.
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let card = snap["desk"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == item)
+            .cloned()
+            .expect("the approval is on the desk");
+        assert_eq!(
+            card["serves"],
+            json!({ "n": 1, "text": "The queue is clear" }),
+            "{card}"
+        );
         // Asked again for the same turn: it has ended, and the refusal says so.
         let again = app
             .clone()

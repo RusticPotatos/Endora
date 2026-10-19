@@ -3746,12 +3746,36 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// stored once the owner approves, and tells HQ what came of it
     /// ([`Self::approval_outcome`]).
     ///
+    /// A request says which of its task's criteria it `serves` (ADR 0124, amended): its number
+    /// or its words. One that serves none, or asked on a task with no criteria, is refused with
+    /// the reason, the turn goes on, and nothing reaches the desk. The card shows the criterion
+    /// it serves.
+    ///
     /// # Errors
-    /// As [`Self::ask_owner`].
-    pub fn ask_approval(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
+    /// As [`Self::ask_owner`]; [`Refusal::Guard`] with what the request serves.
+    pub fn ask_approval(
+        &self,
+        run: RunId,
+        text: &str,
+        serves: Option<&str>,
+    ) -> Done<crate::domain::DeskId> {
         let _held = self.held();
         let text = cut(text.trim(), 1200);
-        self.ask_held_lock(run, "approval", &|_| text.clone())
+        let turn = self.running(run)?;
+        let task = turn
+            .task
+            .ok_or(EngineError::Unknown("task for this turn"))?;
+        // Already waiting on the owner: said before asking what this request serves.
+        if self.waiting_question(turn.member, task)? {
+            return Err(EngineError::Refused(Refusal::AlreadyAsked));
+        }
+        let (n, served) = self.approval_serves(task, serves)?;
+        let desk = self.ask_held_lock(run, "approval", &|_| text.clone())?;
+        self.store.set_setting(
+            &discipline::approval_serves_key(desk),
+            &json!({ "n": n, "text": served }).to_string(),
+        )?;
+        Ok(desk)
     }
 
     /// A question or an approval on the desk from `run`'s member about its task, worded by

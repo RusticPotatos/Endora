@@ -10,7 +10,9 @@ use serde_json::json;
 use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::call;
-use crate::domain::{DeskId, MemberId, Priority, Refusal, Role, RunStatus, TaskId, WakeReason};
+use crate::domain::{
+    Criterion, DeskId, MemberId, Priority, Refusal, Role, RunStatus, TaskId, WakeReason,
+};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -44,7 +46,7 @@ fn started(clock: &Hands) -> (Hq<'_>, MemberId, TaskId, RunContext) {
         )
         .unwrap();
     let task = hq
-        .add_task(
+        .add_task_with(
             Author::Owner,
             NewTask {
                 goal,
@@ -56,6 +58,7 @@ fn started(clock: &Hands) -> (Hq<'_>, MemberId, TaskId, RunContext) {
                 priority: Priority::Normal,
                 waits_on: Vec::new(),
             },
+            &[Criterion::new("The download queue is clear", false)],
         )
         .unwrap();
     hq.tick().unwrap();
@@ -65,10 +68,15 @@ fn started(clock: &Hands) -> (Hq<'_>, MemberId, TaskId, RunContext) {
     (hq, dev, task, context)
 }
 
-/// An approval asked in `context`'s turn, its turn finished as the worker finishes it.
+/// An approval asked in `context`'s turn, serving the task's first criterion, its turn finished
+/// as the worker finishes it.
 fn asked(hq: &Hq<'_>, context: &RunContext) -> DeskId {
     let item = hq
-        .ask_approval(hq.turn_of(&context.token).unwrap().unwrap().0.id, ASKED)
+        .ask_approval(
+            hq.turn_of(&context.token).unwrap().unwrap().0.id,
+            ASKED,
+            Some("1"),
+        )
         .unwrap();
     hq.runner().finish(context.run, true);
     hq.tick().unwrap();
@@ -99,7 +107,7 @@ fn an_approval_waits_on_the_desk_ends_the_turn_and_counts_as_a_question() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, dev, task, context) = started(&clock);
     let run = hq.turn_of(&context.token).unwrap().unwrap().0;
-    let id = hq.ask_approval(run.id, ASKED).unwrap();
+    let id = hq.ask_approval(run.id, ASKED, Some("1")).unwrap();
     let waiting = item(&hq, id);
     assert_eq!(
         (waiting.kind.as_str(), waiting.member, waiting.task),
@@ -114,7 +122,7 @@ fn an_approval_waits_on_the_desk_ends_the_turn_and_counts_as_a_question() {
     assert!(hq.turn_of(&context.token).unwrap().is_none());
     assert_eq!(hq.runner().stopped(), [run.id], "its container is let go");
     assert_eq!(
-        hq.ask_approval(run.id, ASKED),
+        hq.ask_approval(run.id, ASKED, Some("1")),
         Err(EngineError::Refused(Refusal::TurnOver))
     );
 
@@ -131,8 +139,111 @@ fn an_approval_waits_on_the_desk_ends_the_turn_and_counts_as_a_question() {
     let refused = call(&hq, &run, &me, "ask_owner", &json!({ "text": "Well?" })).unwrap_err();
     assert!(refused.contains("waiting"), "{refused}");
     assert_eq!(
-        hq.ask_approval(run.id, ASKED),
+        hq.ask_approval(run.id, ASKED, Some("1")),
         Err(EngineError::Refused(Refusal::AlreadyAsked))
+    );
+}
+
+/// Live, 19 October: a developer on the house's small model asked the owner to approve a web
+/// map search "to find the NAS backup location", with coordinates it had made up, and it reached
+/// the desk. A request for the owner's yes says which of its task's criteria it serves (ADR 0124,
+/// amended); one that serves none is refused to the member with the reason, its turn goes on, and
+/// nothing reaches the desk.
+#[test]
+fn a_request_that_serves_none_of_its_tasks_criteria_is_refused_and_never_reaches_the_desk() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, _dev, task, context) = started(&clock);
+    let run = hq.turn_of(&context.token).unwrap().unwrap().0;
+    for serves in [
+        None,
+        Some(""),
+        Some("  "),
+        Some("2"),
+        Some("the NAS backup location"),
+    ] {
+        let refused = hq
+            .ask_approval(run.id, ASKED, serves)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains(&format!(
+                "which of #{}'s criteria does asking the owner serve?",
+                task.0
+            )) && refused.contains("1. The download queue is clear"),
+            "{serves:?}: {refused}"
+        );
+    }
+    assert!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .all(|d| d.kind != "approval"),
+        "nothing reached the desk"
+    );
+    assert!(
+        hq.turn_of(&context.token).unwrap().is_some(),
+        "the turn goes on: the member may ask again, saying what it serves"
+    );
+    assert!(
+        hq.runner().stopped().is_empty(),
+        "its container is not let go"
+    );
+    // Said right, by its words, the same request is asked.
+    let id = hq
+        .ask_approval(run.id, ASKED, Some("the download QUEUE is clear"))
+        .unwrap();
+    assert_eq!(item(&hq, id).kind, "approval");
+}
+
+/// A task with no criteria, work from before they were asked for, has nothing for a request to
+/// serve: the member is told the way out, not left to guess.
+#[test]
+fn a_request_on_a_task_with_no_criteria_is_refused_with_the_way_out() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, _dev, task, context) = started(&clock);
+    hq.set_criteria(task, &[]).unwrap();
+    let run = hq.turn_of(&context.token).unwrap().unwrap().0;
+    let refused = hq
+        .ask_approval(run.id, ASKED, Some("1"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains(&format!("#{} has no criteria", task.0))
+            && refused.contains("narrow_criteria")
+            && refused.contains("ask_owner"),
+        "{refused}"
+    );
+    assert!(hq.store().desk().unwrap().is_empty());
+    assert!(hq.turn_of(&context.token).unwrap().is_some());
+}
+
+/// The owner's card says which criterion the request serves, as it was when it was asked: a
+/// lead rewording the task's criteria afterwards does not change what the member claimed.
+#[test]
+fn the_owners_card_shows_the_criterion_an_approval_serves_as_it_was_asked() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, _dev, task, context) = started(&clock);
+    let id = asked(&hq, &context);
+    let card = |hq: &Hq<'_>| {
+        hq.snapshot().unwrap()["desk"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == json!(id.0))
+            .cloned()
+            .expect("the approval is on the desk")
+    };
+    assert_eq!(
+        card(&hq)["serves"],
+        json!({ "n": 1, "text": "The download queue is clear" })
+    );
+    hq.set_criteria(task, &[Criterion::new("Something else entirely", false)])
+        .unwrap();
+    assert_eq!(
+        card(&hq)["serves"]["text"],
+        "The download queue is clear",
+        "as it was asked"
     );
 }
 
