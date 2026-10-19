@@ -95,6 +95,27 @@ Feature: The engineering wing and the git flow
     When the node says it pushed: "Pushed hq/task-2-add-the-missing-app-pages to the fork: merge it on GitHub."
     Then Rae is woken about it
 
+  # Task 687: the tester cited her readings as every tool result names them, "receipt r228",
+  # and with what each showed after it; she was refused for it four times and the branch sat in
+  # review. A reference is read as the tools write it.
+  Scenario: A tester's pass cites receipts as the tools name them
+    Given Kit's planning turn is over
+    And Kit hands Rae the task "Add the drift check" in the wing, with the criteria
+      | Branch is cut from develop and named hq/task-N-add-the-drift-check |
+      | The check is no worse than develop                                 |
+    When Rae's turn starts
+    And Rae submits the branch "hq/task-2-add-the-drift-check"
+    And Rae's turn ends
+    And the check passes: "syntax ok, ansible-lint 25 findings (develop 25), yamllint 16 errors (develop 16): no worse than develop"
+    And Rae's turn starts
+    And Rae submits "Add the drift check" for review citing the submit and the check receipts
+    And Dee checks out "hq/task-2-add-the-drift-check"
+    And Dee passes "Add the drift check" citing her checkout and the check as the tools name them
+    Then it is not refused
+    When Dee's turn ends
+    And Kit accepts "Add the drift check"
+    Then the task "Add the drift check" is done
+
   # Task 670 sat 44 minutes in review, was set blocked out of the tester's reach, and climbed
   # to the CEO five times for a review that had simply not happened.
   Scenario: Work left in review is never blocked, and its lead is woken
