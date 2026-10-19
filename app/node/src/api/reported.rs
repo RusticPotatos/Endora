@@ -28,6 +28,14 @@ fn refuse(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// Whether a response says it is an error: a string that starts "Error:". Claude Code reports a
+/// call it denied, and a command that failed, as a `PostToolUse` carrying such a string. A
+/// command that merely printed the word has an object for a response (`stdout`, `stderr`), so
+/// it is not mistaken for one.
+fn says_error(response: &serde_json::Value) -> bool {
+    response.as_str().is_some_and(|s| s.starts_with("Error:"))
+}
+
 /// A value as one line of text: a string as it is, anything else as compact JSON.
 fn text_of(value: &serde_json::Value) -> String {
     match value {
@@ -103,7 +111,9 @@ pub(super) async fn sandbox_receipt(
     };
     let failed = said["hook_event_name"] == "PostToolUseFailure"
         || said["tool_response"]["interrupted"] == true
-        || said["tool_response"]["is_error"] == true;
+        || said["tool_response"]["is_error"] == true
+        || says_error(&said["tool_response"])
+        || says_error(&said["error"]);
     let excerpt = if said["error"].is_null() {
         excerpt_of(&said["tool_response"])
     } else {
@@ -438,6 +448,68 @@ mod tests {
         assert_eq!(
             (&told[2]["ok"], &told[2]["excerpt"]),
             (&json!(false), &json!("exit 2"))
+        );
+    }
+
+    /// Live (2026-10-18, task 674): Claude Code reported a call it had denied, and a command
+    /// that failed, as a `PostToolUse` whose response is a string starting "Error:", not as a
+    /// failure, and the node kept them as done. A refused call must never show as one: a
+    /// receipt may be cited "for what the sandbox did" (ADR 0117).
+    #[tokio::test]
+    async fn a_denied_call_is_kept_as_refused() {
+        let (hq_url, seen) = fake(Arc::new(|path, body| match path {
+            "/v1/team/turn" if body.contains("\"cc\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Rae", "role": "developer", "left": 1000,
+                        "cloud": true, "brain": "claude-haiku-5-5", "runtime": "claude-code" })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            "/v1/team/receipt" => (200, "application/json", r#"{"receipt":52}"#.to_owned()),
+            _ => (200, "application/json", "{}".to_owned()),
+        }));
+        let state = node(&hq_url, "http://127.0.0.1:9");
+        let hook = |tool_response: serde_json::Value| {
+            json!({
+                "hook_event_name": "PostToolUse", "tool_name": "Bash",
+                "tool_input": { "command": "for f in a b; do echo $f; done" },
+                "tool_response": tool_response,
+            })
+        };
+        let responses = [
+            // Denied, as the model read it.
+            json!(
+                "Error: Permission to use Bash has been denied because Claude Code is running in don't ask mode."
+            ),
+            // A command that failed: the same string, beside the failure event's own report.
+            json!("Error: Exit code 1\nyamllint: 3 errors"),
+            // A command that printed the word ran: its response is an object, whatever it says.
+            json!({ "stdout": "Error: not really\n", "stderr": "", "interrupted": false }),
+            // A string that only mentions one is no error.
+            json!("Read the file (no Error: in it)"),
+            json!({ "stdout": "a\nb\n", "stderr": "", "interrupted": false }),
+        ];
+        for response in responses {
+            let (status, _) = answer(&state, report(Some("cc"), &hook(response))).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let told: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/receipt")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        let kept: Vec<bool> = told.iter().map(|t| t["ok"].as_bool().unwrap()).collect();
+        assert_eq!(kept, [false, false, true, true, true], "{told:?}");
+        assert!(
+            told[0]["excerpt"]
+                .as_str()
+                .unwrap()
+                .contains("don't ask mode"),
+            "the denial is kept in words: {}",
+            told[0]
         );
     }
 }

@@ -44,16 +44,12 @@ pub const SERVER: &str = "endora";
 /// reaches out (no web fetch or search, no agents).
 pub const BUILT_IN: [&str; 6] = ["Read", "Edit", "Write", "Glob", "Grep", "Bash"];
 
-/// What its shell may run without asking, which in a headless turn means at all: git and the
-/// lab's own checks, and looking.
-pub const SHELL_ALLOWED: [&str; 6] = [
-    "Bash(git *)",
-    "Bash(ansible-lint *)",
-    "Bash(yamllint *)",
-    "Bash(ansible-playbook --syntax-check *)",
-    "Bash(ls *)",
-    "Bash(cat *)",
-];
+/// What its shell may run without asking, which in a headless turn means at all: the whole of
+/// Bash. The container is the boundary (ADR 0117): offline, a read-only root, a tmpfs `/work`,
+/// no credential. A list of command prefixes protected nothing the container does not, and
+/// under `dontAsk` it denied every compound command (a subshell group, a `for` loop, `$?`),
+/// which one live turn read as "the shell refuses everything".
+pub const SHELL_ALLOWED: [&str; 1] = ["Bash"];
 
 /// Refused outright, whatever else allows them.
 pub const DISALLOWED: [&str; 2] = ["WebFetch", "WebSearch"];
@@ -75,8 +71,9 @@ const HOOK_READ_MOST: u64 = 1024 * 1024;
 const CLAUDE_CODE_RULES: &str = "\n\nYou are running in Claude Code, headless, for Endora HQ. \
     Endora's team tools are yours as mcp__endora__<name> (mcp__endora__post, \
     mcp__endora__set_status, mcp__endora__repo_submit and the rest): use them for everything \
-    the team and the house need. Your shell is Claude Code's Bash, limited to git, ansible-lint, \
-    yamllint, ansible-playbook --syntax-check, ls and cat; edit files with Edit and Write. \
+    the team and the house need. Your shell is Claude Code's Bash: a real shell in the offline \
+    sandbox (git, the lab's checks, sed, python3 and the rest), and nothing outside it is \
+    reachable but Endora's tools; edit files with Edit and Write. \
     Each of your own tool calls is recorded as a sandbox-reported receipt, which you may cite \
     for what you did in the sandbox, but never as a reading of the lab: a reading comes from \
     Endora's own tools. Nothing you leave in /work outlives the turn.";
@@ -963,12 +960,7 @@ mod tests {
                 "Write",
                 "Glob",
                 "Grep",
-                "Bash(git *)",
-                "Bash(ansible-lint *)",
-                "Bash(yamllint *)",
-                "Bash(ansible-playbook --syntax-check *)",
-                "Bash(ls *)",
-                "Bash(cat *)",
+                "Bash",
             ]
         );
         assert_eq!(list("--disallowedTools"), ["WebFetch", "WebSearch"]);
@@ -982,6 +974,76 @@ mod tests {
             !arguments(&no_effort, &[], Path::new("m"), Path::new("r"))
                 .contains(&"--effort".to_owned())
         );
+    }
+
+    /// The arguments a flag lists, up to the next flag.
+    fn listed<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
+        let i = args
+            .iter()
+            .position(|a| a == flag)
+            .unwrap_or_else(|| panic!("{flag}"));
+        args[i + 1..]
+            .iter()
+            .take_while(|a| !a.starts_with("--"))
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// Live (2026-10-18, task 674), `Bash(git *)` and five other prefixes under `dontAsk` denied
+    /// any command with a subshell group, a `for` loop or `$?` in it, and one denial became
+    /// "the shell refused every command". The list protected nothing the container does not
+    /// (ADR 0117: the container is the boundary), so Bash is allowed whole.
+    #[test]
+    fn the_shell_is_claude_codes_whole_bash_in_the_sandbox() {
+        assert_eq!(SHELL_ALLOWED.as_slice(), ["Bash"]);
+        let args = arguments(
+            &setup(),
+            &["my_turn".to_owned()],
+            Path::new("/work/.endora/mcp.json"),
+            Path::new("/work/.endora/rules.md"),
+        );
+        let allowed = listed(&args, "--allowedTools");
+        assert!(allowed.contains(&"Bash"), "{allowed:?}");
+        assert!(
+            !allowed.iter().any(|a| a.starts_with("Bash(")),
+            "no pattern rule is left to deny a part of a command: {allowed:?}"
+        );
+        // The rest of the fence stays: no web, nothing asked, nothing from a fork's settings.
+        assert_eq!(
+            listed(&args, "--disallowedTools"),
+            ["WebFetch", "WebSearch"]
+        );
+        assert_eq!(listed(&args, "--tools"), BUILT_IN);
+        assert_eq!(listed(&args, "--permission-mode"), ["dontAsk"]);
+        assert_eq!(listed(&args, "--setting-sources"), ["user"]);
+        assert!(args.contains(&"--strict-mcp-config".to_owned()));
+        // The model is told what its shell is, so it neither avoids it nor expects a refusal.
+        assert!(
+            CLAUDE_CODE_RULES.contains("real shell") && !CLAUDE_CODE_RULES.contains("limited to"),
+            "{CLAUDE_CODE_RULES}"
+        );
+    }
+
+    #[test]
+    fn the_benchs_managed_settings_allow_the_same_whole_bash_and_still_deny_the_web() {
+        let settings: Value =
+            serde_json::from_str(include_str!("../../../deploy/bench/managed-settings.json"))
+                .expect("the bench's managed settings are JSON");
+        assert_eq!(settings["permissions"]["allow"], json!(["Bash"]));
+        assert_eq!(
+            settings["permissions"]["deny"],
+            json!(["WebFetch", "WebSearch"])
+        );
+        assert_eq!(
+            settings["permissions"]["disableBypassPermissionsMode"],
+            "disable"
+        );
+        // The workbench lists no allowance of its own: its turn's command line does.
+        let workbench: Value = serde_json::from_str(include_str!(
+            "../../../deploy/workbench/managed-settings.json"
+        ))
+        .expect("the managed settings are JSON");
+        assert!(workbench["permissions"]["allow"].is_null());
     }
 
     #[test]

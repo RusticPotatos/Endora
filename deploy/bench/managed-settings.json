@@ -11,14 +11,7 @@
     "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"
   },
   "permissions": {
-    "allow": [
-      "Bash(git *)",
-      "Bash(ansible-lint *)",
-      "Bash(yamllint *)",
-      "Bash(ansible-playbook --syntax-check *)",
-      "Bash(ls *)",
-      "Bash(cat *)"
-    ],
+    "allow": ["Bash"],
     "deny": ["WebFetch", "WebSearch"],
     "disableBypassPermissionsMode": "disable"
   },

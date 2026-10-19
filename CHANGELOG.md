@@ -792,6 +792,16 @@ tagged release.
 
 ### Fixed
 
+- **Claude Code's shell is the sandbox's whole Bash, and a refused call is kept as refused**
+  ([ADR 0117](docs/adr/0117-claude-code-as-a-developer-runtime.md)). Six `Bash(prefix *)` rules
+  under `dontAsk` denied any command holding a subshell group, a `for` loop or `$?`, and one
+  denial in a live turn became "the shell refuses every command": the wing's developer blocked
+  its task. The container is the boundary (the list protected nothing it does not), so the
+  turn is given `Bash`; the bench's managed settings say the same. And Claude Code reports a
+  denied call, and a command that failed, as a response starting "Error:", which the node kept
+  as done: it is kept as refused now, so a receipt cannot show a refused call as one that ran.
+  Ships with the workbench image (the worker's command line) and the node.
+
 - **Live sound no longer falls behind the picture over time, and no longer dips every few
   minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
   backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a
