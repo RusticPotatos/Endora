@@ -172,6 +172,8 @@ fn a_wake_for_another_member_is_held_and_released_oldest_first_when_the_turn_end
             .unwrap(),
         Receipt::Refused(Refused::Duplicate)
     );
+    // The tester's work is the Mac's (ADR 0131), and the node says it is free.
+    hq.tell_mac(true, "ready");
     hq.runner().finish(running, true);
     hq.tick().unwrap();
     let runs = hq.store().runs().unwrap();
@@ -458,7 +460,7 @@ fn a_turn_reserves_before_it_starts_and_is_stopped_the_moment_it_crosses() {
     let hq = hq(&clock, 4);
     let t = team(&hq);
     all_paid(&hq);
-    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    paid_task_for(&hq, t.goal, t.dev, "Add a list");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
     assert_eq!(run.reserved, MOST_A_TURN);
@@ -549,7 +551,7 @@ fn the_snapshot_tells_money_spent_from_money_held() {
     let hq = hq(&clock, 4);
     let t = team(&hq);
     all_paid(&hq);
-    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    paid_task_for(&hq, t.goal, t.dev, "Add a list");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
     hq.report_usage(run.id, 120_000).unwrap();
@@ -584,7 +586,7 @@ fn a_report_too_large_to_add_up_is_held_to_a_turn_and_hq_keeps_going() {
     let hq = hq(&clock, 4);
     let t = team(&hq);
     all_paid(&hq);
-    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    paid_task_for(&hq, t.goal, t.dev, "Add a list");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
     let day = crate::domain::money::day_of(NOON, 0);
@@ -625,7 +627,7 @@ fn a_charge_that_lands_after_the_turn_ended_is_still_counted() {
     let hq = hq(&clock, 4);
     let t = team(&hq);
     all_paid(&hq);
-    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    paid_task_for(&hq, t.goal, t.dev, "Add a list");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
     let day = crate::domain::money::day_of(NOON, 0);
@@ -663,17 +665,51 @@ fn a_charge_that_lands_after_the_turn_ended_is_still_counted() {
     );
 }
 
+/// What wakes a member for a turn that is paid for. Only a turn of judgment is (ADR 0131), and
+/// the tests of the pool, the shares and the caps are about money: they ask for a decision.
+const PAID: WakeReason = WakeReason::Decide;
+
+/// A task the owner hands to `to`, which `to` is also asked to decide: the turn it starts is the
+/// owner's asking, and one of judgment, so it is paid from the pool.
+fn paid_task_for(hq: &Hq<'_>, goal: GoalId, to: MemberId, title: &str) -> TaskId {
+    let task = task_for(hq, goal, Some(to), title);
+    hq.wake(to, Some(task), PAID).unwrap();
+    task
+}
+
+/// Whether `member`, asked to decide `task` now, has its turn kept and waiting for budget (it
+/// used to be turned away, ADR 0131): the wake is queued or joins the turn that waits, and a
+/// tick leaves that turn waiting, saying so.
+fn waits_for_budget(hq: &Hq<'_>, member: MemberId, task: TaskId) -> bool {
+    let receipt = hq.wake(member, Some(task), PAID).unwrap();
+    assert!(
+        matches!(receipt, Receipt::Queued | Receipt::Folded),
+        "{receipt:?}"
+    );
+    hq.tick().unwrap();
+    hq.store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .rfind(|r| r.member == member && r.task == Some(task))
+        .is_some_and(|r| {
+            r.status == RunStatus::Queued && r.end_reason.starts_with("waiting for budget")
+        })
+}
+
 /// A turn of `member`'s own (no owner asked for it) on `task`, which spends `amount` (or what
-/// it reserved, if that is less) and ends.
+/// it reserved, if that is less) and ends. It is a turn of judgment: the one that is paid for.
 fn own_turn_spends(
     hq: &Hq<'_>,
     member: MemberId,
     task: TaskId,
     amount: i64,
 ) -> crate::domain::RunId {
-    assert_eq!(
-        hq.wake(member, Some(task), WakeReason::Mentioned).unwrap(),
-        Receipt::Queued
+    // Queued, or joined to the turn that waited for budget until now.
+    let receipt = hq.wake(member, Some(task), PAID).unwrap();
+    assert!(
+        matches!(receipt, Receipt::Queued | Receipt::Folded),
+        "{receipt:?}"
     );
     hq.tick().unwrap();
     let run = hq
@@ -724,10 +760,7 @@ fn a_member_past_its_share_still_gets_a_turn_while_the_others_have_some_left() {
         3 * MOST_A_TURN
     );
     // Past its share, it draws on what Ada and Grace have not used: a whole turn's cap.
-    assert_eq!(
-        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
-        Receipt::Queued
-    );
+    assert_eq!(hq.wake(t.dev, Some(work), PAID).unwrap(), Receipt::Queued);
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap().into_iter().next_back().unwrap();
     assert_eq!(
@@ -759,24 +792,45 @@ fn nobody_gets_a_turn_once_the_pools_day_is_gone_not_even_for_the_owner() {
     let run = own_turn_spends(&hq, t.lead, work, MOST_A_TURN);
     let spent = hq.store().run(run).unwrap().unwrap().spent;
     assert_eq!(spent, 100_000);
-    for member in [t.dev, t.lead, t.reviewer] {
-        assert_eq!(
-            hq.wake(member, Some(work), WakeReason::Mentioned).unwrap(),
-            Receipt::Refused(Refused::OutOfBudget)
-        );
+    // Nothing is turned away for money any more: each decision is kept, and waits (ADR 0131).
+    for (member, title) in [(t.dev, "One"), (t.lead, "Two"), (t.reviewer, "Three")] {
+        let on = endoras_task(&hq, t.goal, title);
+        assert!(waits_for_budget(&hq, member, on), "{member:?}");
     }
-    // The owner's own request is the pool's, and the pool is spent.
-    task_for(&hq, t.goal, Some(t.lead), "Look at it now");
-    assert_eq!(
-        hq.wakes().unwrap().into_iter().next_back().unwrap().receipt,
-        Receipt::Refused(Refused::OutOfBudget)
-    );
-    // Tomorrow is a new day.
+    // The owner's own request is the pool's, and the pool is spent: a decision it asks for
+    // waits like the rest. What it hands over to be done is work, which costs nothing.
+    let asked = paid_task_for(&hq, t.goal, t.lead, "Look at it now");
+    hq.tick().unwrap();
+    let waiting = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .rfind(|r| r.task == Some(asked))
+        .unwrap();
+    assert_eq!(waiting.status, RunStatus::Queued);
+    assert!(waiting.end_reason.starts_with("waiting for budget"));
+    let free = task_for(&hq, t.goal, Some(t.dev), "Read it now");
+    hq.tick().unwrap();
+    let reading = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .rfind(|r| r.task == Some(free))
+        .unwrap();
+    assert_eq!((reading.status, reading.reserved), (RunStatus::Running, 0));
+    // Tomorrow is a new day, and the decisions that waited start.
     clock.forward(24 * 60 * 60 * 1000);
-    assert_eq!(
-        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
-        Receipt::Queued
-    );
+    hq.tick().unwrap();
+    let started = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.status == RunStatus::Running && r.reserved > 0)
+        .count();
+    assert!(started >= 1, "a decision that waited has started");
 }
 
 #[test]
@@ -786,8 +840,8 @@ fn the_owners_own_request_is_charged_to_the_pool_never_the_members_share() {
     let t = team(&hq);
     all_paid(&hq);
     let day = crate::domain::money::day_of(NOON, 0);
-    // The owner hands Linus a task: its turn is the owner's asking.
-    let asked = task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    // The owner hands Linus a task to decide: its turn is the owner's asking.
+    let asked = paid_task_for(&hq, t.goal, t.dev, "Add a list");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
     assert!(run.asked_by_owner, "the owner handed it");
@@ -910,7 +964,7 @@ fn urgent_work_starts_before_older_normal_work() {
                 parent: None,
                 title: "The site is down".to_owned(),
                 description: String::new(),
-                assignee: Some(t.reviewer),
+                assignee: Some(t.lead),
                 priority: Priority::Urgent,
                 waits_on: Vec::new(),
             },
@@ -926,7 +980,7 @@ fn the_kill_switch_stops_every_turn_and_turns_every_wake_away_until_resumed() {
     let hq = hq(&clock, 4);
     let t = team(&hq);
     let task = task_for(&hq, t.goal, Some(t.dev), "Add a list");
-    task_for(&hq, t.goal, Some(t.reviewer), "Review");
+    task_for(&hq, t.goal, Some(t.lead), "Plan it");
     hq.tick().unwrap();
     hq.stop_all("trying it").unwrap();
     assert!(
@@ -1101,9 +1155,19 @@ fn the_snapshot_holds_what_is_on_screen_and_where_the_stream_resumes() {
     let snap = hq.snapshot().unwrap();
     assert_eq!(snap["stopped"], false);
     assert_eq!(snap["members"].as_array().unwrap().len(), 3);
-    assert_eq!(
-        snap["members"][1]["per_day"], 0,
-        "a member on the house's model costs nothing"
+    // Every member judges with a Claude, so every member has a share of the pool; the shares
+    // are the pool's day between them (ADR 0131).
+    let shares: Vec<i64> = snap["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["per_day"].as_i64().unwrap())
+        .collect();
+    assert!(shares.iter().all(|share| *share > 0), "{shares:?}");
+    let per_day = snap["pool"]["per_day"].as_i64().unwrap();
+    assert!(
+        (per_day - shares.iter().sum::<i64>()).abs() <= 3,
+        "{shares:?}"
     );
     let row = snap["tasks"]
         .as_array()
@@ -1512,6 +1576,7 @@ fn a_members_daily_share_is_weighted_by_its_brains_price() {
     on("Cy", Role::Researcher, "claude-haiku-5-5");
     let rae = on("Rae", Role::Developer, "claude-haiku-5-5");
     on("Zed", Role::Developer, "claude-haiku-5-5");
+    // Dee is hired as she is, so she judges with the cheapest Claude (ADR 0131).
     let local = hq.hire("Dee", Role::Reviewer, 20, 1, 0).unwrap();
     let snap = hq.snapshot().unwrap();
     let share = |id: MemberId| {
@@ -1530,7 +1595,12 @@ fn a_members_daily_share_is_weighted_by_its_brains_price() {
         share(ada),
         share(rae)
     );
-    assert_eq!(share(local), 0, "the house's model claims nothing");
+    assert!(
+        0 < share(local) && share(local) < share(rae),
+        "the tester's {} on Haiku is a claim, smaller than a developer's {} on Haiku",
+        share(local),
+        share(rae)
+    );
 }
 
 /// A pool of $1.00 a day, three paid members: Linus's share is about $0.47, and the others
@@ -1581,10 +1651,9 @@ fn a_member_past_its_share_borrows_one_more_share_and_no_further() {
     );
     let day = crate::domain::money::day_of(NOON, 0);
     assert_eq!(hq.store().share_committed(t.dev, day).unwrap(), 941_176);
-    assert_eq!(
-        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
-        Receipt::Refused(Refused::OutOfBudget),
-        "no further, though the pool has about $0.06 left"
+    assert!(
+        waits_for_budget(&hq, t.dev, work),
+        "no further, though the pool has about $0.06 left: his next decision waits"
     );
 }
 
@@ -1601,10 +1670,7 @@ fn a_member_at_twice_its_share_asks_the_owner_once_while_the_pool_has_money() {
         "nobody has been refused yet"
     );
     for _ in 0..3 {
-        assert_eq!(
-            hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
-            Receipt::Refused(Refused::OutOfBudget)
-        );
+        assert!(waits_for_budget(&hq, t.dev, work));
     }
     let items = out_for_day_items(&hq);
     assert_eq!(items.len(), 1, "one item per member per day");
@@ -1615,10 +1681,10 @@ fn a_member_at_twice_its_share_asks_the_owner_once_while_the_pool_has_money() {
     assert!(text.contains("share $0.47"), "{text}");
     assert!(text.contains("borrowed $0.47"), "{text}");
     assert!(text.contains("pool has $0.06 left today"), "{text}");
-    // Tomorrow it may ask again.
+    // Tomorrow it may ask again: the decision that waited starts with the new day.
     clock.forward(24 * 60 * 60 * 1000);
     linus_spends_twice_his_share(&hq, &t, work);
-    hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap();
+    assert!(waits_for_budget(&hq, t.dev, work));
     assert_eq!(out_for_day_items(&hq).len(), 2);
 }
 
@@ -1630,7 +1696,7 @@ fn approving_lets_the_member_spend_the_allowance_today_and_not_tomorrow() {
     all_paid(&hq);
     let work = endoras_task(&hq, t.goal, "Add a list");
     linus_spends_twice_his_share(&hq, &t, work);
-    hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap();
+    assert!(waits_for_budget(&hq, t.dev, work));
     let item = out_for_day_items(&hq)[0].id;
     // More than the pool's day has left is refused; the item stays.
     assert!(matches!(
@@ -1645,9 +1711,8 @@ fn approving_lets_the_member_spend_the_allowance_today_and_not_tomorrow() {
         50_000,
         "the allowance, not more"
     );
-    assert_eq!(
-        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
-        Receipt::Refused(Refused::OutOfBudget),
+    assert!(
+        waits_for_budget(&hq, t.dev, work),
         "spent, and no second item today"
     );
     assert_eq!(out_for_day_items(&hq).len(), 1);
@@ -1665,21 +1730,18 @@ fn declining_changes_nothing_and_the_owners_own_turns_ignore_the_cap() {
     all_paid(&hq);
     let work = endoras_task(&hq, t.goal, "Add a list");
     linus_spends_twice_his_share(&hq, &t, work);
-    hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap();
+    assert!(waits_for_budget(&hq, t.dev, work));
     let item = out_for_day_items(&hq)[0].id;
     hq.decide(item, "decline").unwrap();
     assert_eq!(out_for_day_items(&hq)[0].status, "decline");
-    assert_eq!(
-        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
-        Receipt::Refused(Refused::OutOfBudget)
-    );
+    assert!(waits_for_budget(&hq, t.dev, work));
     assert_eq!(
         out_for_day_items(&hq).len(),
         1,
         "it does not ask again today"
     );
     // What the owner asks for is the pool's, outside the share and its cap.
-    let asked = task_for(&hq, t.goal, Some(t.dev), "Add a strap");
+    let asked = paid_task_for(&hq, t.goal, t.dev, "Add a strap");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap().into_iter().next_back().unwrap();
     assert_eq!((run.task, run.status), (Some(asked), RunStatus::Running));
@@ -1752,9 +1814,8 @@ fn a_top_up_raises_the_borrowing_cap_with_the_share() {
     assert_eq!(hq.store().run(last).unwrap().unwrap().spent, 282_352);
     let day = crate::domain::money::day_of(NOON, 0);
     assert_eq!(hq.store().share_committed(t.dev, day).unwrap(), 1_882_352);
-    assert_eq!(
-        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
-        Receipt::Refused(Refused::OutOfBudget),
+    assert!(
+        waits_for_budget(&hq, t.dev, work),
         "twice the doubled share, and no further"
     );
 }
@@ -1767,10 +1828,7 @@ fn a_member_out_for_the_day_takes_a_turn_after_a_top_up() {
     all_paid(&hq);
     let work = endoras_task(&hq, t.goal, "Add a list");
     linus_spends_twice_his_share(&hq, &t, work);
-    assert_eq!(
-        hq.wake(t.dev, Some(work), WakeReason::Mentioned).unwrap(),
-        Receipt::Refused(Refused::OutOfBudget)
-    );
+    assert!(waits_for_budget(&hq, t.dev, work));
     hq.top_up_pool(1_000_000).unwrap();
     let run = own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
     assert_eq!(hq.store().run(run).unwrap().unwrap().spent, MOST_A_TURN);

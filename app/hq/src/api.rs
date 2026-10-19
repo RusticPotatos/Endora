@@ -84,6 +84,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/goals/{id}/strategy", post(goal_strategy))
         // What a member thinks with (ADR 0109): the owner's, through the node.
         .route("/v1/members/{id}/brain", post(set_brain))
+        .route("/v1/members/{id}/work-brain", post(set_work_brain))
+        .route("/v1/members/{id}/judgment-brain", post(set_judgment_brain))
         // What runs a member's turns (ADR 0117): the worker, or Claude Code for a developer.
         .route("/v1/members/{id}/runtime", post(set_runtime))
         // The owner renames a member, and reads and edits the CEO's house log (ADR 0111).
@@ -96,12 +98,11 @@ pub fn app(state: State) -> Router {
         .route("/v1/members/{id}/furlough", post(furlough))
         .route("/v1/members/{id}/recall", post(recall))
         // The owner as landlord of the office (ADR 0119): undo the last change, reset it to the
-        // layout it began with, veto an open proposal, and say what paid members' downtime may
-        // spend a day. The team's own proposals and votes come through the worker's door.
+        // layout it began with, and veto an open proposal. The team's own proposals and votes
+        // come through the worker's door.
         .route("/v1/office/undo", post(office_undo))
         .route("/v1/office/reset", post(office_reset))
         .route("/v1/office/proposals/{id}/veto", post(office_veto))
-        .route("/v1/office/downtime", post(office_downtime))
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/pool/top-up", post(pool_top_up))
         // A member's notebook (ADR 0118): the owner reads it, and writes, edits and deletes
@@ -436,8 +437,15 @@ async fn decide(
 struct HireRequest {
     name: String,
     role: String,
+    /// One brain, to the slot it belongs to (ADR 0131): the way a hire was always asked.
     #[serde(default)]
     brain: Option<String>,
+    /// What it works with, the Mac or the house's model; the Mac if not said.
+    #[serde(default)]
+    work_brain: Option<String>,
+    /// The Claude it judges with; Haiku if not said (the CEO's, Sonnet).
+    #[serde(default)]
+    judgment_brain: Option<String>,
     #[serde(default)]
     reports_to: Option<i64>,
 }
@@ -449,10 +457,17 @@ async fn hire(
 ) -> Result<Json<serde_json::Value>, Failed> {
     let role = Role::from_name(req.role.trim()).ok_or(Failed(EngineError::Unknown("role")))?;
     let hq = state.hq.clone();
-    let brain = req.brain.unwrap_or_else(|| "local".to_owned());
-    let id =
-        blocking(move || hq.hire_by_owner(&req.name, role, &brain, req.reports_to.map(MemberId)))
-            .await?;
+    let id = blocking(move || {
+        hq.hire_by_owner_with(
+            &req.name,
+            role,
+            req.brain.as_deref(),
+            req.work_brain.as_deref(),
+            req.judgment_brain.as_deref(),
+            req.reports_to.map(MemberId),
+        )
+    })
+    .await?;
     Ok(Json(json!({ "member": id.0 })))
 }
 
@@ -583,6 +598,40 @@ async fn set_brain(
     let hq = state.hq.clone();
     let brain = blocking(move || hq.set_brain(MemberId(id), &req.brain)).await?;
     Ok(Json(json!({ "member": id, "brain": brain.name() })))
+}
+
+#[derive(Deserialize)]
+struct WorkBrainAsked {
+    work_brain: String,
+}
+
+/// The owner sets what a member does its work with (ADR 0131): `mac` or `local`.
+async fn set_work_brain(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<WorkBrainAsked>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let brain = blocking(move || hq.set_work_brain(MemberId(id), &req.work_brain)).await?;
+    Ok(Json(json!({ "member": id, "work_brain": brain.name() })))
+}
+
+#[derive(Deserialize)]
+struct JudgmentBrainAsked {
+    judgment_brain: String,
+}
+
+/// The owner sets the Claude a member judges with (ADR 0131).
+async fn set_judgment_brain(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<JudgmentBrainAsked>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let brain = blocking(move || hq.set_judgment_brain(MemberId(id), &req.judgment_brain)).await?;
+    Ok(Json(
+        json!({ "member": id, "judgment_brain": brain.name() }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -719,21 +768,6 @@ async fn office_veto(
     let hq = state.hq.clone();
     blocking(move || hq.veto_office(id)).await?;
     Ok(Json(json!({ "proposal": id, "vetoed": true })))
-}
-
-#[derive(Deserialize)]
-struct DowntimeAllowance {
-    cents: i64,
-}
-
-/// The owner says what paid members' downtime turns may spend together in a day, in cents.
-async fn office_downtime(
-    Extract(state): Extract<State>,
-    Json(req): Json<DowntimeAllowance>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    blocking(move || hq.set_downtime_paid_cents(req.cents)).await?;
-    Ok(Json(json!({ "downtime_paid_cents_per_day": req.cents })))
 }
 
 #[derive(Deserialize)]
@@ -1725,10 +1759,23 @@ mod tests {
     #[tokio::test]
     async fn the_relay_learns_whose_a_token_is_and_reports_what_each_call_cost() {
         let st = state(true);
-        // Ada, the demo's lead, thinks with Claude: her turns are paid from the pool. (One on
-        // the house's model reserves nothing, ADR 0111.)
+        // Ada, the demo's lead, judges with Claude: her turns of judgment are paid from the
+        // pool. (A turn of work reserves nothing, ADR 0131.) She is asked to decide the task
+        // she was handed.
         let ada = st.hq.store().members().unwrap()[0].id;
         st.hq.set_brain(ada, "claude-sonnet-5-5").unwrap();
+        let hers = st
+            .hq
+            .store()
+            .tasks()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.assignee == Some(ada))
+            .expect("the demo hands Ada a task")
+            .id;
+        st.hq
+            .wake(ada, Some(hers), endora_team::domain::WakeReason::Decide)
+            .unwrap();
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
         let app = app(st.clone());
@@ -2259,11 +2306,14 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(json_of(res).await["brain"], "claude-sonnet-5-5");
 
+        // A task handed to the lead, and the lead asked to decide it: a turn of judgment, which
+        // is the one that runs on Claude (ADR 0131).
         let goal = st
             .hq
             .set_goal("Keep the lab tidy", "a test", Author::Owner)
             .unwrap();
-        st.hq
+        let look = st
+            .hq
             .add_task(
                 Author::Owner,
                 NewTask {
@@ -2277,6 +2327,9 @@ mod tests {
                     waits_on: Vec::new(),
                 },
             )
+            .unwrap();
+        st.hq
+            .wake(lead, Some(look), endora_team::domain::WakeReason::Decide)
             .unwrap();
         st.hq.tick().unwrap();
         let handed = json_of(
@@ -2311,6 +2364,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_owner_sets_both_brains_and_a_turn_of_work_is_handed_out_on_the_work_brain() {
+        let engine = endora_team::application::engine::Engine::new(
+            SqliteTeamStore::in_memory().unwrap(),
+            Runner::Remote(RemoteRunner::default()),
+            SystemClock,
+            Settings::default(),
+        );
+        let st = State {
+            hq: Arc::new(engine),
+            token: Arc::new(TOKEN.to_owned()),
+            runner_token: Some(Arc::new(RUNNER.to_owned())),
+            demo: false,
+            tick_seconds: 30,
+            last_tick: Arc::default(),
+        };
+        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let app = app(st.clone());
+        let set = |path: &str, token: Option<&str>, body: serde_json::Value| {
+            call(
+                "POST",
+                &format!("/v1/members/{}/{path}", lead.0),
+                token,
+                &body.to_string(),
+            )
+        };
+        let stranger = app
+            .clone()
+            .oneshot(set(
+                "work-brain",
+                Some(RUNNER),
+                json!({ "work_brain": "mac" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            stranger.status(),
+            StatusCode::UNAUTHORIZED,
+            "the node's alone"
+        );
+        // Claude never does the work; the house's models do.
+        let claude = app
+            .clone()
+            .oneshot(set(
+                "work-brain",
+                Some(TOKEN),
+                json!({ "work_brain": "claude-sonnet-5-5" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(claude.status(), StatusCode::BAD_REQUEST);
+        let mac = json_of(
+            app.clone()
+                .oneshot(set(
+                    "work-brain",
+                    Some(TOKEN),
+                    json!({ "work_brain": "mac" }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(mac["work_brain"], "mac");
+        // Judgment is Claude's, Opus is the CEO's alone, and a member cannot be left with none.
+        for refused in ["claude-opus-5-5", "local", "none"] {
+            let res = app
+                .clone()
+                .oneshot(set(
+                    "judgment-brain",
+                    Some(TOKEN),
+                    json!({ "judgment_brain": refused }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{refused}");
+        }
+        let sonnet = json_of(
+            app.clone()
+                .oneshot(set(
+                    "judgment-brain",
+                    Some(TOKEN),
+                    json!({ "judgment_brain": "claude-sonnet-5-5" }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(sonnet["judgment_brain"], "claude-sonnet-5-5");
+
+        // A task handed to the lead is work, and the Mac has not said it is free: the house's
+        // own model does it, on the worker, and the node's relay is told so.
+        let goal = st
+            .hq
+            .set_goal("Keep the lab tidy", "a test", Author::Owner)
+            .unwrap();
+        st.hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: None,
+                    parent: None,
+                    title: "Look round".to_owned(),
+                    description: String::new(),
+                    assignee: Some(lead),
+                    priority: Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+        st.hq.tick().unwrap();
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    &json!({ "free": 1 }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(handed["brain"], "local", "work, and the Mac is not free");
+        assert_eq!(handed["runtime"], "worker");
+        let token = handed["token"].as_str().unwrap();
+        let found = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/team/turn",
+                    Some(TOKEN),
+                    &json!({ "token": token }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            found["cloud"], false,
+            "nothing of a work turn reaches Anthropic"
+        );
+        assert_eq!(found["brain"], "local");
+        let shown = st.hq.snapshot().unwrap();
+        let jane = &shown["members"][0];
+        assert_eq!(jane["work_brain"], "mac");
+        assert_eq!(jane["judgment_brain"], "claude-sonnet-5-5");
+    }
+
+    #[tokio::test]
     async fn the_owner_puts_a_developer_on_claude_code_and_the_runner_and_the_relay_hear_it() {
         let st = state(false);
         let dev = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
@@ -2335,15 +2537,14 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "the node's alone"
         );
-        for (member, why) in [(dev, "a developer at home"), (lead, "a lead")] {
-            let refused = app
-                .clone()
-                .oneshot(set(Some(TOKEN), member.0, "claude-code"))
-                .await
-                .unwrap();
-            assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{why}");
-        }
-        st.hq.set_brain(dev, "claude-haiku-5-5").unwrap();
+        // Every member judges with a Claude (ADR 0131), so a developer may be given Claude Code
+        // to do that judging with; a lead keeps Endora's worker.
+        let refused = app
+            .clone()
+            .oneshot(set(Some(TOKEN), lead.0, "claude-code"))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "a lead");
         let res = app
             .clone()
             .oneshot(set(Some(TOKEN), dev.0, "claude-code"))
@@ -2364,11 +2565,14 @@ mod tests {
             (json!("claude-code"), json!(true))
         );
 
+        // A task handed to the developer, and the developer asked to decide it: a turn of
+        // judgment, which is the one Claude Code runs (work is the worker's, on a house model).
         let goal = st
             .hq
             .set_goal("Tidy the fork", "a test", Author::Owner)
             .unwrap();
-        st.hq
+        let tidy = st
+            .hq
             .add_task(
                 Author::Owner,
                 NewTask {
@@ -2382,6 +2586,9 @@ mod tests {
                     waits_on: Vec::new(),
                 },
             )
+            .unwrap();
+        st.hq
+            .wake(dev, Some(tidy), endora_team::domain::WakeReason::Decide)
             .unwrap();
         st.hq.tick().unwrap();
         let handed = json_of(
@@ -3042,31 +3249,18 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        // Reset puts the seeded layout back, and the allowance is set within the pool's day.
+        // Reset puts the seeded layout back. Downtime is work on the house's own model, so there
+        // is no allowance to set (ADR 0131).
         st.hq.store().remove_office_item(1).unwrap();
         let (status, _) = send("/v1/office/reset".to_owned(), "{}".to_owned(), Some(TOKEN)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(st.hq.store().office_items().unwrap().len(), seeded);
-        let (status, said) = send(
-            "/v1/office/downtime".to_owned(),
-            json!({ "cents": 25 }).to_string(),
-            Some(TOKEN),
-        )
-        .await;
-        assert_eq!(
-            (status, said["downtime_paid_cents_per_day"].clone()),
-            (StatusCode::OK, json!(25))
-        );
-        let (status, _) = send(
-            "/v1/office/downtime".to_owned(),
-            json!({ "cents": -1 }).to_string(),
-            Some(TOKEN),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
         let snap = st.hq.snapshot().unwrap();
         assert_eq!(snap["office"]["items"].as_array().unwrap().len(), seeded);
-        assert_eq!(snap["office"]["downtime_paid_cents_per_day"], 25);
+        assert!(
+            snap["office"].get("downtime_paid_cents_per_day").is_none(),
+            "nothing to allow"
+        );
         assert_eq!(snap["office"]["can_undo"], true, "a reset can be undone");
         let (status, said) = send("/v1/office/undo".to_owned(), "{}".to_owned(), Some(TOKEN)).await;
         assert_eq!(status, StatusCode::OK);

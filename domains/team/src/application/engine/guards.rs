@@ -15,6 +15,7 @@ use crate::domain::closure::{Closed, Closure, DoneWhy, DropWhy, not_a_closure};
 use crate::domain::guards::{
     self, Diagnosis, Finding, Guard, Stopped, THRESHOLDS, TaskFacts, Verdict,
 };
+use crate::domain::turns;
 use crate::domain::{
     CheckBackStatus, EventKind, MemberId, RunStatus, Task, TaskId, TaskStatus, WakeReason,
 };
@@ -54,10 +55,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             None => false,
             Some(h) => self.woken_for_nothing(h, task.id)?,
         };
+        // A turn that waits for budget or for the Mac is queued and live, but it is a wait, not
+        // a turn under way (ADR 0131): the work it is on is held, and starts when it can.
+        let waits =
+            |r: &&Run| r.status == RunStatus::Queued && turns::is_waiting_words(&r.end_reason);
         Ok(TaskFacts {
             status: task.status,
             holder_at_work,
-            live_turn: on_it.iter().any(|r| r.status.live()),
+            live_turn: on_it.iter().any(|r| r.status.live() && !waits(r)),
+            waiting_turn: on_it.iter().any(waits),
             held_wake: !self.store.held_wakes(task.id)?.is_empty(),
             waits_on_open_work: !self.waiting_on(task)?.is_empty(),
             wait_dropped: self.dropped_wait(&task.waits_on)?.is_some(),
@@ -99,7 +105,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The stopped diagnosis of `task` as the record stands now (ADR 0124); `None` for a task
     /// that is finished, or gone.
-    pub(crate) fn diagnosis(&self, task: TaskId) -> Done<Option<Diagnosis>> {
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn diagnosis(&self, task: TaskId) -> Done<Option<Diagnosis>> {
         let Some(task) = self.store.task(task)? else {
             return Ok(None);
         };
@@ -321,7 +330,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Whether stuck work is moving again: finished, out of blocked, or with a turn on it.
+    /// Whether stuck work is moving again: finished, out of blocked, or with a turn on it (one
+    /// that waits for budget or the Mac is one: it starts when it can, ADR 0131).
     fn unstuck(&self, task: TaskId) -> Done<bool> {
         let Some(found) = self.store.task(task)? else {
             return Ok(true);
@@ -329,9 +339,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if found.status != TaskStatus::Blocked {
             return Ok(true);
         }
-        Ok(self
-            .diagnosis(task)?
-            .is_none_or(|d| d.stopped == Stopped::Working))
+        let facts = self.task_facts(&found)?;
+        Ok(facts.live_turn
+            || facts.waiting_turn
+            || guards::diagnose(&facts).is_none_or(|d| d.stopped == Stopped::Working))
     }
 
     // ---- why work closed -----------------------------------------------------------------------

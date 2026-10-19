@@ -294,8 +294,11 @@ pub struct TaskFacts {
     pub status: TaskStatus,
     /// Its holder, if anyone holds it (taken or handed to): whether that member is at work.
     pub holder_at_work: Option<bool>,
-    /// A turn on it is queued, running, or waiting to retry.
+    /// A turn on it is running, or queued and ready to start, or waiting to retry.
     pub live_turn: bool,
+    /// A turn on it is queued but waits to start, for budget or for the Mac (ADR 0131): the
+    /// wait is its wake. Work whose only turn waits is held, never parked.
+    pub waiting_turn: bool,
     /// A wake for it is held behind another member's turn.
     pub held_wake: bool,
     /// It waits on open work: a task it waits for, or one of its sub-tasks.
@@ -324,6 +327,14 @@ pub fn diagnose(facts: &TaskFacts) -> Option<Diagnosis> {
     }
     if facts.live_turn || facts.held_wake {
         return said(Stopped::Working, "a turn on it is queued, running or held");
+    }
+    // A turn that waits for budget or for the Mac is a live wake: the work stopped on purpose,
+    // not by accident, and nothing is nudged, found stuck or climbed while it does (ADR 0131).
+    if facts.waiting_turn {
+        return said(
+            Stopped::Held,
+            "its turn waits for budget or for the Mac, and starts when it can",
+        );
     }
     let Some(at_work) = facts.holder_at_work else {
         return said(Stopped::Indeterminate, "nobody holds it");
@@ -740,6 +751,7 @@ mod tests {
             status,
             holder_at_work: Some(true),
             live_turn: false,
+            waiting_turn: false,
             held_wake: false,
             waits_on_open_work: false,
             wait_dropped: false,
@@ -768,6 +780,41 @@ mod tests {
         assert_eq!(stopped(held), Stopped::Working);
         assert_eq!(diagnose(&idle(TaskStatus::Done)), None);
         assert_eq!(diagnose(&idle(TaskStatus::Dropped)), None);
+    }
+
+    /// A turn that waits for budget or for the Mac is a live wake (ADR 0131): work whose only
+    /// turn waits is held, however long, and whatever its member's status, and is never parked
+    /// for the ladder to climb. A turn that runs beside it makes the work simply working.
+    #[test]
+    fn work_whose_turn_waits_for_budget_or_the_mac_is_held_never_parked() {
+        for status in [
+            TaskStatus::Todo,
+            TaskStatus::Doing,
+            TaskStatus::Blocked,
+            TaskStatus::InReview,
+        ] {
+            let waiting = TaskFacts {
+                waiting_turn: true,
+                ..idle(status)
+            };
+            let found = diagnose(&waiting).expect("open work");
+            assert_eq!(found.stopped, Stopped::Held, "{status:?}");
+            assert!(found.why.contains("waits for budget or for the Mac"));
+        }
+        let and_running = TaskFacts {
+            waiting_turn: true,
+            live_turn: true,
+            ..idle(TaskStatus::Doing)
+        };
+        assert_eq!(stopped(and_running), Stopped::Working);
+        // Without the wait it is the accident it was.
+        assert_eq!(stopped(idle(TaskStatus::Doing)), Stopped::Parked);
+        // Finished work owes nothing, a turn waiting for it or not.
+        let finished = TaskFacts {
+            waiting_turn: true,
+            ..idle(TaskStatus::Done)
+        };
+        assert_eq!(diagnose(&finished), None);
     }
 
     #[test]

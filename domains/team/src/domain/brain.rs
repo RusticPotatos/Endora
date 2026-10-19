@@ -3,6 +3,10 @@
 //! Claude a role may think with is the plan's models by role (section 9), the same rule the
 //! relay enforces on every call: Opus or Sonnet for the CEO; Sonnet or Haiku for the lead, the
 //! developer and the reviewer; Haiku only for the researcher. Opus is the CEO's alone.
+//!
+//! Every member has two (ADR 0131): a **work brain**, one of the house's models (the Mac or
+//! the NAS's), which does its reading, building and drafting for nothing, and a **judgment
+//! brain**, a Claude, which decides. A member who is given none judges with Haiku.
 
 use super::work::{Refusal, Role};
 
@@ -120,6 +124,62 @@ impl Brain {
         ALL.into_iter().filter(|b| b.allowed_for(role)).collect()
     }
 
+    /// The brains a member may do its work with (ADR 0131), in the order the owner is offered
+    /// them: the house's models, the Mac first.
+    #[must_use]
+    pub const fn work_choices() -> [Self; 2] {
+        [Self::Mac, Self::Local]
+    }
+
+    /// The brains a member in `role` may be given to judge with (ADR 0131): the Claude models
+    /// the role may use, in the order the owner is offered them.
+    #[must_use]
+    pub fn judgment_choices(role: Role) -> Vec<Self> {
+        Self::choices(role)
+            .into_iter()
+            .filter(|b| b.cloud())
+            .collect()
+    }
+
+    /// The judgment brain a member in `role` has until the owner chooses another (ADR 0131):
+    /// Claude Haiku, the owner's cheap Claude; Sonnet for the CEO, who may not think with Haiku.
+    #[must_use]
+    pub const fn default_judgment(role: Role) -> Self {
+        match role {
+            Role::Ceo => Self::Sonnet,
+            _ => Self::Haiku,
+        }
+    }
+
+    /// The judgment brain the owner asked for by `name`, for a member in `role`.
+    ///
+    /// # Errors
+    /// [`Refusal::NotABrain`] for a name that is not a Claude the role may use (Opus for any
+    /// role but the CEO, the house's models, anything else).
+    pub fn for_judgment(role: Role, name: &str) -> Result<Self, Refusal> {
+        let brain = Self::for_role(role, name)?;
+        if brain.house() {
+            return Err(Refusal::NotABrain {
+                role,
+                asked: name.chars().take(60).collect(),
+            });
+        }
+        Ok(brain)
+    }
+
+    /// The work brain the owner asked for by `name`.
+    ///
+    /// # Errors
+    /// [`Refusal::NotABrain`] for a name that is not one of the house's models.
+    pub fn for_work(role: Role, name: &str) -> Result<Self, Refusal> {
+        Self::from_name(name.trim())
+            .filter(|b| b.house())
+            .ok_or_else(|| Refusal::NotABrain {
+                role,
+                asked: name.chars().take(60).collect(),
+            })
+    }
+
     /// The brain the owner asked for by `name`, for a member in `role`.
     ///
     /// # Errors
@@ -214,5 +274,62 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(said.contains("Opus is the CEO's alone"), "{said}");
+    }
+
+    #[test]
+    fn a_member_judges_with_haiku_unless_the_owner_says_otherwise_and_the_ceo_with_sonnet() {
+        for role in [
+            Role::Lead,
+            Role::Developer,
+            Role::Reviewer,
+            Role::Researcher,
+        ] {
+            assert_eq!(Brain::default_judgment(role), Brain::Haiku, "{role:?}");
+        }
+        // The relay refuses Haiku for the CEO, so its cheapest Claude is Sonnet.
+        assert_eq!(Brain::default_judgment(Role::Ceo), Brain::Sonnet);
+        // And the default is always one its role may use, and always a Claude.
+        for role in [
+            Role::Ceo,
+            Role::Lead,
+            Role::Developer,
+            Role::Reviewer,
+            Role::Researcher,
+        ] {
+            let default = Brain::default_judgment(role);
+            assert!(default.allowed_for(role) && default.cloud(), "{role:?}");
+            assert!(Brain::judgment_choices(role).contains(&default), "{role:?}");
+        }
+    }
+
+    #[test]
+    fn a_judgment_brain_is_a_claude_its_role_may_use_and_a_work_brain_a_house_model() {
+        assert_eq!(
+            Brain::for_judgment(Role::Lead, "claude-sonnet-5-5"),
+            Ok(Brain::Sonnet)
+        );
+        assert_eq!(
+            Brain::for_judgment(Role::Ceo, "claude-opus-5-5"),
+            Ok(Brain::Opus)
+        );
+        for (role, asked) in [
+            (Role::Lead, "local"),
+            (Role::Lead, "mac"),
+            (Role::Lead, "none"),
+            (Role::Lead, "claude-opus-5-5"),
+            (Role::Researcher, "claude-sonnet-5-5"),
+            (Role::Ceo, "claude-haiku-5-5"),
+        ] {
+            assert!(
+                matches!(
+                    Brain::for_judgment(role, asked),
+                    Err(Refusal::NotABrain { .. })
+                ),
+                "{role:?} {asked}"
+            );
+        }
+        assert_eq!(Brain::for_work(Role::Lead, "mac"), Ok(Brain::Mac));
+        assert_eq!(Brain::for_work(Role::Lead, " local "), Ok(Brain::Local));
+        assert!(Brain::for_work(Role::Lead, "claude-haiku-5-5").is_err());
     }
 }

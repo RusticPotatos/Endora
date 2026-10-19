@@ -6,7 +6,7 @@ use serde_json::json;
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
-use crate::domain::{EventKind, MemberId, Runtime};
+use crate::domain::{EventKind, MemberId, RunId, Runtime};
 
 /// Set once HQ has put the pilot's developer on Claude Code, so the owner's later choice
 /// stands.
@@ -44,6 +44,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let found = self.member(member)?;
         let set = self.store.runtime_of(member)?;
         Ok(set.effective(found.role, found.brain))
+    }
+
+    /// What runs one turn (ADR 0131): the member's setting while the brain the turn was started
+    /// on may run on it. A turn of work on the house's models runs on the worker, whatever the
+    /// member's setting: Claude Code speaks only Anthropic's API.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a turn that does not exist; a store failure.
+    pub fn runtime_of_turn(&self, run: RunId) -> Done<Runtime> {
+        let found = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
+        let member = self.member(found.member)?;
+        let set = self.store.runtime_of(member.id)?;
+        Ok(set.effective(member.role, found.brain.unwrap_or(member.brain)))
     }
 
     /// Puts the pilot's developer on Claude Code, once: nothing when HQ has done so before

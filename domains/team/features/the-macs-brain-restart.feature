@@ -5,9 +5,8 @@ Feature: A turn waiting for the Mac survives HQ restarting
   Scenario: A held wake is still there after HQ restarts, and runs once the node says the Mac is free
     Given HQ keeps its team in a file
     And Mara is the CEO
-    And Zed is the developer
+    And Zed is the tester
     And the goal "Keep the home lab healthy"
-    And Zed thinks with the Mac
     And the node says the Mac is not ready: "owner active"
     And Zed has the task "Cap sonarr's memory"
     When a tick passes

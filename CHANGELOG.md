@@ -24,6 +24,30 @@ tagged release.
 
 ### Added
 
+- **Two brains per member, and two kinds of turn** ([ADR 0131](docs/adr/0131-the-two-kinds-of-turn.md)).
+  Every member has a **work brain** (the Mac or the house's model) and a **judgment brain** (a
+  Claude its role may use: Haiku until the owner says otherwise); the roster shows and sets both
+  (*Work: Mac · Judgment: Sonnet*; `POST /v1/members/{id}/work-brain` and `/judgment-brain`,
+  through the node), and the hire form takes *works with* and *judges with*. What a turn is, and
+  so where it runs, is decided by HQ in code from why it was asked for (a table in
+  `domain/turns.rs`, with a test that fails until a new wake reason is classified), never by the
+  member: **judgment** (planning, reviews, deciding, accepting, a tester's verdict, a huddle, an
+  alarm; all of the CEO's) runs only on the member's Claude and **waits** for budget; **work**
+  costs nothing and runs on the Mac when it is free and otherwise on the NAS's model, except
+  code and branch work, the engineering wing lead's planning and a tester's work, which wait for
+  the Mac and are never given the NAS's. **An alarm acts at once:** with the member's or the
+  pool's budget spent it runs immediately on the member's work brain (the Mac if free, else the
+  NAS), and a notice on the owner's desk says so; no other judgment ever falls back. A wake out
+  of budget is no longer thrown away: its turn is kept, waits for budget, one per member and
+  task, and is released when the pool's day turns, the owner tops up the pool or gives the member
+  an allowance; it survives an HQ restart. A turn that waits for budget or for the Mac is held,
+  never stuck: it produces no stuck finding, nudge or climb to the CEO. The top bar says
+  *N turns wait for budget*; the roster says what a member's turn waits for. Migration
+  (idempotent, two nullable columns): a member on the house's model or the Mac keeps it as its
+  work brain, a member on Claude works with the Mac, and a member with no Claude to judge with is
+  given Haiku (the CEO, Sonnet). There is no switch: the service runs the rules the tests run.
+  Downtime (0119) is work on the NAS and free for every member, so the owner's paid-downtime
+  allowance, its card line and its route are gone.
 - **The collection can declare every NAS-side setting** (`endora.homelab`, `endora` role).
   New variables, all empty by default (nothing rendered, nothing changed): `endora_workers`
   (the `workers` profile), `endora_lan_dns`, `endora_hq_tick_seconds`, `endora_hq_dir`,

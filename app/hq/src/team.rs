@@ -136,7 +136,9 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             return Ok(None);
         };
         // What runs the turn (ADR 0117): the relay passes a Claude Code turn's own shape.
-        let runtime = hq.runtime_of(member.id).unwrap_or_default();
+        // And of the turn's own brain: a turn of work on the house's models runs on the worker
+        // (ADR 0131).
+        let runtime = hq.runtime_of_turn(run.id).unwrap_or_default();
         Ok::<_, endora_team::application::EngineError>(Some((run, member, runtime)))
     })
     .await;

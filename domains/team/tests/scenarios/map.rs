@@ -247,6 +247,7 @@ fn quiz_on(w: &mut Office) {
 }
 
 #[given(regex = r"^it is (\d+):(\d\d) in the morning$")]
+#[when(regex = r"^it is (\d+):(\d\d) in the morning$")]
 fn it_is_morning(w: &mut Office, hour: i64, minute: i64) {
     let day = 24 * 60 * 60 * 1000;
     let now = w.clock.0.load(std::sync::atomic::Ordering::SeqCst);
@@ -257,25 +258,33 @@ fn it_is_morning(w: &mut Office, hour: i64, minute: i64) {
 
 #[when("HQ looks at the night")]
 fn looks_at_the_night(w: &mut Office) {
-    w.hq.tick().expect("the tick runs");
+    w.tick();
 }
 
-#[then("a quiz is asked of a member on the house's model")]
+#[then("a quiz is asked of a member, in a turn on the house's model that costs nothing")]
 fn quiz_asked(w: &mut Office) {
     let quiz = w.last_quiz();
     assert_eq!(quiz.status, endora_team::domain::quiz::Status::Asked);
     let asked = quiz.member.expect("asked of a member");
-    let found =
+    // The quiz is a downtime turn, which is work on the house's own model (ADR 0131).
+    let turn =
         w.hq.store()
-            .members()
+            .runs()
             .expect("the store answers")
             .into_iter()
-            .find(|m| m.id == asked)
-            .expect("hired");
+            .rfind(|r| r.member == asked)
+            .expect("the quizzed member has a turn");
+    assert_eq!(turn.brain, Some(endora_team::domain::Brain::Local));
+    assert_eq!((turn.reserved, turn.spent), (0, 0));
+}
+
+#[then("no quiz is asked")]
+fn no_quiz_asked(w: &mut Office) {
     assert!(
-        !found.brain.cloud(),
-        "{} thinks with a paid brain",
-        found.name
+        w.hq.store()
+            .quizzes()
+            .expect("the store answers")
+            .is_empty()
     );
 }
 
@@ -287,12 +296,12 @@ fn answers_from_map(w: &mut Office) {
 #[when("the night's quiz is answered wrongly three nights running")]
 fn answered_wrongly_three_nights(w: &mut Office) {
     for _ in 0..3 {
-        w.hq.tick().expect("the tick runs");
+        w.tick();
         w.answers_the_quiz(|_| "I do not know".to_owned());
         let name = w.name_of(w.last_quiz().member.expect("asked of a member"));
         let context = w.turns.get(&name).expect("its turn").clone();
         w.hq.runner().finish(context.run, true);
-        w.hq.tick().expect("the tick runs");
+        w.tick();
         w.clock
             .0
             .fetch_add(24 * 60 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);

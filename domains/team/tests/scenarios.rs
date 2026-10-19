@@ -46,6 +46,10 @@ mod history;
 #[path = "scenarios/mac.rs"]
 mod mac;
 
+/// Two brains per member and the kinds of turn (ADR 0131), in their own file.
+#[path = "scenarios/brains.rs"]
+mod brains;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 
@@ -94,6 +98,33 @@ struct Office {
     wakes_at_ask: usize,
     /// The file HQ keeps its team in, when a scenario is about HQ restarting (ADR 0130).
     file: Option<String>,
+    /// The pool for a month, when a scenario is about money (ADR 0131).
+    pool_per_month: Micros,
+    /// Whether the scenario has said what the node says about the owner's Mac. Until it does,
+    /// the Mac is on and free, as it is most of the day (ADR 0131: code work waits for it).
+    mac_said: bool,
+    /// How many wakes there were when a turn began to wait, for what HQ does about work whose
+    /// turn waits (ADR 0131): only what came after is held against it.
+    wakes_when_waiting: usize,
+}
+
+impl Office {
+    /// The settings this scenario's HQ starts with.
+    fn settings(&self) -> Settings {
+        Settings {
+            pool_per_month: self.pool_per_month,
+            ..Settings::default()
+        }
+    }
+
+    /// One tick of HQ. The node says the Mac is free before every tick, as it does while it is,
+    /// unless the scenario has said otherwise.
+    fn tick(&mut self) {
+        if !self.mac_said {
+            self.hq.tell_mac(true, "ready");
+        }
+        self.hq.tick().expect("the tick runs");
+    }
 }
 
 impl Default for Office {
@@ -120,6 +151,9 @@ impl Default for Office {
             answer: None,
             wakes_at_ask: 0,
             file: None,
+            pool_per_month: endora_team::domain::money::POOL_PER_MONTH,
+            mac_said: false,
+            wakes_when_waiting: 0,
         }
     }
 }
@@ -190,7 +224,7 @@ impl Office {
     /// `member`'s turn, running now: the tick starts what is queued, and the newest turn the
     /// runner started for the member must still be running.
     fn turn_of(&mut self, member: &str) -> RunContext {
-        self.hq.tick().expect("the tick runs");
+        self.tick();
         let id = self.member(member);
         let context = self
             .hq
@@ -198,7 +232,24 @@ impl Office {
             .started()
             .into_iter()
             .rfind(|c| c.member == id)
-            .unwrap_or_else(|| panic!("no turn of {member}'s has started"));
+            .unwrap_or_else(|| {
+                // What is under way, so a turn that waits says for whom.
+                let live: Vec<_> = self
+                    .hq
+                    .store()
+                    .runs()
+                    .expect("the store answers")
+                    .into_iter()
+                    .filter(|r| r.status.live())
+                    .map(|r| {
+                        format!(
+                            "member {} on {:?}: {:?} {:?}",
+                            r.member.0, r.task, r.status, r.end_reason
+                        )
+                    })
+                    .collect();
+                panic!("no turn of {member}'s has started; turns under way: {live:#?}")
+            });
         assert!(
             self.hq
                 .turn_of(&context.token)
@@ -720,14 +771,15 @@ fn turns_spend(w: &mut Office, name: String, title: String, first: f64, second: 
     let member = w.member(&name);
     let task = w.task(&title);
     for amount in [first, second] {
-        w.hq.wake(member, Some(task), WakeReason::Assigned)
+        // Only a turn of judgment is paid for (ADR 0131): the member is asked to decide.
+        w.hq.wake(member, Some(task), WakeReason::Decide)
             .expect("a wake has a receipt");
         let context = w.turn_of(&name);
         assert_eq!(context.task, Some(task), "{name}'s turn is on another task");
         w.hq.report_usage(context.run, micros(amount))
             .expect("the ledger takes it");
         w.hq.runner().finish(context.run, true);
-        w.hq.tick().expect("the tick runs");
+        w.tick();
     }
 }
 
@@ -766,7 +818,7 @@ fn turn_spends(w: &mut Office, name: &str, title: &str, amount: Micros) {
     w.hq.report_usage(context.run, amount)
         .expect("the ledger takes it");
     w.hq.runner().finish(context.run, true);
-    w.hq.tick().expect("the tick runs");
+    w.tick();
 }
 
 #[given(regex = r"^(\w+) has spent \$(\d+(?:\.\d+)?) of (?:her|his|its) share today$")]
@@ -777,11 +829,11 @@ fn spent_of_share(w: &mut Office, name: String, dollars: f64) {
     let mut left = micros(dollars);
     while left > 0 {
         let amount = left.min(endora_team::domain::money::MOST_A_TURN);
-        if left != micros(dollars) {
-            let task = w.task(&title);
-            w.hq.wake(member, Some(task), WakeReason::Mentioned)
-                .expect("a wake has a receipt");
-        }
+        // Only a turn of judgment is paid for (ADR 0131): the member is asked to decide, and
+        // the first of these joins the turn Endora's handing queued.
+        let task = w.task(&title);
+        w.hq.wake(member, Some(task), WakeReason::Decide)
+            .expect("a wake has a receipt");
         turn_spends(w, &name, &title, amount);
         left -= amount;
     }
@@ -849,7 +901,7 @@ fn turn_ends(w: &mut Office, name: String) {
         .unwrap_or_else(|| panic!("{name}'s turn has not started"))
         .clone();
     w.hq.runner().finish(context.run, true);
-    w.hq.tick().expect("the tick runs");
+    w.tick();
 }
 
 /// The member takes its task and hands it in, citing the task as what counts (the owner's
@@ -953,6 +1005,15 @@ fn the_wing(w: &mut Office) {
     w.projects
         .insert("ansible-nas clean-up".to_owned(), seeded.project);
     w.wing = Some(seeded);
+}
+
+/// A member's first turn, the one HQ queues when it seeds the wing (Kit's, on the plan), is over.
+/// The Mac takes one turn at a time (ADR 0131), and the scenario is about the others'.
+#[given(expr = "{word}'s planning turn is over")]
+fn planning_turn_is_over(w: &mut Office, name: String) {
+    let context = w.turn_of(&name);
+    w.hq.runner().finish(context.run, true);
+    w.tick();
 }
 
 fn wing(w: &Office) -> &WingSeeded {
@@ -1206,9 +1267,9 @@ fn refused_for(w: &mut Office, why: String) {
 #[given(regex = r"^(\d+) days pass$")]
 #[when(regex = r"^(\d+) days pass$")]
 fn days_pass(w: &mut Office, days: i64) {
-    w.hq.tick().expect("the tick runs");
+    w.tick();
     w.clock.0.fetch_add(days * DAY_MS, Ordering::SeqCst);
-    w.hq.tick().expect("the tick runs");
+    w.tick();
 }
 
 #[then(expr = "the owner's desk offers to furlough {string}")]
@@ -1538,11 +1599,11 @@ fn patterns_turn(w: &mut Office, name: String) {
             .into_iter()
             .find(|r| r.assignee == lead && r.title == "Patterns")
             .expect("the lead has a patterns routine");
-    w.hq.tick().expect("the tick runs");
+    w.tick();
     for started in w.hq.runner().started() {
         w.hq.runner().finish(started.run, true);
     }
-    w.hq.tick().expect("the tick runs");
+    w.tick();
     w.hq.fire_routine(patterns.id).expect("the routine runs");
 }
 
@@ -1616,17 +1677,17 @@ fn sits(w: &mut Office, title: String) {
     };
     let before = climbed(w);
     for _ in 0..4 {
-        w.hq.tick().expect("the tick runs");
-        w.hq.tick().expect("the tick runs");
+        w.tick();
+        w.tick();
         for started in w.hq.runner().started() {
             w.hq.runner().finish(started.run, true);
         }
-        w.hq.tick().expect("the tick runs");
+        w.tick();
         w.clock.0.fetch_add(
             endora_team::application::engine::STRANDED_AFTER_MS + 1,
             Ordering::SeqCst,
         );
-        w.hq.tick().expect("the tick runs");
+        w.tick();
         if climbed(w) > before {
             return;
         }
@@ -1698,7 +1759,7 @@ fn checks_back(w: &mut Office, name: String) {
 #[when("an hour passes")]
 fn an_hour_passes(w: &mut Office) {
     w.clock.0.fetch_add(HOUR_MS + 60_000, Ordering::SeqCst);
-    w.hq.tick().expect("the tick runs");
+    w.tick();
 }
 
 fn main() {
@@ -1853,7 +1914,7 @@ fn owner_resets(w: &mut Office) {
 #[when(regex = r"^(\d+) hours pass$")]
 fn hours_pass(w: &mut Office, hours: i64) {
     w.clock.0.fetch_add(hours * HOUR_MS, Ordering::SeqCst);
-    w.hq.tick().expect("the tick runs");
+    w.tick();
 }
 
 #[then(expr = "the activity feed says {string}")]
@@ -1930,7 +1991,7 @@ fn downtime_on(w: &mut Office) {
 
 #[when("a tick passes")]
 fn a_tick_passes(w: &mut Office) {
-    w.hq.tick().expect("the tick runs");
+    w.tick();
 }
 
 #[then(regex = r"^(\w+) has a downtime turn that costs nothing$")]
@@ -1955,22 +2016,6 @@ fn tries_to_make_work(w: &mut Office, name: String) {
     );
 }
 
-#[when(regex = r"^the owner allows (\d+) cents a day for paid members' downtime$")]
-fn owner_allows_downtime(w: &mut Office, cents: i64) {
-    let set = w.hq.set_downtime_paid_cents(cents);
-    w.note(set);
-}
-
-#[then(regex = r"^(\w+) has a downtime turn charged to the pool, not to \w+'s share$")]
-fn has_a_pooled_downtime_turn(w: &mut Office, name: String) {
-    let turns = w.downtime_turns(&name);
-    assert_eq!(turns.len(), 1, "{name}'s downtime turns: {turns:?}");
-    assert!(turns[0].asked_by_owner, "the pool pays it");
-    let day = endora_team::domain::money::day_of(w.clock.0.load(Ordering::SeqCst), 0);
-    let id = w.member(&name);
-    assert_eq!(w.hq.store().share_committed(id, day).expect("answers"), 0);
-}
-
 // --- Games in the office (ADR 0121) ---------------------------------------------------------------
 
 #[given("the games are on")]
@@ -1982,7 +2027,7 @@ fn games_on(w: &mut Office) {
 #[when(regex = r"^(\d+) minutes pass$")]
 fn minutes_pass(w: &mut Office, minutes: i64) {
     w.clock.0.fetch_add(minutes * 60 * 1000, Ordering::SeqCst);
-    w.hq.tick().expect("the tick runs");
+    w.tick();
 }
 
 impl Office {

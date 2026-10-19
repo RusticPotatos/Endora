@@ -23,19 +23,13 @@ fn engine() -> Engine<SqliteTeamStore, SimulatedRunner, Noon> {
 }
 
 #[test]
-fn claude_code_is_set_for_a_developer_on_claude_and_refused_for_anyone_else() {
+fn claude_code_is_set_for_a_developer_and_refused_for_anyone_else() {
     let hq = engine();
     let dev = hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
     let lead = hq.hire("John Doe", Role::Lead, 25, 2, 1).unwrap();
     assert_eq!(hq.runtime_of(dev).unwrap(), Runtime::Worker, "the default");
-    assert!(
-        matches!(
-            hq.set_runtime(dev, "claude-code"),
-            Err(EngineError::Refused(Refusal::NotARuntime { .. }))
-        ),
-        "a developer on the house's model"
-    );
-    hq.set_brain(dev, "claude-haiku-5-5").unwrap();
+    // Every member judges with a Claude (ADR 0131), so a developer may be set to Claude Code;
+    // it runs the turns the developer judges, and only those (see the turn kinds' tests).
     hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
     assert_eq!(
         hq.set_runtime(dev, "claude-code").unwrap(),
@@ -56,9 +50,9 @@ fn claude_code_is_set_for_a_developer_on_claude_and_refused_for_anyone_else() {
             .any(|e| e.kind == "member.runtime" && e.data["runtime"] == "claude-code"),
         "said in the feed"
     );
-    // Its brain sent home, the member is on the worker again, whatever the setting says.
+    // What it works with is not what runs its judgment: the setting stands.
     hq.set_brain(dev, "local").unwrap();
-    assert_eq!(hq.runtime_of(dev).unwrap(), Runtime::Worker);
+    assert_eq!(hq.runtime_of(dev).unwrap(), Runtime::ClaudeCode);
     hq.set_brain(dev, "claude-sonnet-5-5").unwrap();
     assert_eq!(hq.runtime_of(dev).unwrap(), Runtime::ClaudeCode);
     assert_eq!(hq.set_runtime(dev, "worker").unwrap(), Runtime::Worker);

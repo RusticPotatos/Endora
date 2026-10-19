@@ -157,17 +157,23 @@ fn asking_the_record_finds_the_post_and_the_turn_with_what_to_cite_and_wakes_no_
 }
 
 #[test]
-fn a_cloud_member_is_never_given_what_a_turn_that_read_confidential_data_said() {
+fn a_turn_on_claude_is_never_given_what_a_turn_that_read_confidential_data_said() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = engine(&clock);
     let t = team(&hq);
-    hq.set_brain(t.rae, "claude-haiku-5-5").unwrap();
     linus_capped_sonarr(&hq, &t, true);
-    // Rae thinks on a cloud model; Ada on the house's.
-    task_for(&hq, t.goal, t.rae, "Check the proxy");
+    // What a turn is given depends on the brain it runs on (ADR 0131). Rae is asked to decide
+    // the proxy, so her turn is one of judgment, on Claude; Ada's turn is work, on the house's
+    // own model.
+    let proxy = task_for(&hq, t.goal, t.rae, "Check the proxy");
+    hq.wake(t.rae, Some(proxy), WakeReason::Decide).unwrap();
     let (_, ada) = ada_asks_in_a_turn(&hq, &t);
     hq.tick().unwrap();
     let rae = turn_of(&hq, t.rae);
+    assert_eq!(
+        hq.store().run(rae.run).unwrap().unwrap().brain,
+        Some(crate::domain::Brain::Haiku)
+    );
     let question = json!({ "question": "why did we cap sonarr's memory?" });
     let to_the_cloud = use_tool(&hq, &rae, "ask_record", &question).unwrap();
     assert!(
@@ -493,12 +499,13 @@ fn the_ceo_consults_leads_only_and_nobody_consults_themselves() {
 }
 
 #[test]
-fn a_cloud_experts_turn_is_paid_from_a_cloud_askers_share() {
+fn a_consulted_turn_is_free_work_on_the_house_model_whoever_asks_and_whoever_is_asked() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = engine(&clock);
     let t = team(&hq);
     hq.set_brain(t.ada, "claude-sonnet-5-5").unwrap();
     hq.set_brain(t.linus, "claude-haiku-5-5").unwrap();
+    hq.tell_mac(true, "ready");
     let (_, ada) = ada_asks_in_a_turn(&hq, &t);
     use_tool(
         &hq,
@@ -510,12 +517,12 @@ fn a_cloud_experts_turn_is_paid_from_a_cloud_askers_share() {
     hq.tick().unwrap();
     let linus = turn_of(&hq, t.linus);
     let run = hq.store().run(linus.run).unwrap().unwrap();
-    assert!(run.reserved > 0, "a cloud turn holds money");
+    // It is not quality work, and the Mac is the scarce one: the NAS's model answers, for nothing
+    // (ADR 0131). Neither member's share holds anything for it.
+    assert_eq!(run.reserved, 0, "a house turn holds no money");
+    assert_eq!(run.brain, Some(crate::domain::Brain::Local));
     let day = crate::domain::money::day_of(NOON, 0);
-    let (hers, his) = (
-        hq.store().share_committed(t.ada, day).unwrap(),
-        hq.store().share_committed(t.linus, day).unwrap(),
-    );
-    assert!(his == 0, "his own share is not touched: {his}");
-    assert!(hers >= run.reserved, "the asker's share holds it: {hers}");
+    for member in [t.ada, t.linus] {
+        assert_eq!(hq.store().share_committed(member, day).unwrap(), 0);
+    }
 }

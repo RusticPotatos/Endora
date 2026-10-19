@@ -273,6 +273,7 @@ mod tests {
             look: 0,
             paused: false,
             brain,
+            work_brain: if brain.house() { brain } else { Brain::Mac },
             reports_to: to.map(MemberId),
             furloughed_at: None,
             recalled_at: None,

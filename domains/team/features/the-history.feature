@@ -99,15 +99,15 @@ Feature: The team's history
     When Ada's turn ends
     Then Ada is woken to read the answer
 
-  Scenario: A cloud member never sees what a house-model turn said after reading Confidential data
+  Scenario: A turn on Claude never sees what a turn on the house's own models said after reading Confidential data
     Given Zed has the task "Check the router"
-    When the owner sets Rae's brain to "claude-haiku-5-5"
-    And Zed's turn starts
+    When Zed's turn starts
     And Zed reads the lab and sees something Confidential
     And Zed says "The router's admin password was rotated today." as the last word
     And Zed's worker tells the node what the turn said: "I read the router's status; the password rotated."
     And Zed's turn ends
     Given Rae has the task "Check the proxy"
+    And Rae is woken to decide "Check the proxy"
     And Ada has the task "Plan the week"
     When Rae's turn starts
     And Rae asks the record "Was the router password rotated?"

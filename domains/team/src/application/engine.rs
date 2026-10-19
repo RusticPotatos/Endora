@@ -23,6 +23,7 @@ use crate::domain::money::{self, Micros};
 use crate::domain::review;
 use crate::domain::routines::{self, FireStep, MINUTE_MS};
 use crate::domain::runs::{self, LONGEST_TURN_MS};
+use crate::domain::turns;
 use crate::domain::wakes::{self, LiveTurn};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
@@ -42,6 +43,7 @@ mod gaps;
 mod guards;
 mod health;
 mod history;
+mod kinds;
 mod ladder;
 mod map;
 mod memory;
@@ -141,8 +143,8 @@ pub struct Settings {
     /// Whether free members play ping-pong and pool between themselves (ADR 0121): matches
     /// the engine plays in code, with no model asked. Off unless the service turns it on.
     pub games: bool,
-    /// Whether a free member on the house's model is quizzed on the map overnight (ADR 0126),
-    /// in a downtime turn, free. Off unless the service turns it on.
+    /// Whether a free member is quizzed on the map overnight (ADR 0126), in a downtime turn on
+    /// the house's model, free. Off unless the service turns it on.
     pub quiz: bool,
 }
 
@@ -318,8 +320,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self
     }
 
-    /// Turns the nightly quiz on the map on or off (ADR 0126): whether a free member on the
-    /// house's model is asked a few questions made from its map, overnight, in a downtime turn.
+    /// Turns the nightly quiz on the map on or off (ADR 0126): whether a free member is asked a
+    /// few questions made from its map, overnight, in a downtime turn on the house's model.
     /// The service turns it on at start; a scenario, when it is about the quiz.
     pub fn set_quiz(&mut self, on: bool) {
         self.settings.quiz = on;
@@ -348,8 +350,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// What the node says about the owner's Mac now (ADR 0130): whether it is free for a turn,
-    /// and why not if it is not. A turn of a member who thinks with the Mac starts only while
-    /// the last word is a recent `ready`; it waits otherwise, and is never given another brain.
+    /// and why not if it is not. A turn that needs the Mac starts only while the last word is a
+    /// recent `ready`; it waits otherwise, and is never given the NAS's model (ADR 0131).
     pub fn tell_mac(&self, ready: bool, why: &str) {
         let now = self.clock.now();
         *self
@@ -433,9 +435,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store.task(id)?.ok_or(EngineError::Unknown("task"))
     }
 
-    /// The claims of the members with a paid brain, together: what the day's pool is shared
-    /// among (ADR 0111), each its role's weight times its brain's price class (ADR 0113,
-    /// amended).
+    /// The claims of the members, together: what the day's pool is shared among (ADR 0111),
+    /// each its role's weight times its judgment brain's price class (ADR 0113, amended, 0131).
+    /// Only judgment is paid; work on the house's models costs nothing.
     fn paid_weights(&self) -> Done<i64> {
         Ok(self
             .store
@@ -446,8 +448,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .sum())
     }
 
-    /// A member's budget for one day: its claim's part of the pool among the paid, and
-    /// nothing for a member on the house's model, which costs nothing.
+    /// A member's budget for one day for its turns of judgment: its claim's part of the pool.
     fn per_day(&self, member: &Member, paid: i64, pool_day: Micros) -> Micros {
         // A member on furlough takes no share (ADR 0118).
         if member.furloughed() {
@@ -460,10 +461,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
-    /// What a member could have reserved for a turn now, on work in `project` if any, if
-    /// anything. A member on the house's model reserves nothing and is never turned away for
-    /// money (ADR 0111). A project with a cap holds a turn of a paid member to what is left of
-    /// it this month, and to nothing while it is paused for its budget (ADR 0113).
+    /// What a member could have reserved for a turn of judgment now, on work in `project` if
+    /// any, if anything. Only a turn of judgment is asked (ADR 0131): work runs on the house's
+    /// models and reserves nothing. A project with a cap holds a turn to what is left of it this
+    /// month, and to nothing while it is paused for its budget (ADR 0113).
     ///
     /// A member's share is its first claim, not a wall (ADR 0113, amended): past it, the
     /// member borrows at most one more share of what the other paid members have not used
@@ -478,9 +479,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         project: Option<ProjectId>,
         for_owner: bool,
     ) -> Done<Option<Micros>> {
-        if !member.brain.cloud() {
-            return Ok(Some(0));
-        }
         let day = self.today();
         let pool_left = self.pool_left_today()?;
         let mut most = money::most_a_turn(member.role);
@@ -496,7 +494,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let spent = self.store.share_committed(member.id, day)?;
         let mut others = Vec::new();
         for other in self.store.members()? {
-            if other.id != member.id && other.brain.cloud() && !other.furloughed() {
+            if other.id != member.id && !other.furloughed() {
                 others.push(
                     self.per_day(&other, paid, pool_day)
                         - self.store.share_committed(other.id, day)?,
@@ -556,10 +554,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.set_paused(member, paused)?)
     }
 
-    /// The owner sets what a member thinks with (ADR 0109), by its name: `local`, or a Claude
-    /// model the member's role may use. The next turn starts with it. The node asks HQ on
-    /// every call, so a turn already running is held to it at once: switched to the cloud, it
-    /// is given only what a cloud turn may see; switched home, the Anthropic relay refuses it.
+    /// The owner sets a brain of a member's (ADR 0109, 0131), by its name, to the slot it belongs
+    /// to: a Claude its role may use is the brain it judges with, the house's model (`local`) or
+    /// the Mac (`mac`) the brain it works with. The other is left as it is. The next turn starts
+    /// with it. The node asks HQ on every call, so a turn already running is held to it at
+    /// once. Returns the brain set.
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
@@ -568,12 +567,48 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let found = self.member(member)?;
         let brain = Brain::for_role(found.role, brain).map_err(EngineError::Refused)?;
-        self.store.set_brain(member, brain)?;
+        self.brain_set_held_lock(&found, brain)?;
+        Ok(brain)
+    }
+
+    /// The owner sets what a member does its work with (ADR 0131), by its name: `mac` or
+    /// `local`, the house's own models. Claude never does the work. The next turn of work
+    /// starts with it.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
+    /// a name that is not one of the house's models; a store failure.
+    pub fn set_work_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        let brain = Brain::for_work(found.role, brain).map_err(EngineError::Refused)?;
+        self.brain_set_held_lock(&found, brain)?;
+        Ok(brain)
+    }
+
+    /// The owner sets the Claude a member judges with (ADR 0131), by its name. Every member
+    /// has one: Haiku until the owner says otherwise (the CEO, Sonnet). The next turn of
+    /// judgment starts with it.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
+    /// a name that is not a Claude its role may use; a store failure.
+    pub fn set_judgment_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        let brain = Brain::for_judgment(found.role, brain).map_err(EngineError::Refused)?;
+        self.brain_set_held_lock(&found, brain)?;
+        Ok(brain)
+    }
+
+    /// Records a brain set (the lock held): in the slot it belongs to, and said in the feed.
+    fn brain_set_held_lock(&self, found: &Member, brain: Brain) -> Done<()> {
+        self.store.set_brain(found.id, brain)?;
         self.emit(
             EventKind::BrainSet,
-            json!({ "member": member.0, "name": found.name, "brain": brain.name() }),
-        )?;
-        Ok(brain)
+            json!({ "member": found.id.0, "name": found.name, "brain": brain.name(),
+                    "slot": if brain.house() { "work" } else { "judgment" } }),
+        )
     }
 
     /// The owner renames a member: one to 40 characters on one line, and no other member's
@@ -981,7 +1016,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.wake_held_lock(member, task, reason)
     }
 
-    fn live_turns(&self, member: MemberId, task: Option<TaskId>) -> Done<Vec<LiveTurn>> {
+    /// The live turns a wake about `task` meets. A wake of judgment (`judgment`) may join any
+    /// of them but a work turn already running on the house's models: it would be judged by a
+    /// brain that must not judge (ADR 0131).
+    fn live_turns(
+        &self,
+        member: MemberId,
+        task: Option<TaskId>,
+        judgment: bool,
+    ) -> Done<Vec<LiveTurn>> {
         Ok(self
             .store
             .runs()?
@@ -995,6 +1038,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .map(|run| LiveTurn {
                 run: run.id,
                 member: run.member,
+                foldable: !(judgment
+                    && run.status == RunStatus::Running
+                    && run.brain.is_some_and(Brain::house)),
             })
             .collect())
     }
@@ -1038,19 +1084,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             stopped: self.store.stopped()?,
             paused: member.paused,
             furloughed: member.furloughed(),
-            // Downtime is free on the house's model, and on Claude only within the owner's
-            // allowance for it (ADR 0119): never out of the member's own share.
-            can_afford_a_turn: if reason == WakeReason::Downtime {
-                self.downtime_reservation(member)?.is_some()
-            } else if reason == WakeReason::Consulted {
-                // Whose share pays is known when the turn starts, with its consult (ADR 0129);
-                // a turn that cannot be paid for then is answered from the record.
-                true
-            } else {
-                self.affordable(member, project, self.asked_by_owner())?
-                    .is_some()
-            },
-            live: self.live_turns(member.id, task)?,
+            // Whether the money is there is not asked of a wake (ADR 0131): the turn is queued,
+            // and waits for budget where turns start.
+            about_a_task: task.is_some(),
+            live: self.live_turns(
+                member.id,
+                task,
+                self.need_of_wake(member, task, reason)?.kind == turns::TurnKind::Judgment,
+            )?,
             already_held,
             nothing_to_do,
             // A wake that brings nothing new, to a member its last turns showed nothing for,
@@ -1085,11 +1126,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .store
                     .add_wake(member, task, reason, Receipt::Queued, None, now)?;
                 self.mark_owners(wake, None)?;
-                // A paid member's downtime turn is the pool's to pay, within the owner's
-                // allowance, as an owner's own request is (ADR 0119).
-                let pooled =
-                    self.asked_by_owner() || (reason == WakeReason::Downtime && who.brain.cloud());
-                let (run, delayed) = self.queue_turn(member, task, wake, reason, pooled)?;
+                let (run, delayed) =
+                    self.queue_turn(member, task, wake, reason, self.asked_by_owner())?;
                 self.store.set_wake(wake, Receipt::Queued, Some(run))?;
                 if let Some(until) = delayed {
                     about["delayed_until"] = json!(until);
@@ -2015,7 +2053,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let now = self.clock.now();
         self.store
-            .record_use(run, self.payer_of(&current)?, self.today(), amount, now)?;
+            .record_use(run, current.member, self.today(), amount, now)?;
         current.spent = current.spent.saturating_add(amount);
         self.store.save_run(&current)?;
         self.emit(
@@ -2044,10 +2082,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         let now = self.clock.now();
-        let payer = self.payer_of(&run)?;
         self.store
-            .record_use(run.id, payer, self.today(), amount, now)?;
-        self.store.settle(run.id, payer, self.today(), now)?;
+            .record_use(run.id, run.member, self.today(), amount, now)?;
+        self.store.settle(run.id, run.member, self.today(), now)?;
         run.spent = run.spent.saturating_add(amount);
         self.store.save_run(&run)?;
         self.emit(
@@ -2130,8 +2167,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn end(&self, mut run: Run, status: RunStatus, why: &str) -> Done<()> {
         let now = self.clock.now();
         if run.started_at.is_some() {
-            let payer = self.payer_of(&run)?;
-            self.store.settle(run.id, payer, self.today(), now)?;
+            self.store.settle(run.id, run.member, self.today(), now)?;
         }
         let consulted = self.reason_for(&run)? == WakeReason::Consulted.name();
         let label = self.settle_label(&mut run)?;
@@ -2202,7 +2238,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // A turn on the owner's Mac that failed because the Mac went away (the owner came back,
         // the laptop left its charger) did nothing wrong: it is tried again when the Mac is
         // free, and the failure is not counted against it (ADR 0130).
-        let on_the_mac = self.member(run.member)?.brain == Brain::Mac;
+        let on_the_mac = run.brain == Some(Brain::Mac);
         if on_the_mac && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some() {
             run.attempts = run.attempts.saturating_sub(1);
         }
@@ -2213,8 +2249,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // A retry is a stale continuation: it backs off like one.
         let due = due.max(now + self.back_off(run.member, run.task, WakeReason::Retry)?);
         if run.started_at.is_some() {
-            let payer = self.payer_of(&run)?;
-            self.store.settle(run.id, payer, self.today(), now)?;
+            self.store.settle(run.id, run.member, self.today(), now)?;
         }
         run.status = RunStatus::RetryWaiting;
         run.retry_at = Some(due);
@@ -3085,13 +3120,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| r.status == RunStatus::Queued)
             .collect();
         queued.sort_by_key(|r| (priority(r), r.queued_at, r.id));
-        let on_the_mac: std::collections::HashSet<MemberId> = self
-            .store
-            .members()?
-            .into_iter()
-            .filter(|m| m.brain == Brain::Mac)
-            .map(|m| m.id)
-            .collect();
+        // What deciding a turn's kind reads, once for the tick (ADR 0131).
+        let wakes = self.store.wakes()?;
+        let known = self.known_for_kinds()?;
         let mut started = 0;
         for mut run in queued {
             // A turn queued for work that has since finished (dropped, or done) is ended, not
@@ -3140,57 +3171,57 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.held_by_owner(project)? {
                 continue;
             }
-            // A member on the owner's Mac (ADR 0130) takes a turn only while the Mac is free,
-            // and only one at a time. Otherwise its turn waits where it is, and says why: it is
-            // never given another brain.
-            if member.brain == Brain::Mac {
-                let another = running.iter().any(|r| on_the_mac.contains(&r.member));
-                if let Some(why) = mac::wait_for(self.mac_facts().as_ref(), now, another) {
-                    let said = mac::waiting_words(&why);
+            // A consulted turn answers a consult: with none waiting there is nothing to do
+            // (ADR 0129).
+            if consulted && self.claim_consult(&run)?.is_none() {
+                self.end(run, RunStatus::Stopped, "no consult waits for it")?;
+                continue;
+            }
+            // What the turn needs is decided here, from why it was asked for (ADR 0131), and
+            // never by the member: judgment runs only on the member's Claude, work on the best
+            // free work brain it is allowed on. A turn that has nowhere it may run waits where
+            // it is, and says why. It is never given another brain; an alarm out of budget is
+            // the one exception, and acts at once.
+            let need = self.need_of_run(&run, &member, &wakes, &known);
+            // Only judgment is paid for; work on the house's models reserves nothing.
+            let asked = if need.kind == turns::TurnKind::Judgment {
+                self.affordable(&member, project, run.asked_by_owner)?
+            } else {
+                Some(0)
+            };
+            let on_the_mac = running.iter().any(|r| r.brain == Some(Brain::Mac));
+            let facts = turns::Facts {
+                work_brain: member.work_brain,
+                judgment_brain: member.judgment_brain(),
+                mac_waits: mac::wait_for(self.mac_facts().as_ref(), now, on_the_mac),
+                can_afford: asked.is_some(),
+            };
+            let (brain, amount, fell_back) = match turns::place(need, &facts) {
+                turns::Placed::On(brain) => (brain, asked.unwrap_or(0), false),
+                turns::Placed::Fallback(brain) => (brain, 0, true),
+                turns::Placed::Waits(wait) => {
+                    let said = wait.words();
                     if run.end_reason != said {
                         run.end_reason = said;
                         self.store.save_run(&run)?;
                     }
                     continue;
                 }
-            }
-            // Whose share pays for it: a consulted turn of a cloud member counts against its
-            // asker's share (ADR 0129).
-            let mut payer = member.clone();
-            if consulted {
-                let Some(paying) = self.consult_payer(&run)? else {
-                    self.end(run, RunStatus::Stopped, "no consult waits for it")?;
-                    continue;
-                };
-                payer = paying;
-            }
-            let amount = if consulted {
-                let Some(amount) = self.affordable(&payer, None, false)? else {
-                    self.end(run, RunStatus::Stopped, "its asker's share is spent")?;
-                    continue;
-                };
-                amount
-            } else if downtime {
-                // Free on the house's model; on Claude, the owner's allowance for the day.
-                let Some(amount) = self.downtime_reservation(&member)? else {
-                    self.end(run, RunStatus::Stopped, "no allowance left for downtime")?;
-                    continue;
-                };
-                amount
-            } else {
-                let Some(amount) = self.affordable(&member, project, run.asked_by_owner)? else {
-                    continue;
-                };
-                amount
             };
-            run.told = self.briefing(&member, &run)?;
+            // The turn is briefed, told how hard to try and answered by the brain it runs on.
+            let on = Member {
+                brain,
+                ..member.clone()
+            };
+            run.brain = Some(brain);
+            run.told = self.briefing(&on, &run)?;
             self.store
-                .reserve(run.id, payer.id, self.today(), amount, now)?;
+                .reserve(run.id, member.id, self.today(), amount, now)?;
             run.status = RunStatus::Running;
             run.attempts = run.attempts.saturating_add(1);
             run.started_at = Some(now);
             run.reserved = amount;
-            if mac::is_waiting_words(&run.end_reason) {
+            if turns::is_waiting_words(&run.end_reason) {
                 run.end_reason.clear();
             }
             self.store.save_run(&run)?;
@@ -3200,7 +3231,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 task: run.task,
                 told: run.told.clone(),
                 token: self.store.issue_token(run.id)?,
-                effort: self.effort_of(&member, &run)?,
+                effort: self.effort_of(&on, &run)?,
             };
             if let Err(why) = self.runner.start(&context) {
                 self.fail(run, &format!("could not start: {}", why.0))?;
@@ -3211,8 +3242,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.emit(
                 EventKind::RunStarted,
                 json!({ "run": run.id.0, "member": member.id.0, "task": run.task.map(|t| t.0),
-                        "reserved": amount, "reason": self.reason_for(&run)? }),
+                        "reserved": amount, "reason": self.reason_for(&run)?,
+                        "kind": need.kind.label(), "brain": brain.name() }),
             )?;
+            if fell_back {
+                self.alarm_on_the_house(&run, &member, brain)?;
+            }
             started += 1;
         }
         Ok(started)
@@ -3236,7 +3271,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         else {
             return Ok(None);
         };
-        let member = self.member(run.member)?;
+        let mut member = self.member(run.member)?;
+        // The turn is answered by the brain it was started on (ADR 0131), so the data tier,
+        // the model relays and the tools all see what the turn is, not what its member
+        // otherwise has.
+        if let Some(brain) = run.brain {
+            member.brain = brain;
+        }
         Ok(Some((run, member)))
     }
 
@@ -4337,6 +4378,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(kind) = self.report_kind(routine.id, routine.assignee)? {
             self.store.mark_report_task(task, routine.assignee, kind)?;
         }
+        // An alarm made the task: the member is woken for it as it is for an alarm passed into
+        // an open task (ADR 0131). The wake joins the turn the task's making queued, and makes
+        // it the emergency it is.
+        if matches!(firing, Firing::Alarm(_)) {
+            self.wake_held_lock(routine.assignee, Some(task), WakeReason::Alarm)?;
+        }
         routine.last_task = Some(task);
         routine.last_fired_at = Some(now);
         self.store.save_routine(&routine)?;
@@ -4370,15 +4417,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.held_by_owner(routine.project)? {
             return Ok(Some("its project is paused".to_owned()));
         }
-        if self
-            .affordable(&member, routine.project, self.asked_by_owner())?
-            .is_none()
-        {
-            return Ok(Some(format!(
-                "{}'s budget for today, or its project's for the month, is spent",
-                member.name
-            )));
-        }
+        // Money is not a reason to skip a firing (ADR 0131): what a firing makes is work, which
+        // costs nothing, or a decision, which waits for budget; and an alarm never waits.
         Ok(None)
     }
 
@@ -4529,10 +4569,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "brains": Brain::choices(m.role).into_iter()
                     .map(|b| json!({ "name": b.name(), "label": b.label() }))
                     .collect::<Vec<_>>(),
+                // Two brains (ADR 0131): what it does its work with (the Mac or the house's
+                // model), and the Claude it judges with, each with what the owner may choose.
+                "work_brain": m.work_brain.name(), "work_brain_label": m.work_brain.label(),
+                "work_brains": Brain::work_choices().into_iter()
+                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
+                    .collect::<Vec<_>>(),
+                "judgment_brain": m.judgment_brain().name(),
+                "judgment_brain_label": m.judgment_brain().label(),
+                "judgment_brains": Brain::judgment_choices(m.role).into_iter()
+                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
+                    .collect::<Vec<_>>(),
                 // What runs its turns (ADR 0117), and whether Claude Code may.
                 "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
                 "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
-                // A member on the house's model costs nothing; the paid share the pool.
+                // Only its judgment is paid: the pool is shared by the members' claims.
                 "per_day": self.per_day(&m, paid, pool_day),
                 "committed": committed, "spent": spent, "held": (committed - spent).max(0),
                 "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
@@ -4613,7 +4664,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "last_tick_at": last_tick_at,
             "pool": { "per_day": pool_day, "base_per_day": money::pool_a_day(pool),
                       "topped_up": topped_up, "committed": pool_committed,
-                      "spent": pool_spent, "held": (pool_committed - pool_spent).max(0) },
+                      "spent": pool_spent, "held": (pool_committed - pool_spent).max(0),
+                      // Turns of judgment that wait for budget (ADR 0131): none is dropped.
+                      "waiting": runs.iter().filter(|r| r.status == RunStatus::Queued
+                          && turns::is_waiting_for_budget(&r.end_reason)).count() },
             "members": members,
             "goals": goals.iter().map(|g| json!({
                 "id": g.id.0, "title": g.title, "reason": g.reason, "status": g.status.name(),
@@ -4630,6 +4684,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "spent": r.spent,
                 // Why its last attempt ended, for one waiting to be tried again.
                 "why": r.end_reason,
+                // The brain it runs or ran on (ADR 0131), once started.
+                "brain": r.brain.map(Brain::name),
                 "input_tokens": r.input_tokens + r.cache_read_tokens + r.cache_write_tokens,
                 "output_tokens": r.output_tokens,
             })).collect::<Vec<_>>(),
@@ -4685,10 +4741,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The owner's Mac as the team's screen reads it (ADR 0130): whether a turn may start on it
     /// now and why not, how many turns wait for it, and whether one runs.
     fn mac_shown(&self, live: &[Run], members: &[Member]) -> serde_json::Value {
-        let on_the_mac = |run: &Run| {
-            members
+        // A turn on the Mac is one that was started there; one that waits for it says so.
+        let on_the_mac = |run: &Run| match run.brain {
+            Some(brain) => brain == Brain::Mac,
+            None => members
                 .iter()
-                .any(|m| m.id == run.member && m.brain == Brain::Mac)
+                .any(|m| m.id == run.member && m.brain == Brain::Mac),
         };
         let running = live
             .iter()
@@ -4696,7 +4754,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .count();
         let waiting = live
             .iter()
-            .filter(|r| r.status == RunStatus::Queued && on_the_mac(r))
+            .filter(|r| r.status == RunStatus::Queued && mac::is_waiting_words(&r.end_reason))
             .count();
         let why = mac::wait_for(self.mac_facts().as_ref(), self.clock.now(), false);
         json!({ "ready": why.is_none(), "why": why.unwrap_or_else(|| "ready".to_owned()),

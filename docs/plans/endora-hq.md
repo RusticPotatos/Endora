@@ -1125,7 +1125,9 @@ in their downtime. Built:
 - **Downtime**: the wake reason `downtime`; the scheduler wakes at most one member a tick, one
   at a time, once a member a day, 12 hours apart, only for a member with nothing to do and, by
   default, only on the house's model; Claude members only within `downtime_paid_cents_per_day`,
-  pool-charged. The engine setting `downtime` is on in the service and off in the demo.
+  pool-charged (removed 2026-10-19 by [ADR 0131](../adr/0131-the-two-kinds-of-turn.md): downtime
+  is work on the house's model, free for every member). The engine setting `downtime` is on in
+  the service and off in the demo.
 - Scenarios: `domains/team/features/the-office.feature`.
 
 Not built: pictures for the kinds that have only a pixel shape; the owner placing or pinning an

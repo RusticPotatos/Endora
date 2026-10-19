@@ -287,7 +287,9 @@ fn seeing_a_question_wakes_the_member_who_asked_not_the_tasks_owner() {
         &json!({ "task": s.task.0, "text": "@Grace can you look at the list?" }),
     )
     .unwrap();
-    // Her wake waits for his turn on the task to end.
+    // Her wake waits for his turn on the task to end. She is the tester, whose work is the
+    // Mac's (ADR 0131), and the node says it is free.
+    hq.tell_mac(true, "ready");
     hq.runner().finish(context.run, true);
     hq.tick().unwrap();
     hq.tick().unwrap();
@@ -752,8 +754,8 @@ fn the_leads_briefing_names_the_team_and_says_to_hand_work_on() {
     let (run, me) = turn(&hq, &lead.token);
     let told = call(&hq, &run, &me, "my_turn", &json!({})).unwrap();
     assert!(told.contains("Your team:"), "{told}");
-    assert!(told.contains("Linus (developer, Local)"), "{told}");
-    assert!(told.contains("Grace (reviewer, Local)"), "{told}");
+    assert!(told.contains("Linus (developer, Claude Haiku)"), "{told}");
+    assert!(told.contains("Grace (reviewer, Claude Haiku)"), "{told}");
     assert!(told.contains("hand"), "{told}");
     let (run, me) = turn(&hq, &linus.token);
     let told = call(&hq, &run, &me, "my_turn", &json!({})).unwrap();

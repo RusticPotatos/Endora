@@ -284,6 +284,27 @@ const RUNTIME_COLUMNS: [(&str, &str); 2] = [
     ("call_receipts", "sandbox INTEGER NOT NULL DEFAULT 0"),
 ];
 
+/// The columns a store made before turns had a kind (ADR 0131) gains: a member's work brain and
+/// the brain a turn ran on, both empty. A turn's empty brain is read as unknown (it ran before
+/// turns had one); a member's is filled in at open, see [`give_two_brains`].
+const TURN_COLUMNS: [(&str, &str); 2] = [("members", "work_brain TEXT"), ("runs", "brain TEXT")];
+
+/// Gives every member two brains (ADR 0131), once. A member on the house's model or the Mac keeps
+/// it as its **work brain**, and a member on Claude gets the Mac to work with. A member that has
+/// no Claude to judge with (the house's model in its `brain`, or nothing it knows) is given the
+/// owner's cheap one, Haiku, or Sonnet for the CEO, who may not think with Haiku. Each statement
+/// touches only what is not yet so, so a second start changes nothing and the owner's later
+/// choice is never overwritten.
+fn give_two_brains(conn: &Connection) -> Stored<()> {
+    conn.execute_batch(
+        "UPDATE members SET work_brain = CASE WHEN brain IN ('local', 'mac') THEN brain ELSE 'mac' END
+         WHERE work_brain IS NULL;
+         UPDATE members SET brain = CASE role WHEN 'ceo' THEN 'claude-sonnet-5-5' ELSE 'claude-haiku-5-5' END
+         WHERE brain NOT IN ('claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5');",
+    )
+    .map_err(backend)
+}
+
 /// Adds `column` (its name, then its type) to `table`, unless the table has it already.
 fn add_column(conn: &Connection, table: &str, column: &str) -> Stored<()> {
     let name = column.split_whitespace().next().unwrap_or(column);
@@ -408,9 +429,11 @@ impl SqliteTeamStore {
             .chain(OWNER_COLUMNS)
             .chain(STAFFING_COLUMNS)
             .chain(RUNTIME_COLUMNS)
+            .chain(TURN_COLUMNS)
         {
             add_column(&conn, table, column)?;
         }
+        give_two_brains(&conn)?;
         // A project's month is read on every wake and turn about its work, each row with its
         // turn's reservation: by run and by project, not by reading the whole ledger each time.
         conn.execute_batch(
@@ -563,12 +586,17 @@ fn run_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
             .as_deref()
             .and_then(crate::domain::Label::from_name),
         asked_by_owner: row.get::<_, i64>(22)? != 0,
+        brain: row
+            .get::<_, Option<String>>(23)?
+            .as_deref()
+            .and_then(Brain::from_name),
     })
 }
 
 const RUN_COLUMNS: &str = "id, member, task, wake, status, attempts, queued_at, started_at, \
     retry_at, ended_at, reserved, spent, told, end_reason, moved_forward, input_tokens, \
-    cache_read_tokens, cache_write_tokens, output_tokens, posted, blocked, label, asked_by_owner";
+    cache_read_tokens, cache_write_tokens, output_tokens, posted, blocked, label, \
+    asked_by_owner, brain";
 
 const RECEIPT_SELECT: &str = "SELECT id, run, member, task, tool, args, excerpt, ok, act, \
     confidential, at_ms, sandbox FROM call_receipts";
@@ -600,9 +628,20 @@ impl TeamStore for SqliteTeamStore {
         look: u8,
     ) -> Stored<MemberId> {
         let conn = self.conn()?;
+        // A new member judges with the owner's cheap Claude and works with the Mac, until the
+        // owner says otherwise (ADR 0131).
         conn.execute(
-            "INSERT INTO members (name, role, share_percent, slots, look) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![name, role.name(), share_percent, slots, look],
+            "INSERT INTO members (name, role, share_percent, slots, look, brain, work_brain)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                name,
+                role.name(),
+                share_percent,
+                slots,
+                look,
+                Brain::default_judgment(role).name(),
+                Brain::Mac.name()
+            ],
         )
         .map_err(backend)?;
         Ok(MemberId(conn.last_insert_rowid()))
@@ -613,23 +652,39 @@ impl TeamStore for SqliteTeamStore {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, role, share_percent, slots, paused, look, brain, reports_to, \
-                 furloughed_at, recalled_at FROM members ORDER BY id",
+                 furloughed_at, recalled_at, work_brain FROM members ORDER BY id",
             )
             .map_err(backend)?;
         let rows = stmt
             .query_map([], |r| {
                 let role: String = r.get(2)?;
+                let role = Role::from_name(&role).unwrap_or(Role::Developer);
+                // What a member judges with is a Claude (ADR 0131). A member whose brain is
+                // the house's model, or one the store does not know, has none of its own yet,
+                // and judges with the cheap Claude its role may use, as the migration gives it.
+                let stored = Brain::from_name(&r.get::<_, String>(7)?);
+                let brain = stored
+                    .filter(|b| b.cloud())
+                    .unwrap_or(Brain::default_judgment(role));
+                // A member never given a work brain works with the house's brain it had, or
+                // the Mac when it was on Claude. Claude never does the work.
+                let work_brain = r
+                    .get::<_, Option<String>>(11)?
+                    .as_deref()
+                    .and_then(Brain::from_name)
+                    .filter(|b| b.house())
+                    .or(stored.filter(|b| b.house()))
+                    .unwrap_or(Brain::Mac);
                 Ok(Member {
                     id: MemberId(r.get(0)?),
                     name: r.get(1)?,
-                    role: Role::from_name(&role).unwrap_or(Role::Developer),
+                    role,
                     share_percent: u8::try_from(r.get::<_, i64>(3)?).unwrap_or(0),
                     slots: u8::try_from(r.get::<_, i64>(4)?).unwrap_or(1),
                     paused: r.get::<_, i64>(5)? != 0,
                     look: u8::try_from(r.get::<_, i64>(6)?).unwrap_or(0),
-                    // A brain the store does not know thinks at home: nothing leaves on a
-                    // misreading.
-                    brain: Brain::from_name(&r.get::<_, String>(7)?).unwrap_or(Brain::Local),
+                    brain,
+                    work_brain,
                     reports_to: r.get::<_, Option<i64>>(8)?.map(MemberId),
                     furloughed_at: r.get(9)?,
                     recalled_at: r.get(10)?,
@@ -748,9 +803,25 @@ impl TeamStore for SqliteTeamStore {
     }
 
     fn set_brain(&self, member: MemberId, brain: Brain) -> Stored<()> {
+        // The brain named goes to the slot it belongs to (ADR 0131): a house model is the work
+        // brain and a Claude the judgment brain, and each leaves the other as it is.
+        if brain.house() {
+            return self.set_work_brain(member, brain);
+        }
         self.conn()?
             .execute(
-                "UPDATE members SET brain = ?2 WHERE id = ?1",
+                "UPDATE members SET brain = ?2, work_brain = COALESCE(work_brain, 'mac')
+                 WHERE id = ?1",
+                params![member.0, brain.name()],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_work_brain(&self, member: MemberId, brain: Brain) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET work_brain = ?2 WHERE id = ?1",
                 params![member.0, brain.name()],
             )
             .map_err(backend)?;
@@ -1388,7 +1459,7 @@ impl TeamStore for SqliteTeamStore {
                 "UPDATE runs SET status = ?2, attempts = ?3, started_at = ?4, retry_at = ?5,
                     ended_at = ?6, reserved = ?7, spent = ?8, told = ?9, end_reason = ?10,
                     moved_forward = ?11, posted = ?12, blocked = ?13, label = ?14,
-                    asked_by_owner = ?15
+                    asked_by_owner = ?15, brain = ?16
                  WHERE id = ?1",
                 params![
                     run.id.0,
@@ -1405,7 +1476,8 @@ impl TeamStore for SqliteTeamStore {
                     run.posted,
                     run.blocked,
                     run.label.map(crate::domain::Label::name),
-                    run.asked_by_owner
+                    run.asked_by_owner,
+                    run.brain.map(Brain::name)
                 ],
             )
             .map_err(backend)?;
@@ -3629,5 +3701,153 @@ CREATE TABLE IF NOT EXISTS projects (
         // Settling twice changes nothing.
         store.settle(run, a, 11, 3).unwrap();
         assert_eq!(store.committed(Some(a), 10).unwrap(), 120_000);
+    }
+
+    /// A team's file as it was before turns had a kind (ADR 0131): members with only a brain,
+    /// and no run knowing which brain it ran on.
+    fn a_file_from_before_turns_had_a_kind() -> String {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let path = std::env::temp_dir()
+            .join(format!(
+                "endora-turn-kinds-{}-{unique}.db",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        for (table, column) in PROJECT_COLUMNS
+            .into_iter()
+            .chain(EVIDENCE_COLUMNS)
+            .chain(OWNER_COLUMNS)
+            .chain(STAFFING_COLUMNS)
+            .chain(RUNTIME_COLUMNS)
+        {
+            add_column(&conn, table, column).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots, brain) VALUES
+                (1, 'Jane Doe', 'lead', 25, 2, 'claude-sonnet-5-5'),
+                (2, 'John Doe', 'developer', 40, 2, 'local'),
+                (3, 'Jane Roe', 'developer', 40, 2, 'mac'),
+                (4, 'John Roe', 'researcher', 15, 2, 'claude-haiku-5-5'),
+                (5, 'Mara Roe', 'ceo', 35, 1, 'local'),
+                (6, 'Kit Roe', 'reviewer', 20, 1, 'some-model-nobody-knows');",
+        )
+        .unwrap();
+        path
+    }
+
+    /// Each member's (judgment brain, work brain), by name.
+    fn brains_of(store: &SqliteTeamStore) -> Vec<(String, String)> {
+        store
+            .members()
+            .unwrap()
+            .iter()
+            .map(|m| (m.brain.name().to_owned(), m.work_brain.name().to_owned()))
+            .collect()
+    }
+
+    fn want(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(j, w)| ((*j).to_owned(), (*w).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_store_from_before_turns_had_kinds_gains_two_brains_once_and_loses_no_choice() {
+        let path = a_file_from_before_turns_had_a_kind();
+        let store = SqliteTeamStore::open(&path).unwrap();
+        // A house model or the Mac stays as the work brain, and the member judges with the
+        // owner's cheap Claude (the CEO, Sonnet); a Claude stays the judgment brain and the
+        // member works with the Mac; a brain the store does not know is read as none given.
+        let migrated = want(&[
+            ("claude-sonnet-5-5", "mac"),
+            ("claude-haiku-5-5", "local"),
+            ("claude-haiku-5-5", "mac"),
+            ("claude-haiku-5-5", "mac"),
+            ("claude-sonnet-5-5", "local"),
+            ("claude-haiku-5-5", "mac"),
+        ]);
+        assert_eq!(brains_of(&store), migrated);
+        // It was written, not just read: no member's brain is the house's any more.
+        {
+            let conn = store.conn().unwrap();
+            let houses: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM members WHERE brain IN ('local', 'mac')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(houses, 0);
+            let none: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM members WHERE work_brain IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(none, 0);
+        }
+        // The owner's later choices are kept, and opening the file again changes nothing.
+        let members = store.members().unwrap();
+        store.set_work_brain(members[0].id, Brain::Local).unwrap();
+        store.set_brain(members[1].id, Brain::Sonnet).unwrap();
+        drop(store);
+        let again = SqliteTeamStore::open(&path).unwrap();
+        let mut chosen = migrated;
+        chosen[0].1 = "local".to_owned();
+        chosen[1].0 = "claude-sonnet-5-5".to_owned();
+        assert_eq!(brains_of(&again), chosen);
+        drop(again);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn each_brain_goes_to_its_own_slot_and_a_new_member_has_the_defaults() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let ada = store.add_member("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let ceo = store.add_member("Mara Roe", Role::Ceo, 35, 1, 0).unwrap();
+        let of = |store: &SqliteTeamStore, at: usize| {
+            let m = store.members().unwrap().remove(at);
+            (m.brain, m.work_brain)
+        };
+        assert_eq!(of(&store, 0), (Brain::Haiku, Brain::Mac), "a new member");
+        assert_eq!(
+            of(&store, 1),
+            (Brain::Sonnet, Brain::Mac),
+            "the CEO's cheapest"
+        );
+        // A house model is the work brain, and leaves the Claude it judges with alone.
+        store.set_brain(ada, Brain::Local).unwrap();
+        assert_eq!(of(&store, 0), (Brain::Haiku, Brain::Local));
+        store.set_work_brain(ada, Brain::Mac).unwrap();
+        assert_eq!(of(&store, 0), (Brain::Haiku, Brain::Mac));
+        // A Claude is the judgment brain, and leaves the work brain alone.
+        store.set_work_brain(ada, Brain::Local).unwrap();
+        store.set_brain(ada, Brain::Sonnet).unwrap();
+        assert_eq!(of(&store, 0), (Brain::Sonnet, Brain::Local));
+        store.set_brain(ceo, Brain::Opus).unwrap();
+        assert_eq!(of(&store, 1), (Brain::Opus, Brain::Mac));
+    }
+
+    #[test]
+    fn a_turn_remembers_the_brain_it_ran_on() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let a = store.add_member("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let wake = store
+            .add_wake(a, None, WakeReason::Decide, Receipt::Queued, None, 0)
+            .unwrap();
+        let id = store.add_run(a, None, wake, 0).unwrap();
+        let mut run = store.run(id).unwrap().unwrap();
+        assert_eq!(run.brain, None, "before it starts");
+        run.brain = Some(Brain::Sonnet);
+        store.save_run(&run).unwrap();
+        assert_eq!(store.run(id).unwrap().unwrap().brain, Some(Brain::Sonnet));
     }
 }

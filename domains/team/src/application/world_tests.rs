@@ -83,7 +83,10 @@ fn task_for(hq: &Hq<'_>, goal: GoalId, to: MemberId, title: &str) -> TaskId {
     .unwrap()
 }
 
+/// The newest turn of `member`'s, once the tick has started what is queued. The tester's work
+/// is the Mac's (ADR 0131), so the node says it is free.
 fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
+    hq.tell_mac(true, "ready");
     hq.tick().unwrap();
     hq.runner()
         .started()
@@ -333,12 +336,15 @@ fn every_briefing_says_what_day_it_is_and_a_year_out_on_todays_date_is_corrected
         (t.tester, "Dee"),
     ] {
         task_for(&hq, t.goal, member, "Look");
-        let told = turn(&hq, member).told;
+        let context = turn(&hq, member);
+        let told = &context.told;
         assert!(
             told.contains(&format!("You are {who}, the team's"))
                 && told.contains(" Today is Sun 18 Oct 2026.\n"),
             "{told}"
         );
+        // The turn is over before the next member's: the Mac takes one turn at a time.
+        end(&hq, &clock, &context);
     }
     // The CEO writes a house note, a section, and a note, each starting with last year's date.
     task_for(&hq, t.goal, t.ceo, "Review");

@@ -688,7 +688,7 @@ if (failures.length) {
       // The open office (ADR 0119): what stands on the floor (a plant, a fish tank somebody
       // hostile put there, a couch, a poster on the wall, a rug, a coffee machine, and a kind this
       // screen has no picture for), and the one proposal the team has open, in the team's words.
-      office: { cols: 32, rows: 20, can_undo: true, downtime_paid_cents_per_day: 25, downtime_paid_cents_used: 5,
+      office: { cols: 32, rows: 20, can_undo: true,
         items: [{ id: 1, kind: "plant", x: 8, y: 3, w: 1, h: 1, wall: false, placed_by: "endora" },
                 { id: 2, kind: "fish_tank", x: 10, y: 3, w: 1, h: 1, wall: false, placed_by: "<b>Dee</b>" },
                 { id: 3, kind: "couch", x: 17, y: 18, w: 2, h: 1, wall: false, placed_by: "endora" },
@@ -738,7 +738,8 @@ if (failures.length) {
     hqTell({ id: 44, at: 0, kind: "routine.skipped", data: { routine: 3, title: "Check the home lab", why: "its last task, #7, is still open" } }, false);
     hqTell({ id: 45, at: 0, kind: "checkback.set", data: { member: 1, task: 7, minutes: 30, why: "see it held" } }, false);
     hqTell({ id: 46, at: 0, kind: "lesson.noted", data: { member: 1, task: 7, goal: 1, lesson: "An RSS sync that grabs nothing is normal." } }, false);
-    hqTell({ id: 47, at: 0, kind: "member.brain", data: { member: 1, name: "Ada", brain: "claude-sonnet-5-5" } }, false);
+    hqTell({ id: 47, at: 0, kind: "member.brain", data: { member: 1, name: "Ada", brain: "claude-sonnet-5-5", slot: "judgment" } }, false);
+    hqTell({ id: 55, at: 0, kind: "member.brain", data: { member: 1, name: "Ada", brain: "mac", slot: "work" } }, false);
     hqTell({ id: 48, at: 0, kind: "member.hired", data: { member: 5, name: "Mara", role: "ceo", brain: "claude-opus-5-5", by: "endora" } }, false);
     hqTell({ id: 49, at: 0, kind: "house.noted", data: { by: "Mara", entry: "- 17 Oct: The NAS has 16 GB." } }, false);
     hqTell({ id: 50, at: 0, kind: "project.budget", data: { project: 1, title: "Upkeep", level: "spent", said: "spent its $0.50 cap for the month ($0.46): its Claude turns wait" } }, false);
@@ -754,7 +755,7 @@ if (failures.length) {
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · in 19000 / out 100 · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
     "R7 Bo retry waiting: the turn was over: exit 3: worker: the turn is over: HQ answered 401 (&lt;token&gt;)",
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min",
-    "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now thinks with claude-sonnet-5-5",
+    "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now judges with claude-sonnet-5-5", "Ada now works with the owner&#39;s Mac",
     "Mara joined the team as CEO", "Mara noted in the house log: - 17 Oct: The NAS has 16 GB.",
     "Huddle on EL-7: Ada, Bo", "Ada decided EL-7: hand to"]) {
     if (!office.includes(line)) fail(`hq: the activity log does not say "${line}"`);
@@ -933,7 +934,7 @@ if (failures.length) {
   if (office.includes("hq:decide:24:approve")) fail("hq: a push the node cannot make was offered Approve");
   if (office.includes("hq:bundle:9:task-9-tidy")) fail("hq: a push the node can make offers a download instead");
   if (office.includes("<b>with nobody free</b>")) fail("hq: a lead's hire request became markup");
-  for (const id of ["hq-hire-name", "hq-hire-role", "hq-hire-brain", "hq-hire-to"]) {
+  for (const id of ["hq-hire-name", "hq-hire-role", "hq-hire-work", "hq-hire-judgment", "hq-hire-to"]) {
     if (!office.includes(`id="${id}"`)) fail(`hq: the hire form lacks ${id}`);
   }
   if (!office.includes("1 of 5 developer seats are taken")) fail("hq: the wing's seats are not said");
@@ -958,22 +959,23 @@ if (failures.length) {
   if (!office.includes("on furlough · ")) fail("hq: the roster does not say who is on furlough");
   if (!office.includes("3 seats · 2 at work · 1 on furlough") || !office.includes("&lt;u&gt;Kit&lt;/u&gt;")) fail("hq: the scorecard does not count a team's seats");
   // The Office card (ADR 0119): the team's open proposals with their votes, the owner's veto on
-  // each, undo, reset, and the allowance for paid members' downtime; and every word the team
-  // wrote (a proposal's reason, a vote's, a member's name) as text.
+  // each, undo and reset (downtime costs nothing, so there is no allowance to set); and every
+  // word the team wrote (a proposal's reason, a vote's, a member's name) as text.
   for (const said of ['<h2>Office <span class="hq-count">1</span></h2>', "7 things on the floor", "add a fish tank in the commons; move the &lt;u&gt;fern&lt;/u&gt; to the lounge",
     "&lt;img src=w onerror=alert(10)&gt; the kitchen needs life", "yes 1, no 1", "&lt;i&gt;Dee&lt;/i&gt; yes", "Bo no (&lt;b&gt;too wet&lt;/b&gt;)", 'data-act="hq:office:veto:3"',
-    'data-act="hq:office:undo:go">Undo last change', 'data-act="hq:office:reset:go">Reset the office', "Paid members' downtime: $0.25 a day ($0.05 used today)",
-    'data-act="hq:office:downtime:set">change', "applied: add a plant in the commons", "carried 2 to 0"]) {
+    'data-act="hq:office:undo:go">Undo last change', 'data-act="hq:office:reset:go">Reset the office',
+    "applied: add a plant in the commons", "carried 2 to 0"]) {
     if (!office.includes(said)) fail(`hq: the Office card does not say ${said}`);
   }
+  if (office.includes("hq:office:downtime") || office.includes("Paid members&#39; downtime")) fail("hq: the Office card offers an allowance for downtime, which costs nothing");
   for (const raw of ["<img src=w", "<u>fern</u>", "<b>too wet</b>", "<i>Dee</i> proposes", "<b>Dee</b>"]) {
     if (office.includes(raw)) fail(`hq: the Office card let a member's words become markup (${raw})`);
   }
   {
-    const none = runInContext(`(() => { const o = HQ.snap.office, keep = [o.proposals, o.can_undo, o.downtime_paid_cents_per_day];
-      o.proposals = []; o.can_undo = false; o.downtime_paid_cents_per_day = 0;
-      const html = hqOffice(HQ.snap); [o.proposals, o.can_undo, o.downtime_paid_cents_per_day] = keep; return html; })()`, context);
-    for (const said of ["No proposals open.", 'data-act="hq:office:undo:go" disabled>', "Paid members' downtime: $0.00 a day — "]) {
+    const none = runInContext(`(() => { const o = HQ.snap.office, keep = [o.proposals, o.can_undo];
+      o.proposals = []; o.can_undo = false;
+      const html = hqOffice(HQ.snap); [o.proposals, o.can_undo] = keep; return html; })()`, context);
+    for (const said of ["No proposals open.", 'data-act="hq:office:undo:go" disabled>']) {
       if (!none.includes(said)) fail(`hq: the Office card with nothing open does not say ${said}`);
     }
     const item = runInContext(`HQ.selected = { type: "item", id: 2 }; const looked = hqSelected(); HQ.selected = { type: "task", id: 7 }; looked`, context);
@@ -1180,6 +1182,33 @@ if (failures.length) {
     if (!runInContext('hqMemberMoney({ brain: "mac" })', context).includes("costs nothing")) fail("mac: a Mac member is said to cost money");
     if (!runInContext("hqHireForm(HQ.snap)", context).includes('<option value="mac">Mac</option>')) fail("mac: the hire form does not offer the Mac");
     if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes('<span class="hq-tag">Mac</span> · between turns · costs nothing')) fail("mac: a Mac member's roster line is wrong");
+    // Two brains per member (ADR 0131): the roster line says both, the controls set each, and a
+    // turn that waits says what for; the top bar counts the turns waiting for budget.
+    {
+      const zed = `{ id: 9, name: "Zed", role: "developer", brain: "claude-haiku-5-5", work_brain: "mac", judgment_brain: "claude-haiku-5-5",
+        work_brains: [{ name: "mac", label: "Mac" }, { name: "local", label: "Local" }], judgment_brains: [{ name: "claude-haiku-5-5", label: "Claude Haiku" }],
+        running: [], spent: 0, held: 0, per_day: 100 }`;
+      const line = runInContext(`HQ.roster[9] = true; hqRosterLine(${zed}, [])`, context);
+      if (!line.includes("Work: Mac · Judgment: Haiku")) fail("brains: the roster line does not say both brains");
+      for (const act of ["hq:workbrain:9:mac", "hq:workbrain:9:local", "hq:judge:9:claude-haiku-5-5"]) {
+        if (!line.includes(`data-act="${act}"`)) fail(`brains: the controls lack ${act}`);
+      }
+      if (!/aria-pressed="true"[^>]*data-act="hq:workbrain:9:mac"/.test(line) || !/aria-pressed="true"[^>]*data-act="hq:judge:9:claude-haiku-5-5"/.test(line)) fail("brains: the brains a member has are not marked");
+      // Every member judges with a Claude: there is no taking it away, and work costs nothing.
+      if (line.includes("hq:judge:9:none") || line.includes(">None<")) fail("brains: a member can be left with no judgment brain");
+      if (!line.includes("its work costs nothing")) fail("brains: a member's work is not said to cost nothing");
+      const form = runInContext("hqHireForm(HQ.snap)", context);
+      for (const want of ['id="hq-hire-work"', 'id="hq-hire-judgment"', '<option value="local">Local</option>', '<option value="claude-haiku-5-5">Claude Haiku</option>']) {
+        if (!form.includes(want)) fail(`brains: the hire form lacks ${want}`);
+      }
+      if (form.includes('id="hq-hire-brain"')) fail("brains: the hire form still names one brain");
+      const waiting = runInContext(`HQ.snap.runs = [{ id: 90, member: 9, task: 7, status: "queued", why: "waiting for budget: the budget for it is spent" }];
+        const shown = hqRosterLine(${zed}, []); HQ.snap.runs = []; shown`, context);
+      if (!waiting.includes("waiting for budget: the budget for it is spent")) fail("brains: a turn waiting for budget does not say so on the roster");
+      const chip = (n) => runInContext(`hqChips(Object.assign({}, HQ.snap, { pool: Object.assign({}, HQ.snap.pool, { waiting: ${n} }) }))`, context);
+      if (!chip(2).includes("2 turns wait for budget") || !chip(1).includes("1 turn waits for budget")) fail("brains: the top bar does not count the turns waiting for budget");
+      if (chip(0).includes("for budget")) fail("brains: the top bar mentions a wait with none waiting");
+    }
     // The buttons: the switch, the settings (the key only when typed), the token (asked first
     // when it replaces one, shown once and forgotten with the next action).
     runInContext(`var macCalls = [], macKeepApi = api, macKeepGet = document.getElementById, macKeepConfirm = confirm;

@@ -84,8 +84,10 @@ fn task_in(
     )
 }
 
-/// The newest turn of `member`'s, once the tick has started what is queued.
+/// The newest turn of `member`'s, once the tick has started what is queued. A tester's work is
+/// the Mac's (ADR 0131), so the node says it is free.
 fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
+    hq.tell_mac(true, "ready");
     hq.tick().unwrap();
     hq.runner()
         .started()
@@ -127,9 +129,10 @@ fn last_wake(hq: &Hq<'_>) -> (MemberId, Option<TaskId>, WakeReason, Receipt) {
     (w.member, w.task, w.reason, w.receipt)
 }
 
-/// A turn of the lead's on `task` that spends `amount`, then ends.
+/// A turn of the lead's on `task` that spends `amount`, then ends. It is a decision, the turn
+/// that is paid for (ADR 0131).
 fn spend(hq: &Hq<'_>, lead: MemberId, task: TaskId, amount: i64) {
-    hq.wake(lead, Some(task), WakeReason::Assigned).unwrap();
+    hq.wake(lead, Some(task), WakeReason::Decide).unwrap();
     let context = turn(hq, lead);
     assert_eq!(context.task, Some(task));
     hq.report_usage(context.run, amount).unwrap();
@@ -225,6 +228,8 @@ fn a_cloud_turn_on_a_capped_project_reserves_no_more_than_is_left_of_it() {
         .add_project(t.goal, "Upkeep", "", t.lead, Some(DOLLAR / 4))
         .unwrap();
     let task = task_in(&hq, t.goal, Some(p), t.lead, "Look at sonarr").unwrap();
+    // The lead is asked to decide it: the turn of judgment, which is paid for (ADR 0131).
+    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
     let context = turn(&hq, t.lead);
     assert_eq!(context.task, Some(task));
     let run = hq.store().run(context.run).unwrap().unwrap();
@@ -244,6 +249,7 @@ fn at_eighty_percent_the_owner_hears_once_a_month_and_nothing_is_blocked() {
         .add_project(t.goal, "Upkeep", "", t.lead, Some(DOLLAR / 2))
         .unwrap();
     let task = task_in(&hq, t.goal, Some(p), t.lead, "Look at sonarr").unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
     hq.tick().unwrap();
     let first = hq.runner().started().pop().unwrap();
     hq.report_usage(first.run, 400_000).unwrap();
@@ -257,7 +263,7 @@ fn at_eighty_percent_the_owner_hears_once_a_month_and_nothing_is_blocked() {
     hq.runner().finish(first.run, true);
     hq.tick().unwrap();
     // Still at work, and told no second time this month.
-    hq.wake(t.lead, Some(task), WakeReason::Assigned).unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
     let again = turn(&hq, t.lead);
     assert_ne!(again.run, first.run);
     hq.report_usage(again.run, 10_000).unwrap();
@@ -313,12 +319,23 @@ fn at_its_cap_a_project_pauses_its_cloud_turns_and_its_local_members_go_on() {
         "{}",
         items[0].text
     );
-    // The lead thinks on Claude: turned away. The developer on the house's model goes on.
-    hq.wake(t.lead, Some(task), WakeReason::Assigned).unwrap();
-    assert_eq!(
-        last_wake(&hq).3,
-        Receipt::Refused(Refused::OutOfBudget),
-        "no Claude turn on it"
+    // The lead's decision needs Claude: it is kept, and waits for the month. The developer's
+    // work on the house's model goes on.
+    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
+    assert_eq!(last_wake(&hq).3, Receipt::Queued, "nothing is turned away");
+    hq.tick().unwrap();
+    let decision = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .rfind(|r| r.member == t.lead)
+        .unwrap();
+    assert_eq!(decision.status, crate::domain::RunStatus::Queued);
+    assert!(
+        decision.end_reason.starts_with("waiting for budget"),
+        "no Claude turn on it: {}",
+        decision.end_reason
     );
     let local = task_in(&hq, t.goal, Some(p), t.dev, "Read the logs").unwrap();
     let dev = turn(&hq, t.dev);

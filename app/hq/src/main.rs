@@ -285,8 +285,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         downtime: !demo_mode,
         // Ping-pong and pool between free members (ADR 0121): played in code, free.
         games: !demo_mode,
-        // The nightly quiz on the map (ADR 0126): a free member on the house's model, in a
-        // downtime turn, scored by code. The scripted demo has none.
+        // The nightly quiz on the map (ADR 0126): a free member, in a downtime turn on the
+        // house's model, scored by code. The scripted demo has none.
         quiz: !demo_mode,
         ..Settings::default()
     };
@@ -427,6 +427,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ticks += 1;
             let prune = ticks % 100 == 0;
             let _ = tokio::task::spawn_blocking(move || {
+                // The scripted demo has no node to say whether the owner's Mac is free (ADR
+                // 0131): its Mac is always free, so a tester's review never waits on one.
+                if demo_mode {
+                    hq.tell_mac(true, "the demo's Mac is always free");
+                }
                 match hq.tick() {
                     Ok(_) => ticked.store(
                         endora_team::application::Clock::now(&api::SystemClock),

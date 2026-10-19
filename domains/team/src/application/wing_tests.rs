@@ -56,6 +56,14 @@ fn team(hq: &Hq<'_>) -> Team {
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
     let seeded = hq.seed_wing().unwrap().expect("the wing is seeded");
+    // Kit's first turn, on the plan, is over: the Mac takes one turn at a time (ADR 0131), and
+    // these tests are about the branches of the others.
+    hq.tell_mac(true, "ready");
+    hq.tick().unwrap();
+    for started in hq.runner().started() {
+        hq.runner().finish(started.run, true);
+    }
+    hq.tick().unwrap();
     Team {
         ceo,
         ada,
@@ -65,6 +73,21 @@ fn team(hq: &Hq<'_>) -> Team {
         goal: seeded.goal,
         lab,
         plan: seeded.task,
+    }
+}
+
+/// Every turn that has started is over, and what its end woke has started and is over too. The
+/// Mac takes one turn at a time (ADR 0131), so a test about the next branch begins clear.
+fn all_turns_over(hq: &Hq<'_>) {
+    for _ in 0..3 {
+        for started in hq.runner().started() {
+            hq.runner().finish(started.run, true);
+        }
+        hq.tell_mac(true, "ready");
+        hq.tick().unwrap();
+    }
+    for started in hq.runner().started() {
+        hq.runner().finish(started.run, true);
     }
 }
 
@@ -87,8 +110,10 @@ fn raes_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     .unwrap()
 }
 
-/// The newest turn of `member`'s, after a tick or two to start it.
+/// The newest turn of `member`'s, after a tick or two to start it. The wing's members build
+/// with the Mac (ADR 0131), so the node says it is free.
 fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
+    hq.tell_mac(true, "ready");
     hq.tick().unwrap();
     hq.tick().unwrap();
     hq.runner()
@@ -96,6 +121,14 @@ fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
         .into_iter()
         .rfind(|c| c.member == member)
         .expect("a turn")
+}
+
+/// A new turn of `member`'s on `task`: woken (a mention), then started. Kit's first turn, on
+/// the plan, was over before a test began (see `team`), so a test that wants a turn it can
+/// still use tools in wakes him again.
+fn woken_turn(hq: &Hq<'_>, member: MemberId, task: TaskId) -> RunContext {
+    hq.wake(member, Some(task), WakeReason::Mentioned).unwrap();
+    turn(hq, member)
 }
 
 fn use_tool(hq: &Hq<'_>, context: &RunContext, tool: &str, args: &Value) -> Result<String, String> {
@@ -467,6 +500,9 @@ fn the_wings_branch_reaches_the_owner_only_on_approval() {
     );
     assert!(hq.push_asked(item.id).unwrap().is_none());
     // Approved (a second submission, the same way): the node is asked, and tells what came of it.
+    // Kit's turns (the acceptance, then the plan whose branches are all done) are over, so the
+    // Mac, which takes one turn at a time, is free for the next branch.
+    all_turns_over(&hq);
     let (task2, rae2, _) = submitted(&hq, &t, true);
     hq.store()
         .set_task_status(task2, TaskStatus::InReview)
@@ -640,7 +676,7 @@ fn the_wing_may_not_grow_past_its_seats() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq);
-    let kit = turn(&hq, t.kit);
+    let kit = woken_turn(&hq, t.kit, t.plan);
     let ask = |args: Value| use_tool(&hq, &kit, "request_hire", &args);
     // Evidence, a role below, a brain the role may use, and the wing's brains.
     let refused = ask(
@@ -730,8 +766,7 @@ fn the_wing_may_not_grow_past_its_seats() {
     assert_eq!(snap["wing"]["most_developers"], MOST_DEVELOPERS);
     assert_eq!(snap["wing"]["leads"], json!([t.kit.0]));
     // Outside the wing, Ada may ask without the wing's count; only a lead asks at all.
-    hq.runner().finish(kit.run, true);
-    hq.tick().unwrap();
+    all_turns_over(&hq);
     hq.add_task(
         Author::Owner,
         NewTask {
@@ -749,6 +784,8 @@ fn the_wing_may_not_grow_past_its_seats() {
     let ada = turn(&hq, t.ada);
     let said = use_tool(&hq, &ada, "request_hire", &json!({ "role": "developer", "brain": "claude-sonnet-5-5", "why": "the lab needs a second pair of hands", "evidence": [format!("task {}", t.plan.0)] })).unwrap();
     assert!(said.contains("owner's desk"), "{said}");
+    // Ada's turn is over, and the Mac, which takes one turn at a time, is free for Rae's.
+    all_turns_over(&hq);
     hq.wake(t.rae, Some(t.plan), WakeReason::Mentioned).unwrap();
     let rae = turn(&hq, t.rae);
     let refused = use_tool(

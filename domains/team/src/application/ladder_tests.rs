@@ -92,7 +92,10 @@ fn later(clock: &Hands, ms: i64) {
 }
 
 /// Two ticks (what one queues, the next starts), every started turn ended, and a tick to see it.
+/// The wing builds with the Mac (ADR 0131), so the node says it is free: a turn that waits for it
+/// is held, not stuck.
 fn settle(hq: &Hq<'_>) {
+    hq.tell_mac(true, "ready");
     hq.tick().unwrap();
     hq.tick().unwrap();
     for c in hq.runner().started() {
@@ -103,6 +106,8 @@ fn settle(hq: &Hq<'_>) {
 
 /// The newest turn of `member`'s on `task`, once the ticks have started it.
 fn turn_on(hq: &Hq<'_>, member: MemberId, task: TaskId) -> RunContext {
+    // The wing builds with the Mac (ADR 0131), so the node says it is free.
+    hq.tell_mac(true, "ready");
     hq.tick().unwrap();
     hq.tick().unwrap();
     hq.runner()
@@ -213,7 +218,10 @@ fn a_lead_decides_its_own_plan_with_no_tester_and_nobodys_leave() {
         wakes_of(&hq, w.ceo.unwrap(), plan).is_empty(),
         "nobody's leave"
     );
-    // A developer's work still goes through the tester.
+    // A developer's work still goes through the tester. Kit's turn is over: the Mac takes one
+    // turn at a time (ADR 0131).
+    hq.runner().finish(kit.run, true);
+    hq.tick().unwrap();
     let fix = task_for(&hq, &w, w.devs[0], "Fix the lint");
     let rae = turn_on(&hq, w.devs[0], fix);
     use_tool(&hq, &rae, "claim", &json!({ "task": fix.0 })).unwrap();

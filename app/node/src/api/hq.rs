@@ -218,19 +218,30 @@ pub(super) async fn hq_decide(
 pub(super) struct HqHire {
     name: String,
     role: String,
+    /// One brain, to the slot it belongs to: the way a hire was always asked.
     #[serde(default)]
     brain: Option<String>,
+    /// What it works with, the Mac or the house's model (ADR 0131).
+    #[serde(default)]
+    work_brain: Option<String>,
+    /// The Claude it judges with (ADR 0131).
+    #[serde(default)]
+    judgment_brain: Option<String>,
     #[serde(default)]
     reports_to: Option<i64>,
 }
 
 /// The owner hires a member (ADR 0115): HQ decides the rules (one CEO, a brain the role may
-/// use); the node records who joined.
+/// use in each slot); the node records who joined.
 pub(super) async fn hq_hire(State(state): State<AppState>, Json(req): Json<HqHire>) -> Answer {
     let answer = ask(
         &state,
         "/v1/members".to_owned(),
-        Some(json!({ "name": req.name, "role": req.role, "brain": req.brain, "reports_to": req.reports_to })),
+        Some(json!({
+            "name": req.name, "role": req.role, "brain": req.brain,
+            "work_brain": req.work_brain, "judgment_brain": req.judgment_brain,
+            "reports_to": req.reports_to
+        })),
     )
     .await?;
     record(
@@ -334,6 +345,58 @@ pub(super) async fn hq_set_brain(
     record(
         &state,
         &format!("you set member {id} to think with {brain}"),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqWorkBrain {
+    work_brain: String,
+}
+
+/// The owner sets what a member does its work with (ADR 0131): the Mac or the house's model.
+/// HQ decides what is allowed; the node records what was set.
+pub(super) async fn hq_set_work_brain(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqWorkBrain>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/work-brain"),
+        Some(json!({ "work_brain": req.work_brain })),
+    )
+    .await?;
+    // HQ answers with one of its own brains' names, never what was asked.
+    let brain = answer.0["work_brain"].as_str().unwrap_or("").to_owned();
+    record(&state, &format!("you set member {id} to work with {brain}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqJudgmentBrain {
+    judgment_brain: String,
+}
+
+/// The owner sets the Claude a member judges with (ADR 0131), or `none` to take it away.
+pub(super) async fn hq_set_judgment_brain(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqJudgmentBrain>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/judgment-brain"),
+        Some(json!({ "judgment_brain": req.judgment_brain })),
+    )
+    .await?;
+    let brain = answer.0["judgment_brain"]
+        .as_str()
+        .unwrap_or("no one")
+        .to_owned();
+    record(
+        &state,
+        &format!("you set member {id} to judge with {brain}"),
     );
     Ok(answer)
 }
@@ -610,32 +673,6 @@ pub(super) async fn hq_office_veto(State(state): State<AppState>, Path(id): Path
     )
     .await?;
     record(&state, &format!("you vetoed office proposal {id}"));
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
-pub(super) struct HqDowntime {
-    cents: i64,
-}
-
-/// The owner says what paid members' downtime turns may spend together in a day, in cents.
-pub(super) async fn hq_office_downtime(
-    State(state): State<AppState>,
-    Json(req): Json<HqDowntime>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        "/v1/office/downtime".to_owned(),
-        Some(json!({ "cents": req.cents })),
-    )
-    .await?;
-    record(
-        &state,
-        &format!(
-            "you set paid members' downtime to {} cents a day",
-            req.cents
-        ),
-    );
     Ok(answer)
 }
 
@@ -944,6 +981,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_owner_sets_both_of_a_members_brains_through_the_node_and_both_are_recorded() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            if path.ends_with("/work-brain") {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "member": 1, "work_brain": "mac" }).to_string(),
+                );
+            }
+            (
+                200,
+                "application/json",
+                json!({ "member": 1, "judgment_brain": null }).to_string(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let work = hq_set_work_brain(
+            State(state.clone()),
+            Path(1),
+            Json(HqWorkBrain {
+                work_brain: "mac".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(work.0["work_brain"], "mac");
+        let judges = hq_set_judgment_brain(
+            State(state.clone()),
+            Path(1),
+            Json(HqJudgmentBrain {
+                judgment_brain: "none".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(judges.0["judgment_brain"].is_null());
+        let paths: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(
+            paths,
+            ["/v1/members/1/work-brain", "/v1/members/1/judgment-brain"]
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit.contains(&"HQ: you set member 1 to work with mac".to_owned()),
+            "{audit:?}"
+        );
+        assert!(
+            audit.contains(&"HQ: you set member 1 to judge with no one".to_owned()),
+            "{audit:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn the_owner_sets_a_members_brain_through_the_node_and_it_is_recorded() {
         let (url, seen) = fake(Arc::new(|_, body| {
             if body.contains("opus") {
@@ -1110,8 +1209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_undoes_resets_vetoes_and_sets_downtime_through_the_node_and_it_is_recorded()
-    {
+    async fn the_owner_undoes_resets_and_vetoes_through_the_node_and_it_is_recorded() {
         let (url, seen) = fake(Arc::new(|_, _| {
             (200, "application/json", json!({}).to_string())
         }));
@@ -1119,9 +1217,6 @@ mod tests {
         let _ = hq_office_undo(State(state.clone())).await.unwrap();
         let _ = hq_office_reset(State(state.clone())).await.unwrap();
         let _ = hq_office_veto(State(state.clone()), Path(4)).await.unwrap();
-        let _ = hq_office_downtime(State(state.clone()), Json(HqDowntime { cents: 25 }))
-            .await
-            .unwrap();
         let sent: Vec<(String, String)> = seen
             .lock()
             .unwrap()
@@ -1133,13 +1228,8 @@ mod tests {
             [
                 "/v1/office/undo",
                 "/v1/office/reset",
-                "/v1/office/proposals/4/veto",
-                "/v1/office/downtime"
+                "/v1/office/proposals/4/veto"
             ]
-        );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&sent[3].1).unwrap(),
-            json!({ "cents": 25 })
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
             .unwrap()
@@ -1150,7 +1240,6 @@ mod tests {
             "HQ: you undid the last change to the office",
             "HQ: you reset the office",
             "HQ: you vetoed office proposal 4",
-            "HQ: you set paid members' downtime to 25 cents a day",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }

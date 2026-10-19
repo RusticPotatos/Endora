@@ -13,7 +13,8 @@ Feature: The engineering wing and the git flow
     And the engineering wing
 
   Scenario: The wing's branch reaches the owner only on approval
-    Given Kit hands Rae the task "Tidy the deluge role" in the wing
+    Given Kit's planning turn is over
+    And Kit hands Rae the task "Tidy the deluge role" in the wing
     When Rae's turn starts
     And Rae submits the branch "hq/task-2-tidy-the-deluge-role"
     And the check of "hq/task-2-tidy-the-deluge-role" passes
@@ -29,7 +30,8 @@ Feature: The engineering wing and the git flow
     Then Rae is woken about it
 
   Scenario: A branch that fails its checks is sent back
-    Given Kit hands Rae the task "Tidy the deluge role" in the wing
+    Given Kit's planning turn is over
+    And Kit hands Rae the task "Tidy the deluge role" in the wing
     When Rae's turn starts
     And Rae submits the branch "hq/task-2-tidy-the-deluge-role"
     And Rae submits "Tidy the deluge role" for review
@@ -55,6 +57,6 @@ Feature: The engineering wing and the git flow
   Scenario: Hiring is the owner's, and one CEO is enough
     When the owner hires Sam as a developer under Kit
     Then Sam reports to Kit
-    And Sam thinks with "local"
+    And Sam works with "Local" and judges with "Claude Haiku"
     When the owner hires Second as a ceo under Mara
     Then it is refused for "the team has one CEO already"

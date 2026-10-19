@@ -12,14 +12,11 @@ use super::{Done, Engine, EngineError, one_line};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::office::{self, Change, Proposal, Status, Verdict, Vote};
 use crate::domain::{
-    Brain, EventKind, Member, MemberId, Micros, Millis, Refusal, Role, RunId, WakeId, WakeReason,
-    money,
+    EventKind, Member, MemberId, Millis, Refusal, Role, RunId, WakeId, WakeReason,
 };
 
 /// Set once HQ has put the default layout on the floor, so it never does again.
 const OFFICE_SEEDED: &str = "office_seeded";
-/// What the owner allows paid members' downtime turns together, in cents a day.
-const DOWNTIME_PAID: &str = "downtime_paid_cents_per_day";
 /// How long a member rests between downtime turns, so none follows another across midnight.
 const DOWNTIME_REST_MS: Millis = 12 * 60 * 60 * 1000;
 /// The most items a downtime briefing lists before it says how many more there are.
@@ -44,8 +41,6 @@ pub(super) struct Downtimes {
     pub(super) live: bool,
     /// When each member's last downtime turn ended (or began, while it runs).
     pub(super) last: HashMap<MemberId, Millis>,
-    /// What today's downtime turns hold or have spent, together.
-    today: Micros,
 }
 
 fn proposal_said(by: &str, changes: &[String], why: &str) -> String {
@@ -418,35 +413,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- downtime ----------------------------------------------------------------------
 
-    /// What the owner allows paid members' downtime turns together, in cents a day. Nothing,
-    /// until the owner says.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn downtime_paid_cents(&self) -> Done<i64> {
-        Ok(self
-            .store
-            .setting(DOWNTIME_PAID)?
-            .and_then(|said| said.parse().ok())
-            .unwrap_or(0))
-    }
-
-    /// The owner sets what paid members' downtime turns may spend together in a day: none, or
-    /// up to what the pool's day holds.
-    ///
-    /// # Errors
-    /// [`Refusal::DowntimeOverPool`]; a store failure.
-    pub fn set_downtime_paid_cents(&self, cents: i64) -> Done<()> {
-        let _held = self.held();
-        let most = money::pool_a_day(self.settings.pool_per_month) / money::CENT;
-        if cents < 0 || cents > most {
-            return Err(EngineError::Refused(Refusal::DowntimeOverPool {
-                most_cents: most,
-            }));
-        }
-        Ok(self.store.set_setting(DOWNTIME_PAID, &cents.to_string())?)
-    }
-
     /// The wakes that were for downtime.
     pub(super) fn downtime_wakes(&self) -> Done<HashSet<WakeId>> {
         Ok(self
@@ -471,12 +437,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     pub(super) fn downtimes(&self) -> Done<Downtimes> {
         let wakes = self.downtime_wakes()?;
-        let today = self.today();
-        let offset = self.settings.offset_minutes;
         let mut seen = Downtimes {
             live: false,
             last: HashMap::new(),
-            today: 0,
         };
         for run in self.store.runs()? {
             if !wakes.contains(&run.wake) {
@@ -486,38 +449,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let at = run.ended_at.or(run.started_at).unwrap_or(run.queued_at);
             let last = seen.last.entry(run.member).or_insert(at);
             *last = (*last).max(at);
-            if money::day_of(run.queued_at, offset) == today {
-                seen.today += if run.status.live() {
-                    run.reserved.max(run.spent)
-                } else {
-                    run.spent
-                };
-            }
         }
         Ok(seen)
-    }
-
-    /// What a downtime turn of `member` may reserve: nothing on the house's model, which is
-    /// free; for a paid member only what is left of the owner's allowance for today and of
-    /// the pool's day, none if the owner allows none.
-    pub(super) fn downtime_reservation(&self, member: &Member) -> Done<Option<Micros>> {
-        if !member.brain.cloud() {
-            return Ok(Some(0));
-        }
-        let allowed = self.downtime_paid_cents()? * money::CENT;
-        let left = allowed - self.downtimes()?.today;
-        Ok(money::reservation(
-            left,
-            self.pool_left_today()?,
-            money::most_a_turn(member.role),
-        ))
     }
 
     /// The look at who has nothing to do (the lock held): at most one member, once a day, is
     /// woken for a downtime turn, and only one such turn runs at a time. A member qualifies
     /// when it is at work and not the CEO, has no live turn, no open task and no routine due,
-    /// had no downtime turn today and none in the last twelve hours, and thinks with the
-    /// house's model, or with Claude when the owner's allowance for paid downtime has room.
+    /// and had no downtime turn today and none in the last twelve hours. A downtime turn is
+    /// work on the NAS's own model (ADR 0131): it costs nothing, and takes nobody's share.
     /// Returns how many were woken.
     pub(super) fn downtime_look(&self, now: Millis) -> Done<usize> {
         let today = self.today().to_string();
@@ -525,7 +465,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut waiting: Vec<&Member> = Vec::new();
         for member in members
             .iter()
-            .filter(|m| m.role != Role::Ceo && m.at_work() && m.brain != Brain::Mac)
+            .filter(|m| m.role != Role::Ceo && m.at_work())
         {
             if self.store.setting(&downtime_day(member.id))?.as_deref() != Some(today.as_str()) {
                 waiting.push(member);
@@ -564,9 +504,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .get(&member.id)
                 .is_none_or(|at| now - at >= DOWNTIME_REST_MS);
             if busy || holds || due || !rested {
-                continue;
-            }
-            if self.downtime_reservation(member)?.is_none() {
                 continue;
             }
             self.store.set_setting(&downtime_day(member.id), &today)?;
@@ -620,7 +557,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- what the screen shows ------------------------------------------------------------
 
     /// The office as the HQ screen shows it: the things, the catalog, the open proposals and
-    /// the last few settled, whether the owner can undo, and the allowance for paid downtime.
+    /// the last few settled, and whether the owner can undo.
     pub(super) fn office_shown(&self) -> Done<serde_json::Value> {
         let items = self.store.office_items()?;
         let proposals = self.store.office_proposals()?;
@@ -666,8 +603,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "proposals": open,
             "recent": recent,
             "can_undo": self.store.office_history_len()? > 0,
-            "downtime_paid_cents_per_day": self.downtime_paid_cents()?,
-            "downtime_paid_cents_used": self.downtimes()?.today / money::CENT,
         }))
     }
 }

@@ -50,6 +50,14 @@ fn team(hq: &Hq<'_>) -> Team {
     hq.set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
     let seeded = hq.seed_wing().unwrap().expect("the wing is seeded");
+    // Kit's first turn, on the plan, is over: the Mac takes one turn at a time (ADR 0131), and
+    // these tests are about the notebooks of the others.
+    hq.tell_mac(true, "ready");
+    hq.tick().unwrap();
+    for started in hq.runner().started() {
+        hq.runner().finish(started.run, true);
+    }
+    hq.tick().unwrap();
     Team {
         ceo,
         kit: seeded.lead,
@@ -77,8 +85,10 @@ fn task_for(hq: &Hq<'_>, t: &Team, to: MemberId, title: &str) -> TaskId {
     .unwrap()
 }
 
-/// The newest turn of `member`'s, after a tick or two to start it.
+/// The newest turn of `member`'s, after a tick or two to start it. The wing's members build
+/// with the Mac (ADR 0131), so the node says it is free.
 fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
+    hq.tell_mac(true, "ready");
     hq.tick().unwrap();
     hq.tick().unwrap();
     hq.runner()
@@ -95,14 +105,16 @@ fn use_tool(hq: &Hq<'_>, context: &RunContext, tool: &str, args: &Value) -> Resu
 
 /// Rae's turn on a fresh task, with `token`s to call tools by.
 fn raes_turn(hq: &Hq<'_>, t: &Team, title: &str) -> (RunContext, TaskId) {
-    // Her earlier turns are over, so this one starts at once (two slots would not hold them all).
-    for earlier in hq.runner().started().iter().filter(|c| c.member == t.rae) {
+    // Every earlier turn is over, hers and the others' (the Mac takes one turn at a time, ADR
+    // 0131, and two slots would not hold hers), so this one starts at once.
+    for earlier in hq.runner().started() {
         hq.runner().finish(earlier.run, true);
     }
     hq.tick().unwrap();
-    // ...and her tasks put away, so nothing is left to recover when the clock jumps a week.
+    // ...and the open tasks put away, hers and Kit's plan, so nothing is left to recover when
+    // the clock jumps a week (a recovery turn would hold the Mac).
     for old in hq.store().tasks().unwrap() {
-        if !old.status.finished() && old.assignee == Some(t.rae) {
+        if !old.status.finished() {
             hq.drop_task(old.id).unwrap();
         }
     }
