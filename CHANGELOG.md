@@ -853,6 +853,13 @@ tagged release.
   the CEO five times for a review that had simply not happened. It stays in review now, and
   its lead is woken to decide it up the same ladder.
 
+- **A draft for the owner never closes work** ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)).
+  The CEO's decision for the board moves the work task itself into review, and the tester's
+  `approve` then went through the draft's path: refused for the gate while it was false (tasks
+  671, 672, 679 and 670), and, with the gate true, the task closed as done and its push was
+  offered with no evidence judged and no lead's acceptance. A pass on a draft is refused now
+  (forward it with `ask_owner`, or send it back); sending back is unchanged.
+
 - **Live sound no longer falls behind the picture over time, and no longer dips every few
   minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
   backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a

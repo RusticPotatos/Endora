@@ -699,11 +699,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The tester's verdict on work in review (ADR 0114), in her turn. She re-checks it
     /// herself: a pass cites, per criterion, evidence that holds, with at least one reading of
     /// her own this turn, and goes to the work's lead to accept (or closes it, when no other
-    /// lead is there). Sending it back is a finished test too. A draft for the owner keeps the
-    /// review it had ([`Engine::review_in`]).
+    /// lead is there). Sending it back is a finished test too, and keeps the review it had
+    /// ([`Engine::review_in`]), a draft for the owner included. A draft is never passed: it is
+    /// forwarded with `ask_owner`, or sent back. A CEO's draft puts the work task itself in
+    /// review, and a pass through the draft's path closed it as done, with the gate true, and
+    /// offered its push, with no evidence judged and no lead's acceptance.
     ///
     /// # Errors
-    /// What [`Engine::review_in`] refuses, and what [`evidence::judge`] refuses for a pass.
+    /// What [`Engine::review_in`] refuses, [`Refusal::ForwardTheDraft`], and what
+    /// [`evidence::judge`] refuses for a pass.
     pub fn test_in(
         &self,
         run: RunId,
@@ -713,8 +717,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         cited: &[Vec<Ref>],
     ) -> Done<()> {
         let current = self.task(task)?;
-        if !pass || self.is_draft(&current)? {
-            return self.review_in(run, task, pass, notes);
+        if !pass {
+            return self.review_in(run, task, false, notes);
         }
         let _held = self.held();
         let turn = self.running(run)?;
@@ -728,6 +732,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 from: current.status,
                 to: TaskStatus::Done,
             }));
+        }
+        if self.is_draft(&current)? {
+            return Err(EngineError::Refused(Refusal::ForwardTheDraft));
         }
         let worker = current.owner.or(current.assignee);
         if worker == Some(tester.id) {

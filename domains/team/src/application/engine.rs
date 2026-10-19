@@ -1812,6 +1812,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// `send_back` returns it to its owner as `doing`, waking them. The notes go in the thread
     /// either way. Only the reviewer gives a verdict, and never on its own work.
     ///
+    /// The tester's tool reaches it for a send-back alone ([`Self::test_in`]): a pass is judged
+    /// there, on evidence, and never closes a draft for the owner (ADR 0114, amended).
+    ///
     /// # Errors
     /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYours`] for a member who
     /// is not a reviewer; [`Refusal::NotAStep`] for a task not in review; [`Refusal::OwnWork`];

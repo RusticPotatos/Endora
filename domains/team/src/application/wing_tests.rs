@@ -615,6 +615,85 @@ fn raes_other_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     .unwrap()
 }
 
+/// Live (tasks 671, 672, 679 and 670): the CEO put a draft for the owner on a wing task, which
+/// moved the work task itself to review, and the tester's `approve` of "the review" then went
+/// through the draft's path: with the gate false it was refused for the gate, and with the
+/// gate true the task closed as done and the push was offered, with no evidence judged and no
+/// lead's acceptance. A draft is the owner's to read: the tester forwards it, or sends it back.
+#[test]
+fn a_testers_approve_on_a_draft_is_refused_and_no_push_is_offered() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, rae, _) = submitted(&hq, &t, true);
+    // The branch's check is green: the gate has passed.
+    let handed = hq.next_check().unwrap().unwrap();
+    hq.check_done(
+        handed.id,
+        &handed.token,
+        true,
+        "syntax ok, ansible-lint 25 findings (develop 25), yamllint ok: no worse than develop",
+        "",
+    )
+    .unwrap();
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+    hq.runner().finish(rae.run, true);
+    let dee = turn(&hq, t.dee);
+    // Mara, the CEO, has put a decision for the board on the task: what her `ask_owner` leaves
+    // is a draft in the task's thread and the work task itself in review (the reviewer is
+    // asked to check it before it reaches the board).
+    hq.store()
+        .set_task_status(task, TaskStatus::InReview)
+        .unwrap();
+    hq.store()
+        .post(
+            task,
+            "Mara",
+            &format!(
+                "{}Decision: should the wing take on a second lead?\nRecommendation: not yet.\nWhy: one branch waits.",
+                crate::domain::review::DRAFT
+            ),
+            clock.0.load(Ordering::SeqCst),
+        )
+        .unwrap();
+    let approve = || {
+        use_tool(
+            &hq,
+            &dee,
+            "review",
+            &json!({ "task": task.0, "verdict": "approve", "notes": "it holds",
+                     "evidence": [[format!("task {}", task.0)]] }),
+        )
+    };
+    let refused = approve().unwrap_err();
+    assert!(
+        refused.contains("draft for the owner") && refused.contains("ask_owner"),
+        "{refused}"
+    );
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::InReview,
+        "the task stays in review: the draft closed nothing"
+    );
+    assert!(
+        hq.store().desk().unwrap().iter().all(|d| d.kind != "push"),
+        "and no push is offered"
+    );
+    assert_eq!(hq.store().branches().unwrap()[0].status, "submitted");
+    // Forwarding is the way to the board, and sending it back stays what it was.
+    use_tool(
+        &hq,
+        &dee,
+        "review",
+        &json!({ "task": task.0, "verdict": "send_back", "notes": "the question is not the board's" }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::Doing
+    );
+}
+
 /// Live (task 670): the tester had no reading of a branch she could take, so her pass was
 /// refused for want of one of her own, in three turns. Checking the kept branch out is one.
 #[test]

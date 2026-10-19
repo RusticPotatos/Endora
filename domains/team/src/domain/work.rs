@@ -564,6 +564,9 @@ pub enum Refusal {
         /// The task it was submitted for.
         task: TaskId,
     },
+    /// What waits in review is a draft for the owner, not work: it is forwarded, never passed
+    /// (ADR 0114, amended).
+    ForwardTheDraft,
     /// A recheck of a branch's checks is asked for by the work's lead or developer (ADR 0115).
     NotYourToRecheck,
     /// A check of the branch is still waiting or running: one at a time (ADR 0115).
@@ -868,6 +871,11 @@ impl fmt::Display for Refusal {
                 "{branch} is task #{task}'s: check out the branch of your own work (a branch is \
                  handed to the task it was submitted for, the tasks under and above it, and the \
                  member who submitted it)"
+            ),
+            Self::ForwardTheDraft => f.write_str(
+                "what waits in review is a draft for the owner, not work to pass: check it, then \
+                 forward it with ask_owner (corrected if it needs it), or send it back with \
+                 review send_back",
             ),
             Self::NotYourToRecheck => f.write_str(
                 "a recheck is asked for by the work's lead or developer: the tester judges what \
