@@ -17,6 +17,7 @@ use crate::domain::evidence::{
     self, AfterNothing, CallReceipt, Checkers, Criterion, Found, Judged, Label, Ref, TurnFacts,
 };
 use crate::domain::review::SendBackReason;
+use crate::domain::staffing;
 use crate::domain::{
     EventKind, Member, MemberId, Millis, Refusal, Role, RunId, RunStatus, Task, TaskId, TaskStatus,
     WakeReason,
@@ -474,11 +475,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// A turn of a manager's hands a subordinate's task to another member (itself, or one
     /// below it), saying why, with its handover note (ADR 0122): let go, handed, `todo`, the
-    /// note kept for the new member's first turn, and the new member woken.
+    /// note kept for the new member's first turn, and the new member woken. A task in a lead's
+    /// area goes to someone outside it only by that lead's hand (ADR 0120, amended).
     ///
     /// # Errors
     /// [`Refusal::TurnOver`]; [`Refusal::NotYours`] for a task held by nobody below the turn's
-    /// member; [`Refusal::Finished`]; [`Refusal::NotBelow`]; [`EngineError::Unknown`].
+    /// member; [`Refusal::Finished`]; [`Refusal::NotBelow`]; [`Refusal::OutsideTheArea`] for a
+    /// member outside the task's area, from anyone but that area's lead; [`EngineError::Unknown`].
     pub fn hand_to_in(
         &self,
         run: RunId,
@@ -508,6 +511,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if target.id != by.id {
             crate::domain::work::may_delegate(by.role, target.role)
                 .map_err(EngineError::Refused)?;
+        }
+        // A task in a lead's area leaves it only by that lead's hand, or the owner's, who hands
+        // out work another way (ADR 0120, amended): the CEO directs, and any other manager above
+        // the holder asks. Handing it to someone inside the area is not leaving it.
+        if let Some(area) = self.area_lead(&current)? {
+            let members = self.store.members()?;
+            let inside = staffing::lead_of(&target, &members) == Some(area.id);
+            if by.id != area.id && !inside {
+                return Err(EngineError::Refused(Refusal::OutsideTheArea {
+                    lead: area.name,
+                    to: target.name,
+                }));
+            }
         }
         let from = holder.map(|h| self.member(h)).transpose()?;
         self.store.release(task)?;

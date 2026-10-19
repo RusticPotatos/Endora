@@ -619,6 +619,14 @@ pub enum Refusal {
     CeoDirects(String),
     /// The CEO hands work to a lead only; the lead hands it on in its area (ADR 0120).
     CeoToLeads,
+    /// The task is in `lead`'s area and `to` works outside it: only that lead, who leads it, or
+    /// the owner hands its work out of the area (ADR 0120, amended).
+    OutsideTheArea {
+        /// The lead whose area the task is in.
+        lead: String,
+        /// The member it was to be handed to.
+        to: String,
+    },
     /// The task is in no lead's area: there is nobody to direct.
     NoAreaLead,
     /// A strategy change that gives no part.
@@ -975,6 +983,12 @@ impl fmt::Display for Refusal {
             ),
             Self::CeoToLeads => f.write_str(
                 "the CEO hands work to a lead only, and the lead hands it on in its area",
+            ),
+            Self::OutsideTheArea { lead, to } => write!(
+                f,
+                "{to} is outside {lead}'s area: only {lead}, who leads it, or the owner hands its \
+                 work out of it. Ask {lead} in the task's thread (the CEO directs: direct, with \
+                 evidence), and {lead} decides"
             ),
             Self::NoAreaLead => f.write_str(
                 "that task is in no lead's area: there is no lead at work to direct",

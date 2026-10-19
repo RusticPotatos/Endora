@@ -389,6 +389,99 @@ fn the_ceo_delegates_to_leads_only_and_proposes_no_project() {
     .unwrap();
 }
 
+/// A second area beside Ada's: Kit leads the clean-up project, and Rae reports to him.
+fn second_area(hq: &Hq<'_>, o: &Org) -> (MemberId, MemberId, ProjectId) {
+    let kit = hq.hire("Kit", Role::Lead, 25, 2, 0).unwrap();
+    let rae = hq.hire("Rae", Role::Developer, 40, 2, 0).unwrap();
+    hq.set_reports_to(rae, kit).unwrap();
+    let cleanup = hq
+        .add_project(o.goal, "Clean-up", "the fork", kit, None)
+        .unwrap();
+    (kit, rae, cleanup)
+}
+
+fn note() -> crate::domain::world::HandoverNote {
+    crate::domain::world::HandoverNote::new("nothing yet", "the role", "tidy it", "the check")
+        .unwrap()
+}
+
+#[test]
+fn the_ceo_cannot_hand_one_areas_work_to_another_areas_lead() {
+    // Live, the CEO handed an engineering task to the Ops lead: the CEO directs and does not
+    // move an area's work (ADR 0120, amended).
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let o = org(&hq);
+    let (kit, rae, cleanup) = second_area(&hq, &o);
+    let task = task_for(&hq, &o, rae, "Tidy the deluge role", Some(cleanup));
+    task_for(&hq, &o, o.ceo, "Daily review", None);
+    let mara = turn(&hq, o.ceo);
+    let wakes = wakes_of(&hq, o.ops).len();
+    assert_eq!(
+        hq.hand_to_in(mara.run, task, o.ops, "Ops has the time", &note()),
+        Err(EngineError::Refused(Refusal::OutsideTheArea {
+            lead: "Kit".to_owned(),
+            to: "Ada".to_owned()
+        }))
+    );
+    let said = use_tool(
+        &hq,
+        &mara,
+        "hand_to",
+        &json!({ "task": task.0, "to": "Ada", "why": "Ops has the time",
+                 "handover": { "done": "nothing yet", "not_done": "the role", "next": "tidy it",
+                               "watch_out": "the check" } }),
+    )
+    .unwrap_err();
+    assert!(
+        said.starts_with("Ada is outside Kit's area: only Kit, who leads it, or the owner"),
+        "{said}"
+    );
+    let still = hq.store().task(task).unwrap().unwrap();
+    assert_eq!(still.assignee, Some(rae), "nothing moved");
+    assert_eq!(wakes_of(&hq, o.ops).len(), wakes, "Ada was not woken");
+    // The area's own lead is inside it: handing the task up to Kit stays the CEO's to do.
+    hq.hand_to_in(mara.run, task, kit, "Kit decides", &note())
+        .unwrap();
+    assert_eq!(hq.store().task(task).unwrap().unwrap().assignee, Some(kit));
+}
+
+#[test]
+fn only_an_areas_own_lead_hands_its_work_out_of_it() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let o = org(&hq);
+    let (kit, rae, cleanup) = second_area(&hq, &o);
+    let bo = hq.hire("Bo", Role::Developer, 40, 2, 0).unwrap();
+    let task = task_for(&hq, &o, rae, "Tidy the deluge role", Some(cleanup));
+    let kept = task_for(&hq, &o, o.dev, "Look at radarr", Some(cleanup));
+    task_for(&hq, &o, kit, "Plan the clean-up", Some(cleanup));
+    task_for(&hq, &o, o.ops, "Plan the week", Some(o.upkeep));
+    let kit_turn = turn(&hq, kit);
+    // Kit leads the area the task is in, so he may hand it to a developer of Ada's.
+    hq.hand_to_in(kit_turn.run, task, o.dev, "Linus knows the role", &note())
+        .unwrap();
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().assignee,
+        Some(o.dev)
+    );
+    // Ada manages Linus, but the clean-up project is Kit's area: she does not hand its work to
+    // another of her own.
+    let ada_turn = turn(&hq, o.ops);
+    assert_eq!(
+        hq.hand_to_in(ada_turn.run, kept, bo, "Bo is free", &note()),
+        Err(EngineError::Refused(Refusal::OutsideTheArea {
+            lead: "Kit".to_owned(),
+            to: "Bo".to_owned()
+        }))
+    );
+    assert_eq!(
+        hq.store().task(kept).unwrap().unwrap().assignee,
+        Some(o.dev),
+        "nothing moved"
+    );
+}
+
 #[test]
 fn a_leads_stalled_task_stays_in_its_area_and_never_goes_up_to_the_ceo() {
     let clock = Hands(AtomicI64::new(OCT_17));

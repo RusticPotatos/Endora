@@ -126,3 +126,14 @@ Feature: The engineering wing and the git flow
     Then it is refused for "draft for the owner"
     And the task "Add the missing app pages" is in_review
     And the owner's desk holds no push
+
+  # The CEO directs and does not move an area's work (ADR 0120, amended). Live, it handed an
+  # engineering branch task to the Ops lead.
+  Scenario: The CEO cannot hand the wing's branch work to the Ops lead
+    Given Kit's planning turn is over
+    And Kit hands Rae the task "Tidy the deluge role" in the wing
+    And Mara has the task "Review the house"
+    When Mara tries to hand "Tidy the deluge role" to Ada
+    Then it is refused: "Ada is outside Kit's area: only Kit, who leads it, or the owner hands its work out of it. Ask Kit in the task's thread (the CEO directs: direct, with evidence), and Kit decides"
+    And the task "Tidy the deluge role" is still held by Rae
+    And Ada has never been woken

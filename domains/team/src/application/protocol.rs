@@ -132,7 +132,7 @@ fn criteria_arg(args: &Value) -> Vec<Criterion> {
 fn hand_to_tool() -> Value {
     json!({
         "name": "hand_to",
-        "description": "Hand a task held by someone below you in the chain (who reports to you, or to someone who does) to another member: yourself, or one below you. Say why, and give the handover note (done, not done, next, watch out): the why goes in the thread, the note starts their first turn on it, and they are woken.",
+        "description": "Hand a task held by someone below you in the chain (who reports to you, or to someone who does) to another member: yourself, or one below you. A task in another lead's area stays in it: only that lead moves it out. Say why, and give the handover note (done, not done, next, watch out): the why goes in the thread, the note starts their first turn on it, and they are woken.",
         "inputSchema": { "type": "object", "properties": {
             "task": { "type": "integer", "description": "the task's number" },
             "to": { "type": "string", "description": "the member's name" },
@@ -694,7 +694,7 @@ fn ceos_tools() -> Value {
     ));
     let mut hand_to = hand_to_tool();
     hand_to["description"] = json!(
-        "Hand a task of your own, or one held by someone below you, to a lead (never to anyone else: the lead hands it on in its area). Say why; it goes in the thread, and the lead is woken."
+        "Hand a task of your own, or one held by someone below you, to a lead (never to anyone else: the lead hands it on in its area). A task in a lead's area goes only to that lead, never to another area's: to have it moved, direct its lead. Say why; it goes in the thread, and the lead is woken."
     );
     list.push(hand_to);
     list.push(read_document_tool());

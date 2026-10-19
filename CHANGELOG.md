@@ -9,6 +9,13 @@ tagged release.
 
 ### Changed
 
+- **Work leaves an area only by its lead's hand** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md),
+  amended). Live, the CEO handed an engineering branch task to the Ops lead; the CEO may hand
+  work to a lead only, and the Ops lead is one. `hand_to` now refuses a member outside the task's
+  area ("Ada is outside Kit's area: only Kit, who leads it, or the owner hands its work out of
+  it") unless the caller is that area's lead. Handing a task up to its area's own lead is not
+  leaving the area and stays; the CEO's way to have work moved is `direct`. No migration.
+  Scenario: `domains/team/features/the-engineering-wing.feature`.
 - **A deploy under a turn is the platform's interruption, not the member's failure**
   ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md), amended). Live, a deploy
   cut a developer's turn short; HQ read its task as stopped by accident, the lead was asked to
