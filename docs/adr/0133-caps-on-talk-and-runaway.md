@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-19. Prepared with AI assistance (Claude), from the owner's review of HQ's record
+Accepted, 2026-10-19. Prepared with AI assistance (Claude), from the owner's review of HQ's record
 of 17 and 18 October and the brief that followed it. Amends
 [0124](0124-guards-against-how-agent-teams-fail.md): the budget per task it deferred "only once
 the measure shows it is needed" is built, and tried in shadow first; and the tripwires that

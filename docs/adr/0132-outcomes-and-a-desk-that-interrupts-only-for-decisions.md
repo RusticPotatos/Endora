@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-19. Prepared with AI assistance (Claude), from the owner's review of HQ's record
+Accepted, 2026-10-19. Prepared with AI assistance (Claude), from the owner's review of HQ's record
 of 17 and 18 October and the brief that followed it. Amends
 [0124](0124-guards-against-how-agent-teams-fail.md): the "while you were away" digest it deferred
 is built, for every kind of item that needs no decision, and a finding becomes one per guard and

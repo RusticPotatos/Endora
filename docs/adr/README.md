@@ -7,10 +7,10 @@ and numbered in sequence.
 
 ## What they add up to
 
-Eighty-four records stand, every one accepted, and forty-nine earlier ones are archived into them
-(the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
-reading any individual record; each line is a rule the code actually follows, with the decision
-that established it.
+Eighty-four records stand, all accepted but three still proposed (marked in the *Consolidates*
+column below), and forty-nine earlier ones are archived into them (the same column). A handful of
+ideas sit underneath all of them. Read this before reading any individual record; each line is a
+rule the code actually follows, with the decision that established it.
 
 ### The spine
 
@@ -240,7 +240,7 @@ of an existing record and take the next number.
 | [0068](0068-facts-are-arguments-not-recall.md) | Facts are arguments, not recall | — |
 | [0069](0069-one-door-off-the-device.md) | One door off the device | — |
 | [0070](0070-taint-is-derived-not-remembered.md) | Taint is derived, not remembered | — |
-| [0071](0071-capabilities-it-writes-itself.md) | Capabilities it writes itself | Proposed |
+| [0071](0071-capabilities-it-writes-itself.md) | Capabilities it writes itself | — |
 | [0072](0072-the-base-has-rungs-too.md) | The base has rungs too | — |
 | [0073](0073-a-dead-session-heals-itself.md) | A dead session heals itself | — |
 | [0074](0074-the-brief-is-a-standing-order.md) | The brief is a standing order | — |
@@ -291,13 +291,13 @@ of an existing record and take the next number.
 | [0119](0119-the-open-office.md) | The open office | — |
 | [0120](0120-roles-as-an-enforced-raci.md) | Roles as an enforced RACI | — |
 | [0121](0121-games-in-the-office.md) | Games in the office | — |
-| [0123](0123-a-bench-for-an-external-agent-harness.md) | A bench for an external agent harness | — |
 | [0122](0122-the-teams-world-stages-stories-and-situations.md) | The team's world: stages, stories and situations | — |
-| [0125](0125-secrets-at-rest-in-the-node.md) | Secrets at rest in the node | — |
+| [0123](0123-a-bench-for-an-external-agent-harness.md) | A bench for an external agent harness | — |
 | [0124](0124-guards-against-how-agent-teams-fail.md) | Guards against how agent teams fail | — |
+| [0125](0125-secrets-at-rest-in-the-node.md) | Secrets at rest in the node | Proposed |
 | [0126](0126-the-teams-map.md) | The team's map | — |
-| [0127](0127-openbao-and-the-passkey-unlock.md) | OpenBao and the passkey unlock | — |
-| [0128](0128-an-airplay-2-door.md) | An AirPlay 2 door | — |
+| [0127](0127-openbao-and-the-passkey-unlock.md) | OpenBao and the passkey unlock | Proposed |
+| [0128](0128-an-airplay-2-door.md) | An AirPlay 2 door | Proposed |
 | [0129](0129-the-teams-history-and-asking-the-past.md) | The team's history, and asking the past | — |
 | [0130](0130-the-macs-brain.md) | The Mac's brain | — |
 | [0131](0131-the-two-kinds-of-turn.md) | The two kinds of turn: the house's models work, Claude judges | — |
