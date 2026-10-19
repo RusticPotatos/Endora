@@ -126,7 +126,9 @@ It reads the lab and the threads when it chooses to.
 
 - A project's lead closes its own work in the project (with no branch on it) on its own
   acceptance with evidence: no tester's round, nobody's leave. Its briefing says so.
-- Stuck work (stranded, or doing with no turn, once it has sat ten minutes past its nudge)
+- Stuck work (stranded, or doing with no turn, once it has sat ten minutes past its nudge;
+  work in review keeps its status, since a blocked task is out of the tester's reach: its
+  lead is woken, 0115)
   climbs **one rung at a time, each once**:
   1. the area's **lead** is woken to decide: `decide_stuck` (proceed with what, drop, hand_to
      a member of its team, needs_ceo, needs_board), on evidence;

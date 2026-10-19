@@ -303,9 +303,13 @@ async fn called(
         return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
     };
     if !may_see(&contract, &turn) {
-        let why = if name == REPO_CHECKOUT || name == REPO_SUBMIT {
-            "the wing's git is a lead's or a developer's: read the branch's document \
-             (read_document) and the check's receipt instead"
+        let why = if name == REPO_SUBMIT && turn.role == "reviewer" {
+            "a tester reads a branch by checking it out (repo_checkout) and submits none: only a \
+             lead or a developer submits one"
+                .to_owned()
+        } else if name == REPO_CHECKOUT || name == REPO_SUBMIT {
+            "the wing's git is a lead's or a developer's, and a tester may check a branch out: \
+             read the branch's document (read_document) and the check's receipt instead"
                 .to_owned()
         } else if contract.may_be_seen_by(&turn.role, turn.cloud) {
             "the CEO reads the house and takes no step on it itself: direct the lead of the \
@@ -327,7 +331,7 @@ async fn called(
         ANSIBLE_NAS_DOC => ansible_nas_doc(&state2, &args),
         CONTAINER_LOGS => container_logs(&state2, &args),
         RESTART_CONTAINER => restart_container(&state2, &turn, &args),
-        REPO_CHECKOUT => repo_checkout(&state2, &args),
+        REPO_CHECKOUT => repo_checkout(&state2, &turn, &args),
         REPO_SUBMIT => repo_submit(&state2, &turn, &args),
         _ => Err((
             StatusCode::NOT_FOUND,
@@ -634,8 +638,11 @@ const NO_FORK: &str = "the lab's ansible-nas fork is not configured on the node 
 
 /// `repo_checkout` (ADR 0115): a bundle of the fork's default branch, or of one of the team's
 /// `hq/` branches, as base64 in the text the worker reads (the worker unpacks it; the model
-/// never sees the bundle).
-fn repo_checkout(state: &AppState, args: &serde_json::Value) -> Result<Done, Refused> {
+/// never sees the bundle). A team branch the fork has is handed out from the fork. One it
+/// does not have is the team's own submission, kept on the node until the owner's push: HQ is
+/// asked whether this turn may have it, and the kept branch is handed out at the head HQ
+/// recorded (see [`kept_checkout`]).
+fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Result<Done, Refused> {
     let now = state.clock.now().unix_millis();
     let Some(mirror) = state.lab.mirror(now) else {
         return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
@@ -644,6 +651,13 @@ fn repo_checkout(state: &AppState, args: &serde_json::Value) -> Result<Done, Ref
         .as_str()
         .map(str::trim)
         .filter(|b| !b.is_empty());
+    if let Some(named) = branch.and_then(|b| repo::hq_branch(b).ok()) {
+        // Best effort: the fork may be unreachable while the node still keeps the work.
+        let _ = mirror.refresh(now);
+        if mirror.head_of(named).is_err() {
+            return kept_checkout(state, &mirror, turn, named, now);
+        }
+    }
     let bundle = mirror
         .bundle(branch, now)
         .map_err(|why| (StatusCode::BAD_GATEWAY, why))?;
@@ -655,6 +669,68 @@ fn repo_checkout(state: &AppState, args: &serde_json::Value) -> Result<Done, Ref
     );
     let text = json!({
         "branch": bundle.branch, "head": bundle.head, "base": mirror.base(),
+        "bundle": repo::to_base64(&bundle.bytes),
+    })
+    .to_string();
+    Ok(Done { text, said })
+}
+
+/// The team's own kept submission of `branch`, for the turn that asked (ADR 0115, amended): HQ
+/// is asked, naming the turn by its token, whether the branch is this turn's (its work, or its
+/// member's) and which head it recorded; the node hands out that head and no other, with the
+/// base behind it. HQ's refusal is the turn's. A branch HQ never recorded is not there; a head
+/// the node no longer keeps (the branch was submitted again) is refused, not swapped.
+fn kept_checkout(
+    state: &AppState,
+    mirror: &Mirror,
+    turn: &Turn,
+    branch: &str,
+    now: i64,
+) -> Result<Done, Refused> {
+    let Some(hq) = state.hq.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HQ is not set up on this node".to_owned(),
+        ));
+    };
+    let kept = match hq.post(
+        "/v1/team/branch/checkout",
+        &json!({ "token": turn.token, "branch": branch }),
+    ) {
+        Ok(kept) => kept,
+        Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!(
+                    "the fork has no branch {branch}, and the team has not submitted one of that name: check out {} to start from it",
+                    mirror.base()
+                ),
+            ));
+        }
+        Err(endora_infrastructure::HqError::Answered { message, .. }) => {
+            return Err((StatusCode::FORBIDDEN, message));
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("HQ could not say whose {branch} is: {e}"),
+            ));
+        }
+    };
+    let head = kept["head"].as_str().unwrap_or("");
+    let bundle = mirror
+        .kept_bundle(branch, head, now)
+        .map_err(|why| (StatusCode::CONFLICT, why))?;
+    let said = format!(
+        "checked out the team's kept branch {} at {} (task #{}'s, on top of {}; {} KB)",
+        bundle.branch,
+        &bundle.head[..12.min(bundle.head.len())],
+        kept["task"].as_i64().unwrap_or(0),
+        mirror.base(),
+        bundle.bytes.len() >> 10
+    );
+    let text = json!({
+        "branch": bundle.branch, "head": bundle.head, "base": mirror.base(), "kept": true,
         "bundle": repo::to_base64(&bundle.bytes),
     })
     .to_string();
@@ -1435,6 +1511,25 @@ mod tests {
         .await
     }
 
+    /// One call of a contract as the turn whose token is `token`.
+    async fn as_turn(
+        state: &AppState,
+        token: &str,
+        name: &str,
+        args: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        answer(
+            state,
+            ask(
+                "POST",
+                &format!("/team-relay/contracts/{name}"),
+                Some(token),
+                &args.to_string(),
+            ),
+        )
+        .await
+    }
+
     fn audit(state: &AppState) -> Vec<String> {
         endora_application::AuditLog::recent(state.audit.as_ref(), 50)
             .unwrap()
@@ -2056,6 +2151,12 @@ mod tests {
 
     /// A fork as a bare repository with one commit on `main`, in a folder of its own.
     fn a_fork(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        a_fork_on(name, "main", "---\n- hosts: all\n")
+    }
+
+    /// A fork as a bare repository with one commit on `base`, whose `nas.yml` says `yaml`, in a
+    /// folder of its own.
+    fn a_fork_on(name: &str, base: &str, yaml: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "endora-node-wing-{name}-{}-{}",
             std::process::id(),
@@ -2066,10 +2167,10 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        git_in(&root, &["init", "-q", "--bare", "-b", "main", "fork.git"]);
+        git_in(&root, &["init", "-q", "--bare", "-b", base, "fork.git"]);
         git_in(&root, &["clone", "-q", "fork.git", "seed"]);
         let seed = root.join("seed");
-        std::fs::write(seed.join("nas.yml"), "---\n- hosts: all\n").unwrap();
+        std::fs::write(seed.join("nas.yml"), yaml).unwrap();
         git_in(&seed, &["add", "."]);
         git_in(
             &seed,
@@ -2084,8 +2185,329 @@ mod tests {
                 "the lab",
             ],
         );
-        git_in(&seed, &["push", "-q", "origin", "HEAD:main"]);
+        git_in(&seed, &["push", "-q", "origin", &format!("HEAD:{base}")]);
         (root.clone(), root.join("fork.git"))
+    }
+
+    /// One docs-only branch, with real git and a local bare fork, from the checkout of the fork's
+    /// `develop` to the fork's `hq/` branch after the owner's approval: what the diagnosis of the
+    /// wing's first 39 hours (six branches, none reached the owner) asked to have proved where
+    /// it can be, in the node. The sandbox is played with plain git. The worker's checkout and
+    /// bundling and the check job's unpacking and judging keep their own tests in
+    /// `app/worker`; HQ's rules are played by a fake and held by the engine's own tests and the
+    /// scenarios.
+    #[tokio::test]
+    async fn a_docs_only_branch_goes_from_the_forks_develop_to_the_forks_hq_branch_with_real_git() {
+        use super::super::relay::tests::fake;
+        // Develop has a lint finding of its own (trailing spaces, no document start).
+        let (root, fork) = a_fork_on("docs", "develop", "- hosts: all   \n");
+        let develop = git_in(&fork, &["rev-parse", "refs/heads/develop"]);
+        let recorded: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let told = recorded.clone();
+        let (hq_url, seen) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let said =
+                |status: u16, v: serde_json::Value| (status, "application/json", v.to_string());
+            let on_task_7 = |token: &str| matches!(token, "rae" | "dee");
+            match (path, body["token"].as_str().unwrap_or("")) {
+                ("/v1/team/turn", "rae") => said(
+                    200,
+                    json!({ "run": 7, "member": "Rae", "role": "developer", "left": 40_000,
+                            "cloud": true, "task": 7 }),
+                ),
+                ("/v1/team/turn", "dee") => said(
+                    200,
+                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 40_000,
+                            "cloud": true, "task": 7 }),
+                ),
+                ("/v1/team/turn", "zed") => said(
+                    200,
+                    json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
+                            "cloud": true, "task": 9 }),
+                ),
+                ("/v1/team/turn", _) => said(404, json!({})),
+                ("/v1/team/branch", _) => {
+                    *told.lock().unwrap() = Some(body);
+                    said(200, json!({ "branch": 1, "document": 5, "check": 9 }))
+                }
+                ("/v1/team/branch/checkout", token) if on_task_7(token) => {
+                    let branch = told.lock().unwrap().clone().unwrap_or_default();
+                    said(
+                        200,
+                        json!({ "head": branch["head"], "base": branch["base"], "task": 7 }),
+                    )
+                }
+                ("/v1/team/branch/checkout", _) => said(
+                    400,
+                    json!({ "error": "hq/task-7-add-pages is task #7's: check out the branch of your own work" }),
+                ),
+                ("/v1/team/check", "a-check-jobs-token-of-thirty-two-chars-x") => {
+                    let branch = told.lock().unwrap().clone().unwrap_or_default();
+                    said(
+                        200,
+                        json!({ "check": 9, "task": 7, "branch": branch["branch"],
+                                "head": branch["head"], "base": branch["base"] }),
+                    )
+                }
+                ("/v1/team/check", _) => said(404, json!({})),
+                _ => {
+                    // The owner's approval of push item 4 names the branch and the head HQ
+                    // recorded; every other call gets its receipt or an empty answer.
+                    if path == "/v1/desk/4" {
+                        let branch = told.lock().unwrap().clone().unwrap_or_default();
+                        return said(
+                            200,
+                            json!({ "decided": true, "push": { "item": 4, "task": 7,
+                                    "branch": branch["branch"], "head": branch["head"] } }),
+                        );
+                    }
+                    if path == "/v1/team/receipt" {
+                        return said(200, json!({ "receipt": 41 }));
+                    }
+                    said(200, json!({}))
+                }
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        state.lab = Arc::new(
+            LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new()).with_repo(
+                root.join("data"),
+                fork.to_str().unwrap(),
+                "develop",
+                fork.to_str().unwrap(),
+            ),
+        );
+        // 1. Rae's turn starts in the fork: a bundle of develop, which her sandbox clones.
+        let (status, said) = as_turn(&state, "rae", REPO_CHECKOUT, json!({ "why": "start" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let (payload, _) = said["text"]
+            .as_str()
+            .unwrap()
+            .rsplit_once(" (receipt ")
+            .unwrap();
+        let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(
+            (handed["branch"].as_str(), handed["base"].as_str()),
+            (Some("develop"), Some("develop"))
+        );
+        let file = root.join("checkout.bundle");
+        std::fs::write(
+            &file,
+            repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        git_in(
+            &root,
+            &[
+                "clone",
+                "-q",
+                "-b",
+                "develop",
+                file.to_str().unwrap(),
+                "work",
+            ],
+        );
+        let work = root.join("work");
+        // 2. A docs-only commit on her task's branch, HQ-authored with the trailer.
+        git_in(
+            &work,
+            &["checkout", "-q", "-b", "hq/task-7-add-pages", "develop"],
+        );
+        std::fs::create_dir_all(work.join("website/docs/applications")).unwrap();
+        std::fs::write(work.join("website/docs/applications/foo.md"), "# Foo\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(
+            &work,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "add the foo page\n\nMade-by: Endora HQ (Rae) for task #7",
+            ],
+        );
+        let head = git_in(&work, &["rev-parse", "HEAD"]);
+        let delta = root.join("delta.bundle");
+        git_in(
+            &work,
+            &[
+                "bundle",
+                "create",
+                delta.to_str().unwrap(),
+                "develop..hq/task-7-add-pages",
+            ],
+        );
+        let delta = repo::to_base64(&std::fs::read(&delta).unwrap());
+        // 3. The node takes it and tells HQ the branch, its head and the base it sits on.
+        let (status, said) = as_turn(
+            &state,
+            "rae",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "adds the foo page", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let told_hq = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(told_hq["branch"], "hq/task-7-add-pages");
+        assert_eq!(told_hq["head"], head.as_str());
+        assert_eq!(
+            told_hq["base"],
+            develop.as_str(),
+            "the base it sits on: develop's head"
+        );
+        assert_eq!(told_hq["files"], 1);
+        // 4. The check job fetches the branch's whole history with its token, and the base HQ
+        //    recorded rides in the header and is in that history: what "no worse than develop"
+        //    needs to run the same checks there.
+        let job = "a-check-jobs-token-of-thirty-two-chars-x";
+        let res = team_relay(state.clone())
+            .oneshot(ask("GET", "/team-relay/check/9/bundle", Some(job), ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["x-endora-base"].to_str().unwrap(), develop);
+        let whole = res.into_body().collect().await.unwrap().to_bytes();
+        let file = root.join("whole.bundle");
+        std::fs::write(&file, &whole).unwrap();
+        git_in(&root, &["init", "-q", "check"]);
+        let check = root.join("check");
+        git_in(
+            &check,
+            &[
+                "fetch",
+                "-q",
+                file.to_str().unwrap(),
+                "refs/submissions/hq/task-7-add-pages:refs/heads/check",
+            ],
+        );
+        assert_eq!(git_in(&check, &["rev-parse", "check"]), head);
+        git_in(
+            &check,
+            &["cat-file", "-e", &format!("{develop}^{{commit}}")],
+        );
+        // 5. Dee, the tester of the same task, has the kept branch for her own reading, with
+        //    develop behind it; another task's developer is refused; she submits nothing.
+        let (status, said) = as_turn(
+            &state,
+            "dee",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "to read it" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        let (payload, receipt) = text.rsplit_once(" (receipt ").unwrap();
+        assert!(receipt.starts_with("r41"), "her receipt: {receipt}");
+        let kept: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(
+            (
+                kept["kept"].as_bool(),
+                kept["head"].as_str(),
+                kept["base"].as_str()
+            ),
+            (Some(true), Some(head.as_str()), Some("develop"))
+        );
+        let kept_file = root.join("kept.bundle");
+        std::fs::write(
+            &kept_file,
+            repo::from_base64(kept["bundle"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let heads = git_in(
+            &root,
+            &["bundle", "list-heads", kept_file.to_str().unwrap()],
+        );
+        assert!(
+            heads.contains("refs/heads/develop")
+                && heads.contains("refs/submissions/hq/task-7-add-pages"),
+            "{heads}"
+        );
+        git_in(
+            &root,
+            &[
+                "clone",
+                "-q",
+                "-b",
+                "develop",
+                kept_file.to_str().unwrap(),
+                "reading",
+            ],
+        );
+        git_in(
+            &root.join("reading"),
+            &[
+                "fetch",
+                "-q",
+                kept_file.to_str().unwrap(),
+                "refs/submissions/hq/task-7-add-pages:refs/heads/hq/task-7-add-pages",
+            ],
+        );
+        let diff = git_in(
+            &root.join("reading"),
+            &["diff", "--name-only", "develop..hq/task-7-add-pages"],
+        );
+        assert_eq!(
+            diff, "website/docs/applications/foo.md",
+            "what she reads is the docs-only change"
+        );
+        let (status, said) = as_turn(
+            &state,
+            "zed",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "to look" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"].as_str().unwrap().contains("task #7's"),
+            "{said}"
+        );
+        let (status, _) = as_turn(
+            &state,
+            "dee",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "x", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // 6. The owner approves the push (desk item 4): the node sends the stored ref to the
+        //    fork as the `hq/` branch, at that head, and develop is untouched.
+        let mut signed = state.clone();
+        signed.token = Arc::new(super::super::tests::TEST_TOKEN.to_owned());
+        let decided = super::super::hq::hq_decide(
+            State(signed.clone()),
+            Path(4),
+            Json(super::super::hq::HqDecision {
+                decision: "approve".to_owned(),
+                answer: String::new(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(decided.0["pushed"], true, "{}", decided.0);
+        assert_eq!(
+            git_in(&fork, &["rev-parse", "refs/heads/hq/task-7-add-pages"]),
+            head
+        );
+        assert_eq!(
+            git_in(&fork, &["rev-parse", "refs/heads/develop"]),
+            develop,
+            "develop untouched"
+        );
+        let outcome: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/push/4/outcome")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(outcome.len(), 1);
+        assert_eq!(outcome[0]["ok"], true);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -2157,7 +2579,8 @@ mod tests {
                 fork.to_str().unwrap(),
             ),
         );
-        // A lead and a developer are offered the wing's git; the tester is not.
+        // A lead and a developer are offered the wing's git; the tester is offered the checkout
+        // alone (it is her reading of a branch), never the submission.
         let (_, listed) = answer(
             &state,
             ask("GET", "/team-relay/contracts", Some("good"), ""),
@@ -2191,11 +2614,30 @@ mod tests {
             .filter_map(|t| t["name"].as_str())
             .collect();
         assert!(
-            !names.contains(&REPO_CHECKOUT) && !names.contains(&REPO_SUBMIT),
-            "{names:?}"
+            names.contains(&REPO_CHECKOUT) && !names.contains(&REPO_SUBMIT),
+            "a tester is offered checkout, never submit: {names:?}"
         );
-        // Dee's refusal says the wing's rule, not the CEO's.
+        // Dee's refusal of a submission says the tester's rule, not the CEO's.
         let (refused, why) = answer(
+            &state,
+            ask(
+                "POST",
+                "/team-relay/contracts/repo_submit",
+                Some("dee"),
+                r#"{"branch":"hq/task-3-x","why":"look","bundle":"AAAA"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(refused, StatusCode::FORBIDDEN, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .unwrap()
+                .contains("reads a branch by checking it out"),
+            "{why}"
+        );
+        // The tester checks the fork out like anyone: a bundle, and a receipt of hers.
+        let (status, said) = answer(
             &state,
             ask(
                 "POST",
@@ -2205,14 +2647,7 @@ mod tests {
             ),
         )
         .await;
-        assert_eq!(refused, StatusCode::FORBIDDEN, "{why}");
-        assert!(
-            why["error"]
-                .as_str()
-                .unwrap()
-                .contains("lead's or a developer's"),
-            "{why}"
-        );
+        assert_eq!(status, StatusCode::OK, "{said}");
         // The checkout: a bundle of main the sandbox can clone, said in the receipt by its head.
         let (status, said) = use_contract(&state, REPO_CHECKOUT, json!({ "why": "x" })).await;
         assert_eq!(status, StatusCode::OK, "{said}");
@@ -2438,6 +2873,366 @@ mod tests {
             "{audit:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Live (2026-10-18): `repo_checkout` of a submitted `hq/` branch was refused, "the fork has
+    /// no branch", three times, though the node was keeping it: a submission lives under
+    /// `refs/submissions/`, and only the owner's push puts a branch on the fork. Real git, a
+    /// local bare fork, and HQ played by a fake that applies its rule: a kept branch is its own
+    /// task's.
+    #[tokio::test]
+    async fn the_team_checks_out_its_own_kept_branch_and_only_its_own() {
+        use super::super::relay::tests::fake;
+        let (root, fork) = a_fork("kept");
+        let recorded: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let first_head: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let (told, first) = (recorded.clone(), first_head.clone());
+        let (hq_url, seen) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let said =
+                |status: u16, v: serde_json::Value| (status, "application/json", v.to_string());
+            match (path, body["token"].as_str()) {
+                // Kit leads task 7; Zed is a developer on task 9.
+                ("/v1/team/turn", Some("kit" | "late")) => said(
+                    200,
+                    json!({ "run": 7, "member": "Kit", "role": "lead", "left": 40_000,
+                            "cloud": true, "task": 7 }),
+                ),
+                ("/v1/team/turn", Some("zed")) => said(
+                    200,
+                    json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
+                            "cloud": true, "task": 9 }),
+                ),
+                // Dee, the tester, is on task 7 too, on Haiku: a turn of judgment.
+                ("/v1/team/turn", Some("dee")) => said(
+                    200,
+                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 40_000,
+                            "cloud": true, "task": 7 }),
+                ),
+                ("/v1/team/turn", _) => said(404, json!({})),
+                ("/v1/team/branch", _) => {
+                    let mut first = first.lock().unwrap();
+                    if first.is_empty() {
+                        *first = body["head"].as_str().unwrap_or("").to_owned();
+                    }
+                    *told.lock().unwrap() = Some(body);
+                    said(200, json!({ "branch": 1, "document": 5, "check": 9 }))
+                }
+                // HQ's rule, played here (the engine's tests hold the real one): the head it
+                // recorded, to the branch's own task, and to no other.
+                ("/v1/team/branch/checkout", token) => {
+                    let branch = told.lock().unwrap().clone().unwrap_or_default();
+                    if body["branch"] != branch["branch"] {
+                        return said(404, json!({ "error": "no branch of that name" }));
+                    }
+                    match token {
+                        Some("kit" | "dee") => said(
+                            200,
+                            json!({ "head": branch["head"], "base": branch["base"], "task": 7 }),
+                        ),
+                        // HQ's record names a head the node no longer keeps.
+                        Some("late") => said(
+                            200,
+                            json!({ "head": first.lock().unwrap().clone(),
+                                    "base": branch["base"], "task": 7 }),
+                        ),
+                        _ => said(
+                            400,
+                            json!({ "error": "hq/task-7-add-pages is task #7's: check out the branch of your own work" }),
+                        ),
+                    }
+                }
+                ("/v1/team/receipt", _) => said(200, json!({ "receipt": 41 })),
+                _ => said(200, json!({})),
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        state.lab = Arc::new(
+            LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new()).with_repo(
+                root.join("data"),
+                fork.to_str().unwrap(),
+                "main",
+                fork.to_str().unwrap(),
+            ),
+        );
+        // Kit checks out the fork, makes the docs-only branch, and submits it.
+        let (status, said) = as_turn(&state, "kit", REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        let (payload, _) = text.rsplit_once(" (receipt ").unwrap();
+        let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert!(
+            handed["kept"].is_null() || handed["kept"] == false,
+            "the fork's own branch is not a kept one"
+        );
+        let file = root.join("checkout.bundle");
+        std::fs::write(
+            &file,
+            repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        git_in(
+            &root,
+            &["clone", "-q", "-b", "main", file.to_str().unwrap(), "work"],
+        );
+        let work = root.join("work");
+        git_in(
+            &work,
+            &["checkout", "-q", "-b", "hq/task-7-add-pages", "main"],
+        );
+        std::fs::create_dir_all(work.join("website/docs/applications")).unwrap();
+        std::fs::write(work.join("website/docs/applications/foo.md"), "# Foo\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(
+            &work,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "add the page\n\nMade-by: Endora HQ (Kit) for task #7",
+            ],
+        );
+        let head = git_in(&work, &["rev-parse", "HEAD"]);
+        let delta = root.join("delta.bundle");
+        git_in(
+            &work,
+            &[
+                "bundle",
+                "create",
+                delta.to_str().unwrap(),
+                "main..hq/task-7-add-pages",
+            ],
+        );
+        let delta = repo::to_base64(&std::fs::read(&delta).unwrap());
+        // A branch is named for the turn's task: task 7's turn cannot overwrite task 9's.
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-9-add-pages", "why": "x", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
+        assert!(
+            said["error"].as_str().unwrap().contains("hq/task-7-<slug>"),
+            "{said}"
+        );
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "adds a page", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        // The fork has no such branch, but the team's own task may have it back: the kept
+        // submission, with the base behind it.
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "to go on" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        let (payload, receipt) = text.rsplit_once(" (receipt ").unwrap();
+        assert!(receipt.starts_with("r41"), "{receipt}");
+        let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(handed["kept"], true);
+        assert_eq!(
+            (
+                handed["branch"].as_str(),
+                handed["head"].as_str(),
+                handed["base"].as_str()
+            ),
+            (
+                Some("hq/task-7-add-pages"),
+                Some(head.as_str()),
+                Some("main")
+            )
+        );
+        let kept = root.join("kept.bundle");
+        std::fs::write(
+            &kept,
+            repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let heads = git_in(&root, &["bundle", "list-heads", kept.to_str().unwrap()]);
+        assert!(
+            heads.contains("refs/heads/main")
+                && heads.contains("refs/submissions/hq/task-7-add-pages"),
+            "{heads}"
+        );
+        git_in(
+            &root,
+            &["clone", "-q", "-b", "main", kept.to_str().unwrap(), "again"],
+        );
+        git_in(
+            &root.join("again"),
+            &[
+                "fetch",
+                "-q",
+                kept.to_str().unwrap(),
+                "refs/submissions/hq/task-7-add-pages:refs/heads/hq/task-7-add-pages",
+            ],
+        );
+        git_in(
+            &root.join("again"),
+            &["checkout", "-q", "hq/task-7-add-pages"],
+        );
+        assert_eq!(git_in(&root.join("again"), &["rev-parse", "HEAD"]), head);
+        assert!(root.join("again/website/docs/applications/foo.md").exists());
+        // HQ was asked, with the turn's own token and the branch, and the receipt says what
+        // was checked out: the branch, its head, and that it is the team's kept one.
+        let asked: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/branch/checkout")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(
+            asked.len(),
+            1,
+            "asked once, for the kept one only: {asked:?}"
+        );
+        assert_eq!(
+            asked[0],
+            json!({ "token": "kit", "branch": "hq/task-7-add-pages" })
+        );
+        let receipt: serde_json::Value = serde_json::from_str(
+            &seen
+                .lock()
+                .unwrap()
+                .iter()
+                .rfind(|(p, _, _)| p == "/v1/team/receipt")
+                .unwrap()
+                .2,
+        )
+        .unwrap();
+        let excerpt = receipt["excerpt"].as_str().unwrap();
+        assert!(
+            excerpt.starts_with("checked out the team's kept branch hq/task-7-add-pages at ")
+                && excerpt.contains(&head[..12]),
+            "{excerpt}"
+        );
+        assert_eq!(receipt["act"], false);
+        assert!(
+            receipt["args"]
+                .as_str()
+                .unwrap()
+                .contains("hq/task-7-add-pages"),
+            "{receipt}"
+        );
+        // The tester of the same task reads it too: a reading of her own, whose receipt names
+        // the branch and its head (she cites it with the check's). She submits nothing.
+        let (status, said) = as_turn(
+            &state,
+            "dee",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "to read it" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(
+            said["text"].as_str().unwrap().contains("\"kept\":true"),
+            "{said}"
+        );
+        let (status, said) = as_turn(
+            &state,
+            "dee",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "x", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        // Another task's turn is refused, with HQ's words; a branch nobody submitted is not
+        // there; and a head HQ recorded that the node no longer keeps is not handed out.
+        let (status, said) = as_turn(
+            &state,
+            "zed",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "to look" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"].as_str().unwrap().contains("task #7's"),
+            "{said}"
+        );
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-nothing", "why": "x" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{said}");
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("has not submitted"),
+            "{said}"
+        );
+        git_in(&work, &["checkout", "-q", "hq/task-7-add-pages"]);
+        std::fs::write(work.join("website/docs/applications/bar.md"), "# Bar\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(
+            &work,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "another page\n\nMade-by: Endora HQ (Kit) for task #7",
+            ],
+        );
+        git_in(
+            &work,
+            &[
+                "bundle",
+                "create",
+                delta_path(&root).as_str(),
+                "main..hq/task-7-add-pages",
+            ],
+        );
+        let again = repo::to_base64(&std::fs::read(delta_path(&root)).unwrap());
+        let (status, said) = as_turn(
+            &state,
+            "kit",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "one more page", "bundle": again }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let (status, said) = as_turn(
+            &state,
+            "late",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "x" }),
+        )
+        .await;
+        assert!(
+            status == StatusCode::CONFLICT
+                && said["error"].as_str().unwrap().contains("submitted again"),
+            "{status}: {said}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Where a test puts a second bundle of a branch.
+    fn delta_path(root: &std::path::Path) -> String {
+        root.join("delta-two.bundle").to_str().unwrap().to_owned()
     }
 
     #[tokio::test]

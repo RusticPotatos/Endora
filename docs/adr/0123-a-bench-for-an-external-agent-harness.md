@@ -79,9 +79,10 @@ Endora's fence, with its money capped and metered, and compared with the wing do
    pinned). Its managed settings (`deploy/bench/managed-settings.json`) are the workbench's
    without the receipt hook: no updates, telemetry, error reports or other traffic, no
    experimental betas, the five-minute cache, no attribution, WebFetch and WebSearch denied,
-   **bypass mode refused**, and the workbench developer's shell allowlist (git, the linters,
-   `ls`, `cat`). A non-root user (uid 10001), no credential in the image. `make bench-image`
-   builds it on the Mac and copies it to the Pi.
+   **bypass mode refused**, and the workbench developer's shell: the whole of Bash (amended
+   2026-10-19 with [0117](0117-claude-code-as-a-developer-runtime.md); it was git, the linters,
+   `ls` and `cat` by prefix, which denied compound commands). A non-root user (uid 10001), no
+   credential in the image. `make bench-image` builds it on the Mac and copies it to the Pi.
 7. **How it runs.** One container on the Pi's `endora_sandbox` network (the NAS's team gateway
    on 8788 and nothing else; DNS `192.0.2.1`), read-only root, `/work` and `/tmp` in memory, no
    capabilities, 4 GB and three CPUs, a wall-clock limit of 45 minutes. The token is read from

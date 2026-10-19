@@ -60,3 +60,69 @@ Feature: The engineering wing and the git flow
     And Sam works with "Local" and judges with "Claude Haiku"
     When the owner hires Second as a ceo under Mara
     Then it is refused for "the team has one CEO already"
+
+  # The wing's first 39 hours: six branches submitted, none reached the owner. One docs-only
+  # branch, from the check that passes on develop's own findings to the owner's push card.
+  Scenario: A docs-only branch reaches the owner's push card on develop's own findings
+    Given Kit's planning turn is over
+    And Kit hands Rae the task "Add the missing app pages" in the wing, with the criteria
+      | Branch is cut from develop and named hq/task-N-add-the-missing-app-pages |
+      | Diff only adds files under website/docs/applications                      |
+      | The check is no worse than develop                                        |
+    When Rae's turn starts
+    And Rae submits the branch "hq/task-2-add-the-missing-app-pages"
+    And Rae's turn ends
+    And the check passes: "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 errors (develop 14): no worse than develop"
+    Then the gate of "Add the missing app pages" has passed
+    # The check's pass wakes her; her sandbox is new, and the kept branch comes back whole, at
+    # the head that was submitted.
+    When Rae's turn starts
+    And Rae checks out "hq/task-2-add-the-missing-app-pages"
+    Then the checkout is the submitted head of "Add the missing app pages"
+    When Rae submits "Add the missing app pages" for review citing the submit and the check receipts
+    # The check is not the tester's own reading: her checkout of the branch is.
+    And Dee passes "Add the missing app pages" citing the check receipt alone
+    Then it is refused for "her own readings"
+    When Dee checks out "hq/task-2-add-the-missing-app-pages"
+    And Dee passes "Add the missing app pages" citing her checkout and the check receipt
+    Then it is not refused
+    When Dee's turn ends
+    And Kit accepts "Add the missing app pages"
+    Then the task "Add the missing app pages" is done
+    And the owner's desk holds a push of "hq/task-2-add-the-missing-app-pages" at the submitted head, saying "checks passed"
+    When the owner approves the push
+    Then Endora is asked to push "hq/task-2-add-the-missing-app-pages"
+    When the node says it pushed: "Pushed hq/task-2-add-the-missing-app-pages to the fork: merge it on GitHub."
+    Then Rae is woken about it
+
+  # Task 670 sat 44 minutes in review, was set blocked out of the tester's reach, and climbed
+  # to the CEO five times for a review that had simply not happened.
+  Scenario: Work left in review is never blocked, and its lead is woken
+    Given Kit's planning turn is over
+    And Kit hands Rae the task "Add the missing app pages" in the wing
+    When Rae's turn starts
+    And Rae submits the branch "hq/task-2-add-the-missing-app-pages"
+    And the check passes: "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 errors (develop 14): no worse than develop"
+    And Rae submits "Add the missing app pages" for review
+    And "Add the missing app pages" sits with nobody coming back to it
+    Then Kit is asked to decide "Add the missing app pages"
+    And the task "Add the missing app pages" is in_review
+
+  # A CEO's draft for the board moves the work task itself into review; passing it closed
+  # the work, and offered its push, with no evidence judged.
+  Scenario: A draft for the owner never closes the work
+    Given Kit's planning turn is over
+    And Kit hands Rae the task "Add the missing app pages" in the wing
+    When Rae's turn starts
+    And Rae submits the branch "hq/task-2-add-the-missing-app-pages"
+    And Rae's turn ends
+    And Mara is woken about "Add the missing app pages"
+    And Mara puts the decision "Should the wing take a second lead?" to the board, recommending "Not yet", because "One branch waits"
+    And the check passes: "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 errors (develop 14): no worse than develop"
+    Then the gate of "Add the missing app pages" has passed
+    And the task "Add the missing app pages" is in_review
+    When Dee checks out "hq/task-2-add-the-missing-app-pages"
+    And Dee passes "Add the missing app pages" citing her checkout and the check receipt
+    Then it is refused for "draft for the owner"
+    And the task "Add the missing app pages" is in_review
+    And the owner's desk holds no push

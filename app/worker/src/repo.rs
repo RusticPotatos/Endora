@@ -92,15 +92,52 @@ fn git_stdin(dir: &Path, args: &[&str], input: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+/// Whether `branch` is a plain name under `hq/`, safe to hand to git as a ref: nothing that
+/// climbs (`..`), nothing that git would read as an option, only the characters a slug has.
+fn is_team_branch(branch: &str) -> bool {
+    branch.starts_with(BRANCH_PREFIX)
+        && branch.len() > BRANCH_PREFIX.len()
+        && !branch.contains("..")
+        && !branch.starts_with('-')
+        && branch
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
+}
+
 /// A word in a shell single-quoted string.
 fn quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
 
-/// Unpacks `bundle` (one branch, `branch`, with its history) into `work/repo`, fresh, and sets
-/// git up the team's way: the author, no remote, and a `prepare-commit-msg` hook that adds
-/// the trailer naming `member` and `task` when a commit lacks it. `base`, the branch the wing
-/// works from, is kept beside it, so a submission is bundled from there.
+/// Empties `dir` of everything in it and keeps the folder itself, so a shell standing in it
+/// (Claude Code's, after a second checkout) still stands in a folder that exists. A link is
+/// removed, never followed.
+fn emptied(dir: &Path) -> Result<(), String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let gone = if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        gone.map_err(|e| format!("the old checkout stays: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Unpacks `bundle` into `work/repo`, fresh, and sets git up the team's way: the author, no
+/// remote, and a `prepare-commit-msg` hook that adds the trailer naming `member` and `task`
+/// when a commit lacks it. `base`, the branch the wing works from, is kept beside it, so a
+/// submission is bundled from there.
+///
+/// The bundle is either the one `branch` with its history, cloned as it is, or, when `kept`
+/// (the team's own submission, handed back by the node), the `base` and the stored
+/// submission as `refs/submissions/<branch>`: the base is cloned, and the submission fetched
+/// as a head of its own and checked out, with `base` still a head behind it, so what is made of
+/// it can be submitted again. The folder is emptied, not replaced.
 ///
 /// # Errors
 /// What git said, in a line.
@@ -109,27 +146,43 @@ pub fn checkout(
     bundle: &[u8],
     branch: &str,
     base: &str,
+    kept: bool,
     member: &str,
     task: Option<i64>,
 ) -> Result<CheckedOut, String> {
     std::fs::create_dir_all(work).map_err(|e| format!("no {}: {e}", work.display()))?;
+    if kept && !is_team_branch(branch) {
+        return Err(format!("{branch:?} is not one of the team's branches"));
+    }
     let file = work.join("checkout.bundle");
     std::fs::write(&file, bundle).map_err(|e| format!("the bundle could not be written: {e}"))?;
     let repo = work.join(REPO_DIR);
-    if repo.exists() {
-        std::fs::remove_dir_all(&repo).map_err(|e| format!("the old checkout stays: {e}"))?;
-    }
+    emptied(&repo)?;
+    let start = if kept { base } else { branch };
     git(
         work,
         &[
             "clone",
             "-q",
             "-b",
-            branch,
+            start,
             &file.to_string_lossy(),
             REPO_DIR,
         ],
     )?;
+    if kept {
+        git(
+            &repo,
+            &[
+                "fetch",
+                "-q",
+                &file.to_string_lossy(),
+                &format!("refs/submissions/{branch}:refs/heads/{branch}"),
+            ],
+        )
+        .map_err(|_| format!("the bundle holds no kept {branch}"))?;
+        git(&repo, &["checkout", "-q", branch])?;
+    }
     // No remote: there is nowhere to push from the sandbox, and nothing to push with.
     git(&repo, &["remote", "remove", "origin"])?;
     git(&repo, &["config", "user.name", AUTHOR_NAME])?;
@@ -235,14 +288,7 @@ fn stamp(repo: &Path, base: &str, branch: &str, trailer: &str) -> Result<(), Str
 /// A branch not under `hq/` or not there, no checkout, or a bundle past [`BUNDLE_MOST`].
 pub fn bundle(work: &Path, branch: &str) -> Result<(Vec<u8>, String), String> {
     let branch = branch.trim();
-    if !branch.starts_with(BRANCH_PREFIX)
-        || branch.len() <= BRANCH_PREFIX.len()
-        || branch.contains("..")
-        || branch.starts_with('-')
-        || !branch
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
-    {
+    if !is_team_branch(branch) {
         return Err(format!(
             "the branch is named hq/task-N-<slug>, e.g. hq/task-12-tidy-roles, not {branch:?}"
         ));
@@ -365,11 +411,141 @@ mod tests {
         (root, bytes)
     }
 
+    /// What the node hands over for a kept submission (ADR 0115, amended): the base branch and
+    /// the kept ref, `refs/submissions/hq/task-12-tidy`, whole history, in one bundle. Returns
+    /// the folder, the bundle and the kept head.
+    fn a_kept_bundle(name: &str) -> (PathBuf, Vec<u8>, String) {
+        let (root, _) = a_bundle(name);
+        let seed = root.join("seed");
+        run(&seed, &["checkout", "-q", "-b", "hq/task-12-tidy"]);
+        std::fs::write(seed.join("kept.yml"), "---\n").unwrap();
+        run(&seed, &["add", "."]);
+        run(
+            &seed,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "kept\n\nMade-by: Endora HQ (Rae) for task #12",
+            ],
+        );
+        let head = run(&seed, &["rev-parse", "HEAD"]);
+        run(
+            &seed,
+            &["update-ref", "refs/submissions/hq/task-12-tidy", &head],
+        );
+        let file = root.join("kept.bundle");
+        run(
+            &seed,
+            &[
+                "bundle",
+                "create",
+                "-q",
+                file.to_str().unwrap(),
+                "refs/heads/main",
+                "refs/submissions/hq/task-12-tidy",
+            ],
+        );
+        (root, std::fs::read(&file).unwrap(), head)
+    }
+
+    /// Live (task 670): a branch existed only in the turn that made it, so a follow-up turn
+    /// recreated the work. A kept branch is checked out as a head of its own on top of its base
+    /// (which is still a head too), and can be added to and submitted again.
+    #[test]
+    fn a_kept_branch_is_checked_out_on_top_of_its_base_and_can_be_submitted_again() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let (root, kept, head) = a_kept_bundle("kept");
+        let work = root.join("work");
+        let out = checkout(
+            &work,
+            &kept,
+            "hq/task-12-tidy",
+            "main",
+            true,
+            "Rae",
+            Some(12),
+        )
+        .unwrap();
+        assert_eq!(
+            (out.branch.as_str(), out.head.as_str()),
+            ("hq/task-12-tidy", head.as_str())
+        );
+        assert_eq!(out.files, 2, "the base's file and the branch's");
+        assert_eq!(
+            run(&out.path, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "hq/task-12-tidy"
+        );
+        assert_eq!(run(&out.path, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            run(&out.path, &["rev-list", "--count", "main..hq/task-12-tidy"]),
+            "1",
+            "main is a head of its own, one commit behind the kept branch"
+        );
+        assert_eq!(run(&out.path, &["remote"]), "", "no remote to push to");
+        assert!(
+            !work.join("checkout.bundle").exists(),
+            "the bundle is not left about"
+        );
+        // Added to and bundled from main, with both commits and nothing of main's: the node
+        // takes it as a submission again.
+        std::fs::write(out.path.join("more.yml"), "---\n").unwrap();
+        run(&out.path, &["add", "-A"]);
+        run(&out.path, &["commit", "-q", "-m", "more"]);
+        let (bytes, new_head) = bundle(&work, "hq/task-12-tidy").unwrap();
+        assert_ne!(new_head, head);
+        assert_eq!(
+            run(&out.path, &["rev-list", "--count", "main..hq/task-12-tidy"]),
+            "2"
+        );
+        let file = root.join("out.bundle");
+        std::fs::write(&file, &bytes).unwrap();
+        let heads = run(&out.path, &["bundle", "list-heads", file.to_str().unwrap()]);
+        assert!(heads.ends_with("refs/heads/hq/task-12-tidy"), "{heads}");
+        // Checked out again over the old one: the folder is emptied, not replaced, so a shell
+        // that is inside it (Claude Code's) still stands in it; and it is the kept head again.
+        // (A mode only this folder has, since a folder made again would have the default one.)
+        std::fs::set_permissions(&out.path, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let folder = std::fs::metadata(&out.path).unwrap().ino();
+        let again = checkout(
+            &work,
+            &kept,
+            "hq/task-12-tidy",
+            "main",
+            true,
+            "Rae",
+            Some(12),
+        )
+        .unwrap();
+        let after = std::fs::metadata(&again.path).unwrap();
+        assert_eq!((after.ino(), after.mode() & 0o777), (folder, 0o750));
+        assert_eq!(again.head, head, "none of the commits made since");
+        assert!(!again.path.join("more.yml").exists());
+        // A bundle that is said to be kept and holds no kept ref is no checkout.
+        let (_, plain) = a_bundle("plain");
+        let why = checkout(
+            &work,
+            &plain,
+            "hq/task-12-tidy",
+            "main",
+            true,
+            "Rae",
+            Some(12),
+        )
+        .unwrap_err();
+        assert!(why.contains("hq/task-12-tidy"), "{why}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_checkout_sets_git_up_the_teams_way_and_a_commit_gets_its_trailer() {
         let (root, fork) = a_bundle("checkout");
         let work = root.join("work");
-        let out = checkout(&work, &fork, "main", "main", "Rae", Some(12)).unwrap();
+        let out = checkout(&work, &fork, "main", "main", false, "Rae", Some(12)).unwrap();
         assert_eq!(out.path, work.join("repo"));
         assert_eq!((out.branch.as_str(), out.files), ("main", 1));
         assert_eq!(out.head.len(), 40);
@@ -418,7 +594,7 @@ mod tests {
         let heads = run(&out.path, &["bundle", "list-heads", file.to_str().unwrap()]);
         assert!(heads.ends_with("refs/heads/hq/task-12-tidy"), "{heads}");
         // Checked out again, over the old one: fresh.
-        let again = checkout(&work, &fork, "main", "main", "Rae", None).unwrap();
+        let again = checkout(&work, &fork, "main", "main", false, "Rae", None).unwrap();
         assert!(run(&again.path, &["branch", "--list", "hq/*"]).is_empty());
         std::fs::write(again.path.join("x.yml"), "---\n").unwrap();
         run(&again.path, &["add", "-A"]);
@@ -436,7 +612,7 @@ mod tests {
         // there: the trailer must not depend on it.
         let (root, fork) = a_bundle("stamp");
         let work = root.join("work");
-        let out = checkout(&work, &fork, "main", "main", "Rae", Some(12)).unwrap();
+        let out = checkout(&work, &fork, "main", "main", false, "Rae", Some(12)).unwrap();
         run(&out.path, &["checkout", "-q", "-b", "hq/task-12-tidy"]);
         let commit = |file: &str, message: &str| {
             std::fs::write(out.path.join(file), "---\n").unwrap();
@@ -519,7 +695,7 @@ mod tests {
                 .unwrap_err()
                 .contains("repo_checkout first")
         );
-        let out = checkout(&work, &fork, "main", "main", "Rae", Some(1)).unwrap();
+        let out = checkout(&work, &fork, "main", "main", false, "Rae", Some(1)).unwrap();
         for bad in ["main", "feature/x", "hq/", "hq/../main", "-hq/x", "hq/a b"] {
             assert!(
                 bundle(&work, bad).unwrap_err().contains("hq/task-N"),

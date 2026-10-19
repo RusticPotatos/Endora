@@ -792,6 +792,86 @@ tagged release.
 
 ### Fixed
 
+- **Claude Code's shell is the sandbox's whole Bash, and a refused call is kept as refused**
+  ([ADR 0117](docs/adr/0117-claude-code-as-a-developer-runtime.md)). Six `Bash(prefix *)` rules
+  under `dontAsk` denied any command holding a subshell group, a `for` loop or `$?`, and one
+  denial in a live turn became "the shell refuses every command": the wing's developer blocked
+  its task. The container is the boundary (the list protected nothing it does not), so the
+  turn is given `Bash`; the bench's managed settings say the same. And Claude Code reports a
+  denied call, and a command that failed, as a response starting "Error:", which the node kept
+  as done: it is kept as refused now, so a receipt cannot show a refused call as one that ran.
+  Ships with the workbench image (the worker's command line) and the node.
+
+- **A check box that cannot run its checks passes nothing** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)).
+  "No worse than develop" counted a failure with no readable count as no worse whenever develop
+  failed too, so a box with no tools (every check exiting 127 on the branch and on develop, as
+  the first two checks did live) would have passed every branch. A check that could not run (a
+  missing or non-executable tool, a kill, a timeout) is no finding now: a develop on which one
+  could not run is "could not be checked" and excuses nothing, and a branch's own check that
+  could not run is never excused. The result line says "could not run". Ships with the
+  workbench image (the check job).
+
+- **A member can check out the team's own submitted branch, and a branch is named for its task**
+  ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)). In 39 hours of live
+  use the wing submitted six branches and none reached the owner; `repo_checkout` of a branch
+  the node was keeping was refused three times ("the fork has no branch"), because a
+  submission is kept as `refs/submissions/…` and reaches the fork's heads only after the
+  owner's push. Each refusal ended with the work recreated from develop. The node now asks HQ
+  (`POST /v1/team/branch/checkout`), whose record says whether the branch is the turn's work
+  (its task, the tasks under and above it) or its member's, and at which head; the node hands
+  out the base and the kept ref, at that head only, and the worker clones the base, fetches the
+  kept ref as a head and checks it out, so it can be added to and submitted again (and
+  `/work/repo` is emptied, not replaced, so a shell standing in it is not left in a folder
+  that is gone). `repo_submit` now requires `hq/task-<the turn's task>-<slug>`, so no task's
+  kept branch can be overwritten by another's. Ships with the node, HQ and the workbench image.
+
+- **A lead or a developer can ask for a kept branch to be checked again** (`recheck`,
+  [ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)). A check was queued only
+  by submitting a branch from a sandbox that held it, so a check that failed for the check
+  box's own reasons (tools missing, a collection absent) cost a recreated branch each time:
+  task 674 existed only to check one commit again, and 679's probe branch, with no file in it,
+  only to get a check run. `recheck` queues a new check of the newest kept branch of the work
+  with no sandbox and no new submission, one at a time; its result is a receipt on the turn that
+  asked and wakes it, the branch's member and the tester. A failed check's "sent back" post
+  says to recheck when the box could not run.
+
+- **The tester can take a reading of a branch, so her pass can be recorded**
+  ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)). A pass must cite a
+  reading of her own, and she had none she could take of a branch: the node offered her neither
+  wing contract and `read_document` leaves no receipt, so her three turns on task 670 each
+  ended with "tried to call review, refused". The node now offers her `repo_checkout` (never
+  `repo_submit`): checking the team's kept branch out is a witnessed receipt that names the
+  branch and its head, which she cites with the check's. Her briefing and her wing paragraph
+  say so (a read-only paragraph where she may not submit), and the engine and the scenarios
+  take her pass on that real receipt, where they had recorded a `read_document` one by hand
+  that the real tool never makes.
+
+- **Work in review is never demoted to blocked** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)).
+  HQ's sweep of stranded work nudged the tester once, and at the next quiet window set the
+  task `blocked`: task 670 was blocked 44 minutes after it entered review, out of the tester's
+  reach (she passes work in review) and settable back by its holder alone, and it climbed to
+  the CEO five times for a review that had simply not happened. It stays in review now, and
+  its lead is woken to decide it up the same ladder.
+
+- **A draft for the owner never closes work** ([ADR 0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)).
+  The CEO's decision for the board moves the work task itself into review, and the tester's
+  `approve` then went through the draft's path: refused for the gate while it was false (tasks
+  671, 672, 679 and 670), and, with the gate true, the task closed as done and its push was
+  offered with no evidence judged and no lead's acceptance. A pass on a draft is refused now
+  (forward it with `ask_owner`, or send it back); sending back is unchanged.
+
+- **The push the owner is offered is of the head that was reviewed**
+  ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)). The gate was the task's
+  and every check overwrote it, and the card offered the newest submitted branch, so a head
+  submitted after the tester's pass changed what the card offered with the gate left as the
+  first head's check set it. A new head submitted while the task is in review sends it back
+  ("a new head needs a new review") and resets the gate to wait for its own check; a late check
+  of an older head is recorded but sets nothing and wakes nobody. `repo_submit` also refuses a
+  branch that changes no file (a probe with none was accepted, on task 679), and a refused
+  submission no longer moves the kept branch: the node stages a submission and keeps it only
+  once every rule has passed, where a missing trailer (five times live) used to overwrite a
+  good kept branch of the same name.
+
 - **Live sound no longer falls behind the picture over time, and no longer dips every few
   minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
   backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a

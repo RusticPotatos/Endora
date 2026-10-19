@@ -14,8 +14,8 @@ pub mod scorecard;
 pub mod world_ports;
 
 pub use engine::{
-    Asked, Author, Engine, EngineError, Fired, Proposal, Recorded, Settings, Standing, Submission,
-    TickReport, WingSeeded,
+    Asked, Author, Engine, EngineError, Fired, KeptBranch, Proposal, Recorded, Settings, Standing,
+    Submission, TickReport, WingSeeded,
 };
 pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
 

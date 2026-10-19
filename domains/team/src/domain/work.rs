@@ -556,6 +556,21 @@ pub enum Refusal {
     NotBelowAsker,
     /// Not a document on a task this turn may read.
     NotADocument,
+    /// A kept branch is checked out by the work it is for and the member who submitted it
+    /// (ADR 0115): this one is another task's.
+    NotYourBranch {
+        /// The branch asked for.
+        branch: String,
+        /// The task it was submitted for.
+        task: TaskId,
+    },
+    /// What waits in review is a draft for the owner, not work: it is forwarded, never passed
+    /// (ADR 0114, amended).
+    ForwardTheDraft,
+    /// A recheck of a branch's checks is asked for by the work's lead or developer (ADR 0115).
+    NotYourToRecheck,
+    /// A check of the branch is still waiting or running: one at a time (ADR 0115).
+    CheckPending(i64),
     /// The CEO is never furloughed: the owner's own line to the team (ADR 0118).
     IsTheCeo,
     /// The member is on furlough already.
@@ -850,6 +865,26 @@ impl fmt::Display for Refusal {
             Self::NotBelowAsker => f.write_str("a hire is asked for a role below your own"),
             Self::NotADocument => f.write_str(
                 "read_document reads a document of your task, its sub-tasks or the task above: d12, as the thread names them",
+            ),
+            Self::NotYourBranch { branch, task } => write!(
+                f,
+                "{branch} is task #{task}'s: check out the branch of your own work (a branch is \
+                 handed to the task it was submitted for, the tasks under and above it, and the \
+                 member who submitted it)"
+            ),
+            Self::ForwardTheDraft => f.write_str(
+                "what waits in review is a draft for the owner, not work to pass: check it, then \
+                 forward it with ask_owner (corrected if it needs it), or send it back with \
+                 review send_back",
+            ),
+            Self::NotYourToRecheck => f.write_str(
+                "a recheck is asked for by the work's lead or developer: the tester judges what \
+                 the checks found, and the CEO directs",
+            ),
+            Self::CheckPending(check) => write!(
+                f,
+                "check c{check} of this branch is still waiting or running: its result comes \
+                 back as a receipt, and you may ask again once it has"
             ),
             Self::IsTheCeo => f.write_str("the CEO is never furloughed"),
             Self::AlreadyFurloughed => f.write_str("that member is on furlough already"),

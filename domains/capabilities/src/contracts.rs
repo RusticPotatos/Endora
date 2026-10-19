@@ -72,10 +72,15 @@ impl Contract {
     /// Whether a turn of a member in `role` is offered this contract: what it may see, and an
     /// act only for a member who works on the house. The CEO reads what the lead reads and
     /// directs; it takes no step on the house itself (ADR 0111, 0120). The wing's git contracts (ADR 0115) go to
-    /// a lead or a developer, whatever its brain: the fork is public.
+    /// a lead or a developer, whatever its brain: the fork is public. The tester is offered the
+    /// checkout alone (amended 2026-10-19): checking a branch out is her reading of it, the one
+    /// receipt of her own she could not otherwise have; she submits nothing.
     #[must_use]
     pub fn offered_to(&self, role: &str, on_a_cloud_model: bool) -> bool {
-        if self.name == REPO_CHECKOUT || self.name == REPO_SUBMIT {
+        if self.name == REPO_CHECKOUT {
+            return matches!(role, "lead" | "developer" | "reviewer");
+        }
+        if self.name == REPO_SUBMIT {
             return matches!(role, "lead" | "developer");
         }
         if self.kind == Kind::AutomaticAct && role == "ceo" {
@@ -154,21 +159,21 @@ pub fn all() -> Vec<Contract> {
         },
         Contract {
             name: REPO_CHECKOUT,
-            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches to review. Git is set up there (commits are authored Endora HQ with the trailer added for you). Free; the sandbox stays offline.",
+            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches. A branch your team submitted comes back whole before the owner has pushed it, on top of its base, to go on from or to review: your own work's (its task, the tasks under and above it) or one you submitted yourself. Git is set up there (commits are authored Endora HQ with the trailer added for you). Free; the sandbox stays offline.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
-                "branch": { "type": "string", "description": "The fork's default branch unless you name a team branch, hq/task-N-slug." },
+                "branch": { "type": "string", "description": "The fork's default branch unless you name a team branch, hq/task-N-slug (a submitted one of your work)." },
                 "why": { "type": "string", "description": "Why, in a few words." },
             }, "required": ["why"] }),
         },
         Contract {
             name: REPO_SUBMIT,
-            description: "Send your branch (hq/task-N-slug, committed in /work/repo) to Endora, which keeps it, writes its diff as a document on your task and runs the lab's checks (ansible syntax, ansible-lint, yamllint) on the dev node, judged against the fork's develop (it passes when no check is worse than on develop); the result comes back as a receipt. Refused unless it sits on the fork's default branch, changes at most 200 files and 1 MB, and every commit is HQ's. Nothing is pushed: the owner pushes an accepted branch.",
+            description: "Send your branch (hq/task-N-slug, N being your task's number, committed in /work/repo) to Endora, which keeps it, writes its diff as a document on your task and runs the lab's checks (ansible syntax, ansible-lint, yamllint) on the dev node, judged against the fork's develop (it passes when no check is worse than on develop); the result comes back as a receipt. Refused unless it is named for your task, sits on the fork's default branch, changes at least one file and at most 200 files and 1 MB, and every commit is HQ's. A new head submitted while the task is in review sends it back: it needs a new review. Nothing is pushed: the owner pushes an accepted branch.",
             kind: Kind::AutomaticAct,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
-                "branch": { "type": "string", "description": "Your branch, hq/task-N-slug." },
+                "branch": { "type": "string", "description": "Your branch, hq/task-N-slug, N being your task's number." },
                 "why": { "type": "string", "description": "What the branch does, in a sentence the tester reads." },
             }, "required": ["branch", "why"] }),
         },
@@ -420,9 +425,11 @@ mod tests {
     }
 
     #[test]
-    fn the_wings_git_goes_to_a_lead_or_a_developer_on_any_brain_and_nobody_else() {
+    fn the_wings_git_goes_to_a_lead_or_a_developer_on_any_brain_and_a_tester_may_only_check_out() {
         let all = all();
-        for contract in &all[5..] {
+        let (checkout, submit) = (&all[5], &all[6]);
+        assert_eq!((checkout.name, submit.name), (REPO_CHECKOUT, REPO_SUBMIT));
+        for contract in [checkout, submit] {
             assert_eq!(contract.tier, "internal", "the fork is public");
             for role in ["lead", "developer"] {
                 for cloud in [false, true] {
@@ -433,13 +440,20 @@ mod tests {
                     );
                 }
             }
-            for role in ["ceo", "reviewer", "researcher", ""] {
+            for role in ["ceo", "researcher", ""] {
                 assert!(
                     !contract.offered_to(role, false),
                     "{} to a {role}",
                     contract.name
                 );
             }
+        }
+        // Live (task 670): the tester had no way to read a submitted branch, so no reading of
+        // her own, so no pass was ever possible. Checking it out is her reading (ADR 0115,
+        // amended); she submits nothing, on any brain.
+        for cloud in [false, true] {
+            assert!(checkout.offered_to("reviewer", cloud));
+            assert!(!submit.offered_to("reviewer", cloud));
         }
     }
 

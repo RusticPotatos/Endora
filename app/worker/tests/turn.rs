@@ -1563,14 +1563,20 @@ fn a_claude_code_turn_is_hqs_bookkeeping_then_claude_code_headless_then_its_last
     assert_eq!(at("--model"), "claude-haiku-5-5");
     assert_eq!(at("--effort"), "low");
     assert_eq!(at("--max-turns"), "30");
+    // The shell is Claude Code's whole Bash (ADR 0117): the container is the boundary, and a
+    // list of prefixes denied the compound commands a model writes.
     for tool in [
         "mcp__endora__post",
         "mcp__endora__homelab_status",
         "mcp__endora__restart_container",
-        "Bash(git *)",
+        "Bash",
     ] {
         assert!(args.contains(&tool.to_owned()), "{tool}: {args:?}");
     }
+    assert!(
+        !args.iter().any(|a| a.starts_with("Bash(")),
+        "no pattern rule on Bash: {args:?}"
+    );
     assert!(
         !args.iter().any(|a| a.contains(TOKEN)),
         "no token in an argument"

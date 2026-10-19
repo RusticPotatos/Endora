@@ -27,6 +27,14 @@ finished task. The worker checks the fork out into `/work/repo` before Claude Co
 `repo_submit` reaches it through the worker's MCP bridge, so the bundles are still the worker's
 to carry.
 
+Amended 2026-10-19, after the wing's first 39 hours (six branches submitted, none reached the
+owner; the diagnosis found every blocker on the path): **a member may check out the team's own
+kept branch** (decision 2) and **a branch is named for its task** (decision 4); the check's
+base compare is hardened (decision 5); the tester may check a branch out for her own reading,
+a lead or a developer may ask for a **recheck**, work in review is never demoted to blocked, a
+draft never closes work, and a new head sends work back for a new review (decision 6). Each is
+marked where it lands.
+
 Amended 2026-10-18: the check job has every collection and role the fork needs, offline. The
 image builds `endora.homelab` from the Endora source it was built from, into the same path as
 the other baked collections, because the fork pins it to a git commit the sandbox cannot fetch;
@@ -64,30 +72,56 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    with no credential, refreshed at most every five minutes, and hands the turn a **bundle** of
    the base branch, or of one of the team's `hq/*` branches to review, as base64 in the
    contract's result (32 MB cap; the fork is about 6 MB; a bundle carries the branch's whole
-   history, since a shallow one cannot be cloned alone). The worker, in the workbench only,
-   unpacks it into `/work/repo` with git set up the team's way: commits authored
+   history, since a shallow one cannot be cloned alone). *Amended 2026-10-19:* a team branch
+   the fork does not have is the team's own **submission**, kept as `refs/submissions/…` on
+   the node until the owner's push, and a member could never have it back (three refusals of
+   a branch the node was keeping; each ended in the work recreated). The node now asks HQ
+   (`POST /v1/team/branch/checkout`, naming the turn by its token), whose **record** decides,
+   never the branch's name: the newest branch recorded under that name must be for the
+   turn's own work (its task, the tasks under it, the tasks above it) or have been submitted
+   by the turn's member, and HQ answers with the head and base it recorded. The node hands
+   out one bundle of the base and that kept ref, at that head only (a branch submitted again
+   since is refused, not swapped), and the checkout's receipt names the branch and its head.
+   A branch the fork has is handed out from the fork as before. The worker, in the
+   workbench only, unpacks it into `/work/repo` with git set up the team's way: commits authored
    `Endora HQ <hq@endora.invalid>`, no remote at all, and a `prepare-commit-msg` hook that adds
    the trailer `Made-by: Endora HQ (<members>) for task #N` when a commit lacks it. The model
    reads where the checkout is and what its base is; it never sees a bundle. The sandbox stays
-   offline.
+   offline. For a kept branch the worker clones the base, fetches the kept ref as a head of
+   its own and checks it out, with the base still a head behind it, so it can be added to and
+   submitted again; and it empties `/work/repo` rather than replacing the folder, so a shell
+   standing in it (Claude Code's) is not left in a folder that is gone.
 3. **The work**: branches named `hq/task-<N>-<slug>` (the slug from the task's title, `[a-z0-9-]`,
    at most 40), cut from the base. The model never pushes: no remote and no credential exist in
    the sandbox.
 4. **Submit** (`repo_submit`, an automatic act, Internal, a lead's or a developer's). The worker
    bundles the branch from the base (`git bundle create base..hq/…`; uncommitted changes refuse
    it) and sends it as base64. The node takes it only when: it holds exactly that one branch,
-   under `hq/`; it applies to the mirror and **sits on top of the base** (a fast-forward; a
-   branch behind the fork's base is sent back to rebase); it changes at most **200 files** and
+   under `hq/` and **named for the turn's own task**, `hq/task-<N>-<slug>` (amended
+   2026-10-19: the kept ref is keyed by the name alone, so a name that carries its task is a
+   key no other task can write; a sub-task that goes on with its parent's branch submits it
+   under its own name); it applies to the mirror and **sits on top of the base** (a fast-forward; a
+   branch behind the fork's base is sent back to rebase); it changes **at least one file** (a
+   probe with no file in it was accepted and checked on task 679; commits that add up to nothing
+   are no branch to review) and at most **200 files** and
    **1 MB** of diff; **every commit is HQ's** (the author and the trailer); and it **touches
    nothing of the owner's values**: `group_vars/*.yml`, `host_vars/`, any inventory or anything
    named for a vault is refused whole, and the briefing says never to edit, cite or copy from
    them. What passes is kept under the task (`submissions/task-N/<slug>-<sha>.bundle`, and as
-   `refs/submissions/hq/…` in the mirror, which the mirror's fetch never prunes), and told to HQ
+   `refs/submissions/hq/…` in the mirror, which the mirror's fetch never prunes: the
+   submission is **staged** apart and moved there only once every rule has passed, so a
+   refused attempt, a missing trailer being the commonest, leaves the kept branch as it was),
+   and told to HQ
    with the turn's own token (`POST /v1/team/branch`): HQ records the **branch**, writes a
    **document** on the task, "branch hq/… (N files, +a −b)", with the stat and the diff (64 KB
    shown), says so in the thread, and queues the **check**. The call's receipt (0114) is the
    turn's to cite. No desk notice per submission: the thread, the document and the push card
-   are where the owner reads it.
+   are where the owner reads it. *Amended 2026-10-19:* **the push is bound to the head that was
+   reviewed.** A new head submitted while the task is in review voids the review (the task goes
+   back to `doing`, saying a new head needs a new review) and resets the gate to wait for the
+   new head's own check; the gate is the newest head's, so a check of an older head that reports
+   late is recorded and sets nothing, wakes nobody and sends nothing back; and the card offers
+   the newest submitted head, which is therefore the one the tester and the lead judged.
 5. **The check job**: the first piece of the lab (ring 2), **model-free**. HQ hands the Pi's
    runner a check before any turn (`POST /v1/runner/next` → `kind: "check"`), with a token of
    the job's own. The runner starts the workbench image with the same fence as a turn and
@@ -108,19 +142,45 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    than on the base, syntax failing only where the base's did, a timeout always a fail. The line
    then says both ("ansible-lint 25 findings (develop 25), …: no worse than develop") and the
    report holds the base's outcomes; a clean branch costs no second run, and a base that cannot
-   be found leaves the plain pass or fail, said in the line. HQ keeps the
+   be found leaves the plain pass or fail, said in the line. *Amended 2026-10-19:* a check that
+   **could not run** (its tool not found or not executable, exit 127 or 126; killed; out of
+   time) is no finding. A base on which any check could not run was not read and excuses
+   nothing: the failure stands and the line says "develop could not be checked: …", so a box
+   without its tools (every check at 127 on both sides, as c1 and c2 were) passes no branch,
+   where "develop failed too" had read as "no worse". A branch's own check that could not run
+   is never excused by a failing base either. HQ keeps the
    result as a **receipt** on the task and a document with the report, and as the task's
    **gate** (0114: code work closes only once it passed); a pass wakes the submitter and the
    tester, and **a branch that fails its checks is sent back** by HQ itself, the tester
    untroubled. A check that never reports is given up after thirty minutes; the runner reports
-   one that never started or ended without reporting. The workbench image gains a venv with
+   one that never started or ended without reporting. *Amended 2026-10-19:* a check was queued
+   only by submitting, from a sandbox that held the branch, so a check that failed for the
+   box's own reasons cost a recreated branch each time (task 674 existed only to check one
+   commit again). A lead or a developer on the work now asks for **`recheck`**: a new check of
+   the newest kept branch of the work, with no sandbox and no new submission, one at a time
+   (refused while a check of that branch waits or runs), judged against develop as before; the
+   result is a receipt on the turn that asked, and wakes it with the branch's member and the
+   tester. The workbench image gains a venv with
    `ansible-core` 2.15.13 (the engine alone, not the `ansible` package of every collection: the
    checks never load them and the arm64 build would take minutes more), the two linters, the
    fork's four collections and two roles.
 6. **Review and push**, the 0114 flow: the developer submits the task (`in_review`) citing the
    branch's and the check's receipts; Dee, the tester, reads the diff and the report
-   (`read_document`; she may also `repo_checkout` the `hq/` branch into her sandbox) and
-   passes it on her own readings; the wing's lead accepts; the task is done. **Then** the push
+   (`read_document`) and **checks the branch out** (`repo_checkout`) and passes it on her own
+   readings; the wing's lead accepts; the task is done. *Amended 2026-10-19:* this was
+   written but not true: the node offered the tester neither wing contract, and
+   `read_document` leaves no receipt, so she had no reading of the branch to take, and none of
+   her three turns on task 670 could pass it (0114 holds a pass to a reading of her own).
+   The node now offers her `repo_checkout` alone, never `repo_submit`: checking the kept
+   branch out (HQ lets her, as the work's tester) is a witnessed receipt on the task that
+   names the branch and its head, which she cites with the check's. Her briefing says so, and
+   her turn, a turn of judgment on her Haiku (0131), runs in the same sandbox as the others.
+   *Amended 2026-10-19:* **work in review is never demoted to `blocked`** by HQ's sweep of
+   stranded work. After one nudge of the tester and a quiet window it was set `blocked` (task
+   670, 44 minutes after it entered review), out of the tester's reach (she passes work in
+   review) and settable back by its holder alone; it climbed to the CEO five times. It stays
+   in review and its lead is woken to decide it, up the same ladder (0120).
+   **Then** the push
    is the owner's: a desk card, "Push hq/… to your fork (N files, checks passed)", with Approve
    and Decline. On Approve, HQ names the branch to the node, which pushes the **stored
    submission** to the fork over SSH with the deploy key at `ENDORA_GIT_PUSH_KEY_FILE`

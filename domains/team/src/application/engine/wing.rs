@@ -62,6 +62,18 @@ pub struct Recorded {
     pub check: i64,
 }
 
+/// A kept branch a turn may check out (ADR 0115, amended): the head HQ recorded for it, the
+/// base it sits on, and the task it is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptBranch {
+    /// The head HQ recorded: the node hands out the kept submission only at this head.
+    pub head: String,
+    /// The default branch's head it sits on.
+    pub base: String,
+    /// The task it was submitted for.
+    pub task: TaskId,
+}
+
 /// What seeding the wing made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WingSeeded {
@@ -167,6 +179,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 short(&s.head)
             ),
         )?;
+        // The push the owner is offered is of the newest head, and the tester and the lead
+        // judge one head: a new head voids the review, and the gate waits for its own check
+        // (ADR 0115, amended).
+        self.store.set_gate(task, false)?;
+        let reviewed = self.task(task)?;
+        if reviewed.status == TaskStatus::InReview {
+            self.store.set_task_status(task, TaskStatus::Doing)?;
+            self.post_held_lock(
+                Author::Endora,
+                task,
+                &format!(
+                    "Sent back: {} was submitted again at {} while this was in review. A new \
+                     head needs a new review: submit the task for review again once its check \
+                     has passed.",
+                    s.branch,
+                    short(&s.head)
+                ),
+            )?;
+            self.emit_status(&reviewed, TaskStatus::Doing)?;
+        }
         self.emit(
             EventKind::BranchSubmitted,
             json!({ "task": task.0, "branch": branch, "name": s.branch, "head": s.head,
@@ -178,6 +210,145 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             document,
             check,
         })
+    }
+
+    /// A lead or a developer asks for the newest kept branch of a piece of work to be checked
+    /// again (ADR 0115, amended), without submitting it again: a check queued for the branch the
+    /// node still keeps, with no sandbox and no new submission, whose result comes back as the
+    /// first's did (a receipt, a document, the task's gate). A check was queued only by
+    /// submitting from a sandbox that held the branch, which a later turn never does, so a
+    /// check that failed for the check box's own reasons cost a recreated branch each time.
+    /// One at a time: refused while a check of that branch waits or runs. Returns the check.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYourToRecheck`] for the
+    /// tester or the CEO; [`EngineError::Unknown`] for work with no submitted branch;
+    /// [`Refusal::CheckPending`].
+    pub fn recheck_in(&self, run: RunId, task: TaskId, why: &str) -> Done<i64> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        self.reach(&turn, task, false)?;
+        let member = self.member(turn.member)?;
+        if !matches!(member.role, Role::Lead | Role::Developer) {
+            return Err(EngineError::Refused(Refusal::NotYourToRecheck));
+        }
+        let work = self.work_of(task)?;
+        let Some(branch) = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| work.contains(&b.task) && b.status == "submitted")
+            .max_by_key(|b| b.id)
+        else {
+            return Err(EngineError::Unknown("submitted branch on that work"));
+        };
+        if let Some(pending) = self
+            .store
+            .checks()?
+            .into_iter()
+            .find(|c| c.branch == branch.id && c.status != "done")
+        {
+            return Err(EngineError::Refused(Refusal::CheckPending(pending.id)));
+        }
+        let (check, _) = self.store.add_check(&Check {
+            id: 0,
+            task: branch.task,
+            branch: branch.id,
+            run: turn.id,
+            token: String::new(),
+            status: "waiting".to_owned(),
+            ok: None,
+            summary: String::new(),
+            queued_at: self.clock.now(),
+            started_at: None,
+            done_at: None,
+        })?;
+        self.post_held_lock(
+            Author::Endora,
+            branch.task,
+            &format!(
+                "Check c{check} is queued again on {} at {}, asked for by {}: {}. No new \
+                 submission: the branch the node keeps is checked, judged against develop as \
+                 before. Its result comes back as a receipt.",
+                branch.name,
+                short(&branch.head),
+                member.name,
+                super::one_line(why, 300)
+            ),
+        )?;
+        // Asking is a step the turn took: it is not a turn that showed nothing.
+        if let Some(own) = turn.task {
+            self.mark_progress(member.id, own)?;
+        }
+        Ok(check)
+    }
+
+    /// Whether a turn may have a branch the team submitted and the node keeps (ADR 0115,
+    /// amended): the node asks, naming the turn by its own token, before it hands a kept
+    /// submission out. HQ's record decides, never the name (a name is the model's): the newest
+    /// branch recorded under it must be for the turn's own work (its task, the tasks under it,
+    /// the tasks above it) or have been submitted by the turn's member. What is handed back is
+    /// the head HQ recorded, the base it sits on, and its task: the node checks out that head
+    /// only, and refuses it if the kept branch has moved. Two risks are fenced: half-done work
+    /// leaking across areas, and one member laundering another's unreviewed branch under a task
+    /// of its own.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a token that opens no running turn, or a name HQ never
+    /// recorded; [`Refusal::NotYourBranch`] for another task's.
+    pub fn checkout_branch(&self, token: &str, name: &str) -> Done<KeptBranch> {
+        let _held = self.held();
+        let Some(id) = self.store.run_of_token(token)? else {
+            return Err(EngineError::Unknown("running turn with that token"));
+        };
+        let run = self
+            .running(id)
+            .map_err(|_| EngineError::Unknown("running turn with that token"))?;
+        let Some(branch) = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| b.name == name)
+            .max_by_key(|b| b.id)
+        else {
+            return Err(EngineError::Unknown("branch of that name"));
+        };
+        if branch.member != run.member && !self.in_the_work_of(&run, branch.task)? {
+            return Err(EngineError::Refused(Refusal::NotYourBranch {
+                branch: branch.name,
+                task: branch.task,
+            }));
+        }
+        Ok(KeptBranch {
+            head: branch.head,
+            base: branch.base,
+            task: branch.task,
+        })
+    }
+
+    /// Whether `task` is in the work of a turn: the task the turn is on, a task under it at any
+    /// depth, or one of the tasks above it. A turn on no task has no work.
+    fn in_the_work_of(&self, run: &crate::application::ports::Run, task: TaskId) -> Done<bool> {
+        let Some(own) = run.task else {
+            return Ok(false);
+        };
+        if self.work_of(own)?.contains(&task) {
+            return Ok(true);
+        }
+        let tasks = self.store.tasks()?;
+        let parent_of = |id: TaskId| tasks.iter().find(|t| t.id == id).and_then(|t| t.parent);
+        let (mut above, mut seen) = (parent_of(own), vec![own]);
+        while let Some(id) = above {
+            if id == task {
+                return Ok(true);
+            }
+            if seen.contains(&id) {
+                break;
+            }
+            seen.push(id);
+            above = parent_of(id);
+        }
+        Ok(false)
     }
 
     /// The next check job for the runner: the oldest waiting, now running. A check running
@@ -292,17 +463,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         done.done_at = Some(now);
         self.store.save_check(&done)?;
         // The check is the wing's gate (tests, lint and build, ADR 0114): code work closes only
-        // once it has passed, and the lab's own checks are what passes it.
-        self.store.set_gate(check.task, ok)?;
-        self.emit(
-            EventKind::GateResult,
-            json!({ "task": check.task.0, "passed": ok, "failed": if ok { "" } else { summary.as_str() },
-                    "check": check.id }),
-        )?;
+        // once it has passed, and the lab's own checks are what passes it. The gate is the
+        // newest head's: a check of an older head that reports late (two heads in flight) is
+        // recorded below, and sets nothing (ADR 0115, amended).
+        let newer = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| b.task == check.task)
+            .max_by_key(|b| b.id)
+            .filter(|newest| newest.head != branch.head);
+        if newer.is_none() {
+            self.store.set_gate(check.task, ok)?;
+            self.emit(
+                EventKind::GateResult,
+                json!({ "task": check.task.0, "passed": ok, "failed": if ok { "" } else { summary.as_str() },
+                        "check": check.id }),
+            )?;
+        }
+        // The turn that asked for the check: the member who submitted the branch, unless a lead
+        // or another developer asked for it to be checked again.
+        let asked = self
+            .store
+            .run(check.run)?
+            .map_or(branch.member, |r| r.member);
         let receipt = self.store.add_call_receipt(&CallReceipt {
             id: 0,
             run: check.run,
-            member: branch.member,
+            member: asked,
             task: Some(check.task),
             tool: "check".to_owned(),
             args: format!("c{} {}@{}", check.id, branch.name, short(&branch.head)),
@@ -321,11 +509,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             text: held_to(report, DOCUMENT_MOST),
             at: now,
         })?;
+        let older = newer.as_ref().map_or_else(String::new, |newest| {
+            format!(
+                " It is the check of an older head: {} was submitted since, and its check is \
+                 the gate.",
+                short(&newest.head)
+            )
+        });
         self.post_held_lock(
             Author::Endora,
             check.task,
             &format!(
-                "Check c{} on {}: {summary} (receipt r{receipt}, document d{document}).",
+                "Check c{} on {}: {summary} (receipt r{receipt}, document d{document}).{older}",
                 check.id, branch.name
             ),
         )?;
@@ -335,6 +530,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "summary": summary, "receipt": receipt, "document": document,
                     "member": branch.member.0 }),
         )?;
+        // Nobody is sent back or woken for a head that has been replaced.
+        if newer.is_some() {
+            return Ok(());
+        }
         let task = self.task(check.task)?;
         if !ok && task.status == TaskStatus::InReview {
             // A branch that fails its checks is sent back (ADR 0115): the tester need not read
@@ -345,7 +544,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 task.id,
                 &format!(
                     "Sent back: check c{} failed ({summary}). Read document d{document}, put it \
-                     right, submit the branch again and then the task.",
+                     right, submit the branch again and then the task. If the line says the \
+                     check box could not run, ask for the same branch to be checked again with \
+                     recheck, and submit nothing new.",
                     check.id
                 ),
             )?;
@@ -357,6 +558,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         self.wake_held_lock(branch.member, Some(task.id), WakeReason::CheckDone)?;
+        // A lead or another developer who asked for the branch to be checked again hears too.
+        if asked != branch.member && self.member(asked)?.at_work() {
+            self.wake_held_lock(asked, Some(task.id), WakeReason::CheckDone)?;
+        }
         for tester in self
             .store
             .members()?

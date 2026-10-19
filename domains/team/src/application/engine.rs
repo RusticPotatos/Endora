@@ -72,7 +72,7 @@ pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
 pub use proposals::PageProposing;
 pub use raci::DIRECTION_MOST;
-pub use wing::{DOCUMENT_PART, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
+pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
 pub use world::{RETELL_AT_ONCE, StoryTelling, WorldWrite};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
@@ -1811,6 +1811,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// no gate as done (work that needs the gate waits for it, as [`Self::approve`] says), and
     /// `send_back` returns it to its owner as `doing`, waking them. The notes go in the thread
     /// either way. Only the reviewer gives a verdict, and never on its own work.
+    ///
+    /// The tester's tool reaches it for a send-back alone ([`Self::test_in`]): a pass is judged
+    /// there, on evidence, and never closes a draft for the owner (ADR 0114, amended).
     ///
     /// # Errors
     /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYours`] for a member who
@@ -4037,7 +4040,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
                 continue;
             }
-            if task.status != TaskStatus::Blocked {
+            // Work in review is never put out of the tester's reach (task 670: blocked 44
+            // minutes after it entered review, with the review not yet done; only its holder
+            // could put it back, and it climbed to the CEO five times). It stays in review,
+            // and its lead is woken to decide it.
+            let in_review = task.status == TaskStatus::InReview;
+            if task.status != TaskStatus::Blocked && !in_review {
                 self.store.set_task_status(task.id, TaskStatus::Blocked)?;
                 self.emit(
                     EventKind::TaskChanged,
@@ -4048,12 +4056,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             stuck += 1;
             self.found_stuck(task, found.why)?;
             // Stuck work climbs the ladder (ADR 0120); the owner's desk only with no lead.
-            let why = "it was handed on, woken once, and nobody came back to it";
-            if !self.climb_stuck(task, why)? {
-                self.stuck_on_the_desk(
-                    task,
+            let (why, on_the_desk) = if in_review {
+                (
+                    "it waits in review, its tester was woken once, and no verdict came",
+                    "It waits in review, its tester was woken once, and no verdict came.",
+                )
+            } else {
+                (
+                    "it was handed on, woken once, and nobody came back to it",
                     "It was handed on, woken once, and nobody came back to it.",
-                )?;
+                )
+            };
+            if !self.climb_stuck(task, why)? {
+                self.stuck_on_the_desk(task, on_the_desk)?;
             }
         }
         Ok((nudged, stuck))

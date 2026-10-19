@@ -15,6 +15,16 @@ relay's pass-through for a Claude Code turn; sandbox-reported receipts and the e
 each member's cost of a finished task on the scorecard. Not built: a control on the HQ screen
 (the owner's route is there; the button is wired with the screen's roster code).
 
+Amended 2026-10-19: **its shell is the sandbox's whole Bash**, not six command prefixes. Live
+(task 674) `--allowedTools "Bash(git *)" …` under `dontAsk` denied every command with a subshell
+group, a `for` loop or `$?` in it, and the one denial in a turn became "the shell refused every
+command"; the turn blocked its task. The list protected nothing the container does not (see the
+table: the container is the boundary; `Bash(git *)` already runs anything git can be made to
+run, and `cat /proc/self/environ` matched `Bash(cat *)`), and it cost a turn's work. Decision 4's
+command line and the table's row say so below. A call the shell refuses, or a command that
+fails, is also kept as a refused receipt now: Claude Code reports both as a `PostToolUse`
+whose response is a string starting "Error:", which the node used to keep as done.
+
 ## Context
 
 HQ's members take their turns on Endora's own worker (0102, 0109): a small loop that offers the
@@ -61,11 +71,11 @@ instead. Nothing in Endora reads, stores or passes a subscription credential: no
    --permission-mode dontAsk --permission-prompts none --setting-sources user
    --no-session-persistence --strict-mcp-config --mcp-config <file>
    --append-system-prompt-file <Endora's rules> --tools Read Edit Write Glob Grep Bash
-   --allowedTools <the bridge's tools as mcp__endora__*> Read Edit Write Glob Grep "Bash(git *)"
-   "Bash(ansible-lint *)" "Bash(yamllint *)" "Bash(ansible-playbook --syntax-check *)"
-   "Bash(ls *)" "Bash(cat *)" --disallowedTools WebFetch WebSearch`
+   --allowedTools <the bridge's tools as mcp__endora__*> Read Edit Write Glob Grep Bash
+   --disallowedTools WebFetch WebSearch`
 
-   with the briefing on stdin. `--setting-sources user` keeps a fork's own `.claude/` settings
+   with the briefing on stdin (amended 2026-10-19: `Bash` whole, where it was six
+   `Bash(prefix *)` rules). `--setting-sources user` keeps a fork's own `.claude/` settings
    and hooks from ever being read; `dontAsk` denies whatever is not allowed, so nothing waits on
    a prompt. Its environment: `ANTHROPIC_BASE_URL` is the node's Anthropic relay,
    `ANTHROPIC_AUTH_TOKEN` the turn's token (sent as `Authorization: Bearer`, which the relay
@@ -132,7 +142,7 @@ instead. Nothing in Endora reads, stores or passes a subscription credential: no
 | Five-minute cache only | the relay (rewrites `1h`, refuses other marks); Claude Code's own setting |
 | No server-side tools, MCP servers, fast mode, fallbacks, fetched content | the relay |
 | No web tools in the sandbox | `--tools`, `--disallowedTools`, the managed settings' deny, and the offline sandbox |
-| Its shell: git and the checks | `--allowedTools` with `dontAsk`; the container is the boundary |
+| Its shell: the sandbox's whole Bash | `--allowedTools Bash` with `dontAsk`; the container is the boundary (amended 2026-10-19; it was git and the checks, by prefix) |
 | A fork's own Claude settings or hooks never load | `--setting-sources user` |
 | A sandbox's report is no reading of the lab | the evidence rule (`judge`) |
 | Endora's tools still decide every act | HQ and the node, as for the worker: the bridge acts on nothing |
@@ -181,6 +191,15 @@ traffic (the betas it forwards, the `role: "system"` messages, counting such a c
 a turn on the Pi itself; Claude Code against the real HQ and node; its cost per task. The first
 real turn on the Pi is that check, and its receipts and the relay's charges are the record of
 it.
+
+Not verified either (2026-10-19, the whole-Bash amendment): that a bare `Bash` under
+2.1.296's `dontAsk` runs what a model writes. The documentation leaves two points open: a
+command the parser cannot split, and a redirect to a path outside the working directory. One
+real turn on the Pi settles both, and each sandbox receipt must be `ok` with no "don't ask
+mode" in it: `git checkout -b hq/task-N-x develop && for f in a.yml b.yml; do printf '\n' >> "$f"; done && (git add -A || true) && git commit -qm x`,
+then `diff <(git show develop:nas.yml) nas.yml > /tmp/d.txt; echo "diff exit $?"`. If only the
+redirect is still denied, `--add-dir /tmp` lets Claude Code write there: a follow-up, not a
+blocker for delivering a branch.
 
 ## Deferred
 

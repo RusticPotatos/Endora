@@ -172,8 +172,10 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     // A huddle on stuck work asks every member's view (ADR 0120), and every member shapes the
     // office (ADR 0119), and may play chess (ADR 0121); every member reads the world and tells stories (ADR 0122),
     // and proposes to a page it does not keep and reports what its map lacks (ADR 0126); and
-    // every member asks the record, consults and answers a consult (ADR 0129).
-    assert_eq!(names.len(), 26, "{names:?}");
+    // every member asks the record, consults and answers a consult (ADR 0129); and a developer
+    // asks for its kept branch to be checked again (ADR 0115).
+    assert_eq!(names.len(), 27, "{names:?}");
+    assert!(names.contains(&"recheck".to_owned()));
     for tool in ["ask_record", "consult", "answer_consult"] {
         assert!(names.contains(&tool.to_owned()), "{tool}");
     }
@@ -216,6 +218,18 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     );
     assert!(reviewers.contains(&"tell_story".to_owned()));
     assert!(reviewers.contains(&"review".to_owned()));
+    // The tester judges and does not run the lab's checks; a lead and a developer ask for them
+    // again, and the CEO, who keeps out of the area's work, does not (ADR 0115).
+    assert!(!reviewers.contains(&"recheck".to_owned()));
+    let offered = |role: Role| -> bool {
+        tools(role)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "recheck")
+    };
+    assert!(offered(Role::Lead) && offered(Role::Developer));
+    assert!(!offered(Role::Ceo) && !offered(Role::Researcher));
     assert!(names.contains(&"check_back".to_owned()));
     assert!(
         !names.contains(&"report_usage".to_owned()),

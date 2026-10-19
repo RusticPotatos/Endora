@@ -86,6 +86,8 @@ struct Office {
     wing: Option<WingSeeded>,
     /// The push the owner last decided on.
     push: Option<DeskId>,
+    /// The branch the last checkout was of, the head HQ handed out for it, and its receipt.
+    checkout: Option<(String, String, i64)>,
     /// The clock the engine reads, for steps that let days pass.
     clock: Hands,
     /// The receipt of the last reading of the lab a step took.
@@ -146,6 +148,7 @@ impl Default for Office {
             seeded: None,
             wing: None,
             push: None,
+            checkout: None,
             reading: None,
             retraction: None,
             answer: None,
@@ -1022,8 +1025,38 @@ fn wing(w: &Office) -> &WingSeeded {
 
 #[given(expr = "{word} hands {word} the task {string} in the wing")]
 fn wing_hands(w: &mut Office, by: String, to: String, title: String) {
-    let by = w.member(&by);
-    let to = w.member(&to);
+    hand_in_the_wing(
+        w,
+        &by,
+        &to,
+        title,
+        vec![Criterion::new("The branch passes its checks", false)],
+    );
+}
+
+/// As above, with what done means as the owner wrote it: a line of the step's table each.
+#[given(expr = "{word} hands {word} the task {string} in the wing, with the criteria")]
+fn wing_hands_with_criteria(
+    w: &mut Office,
+    by: String,
+    to: String,
+    title: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let criteria: Vec<Criterion> = step
+        .table
+        .as_ref()
+        .expect("the criteria are the step's table")
+        .rows
+        .iter()
+        .map(|row| Criterion::new(&row[0], false))
+        .collect();
+    hand_in_the_wing(w, &by, &to, title, criteria);
+}
+
+fn hand_in_the_wing(w: &mut Office, by: &str, to: &str, title: String, criteria: Vec<Criterion>) {
+    let by = w.member(by);
+    let to = w.member(to);
     let (goal, project, plan) = (wing(w).goal, wing(w).project, wing(w).task);
     w.hq.add_task_with(
         Author::Member(by),
@@ -1037,21 +1070,26 @@ fn wing_hands(w: &mut Office, by: String, to: String, title: String) {
             priority: Priority::Normal,
             waits_on: Vec::new(),
         },
-        &[Criterion::new("The branch passes its checks", false)],
+        &criteria,
     )
     .expect("the lead hands work on");
 }
 
-/// The node took the member's branch (`repo_submit`) and tells HQ, with the turn's token.
+/// The head the node's record of a submission has in these scenarios, and the base under it.
+const SUBMITTED_HEAD: &str = "a1b2c3d4e5f60718293a4b5c";
+const SUBMITTED_BASE: &str = "0123456789abcdef01234567";
+
+/// The node took the member's branch (`repo_submit`) and tells HQ, with the turn's token; and
+/// the receipt of that call, as the node writes one (an act, which the member may cite).
 #[when(expr = "{word} submits the branch {string}")]
 fn submits_branch(w: &mut Office, name: String, branch: String) {
     let context = w.turn_of(&name);
     w.hq.record_branch(
         &context.token,
         &Submission {
-            branch,
-            head: "a1b2c3d4e5f60718293a4b5c".to_owned(),
-            base: "0123456789abcdef01234567".to_owned(),
+            branch: branch.clone(),
+            head: SUBMITTED_HEAD.to_owned(),
+            base: SUBMITTED_BASE.to_owned(),
             files: 1,
             plus: 4,
             minus: 1,
@@ -1061,12 +1099,50 @@ fn submits_branch(w: &mut Office, name: String, branch: String) {
         },
     )
     .expect("the node's record is taken");
+    w.hq.record_receipt(
+        &context.token,
+        &Called {
+            tool: "repo_submit".to_owned(),
+            args: format!("branch: {branch}"),
+            excerpt: format!("submitted branch {branch} at {}", &SUBMITTED_HEAD[..12]),
+            ok: true,
+            act: true,
+            confidential: false,
+        },
+    )
+    .expect("the node's receipt of the submission");
 }
 
 /// The dev node's runner takes the check and reports with the job's own token.
 #[when(expr = "the check of {string} passes")]
 fn check_passes(w: &mut Office, branch: String) {
     check_reports(w, &branch, true, "syntax ok, ansible-lint ok, yamllint ok");
+}
+
+/// As above, with the line the check job gives: both counts, and the verdict against develop.
+#[when(expr = "the check passes: {string}")]
+fn check_passes_saying(w: &mut Office, summary: String) {
+    let check =
+        w.hq.next_check()
+            .expect("the store answers")
+            .expect("a check waits");
+    w.hq.check_done(
+        check.id,
+        &check.token,
+        true,
+        &summary,
+        "the commands' last words",
+    )
+    .expect("reported once");
+}
+
+#[then(expr = "the gate of {string} has passed")]
+fn the_gate_has_passed(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    assert_eq!(
+        w.hq.store().gate(task).expect("the store answers"),
+        Some(true)
+    );
 }
 
 #[when(expr = "the check of {string} fails: {string}")]
@@ -1099,6 +1175,28 @@ fn no_push(w: &mut Office) {
     assert!(w.waiting_on_desk("push").is_empty());
 }
 
+/// The push card offers the head that was submitted and reviewed, and says how its checks went.
+#[then(expr = "the owner's desk holds a push of {string} at the submitted head, saying {string}")]
+fn push_offered_at_the_head(w: &mut Office, branch: String, saying: String) {
+    push_offered(w, branch);
+    let item = w.push.expect("a push is offered");
+    let text = w
+        .waiting_on_desk("push")
+        .into_iter()
+        .find(|d| d.id == item)
+        .expect("the push waits")
+        .text;
+    assert!(
+        text.contains(&format!(
+            "It is {} on top of {}",
+            &SUBMITTED_HEAD[..12],
+            &SUBMITTED_BASE[..12]
+        )),
+        "{text}"
+    );
+    assert!(text.contains(&saying), "{text}");
+}
+
 #[then(expr = "the owner's desk holds a push of {string}")]
 fn push_offered(w: &mut Office, branch: String) {
     let items = w.waiting_on_desk("push");
@@ -1113,53 +1211,174 @@ fn push_offered(w: &mut Office, branch: String) {
     w.push = Some(items[0].id);
 }
 
-/// The tester re-checks: she reads the document herself (a receipt of her own) and cites the
-/// check's receipt.
-#[when(expr = "{word} passes {string} on the check and her own reading")]
-fn tester_passes(w: &mut Office, name: String, title: String) {
-    let task = w.task(&title);
-    let context = w.turn_of(&name);
-    let own =
+/// A member checks a kept branch out, as the node does for the turn (ADR 0115, amended): HQ's
+/// rule says whether the branch is the turn's to have (its work, or its member's), and the
+/// node writes the receipt of the checkout, naming the branch and its head. Returns the
+/// receipt, which is the turn's own reading of the branch; `None` when HQ refuses, with the
+/// refusal noted as the node would tell the turn.
+fn checks_out(w: &mut Office, name: &str, branch: &str) -> Option<i64> {
+    let context = w.turn_of(name);
+    let asked = w.hq.checkout_branch(&context.token, branch);
+    let kept = w.note(asked)?;
+    let receipt =
         w.hq.record_receipt(
             &context.token,
             &Called {
-                tool: "read_document".to_owned(),
-                args: "d1".to_owned(),
-                excerpt: "the diff".to_owned(),
+                tool: "repo_checkout".to_owned(),
+                args: format!("branch: {branch}"),
+                excerpt: format!(
+                    "checked out the team's kept branch {branch} at {} (task #{}'s, on top of develop)",
+                    &kept.head[..12],
+                    kept.task.0
+                ),
                 ok: true,
                 act: false,
                 confidential: false,
             },
         )
-        .expect("her own reading");
-    let check =
-        w.hq.store()
-            .runs()
-            .expect("the store answers")
-            .into_iter()
-            .filter_map(|r| w.hq.store().call_receipts_of(r.id).ok())
-            .flatten()
-            .find(|r| r.tool == "check" && r.task == Some(task))
-            .expect("the check's receipt");
+        .expect("the checkout's receipt");
+    w.checkout = Some((branch.to_owned(), kept.head, receipt));
+    Some(receipt)
+}
+
+/// The newest branch the team submitted for a task.
+fn branch_of(w: &Office, title: &str) -> endora_team::domain::Branch {
+    let task = w.task(title);
+    w.hq.store()
+        .branches()
+        .expect("the store answers")
+        .into_iter()
+        .filter(|b| b.task == task)
+        .max_by_key(|b| b.id)
+        .unwrap_or_else(|| panic!("no branch was submitted for {title:?}"))
+}
+
+/// The tester re-checks: she checks the branch out (a reading of her own, in her turn) and
+/// cites that receipt with the check's.
+#[when(expr = "{word} passes {string} on the check and her own reading")]
+fn tester_passes(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let branch = branch_of(w, &title).name;
+    let own = checks_out(w, &name, &branch).expect("the branch is hers to read");
+    let check = receipt_of(w, task, "check");
     w.use_tool(
         &name,
         "review",
         &json!({ "task": task.0, "verdict": "approve", "notes": "the diff is what it says",
-                 "evidence": [[format!("r{}", check.id), format!("r{own}")]] }),
+                 "evidence": [[format!("r{check}"), format!("r{own}")]] }),
     )
     .expect("the tester passes it");
     turn_ends(w, name);
+}
+
+/// A member checks the branch of a task out (HQ's rule, then the node's receipt of it).
+#[when(expr = "{word} checks out {string}")]
+fn checks_out_step(w: &mut Office, name: String, branch: String) {
+    checks_out(w, &name, &branch);
+}
+
+#[then(expr = "the checkout is the submitted head of {string}")]
+fn the_checkout_is_the_head(w: &mut Office, title: String) {
+    let (branch, head, _) = w.checkout.clone().expect("a checkout was made");
+    let submitted = branch_of(w, &title);
+    assert_eq!((branch, head), (submitted.name, submitted.head));
+}
+
+/// The newest receipt of `tool` on a task, by whichever turn it was made in.
+fn receipt_of(w: &Office, task: TaskId, tool: &str) -> i64 {
+    w.hq.store()
+        .runs()
+        .expect("the store answers")
+        .into_iter()
+        .filter_map(|r| w.hq.store().call_receipts_of(r.id).ok())
+        .flatten()
+        .filter(|r| r.tool == tool && r.task == Some(task))
+        .map(|r| r.id)
+        .max()
+        .unwrap_or_else(|| panic!("no {tool} receipt is on the task"))
+}
+
+/// How many criteria a task has (one list of evidence is cited for each; at least one).
+fn criteria_of(w: &Office, task: TaskId) -> usize {
+    w.hq.store()
+        .task(task)
+        .expect("the store answers")
+        .expect("a task")
+        .criteria
+        .len()
+        .max(1)
+}
+
+/// The member takes the task and hands it in for review, citing the receipts of the branch's
+/// submission and of its check: the first two criteria rest on what was submitted and the last
+/// on the check. Its turn ends, so the tester's can start.
+#[when(expr = "{word} submits {string} for review citing the submit and the check receipts")]
+fn submits_citing(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let (submit, check) = (
+        receipt_of(w, task, "repo_submit"),
+        receipt_of(w, task, "check"),
+    );
+    let criteria = criteria_of(w, task);
+    let evidence: Vec<Vec<String>> = (0..criteria)
+        .map(|i| {
+            let r = if i + 1 == criteria { check } else { submit };
+            vec![format!("r{r}")]
+        })
+        .collect();
+    w.use_tool(&name, "claim", &json!({ "task": task.0 }))
+        .expect("the member takes its task");
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "the check passed",
+                 "evidence": evidence }),
+    )
+    .expect("the work goes to review");
+    turn_ends(w, name);
+}
+
+/// The tester passes the task, citing the check's receipt for every criterion and nothing of her
+/// own: refused, since a pass rests on a reading she took herself.
+#[when(expr = "{word} passes {string} citing the check receipt alone")]
+fn passes_on_the_check_alone(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let check = receipt_of(w, task, "check");
+    let evidence = vec![vec![format!("r{check}")]; criteria_of(w, task)];
+    w.use_tool(
+        &name,
+        "review",
+        &json!({ "task": task.0, "verdict": "approve", "notes": "the check passed",
+                 "evidence": evidence }),
+    );
+}
+
+/// The tester passes the task on her checkout of the branch, which is a reading of her own,
+/// and the check's receipt, for every criterion. Whether it is taken is for the next step.
+#[when(expr = "{word} passes {string} citing her checkout and the check receipt")]
+fn passes_on_her_checkout(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let (_, _, own) = w.checkout.clone().expect("she checked the branch out");
+    let check = receipt_of(w, task, "check");
+    let evidence = vec![vec![format!("r{check}"), format!("r{own}")]; criteria_of(w, task)];
+    w.use_tool(
+        &name,
+        "review",
+        &json!({ "task": task.0, "verdict": "approve", "notes": "the diff is what it says",
+                 "evidence": evidence }),
+    );
 }
 
 #[when(expr = "{word} accepts {string}")]
 fn lead_accepts(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);
     w.turn_of(&name);
+    // The task itself is the evidence of each of its criteria: one list for every one.
+    let evidence = vec![vec![format!("task {}", task.0)]; criteria_of(w, task)];
     w.use_tool(
         &name,
         "accept",
-        &json!({ "task": task.0, "verdict": "accept", "notes": "good",
-                 "evidence": [[format!("task {}", task.0)]] }),
+        &json!({ "task": task.0, "verdict": "accept", "notes": "good", "evidence": evidence }),
     )
     .expect("the lead accepts");
 }

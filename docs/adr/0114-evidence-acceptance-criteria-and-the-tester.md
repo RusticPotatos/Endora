@@ -105,7 +105,13 @@ propose and code decides, and the owner is the board.
    **unsupported** in every thread a member and the owner read.
 6. **The tester's fact-check before the desk** (`REVIEW_DRAFT`) lists the receipts a draft
    cites, as the node recorded them; the evidence of submitted work is listed for her, and for
-   the lead what she passed it on.
+   the lead what she passed it on. *Amended 2026-10-19:* **a draft is never passed.** A CEO's
+   draft for the board moves the work task itself into review, and `review` with `approve`
+   then went through the draft's path: with the gate false it was refused for the gate, and
+   with the gate true the task closed as done and its push was offered, with no evidence
+   judged and no lead's acceptance (found on tasks 671, 672, 679 and 670). A pass on a draft is
+   refused ("forward it with `ask_owner`, or send it back"); sending a draft back stays as it
+   was.
 7. **Turn labels**, from the record when a turn ends: `advanced` (a task moved or was made, a
    project changed, an act succeeded; the tester's verdict either way), `blocked` (it left its
    task blocked, or asked up the chain, the owner or for an approval), `checked` (it took

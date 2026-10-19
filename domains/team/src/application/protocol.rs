@@ -159,6 +159,18 @@ fn read_document_tool() -> Value {
     })
 }
 
+/// The tool a lead or a developer asks for a kept branch to be checked again with (ADR 0115).
+fn recheck_tool() -> Value {
+    json!({
+        "name": "recheck",
+        "description": "Queue the lab's checks again on the newest branch your work has submitted (the node keeps it), without submitting it again and without a sandbox. Use it when a check failed for the check box's own reasons (a tool missing, a timeout, a fix to the check image since) or to see it pass again, instead of recreating the branch. One at a time: refused while a check of that branch is waiting or running. The result comes back as a receipt in the task's thread, judged against develop as the first check was.",
+        "inputSchema": { "type": "object", "properties": {
+            "task": { "type": "integer", "description": "the task whose branch to check (default: your turn's task, and the work under it)" },
+            "why": { "type": "string", "description": "why, in a sentence: it goes in the thread" },
+        }, "required": ["why"] },
+    })
+}
+
 /// The tool every member reads Endora's public library with (ADR 0111, 0116): the decision
 /// records, the plans, the drafts the team proposes, and the team's standards.
 fn read_doc_tool() -> Value {
@@ -503,6 +515,11 @@ pub fn tools(role: Role) -> Value {
                 &["task", "decision", "detail", "evidence"],
             ));
             list.push(judge_finding_tool());
+        }
+    }
+    if matches!(role, Role::Lead | Role::Developer) {
+        if let Some(list) = all.as_array_mut() {
+            list.push(recheck_tool());
         }
     }
     if let Some(list) = all.as_array_mut() {
@@ -1108,6 +1125,22 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .and_then(|p| usize::try_from(p).ok())
                 .unwrap_or(1);
             engine.read_document(run.id, id, part).map_err(|e| said(&e))
+        }
+        "recheck" => {
+            let task = match args["task"].as_i64() {
+                Some(task) => TaskId(task),
+                None => run.task.ok_or_else(|| {
+                    "which task? Give its number as `task`: this turn has none".to_owned()
+                })?,
+            };
+            let why = text_arg(args, "why")?;
+            let check = engine.recheck_in(run.id, task, why).map_err(|e| said(&e))?;
+            Ok(format!(
+                "Check c{check} is queued again on the newest branch of task {}: no new \
+                 submission. The dev node's runner takes it; its result comes back as a \
+                 receipt in the task's thread, and you are woken when it does.",
+                task.0
+            ))
         }
         "request_hire" => {
             let role = Role::from_name(text_arg(args, "role")?)

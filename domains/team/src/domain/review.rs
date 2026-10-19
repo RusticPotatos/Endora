@@ -38,8 +38,11 @@ pub const TESTER: &str = "A tester passes work or sends it back; she never creat
 /// What the reviewer is told when work is put before it.
 pub const REVIEW_WORK: &str = "You are the tester: re-check it yourself. Take your own \
     readings (homelab_status, container_logs, the queues) to confirm each piece of its evidence \
-    is real and still true. Pass only what holds (review, verdict approve), citing your \
-    receipts per criterion: its lead then accepts it. Send it back with exactly what does not \
+    is real and still true. For a branch of the wing's, your own reading is the branch itself: \
+    check it out (repo_checkout, with its name, hq/task-N-<slug>, as the thread gives it), look \
+    at what it changes in the shell (git diff against its base, git log, the files), and cite \
+    that checkout's receipt with the check's. Pass only what holds (review, verdict approve), \
+    citing your receipts per criterion: its lead then accepts it. Send it back with exactly what does not \
     hold (review, verdict send_back). Send back any problem that no tool shows causing harm.";
 
 /// What the reviewer is told when a draft for the owner is put before it.
@@ -313,6 +316,30 @@ mod tests {
             "the reviewer's own"
         );
         assert!(!goes_to_review(false, false, true, true), "no reviewer");
+    }
+
+    /// Live (task 670): the tester was never told how to read a branch, and could not, so no
+    /// pass of hers was ever recorded. Her reading of a wing branch is checking it out.
+    #[test]
+    fn the_tester_is_told_to_read_a_branch_by_checking_it_out_and_to_cite_that_receipt() {
+        assert!(
+            REVIEW_WORK.contains("repo_checkout") && REVIEW_WORK.contains("hq/task-N-<slug>"),
+            "{REVIEW_WORK}"
+        );
+        assert!(
+            REVIEW_WORK.contains("cite that checkout's receipt with the check's"),
+            "{REVIEW_WORK}"
+        );
+        // What the home lab's reviews already said stays.
+        assert!(
+            REVIEW_WORK.starts_with(
+                "You are the tester: re-check it yourself. Take your own readings (homelab_status, \
+                 container_logs, the queues)"
+            ) && REVIEW_WORK.ends_with("Send back any problem that no tool shows causing harm."),
+            "{REVIEW_WORK}"
+        );
+        // She does not submit what she reads.
+        assert!(!REVIEW_WORK.contains("repo_submit"));
     }
 
     #[test]
