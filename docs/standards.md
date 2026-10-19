@@ -121,6 +121,15 @@ An architectural decision gets a decision record (ADR): context, decision, conse
 the architecture changes, its documentation and ADRs change in the same branch.
 *How you'll know:* a newcomer can find why the system is the way it is.
 
+### Architecture is settled by evidence, not by asking
+
+Before putting a design question to the owner, read what the project already knows: its research
+notes, its ADRs, and the designs it borrows from. Decide from them, and name them in the ADR. The
+owner is asked only what evidence cannot settle: money, keys and accounts, accepting a risk,
+irreversible steps, and taste.
+*How you'll know:* the owner's questions are about what they want, never about how the system
+should work.
+
 ### Think it through before running it
 
 When something is going to be verified live, spend the minute reasoning first: a checker
