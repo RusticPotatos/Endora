@@ -167,8 +167,6 @@ pub enum Wait {
     Budget,
     /// It needs the Mac, and the Mac cannot take it now, for this reason (ADR 0130).
     Mac(String),
-    /// It needs the Mac, and the member works on the house's own model only.
-    NeedsTheMac,
     /// It is work on the house's own models, which cost nothing, and the member has started as
     /// many turns on them today as it may (ADR 0133): it waits until the day turns.
     DayCap,
@@ -188,9 +186,6 @@ impl Wait {
         match self {
             Self::Budget => "waiting for budget: the budget for it is spent".to_owned(),
             Self::Mac(why) => super::mac::waiting_words(why),
-            Self::NeedsTheMac => super::mac::waiting_words(
-                "this work needs the Mac, and the member's work brain is the house's model",
-            ),
             Self::DayCap => format!(
                 "{}{} turns a day is the most a member takes on the house's own models",
                 WAITING[2],
@@ -282,10 +277,11 @@ pub fn place(need: Need, facts: &Facts) -> Placed {
     match need.allowed {
         Allowed::Local => Placed::On(Brain::Local),
         Allowed::Either => Placed::On(best_free_work_brain(facts)),
-        Allowed::Mac => match (&facts.mac_waits, facts.work_brain) {
-            (None, Brain::Mac) => Placed::On(Brain::Mac),
-            (Some(why), Brain::Mac) => Placed::Waits(Wait::Mac(why.clone())),
-            _ => Placed::Waits(Wait::NeedsTheMac),
+        // The Mac is the floor for this work, not the member's ceiling: it runs there when the
+        // Mac is free, whatever the member's own work brain, and waits for the Mac otherwise.
+        Allowed::Mac => match &facts.mac_waits {
+            None => Placed::On(Brain::Mac),
+            Some(why) => Placed::Waits(Wait::Mac(why.clone())),
         },
     }
 }
@@ -571,11 +567,15 @@ mod tests {
         );
         let free = facts(Brain::Mac, None);
         assert_eq!(place(work(Allowed::Mac), &free), Placed::On(Brain::Mac));
-        // A member whose work brain is the house's model cannot do it at all.
+        // The Mac is a floor, not the member's ceiling: a member whose own work brain is the
+        // house's model still does Mac-floor work on the Mac when it is free, and waits for it
+        // when it is not. It never waits forever on its setting.
         let local = facts(Brain::Local, None);
+        assert_eq!(place(work(Allowed::Mac), &local), Placed::On(Brain::Mac));
+        let local_busy = facts(Brain::Local, Some("owner active"));
         assert_eq!(
-            place(work(Allowed::Mac), &local),
-            Placed::Waits(Wait::NeedsTheMac)
+            place(work(Allowed::Mac), &local_busy),
+            Placed::Waits(Wait::Mac("owner active".to_owned()))
         );
     }
 
@@ -638,13 +638,14 @@ mod tests {
         for wait in [
             Wait::Budget,
             Wait::Mac("on battery".to_owned()),
-            Wait::NeedsTheMac,
             Wait::DayCap,
         ] {
             assert!(is_waiting_words(&wait.words()), "{wait:?}");
         }
         assert!(is_waiting_for_budget(&Wait::Budget.words()));
-        assert!(!is_waiting_for_budget(&Wait::NeedsTheMac.words()));
+        assert!(!is_waiting_for_budget(
+            &Wait::Mac("on battery".to_owned()).words()
+        ));
         assert!(is_waiting_for_cap(&Wait::DayCap.words()));
         assert!(!is_waiting_for_cap(&Wait::Budget.words()));
         assert!(!is_waiting_for_budget(&Wait::DayCap.words()));

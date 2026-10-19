@@ -491,18 +491,21 @@ fn a_tester_reviews_on_claude_and_its_readings_of_a_check_need_the_mac() {
         .unwrap();
     hq.tick().unwrap();
     assert_eq!(latest(&hq, t.reviewer).brain, Some(Brain::Haiku));
-    // Reading the check's result is code work, and this tester works on the house's model:
-    // it waits, and says so, rather than being given the model that cannot do it.
+    // Reading the check's result is code work: the Mac is its floor. This tester's own work
+    // brain is the house's model, but the floor is a minimum, not her ceiling: the reading runs
+    // on the Mac, never on the model that cannot do it, and never waits forever on her setting.
     let other = task(&hq, t.goal, "Tidy the radarr role");
     hq.wake(t.reviewer, Some(other), WakeReason::CheckDone)
         .unwrap();
     hq.tick().unwrap();
-    let waiting = runs_of(&hq, t.reviewer).pop().unwrap();
-    assert_eq!(waiting.status, RunStatus::Queued);
+    let reading = runs_of(&hq, t.reviewer).pop().unwrap();
+    assert_ne!(reading.brain, Some(Brain::Local), "{reading:?}");
     assert!(
-        waiting
-            .end_reason
-            .starts_with("waiting for the Mac: this work needs the Mac")
+        reading.brain == Some(Brain::Mac)
+            || (reading.status == RunStatus::Queued
+                && reading.end_reason.starts_with("waiting for the Mac: ")
+                && !reading.end_reason.contains("work brain")),
+        "{reading:?}"
     );
 }
 
