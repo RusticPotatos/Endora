@@ -488,9 +488,12 @@ badge show how many are waiting:
 - budget raises and Opus requests;
 - actions the gateway marks Ask first, and the bridge's approvals (ADR 0108): an action a member
   proposed, shown as exactly what will run, with Approve and Decline;
-- stuck work;
 - finished work, ready to merge;
 - new runners.
+
+Stuck work, a guard's finding and a notice are not on that list: none needs a decision before
+the team can go on, so they wait in one "while you were away" digest at the top of the Desk tab
+(ADR 0132), each with its own choices.
 
 The **CEO** (ADR 0111) takes most of these, with the owner as the board: members' questions go
 up the chain to it, and only its decisions, with a recommendation, reach the desk (money
@@ -1279,6 +1282,34 @@ showing it, every number in `domain::guards::THRESHOLDS`, every finding judged.
 - The owner: `POST /v1/hq/retractions`, `GET /v1/hq/retractions/{id}/sweep`,
   `POST /v1/hq/retractions/{id}/forget`, through the node and its audit log.
 - Scenarios: `domains/team/features/guards.feature`.
+
+### Outcomes, and a desk that interrupts only for decisions (as built 2026-10-19, [ADR 0132](../adr/0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md))
+
+As built, from the review of 17 and 18 October (201 turns and $8.85, no change accepted; 30 items
+on the desk in 38.6 hours, 6 of them real decisions):
+
+- **Outcomes** head the Team tab's "How the team is doing" card, over the last day and the last
+  week ending now (`application/scorecard/outcomes.rs`, pure; `snapshot.scorecard.outcomes`), and
+  the top bar says how many changes landed this week. **Landed**: tasks whose branch the node
+  pushed to the fork after the owner approved the push card (`branch.pushed`, ok), each once;
+  with branches submitted and checks passed. **Cost of one**: the window's spend over what
+  landed, "none landed" when nothing did. **Talk : work**: coordination turns against product
+  turns by the ceremony guard's labels, with posts and acts, kept by the five-minute look
+  (`guards_talk`). **Desk**: interruptions a day and what went to the digest. **Waiting now**:
+  turns waiting for budget and for the Mac, and the oldest wait. **Memory**: sends-back with
+  `reason: exists_already` (the `reason` argument of `review` and `accept`), `ask_record` calls
+  (`record.asked`), and consults asked, answered and from the record.
+- **The desk** holds what needs the owner's word; `domain::desk` says which kinds interrupt
+  (every kind but stuck, guard and notice). Those three are `snapshot.digest`, newest first, one
+  card at the top of the Desk tab with a count. Each keeps its choices and endpoints; acting on
+  one takes it out, and the owner's verdict on a finding from the Guards card puts its card away.
+- **One finding for a guard and what it is about** (`guards::reconcile`, `Finding::mark`): a
+  detection refreshes the open finding, opens a cleared unjudged one again as itself, renews a
+  judged one only when its mark has grown by `Guard::step` (one, or a dozen turns of talk for the
+  ceremony), and leaves a cleared judged one alone otherwise. Stored as three columns on
+  `findings`, each added if missing (`seen_at`, `episodes`, `mark`).
+- Scenarios: `domains/team/features/what-the-work-came-to.feature` and
+  `a-desk-that-interrupts-only-for-decisions.feature`.
 
 ### The team's map (as built 2026-10-18, [ADR 0126](../adr/0126-the-teams-map.md))
 
