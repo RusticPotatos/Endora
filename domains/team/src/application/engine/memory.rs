@@ -434,6 +434,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .find(|h| h.to == Some(member.id))
             .or_else(|| notes.last());
         if let Some(h) = note {
+            // A note a member left itself when a restart ended its turn (ADR 0134).
+            if h.by == member.id {
+                return Ok(format!(
+                    "Your own note, left on #{} when a restart ended your turn ({}). {}\n",
+                    task.0,
+                    self.said_day(h.at),
+                    h.note.line()
+                ));
+            }
             let by = self.member(h.by)?.name;
             return Ok(format!(
                 "Handed over by {by} on #{} ({}). {}\n",

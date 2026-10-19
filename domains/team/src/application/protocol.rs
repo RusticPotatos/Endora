@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use super::engine::{Engine, EngineError, Proposal};
 use super::ports::{Clock, NewTask, Run, TeamStore, WorkerAdapter};
+use crate::domain::drain;
 use crate::domain::review::SendBackReason;
 use crate::domain::{
     Criterion, GoalId, Member, Micros, Priority, ProjectId, Ref, Refusal, Role, RunStatus, TaskId,
@@ -129,6 +130,18 @@ fn criteria_arg(args: &Value) -> Vec<Criterion> {
 }
 
 /// The tool a manager hands a subordinate's task on with (ADR 0114).
+/// The `handover` a post may carry (ADR 0134): only when HQ has told the turn a restart is
+/// coming. It is the same note work handed on needs, kept for the member's own next turn.
+fn drain_handover_schema() -> Value {
+    let mut schema = super::protocol_world::handover_schema();
+    schema["description"] = json!(
+        "Only when your turn says a restart is coming: your note for your next turn on this \
+         task, each part said, all of it at most 1,200 characters. Posting it ends your turn; \
+         the task stays yours."
+    );
+    schema
+}
+
 fn hand_to_tool() -> Value {
     json!({
         "name": "hand_to",
@@ -442,7 +455,7 @@ pub fn tools(role: Role) -> Value {
         tool(
             "post",
             "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mention a member by name to wake them. A finding cites its evidence; a post that cites none in a turn with no receipts is marked unsupported.",
-            json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What the post rests on, if anything.") }),
+            json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What the post rests on, if anything."), "handover": drain_handover_schema() }),
             &["task", "text"]
         ),
         tool(
@@ -786,9 +799,38 @@ fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
 /// Runs one tool for a turn. `Ok` is what the worker reads back; `Err` is a refusal it reads
 /// as a tool error, said so that it can do something about it.
 ///
+/// While a drain lasts (ADR 0134), every answer a running turn gets, a refusal as much as a
+/// reading, ends with the notice that a restart is coming. This is the one place the protocol's
+/// answers pass through, so it is the one place that says it.
+///
 /// # Errors
 /// What the rules refuse, an argument that is missing, or a tool not there yet.
 pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+    tool: &str,
+    args: &Value,
+) -> Result<String, String> {
+    let answer = call_tool(engine, run, member, tool, args);
+    // A turn the call ended has nothing more to read: it was told when it ended it.
+    let over = engine
+        .store()
+        .run(run.id)
+        .ok()
+        .flatten()
+        .is_none_or(|r| r.status != RunStatus::Running);
+    if over || !engine.draining() {
+        return answer;
+    }
+    let notice = format!("\n\n{} {}", drain::NOTICE, drain::HOW_TO_LEAVE_IT);
+    match answer {
+        Ok(text) => Ok(text + &notice),
+        Err(text) => Err(text + &notice),
+    }
+}
+
+fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     engine: &Engine<S, W, C>,
     run: &Run,
     member: &Member,
@@ -862,10 +904,22 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 return Ok("Posted.".to_owned());
             }
             let cited = evidence_flat(args)?;
+            // A handover note with the post (ADR 0134) is a wrap-up for a restart: the note is
+            // read, and refused, before anything is posted; the turn ends and keeps its task.
+            let wrap = super::protocol_world::handover_arg(args)?;
+            if wrap.is_some() && !engine.draining() {
+                return Err(Refusal::NoRestartComing.to_string());
+            }
             engine
                 .post_citing(run.id, task, text, &cited)
                 .map_err(|e| said(&e))?;
-            Ok("Posted.".to_owned())
+            let Some(note) = wrap else {
+                return Ok("Posted.".to_owned());
+            };
+            engine
+                .wrap_up_in(run.id, task, &note)
+                .map_err(|e| said(&e))?;
+            Ok("Posted, and your handover note is kept. This turn has ended: stop now. The task is still yours, and goes on after the restart with your note.".to_owned())
         }
         "set_status" => {
             let task = task_arg(args)?;

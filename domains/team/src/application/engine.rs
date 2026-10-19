@@ -40,6 +40,7 @@ mod budget;
 mod consult;
 mod digest;
 mod discipline;
+mod drain;
 mod evidence;
 mod games;
 mod gaps;
@@ -293,6 +294,10 @@ pub struct Engine<S, W, C> {
     /// The turn whose call the engine is taking now, if it is one's: every event it emits
     /// names it, for Replay. Cleared each time the lock is taken.
     acting: Mutex<Option<RunId>>,
+    /// Whether this HQ has looked yet at the drain its store kept (ADR 0134). A drain found at
+    /// the first look is the last HQ's, for the restart that has now happened, and is lifted;
+    /// every one after is this HQ's own.
+    drain_checked: AtomicBool,
 }
 
 /// While it lives, the engine is doing what the owner asked; see [`Engine::for_owner`].
@@ -318,6 +323,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             docs: &[],
             for_owner: AtomicBool::new(false),
             acting: Mutex::new(None),
+            drain_checked: AtomicBool::new(false),
         }
     }
 
@@ -2959,10 +2965,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn tick(&self) -> Done<TickReport> {
         let _held = self.held();
         let mut report = TickReport::default();
+        let now = self.clock.now();
+        // A drain before a restart (ADR 0134): the one the last HQ kept is lifted now that HQ is
+        // up again, before its turns are looked at, so the ones the restart cut are counted; and
+        // one nobody ended outlasts its age.
+        self.drain_tick_held_lock(now)?;
         if self.store.stopped()? {
             return Ok(report);
         }
-        let now = self.clock.now();
 
         // 1. Timers that are due raise their wakes; a late one fires once.
         for timer in self.store.timers()? {
@@ -3226,6 +3236,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     fn start_queued(&self, now: Millis) -> Done<usize> {
+        // A drain before a restart (ADR 0134) starts nothing: the queue waits, and says why.
+        if self.hold_for_restart_held_lock()? {
+            return Ok(0);
+        }
         let tasks = self.store.tasks()?;
         let priority = |run: &Run| {
             run.task

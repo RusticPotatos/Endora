@@ -62,6 +62,10 @@ mod desk;
 #[path = "scenarios/caps.rs"]
 mod caps;
 
+/// A drain before every restart (ADR 0134), in its own file.
+#[path = "scenarios/drains.rs"]
+mod drains;
+
 /// What done means comes first (ADR 0124, amended), in its own file.
 #[path = "scenarios/criteria.rs"]
 mod criteria;

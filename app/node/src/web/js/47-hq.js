@@ -325,6 +325,12 @@ function hqTell(e, live, older) {
     "guard.mode": ["you", d.mode === "on" ? `You switched the ${String(d.guard || "").replace(/_/g, " ")} guard on` : `You put the ${String(d.guard || "").replace(/_/g, " ")} guard back in shadow`],
     // A lead narrowed what done means for a task in its area (ADR 0133).
     "task.criteria": ["run", `${hqName(d.by)} narrowed what done means for ${key}: ${(d.after || []).join("; ")}${d.why ? " (" + d.why + ")" : ""}`],
+    // A drain before a restart (ADR 0134): silent on the desk, one line here.
+    "drain.began": ["warn", `A restart is announced: nothing new starts until it has been (${d.running || 0} running, up to ${d.cap_seconds} s)`],
+    "drain.ended": [d.cut ? "bad" : "done", d.by === "restart"
+      ? `The restart came: ${d.clean || 0} turn${d.clean === 1 ? "" : "s"} ended before it, ${d.cut ? d.cut + " cut and tried again" : "none cut"}`
+      : d.by === "resume" ? "The announced restart is over: new turns start again"
+      : "An announced restart never came: lifted after half an hour"],
     "checkback.fired": ["wake", `${name} checks back on ${key}`],
     "checkback.dropped": ["run", `Check-back on ${key} dropped: it is over`],
     // Projects, their budgets, and whom members report to (ADR 0113).
