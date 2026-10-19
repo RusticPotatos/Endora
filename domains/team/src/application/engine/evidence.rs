@@ -391,8 +391,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.set_criteria_held_lock(task, criteria)?;
         // Narrowed, its talk is counted afresh, and the question put to its lead is answered
         // (ADR 0133).
-        // Narrowed, its talk is counted afresh, and the question put to its lead is answered
-        // (ADR 0133).
         self.renew_coordination_budget(task)?;
         let texts = |all: &[Criterion]| all.iter().map(|c| c.text.clone()).collect::<Vec<_>>();
         let said = |all: &[Criterion]| {

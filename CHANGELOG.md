@@ -43,6 +43,30 @@ tagged release.
 
 ### Added
 
+- **Caps on talk and runaway** ([ADR 0133](docs/adr/0133-caps-on-talk-and-runaway.md)). On 17
+  and 18 October one docs branch took 44 turns, 80 posts and $2.47, 28% of all the spend, and the
+  guard that noticed it stopped nothing; the house's own models have no budget to stop a runaway
+  (the scripted demo ran 1,539 turns in 3 h 40 min); and only the owner could stop the team.
+  **The ceremony guard sees all work:** work outside a project is looked at by its task tree
+  (what its lead can narrow, split or drop), and every finding, and the Guards card, say what the
+  window's turns spent. **A coordination budget per task:** more than 20 coordination turns on
+  one task in 24 h with nothing changing, counted from its newest product change or its lead's
+  last decision. In **shadow** (the default) it records *would have held coordination on #N
+  (budget 20, 27 turns, $X)* on the Guards card and in the digest and changes nothing; switched
+  **on** from a toggle on the card (`POST /v1/hq/guards/{guard}/mode` through the node, audited;
+  a guard that only records has no mode), the wakes that only ask for talk are held, not lost,
+  and the task's lead is asked once to narrow it, split it or drop it. **`narrow_criteria {task,
+  criteria}`:** the lead of a task's area may narrow or reword what done means for it (no more
+  criteria than it had), posted in the thread and recorded (`task.criteria`); a tester's pass on
+  the old ones needs checking again. **A daily cap on the house's own models:** a member takes at
+  most 60 turns a day on the node's model or the Mac, and the 61st waits for tomorrow, shown in
+  the top bar, the outcomes and the roster. **A runaway tripwire:** 40 turns started by the team
+  in 10 minutes stop the team itself (*stopped by the runaway tripwire*; the forty-first never
+  starts), with one card on the owner's desk saying who started how many; the owner resumes as
+  ever. Both caps are on from the start, and the scripted demo is exempt from both. No schema
+  change and no migration (new settings keys only); rolling back past it needs the
+  `coordination` findings deleted first. Scenarios:
+  `domains/team/features/caps-on-talk-and-runaway.feature` and `guards.feature`.
 - **Outcomes beside activity** ([ADR 0132](docs/adr/0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md)).
   Over 17 and 18 October, 201 turns and $8.85 delivered no change the owner accepted, and nothing
   on the HQ screen said so. The Team tab's "How the team is doing" card now opens with
