@@ -860,6 +860,18 @@ tagged release.
   offered with no evidence judged and no lead's acceptance. A pass on a draft is refused now
   (forward it with `ask_owner`, or send it back); sending back is unchanged.
 
+- **The push the owner is offered is of the head that was reviewed**
+  ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)). The gate was the task's
+  and every check overwrote it, and the card offered the newest submitted branch, so a head
+  submitted after the tester's pass changed what the card offered with the gate left as the
+  first head's check set it. A new head submitted while the task is in review sends it back
+  ("a new head needs a new review") and resets the gate to wait for its own check; a late check
+  of an older head is recorded but sets nothing and wakes nobody. `repo_submit` also refuses a
+  branch that changes no file (a probe with none was accepted, on task 679), and a refused
+  submission no longer moves the kept branch: the node stages a submission and keeps it only
+  once every rule has passed, where a missing trailer (five times live) used to overwrite a
+  good kept branch of the same name.
+
 - **Live sound no longer falls behind the picture over time, and no longer dips every few
   minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
   backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a

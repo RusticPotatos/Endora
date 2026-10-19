@@ -582,18 +582,51 @@ impl Mirror {
                 }
             ));
         }
-        let kept = format!("refs/submissions/{branch}");
+        // The submission is staged apart from the kept ref and moved there only once every rule
+        // has passed: a refused attempt (a missing trailer was the commonest live) must leave
+        // the branch the node keeps as it was, since the push and the checkout of a kept
+        // branch are bound to its head.
+        let staged = format!("refs/incoming/{branch}");
         git(
             &self.dir,
-            &["fetch", "--no-tags", &file, &format!("+{wanted}:{kept}")],
+            &["fetch", "--no-tags", &file, &format!("+{wanted}:{staged}")],
             &[],
         )?;
-        let head = text(git(&self.dir, &["rev-parse", &kept], &[])?);
+        let vetted = self.vet(&staged, incoming, branch, task);
+        let kept = vetted.as_ref().map_or(Ok(()), |taken| {
+            git(
+                &self.dir,
+                &[
+                    "update-ref",
+                    &format!("refs/submissions/{branch}"),
+                    &taken.head,
+                ],
+                &[],
+            )
+            .map(|_| ())
+        });
+        let _ = git(&self.dir, &["update-ref", "-d", &staged], &[]);
+        kept?;
+        vetted
+    }
+
+    /// Every rule a staged submission must pass: on top of the default branch, something
+    /// beyond it, every commit HQ's own, nothing of the owner's values, a file or more but at
+    /// most [`FILES_MOST`], a diff within [`DIFF_MOST`]. What passes has its bundle kept under
+    /// the task.
+    fn vet(
+        &self,
+        staged: &str,
+        incoming: &Path,
+        branch: &str,
+        task: i64,
+    ) -> Result<Submitted, String> {
+        let head = text(git(&self.dir, &["rev-parse", staged], &[])?);
         let base_ref = format!("refs/heads/{}", self.base);
         let base = text(git(&self.dir, &["rev-parse", &base_ref], &[])?);
         if git(
             &self.dir,
-            &["merge-base", "--is-ancestor", &base_ref, &kept],
+            &["merge-base", "--is-ancestor", &base_ref, staged],
             &[],
         )
         .is_err()
@@ -612,7 +645,7 @@ impl Mirror {
                 self.base
             ));
         }
-        let range = format!("{base_ref}..{kept}");
+        let range = format!("{base_ref}..{staged}");
         let commits = text(git(
             &self.dir,
             &["log", "--format=%H%x1f%ae%x1f%B%x1e", &range],
@@ -641,6 +674,14 @@ impl Mirror {
             ));
         }
         let files = names.lines().filter(|l| !l.is_empty()).count();
+        // Commits that change nothing (an empty one, a change undone) are no branch to review:
+        // a probe with no file in it was accepted, checked, and would have been offered.
+        if files == 0 {
+            return Err(format!(
+                "{branch} changes no file beyond {}: nothing to submit",
+                self.base
+            ));
+        }
         if files > FILES_MOST {
             return Err(format!(
                 "{branch} changes {files} files, more than the {FILES_MOST} a submission may"
@@ -1282,6 +1323,120 @@ mod tests {
         assert_eq!(taken.branch, "hq/task-12-tidy");
         assert_eq!(branch_for(4, "Tidy"), "hq/task-4-tidy");
         assert!(task_branch("hq/task-4-tidy", 4).is_ok());
+        let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// Live (task 679): a probe branch with no file in it was accepted, because `take` refused
+    /// only a head equal to the base; its check ran, and it would have been offered to the owner
+    /// as a push of nothing. Commits that change nothing are no branch to review.
+    #[test]
+    fn an_empty_branch_is_refused_at_submit() {
+        let s = scene("empty");
+        let empty = |message: &str| {
+            run(
+                &s.work,
+                &[
+                    "-c",
+                    "user.name=Endora HQ",
+                    "-c",
+                    "user.email=hq@endora.invalid",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    message,
+                ],
+            );
+        };
+        // A commit with no change in it.
+        run(
+            &s.work,
+            &["checkout", "-q", "-B", "hq/task-3-probe", "main"],
+        );
+        empty(TRAILED);
+        let why = s
+            .mirror
+            .submit(&s.delta("hq/task-3-probe"), "hq/task-3-probe", 3, 0)
+            .unwrap_err();
+        assert!(why.contains("changes no file"), "{why}");
+        // A change and its undoing: commits beyond main that add up to nothing.
+        run(
+            &s.work,
+            &["checkout", "-q", "-B", "hq/task-3-undone", "main"],
+        );
+        std::fs::write(s.work.join("a.yml"), "---\n").unwrap();
+        run(&s.work, &["add", "."]);
+        commit(&s.work, TRAILED, HQ);
+        run(&s.work, &["rm", "-q", "a.yml"]);
+        commit(&s.work, TRAILED, HQ);
+        let why = s
+            .mirror
+            .submit(&s.delta("hq/task-3-undone"), "hq/task-3-undone", 3, 0)
+            .unwrap_err();
+        assert!(why.contains("changes no file"), "{why}");
+        assert!(
+            s.mirror
+                .kept_bundle("hq/task-3-probe", &run(&s.work, &["rev-parse", "main"]), 0)
+                .is_err(),
+            "nothing refused is kept"
+        );
+        // One real file is a branch.
+        s.branch("hq/task-3-real", "a.yml", TRAILED, HQ);
+        assert!(
+            s.mirror
+                .submit(&s.delta("hq/task-3-real"), "hq/task-3-real", 3, 0)
+                .is_ok()
+        );
+        let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// The kept ref is what the push and the checkout of a kept branch are bound to. A
+    /// submission that is refused (a missing trailer was the commonest live: five times) must
+    /// leave it as it was, or a good branch is lost to a bad second attempt of the same name.
+    #[test]
+    fn a_refused_submission_leaves_the_kept_branch_as_it_was() {
+        let s = scene("clobber");
+        s.branch("hq/task-3-tidy", "roles/deluge/README.md", TRAILED, HQ);
+        let good = s
+            .mirror
+            .submit(&s.delta("hq/task-3-tidy"), "hq/task-3-tidy", 3, 0)
+            .unwrap();
+        let kept = |s: &Scene| {
+            run(
+                &s.mirror.dir,
+                &["rev-parse", "refs/submissions/hq/task-3-tidy"],
+            )
+        };
+        assert_eq!(kept(&s), good.head);
+        // The same name again, one commit more, without its trailer: refused...
+        std::fs::write(s.work.join("roles/deluge/more.yml"), "---\n").unwrap();
+        run(&s.work, &["add", "."]);
+        commit(&s.work, "no trailer here", HQ);
+        let why = s
+            .mirror
+            .submit(&s.delta("hq/task-3-tidy"), "hq/task-3-tidy", 3, 1)
+            .unwrap_err();
+        assert!(why.contains("trailer"), "{why}");
+        // ... and the branch the node keeps is still the good one, whole.
+        assert_eq!(
+            kept(&s),
+            good.head,
+            "a refused submission moved the kept ref"
+        );
+        assert!(
+            s.mirror
+                .kept_bundle("hq/task-3-tidy", &good.head, 1)
+                .is_ok()
+        );
+        assert!(
+            s.mirror
+                .submission_bundle("hq/task-3-tidy", &good.head)
+                .unwrap()
+                .is_some()
+        );
+        // Nor is anything left staged: the mirror holds the kept ref and the fork's heads.
+        let refs = run(&s.mirror.dir, &["for-each-ref", "--format=%(refname)"]);
+        assert!(!refs.contains("refs/incoming"), "{refs}");
         let _ = std::fs::remove_dir_all(&s.root);
     }
 

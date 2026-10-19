@@ -179,6 +179,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 short(&s.head)
             ),
         )?;
+        // The push the owner is offered is of the newest head, and the tester and the lead
+        // judge one head: a new head voids the review, and the gate waits for its own check
+        // (ADR 0115, amended).
+        self.store.set_gate(task, false)?;
+        let reviewed = self.task(task)?;
+        if reviewed.status == TaskStatus::InReview {
+            self.store.set_task_status(task, TaskStatus::Doing)?;
+            self.post_held_lock(
+                Author::Endora,
+                task,
+                &format!(
+                    "Sent back: {} was submitted again at {} while this was in review. A new \
+                     head needs a new review: submit the task for review again once its check \
+                     has passed.",
+                    s.branch,
+                    short(&s.head)
+                ),
+            )?;
+            self.emit_status(&reviewed, TaskStatus::Doing)?;
+        }
         self.emit(
             EventKind::BranchSubmitted,
             json!({ "task": task.0, "branch": branch, "name": s.branch, "head": s.head,
@@ -443,13 +463,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         done.done_at = Some(now);
         self.store.save_check(&done)?;
         // The check is the wing's gate (tests, lint and build, ADR 0114): code work closes only
-        // once it has passed, and the lab's own checks are what passes it.
-        self.store.set_gate(check.task, ok)?;
-        self.emit(
-            EventKind::GateResult,
-            json!({ "task": check.task.0, "passed": ok, "failed": if ok { "" } else { summary.as_str() },
-                    "check": check.id }),
-        )?;
+        // once it has passed, and the lab's own checks are what passes it. The gate is the
+        // newest head's: a check of an older head that reports late (two heads in flight) is
+        // recorded below, and sets nothing (ADR 0115, amended).
+        let newer = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| b.task == check.task)
+            .max_by_key(|b| b.id)
+            .filter(|newest| newest.head != branch.head);
+        if newer.is_none() {
+            self.store.set_gate(check.task, ok)?;
+            self.emit(
+                EventKind::GateResult,
+                json!({ "task": check.task.0, "passed": ok, "failed": if ok { "" } else { summary.as_str() },
+                        "check": check.id }),
+            )?;
+        }
         // The turn that asked for the check: the member who submitted the branch, unless a lead
         // or another developer asked for it to be checked again.
         let asked = self
@@ -478,11 +509,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             text: held_to(report, DOCUMENT_MOST),
             at: now,
         })?;
+        let older = newer.as_ref().map_or_else(String::new, |newest| {
+            format!(
+                " It is the check of an older head: {} was submitted since, and its check is \
+                 the gate.",
+                short(&newest.head)
+            )
+        });
         self.post_held_lock(
             Author::Endora,
             check.task,
             &format!(
-                "Check c{} on {}: {summary} (receipt r{receipt}, document d{document}).",
+                "Check c{} on {}: {summary} (receipt r{receipt}, document d{document}).{older}",
                 check.id, branch.name
             ),
         )?;
@@ -492,6 +530,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "summary": summary, "receipt": receipt, "document": document,
                     "member": branch.member.0 }),
         )?;
+        // Nobody is sent back or woken for a head that has been replaced.
+        if newer.is_some() {
+            return Ok(());
+        }
         let task = self.task(check.task)?;
         if !ok && task.status == TaskStatus::InReview {
             // A branch that fails its checks is sent back (ADR 0115): the tester need not read

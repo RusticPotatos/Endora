@@ -615,6 +615,258 @@ fn raes_other_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     .unwrap()
 }
 
+/// The push the owner is offered is of the branch's newest head, and the tester and the lead
+/// judged one head. A head submitted after the pass (a probe, a second try) used to change what
+/// the card offered, with the gate left as the first head's check set it.
+///
+/// Given a branch whose check passed, that the tester passed, and the lead is to accept,
+/// when a new head is submitted,
+/// then the task is back in doing with no pass standing and its gate waiting for the new head's
+/// own check, the lead has nothing to accept, and no push is offered until it is reviewed again.
+#[test]
+fn a_new_head_after_the_pass_needs_a_new_review() {
+    const NAME: &str = "hq/task-3-tidy-the-deluge-role";
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, rae, _) = submitted(&hq, &t, true);
+    // The first head: its check passes, Rae submits the task, Dee passes it on her checkout.
+    let c1 = hq.next_check().unwrap().unwrap();
+    hq.check_done(
+        c1.id,
+        &c1.token,
+        true,
+        "syntax ok, ansible-lint ok, yamllint ok",
+        "",
+    )
+    .unwrap();
+    let check1 = hq.store().call_receipts_of(rae.run).unwrap().pop().unwrap();
+    use_tool(
+        &hq,
+        &rae,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "done",
+                 "evidence": [[format!("r{}", check1.id)]] }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    hq.runner().finish(rae.run, true);
+    let dee = turn(&hq, t.dee);
+    let own = checks_out(&hq, &dee, NAME);
+    use_tool(
+        &hq,
+        &dee,
+        "review",
+        &json!({ "task": task.0, "verdict": "approve", "notes": "it holds",
+                 "evidence": [[format!("r{}", check1.id), format!("r{own}")]] }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        wakes_after(&hq, 0).contains(&(t.kit, WakeReason::AcceptanceAsked)),
+        "the lead is asked to accept the first head"
+    );
+    hq.runner().finish(dee.run, true);
+    // The lead's turn on it comes and ends without a decision (turns on one task take their
+    // turn one at a time). Then the owner speaks to Rae, who submits a new head in her turn.
+    let kit1 = turn(&hq, t.kit);
+    hq.runner().finish(kit1.run, true);
+    hq.tick().unwrap();
+    hq.post(Author::Owner, task, "One more page, please.")
+        .unwrap();
+    let rae2 = turn(&hq, t.rae);
+    let mut second = submission(true);
+    second.head = "0f1e2d3c4b5a69788796a5b4".to_owned();
+    hq.record_branch(&rae2.token, &second).unwrap();
+    // (The node's receipt of that submission, as it writes one: a turn that submitted a branch
+    // is not a turn that showed nothing.)
+    hq.record_receipt(
+        &rae2.token,
+        &super::engine::Called {
+            tool: "repo_submit".to_owned(),
+            args: format!("branch: {NAME}"),
+            excerpt: format!(
+                "submitted branch {NAME} at 0f1e2d3c4b5a for task {}",
+                task.0
+            ),
+            ok: true,
+            act: true,
+            confidential: false,
+        },
+    )
+    .unwrap();
+    // The review is void: back in doing, the gate waits for the new head's own check.
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::Doing,
+        "a new head needs a new review"
+    );
+    assert_eq!(
+        hq.store().gate(task).unwrap(),
+        Some(false),
+        "the first head's check is not the new head's"
+    );
+    let said = thread(&hq, task);
+    assert!(
+        said.iter().any(|p| p.starts_with("endora: Sent back: ")
+            && p.contains("submitted again at 0f1e2d3c4b5a")
+            && p.contains("new head needs a new review")),
+        "{said:?}"
+    );
+    // Rae's turn ends; HQ finds the task idle in doing and wakes her once more, which runs its
+    // course at a turn's own pace, half an hour on. Then the lead, asked again, has nothing to
+    // accept, and nothing is offered to the owner.
+    hq.runner().finish(rae2.run, true);
+    hq.tick().unwrap();
+    clock.0.fetch_add(30 * 60 * 1000, Ordering::SeqCst);
+    quiet(&hq);
+    hq.wake(t.kit, Some(task), WakeReason::AcceptanceAsked)
+        .unwrap();
+    let kit = turn(&hq, t.kit);
+    let refused = use_tool(
+        &hq,
+        &kit,
+        "accept",
+        &json!({ "task": task.0, "verdict": "accept", "notes": "good",
+                 "evidence": [[format!("r{}", check1.id)]] }),
+    )
+    .unwrap_err();
+    assert!(refused.contains("does not go from doing"), "{refused}");
+    assert!(hq.store().desk().unwrap().iter().all(|d| d.kind != "push"));
+    // The second round: the new head's check, the task submitted again, a new pass, the lead.
+    hq.runner().finish(kit.run, true);
+    hq.tick().unwrap();
+    let c2 = hq.next_check().unwrap().unwrap();
+    hq.check_done(
+        c2.id,
+        &c2.token,
+        true,
+        "syntax ok, ansible-lint ok, yamllint ok",
+        "",
+    )
+    .unwrap();
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+    let check2 = hq
+        .store()
+        .call_receipts_of(rae2.run)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let rae3 = turn(&hq, t.rae);
+    use_tool(
+        &hq,
+        &rae3,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "done again",
+                 "evidence": [[format!("r{}", check2.id)]] }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    hq.runner().finish(rae3.run, true);
+    hq.tick().unwrap();
+    let dee2 = turn(&hq, t.dee);
+    let own2 = checks_out(&hq, &dee2, NAME);
+    use_tool(
+        &hq,
+        &dee2,
+        "review",
+        &json!({ "task": task.0, "verdict": "approve", "notes": "the new head holds",
+                 "evidence": [[format!("r{}", check2.id), format!("r{own2}")]] }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    hq.runner().finish(dee2.run, true);
+    let kit2 = turn(&hq, t.kit);
+    use_tool(
+        &hq,
+        &kit2,
+        "accept",
+        &json!({ "task": task.0, "verdict": "accept", "notes": "good",
+                 "evidence": [[format!("r{}", check2.id)]] }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::Done
+    );
+    // The card offers the head that was reviewed this time.
+    let pushes: Vec<_> = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == "push")
+        .collect();
+    assert_eq!(pushes.len(), 1);
+    assert!(
+        pushes[0].text.contains("0f1e2d3c4b5a"),
+        "the second head: {}",
+        pushes[0].text
+    );
+}
+
+/// The gate is the task's and every check overwrote it: a check of an older head that reported
+/// late set the gate for a newer one. It is the newest head's.
+#[test]
+fn a_late_check_of_an_older_head_leaves_the_gate_to_the_newest() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, rae, _) = submitted(&hq, &t, true);
+    let mut second = submission(true);
+    second.head = "0f1e2d3c4b5a69788796a5b4".to_owned();
+    hq.record_branch(&rae.token, &second).unwrap();
+    let (one, two) = (
+        hq.next_check().unwrap().unwrap(),
+        hq.next_check().unwrap().unwrap(),
+    );
+    // The newer head's check fails; the older head's passes, late.
+    hq.check_done(two.id, &two.token, false, "yamllint failed", "")
+        .unwrap();
+    let before = hq.store().wakes().unwrap().len();
+    hq.check_done(
+        one.id,
+        &one.token,
+        true,
+        "syntax ok, ansible-lint ok, yamllint ok",
+        "",
+    )
+    .unwrap();
+    assert_eq!(
+        hq.store().gate(task).unwrap(),
+        Some(false),
+        "the older head's pass is not the newest head's"
+    );
+    let last = thread(&hq, task).pop().unwrap();
+    assert!(
+        last.contains("older head") && last.contains("syntax ok, ansible-lint ok"),
+        "it is said, with its result: {last}"
+    );
+    assert!(
+        wakes_after(&hq, before).is_empty(),
+        "and nobody is woken to read a head that has been replaced"
+    );
+    // The other way: the newest passes, an older one fails late, and the gate stays passed.
+    let mut third = submission(true);
+    third.head = "aa11bb22cc33dd44ee55ff66".to_owned();
+    hq.record_branch(&rae.token, &third).unwrap();
+    let mut fourth = submission(true);
+    fourth.head = "bb22cc33dd44ee55ff66aa11".to_owned();
+    hq.record_branch(&rae.token, &fourth).unwrap();
+    let (old, new) = (
+        hq.next_check().unwrap().unwrap(),
+        hq.next_check().unwrap().unwrap(),
+    );
+    assert!(old.id < new.id);
+    hq.check_done(
+        new.id,
+        &new.token,
+        true,
+        "syntax ok, ansible-lint ok, yamllint ok",
+        "",
+    )
+    .unwrap();
+    hq.check_done(old.id, &old.token, false, "yamllint failed", "")
+        .unwrap();
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+}
+
 /// Live (tasks 671, 672, 679 and 670): the CEO put a draft for the owner on a wing task, which
 /// moved the work task itself to review, and the tester's `approve` of "the review" then went
 /// through the draft's path: with the gate false it was refused for the gate, and with the

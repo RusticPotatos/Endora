@@ -101,17 +101,27 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    2026-10-19: the kept ref is keyed by the name alone, so a name that carries its task is a
    key no other task can write; a sub-task that goes on with its parent's branch submits it
    under its own name); it applies to the mirror and **sits on top of the base** (a fast-forward; a
-   branch behind the fork's base is sent back to rebase); it changes at most **200 files** and
+   branch behind the fork's base is sent back to rebase); it changes **at least one file** (a
+   probe with no file in it was accepted and checked on task 679; commits that add up to nothing
+   are no branch to review) and at most **200 files** and
    **1 MB** of diff; **every commit is HQ's** (the author and the trailer); and it **touches
    nothing of the owner's values**: `group_vars/*.yml`, `host_vars/`, any inventory or anything
    named for a vault is refused whole, and the briefing says never to edit, cite or copy from
    them. What passes is kept under the task (`submissions/task-N/<slug>-<sha>.bundle`, and as
-   `refs/submissions/hq/…` in the mirror, which the mirror's fetch never prunes), and told to HQ
+   `refs/submissions/hq/…` in the mirror, which the mirror's fetch never prunes: the
+   submission is **staged** apart and moved there only once every rule has passed, so a
+   refused attempt, a missing trailer being the commonest, leaves the kept branch as it was),
+   and told to HQ
    with the turn's own token (`POST /v1/team/branch`): HQ records the **branch**, writes a
    **document** on the task, "branch hq/… (N files, +a −b)", with the stat and the diff (64 KB
    shown), says so in the thread, and queues the **check**. The call's receipt (0114) is the
    turn's to cite. No desk notice per submission: the thread, the document and the push card
-   are where the owner reads it.
+   are where the owner reads it. *Amended 2026-10-19:* **the push is bound to the head that was
+   reviewed.** A new head submitted while the task is in review voids the review (the task goes
+   back to `doing`, saying a new head needs a new review) and resets the gate to wait for the
+   new head's own check; the gate is the newest head's, so a check of an older head that reports
+   late is recorded and sets nothing, wakes nobody and sends nothing back; and the card offers
+   the newest submitted head, which is therefore the one the tester and the lead judged.
 5. **The check job**: the first piece of the lab (ring 2), **model-free**. HQ hands the Pi's
    runner a check before any turn (`POST /v1/runner/next` → `kind: "check"`), with a token of
    the job's own. The runner starts the workbench image with the same fence as a turn and
