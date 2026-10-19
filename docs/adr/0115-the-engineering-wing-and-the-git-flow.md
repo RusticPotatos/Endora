@@ -156,8 +156,16 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    fork's four collections and two roles.
 6. **Review and push**, the 0114 flow: the developer submits the task (`in_review`) citing the
    branch's and the check's receipts; Dee, the tester, reads the diff and the report
-   (`read_document`; she may also `repo_checkout` the `hq/` branch into her sandbox) and
-   passes it on her own readings; the wing's lead accepts; the task is done. **Then** the push
+   (`read_document`) and **checks the branch out** (`repo_checkout`) and passes it on her own
+   readings; the wing's lead accepts; the task is done. *Amended 2026-10-19:* this was
+   written but not true: the node offered the tester neither wing contract, and
+   `read_document` leaves no receipt, so she had no reading of the branch to take, and none of
+   her three turns on task 670 could pass it (0114 holds a pass to a reading of her own).
+   The node now offers her `repo_checkout` alone, never `repo_submit`: checking the kept
+   branch out (HQ lets her, as the work's tester) is a witnessed receipt on the task that
+   names the branch and its head, which she cites with the check's. Her briefing says so, and
+   her turn, a turn of judgment on her Haiku (0131), runs in the same sandbox as the others.
+   **Then** the push
    is the owner's: a desk card, "Push hq/… to your fork (N files, checks passed)", with Approve
    and Decline. On Approve, HQ names the branch to the node, which pushes the **stored
    submission** to the fork over SSH with the deploy key at `ENDORA_GIT_PUSH_KEY_FILE`

@@ -72,10 +72,15 @@ impl Contract {
     /// Whether a turn of a member in `role` is offered this contract: what it may see, and an
     /// act only for a member who works on the house. The CEO reads what the lead reads and
     /// directs; it takes no step on the house itself (ADR 0111, 0120). The wing's git contracts (ADR 0115) go to
-    /// a lead or a developer, whatever its brain: the fork is public.
+    /// a lead or a developer, whatever its brain: the fork is public. The tester is offered the
+    /// checkout alone (amended 2026-10-19): checking a branch out is her reading of it, the one
+    /// receipt of her own she could not otherwise have; she submits nothing.
     #[must_use]
     pub fn offered_to(&self, role: &str, on_a_cloud_model: bool) -> bool {
-        if self.name == REPO_CHECKOUT || self.name == REPO_SUBMIT {
+        if self.name == REPO_CHECKOUT {
+            return matches!(role, "lead" | "developer" | "reviewer");
+        }
+        if self.name == REPO_SUBMIT {
             return matches!(role, "lead" | "developer");
         }
         if self.kind == Kind::AutomaticAct && role == "ceo" {
@@ -420,9 +425,11 @@ mod tests {
     }
 
     #[test]
-    fn the_wings_git_goes_to_a_lead_or_a_developer_on_any_brain_and_nobody_else() {
+    fn the_wings_git_goes_to_a_lead_or_a_developer_on_any_brain_and_a_tester_may_only_check_out() {
         let all = all();
-        for contract in &all[5..] {
+        let (checkout, submit) = (&all[5], &all[6]);
+        assert_eq!((checkout.name, submit.name), (REPO_CHECKOUT, REPO_SUBMIT));
+        for contract in [checkout, submit] {
             assert_eq!(contract.tier, "internal", "the fork is public");
             for role in ["lead", "developer"] {
                 for cloud in [false, true] {
@@ -433,13 +440,20 @@ mod tests {
                     );
                 }
             }
-            for role in ["ceo", "reviewer", "researcher", ""] {
+            for role in ["ceo", "researcher", ""] {
                 assert!(
                     !contract.offered_to(role, false),
                     "{} to a {role}",
                     contract.name
                 );
             }
+        }
+        // Live (task 670): the tester had no way to read a submitted branch, so no reading of
+        // her own, so no pass was ever possible. Checking it out is her reading (ADR 0115,
+        // amended); she submits nothing, on any brain.
+        for cloud in [false, true] {
+            assert!(checkout.offered_to("reviewer", cloud));
+            assert!(!submit.offered_to("reviewer", cloud));
         }
     }
 

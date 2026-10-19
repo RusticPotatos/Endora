@@ -165,6 +165,32 @@ fn submission(can_push: bool) -> Submission {
     }
 }
 
+/// The tester (or anyone) checks a kept branch out, as the node does for the turn (ADR 0115,
+/// amended): HQ's rule says whether the branch is the turn's to have, and the node writes the
+/// receipt of the checkout, which names the branch and its head. Returns the receipt, the
+/// turn's own reading of the branch. Panics when HQ refuses.
+fn checks_out(hq: &Hq<'_>, context: &RunContext, name: &str) -> i64 {
+    let kept = hq
+        .checkout_branch(&context.token, name)
+        .unwrap_or_else(|e| panic!("{e}"));
+    hq.record_receipt(
+        &context.token,
+        &super::engine::Called {
+            tool: "repo_checkout".to_owned(),
+            args: format!("branch: {name}"),
+            excerpt: format!(
+                "checked out the team's kept branch {name} at {} (task #{}'s, on top of develop)",
+                &kept.head[..12],
+                kept.task.0
+            ),
+            ok: true,
+            act: false,
+            confidential: false,
+        },
+    )
+    .unwrap()
+}
+
 fn thread(hq: &Hq<'_>, task: TaskId) -> Vec<String> {
     hq.store()
         .thread(task)
@@ -589,6 +615,74 @@ fn raes_other_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     .unwrap()
 }
 
+/// Live (task 670): the tester had no reading of a branch she could take, so her pass was
+/// refused for want of one of her own, in three turns. Checking the kept branch out is one.
+#[test]
+fn a_testers_pass_needs_her_own_reading_and_her_checkout_of_the_branch_is_one() {
+    const NAME: &str = "hq/task-3-tidy-the-deluge-role";
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, rae, _) = submitted(&hq, &t, true);
+    let handed = hq.next_check().unwrap().unwrap();
+    hq.check_done(
+        handed.id,
+        &handed.token,
+        true,
+        "syntax ok, ansible-lint 25 findings (develop 25), yamllint ok: no worse than develop",
+        "",
+    )
+    .unwrap();
+    let check = hq.store().call_receipts_of(rae.run).unwrap().pop().unwrap();
+    assert_eq!(check.tool, "check");
+    use_tool(
+        &hq,
+        &rae,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "done",
+                 "evidence": [[format!("r{}", check.id)]] }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    hq.runner().finish(rae.run, true);
+    let dee = turn(&hq, t.dee);
+    let pass = |evidence: Vec<String>| {
+        use_tool(
+            &hq,
+            &dee,
+            "review",
+            &json!({ "task": task.0, "verdict": "approve", "notes": "the page is what it says",
+                     "evidence": [evidence] }),
+        )
+    };
+    // The check's receipt is the submitter's turn's, not hers: no reading of her own.
+    let refused = pass(vec![format!("r{}", check.id)]).unwrap_err();
+    assert!(refused.contains("her own readings"), "{refused}");
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::InReview,
+        "still in review, with no pass recorded"
+    );
+    // She checks the kept branch out; that checkout's receipt is hers, in this turn.
+    let own = checks_out(&hq, &dee, NAME);
+    let before = hq.store().wakes().unwrap().len();
+    pass(vec![format!("r{}", check.id), format!("r{own}")]).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        hq.store().task(task).unwrap().unwrap().status,
+        TaskStatus::InReview,
+        "her pass is not the end: the lead accepts"
+    );
+    assert!(
+        wakes_after(&hq, before).contains(&(t.kit, WakeReason::AcceptanceAsked)),
+        "{:?}",
+        wakes_after(&hq, before)
+    );
+    // A branch HQ never recorded is not there to be read, so no reading of it can be cited.
+    assert_eq!(
+        hq.checkout_branch(&dee.token, "hq/task-9-none"),
+        Err(super::EngineError::Unknown("branch of that name"))
+    );
+}
+
 #[test]
 fn a_branch_that_fails_its_checks_is_sent_back() {
     let clock = Hands(AtomicI64::new(OCT_17));
@@ -702,19 +796,8 @@ fn the_wings_branch_reaches_the_owner_only_on_approval() {
     .unwrap_or_else(|e| panic!("{e}"));
     hq.runner().finish(rae.run, true);
     let dee = turn(&hq, t.dee);
-    let own = hq
-        .record_receipt(
-            &dee.token,
-            &super::engine::Called {
-                tool: "read_document".to_owned(),
-                args: String::new(),
-                excerpt: "read".to_owned(),
-                ok: true,
-                act: false,
-                confidential: false,
-            },
-        )
-        .unwrap();
+    // Her own reading is the branch itself: she checks it out, as the node lets her.
+    let own = checks_out(&hq, &dee, "hq/task-3-tidy-the-deluge-role");
     use_tool(
         &hq,
         &dee,

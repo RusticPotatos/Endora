@@ -29,9 +29,9 @@ use serde_json::{Value, json};
 
 use crate::repo;
 use crate::turn::{
-    self, Answered, Call, Hq, Ledger, Node, POST_AT_MOST, PROTOCOL, REPO_CHECKOUT, Reply, SHELL,
-    Setup, Stopped, Taken, beside, in_the_repo, instructions, is_repo_tool, member_of, quiet, run,
-    task_of,
+    self, Answered, Call, Hq, Ledger, Node, POST_AT_MOST, PROTOCOL, REPO_CHECKOUT, REPO_SUBMIT,
+    Reply, SHELL, Setup, Stopped, Taken, beside, in_the_repo, instructions, is_repo_tool,
+    member_of, quiet, run, task_of,
 };
 
 /// Claude Code's command, unless `ENDORA_CLAUDE` names another (the tests' stand-in).
@@ -401,7 +401,8 @@ fn turn_with_claude_code(setup: &Setup) -> Result<Taken, Stopped> {
             name: REPO_CHECKOUT.to_owned(),
             arguments: json!({ "why": "the turn starts in the fork" }),
         };
-        let reply = in_the_repo(&node, &work, &who, task, &mut did, &call)?;
+        let can_submit = on_the_node.iter().any(|n| n == REPO_SUBMIT);
+        let reply = in_the_repo(&node, &work, &who, task, can_submit, &mut did, &call)?;
         if !reply.refused {
             cwd = work.join(repo::REPO_DIR);
         }
@@ -710,6 +711,7 @@ pub fn serve() -> i32 {
                             &setup.dir,
                             &setup.member,
                             setup.task,
+                            on_the_node.iter().any(|n| n == REPO_SUBMIT),
                             &mut did,
                             &call,
                         )

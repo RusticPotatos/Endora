@@ -51,7 +51,7 @@ pub(crate) const SHELL: &str = "shell";
 /// The wing's git (ADR 0115), as the node offers it: the worker unpacks and makes the bundles,
 /// in the workbench alone.
 pub(crate) const REPO_CHECKOUT: &str = "repo_checkout";
-const REPO_SUBMIT: &str = "repo_submit";
+pub(crate) const REPO_SUBMIT: &str = "repo_submit";
 
 /// The most of a command the line saying what a turn did shows.
 const COMMAND_AT_MOST: usize = 60;
@@ -216,9 +216,15 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             for call in &said.calls {
                 let reply = match (&shell, setup.workbench.as_deref()) {
                     (Some(shell), _) if call.name == SHELL => in_the_shell(shell, &mut did, call),
-                    (_, Some(dir)) if is_repo_tool(&call.name) => {
-                        in_the_repo(&node, dir, &who, task, &mut did, call)?
-                    }
+                    (_, Some(dir)) if is_repo_tool(&call.name) => in_the_repo(
+                        &node,
+                        dir,
+                        &who,
+                        task,
+                        on_the_node.iter().any(|n| n == REPO_SUBMIT),
+                        &mut did,
+                        call,
+                    )?,
                     _ => run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?,
                 };
                 if reply.asked {
@@ -333,7 +339,21 @@ pub(crate) fn instructions(
             "."
         });
     }
-    if on_the_node.iter().any(|n| n == REPO_CHECKOUT) {
+    // A checkout without a submission is the tester's: a branch is read, not worked on.
+    if on_the_node.iter().any(|n| n == REPO_CHECKOUT)
+        && !on_the_node.iter().any(|n| n == REPO_SUBMIT)
+    {
+        told.push_str(
+            "\n\nThe wing's git, for your reading: repo_checkout with a branch's name \
+             (hq/task-N-<slug>, as the task's thread gives it) puts the team's submitted branch \
+             in /work/repo, on top of its base, and you read it in the shell: git log, git diff \
+             against the base, the files themselves. Cite that checkout's receipt (receipt r12) \
+             as a reading of your own, with the check's, when you pass the work or send it back. \
+             You read; you submit and push nothing, and what you leave in /work is gone when \
+             the turn ends. Never cite or copy from group_vars/*.yml, host_vars or any \
+             inventory: they hold the owner's own values.",
+        );
+    } else if on_the_node.iter().any(|n| n == REPO_CHECKOUT) {
         told.push_str(
             "\n\nThe wing's git: repo_checkout brings the lab's ansible-nas fork into /work/repo \
              with git set up (your commits are authored Endora HQ and carry the trailer for \
@@ -390,6 +410,54 @@ pub(crate) fn member_of(briefing: &str) -> Option<String> {
     (!name.is_empty() && name.chars().count() <= 40).then(|| name.to_owned())
 }
 
+/// What the model reads after a checkout: where it is, and what to do with it. A turn that
+/// may submit (`can_submit`: a lead or a developer) is told to branch from the base, or, for the
+/// team's own kept branch, to go on from it and submit it again; a turn that may not (the
+/// tester's) is told to read it and to cite this checkout's receipt as a reading of its own.
+pub(crate) fn said_after_checkout(
+    out: &repo::CheckedOut,
+    base: &str,
+    kept: bool,
+    can_submit: bool,
+    task: Option<i64>,
+    receipt: &str,
+) -> String {
+    let at = &out.head[..12.min(out.head.len())];
+    let (branch, path, files) = (&out.branch, out.path.display(), out.files);
+    if !can_submit {
+        return format!(
+            "Checked out {branch} at {at} into {path} ({files} files){receipt}. It sits on top \
+             of {base}. Read it with the shell: `cd {path} && git log --oneline \
+             {base}..{branch}`, `git diff {base}..{branch}`, the files themselves. You read; \
+             you submit and push nothing. Cite this checkout's receipt as a reading of your \
+             own, with the check's, when you pass the work or send it back. Never cite or copy \
+             from group_vars/*.yml, host_vars or any inventory."
+        );
+    }
+    if kept {
+        return format!(
+            "Checked out the team's kept branch {branch} at {at} into {path} ({files} \
+             files){receipt}. It sits on top of {base}, which is a branch here too. Go on from \
+             it: edit, `git add -A && git commit -m \"what and why\"` in {path}, then \
+             repo_submit this branch again; if {base} has moved on, `git rebase {base}` \
+             first. Git is set up: your commits are authored Endora HQ and the trailer is \
+             added for you. Never edit, cite or copy from group_vars/*.yml, host_vars or any \
+             inventory: they hold the owner's own values, and a branch touching them is \
+             refused."
+        );
+    }
+    let slug = task.map_or_else(|| "N-<slug>".to_owned(), |t| format!("{t}-<slug>"));
+    format!(
+        "Checked out {branch} at {at} into {path} ({files} files){receipt}. Your base is \
+         {base}: branch from it and your submission must sit on top of it. Git is set up: \
+         your commits are authored Endora HQ and the trailer is added for you. Work on a \
+         branch of your own: `cd {path} && git checkout -b hq/task-{slug} {base}`, edit, \
+         `git add -A && git commit -m \"what and why\"`, then repo_submit with that branch. \
+         Never edit, cite or copy from group_vars/*.yml, host_vars or any inventory: they \
+         hold the owner's own values, and a branch touching them is refused."
+    )
+}
+
 /// What the node handed over for `repo_checkout`, read from its text.
 pub(crate) struct Handed {
     /// The branch to be on: the fork's, or the team's kept one.
@@ -434,12 +502,14 @@ pub(crate) fn handed_over(said: &str) -> Option<Handed> {
 /// Runs one call of the wing's git (ADR 0115) in the sandbox: a checkout asks the node for the
 /// fork's bundle and unpacks it into /work/repo; a submission bundles the member's branch and
 /// sends it to the node, which decides it. The model reads where the checkout is, or what the
-/// node said; it never sees a bundle.
+/// node said; it never sees a bundle. `can_submit` is whether the node offers this turn
+/// `repo_submit`: a tester's checkout is told to be read, not worked on.
 pub(crate) fn in_the_repo(
     node: &Node<'_>,
     dir: &Path,
     member: &str,
     task: Option<i64>,
+    can_submit: bool,
     did: &mut Ledger,
     call: &Call,
 ) -> Result<Reply, Stopped> {
@@ -506,39 +576,8 @@ pub(crate) fn in_the_repo(
     match repo::checkout(dir, &bundle, &branch, &base, kept, member, task) {
         Ok(out) => {
             did.note(&call.name, &args, Outcome::Done);
-            let slug = task.map_or_else(|| "N-<slug>".to_owned(), |t| format!("{t}-<slug>"));
-            let at = &out.head[..12.min(out.head.len())];
-            let text = if kept {
-                format!(
-                    "Checked out the team's kept branch {} at {at} into {} ({} files){receipt}. \
-                     It sits on top of {base}, which is a branch here too. Go on from it: edit, \
-                     `git add -A && git commit -m \"what and why\"` in /work/repo, then \
-                     repo_submit this branch again; if {base} has moved on, `git rebase {base}` \
-                     first. Git is set up: your commits are authored Endora HQ and the trailer \
-                     is added for you. Never edit, cite or copy from group_vars/*.yml, \
-                     host_vars or any inventory: they hold the owner's own values, and a branch \
-                     touching them is refused.",
-                    out.branch,
-                    out.path.display(),
-                    out.files
-                )
-            } else {
-                format!(
-                    "Checked out {} at {at} into {} ({} files){receipt}. Your base is {base}: \
-                     branch from it and your submission must sit on top of it. Git is set up: \
-                     your commits are authored Endora HQ and the trailer is added for you. Work \
-                     on a branch of your own: `cd /work/repo && git checkout -b hq/task-{slug} \
-                     {base}`, edit, `git add -A && git commit -m \"what and why\"`, then \
-                     repo_submit with that branch. Never edit, cite or copy from \
-                     group_vars/*.yml, host_vars or any inventory: they hold the owner's own \
-                     values, and a branch touching them is refused.",
-                    out.branch,
-                    out.path.display(),
-                    out.files
-                )
-            };
             Ok(Reply {
-                text,
+                text: said_after_checkout(&out, &base, kept, can_submit, task, &receipt),
                 refused: false,
                 asked: false,
             })
@@ -1527,6 +1566,98 @@ mod tests {
         fn now(&self) -> i64 {
             1_792_166_400_000
         }
+    }
+
+    fn checked_out(branch: &str) -> repo::CheckedOut {
+        repo::CheckedOut {
+            path: "/work/repo".into(),
+            branch: branch.to_owned(),
+            head: "6efcf97c1954aaaaaaaa".to_owned(),
+            files: 412,
+        }
+    }
+
+    #[test]
+    fn what_the_model_reads_after_a_checkout_depends_on_what_it_may_do_with_it() {
+        let receipt = " (receipt r41)";
+        // A developer on the fork: branch from the base, work, submit.
+        let fresh = said_after_checkout(
+            &checked_out("develop"),
+            "develop",
+            false,
+            true,
+            Some(7),
+            receipt,
+        );
+        assert!(
+            fresh.contains("git checkout -b hq/task-7-<slug> develop")
+                && fresh.contains("repo_submit")
+                && fresh.contains(receipt),
+            "{fresh}"
+        );
+        // A developer on the team's kept branch: go on from it, rebase if the base moved,
+        // submit again; it is not a fresh branch to cut.
+        let kept = said_after_checkout(
+            &checked_out("hq/task-7-add-pages"),
+            "develop",
+            true,
+            true,
+            Some(7),
+            receipt,
+        );
+        assert!(
+            kept.contains("kept branch hq/task-7-add-pages at 6efcf97c1954")
+                && kept.contains("git rebase develop")
+                && kept.contains("repo_submit"),
+            "{kept}"
+        );
+        assert!(!kept.contains("git checkout -b"), "{kept}");
+        // A tester: she reads it and cites the checkout; she submits and pushes nothing.
+        let read = said_after_checkout(
+            &checked_out("hq/task-7-add-pages"),
+            "develop",
+            true,
+            false,
+            Some(7),
+            receipt,
+        );
+        assert!(
+            read.contains("git diff develop..hq/task-7-add-pages")
+                && read.contains("this checkout's receipt as a reading of your own")
+                && read.contains(receipt),
+            "{read}"
+        );
+        assert!(
+            !read.contains("repo_submit") && !read.contains("git checkout -b"),
+            "{read}"
+        );
+    }
+
+    #[test]
+    fn a_tester_is_told_the_wings_git_is_for_reading_and_a_developer_that_it_is_for_work() {
+        let checkout_and_submit = ["repo_checkout".to_owned(), "repo_submit".to_owned()];
+        let developer = instructions(true, &checkout_and_submit, false, true);
+        assert!(
+            developer.contains("then repo_submit that branch")
+                && developer.contains("never recreate it")
+                && developer.contains("recheck"),
+            "{developer}"
+        );
+        // Checkout without submit is a tester's: a reading, whose receipt she cites.
+        let tester = instructions(true, &["repo_checkout".to_owned()], false, true);
+        assert!(
+            tester.contains("for your reading")
+                && tester.contains("that checkout's receipt")
+                && tester.contains("as a reading of your own")
+                && tester.contains("git diff"),
+            "{tester}"
+        );
+        assert!(
+            !tester.contains("repo_submit") && !tester.contains("recheck"),
+            "she submits and rechecks nothing: {tester}"
+        );
+        // Neither offered: the wing is not mentioned.
+        assert!(!instructions(true, &[], false, true).contains("wing's git"));
     }
 
     #[test]

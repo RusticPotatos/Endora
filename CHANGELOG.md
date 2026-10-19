@@ -835,6 +835,17 @@ tagged release.
   asked and wakes it, the branch's member and the tester. A failed check's "sent back" post
   says to recheck when the box could not run.
 
+- **The tester can take a reading of a branch, so her pass can be recorded**
+  ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)). A pass must cite a
+  reading of her own, and she had none she could take of a branch: the node offered her neither
+  wing contract and `read_document` leaves no receipt, so her three turns on task 670 each
+  ended with "tried to call review, refused". The node now offers her `repo_checkout` (never
+  `repo_submit`): checking the team's kept branch out is a witnessed receipt that names the
+  branch and its head, which she cites with the check's. Her briefing and her wing paragraph
+  say so (a read-only paragraph where she may not submit), and the engine and the scenarios
+  take her pass on that real receipt, where they had recorded a `read_document` one by hand
+  that the real tool never makes.
+
 - **Live sound no longer falls behind the picture over time, and no longer dips every few
   minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
   backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a

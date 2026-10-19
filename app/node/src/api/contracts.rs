@@ -303,9 +303,13 @@ async fn called(
         return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
     };
     if !may_see(&contract, &turn) {
-        let why = if name == REPO_CHECKOUT || name == REPO_SUBMIT {
-            "the wing's git is a lead's or a developer's: read the branch's document \
-             (read_document) and the check's receipt instead"
+        let why = if name == REPO_SUBMIT && turn.role == "reviewer" {
+            "a tester reads a branch by checking it out (repo_checkout) and submits none: only a \
+             lead or a developer submits one"
+                .to_owned()
+        } else if name == REPO_CHECKOUT || name == REPO_SUBMIT {
+            "the wing's git is a lead's or a developer's, and a tester may check a branch out: \
+             read the branch's document (read_document) and the check's receipt instead"
                 .to_owned()
         } else if contract.may_be_seen_by(&turn.role, turn.cloud) {
             "the CEO reads the house and takes no step on it itself: direct the lead of the \
@@ -2248,7 +2252,8 @@ mod tests {
                 fork.to_str().unwrap(),
             ),
         );
-        // A lead and a developer are offered the wing's git; the tester is not.
+        // A lead and a developer are offered the wing's git; the tester is offered the checkout
+        // alone (it is her reading of a branch), never the submission.
         let (_, listed) = answer(
             &state,
             ask("GET", "/team-relay/contracts", Some("good"), ""),
@@ -2282,11 +2287,30 @@ mod tests {
             .filter_map(|t| t["name"].as_str())
             .collect();
         assert!(
-            !names.contains(&REPO_CHECKOUT) && !names.contains(&REPO_SUBMIT),
-            "{names:?}"
+            names.contains(&REPO_CHECKOUT) && !names.contains(&REPO_SUBMIT),
+            "a tester is offered checkout, never submit: {names:?}"
         );
-        // Dee's refusal says the wing's rule, not the CEO's.
+        // Dee's refusal of a submission says the tester's rule, not the CEO's.
         let (refused, why) = answer(
+            &state,
+            ask(
+                "POST",
+                "/team-relay/contracts/repo_submit",
+                Some("dee"),
+                r#"{"branch":"hq/task-3-x","why":"look","bundle":"AAAA"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(refused, StatusCode::FORBIDDEN, "{why}");
+        assert!(
+            why["error"]
+                .as_str()
+                .unwrap()
+                .contains("reads a branch by checking it out"),
+            "{why}"
+        );
+        // The tester checks the fork out like anyone: a bundle, and a receipt of hers.
+        let (status, said) = answer(
             &state,
             ask(
                 "POST",
@@ -2296,14 +2320,7 @@ mod tests {
             ),
         )
         .await;
-        assert_eq!(refused, StatusCode::FORBIDDEN, "{why}");
-        assert!(
-            why["error"]
-                .as_str()
-                .unwrap()
-                .contains("lead's or a developer's"),
-            "{why}"
-        );
+        assert_eq!(status, StatusCode::OK, "{said}");
         // The checkout: a bundle of main the sandbox can clone, said in the receipt by its head.
         let (status, said) = use_contract(&state, REPO_CHECKOUT, json!({ "why": "x" })).await;
         assert_eq!(status, StatusCode::OK, "{said}");
@@ -2559,6 +2576,12 @@ mod tests {
                     json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
                             "cloud": true, "task": 9 }),
                 ),
+                // Dee, the tester, is on task 7 too, on Haiku: a turn of judgment.
+                ("/v1/team/turn", Some("dee")) => said(
+                    200,
+                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 40_000,
+                            "cloud": true, "task": 7 }),
+                ),
                 ("/v1/team/turn", _) => said(404, json!({})),
                 ("/v1/team/branch", _) => {
                     let mut first = first.lock().unwrap();
@@ -2576,7 +2599,7 @@ mod tests {
                         return said(404, json!({ "error": "no branch of that name" }));
                     }
                     match token {
-                        Some("kit") => said(
+                        Some("kit" | "dee") => said(
                             200,
                             json!({ "head": branch["head"], "base": branch["base"], "task": 7 }),
                         ),
@@ -2780,6 +2803,28 @@ mod tests {
                 .contains("hq/task-7-add-pages"),
             "{receipt}"
         );
+        // The tester of the same task reads it too: a reading of her own, whose receipt names
+        // the branch and its head (she cites it with the check's). She submits nothing.
+        let (status, said) = as_turn(
+            &state,
+            "dee",
+            REPO_CHECKOUT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "to read it" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(
+            said["text"].as_str().unwrap().contains("\"kept\":true"),
+            "{said}"
+        );
+        let (status, said) = as_turn(
+            &state,
+            "dee",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "x", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
         // Another task's turn is refused, with HQ's words; a branch nobody submitted is not
         // there; and a head HQ recorded that the node no longer keeps is not handed out.
         let (status, said) = as_turn(

@@ -86,6 +86,8 @@ struct Office {
     wing: Option<WingSeeded>,
     /// The push the owner last decided on.
     push: Option<DeskId>,
+    /// The branch the last checkout was of, the head HQ handed out for it, and its receipt.
+    checkout: Option<(String, String, i64)>,
     /// The clock the engine reads, for steps that let days pass.
     clock: Hands,
     /// The receipt of the last reading of the lab a step took.
@@ -146,6 +148,7 @@ impl Default for Office {
             seeded: None,
             wing: None,
             push: None,
+            checkout: None,
             reading: None,
             retraction: None,
             answer: None,
@@ -1113,25 +1116,55 @@ fn push_offered(w: &mut Office, branch: String) {
     w.push = Some(items[0].id);
 }
 
-/// The tester re-checks: she reads the document herself (a receipt of her own) and cites the
-/// check's receipt.
-#[when(expr = "{word} passes {string} on the check and her own reading")]
-fn tester_passes(w: &mut Office, name: String, title: String) {
-    let task = w.task(&title);
-    let context = w.turn_of(&name);
-    let own =
+/// A member checks a kept branch out, as the node does for the turn (ADR 0115, amended): HQ's
+/// rule says whether the branch is the turn's to have (its work, or its member's), and the
+/// node writes the receipt of the checkout, naming the branch and its head. Returns the
+/// receipt, which is the turn's own reading of the branch; `None` when HQ refuses, with the
+/// refusal noted as the node would tell the turn.
+fn checks_out(w: &mut Office, name: &str, branch: &str) -> Option<i64> {
+    let context = w.turn_of(name);
+    let asked = w.hq.checkout_branch(&context.token, branch);
+    let kept = w.note(asked)?;
+    let receipt =
         w.hq.record_receipt(
             &context.token,
             &Called {
-                tool: "read_document".to_owned(),
-                args: "d1".to_owned(),
-                excerpt: "the diff".to_owned(),
+                tool: "repo_checkout".to_owned(),
+                args: format!("branch: {branch}"),
+                excerpt: format!(
+                    "checked out the team's kept branch {branch} at {} (task #{}'s, on top of develop)",
+                    &kept.head[..12],
+                    kept.task.0
+                ),
                 ok: true,
                 act: false,
                 confidential: false,
             },
         )
-        .expect("her own reading");
+        .expect("the checkout's receipt");
+    w.checkout = Some((branch.to_owned(), kept.head, receipt));
+    Some(receipt)
+}
+
+/// The newest branch the team submitted for a task.
+fn branch_of(w: &Office, title: &str) -> endora_team::domain::Branch {
+    let task = w.task(title);
+    w.hq.store()
+        .branches()
+        .expect("the store answers")
+        .into_iter()
+        .filter(|b| b.task == task)
+        .max_by_key(|b| b.id)
+        .unwrap_or_else(|| panic!("no branch was submitted for {title:?}"))
+}
+
+/// The tester re-checks: she checks the branch out (a reading of her own, in her turn) and
+/// cites that receipt with the check's.
+#[when(expr = "{word} passes {string} on the check and her own reading")]
+fn tester_passes(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let branch = branch_of(w, &title).name;
+    let own = checks_out(w, &name, &branch).expect("the branch is hers to read");
     let check =
         w.hq.store()
             .runs()
