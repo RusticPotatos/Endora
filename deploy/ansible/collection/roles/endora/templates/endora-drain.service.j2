@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Endora ADR 0134: before this host shuts down (the NAS's 04:00 security reboot, a manual one),
+# ask Endora's HQ to stop starting turns and to wait for the ones under way, so a reboot does not
+# cut a turn of ten or fifteen minutes in the middle of a step.
+#
+# How it works: this unit does nothing when it starts and stays "active". Units stop in the
+# reverse of the order they started, and it starts After=docker.service, so it is stopped before
+# Docker is, and its ExecStop runs while HQ's container is still up. The drain waits for the turns
+# under way or for its cap; what is still running then is cut, and tried again after the boot.
+# HQ lifts the drain itself when it starts again.
+[Unit]
+Description=Let Endora's team finish its turns before this host shuts down
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=HQ_CONTAINER=endora-hq
+Environment=DRAIN_CAP={{ endora_drain_cap_seconds }}
+ExecStart=/bin/true
+# Endora's own script, from the checkout this role keeps, so the guards are the ones a deploy
+# has. The `-` means a drain that fails never holds the shutdown. The test is for the day the
+# role takes this file away: systemd keeps the unit in memory until the next boot, and then it
+# should do nothing.
+ExecStop=-/bin/sh -c 'test -f /etc/systemd/system/endora-drain.service && exec sh {{ endora_root }}/src/scripts/hq-drain.sh drain'
+# The drain waits up to its cap; systemd must wait longer, or it kills the wait.
+TimeoutStopSec={{ endora_drain_cap_seconds | int + 60 }}
+
+[Install]
+WantedBy=multi-user.target

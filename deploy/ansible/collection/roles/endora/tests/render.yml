@@ -107,8 +107,25 @@
       vars:
         endora_tls_san: ""
 
+    # The drain before this host shuts down (Endora ADR 0134): the unit a NAS reboot stops.
+    - name: The drain on shutdown, with the defaults
+      ansible.builtin.template:
+        src: ../templates/endora-drain.service.j2
+        dest: "{{ out }}/drain.service"
+        mode: "0600"
+
+    - name: The drain on shutdown, with a shorter cap
+      ansible.builtin.template:
+        src: ../templates/endora-drain.service.j2
+        dest: "{{ out }}/drain-short.service"
+        mode: "0600"
+      vars:
+        endora_drain_cap_seconds: 120
+
     - name: Read them back
       ansible.builtin.set_fact:
+        drain: "{{ lookup('file', out ~ '/drain.service').splitlines() }}"
+        drain_short: "{{ lookup('file', out ~ '/drain-short.service').splitlines() }}"
         full: "{{ lookup('file', out ~ '/full.env').splitlines() }}"
         bare: "{{ lookup('file', out ~ '/bare.env').splitlines() }}"
         door: "{{ lookup('file', out ~ '/door.env').splitlines() }}"
@@ -177,6 +194,67 @@
           - "'ENDORA_GIT_PUSH_KEY=/srv/endora/git-key' in all"
           - "'ENDORA_BENCH_TOKEN=/srv/endora/bench' in all"
           - "'ENDORA_BENCH_CAP_CENTS=500' in all"
+
+    # The idiom for "run this when the host shuts down, while Docker is still up" (ADR 0134):
+    # a oneshot that stays "active" once started, ordered After=docker.service. Units stop in
+    # the reverse of the order they started, so this one is stopped, and its ExecStop run, before
+    # Docker begins to stop. It is not DefaultDependencies=no: that is for units that must run
+    # before the system is up or after it is nearly down, and this one wants Docker running.
+    - name: The unit runs the drain as its host shuts down, before Docker stops
+      ansible.builtin.assert:
+        that:
+          - "'Type=oneshot' in drain"
+          - "'RemainAfterExit=yes' in drain"
+          - "'ExecStart=/bin/true' in drain"
+          - "'After=docker.service' in drain"
+          - "'Wants=docker.service' in drain"
+          - "'WantedBy=multi-user.target' in drain"
+          - "drain | select('match', 'DefaultDependencies') | list | length == 0"
+          # Not Requires: restarting Docker must not restart, and so drain, this unit's job.
+          - "drain | select('match', 'Requires=|BindsTo=|PartOf=') | list | length == 0"
+          # The drain waits up to its cap, so systemd must wait longer than the cap, or it kills
+          # the wait: the default of 90 seconds would cut a five-minute cap short.
+          - "'Environment=DRAIN_CAP=300' in drain"
+          - "'TimeoutStopSec=360' in drain"
+          - "'Environment=DRAIN_CAP=120' in drain_short"
+          - "'TimeoutStopSec=180' in drain_short"
+          - "'Environment=HQ_CONTAINER=endora-hq' in drain"
+          # The checkout's own script, so the guards are the ones a deploy has; a failed drain
+          # (the `-`) never holds the shutdown; and the unit does nothing once the role has
+          # taken its file away, though systemd still holds it in memory until the next boot.
+          - "drain | select('match', 'ExecStop=-/bin/sh -c ') | list | length == 1"
+          - "drain | select('search', 'test -f /etc/systemd/system/endora-drain.service') | list | length == 1"
+          - "drain | select('search', '/tmp/endora-render-test/endora/src/scripts/hq-drain.sh drain') | list | length == 1"
+
+    - name: The shutdown drain is off by default, and turning it off never drains
+      ansible.builtin.assert:
+        that:
+          - "endora_drain_on_shutdown is false"
+          - "endora_drain_cap_seconds == 300"
+          - "drain_on | length == 1"
+          - "'endora_drain_on_shutdown' in drain_on[0].when"
+          - "drain_off | length == 1"
+          - "'endora_drain_on_shutdown' in drain_off[0].when"
+          # Stopping the unit runs its ExecStop, which drains HQ: turning the drain off must
+          # not, so its tasks only disable the unit and take its file away.
+          - "off_systemd | length == 2"
+          - "off_systemd | selectattr('state', 'defined') | list | length == 0"
+          # And turned on, it is enabled and started: started does nothing until shutdown.
+          - "on_systemd | length == 1"
+          - "on_systemd[0].state == 'started' and on_systemd[0].enabled"
+      vars:
+        tasks: "{{ lookup('file', '../tasks/main.yml') | from_yaml }}"
+        # By key: a dotted module name would be read as nested attributes.
+        off_systemd: >-
+          {{ drain_off[0].block | map('dict2items') | flatten
+             | selectattr('key', 'equalto', 'ansible.builtin.systemd')
+             | map(attribute='value') | list }}
+        on_systemd: >-
+          {{ drain_on[0].block | map('dict2items') | flatten
+             | selectattr('key', 'equalto', 'ansible.builtin.systemd')
+             | map(attribute='value') | list }}
+        drain_on: "{{ tasks | selectattr('name', 'equalto', 'Drain HQ before this host shuts down') | list }}"
+        drain_off: "{{ tasks | selectattr('name', 'equalto', 'No drain before this host shuts down') | list }}"
 
     - name: No profiles and everything missing, with nothing set
       ansible.builtin.assert:
