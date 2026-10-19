@@ -343,8 +343,10 @@ pub(crate) fn instructions(
              checks; the result comes back as a receipt. A branch of your work that is \
              submitted stays kept on the node, and repo_checkout with its name (branch: \
              hq/task-N-<slug>) brings it back whole in a later turn, on top of its base: go on \
-             from it, never recreate it. Then submit the task for review, citing that \
-             receipt. You never push: \
+             from it, never recreate it. If a check failed for the check box's own reasons (its \
+             line says a tool could not run, or that develop could not be checked), ask for the \
+             same branch to be checked again with recheck rather than submitting it again. \
+             Then submit the task for review, citing that receipt. You never push: \
              the owner pushes an accepted branch to the fork and merges it there. Never edit, \
              cite or copy from group_vars/*.yml, host_vars or any inventory: they hold the \
              owner's own values, and a branch touching them is refused.",

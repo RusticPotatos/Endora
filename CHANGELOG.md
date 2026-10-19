@@ -825,6 +825,16 @@ tagged release.
   that is gone). `repo_submit` now requires `hq/task-<the turn's task>-<slug>`, so no task's
   kept branch can be overwritten by another's. Ships with the node, HQ and the workbench image.
 
+- **A lead or a developer can ask for a kept branch to be checked again** (`recheck`,
+  [ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md)). A check was queued only
+  by submitting a branch from a sandbox that held it, so a check that failed for the check
+  box's own reasons (tools missing, a collection absent) cost a recreated branch each time:
+  task 674 existed only to check one commit again, and 679's probe branch, with no file in it,
+  only to get a check run. `recheck` queues a new check of the newest kept branch of the work
+  with no sandbox and no new submission, one at a time; its result is a receipt on the turn that
+  asked and wakes it, the branch's member and the tester. A failed check's "sent back" post
+  says to recheck when the box could not run.
+
 - **Live sound no longer falls behind the picture over time, and no longer dips every few
   minutes** ([ADR 0104](docs/adr/0104-endora-sound.md)). The hub holds an AirPlay door's
   backlog to 60 ms beyond a mix block, dropping any standing excess a few milliseconds at a

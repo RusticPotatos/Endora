@@ -91,6 +91,21 @@ fn all_turns_over(hq: &Hq<'_>) {
     }
 }
 
+/// As [`all_turns_over`], for a test that has woken several members: the Mac takes one turn at
+/// a time, so each round ends what started and starts the next, until none waits.
+fn quiet(hq: &Hq<'_>) {
+    for _ in 0..12 {
+        for started in hq.runner().started() {
+            hq.runner().finish(started.run, true);
+        }
+        hq.tell_mac(true, "ready");
+        hq.tick().unwrap();
+    }
+    for started in hq.runner().started() {
+        hq.runner().finish(started.run, true);
+    }
+}
+
 /// Kit hands Rae a branch's worth of work under the plan, with criteria.
 fn raes_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     hq.add_task_with(
@@ -421,6 +436,157 @@ fn a_check_that_passes_is_a_receipt_that_wakes_the_submitter_and_the_tester() {
             .title
             .starts_with(&format!("check c{}: syntax ok", recorded.check))
     );
+}
+
+/// Live (tasks 674 and 679): a check was queued only by submitting a branch from a sandbox that
+/// held it, which a later turn never did. A check that failed for the box's own reasons (tools
+/// missing, a collection absent) cost a recreated branch each time: task 674 existed only to
+/// check the same commit again, and 679's probe branch (no file in it) only to get a check run.
+/// A lead or a developer on the work now asks for the kept branch to be checked again.
+#[test]
+fn a_kept_branch_is_checked_again_without_a_new_submission() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, rae, _) = submitted(&hq, &t, true);
+    // The first check failed for the box's own reasons.
+    let first = hq.next_check().unwrap().unwrap();
+    hq.check_done(
+        first.id,
+        &first.token,
+        false,
+        "syntax could not run (develop could not be checked: syntax exited 127 (not found) on develop)",
+        "",
+    )
+    .unwrap();
+    assert_eq!(hq.store().gate(task).unwrap(), Some(false));
+    let branches = hq.store().branches().unwrap().len();
+    // Rae, in her turn, asks for it again: no sandbox, no new submission.
+    let said = use_tool(
+        &hq,
+        &rae,
+        "recheck",
+        &json!({ "task": task.0, "why": "the check image has its tools now" }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(said.contains("queued"), "{said}");
+    let checks = hq.store().checks().unwrap();
+    assert_eq!(checks.len(), 2);
+    let again = checks.iter().find(|c| c.id != first.id).unwrap().clone();
+    assert_eq!(
+        (again.branch, again.status.as_str(), again.run),
+        (first.branch, "waiting", rae.run)
+    );
+    assert_eq!(
+        hq.store().branches().unwrap().len(),
+        branches,
+        "no new branch row: the kept one is checked again"
+    );
+    let last = thread(&hq, task).pop().unwrap();
+    assert!(
+        last.contains(&format!("Check c{} is queued again", again.id))
+            && last.contains("hq/task-3-tidy-the-deluge-role")
+            && last.contains("the check image has its tools now"),
+        "{last}"
+    );
+    // One at a time: refused while the branch's last check waits, and while it runs.
+    let ask = |context: &RunContext| {
+        use_tool(
+            &hq,
+            context,
+            "recheck",
+            &json!({ "task": task.0, "why": "again" }),
+        )
+    };
+    let waiting = ask(&rae).unwrap_err();
+    assert!(
+        waiting.contains(&format!("c{}", again.id)) && waiting.contains("waiting or running"),
+        "{waiting}"
+    );
+    let handed = hq.next_check().unwrap().expect("the runner is handed it");
+    assert_eq!(handed.id, again.id);
+    assert!(ask(&rae).is_err(), "and not while it runs");
+    // Its result is the task's gate, as the first's was, and a receipt of Rae's turn.
+    let before = hq.store().wakes().unwrap().len();
+    hq.check_done(
+        handed.id,
+        &handed.token,
+        true,
+        "syntax ok, ansible-lint 25 findings (develop 25), yamllint ok: no worse than develop",
+        "",
+    )
+    .unwrap();
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+    let receipt = hq.store().call_receipts_of(rae.run).unwrap().pop().unwrap();
+    assert_eq!((receipt.tool.as_str(), receipt.ok), ("check", true));
+    assert!(
+        receipt
+            .args
+            .starts_with(&format!("c{} hq/task-3", again.id)),
+        "{}",
+        receipt.args
+    );
+    assert!(wakes_after(&hq, before).contains(&(t.dee, WakeReason::CheckDone)));
+    // The branch is not offered anew, and a checked-again branch is still one branch.
+    assert_eq!(hq.store().branches().unwrap().len(), branches);
+    // A lead asks too, for work under hers, and is told the result with the branch's member.
+    quiet(&hq);
+    let kit = woken_turn(&hq, t.kit, t.plan);
+    use_tool(
+        &hq,
+        &kit,
+        "recheck",
+        &json!({ "task": task.0, "why": "to see it pass again" }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let third = hq.next_check().unwrap().expect("a third check waits");
+    let before = hq.store().wakes().unwrap().len();
+    hq.check_done(
+        third.id,
+        &third.token,
+        true,
+        "syntax ok, ansible-lint ok, yamllint ok",
+        "",
+    )
+    .unwrap();
+    let woken = wakes_after(&hq, before);
+    assert!(woken.contains(&(t.kit, WakeReason::CheckDone)), "{woken:?}");
+    assert!(woken.contains(&(t.rae, WakeReason::CheckDone)), "{woken:?}");
+    // The tester judges and does not run the lab's checks; work with no branch has nothing to check.
+    quiet(&hq);
+    let dee = woken_turn(&hq, t.dee, task);
+    let refused = ask(&dee).unwrap_err();
+    assert!(refused.contains("lead or developer"), "{refused}");
+    quiet(&hq);
+    let other = raes_other_task(&hq, &t);
+    let rae_again = woken_turn(&hq, t.rae, other);
+    let nothing = use_tool(
+        &hq,
+        &rae_again,
+        "recheck",
+        &json!({ "task": other.0, "why": "x" }),
+    )
+    .unwrap_err();
+    assert!(nothing.contains("submitted branch"), "{nothing}");
+}
+
+/// Another piece of Rae's work, with nothing submitted on it.
+fn raes_other_task(hq: &Hq<'_>, t: &Team) -> TaskId {
+    hq.add_task_with(
+        Author::Member(t.kit),
+        NewTask {
+            goal: t.goal,
+            project: None,
+            parent: Some(t.plan),
+            title: "Write the role's readme".to_owned(),
+            description: String::new(),
+            assignee: Some(t.rae),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+        &[Criterion::new("The readme is written", false)],
+    )
+    .unwrap()
 }
 
 #[test]

@@ -564,6 +564,10 @@ pub enum Refusal {
         /// The task it was submitted for.
         task: TaskId,
     },
+    /// A recheck of a branch's checks is asked for by the work's lead or developer (ADR 0115).
+    NotYourToRecheck,
+    /// A check of the branch is still waiting or running: one at a time (ADR 0115).
+    CheckPending(i64),
     /// The CEO is never furloughed: the owner's own line to the team (ADR 0118).
     IsTheCeo,
     /// The member is on furlough already.
@@ -864,6 +868,15 @@ impl fmt::Display for Refusal {
                 "{branch} is task #{task}'s: check out the branch of your own work (a branch is \
                  handed to the task it was submitted for, the tasks under and above it, and the \
                  member who submitted it)"
+            ),
+            Self::NotYourToRecheck => f.write_str(
+                "a recheck is asked for by the work's lead or developer: the tester judges what \
+                 the checks found, and the CEO directs",
+            ),
+            Self::CheckPending(check) => write!(
+                f,
+                "check c{check} of this branch is still waiting or running: its result comes \
+                 back as a receipt, and you may ask again once it has"
             ),
             Self::IsTheCeo => f.write_str("the CEO is never furloughed"),
             Self::AlreadyFurloughed => f.write_str("that member is on furlough already"),

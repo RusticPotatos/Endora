@@ -143,7 +143,14 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    **gate** (0114: code work closes only once it passed); a pass wakes the submitter and the
    tester, and **a branch that fails its checks is sent back** by HQ itself, the tester
    untroubled. A check that never reports is given up after thirty minutes; the runner reports
-   one that never started or ended without reporting. The workbench image gains a venv with
+   one that never started or ended without reporting. *Amended 2026-10-19:* a check was queued
+   only by submitting, from a sandbox that held the branch, so a check that failed for the
+   box's own reasons cost a recreated branch each time (task 674 existed only to check one
+   commit again). A lead or a developer on the work now asks for **`recheck`**: a new check of
+   the newest kept branch of the work, with no sandbox and no new submission, one at a time
+   (refused while a check of that branch waits or runs), judged against develop as before; the
+   result is a receipt on the turn that asked, and wakes it with the branch's member and the
+   tester. The workbench image gains a venv with
    `ansible-core` 2.15.13 (the engine alone, not the `ansible` package of every collection: the
    checks never load them and the arm64 build would take minutes more), the two linters, the
    fork's four collections and two roles.

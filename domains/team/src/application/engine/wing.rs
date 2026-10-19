@@ -192,6 +192,77 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         })
     }
 
+    /// A lead or a developer asks for the newest kept branch of a piece of work to be checked
+    /// again (ADR 0115, amended), without submitting it again: a check queued for the branch the
+    /// node still keeps, with no sandbox and no new submission, whose result comes back as the
+    /// first's did (a receipt, a document, the task's gate). A check was queued only by
+    /// submitting from a sandbox that held the branch, which a later turn never does, so a
+    /// check that failed for the check box's own reasons cost a recreated branch each time.
+    /// One at a time: refused while a check of that branch waits or runs. Returns the check.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYourToRecheck`] for the
+    /// tester or the CEO; [`EngineError::Unknown`] for work with no submitted branch;
+    /// [`Refusal::CheckPending`].
+    pub fn recheck_in(&self, run: RunId, task: TaskId, why: &str) -> Done<i64> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        self.reach(&turn, task, false)?;
+        let member = self.member(turn.member)?;
+        if !matches!(member.role, Role::Lead | Role::Developer) {
+            return Err(EngineError::Refused(Refusal::NotYourToRecheck));
+        }
+        let work = self.work_of(task)?;
+        let Some(branch) = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| work.contains(&b.task) && b.status == "submitted")
+            .max_by_key(|b| b.id)
+        else {
+            return Err(EngineError::Unknown("submitted branch on that work"));
+        };
+        if let Some(pending) = self
+            .store
+            .checks()?
+            .into_iter()
+            .find(|c| c.branch == branch.id && c.status != "done")
+        {
+            return Err(EngineError::Refused(Refusal::CheckPending(pending.id)));
+        }
+        let (check, _) = self.store.add_check(&Check {
+            id: 0,
+            task: branch.task,
+            branch: branch.id,
+            run: turn.id,
+            token: String::new(),
+            status: "waiting".to_owned(),
+            ok: None,
+            summary: String::new(),
+            queued_at: self.clock.now(),
+            started_at: None,
+            done_at: None,
+        })?;
+        self.post_held_lock(
+            Author::Endora,
+            branch.task,
+            &format!(
+                "Check c{check} is queued again on {} at {}, asked for by {}: {}. No new \
+                 submission: the branch the node keeps is checked, judged against develop as \
+                 before. Its result comes back as a receipt.",
+                branch.name,
+                short(&branch.head),
+                member.name,
+                super::one_line(why, 300)
+            ),
+        )?;
+        // Asking is a step the turn took: it is not a turn that showed nothing.
+        if let Some(own) = turn.task {
+            self.mark_progress(member.id, own)?;
+        }
+        Ok(check)
+    }
+
     /// Whether a turn may have a branch the team submitted and the node keeps (ADR 0115,
     /// amended): the node asks, naming the turn by its own token, before it hands a kept
     /// submission out. HQ's record decides, never the name (a name is the model's): the newest
@@ -379,10 +450,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "task": check.task.0, "passed": ok, "failed": if ok { "" } else { summary.as_str() },
                     "check": check.id }),
         )?;
+        // The turn that asked for the check: the member who submitted the branch, unless a lead
+        // or another developer asked for it to be checked again.
+        let asked = self
+            .store
+            .run(check.run)?
+            .map_or(branch.member, |r| r.member);
         let receipt = self.store.add_call_receipt(&CallReceipt {
             id: 0,
             run: check.run,
-            member: branch.member,
+            member: asked,
             task: Some(check.task),
             tool: "check".to_owned(),
             args: format!("c{} {}@{}", check.id, branch.name, short(&branch.head)),
@@ -425,7 +502,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 task.id,
                 &format!(
                     "Sent back: check c{} failed ({summary}). Read document d{document}, put it \
-                     right, submit the branch again and then the task.",
+                     right, submit the branch again and then the task. If the line says the \
+                     check box could not run, ask for the same branch to be checked again with \
+                     recheck, and submit nothing new.",
                     check.id
                 ),
             )?;
@@ -437,6 +516,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         self.wake_held_lock(branch.member, Some(task.id), WakeReason::CheckDone)?;
+        // A lead or another developer who asked for the branch to be checked again hears too.
+        if asked != branch.member && self.member(asked)?.at_work() {
+            self.wake_held_lock(asked, Some(task.id), WakeReason::CheckDone)?;
+        }
         for tester in self
             .store
             .members()?
