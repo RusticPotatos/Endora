@@ -26,12 +26,16 @@ pub(super) fn later(clock: &Hands, ms: i64) {
 
 /// A team (with a lead, unless `lead` is false) and Linus's task, handed to him by the owner.
 pub(super) fn team(clock: &Hands, lead: bool) -> (Hq<'_>, MemberId, TaskId) {
-    let hq = Engine::new(
-        SqliteTeamStore::in_memory().unwrap(),
-        SimulatedRunner::new(4),
-        clock,
-        Settings::default(),
-    );
+    team_over(SqliteTeamStore::in_memory().unwrap(), clock, lead)
+}
+
+/// [`team`], over the team's `store`: a file, when a test is about HQ starting again.
+pub(super) fn team_over(
+    store: SqliteTeamStore,
+    clock: &Hands,
+    lead: bool,
+) -> (Hq<'_>, MemberId, TaskId) {
+    let hq = Engine::new(store, SimulatedRunner::new(4), clock, Settings::default());
     if lead {
         hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     }

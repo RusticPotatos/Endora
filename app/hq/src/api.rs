@@ -25,6 +25,7 @@ use endora_team::infrastructure::demo;
 
 use crate::Hq;
 
+mod drain;
 mod guards;
 mod world;
 
@@ -170,6 +171,9 @@ pub fn app(state: State) -> Router {
         .merge(world::routes())
         // The guards (ADR 0124): the owner's verdict on a finding.
         .merge(guards::routes())
+        // The drain before a restart (ADR 0134): HQ's own token, for a deploy and the NAS's
+        // shutdown; the node does not proxy it.
+        .merge(drain::routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             signed_by_the_node,
@@ -4142,6 +4146,194 @@ mod tests {
                 .text
                 .contains("Pushed hq/task-1")
         );
+    }
+
+    /// The drain's door (ADR 0134) is the node's token's alone, as the owner's actions are: not
+    /// a runner's, not a worker's, not nobody's.
+    #[tokio::test]
+    async fn only_the_hq_token_opens_the_drain() {
+        let st = state(false);
+        let app = app(st.clone());
+        for (method, uri, body) in [
+            ("GET", "/v1/team/drain", ""),
+            ("POST", "/v1/team/drain", "{}"),
+            ("POST", "/v1/team/resume", ""),
+        ] {
+            for token in [None, Some(""), Some("wrong"), Some(RUNNER)] {
+                let res = app
+                    .clone()
+                    .oneshot(call(method, uri, token, body))
+                    .await
+                    .unwrap();
+                assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{uri} {token:?}");
+            }
+        }
+        assert!(!st.hq.draining(), "nothing was started by the refused");
+    }
+
+    #[tokio::test]
+    async fn a_deploy_drains_reads_the_drain_and_resumes() {
+        let st = state(false);
+        let (run, _) = a_turn_starts(&st);
+        let app = app(st.clone());
+
+        let before = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/team/drain", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(before["draining"], false);
+        assert_eq!(
+            before["running"], 1,
+            "a turn HQ started is running, held or not"
+        );
+
+        let res = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                "/v1/team/drain",
+                Some(TOKEN),
+                r#"{"cap_seconds":120}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let began = json_of(res).await;
+        assert_eq!(began["draining"], true);
+        assert_eq!(began["cap_seconds"], 120);
+        assert!(began["since"].as_i64().unwrap() > 0, "{began}");
+        assert!(st.hq.draining());
+        assert!(status_of(&st, run) != RunStatus::Failed);
+
+        // No cap given: the default of five minutes. Asking again does not begin another.
+        let again = json_of(
+            app.clone()
+                .oneshot(call("POST", "/v1/team/drain", Some(TOKEN), "{}"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(again["since"], began["since"]);
+        assert_eq!(again["cap_seconds"], 120);
+
+        let read = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/team/drain", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(read["draining"], true);
+
+        let resumed = json_of(
+            app.clone()
+                .oneshot(call("POST", "/v1/team/resume", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resumed["draining"], false);
+        assert!(!st.hq.draining());
+        assert_eq!(resumed["last"]["by"], "resume");
+    }
+
+    /// The command a deploy runs in the container, against a real HQ over a real socket: it
+    /// announces the restart, finds nothing running, and lifts it again.
+    #[tokio::test]
+    async fn the_drain_command_drains_a_real_hq_over_tcp_and_resumes_it() {
+        use crate::drain_cli::{Command, Door as _, Tcp, World, run};
+        let st = state(false);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let served = app(st.clone());
+        tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+
+        let command = |door: Tcp, command: Command| {
+            let now = || 1_i64;
+            let sleep = |_: u64| {};
+            let mut out = Vec::new();
+            let code = run(
+                &command,
+                &World {
+                    door: &door,
+                    now: &now,
+                    sleep: &sleep,
+                },
+                &mut out,
+            );
+            (code, String::from_utf8(out).unwrap())
+        };
+        let (a, t) = (addr.clone(), TOKEN.to_owned());
+        let (code, said) = tokio::task::spawn_blocking(move || {
+            command(
+                Tcp { addr: a, token: t },
+                Command::Drain {
+                    cap: Some(30),
+                    wait: true,
+                },
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(code, 0, "{said}");
+        assert!(said.contains("no turn is running"), "{said}");
+        assert!(st.hq.draining(), "the real HQ was told");
+
+        let (a, t) = (addr.clone(), TOKEN.to_owned());
+        let (code, said) = tokio::task::spawn_blocking(move || {
+            command(Tcp { addr: a, token: t }, Command::Resume)
+        })
+        .await
+        .unwrap();
+        assert_eq!(code, 0, "{said}");
+        assert!(!st.hq.draining());
+
+        // A wrong token is refused, said, and changes nothing.
+        let (a, wrong) = (addr.clone(), RUNNER.to_owned());
+        let (code, said) = tokio::task::spawn_blocking(move || {
+            command(
+                Tcp {
+                    addr: a,
+                    token: wrong,
+                },
+                Command::Drain {
+                    cap: None,
+                    wait: false,
+                },
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(code, 1, "{said}");
+        assert!(said.contains("401"), "{said}");
+        assert!(!st.hq.draining());
+
+        // And a door that nobody listens at is said, not waited for.
+        let gone = tokio::task::spawn_blocking(move || {
+            Tcp {
+                addr: "127.0.0.1:1".to_owned(),
+                token: TOKEN.to_owned(),
+            }
+            .send("GET", "/v1/team/drain", "")
+        })
+        .await
+        .unwrap();
+        assert!(gone.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_drain_with_no_cap_waits_five_minutes() {
+        let app = app(state(false));
+        let began = json_of(
+            app.oneshot(call("POST", "/v1/team/drain", Some(TOKEN), "{}"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(began["cap_seconds"], 300);
     }
 
     #[tokio::test]

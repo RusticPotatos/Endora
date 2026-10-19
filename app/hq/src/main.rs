@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 mod api;
+mod drain_cli;
 mod runner;
 mod team;
 
@@ -234,6 +235,13 @@ pub(crate) fn seed_ceo(hq: &Hq) -> Result<SeededCeo, endora_team::application::E
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `endora-hq drain` and `endora-hq resume` (ADR 0134) talk to the HQ that is running and
+    // exit. Any argument at all is a command or an error: it never starts a second HQ over the
+    // same database.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = drain_cli::handle(&args) {
+        std::process::exit(code);
+    }
     let token = match the_token(
         "HQ_TOKEN",
         std::env::var("HQ_TOKEN").ok(),

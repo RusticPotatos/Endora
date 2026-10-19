@@ -200,6 +200,17 @@ export ENDORA_MAIL_DIR
 COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose
 TARGET_DOCKER = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),)
 
+# A drain before a restart (ADR 0134). `make deploy` and `make deploy-pi` first ask HQ to stop
+# starting turns and to tell the ones under way to wrap up, wait until none is running or
+# DRAIN_CAP seconds have passed, and only then restart; a turn that is still running at the cap is
+# cut and tried again. Afterwards HQ lifts the drain itself when it starts, and the deploy asks
+# again in case it did not restart. NO_DRAIN=1 skips all of it: `make deploy NO_DRAIN=1`. The
+# work is in scripts/hq-drain.sh, which never stops a deploy.
+NO_DRAIN ?=
+DRAIN_CAP ?= 300
+HQ_CONTAINER ?= endora-hq
+HQ_DRAIN = env DOCKER="$(TARGET_DOCKER)" HQ_CONTAINER="$(HQ_CONTAINER)" DRAIN_CAP="$(DRAIN_CAP)" NO_DRAIN="$(NO_DRAIN)" sh scripts/hq-drain.sh
+
 # Where the image is BUILT, when that is not where it runs: a Docker context on this machine
 # (e.g. ENDORA_BUILD_CONTEXT = desktop-linux in local.mk on a laptop). The image is built
 # there for the target's architecture, cross-compiled rather than emulated, and copied to
@@ -311,8 +322,16 @@ deploy: check-data-dir check-airplay2 ##Build + start the node via Compose (DOCK
 	# in local.mk). Keep the bearer-authenticated API on a trusted network.
 	# ENDORA_BUILD stamps the deploy's git short SHA into the image, so /health
 	# and the console header show which build is live.
+	# HQ is drained first (ADR 0134, NO_DRAIN=1 skips it): with the build and the restart in one
+	# command, the drain comes before the build; when the image is built elsewhere it comes after
+	# it, just before the restart.
 ifeq ($(ENDORA_BUILD_CONTEXT),)
-	ENDORA_BUILD="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" $(COMPOSE) up -d --build
+	@set -e; \
+	$(HQ_DRAIN) drain; \
+	rc=0; \
+	ENDORA_BUILD="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" $(COMPOSE) up -d --build || rc=$$?; \
+	$(HQ_DRAIN) resume; \
+	exit $$rc
 else
 	@set -e; \
 	build="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)"; \
@@ -344,7 +363,11 @@ else
 		docker --context $(ENDORA_BUILD_CONTEXT) save endora-airplay2:for-target | gzip -1 | $(TARGET_DOCKER) load; \
 		$(TARGET_DOCKER) tag endora-airplay2:for-target endora-airplay2:latest;; \
 	esac; \
-	ENDORA_BUILD="$$build" $(COMPOSE) up -d --no-build
+	$(HQ_DRAIN) drain; \
+	rc=0; \
+	ENDORA_BUILD="$$build" $(COMPOSE) up -d --no-build || rc=$$?; \
+	$(HQ_DRAIN) resume; \
+	exit $$rc
 endif
 
 .PHONY: check-pi
@@ -357,7 +380,10 @@ check-pi:
 deploy-pi: check-pi ## Build the node and workbench images for the Pi here (arm64), copy them over SSH, start the runner
 	# Mirrors `make deploy` with ENDORA_BUILD_CONTEXT: cross-compiled on this machine, copied
 	# with docker save | ssh docker load, so the Pi only starts it. scripts/pi-runner.sh then
-	# runs on the Pi and (re)starts endora-runner against the NAS's team gateway.
+	# runs on the Pi and (re)starts endora-runner against the NAS's team gateway. The runner takes
+	# its turns from HQ, so draining HQ is enough to keep new ones from starting under the
+	# restart (ADR 0134, NO_DRAIN=1 skips it); HQ itself is not restarted here, so the drain is
+	# lifted by name afterwards.
 	@set -e; \
 	build="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)"; \
 	echo "building $$build for linux/arm64 on $(ENDORA_PI_BUILD_CONTEXT)"; \
@@ -372,7 +398,11 @@ deploy-pi: check-pi ## Build the node and workbench images for the Pi here (arm6
 	docker --context $(ENDORA_PI_BUILD_CONTEXT) save endora-workbench:for-pi | gzip -1 | ssh $(ENDORA_PI_SSH) docker load; \
 	ssh $(ENDORA_PI_SSH) docker tag endora-workbench:for-pi endora-workbench:latest; \
 	echo "starting the runner"; \
-	ssh $(ENDORA_PI_SSH) sh -s -- "$(ENDORA_NAS_ADDR)" "$(ENDORA_PI_TOKEN_DIR)" < scripts/pi-runner.sh
+	$(HQ_DRAIN) drain; \
+	rc=0; \
+	ssh $(ENDORA_PI_SSH) sh -s -- "$(ENDORA_NAS_ADDR)" "$(ENDORA_PI_TOKEN_DIR)" < scripts/pi-runner.sh || rc=$$?; \
+	$(HQ_DRAIN) resume; \
+	exit $$rc
 
 .PHONY: bench-image
 bench-image: check-pi ## Build the bench image (ADR 0123) here for the Pi (arm64) from ENDORA_BENCH_HARNESS, and copy it there
@@ -468,6 +498,10 @@ sound-airplay2-test: ## Test what the AirPlay 2 door writes for shairport-sync a
 .PHONY: mac-brain-test
 mac-brain-test: ## Test the Mac's brain helper and its install against stubs (no Mac, model or network needed)
 	sh scripts/test-mac-brain.sh
+
+.PHONY: hq-drain-test
+hq-drain-test: ## Test the drain a deploy runs before it restarts HQ against a fake docker (no daemon needed)
+	sh scripts/test-hq-drain.sh
 
 .PHONY: mac-brain-install
 mac-brain-install: ## On the Mac: load the Mac's brain helper as a LaunchAgent, from local.mk's ENDORA_MAC_* (no sudo)

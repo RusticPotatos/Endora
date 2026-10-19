@@ -163,6 +163,23 @@ tagged release.
 
 ### Added
 
+- **A drain before every restart** ([ADR 0134](docs/adr/0134-a-drain-before-every-restart.md)).
+  A deploy, and the NAS's 04:00 security reboot, cut turns of ten or fifteen minutes in the middle
+  of a step, and the work was lost with them. A restart is now announced first. **While a drain
+  lasts** HQ starts no new turn (queued work waits and says "waiting for a restart"), every
+  answer a running member gets ends with "A restart is coming: finish this step, leave a handover
+  note, and end your turn.", and `post` takes an optional `handover` note that ends the turn and
+  keeps the task: the note opens the member's briefing when the turn goes on, and it costs the
+  member nothing. **Routes** (HQ's own token, not proxied by the node): `POST /v1/team/drain
+  {cap_seconds}`, `GET /v1/team/drain`, `POST /v1/team/resume`; the command is `endora-hq drain
+  [--cap SECONDS] [--wait]` and `endora-hq resume`, run in HQ's container. **`make deploy` and
+  `make deploy-pi`** run it before the restart (`DRAIN_CAP`, default 300 seconds; `NO_DRAIN=1`
+  skips it) and lift it after; HQ starting again lifts it too, and one nobody ended lifts itself
+  after 30 minutes. **The owner** sees one Activity line, and, only if a restart cut turns, one
+  item in the digest: "A restart cut N turns: ...". **The NAS's reboot:** the `endora` role can
+  install a systemd unit that runs the drain as the host shuts down, before Docker stops
+  (`endora_drain_on_shutdown`, off by default; `endora_drain_cap_seconds`). Migration: none (two
+  rows in HQ's settings). Scenarios: `domains/team/features/a-drain-before-a-restart.feature`.
 - **Caps on talk and runaway** ([ADR 0133](docs/adr/0133-caps-on-talk-and-runaway.md)). On 17
   and 18 October one docs branch took 44 turns, 80 posts and $2.47, 28% of all the spend, and the
   guard that noticed it stopped nothing; the house's own models have no budget to stop a runaway

@@ -405,6 +405,8 @@ pub enum Refusal {
     OutOfReach,
     /// The turn has ended.
     TurnOver,
+    /// A handover note was left for a restart, and none is coming (ADR 0134).
+    NoRestartComing,
     /// A routine's rhythm is too fast or too slow.
     Rhythm,
     /// A routine's check is closed only by its member, once it is being worked.
@@ -704,6 +706,10 @@ impl fmt::Display for Refusal {
                  own task's thread instead",
             ),
             Self::TurnOver => f.write_str("this turn has ended: stop now"),
+            Self::NoRestartComing => f.write_str(
+                "no restart is coming, so there is nothing to wrap up for: carry on, or hand the \
+                 task on with hand_to and its handover note",
+            ),
             Self::Rhythm => {
                 f.write_str("a routine comes round between every 15 minutes and every 30 days")
             }

@@ -170,13 +170,17 @@ pub enum Wait {
     /// It is work on the house's own models, which cost nothing, and the member has started as
     /// many turns on them today as it may (ADR 0133): it waits until the day turns.
     DayCap,
+    /// A restart is coming and a drain holds every new turn back (ADR 0134): it starts once
+    /// HQ is up again.
+    Restart,
 }
 
 /// The prefixes a waiting turn's words begin with.
-const WAITING: [&str; 3] = [
+const WAITING: [&str; 4] = [
     "waiting for the Mac: ",
     "waiting for budget: ",
     "waiting for tomorrow: ",
+    "waiting for a restart: ",
 ];
 
 impl Wait {
@@ -191,6 +195,7 @@ impl Wait {
                 WAITING[2],
                 super::guards::THRESHOLDS.free_turns_a_day
             ),
+            Self::Restart => format!("{}nothing new starts until it has been", WAITING[3]),
         }
     }
 }
@@ -656,6 +661,19 @@ mod tests {
         assert!(!is_waiting_words(
             "backing off: its last turns moved nothing"
         ));
+    }
+
+    /// A turn held back by a drain (ADR 0134) says so in the words the roster shows, and is a
+    /// wait like the rest: recognised, so the engine clears it when the turn starts.
+    #[test]
+    fn a_turn_held_for_a_restart_says_so() {
+        let words = Wait::Restart.words();
+        assert_eq!(
+            words,
+            "waiting for a restart: nothing new starts until it has been"
+        );
+        assert!(is_waiting_words(&words));
+        assert!(!is_waiting_for_budget(&words) && !is_waiting_for_cap(&words));
     }
 
     /// A member takes sixty turns a day on the house's own models (ADR 0133): they cost nothing,

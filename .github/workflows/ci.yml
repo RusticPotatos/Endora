@@ -57,6 +57,9 @@ jobs:
       - name: The Mac's brain helper and its install
         run: sh scripts/test-mac-brain.sh
 
+      - name: The drain a deploy runs before it restarts HQ
+        run: sh scripts/test-hq-drain.sh
+
       - name: Handheld terminal checks
         working-directory: clients/terminal
         run: |

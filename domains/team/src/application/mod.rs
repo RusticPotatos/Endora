@@ -98,6 +98,9 @@ mod budget_tests;
 mod caps_tests;
 
 #[cfg(test)]
+mod drain_tests;
+
+#[cfg(test)]
 mod map_tests;
 
 #[cfg(test)]

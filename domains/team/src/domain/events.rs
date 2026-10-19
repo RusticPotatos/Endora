@@ -151,6 +151,10 @@ pub enum EventKind {
     CriteriaChanged,
     /// The owner switched a guard that is tried in shadow on, or back to shadow (ADR 0133).
     GuardMode,
+    /// A drain began: nothing new starts until a restart has been (ADR 0134).
+    DrainBegan,
+    /// A drain ended, and how many turns ended before it and how many the restart cut.
+    DrainEnded,
 }
 
 impl EventKind {
@@ -230,6 +234,8 @@ impl EventKind {
             Self::RecordAsked => "record.asked",
             Self::CriteriaChanged => "task.criteria",
             Self::GuardMode => "guard.mode",
+            Self::DrainBegan => "drain.began",
+            Self::DrainEnded => "drain.ended",
         }
     }
 }

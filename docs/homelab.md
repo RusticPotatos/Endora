@@ -349,6 +349,72 @@ it.
 To check by hand, on the Mac: `sh ~/Library/Application\ Support/Endora/mac-brain/endora-mac-brain.sh`
 runs one pass. `make mac-brain-test` tests the helper against stubs, on any machine.
 
+## A drain before every restart (ADR 0134)
+
+A deploy, and the NAS's own security reboot, restart HQ and the team's runner under turns that
+are running, and a turn on the Mac takes ten to fifteen minutes. So a restart is announced first:
+HQ starts no new turn (what is queued waits, and the roster says "waiting for a restart"), every
+answer a running member gets says a restart is coming, and a member can end its turn with a
+handover note and keep its task. The restart waits until no turn is running, or for a cap (five
+minutes), and then goes ahead. A turn still running at the cap is cut and tried again, as any
+interrupted turn is.
+
+### What `make deploy` and `make deploy-pi` do
+
+Before they restart anything they run `scripts/hq-drain.sh drain`, which is, through the same
+Docker context the deploy uses:
+
+```sh
+docker --context nas exec endora-hq endora-hq drain --cap 300 --wait
+```
+
+It prints what it did (how many turns are running, and when none is, "the restart can go ahead").
+After the deploy they run `scripts/hq-drain.sh resume`
+(`docker --context nas exec endora-hq endora-hq resume`). HQ also lifts the drain itself when it
+starts again, and a drain nobody ended lifts itself after 30 minutes, so none can stall the team.
+
+- `make deploy NO_DRAIN=1` (or `make deploy-pi NO_DRAIN=1`) skips it, for a deploy that cannot
+  wait.
+- `make deploy DRAIN_CAP=120` waits two minutes at most instead of five (never more than 30).
+- With `ENDORA_BUILD_CONTEXT` set, the image is built first and the drain comes just before the
+  restart. Without it, building and restarting are one command, so the drain comes before the
+  build.
+- It never stops a deploy: HQ not running there is said and skipped, and so is an HQ that
+  predates the command (the first deploy that brings it drains nothing).
+- `deploy-pi` restarts the runner and not HQ. The runner takes its turns from HQ, so draining HQ
+  keeps new turns from starting under it, and the deploy lifts the drain by name afterwards.
+
+You can run it by hand: `docker --context nas exec endora-hq endora-hq drain --wait`, then
+`... endora-hq resume`. `GET /v1/team/drain` on HQ (signed with its token, from inside the
+network) says whether one lasts, since when, how many turns are running, and what the last drain
+came to (`clean` and `cut`).
+
+### What you see
+
+Nothing, when the drain cut nothing: one line in the Activity ("The restart came: 2 turns ended
+before it, none cut"). When a restart did cut a turn, one item in the Desk's "While you were
+away" digest: "A restart cut 1 turn: ...", naming it. Nothing waits on you either way.
+
+### The NAS's reboot (optional)
+
+The `endora` role in the `endora.homelab` collection can install a systemd unit that runs the
+same drain as the NAS shuts down, so the 04:00 security reboot does not cut a turn. It is off by
+default, because it adds a wait, up to the cap, to every shutdown. In your ansible-nas variables:
+
+```yaml
+endora_hq: true
+endora_drain_on_shutdown: true
+# endora_drain_cap_seconds: 300   # the most a shutdown waits for the turns under way
+```
+
+The unit (`/etc/systemd/system/endora-drain.service`) is a oneshot that does nothing when it
+starts and stays active, ordered after `docker.service`. Systemd stops units in the reverse of
+their start order, so at shutdown it is stopped, and its `ExecStop` runs the drain, while Docker
+and HQ's container are still up; its timeout is the cap plus a minute, because systemd's default
+of 90 seconds would cut a five-minute wait. Setting the variable back to false disables the unit
+and takes its file away without stopping it (stopping it would drain HQ). Check it on the NAS
+with `systemctl status endora-drain` and, after a reboot, `journalctl -b -1 -u endora-drain`.
+
 ## Docker boundary
 
 For the supplied Compose deployment, enable the optional `homelab` profile after

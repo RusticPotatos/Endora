@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Eighty-four records stand, all accepted but three still proposed (marked in the *Consolidates*
+Eighty-five records stand, all accepted but three still proposed (marked in the *Consolidates*
 column below), and forty-nine earlier ones are archived into them (the same column). A handful of
 ideas sit underneath all of them. Read this before reading any individual record; each line is a
 rule the code actually follows, with the decision that established it.
@@ -150,6 +150,11 @@ rule the code actually follows, with the decision that established it.
   owner switches it on. The caps that exist because a runaway costs most when nobody is watching
   (a member's day of turns on the house's own models, forty turns in ten minutes) are on from the
   start: what they hold is kept, not lost, and the owner resumes in one tap.
+- **A restart is announced before it comes, and what it cuts is counted**
+  ([0134](0134-a-drain-before-every-restart.md)). Before a deploy or the NAS's reboot restarts HQ,
+  nothing new starts, the turns under way are told to wrap up (and may end with a handover note,
+  keeping their task), and the restart waits for them up to a cap. What it still cuts is tried
+  again as before, and told to the owner once in the digest, and only when it cut something.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -303,6 +308,7 @@ of an existing record and take the next number.
 | [0131](0131-the-two-kinds-of-turn.md) | The two kinds of turn: the house's models work, Claude judges | — |
 | [0132](0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md) | Outcomes, and a desk that interrupts only for decisions | — |
 | [0133](0133-caps-on-talk-and-runaway.md) | Caps on talk and runaway | — |
+| [0134](0134-a-drain-before-every-restart.md) | A drain before every restart | - |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

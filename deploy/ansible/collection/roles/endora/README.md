@@ -62,6 +62,27 @@ Secrets are folders or files, never values.
 | `endora_bench_token_dir` | `ENDORA_BENCH_TOKEN` | Folder holding the file `token` (ADR 0123) (no bench) |
 | `endora_bench_cap_cents` | `ENDORA_BENCH_CAP_CENTS` | What the bench may spend a day (200) |
 
+## A drain before this host shuts down (optional)
+
+Endora ADR 0134: `make deploy` asks HQ to stop starting turns and to wait for the ones under way
+before it restarts anything. The same can happen when this host shuts down, so the NAS's 04:00
+security reboot does not cut a turn of ten or fifteen minutes:
+
+```yaml
+endora_hq: true
+endora_drain_on_shutdown: true     # off by default: it adds a wait to every shutdown
+endora_drain_cap_seconds: 300      # the most a shutdown waits; the unit's timeout is this and a minute
+```
+
+The role installs `/etc/systemd/system/endora-drain.service`: a oneshot that does nothing when it
+starts and stays active, ordered `After=docker.service`. Units stop in the reverse of their start
+order, so at shutdown it is stopped, and its `ExecStop` runs Endora's `scripts/hq-drain.sh drain`
+from the checkout this role keeps, while Docker and HQ are still up. A drain that fails never
+holds the shutdown. Nothing is lifted afterwards: HQ lifts the drain itself when its container
+starts again at boot. Setting the variable back to false disables the unit and removes its file
+without stopping it (stopping it would run the drain). The variables are not compose settings, so
+they are not in `endora.env`; `tests/render.yml` renders the unit and checks it.
+
 ## Parity with the compose file
 
 Anything Endora's `docker-compose.yml` reads from the environment can be declared here, so this
