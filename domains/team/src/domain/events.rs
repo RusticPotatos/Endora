@@ -146,6 +146,9 @@ pub enum EventKind {
     SentBack,
     /// A member searched the record with `ask_record`, and how many passages it found (ADR 0132).
     RecordAsked,
+    /// A lead narrowed or reworded what done means for a task in its area: the criteria it had
+    /// and the criteria it has (ADR 0133).
+    CriteriaChanged,
 }
 
 impl EventKind {
@@ -223,6 +226,7 @@ impl EventKind {
             Self::GuardJudged => "guard.judged",
             Self::SentBack => "task.sent_back",
             Self::RecordAsked => "record.asked",
+            Self::CriteriaChanged => "task.criteria",
         }
     }
 }

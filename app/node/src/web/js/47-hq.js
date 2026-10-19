@@ -318,6 +318,8 @@ function hqTell(e, live, older) {
       : `${d.by || "Someone"} ${String(d.what || "changed").replace(/_/g, " ")} ${d.address || ""}`],
     "story.told": ["run", `${d.by} ${d.retold ? "retold" : "told"} the story ${d.handle}`],
     "task.handed_over": ["run", `${hqName(d.by)} handed ${key} on: ${d.note || ""}`],
+    // A lead narrowed what done means for a task in its area (ADR 0133).
+    "task.criteria": ["run", `${hqName(d.by)} narrowed what done means for ${key}: ${(d.after || []).join("; ")}${d.why ? " (" + d.why + ")" : ""}`],
     "checkback.fired": ["wake", `${name} checks back on ${key}`],
     "checkback.dropped": ["run", `Check-back on ${key} dropped: it is over`],
     // Projects, their budgets, and whom members report to (ADR 0113).

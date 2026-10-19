@@ -619,6 +619,7 @@ fn work_outside_a_project_that_only_talks_is_found_by_its_task_tree_and_says_wha
                 p.text
                     .starts_with("Talking about work isn't work (finding ")
                     && p.text.contains("this is in your area")
+                    && p.text.contains("narrow its criteria (narrow_criteria)")
             }),
         "{said:?}"
     );

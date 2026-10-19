@@ -2589,7 +2589,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 ", review, read_document, read_doc, read_world, tell_story, propose_world, office. "
             }
             Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, judge_finding, read_document, read_doc, read_world, tell_story, propose_world, decide_proposal, write_world, verify_world, retire_world, propose_canon, office. "
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, narrow_criteria, judge_finding, read_document, read_doc, read_world, tell_story, propose_world, decide_proposal, write_world, verify_world, retire_world, propose_canon, office. "
             }
             _ => ", read_document, read_doc, read_world, tell_story, propose_world, office. ",
         });

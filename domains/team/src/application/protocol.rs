@@ -382,6 +382,23 @@ fn judge_finding_tool() -> Value {
     })
 }
 
+/// The tool a lead narrows what done means for a task in its area with (ADR 0133).
+fn narrow_criteria_tool() -> Value {
+    json!({
+        "name": "narrow_criteria",
+        "description": "Narrow or reword what done means for a task in your area, when it has taken far more talk than it was worth: as many criteria as it has now or fewer, and at least one. Say why. The change is posted in the task's thread and recorded; a tester's pass on the old criteria then needs checking again, and the task's budget of talk starts afresh.",
+        "inputSchema": { "type": "object", "properties": {
+            "task": { "type": "integer", "description": "the task's number" },
+            "criteria": { "type": "array", "items": { "type": "object", "properties": {
+                "text": { "type": "string" },
+                "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" },
+                "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown" },
+            }, "required": ["text"] }, "description": "what done means now, replacing what it meant" },
+            "why": { "type": "string", "description": "why, in a sentence: it goes in the thread" },
+        }, "required": ["task", "criteria"] },
+    })
+}
+
 /// What a downtime turn may not do: it makes no work.
 const MAKES_WORK: [&str; 6] = [
     "create_task",
@@ -543,6 +560,7 @@ pub fn tools(role: Role) -> Value {
                 }),
                 &["task", "decision", "detail", "evidence"],
             ));
+            list.push(narrow_criteria_tool());
             list.push(judge_finding_tool());
         }
     }
@@ -1033,6 +1051,18 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 "Task {} is decided ({}): it is in its thread.",
                 task.0,
                 decision.name().replace('_', " ")
+            ))
+        }
+        "narrow_criteria" => {
+            let task = task_arg(args)?;
+            let criteria = criteria_arg(args);
+            engine
+                .narrow_criteria_in(run.id, task, &criteria, args["why"].as_str().unwrap_or(""))
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "Task {}'s criteria are narrowed: it is in its thread, and a tester's pass on \
+                 the old ones needs checking again.",
+                task.0
             ))
         }
         "judge_finding" => {

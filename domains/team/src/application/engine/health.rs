@@ -431,9 +431,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task,
             &format!(
                 "Talking about work isn't work (finding {id}): {evidence}. {}, this is {whose}: \
-                 decide what moves it on evidence (narrow its criteria, merge its tasks, drop \
-                 what is not needed, or carry on and say why), and say whether the finding was \
-                 real with judge_finding.",
+                 decide what moves it on evidence. You may narrow its criteria (narrow_criteria), \
+                 merge its tasks, drop what is not needed, or carry on and say why. Then say \
+                 whether the finding was real with judge_finding.",
                 lead.name
             ),
         )?;

@@ -649,6 +649,18 @@ pub enum Refusal {
     NotWoken(super::wakes::Refused),
     /// Stuck work was to be tried again, but no member has it to wake.
     NobodyHasIt,
+    /// Only the lead of a task's area narrows or rewords its criteria (ADR 0133).
+    OnlyTheAreasLead,
+    /// Narrowing leaves at least one criterion: done must still mean something (ADR 0133).
+    NarrowedToNothing,
+    /// A lead narrows or rewords what done means and never widens it: as many criteria as the
+    /// task has, or fewer (ADR 0133).
+    NotNarrower {
+        /// How many criteria the task has.
+        had: usize,
+        /// How many were given.
+        gave: usize,
+    },
 }
 
 impl fmt::Display for Refusal {
@@ -838,6 +850,18 @@ impl fmt::Display for Refusal {
             ),
             Self::NobodyHasIt => f.write_str(
                 "it was not tried again, and still waits here: no member has this task to wake",
+            ),
+            Self::OnlyTheAreasLead => f.write_str(
+                "only the lead of the task's area narrows its criteria: ask that lead, in the \
+                 task's thread",
+            ),
+            Self::NarrowedToNothing => f.write_str(
+                "narrowing keeps at least one criterion: done must still mean something",
+            ),
+            Self::NotNarrower { had, gave } => write!(
+                f,
+                "narrow_criteria narrows or rewords what done means and never widens it: the \
+                 task has {had} and you gave {gave}"
             ),
             Self::NotAManager => f.write_str(
                 "a member reports to another member, never itself and never in a circle; the \
