@@ -1284,6 +1284,47 @@ pub fn is_private_endpoint(url: &str) -> bool {
     host == "host.docker.internal" || !host.contains('.')
 }
 
+/// Whether `url` reaches only the house's network: private by its text
+/// ([`is_private_endpoint`]), or a name that resolves, now, to private addresses only, such as
+/// a laptop's name as the house's router hands it out, which follows the laptop when its
+/// address changes (ADR 0130). A name that resolves to nothing is not known to be at home.
+#[must_use]
+pub fn reaches_only_the_house(url: &str) -> bool {
+    if is_private_endpoint(url) {
+        return true;
+    }
+    let rest = url
+        .trim()
+        .split_once("://")
+        .map_or(url.trim(), |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if authority.is_empty() || authority.starts_with('[') {
+        return false;
+    }
+    let target = if authority.contains(':') {
+        authority.to_owned()
+    } else if url.trim().starts_with("https://") {
+        format!("{authority}:443")
+    } else {
+        format!("{authority}:80")
+    };
+    let Ok(found) = std::net::ToSocketAddrs::to_socket_addrs(&target) else {
+        return false;
+    };
+    all_private(&found.collect::<Vec<_>>())
+}
+
+/// Whether every address is on the house's network, and there is at least one.
+fn all_private(addrs: &[std::net::SocketAddr]) -> bool {
+    !addrs.is_empty()
+        && addrs
+            .iter()
+            .all(|a| is_private_endpoint(&format!("http://{a}/")))
+}
+
 /// Builds one [`LlmButler`] slot from a config's shared endpoint + key and the
 /// slot's model and sampling.
 fn slot_butler(config: &ButlerModelConfig, slot: &ModelSlot) -> LlmButler {
@@ -2537,6 +2578,32 @@ mod tests {
         ] {
             assert!(!super::is_private_endpoint(public), "{public}");
         }
+    }
+
+    #[test]
+    fn a_name_reaches_only_the_house_when_everything_it_resolves_to_is_private() {
+        let at = |s: &str| s.parse::<std::net::SocketAddr>().unwrap();
+        assert!(super::all_private(&[at("192.168.1.10:8080")]));
+        assert!(super::all_private(&[
+            at("192.168.1.10:8080"),
+            at("[fd00::10]:8080")
+        ]));
+        assert!(!super::all_private(&[
+            at("192.168.1.10:8080"),
+            at("8.8.8.8:8080")
+        ]));
+        assert!(!super::all_private(&[]));
+        // A private address by its text needs no lookup; a public one never passes.
+        assert!(super::reaches_only_the_house("http://192.168.1.10:8080/v1"));
+        assert!(!super::reaches_only_the_house("http://8.8.8.8:8080/v1"));
+        // A name the text check does not know, that resolves to a private address, reaches only
+        // the house: "localhost." stands in for a laptop's router-given name.
+        assert!(!super::is_private_endpoint("http://localhost.:8080/v1"));
+        assert!(super::reaches_only_the_house("http://localhost.:8080/v1"));
+        // A name that resolves to nothing is not known to be at home.
+        assert!(!super::reaches_only_the_house(
+            "http://no-such-mac.invalid:8080/v1"
+        ));
     }
 
     /// Answers one request with `status`, on a port of its own.

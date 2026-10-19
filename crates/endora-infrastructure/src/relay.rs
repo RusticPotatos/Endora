@@ -104,7 +104,7 @@ pub const LARGEST_LOCAL_REPLY: u64 = 16 * 1024 * 1024;
 /// house), the endpoint could not be reached, or its reply was longer than
 /// [`LARGEST_LOCAL_REPLY`].
 pub fn send_local(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
-    if !crate::is_private_endpoint(base) {
+    if !crate::butler::reaches_only_the_house(base) {
         return Err(format!("{base} is not on the house's network"));
     }
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -949,6 +949,14 @@ mod tests {
         assert!(
             refused.is_err_and(|why| why.contains("house's network")),
             "refused before anything is sent"
+        );
+        // A name that resolves only to the house's addresses is the house's: a laptop's
+        // router-given name ("localhost." stands in for it). Nothing listens on port 1, so the
+        // call fails to connect, but never for being off the house's network.
+        let by_name = send_local("http://localhost.:1/v1", "", b"{}");
+        assert!(
+            by_name.is_err_and(|why| !why.contains("house's network")),
+            "a name at home is not refused as away"
         );
     }
 
