@@ -12,7 +12,7 @@ use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::application::scorecard::Window;
 use crate::application::scorecard::outcomes::talk_work;
 use crate::domain::evidence::Ref;
-use crate::domain::guards::{self, Ceremony, Guard, THRESHOLDS, TurnKind, TurnSeen, Verdict};
+use crate::domain::guards::{self, Ceremony, Guard, Over, THRESHOLDS, TurnKind, TurnSeen, Verdict};
 use crate::domain::ladder::Rung;
 use crate::domain::{
     EventKind, MemberId, Millis, ProjectStatus, Refusal, RunId, Task, TaskId, WakeReason,
@@ -39,6 +39,20 @@ pub(super) struct Seen {
     pub(super) turn: TurnSeen,
     /// When each act of its that succeeded was done.
     pub(super) acts: Vec<Millis>,
+}
+
+/// A turn that ended in the last week and that HQ cannot read: it has no label (it ended before
+/// turns were labelled, ADR 0114), so whether it talked or changed the product is not known
+/// (ADR 0124, amended).
+pub(super) struct Unread {
+    /// The project of its task, if the task is in one.
+    pub(super) project: Option<i64>,
+    /// The task it was on.
+    pub(super) task: TaskId,
+    /// The top of the task tree that task hangs from.
+    pub(super) root: TaskId,
+    /// When it ended.
+    pub(super) ended_at: Millis,
 }
 
 /// What a ceremony is the ceremony of: a project, or, for work outside any, the task tree it is
@@ -94,7 +108,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         self.store.set_setting(LOOKED_AT, &now.to_string())?;
         let turns = self.turns_seen(now, None)?;
-        self.look_for_ceremony(now, &turns)?;
+        let unread = self.unread_turns(now)?;
+        self.look_for_ceremony(now, &turns, &unread)?;
         self.look_at_coordination(now, &turns)?;
         self.look_at_talk(now, &turns)
     }
@@ -231,6 +246,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(turns)
     }
 
+    /// The turns that ended in the last week that HQ cannot read: started and ended, and with no
+    /// label. They are left out of [`Self::turns_seen`], which is of what a turn did.
+    pub(super) fn unread_turns(&self, now: Millis) -> Done<Vec<Unread>> {
+        let tasks = self.store.tasks()?;
+        let week = guards::WINDOWS[1].0;
+        Ok(self
+            .store
+            .runs()?
+            .into_iter()
+            .filter(|r| r.started_at.is_some() && r.label.is_none())
+            .filter_map(|r| {
+                let (task, ended) = (r.task?, r.ended_at?);
+                (now.saturating_sub(ended) < week).then(|| Unread {
+                    project: tasks
+                        .iter()
+                        .find(|t| t.id == task)
+                        .and_then(|t| t.project)
+                        .map(|p| p.0),
+                    task,
+                    root: root_of(&tasks, task),
+                    ended_at: ended,
+                })
+            })
+            .collect())
+    }
+
     /// The whole team's talk against work over the day and the week, with the ceremony guard's
     /// own labels, kept for the outcomes line (ADR 0132): turns that coordinated against turns
     /// that changed the product, the posts members wrote and the acts that succeeded. A lead's
@@ -270,7 +311,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// notice on the owner's digest and the lead woken on the busiest task; back under it in both,
     /// the finding clears. Kept for the scorecard either way, for a project; a tree is on the
     /// card only while it is over.
-    fn look_for_ceremony(&self, now: Millis, turns: &[Seen]) -> Done<()> {
+    fn look_for_ceremony(&self, now: Millis, turns: &[Seen], unread: &[Unread]) -> Done<()> {
         let mut shown = Vec::new();
         let mut looked_at = Vec::new();
         for project in self.store.projects()? {
@@ -288,7 +329,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 lead: Some(project.lead),
             };
             looked_at.push(subject.key.clone());
-            shown.push(self.look_at_ceremony(now, &subject, &mine)?);
+            let gone: Vec<Millis> = unread
+                .iter()
+                .filter(|u| u.project == Some(project.id.0))
+                .map(|u| u.ended_at)
+                .collect();
+            shown.push(self.look_at_ceremony(now, &subject, &mine, &gone)?);
         }
         // Work outside any project (the owner's, a routine's) belongs to its task tree, the unit
         // its lead can act on: the top task and everything under it. A lead's standing reviews
@@ -326,8 +372,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 lead: None,
             };
             looked_at.push(subject.key.clone());
-            let entry = self.look_at_ceremony(now, &subject, &mine)?;
-            if entry["over"] == true {
+            let gone: Vec<Millis> = unread
+                .iter()
+                .filter(|u| u.project.is_none() && !reports.contains(&u.task) && u.root == root)
+                .map(|u| u.ended_at)
+                .collect();
+            let entry = self.look_at_ceremony(now, &subject, &mine, &gone)?;
+            if entry["over"] == true || entry["cannot_tell"] == true {
                 shown.push(entry);
             }
         }
@@ -348,19 +399,33 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// One ceremony's look: its turns over the day and the week, what they spent, and, over the
     /// line, its finding and the lead it wakes. Returns what the Guards card shows of it.
-    fn look_at_ceremony(&self, now: Millis, subject: &Subject, mine: &[&Seen]) -> Done<Value> {
+    fn look_at_ceremony(
+        &self,
+        now: Millis,
+        subject: &Subject,
+        mine: &[&Seen],
+        unread: &[Millis],
+    ) -> Done<Value> {
         let seen: Vec<TurnSeen> = mine.iter().map(|s| s.turn).collect();
         let windows: Vec<(Ceremony, &str)> = guards::WINDOWS
             .iter()
-            .map(|(ms, name)| (guards::ceremony(&seen, now, *ms), *name))
+            .map(|(ms, name)| (guards::ceremony_with_unread(&seen, unread, now, *ms), *name))
             .collect();
-        let over = windows.iter().any(|(c, _)| c.over());
+        let over = windows.iter().any(|(c, _)| c.over().is_yes());
+        // A window that depends on a turn HQ cannot read is neither over nor under: no finding
+        // is opened on it, and none that stands is cleared (ADR 0124, amended).
+        let cannot_tell = !over && windows.iter().any(|(c, _)| c.over() == Over::CannotTell);
         let entry = json!({
             "project": subject.project, "title": subject.title, "over": over,
+            "cannot_tell": cannot_tell,
             "windows": windows.iter().map(|(c, name)| json!({
                 "window": name, "coordination": c.coordination, "product": c.product,
-                "over": c.over(), "said": c.said(name), "spent": c.spent })).collect::<Vec<_>>(),
+                "unread": c.unread, "over": c.over().is_yes(), "verdict": c.over().name(),
+                "said": c.said(name), "spent": c.spent })).collect::<Vec<_>>(),
         });
+        if cannot_tell {
+            return Ok(entry);
+        }
         if !over {
             if let Some(open) = self
                 .store
@@ -550,11 +615,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- the CEO's rescues --------------------------------------------------------------------
 
-    /// How often the chain of command's top reached into each member's work (ADR 0124): the
-    /// CEO's directions on a task the member holds, and stuck work of the member's that climbed
-    /// to the CEO. A member whose work is rescued again and again needs its brain, notebook or
-    /// role looked at, not more rescuing. Counted by whoever holds each task now.
-    pub(super) fn rescues(&self) -> Done<std::collections::HashMap<i64, usize>> {
+    /// How often the chain of command's top reached into each member's work over the last week
+    /// (ADR 0124): the CEO's directions on a task the member holds, and stuck work of the
+    /// member's that climbed to the CEO. A member whose work is rescued again and again needs its
+    /// brain, notebook or role looked at, not more rescuing. Counted by whoever holds each task
+    /// now. `None` when HQ cannot tell: the climbs are counted from the event feed, which the node
+    /// prunes to the newest events it keeps, and events inside the week are gone from it; a count
+    /// over them would be too low, and is not a count (see [`guards::feed_reaches`]).
+    pub(super) fn rescues(&self) -> Done<Option<std::collections::HashMap<i64, usize>>> {
+        let from = self.clock.now().saturating_sub(guards::RESCUE_WINDOW_MS);
+        let events = self.store.events_after(0)?;
+        if !guards::feed_reaches(from, events.first().map(|e| (e.id, e.at))) {
+            return Ok(None);
+        }
         let tasks = self.store.tasks()?;
         let holder = |task: Option<i64>| {
             task.and_then(|t| tasks.iter().find(|x| x.id.0 == t))
@@ -562,22 +635,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let mut count = std::collections::HashMap::new();
         for w in self.store.wakes()? {
-            if w.reason != WakeReason::Directed {
+            if w.reason != WakeReason::Directed || w.at < from {
                 continue;
             }
             if let Some(m) = holder(w.task.map(|t| t.0)) {
                 *count.entry(m.0).or_insert(0) += 1;
             }
         }
-        for e in self.store.events_after(0)? {
-            if e.kind != EventKind::StuckClimbed.name() || e.data["rung"] != "ceo" {
+        for e in events {
+            if e.at < from || e.kind != EventKind::StuckClimbed.name() || e.data["rung"] != "ceo" {
                 continue;
             }
             if let Some(m) = holder(e.data["task"].as_i64()) {
                 *count.entry(m.0).or_insert(0) += 1;
             }
         }
-        Ok(count)
+        Ok(Some(count))
     }
 
     // ---- the same ask, once on the desk -------------------------------------------------------

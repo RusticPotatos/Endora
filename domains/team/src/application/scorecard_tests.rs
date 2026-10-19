@@ -58,6 +58,7 @@ pub(super) fn run(
         output_tokens: 0,
         asked_by_owner: false,
         brain: None,
+        interrupted: 0,
     }
 }
 

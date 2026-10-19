@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-18. Prepared with AI assistance (Claude). Amends
+Accepted, 2026-10-19 (proposed 2026-10-18). Prepared with AI assistance (Claude). Amends
 [0114](0114-evidence-acceptance-criteria-and-the-tester.md) (a tester's pass is bound to the
 criteria it judged; evidence already enough is submitted, not polished; re-checking it is talk
 only), [0118](0118-elastic-staffing-and-notebooks.md) (a note that cites another is built on it;
@@ -19,6 +19,13 @@ routine's task carries criteria from its routine, and a request for the owner's 
 criterion of its task it serves. Scenarios:
 `domains/team/features/what-done-means-comes-first.feature` and
 `a-request-says-what-it-serves.feature`.
+
+Amended again 2026-10-19, from a review of the live record and two audits (*hygiene*): a turn the
+platform cut short is not its member's failure (*Amended: a deploy under a turn*), and two holes in
+the closure contract are shut (*Amended: the closure contract*), and a guard says it cannot tell
+when the record does not let it (*Amended: can't tell*). Scenarios:
+`domains/team/features/a-deploy-under-a-turn.feature`, and in `guards.feature` and
+`the-engineering-wing.feature`.
 
 ## Context
 
@@ -75,8 +82,8 @@ finding takes a verdict, so its precision is measured before anyone tunes it.
 | Stopped diagnosis | Each open task, read when asked: **working** (a turn or a held wake), **parked** (its member idle, still owed), **held** (blocked with a named reason and a live check-back or answer to come, or waiting on open work), **indeterminate** (nobody holds it, or its last turn failed for good) | — | `domain::guards::diagnose`; the tick's steps 5 and 5b; `climb_stuck` |
 | Receipted nudges | A recovery wake is recorded under task + member + reason + what HQ saw (status, posts not HQ's, citations, newest receipt, newest wake not HQ's own) before it is sent; a key is never sent twice | — | `nudges` table (append-only); `engine::guards::nudge_once` |
 | Stuck | Parked work nudged once and still parked: a finding; on the desk once, closing itself when the work moves | — | ladder, `guards_tick` |
-| Closure reasons | Done: met criteria, superseded (successor), not needed. Dropped: obsolete, duplicate of #N, won't do, blocked for good, optional successor. A task waiting on a dropped one stays blocked; its holder is told at once (`wait_dropped`) | — | `domain::closure`; `closures` table; `after_closing` |
-| Ceremony | Per project, over 24 h and 7 d: coordination turns (talk only, a re-check with no new reading, a review round or huddle view, a question up the chain) against product change (an act, a branch, a criterion met) | 12 coordination turns and 4:1 | `domain::guards::ceremony`; `health_tick`, every 5 min |
+| Closure reasons | Done: met criteria, superseded (*names its successor*, never itself), not needed. Dropped: obsolete, duplicate of #N, won't do, blocked for good, optional successor. A task waiting on a dropped one stays blocked; its holder is told at once (`wait_dropped`); *a task is not made to wait on work already done or dropped* | — | `domain::closure` (`may_close`); `closures` table; `after_closing`; `add_task` |
+| Ceremony | Per project, over 24 h and 7 d: coordination turns (talk only, a re-check with no new reading, a review round or huddle view, a question up the chain) against product change (an act, a branch, a criterion met). *Amended*: a turn HQ cannot read (it ended before turns were labelled) is counted apart and said; a window that is over only if such turns talked, or under only if they changed the product, is *can't tell*: no finding opens and none that stands clears | 12 coordination turns and 4:1 | `domain::guards::ceremony_with_unread`, `Ceremony::over` (`Over`); `health_tick`, every 5 min |
 | Carousel | Sent back with no new evidence submitted between returns: straight to a huddle; a submission while it decides waits | 3 returns | `after_sent_back`; `review_asked` |
 | Redundant wakes | A wake that brings no news, to a member whose last turns on the task showed nothing: refused, the work parked | 3 turns | `wakes::decide` (`Refused::Redundant`) |
 | Sub-tasks | At most 5 open under one task, at most 3 deep; a sub-task of any task with criteria names which it serves (`serves`), the owner's and a routine's included (*amended*: depth 0 was exempt, and is where a lead first splits work). A task with no criteria has none to name: work open from before they were asked for, and the plan HQ hands a project's lead | 5 open, depth 3 | `create_task_in`, `subtask_discipline` |
@@ -87,7 +94,7 @@ finding takes a verdict, so its precision is measured before anyone tunes it.
 | Fence push | Refused acts in one turn, or the same refused act for different members within a day: a deduped desk notice naming the tool and the members; every briefing carries its goal's "not now" | 3 a turn; 2 members in 24 h | `after_refused_act`; the briefing |
 | The same ask once | A question or board decision alike both ways to one waiting from another task attaches to it ("also on #672"); the owner's one answer reaches every attached thread and wakes each asker. Approvals never merge: each runs its own stored action | 60% both ways | `ask_on_the_desk`; `desk_attached` table |
 | Pass bound to criteria | A tester's pass keeps a hash of the criteria; changed since, it reads "needs re-check" and does not count | — | `test_in`, `tested_since_submitted` |
-| CEO rescues | Per member: the CEO's directions on a task it holds, and its stuck work that climbed to the CEO, on the roster | — | `rescues` |
+| CEO rescues | Per member, over the last 7 days: the CEO's directions on a task it holds, and its stuck work that climbed to the CEO, on the roster. *Amended*: the climbs are counted from the event feed, which the node prunes to its newest 20,000; when the oldest event kept is newer than the week's start, the count would be too low and the roster says HQ cannot tell | 7 d | `rescues`, `guards::feed_reaches` |
 | Reachability | A read that timed out is `unverified`, never `unavailable`: no alarm, and what was last seen stands. `/health` gives the tick's last finish, its age and whether it is within three periods | — | `capabilities::observe_homelab`, `lab_alarms`; HQ `/health` |
 
 **Findings and verdicts.** Every finding (stuck, ceremony, carousel, redundant wake, fence push,
@@ -138,15 +145,79 @@ ladder (0120) takes parked work as before.
   card's `serves` is the criterion's number and words as they were when asked. Models propose; HQ
   decides.
 
+**Amended: a deploy under a turn.** A deploy restarts HQ, the node and the runner in turn. Live,
+one cut a developer's turn short, HQ read the task as stopped by accident (*its last turn failed:
+the runner stopped it, not its member*), its lead was asked to look, and the CEO handed the work
+to another area's lead ([0120](0120-roles-as-an-enforced-raci.md), amended). So HQ tells whose it
+was that a turn did not finish well (`domain::runs::fault_of`), from what it was told and nothing
+a model says:
+
+- *The platform's*: HQ lost the turn (`Liveness::Gone`: HQ restarted, and with it the memory of
+  what the runner was handed); the runner says the container was gone before it saw it end (no
+  exit code, with its words: the runner has always said so, and is unchanged); or the container
+  was killed from outside before its full time (exit 137 or 143).
+- *The worker's*: every other exit (1, 3, none given), and a kill at the turn's full time, which
+  is the turn's own timeout.
+
+A turn the platform cut short is tried again a minute later, as the same member on the same run,
+and **the first interruption does not count against its retries** (`runs::own_attempts`, one
+free): it gets four starts, not three, and only the first loss is free. While it waits, the task
+has a live turn, so the stopped diagnosis reads *working* and nothing is found, nudged, climbed
+or put on a desk. The run's reason says `interrupted: …`, and the feed's `run.ended` says
+`"interrupted": true`. An older runner that says neither why nor how is the worker's, as before.
+
+**Amended: the closure contract.** Two holes in it, found in an audit of the record. *Superseded
+named nothing:* work closed as done, superseded, was meant to name the task that carries it on
+(the tool's own description said so), and was not made to. `closure::may_close` now refuses it
+with no successor, and a successor that is the task itself, and `set_status` checks it, and that
+the successor is there, before anything moves, as it checks a reason not in the set; the engine's
+`done_because_in` checks it too. *A wait on finished work:* `add_task` accepted any `waits_on`,
+and a task waiting on work already dropped was stuck by construction (what it waits for will not
+happen: `wait_dropped` told its holder only when the dropping came after). It now refuses a
+`waits_on` that holds a task already done (nothing to wait for) or dropped
+(`GuardRefusal::WaitsOnFinished`, which says to leave it out or wait on the task that carries the
+work on), and a task that is not there; a wait on open work is as ever. Closings already
+recorded are read as they were: nothing is migrated.
+
+**Amended: can't tell.** A guard that reads a gap in the record as zero says something false. Two
+were found, and now say that they cannot tell:
+
+- *Ceremony, over a turn it cannot read.* The count of product changes comes from each turn's
+  label. A turn that ended before turns were labelled ([0114](0114-evidence-acceptance-criteria-and-the-tester.md))
+  has none, and was counted as nothing, so a project could be found talking more than working, or
+  cleared of it, on turns HQ never read. They are now counted apart (`Ceremony::unread`, said as
+  "1 turn it cannot read"), and `Ceremony::over` is three-valued (`Over`): *over* if it is over
+  even were every turn it cannot read a product change, *under* if it is under even were every one
+  talk, otherwise *can't tell*. This reading of "the product count is missing" is HQ's: a turn
+  with no label is the only way a count is missing, and the count is not guessed. A window that
+  cannot be told is neither over nor under: no finding is opened, and a finding that stands is not
+  cleared (and, standing, not raised again). The Guards card shows it as *cannot tell whether it
+  is talking more than working: some turns have no label*; a task tree outside a project is
+  shown only when it is over or cannot be told.
+- *The CEO's rescues, over a pruned feed.* A climb to the CEO is an event, and the node keeps the
+  newest 20,000. A count over a feed whose oldest kept event is newer than the start of the week it
+  counts would be too low, and was shown as a plain number. It is now counted over the last week
+  only (the longest window the guards use), and when the feed no longer reaches back to its start
+  (`guards::feed_reaches`: the first event ever is place 1, so a feed that starts later was
+  pruned) the roster's `rescues` is null and the console says *how often the CEO stepped in this
+  week: HQ cannot tell, the record has lost part of it*. Wakes are counted over the same week.
+
+The thresholds, the windows and the findings are as they were; nothing is migrated.
+
 **Stored** in tables made if missing (`nudges`, `findings`, `closures`, `retractions`,
 `note_parents`, `desk_attached`) and in HQ's settings (`serves:<task>`, `enough:<task>:<member>`,
 `passed:<task>:<run>`, `guards_looked_at`, `guards_ceremony`, and, since the amendment,
-`approval_serves:<desk item>`). No existing row changes, and no migration.
+`approval_serves:<desk item>`). No existing row changes, and no migration; the deploy
+amendment adds one column to `runs`, `interrupted`, at none for every turn from before, added only
+if missing.
 
 ## Consequences
 
 - Fewer turns spent on talk, polish and nudges that say nothing new; one more look for the lead
   where HQ cannot tell, and a few more refusals a member must read and act on.
+- A deploy that restarts HQ under a turn costs the member nothing the first time: one more start,
+  and no finding, recovery wake or look from its lead. A run interrupted at every start is tried
+  four times before it fails, not three.
 - The detectors run every five minutes over the week's runs; at home-lab size this is small.
 - A member's sub-task under any task with criteria must say which it serves, and since the
   amendment that includes the owner's tasks and a routine's: the splitting that was exempt is the

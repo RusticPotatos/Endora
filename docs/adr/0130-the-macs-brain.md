@@ -19,6 +19,9 @@ and the NAS's model when it is not; judgment never runs on it. `start_queued` de
 turn, from why the turn was asked for, and the Mac's one-turn rule counts turns started on it,
 not members.
 
+Amended 2026-10-19 (hygiene, from a review of the live record): the Mac has limits of its own,
+between the NAS's model's and Claude's (*The Mac's limits*, below).
+
 ## Context
 
 The owner's laptop (an Apple Silicon Mac) can run a far stronger coding model than the NAS can.
@@ -47,10 +50,41 @@ node; nothing leaves the house; it costs nothing; it runs only while the Mac is 
 offered to every role on the roster's brain picker and the hire form, is unmetered like the
 house's own model (price class 0, no share of the pool), and has the **house-local data tier**:
 `cloud()` is false, so the same data rules as `local` apply (a Mac turn may be given Confidential
-results; the node's Anthropic relay refuses it). Where a rule is about the size of a
-house model's context (the briefing budget, the map's size) it follows `Brain::house()`, which is
-true of both. In the engineering wing a lead or a developer may sit on the Mac as on the
-house's model. Claude Code, which speaks Anthropic's API alone, is not offered for it.
+results; the node's Anthropic relay refuses it). Where a rule is about *where the model runs*
+(the data tier, what costs nothing) it follows `Brain::house()`, which is true of both; where it
+is about the size of the model's context (the briefing budget, the map's size) it does not:
+*The Mac's limits*, below. In the engineering wing a lead or a developer may sit on the Mac as
+on the house's model. Claude Code, which speaks Anthropic's API alone, is not offered for it.
+
+### The Mac's limits
+
+*Amended 2026-10-19.* The first build gave the Mac the NAS's limits on what a turn is told of
+the team's world, because both are house models. They are not alike in the one thing those
+limits are about, the context. The bundled runtime serves the NAS's model a window of 8,192
+tokens (`scripts/pick-a-model.sh`), of which the briefing's 1,800 tokens of the world is a fifth;
+the Mac's helper starts its server at `-c 32768` unless the owner says otherwise
+(`ENDORA_MAC_LLAMA_ARGS`), and the owner runs it at 65,536, where the same 1,800 is under 3%. So a
+model that reads and writes code, and needs what the team knows about the lab to do it, was
+being told the least of anyone.
+
+It is not given Claude's either. A turn on the Mac runs on a laptop the owner is not using, and
+every token of its briefing is read there at the start of the turn; a local model also holds a
+long briefing less steadily than Claude does (the failure study, 0124). So the limits sit between:
+
+| | The NAS's model | **The Mac** | Claude |
+|---|---|---|---|
+| The world in a briefing (0122), continuing or fresh | 1,800 tokens | **2,800 tokens** (the CEO's 2,500 stays: its briefings are held short whatever it thinks with) | 2,500 / 4,000 / 3,000 by role |
+| The same after a gap, a handover or a recall | 3,000 | **4,000** (the CEO's 3,700) | 3,700 / 5,200 / 4,200 |
+| The map's lines (0126) | 1,400 characters | **1,900 characters** | 2,400 |
+
+2,800 is 1,000 tokens (about 55%) above what the NAS's model has, 200 short of what a developer
+has on Claude and 1,200 short of a lead's; 1,900 characters is about ten map lines, where the
+NAS's 1,400 is seven and Claude's 2,400 is twelve. They are a starting point, not a
+measurement. Every run keeps the size of its briefing against its budget and whether the core
+alone ran over (`run_briefings`, shown in the replay), so a limit that binds on most Mac turns, or
+is never reached, shows there, and is tuned from it. The rules are pure functions, one place each
+(`situations::budget`, `map::chars_for`), and a model that is neither the NAS's nor the Mac's has
+its role's.
 
 ### Who knows what
 

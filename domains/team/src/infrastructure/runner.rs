@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use crate::application::ports::{RunContext, StartError, WorkerAdapter};
-use crate::domain::{Liveness, RunId};
+use crate::domain::{Exit, Liveness, RunId};
 use crate::infrastructure::{RemoteRunner, SimulatedRunner};
 
 /// Either runner, chosen when HQ starts.
@@ -53,6 +53,10 @@ impl WorkerAdapter for Runner {
 
     fn why_ended(&self, run: RunId) -> Option<String> {
         self.adapter().why_ended(run)
+    }
+
+    fn exit_of(&self, run: RunId) -> Exit {
+        self.adapter().exit_of(run)
     }
 
     fn stop(&self, run: RunId, grace: Duration) {

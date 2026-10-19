@@ -499,16 +499,61 @@ fn every_briefing_opens_with_a_map_of_the_pages_that_matter_to_its_member() {
 }
 
 #[test]
+fn a_turn_on_the_mac_has_a_longer_map_and_a_bigger_briefing_than_one_on_the_nas() {
+    use crate::domain::map::{MAP_CHARS_LOCAL, MAP_CHARS_MAC};
+    use crate::domain::situations::{LOCAL_BUDGET, MAC_BUDGET};
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    for n in 0..14 {
+        hq.hire(&format!("Lead{n}"), Role::Lead, 25, 2, 5).unwrap();
+    }
+    hq.migrate_map().unwrap();
+    // The node says the Mac is free, so Linus's work runs on it: a large context, its own limits.
+    hq.tell_mac(true, "ready");
+    let (linus, _) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    assert_eq!(
+        hq.store().run(linus.run).unwrap().unwrap().brain,
+        Some(crate::domain::Brain::Mac),
+        "his turn runs on the Mac"
+    );
+    let briefed = hq.briefed(linus.run).unwrap().unwrap();
+    assert_eq!(briefed.budget, MAC_BUDGET);
+    assert!(briefed.budget > LOCAL_BUDGET);
+    let map = map_of(&linus.told);
+    let chars = map.chars().count();
+    assert!(
+        chars <= MAP_CHARS_MAC + 200,
+        "the Mac's map keeps to its own size: {chars} chars"
+    );
+    assert!(
+        chars > MAP_CHARS_LOCAL + 200,
+        "and is longer than the NAS's model gets: {chars} chars"
+    );
+    assert!(map.contains("Left off this map to keep it short:"), "{map}");
+}
+
+#[test]
 fn a_tight_map_leaves_off_the_least_and_names_it() {
     let clock = Hands(AtomicI64::new(OCT_18));
     let hq = engine(&clock);
     let t = team(&hq);
-    // Many areas, so the map is wide; Linus thinks with the house's model, so it is short.
+    // Many areas, so the map is wide; the node has not said the Mac is free, so Linus works on
+    // the NAS's model, whose context is small: its map is short and its briefing small.
     for n in 0..14 {
         hq.hire(&format!("Lead{n}"), Role::Lead, 25, 2, 5).unwrap();
     }
     hq.migrate_map().unwrap();
     let (linus, _) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    assert_eq!(
+        hq.store().run(linus.run).unwrap().unwrap().brain,
+        Some(crate::domain::Brain::Local),
+        "his turn runs on the NAS's model"
+    );
+    assert_eq!(
+        hq.briefed(linus.run).unwrap().unwrap().budget,
+        crate::domain::situations::LOCAL_BUDGET
+    );
     let map = map_of(&linus.told);
     assert!(
         map.chars().count() <= crate::domain::map::MAP_CHARS_LOCAL + 200,
@@ -785,6 +830,40 @@ fn a_cited_address_that_does_not_resolve_is_a_broken_road_found_by_code() {
 fn propose(page: &str, heading: &str, task: TaskId) -> Value {
     json!({ "page": page, "heading": heading, "headline": format!("{heading}: how it goes"),
             "body": "Nightly, at 03:00.", "evidence": [format!("task {}", task.0)] })
+}
+
+/// A claim the owner retracted is not proposed to a page again (ADR 0124), in the proposer's own
+/// words around it; the refusal says when it was retracted, and nothing is proposed.
+#[test]
+fn a_retracted_claim_is_not_proposed_to_a_page_again() {
+    let clock = Hands(AtomicI64::new(OCT_18));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.migrate_map().unwrap();
+    let page = area(t.ada);
+    let (linus, task) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    use_tool(
+        &hq,
+        &linus,
+        "note",
+        &json!({ "text": "Backups Backups: how it goes Nightly, at 03:00.",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    let wrong = hq.notebook(t.linus).unwrap()[0].id;
+    hq.retract(&format!("note:{wrong}")).unwrap();
+    let refused = use_tool(
+        &hq,
+        &linus,
+        "propose_world",
+        &propose(&page, "Backups", task),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("this says again what was retracted on"),
+        "{refused}"
+    );
+    assert!(hq.store().proposals().unwrap().is_empty());
 }
 
 #[test]

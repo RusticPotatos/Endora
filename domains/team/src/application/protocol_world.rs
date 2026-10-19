@@ -72,9 +72,22 @@ pub fn handover_needed(args: &Value) -> Result<HandoverNote, String> {
     handover_arg(args)?.ok_or_else(|| WorldRefusal::HandoverNeeded.to_string())
 }
 
+/// The tool a member answers the nightly quiz on its map with. Offered in the quiz's own turn
+/// and in no other (ADR 0131, amended): a tool only one turn in a night can use is not one more
+/// for every other turn to choose among.
+#[must_use]
+pub fn quiz_tool() -> Value {
+    tool(
+        "answer_quiz",
+        "Answer the quiz on your map, when your downtime turn carries one (the briefing lists the questions): one answer each, in order, from your map and read_world. HQ scores it by code; nothing rides on it but whether the map carries.",
+        json!({ "answers": { "type": "array", "items": { "type": "string" }, "description": "one short answer per question: an address (world:...), a name, 'the CEO' or 'the owner'" } }),
+        &["answers"],
+    )
+}
+
 /// The world's tools a member of `role` is offered: everyone reads it and tells stories; the
 /// CEO writes the house page; the CEO and the leads confirm and retire what they steward and
-/// propose canon.
+/// propose canon. Not the quiz's answer: that is the quiz turn's alone ([`quiz_tool`]).
 #[must_use]
 pub fn tools(role: Role) -> Vec<Value> {
     let address = json!({ "type": "string", "description": "world:house, world:lab, world:team, world:area/<n>, world:project/<n>, world:goal/<n>, world:role/<role>, any of them with #<section>, or story:<handle>" });
@@ -126,12 +139,6 @@ pub fn tools(role: Role) -> Vec<Value> {
             "where_looked": { "type": "string", "maxLength": map::GAP_MOST, "description": "the addresses and docs you looked in" },
         }),
         &["what", "where_looked"],
-    ));
-    all.push(tool(
-        "answer_quiz",
-        "Answer the quiz on your map, when your downtime turn carries one (the briefing lists the questions): one answer each, in order, from your map and read_world. HQ scores it by code; nothing rides on it but whether the map carries.",
-        json!({ "answers": { "type": "array", "items": { "type": "string" }, "description": "one short answer per question: an address (world:...), a name, 'the CEO' or 'the owner'" } }),
-        &["answers"],
     ));
     if matches!(role, Role::Ceo | Role::Lead) {
         all.push(tool(

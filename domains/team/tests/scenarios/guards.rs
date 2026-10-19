@@ -4,9 +4,10 @@
 use std::sync::atomic::Ordering;
 
 use cucumber::{given, then, when};
-use endora_team::application::TeamStore;
-use endora_team::domain::WakeReason;
+use endora_team::application::guard_ports::GuardStore;
+use endora_team::application::{Author, NewTask, TeamStore};
 use endora_team::domain::guards::THRESHOLDS;
+use endora_team::domain::{Priority, TaskId, TaskStatus, WakeReason};
 use serde_json::json;
 
 use super::Office;
@@ -74,6 +75,59 @@ fn reviews_and_changes_nothing(
         .expect("a member may post in the task its turn is on");
         super::turn_ends(w, name.clone());
     }
+}
+
+/// The member's newest turn on the task, as one that ended before turns were labelled.
+#[when(regex = r#"^one of (\w+)'s turns on "(.+)" ended before turns were labelled$"#)]
+fn a_turn_ended_before_labels(w: &mut Office, name: String, title: String) {
+    let member = w.member(&name);
+    let task = w.task(&title);
+    let mut run =
+        w.hq.store()
+            .runs()
+            .expect("the store answers")
+            .into_iter()
+            .rfind(|r| r.member == member && r.task == Some(task) && r.label.is_some())
+            .expect("a labelled turn");
+    run.label = None;
+    w.hq.store().save_run(&run).expect("the store takes it");
+}
+
+/// The Guards card's ceremony entry for the project says HQ cannot tell, rather than over or under.
+#[then(expr = "the guards card cannot tell whether {string} is talking more than working")]
+fn guards_card_cannot_tell(w: &mut Office, title: String) {
+    let card = w.guards();
+    let entry = card["ceremony"]
+        .as_array()
+        .expect("each ceremony")
+        .iter()
+        .find(|c| c["title"] == title.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("no ceremony for {title}: {card}"));
+    assert_eq!(entry["cannot_tell"], json!(true), "{entry}");
+    assert_eq!(entry["over"], json!(false), "{entry}");
+}
+
+#[then("the owner's desk holds no finding")]
+fn desk_holds_no_finding(w: &mut Office) {
+    let found = w.waiting_on_desk("guard");
+    assert!(found.is_empty(), "on the desk: {found:?}");
+    let open = w.hq.store().findings().expect("the store answers");
+    assert!(
+        open.iter().all(|f| f.cleared_at.is_some()),
+        "a finding stands: {open:?}"
+    );
+}
+
+#[then(expr = "{word} is not woken by a guard")]
+fn not_woken_by_a_guard(w: &mut Office, name: String) {
+    let member = w.member(&name);
+    let woken =
+        w.hq.wakes()
+            .expect("the store answers")
+            .iter()
+            .any(|x| x.member == member && x.reason == WakeReason::Guard);
+    assert!(!woken, "{name} was woken by a guard");
 }
 
 #[when("HQ looks at how the team is doing")]
@@ -372,5 +426,79 @@ fn huddle_called_because(w: &mut Office, title: String, why: String) {
             .iter()
             .any(|d| d["why"].as_str().is_some_and(|w| w.contains(&why))),
         "huddles on {title}: {called:?}"
+    );
+}
+
+// --- The closure contract (ADR 0124, amended) -----------------------------------------------
+
+/// The owner hands a member a task that waits on another.
+#[when(regex = r#"^the owner hands (\w+) the task "(.+)", waiting on "(.+)"$"#)]
+fn owner_hands_a_task_that_waits(w: &mut Office, name: String, title: String, waits_on: String) {
+    let to = w.member(&name);
+    let goal = w.goal();
+    let wait = w.task(&waits_on);
+    w.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title,
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: vec![wait],
+        },
+    );
+}
+
+/// The wing's lead closes his plan as done, saying it was superseded, and by what if he does.
+fn closes_the_plan_superseded(w: &mut Office, name: &str, successor: Option<TaskId>) {
+    let plan = w.wing.as_ref().expect("the scenario has the wing").task;
+    let member = w.member(name);
+    let held =
+        w.hq.store()
+            .task(plan)
+            .expect("the store answers")
+            .expect("the plan");
+    if held.owner != Some(member) {
+        w.use_tool(name, "claim", &json!({ "task": plan.0 }))
+            .expect("the lead takes his plan");
+    }
+    // One list of evidence for each of the plan's criteria: the plan itself will do.
+    let cited = vec![vec![format!("task {}", plan.0)]; held.criteria.len().max(1)];
+    w.use_tool(
+        name,
+        "set_status",
+        &json!({ "task": plan.0, "status": "done", "reason": "the branches overtook the plan",
+                 "why": "superseded", "successor": successor.map(|t| t.0),
+                 "evidence": cited }),
+    );
+}
+
+#[when(regex = r"^(\w+) closes the plan as superseded, naming no successor$")]
+fn closes_the_plan_without_a_successor(w: &mut Office, name: String) {
+    closes_the_plan_superseded(w, &name, None);
+}
+
+#[when(regex = r#"^(\w+) closes the plan as superseded by "(.+)"$"#)]
+fn closes_the_plan_superseded_by(w: &mut Office, name: String, successor: String) {
+    let successor = w.task(&successor);
+    closes_the_plan_superseded(w, &name, Some(successor));
+}
+
+#[then(regex = r"^the plan is (still open|done)$")]
+fn the_plan_is(w: &mut Office, which: String) {
+    let plan = w.wing.as_ref().expect("the scenario has the wing").task;
+    let status =
+        w.hq.store()
+            .task(plan)
+            .expect("the store answers")
+            .expect("the plan")
+            .status;
+    assert_eq!(
+        status == TaskStatus::Done,
+        which == "done",
+        "the plan is {status:?}"
     );
 }

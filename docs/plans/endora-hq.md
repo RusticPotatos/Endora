@@ -254,7 +254,10 @@ Every 30 seconds, in this order:
 1. Timers that are due raise their wakes; **routines** that are due fire (a task for their
    member, or skipped while their last task is open); **check-backs** that are due wake their
    member on their task, if it is still open.
-2. Runs whose container is gone become `failed`, with one retry.
+2. Runs whose container is gone become `failed`, with one retry. A run the platform cut short
+   (HQ lost it when it restarted, the runner found its container gone, or it was killed from
+   outside before its full time) is tried again without that start counting, once, and says
+   `interrupted` ([ADR 0124](../adr/0124-guards-against-how-agent-teams-fail.md), amended).
 3. Retries whose time has come are queued again (at most two, a minute apart).
 4. Queued runs start where a member has a free slot, budget can be reserved, and a runner is
    available.
@@ -320,8 +323,7 @@ container:
 | `create_task` | Creates a sub-task for another member, with what it waits on. Refused when an open task under the same goal is already about the same home-lab containers (named in its title, or in its description when the title names none): "#664 already covers this (deluge, nzbget, prowlarr): add to it with post in #664, rather than a second task". The member's own task above the new one, and what is above it, never counts (ADR 0107) |
 | `ask_owner` | Asks a question or puts a proposal and ends the turn: HQ ends the run there and refuses any further call from it, and the worker exits 0. With a CEO at work it goes up the chain, in the task's thread (section 5); the CEO's is `{ "decision", "recommendation", "why" }`, a decision for the board's desk after the reviewer. With no CEO it goes on the owner's desk. One waits at a time per member and task. The owner can answer on the card, into the task's thread, and seeing it wakes the member who asked |
 | `check_back` | Wakes the member on its task again after 5–720 minutes, once, if it is still open: after a fix, to confirm it held |
-| `run_gate` | Runs the tests and build on a runner and returns the result |
-| `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
+| `run_gate`, `request_action` | Removed (2026-10-19): they were listed to every member from the first build and answered "not available yet" to every call, and were never built. A call to either now is a call to a tool that is not there. The gate runs where work is submitted, not on a member's call; a privileged act is asked of the owner with `ask_owner` or the bridge |
 | `note_lesson` | No longer offered (ADR 0122): a worker that still calls it gets a story marked to retell, in its writer's area, under a handle from the lesson's first words; a `lesson.noted` event and a notice on the owner's desk ("Ada noted: …") as before. The goal's notes are not changed |
 | `note_house` | The CEO's only: `{ "entry" }`, at most 500 characters, a dated line on the house page's timeline (ADR 0122; before it, the house log). A `house.noted` event |
 | `rewrite_house` | Refused for a release (ADR 0122), saying to use `write_world` and `note_house`; then removed |
@@ -855,7 +857,7 @@ for working things out: scripts, parsing what the tools returned, trying command
 - **The role**: `ceo`, ranked above the lead, which leads every goal as the lead does (it may
   act on any task); work is handed only down, so nobody hands the CEO work. Its tools: `my_turn`,
   `claim`, `post`, `set_status`, `create_task`, `check_back`, `ask_owner` (a decision),
-  `note_house`, `rewrite_house` and `read_doc`; not the gate or `request_action`.
+  `note_house`, `rewrite_house` and `read_doc`.
 - **Seated once**: HQ started with the demo off and no CEO seats "Mara" (share 35, Claude Opus,
   `member.hired` in the feed), remembered in HQ's settings so it is never seated again; and,
   once there is an active goal (the home lab's if any), the routine "Daily review" for the CEO
@@ -1242,7 +1244,8 @@ As built: the first of three builds of the team's memory; the map and asking the
   situations they are taught in, cited by handle. `tell_story` replaces `note_lesson`.
 - **Situations and budgets**: recalled, handover, fresh, after a gap, continuing (and resumed,
   named for later), decided from the record; the world's pieces composed within 2,500 (CEO),
-  4,000 (lead), 3,000 (others) or 1,800 (the house's model) tokens, 1,200 more after a gap, on a
+  4,000 (lead), 3,000 (others), 1,800 (the NAS's model) or 2,800 (the Mac, the CEO keeping its
+  own; [ADR 0130](../adr/0130-the-macs-brain.md), amended) tokens, 1,200 more after a gap, on a
   handover or a recall; what is left out is named on the last line; the run records it, and the
   replay shows it.
 - **Handover notes**: `hand_to` and a stuck task's hand-on or drop need `{done, not_done, next,
@@ -1283,6 +1286,15 @@ showing it, every number in `domain::guards::THRESHOLDS`, every finding judged.
 - **Small ones**: a tester's pass bound to the criteria it judged ("needs re-check"); the CEO's
   rescues per member on the roster; a home-lab read that timed out is `unverified`, never
   `unavailable`; HQ's `/health` gives the tick's age.
+- **A deploy under a turn** (amended 2026-10-19): a turn the platform cut short (HQ restarted, the
+  container vanished or was killed from outside) is the platform's, not its member's: tried
+  again once without counting against its retries, and nothing is found, nudged or climbed
+  while it waits (`runs.interrupted`; scenario `a-deploy-under-a-turn.feature`).
+- **Guards say can't tell** (amended 2026-10-19): a ceremony window that depends on a turn HQ
+  cannot read (one that ended before turns were labelled) is neither found nor cleared, and the
+  Guards card says so; the CEO's rescues are counted over the last week, and when the pruned
+  event feed no longer reaches back that far the roster says HQ cannot tell rather than show a
+  count that is too low (scenario `guards.feature`).
 - The owner: `POST /v1/hq/retractions`, `GET /v1/hq/retractions/{id}/sweep`,
   `POST /v1/hq/retractions/{id}/forget`, through the node and its audit log.
 - Scenarios: `domains/team/features/guards.feature`.
@@ -1402,8 +1414,8 @@ As built: the second of three builds of the team's memory; asking the past follo
   `propose_world` (any member) and `decide_proposal` (the steward; the owner from the World card,
   `POST /v1/hq/world/proposals/decide`); a decline says why; five open a member; the proposer is
   told once in its next briefing (`world_proposals`).
-- **The map**: the first piece of every briefing, core, within 1,400 characters (the house's
-  model) or 2,400; its role's page, area, task's project and the house first, then the lab, team
+- **The map**: the first piece of every briefing, core, within 1,400 characters (the NAS's
+  model), 1,900 (the Mac) or 2,400 (Claude); its role's page, area, task's project and the house first, then the lab, team
   and goal, then a line each for the rest, with the best three sections of each page that matters;
   what it left off is named, and how to say a thing is missing. Closed by `(End of your map.)`.
 - **Gaps and broken roads**: `report_gap {what, where_looked}` is one item for the member's lead

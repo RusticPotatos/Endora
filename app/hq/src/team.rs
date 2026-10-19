@@ -56,7 +56,8 @@ fn answer(
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({ "tools": protocol::tools(member.role) }),
+        // The role's tools, and the one tool of the special turn this is (a quiz, a consult).
+        "tools/list" => json!({ "tools": protocol::tools_in(hq, run, member) }),
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
             let args = params

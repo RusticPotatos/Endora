@@ -132,7 +132,7 @@ fn criteria_arg(args: &Value) -> Vec<Criterion> {
 fn hand_to_tool() -> Value {
     json!({
         "name": "hand_to",
-        "description": "Hand a task held by someone below you in the chain (who reports to you, or to someone who does) to another member: yourself, or one below you. Say why, and give the handover note (done, not done, next, watch out): the why goes in the thread, the note starts their first turn on it, and they are woken.",
+        "description": "Hand a task held by someone below you in the chain (who reports to you, or to someone who does) to another member: yourself, or one below you. A task in another lead's area stays in it: only that lead moves it out. Say why, and give the handover note (done, not done, next, watch out): the why goes in the thread, the note starts their first turn on it, and they are woken.",
         "inputSchema": { "type": "object", "properties": {
             "task": { "type": "integer", "description": "the task's number" },
             "to": { "type": "string", "description": "the member's name" },
@@ -448,7 +448,7 @@ pub fn tools(role: Role) -> Value {
         tool(
             "set_status",
             "Move your task on (todo, doing, in_review, blocked), with a reason. Submitting it (in_review) cites evidence for each of its criteria, and a live criterion a reading from this turn; the tester then re-checks it and its lead accepts it. Done is set only that way, except a routine's check: close that as done, with its evidence, once you have looked. Done met its criteria unless you say why otherwise: superseded (name the successor task) or not_needed.",
-            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on" } }),
+            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on, which superseded needs" } }),
             &["task", "status", "reason"]
         ),
         tool(
@@ -498,18 +498,6 @@ pub fn tools(role: Role) -> Value {
             "Give your view on stuck work, when a huddle asks you (your turn says so): three sentences at most, on evidence from HQ's record. One short turn: give it and stop; the area's lead then decides.",
             json!({ "task": task, "view": { "type": "string", "maxLength": crate::domain::ladder::VIEW_MOST }, "evidence": ids("What your view rests on: at least one.") }),
             &["task", "view", "evidence"]
-        ),
-        tool(
-            "run_gate",
-            "Run the task's tests and build on a runner and get the result.",
-            json!({ "task": task }),
-            &["task"]
-        ),
-        tool(
-            "request_action",
-            "Ask for a privileged action, such as opening a pull request. The gateway decides.",
-            json!({ "action": { "type": "string" }, "detail": { "type": "string" } }),
-            &["action", "detail"]
         ),
     ]);
     if role == Role::Reviewer {
@@ -579,6 +567,30 @@ pub fn tools(role: Role) -> Value {
         list.extend(super::protocol_world::tools(role));
         // Asking the past (ADR 0129).
         list.extend(super::protocol_history::tools());
+    }
+    all
+}
+
+/// The tools one turn is offered (what `tools/list` answers): its member's role's, and, in the
+/// turn that is for it, the tool a special turn answers with (ADR 0131, amended): `answer_quiz`
+/// in the night's quiz turn, `answer_consult` in a consulted one, and neither anywhere else. The
+/// number of tools a model is offered is a measured failure mode for the house's model (ADR
+/// 0085). A store that cannot say what the turn is offers it the role's, as every other turn.
+#[must_use]
+pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+) -> Value {
+    let mut all = tools(member.role);
+    let Some(list) = all.as_array_mut() else {
+        return all;
+    };
+    if engine.in_quiz(run.id).unwrap_or(false) {
+        list.push(super::protocol_world::quiz_tool());
+    }
+    if engine.in_consult(run.id).unwrap_or(false) {
+        list.push(super::protocol_history::answer_consult_tool());
     }
     all
 }
@@ -694,7 +706,7 @@ fn ceos_tools() -> Value {
     ));
     let mut hand_to = hand_to_tool();
     hand_to["description"] = json!(
-        "Hand a task of your own, or one held by someone below you, to a lead (never to anyone else: the lead hands it on in its area). Say why; it goes in the thread, and the lead is woken."
+        "Hand a task of your own, or one held by someone below you, to a lead (never to anyone else: the lead hands it on in its area). A task in a lead's area goes only to that lead, never to another area's: to have it moved, direct its lead. Say why; it goes in the thread, and the lead is woken."
     );
     list.push(hand_to);
     list.push(read_document_tool());
@@ -813,10 +825,16 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let mut out = run.told.clone();
             if let Some(task) = run.task {
                 let thread = engine.store().thread(task).map_err(|e| e.to_string())?;
+                let members = engine.store().members().map_err(|e| e.to_string())?;
                 if !thread.is_empty() {
                     out.push_str("\n\nThe thread, newest last:\n");
                     for p in thread.iter().rev().take(12).rev() {
-                        let line = Engine::<S, W, C>::post_line(&p.author, &p.text, p.unsupported);
+                        let line = Engine::<S, W, C>::post_line(
+                            &members,
+                            &p.author,
+                            &p.text,
+                            p.unsupported,
+                        );
                         out.push_str(&format!("- {line}\n"));
                     }
                 }
@@ -861,10 +879,23 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let reason = text_arg(args, "reason")?;
             let cited = evidence_lists(args)?;
             // Done says why when it is not "met its criteria" (ADR 0124): checked first, so a
-            // reason not in the set changes nothing.
+            // reason not in the set, a superseded that names no successor (or itself, or a task
+            // that is not there) changes nothing.
             let why = match (to, args["why"].as_str()) {
                 (TaskStatus::Done, Some(w)) if w != "met_criteria" => {
-                    Some(closure_arg(args, TaskStatus::Done)?)
+                    let (closure, successor) = closure_arg(args, TaskStatus::Done)?;
+                    crate::domain::closure::may_close(task, closure, successor)
+                        .map_err(|r| r.to_string())?;
+                    if let Some(next) = successor {
+                        let there = engine.store().task(next).map_err(|e| e.to_string())?;
+                        if there.is_none() {
+                            return Err(format!(
+                                "there is no task #{} to carry the work on",
+                                next.0
+                            ));
+                        }
+                    }
+                    Some((closure, successor))
                 }
                 _ => None,
             };
@@ -1374,10 +1405,6 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             "Nothing to report: the model relay already charges every call this turn makes."
                 .to_owned(),
         ),
-        // Not built yet (spec section 15, phase 5): said plainly, so a worker does not pretend.
-        "run_gate" | "request_action" => Err(format!(
-            "`{tool}` is not available yet: say in the thread what you would have done, and ask the owner"
-        )),
         _ => Err(format!("there is no tool called `{tool}`")),
     }
 }

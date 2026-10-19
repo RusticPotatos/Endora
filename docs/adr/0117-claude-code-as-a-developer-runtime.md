@@ -2,8 +2,8 @@
 
 ## Status
 
-Proposed, 2026-10-18, on the owner's decisions of 2026-10-17, for the owner to accept at the
-merge. Prepared with AI assistance (Claude). Amends
+Accepted, 2026-10-19 (proposed 2026-10-18), on the owner's decisions of 2026-10-17. Prepared
+with AI assistance (Claude). Amends
 [0110](0110-the-teams-rings.md) (the workbench image carries Claude Code, and a turn in it may
 be Claude Code's), [0114](0114-evidence-acceptance-criteria-and-the-tester.md) (receipts
 reported by the sandbox, which no live criterion rests on) and

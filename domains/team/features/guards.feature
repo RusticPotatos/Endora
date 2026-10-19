@@ -98,3 +98,31 @@ Feature: Guards against how agent teams fail
     And Linus is woken and reads sonarr's logs again
     Then the task "Find why sonarr restarts" is in_review
     And HQ says in "Find why sonarr restarts": "HQ submits it for Linus, on that evidence."
+
+  # Live, work waiting on a dropped task is told at once and stays blocked. Now it is not made to
+  # wait on one in the first place.
+  # Seed: the waits check skipped for dropped work fails the refusal step.
+  Scenario: Work is not made to wait on what was dropped
+    Given Ada has the task "Try the old way"
+    And Ada has the task "Read the logs"
+    When the owner drops the task "Try the old way"
+    And the owner hands Ada the task "Restore from the backup", waiting on "Try the old way"
+    Then it is refused: "#1 was dropped, so what a task waits on it for will not happen: leave it out of waits_on, or wait on the task that carries its work on"
+    And the team has 2 tasks
+    When the owner hands Ada the task "Restore from the backup", waiting on "Read the logs"
+    Then it is not refused
+
+  # A turn that ended before turns were labelled may have been the talk that puts the project over,
+  # or the change that keeps it under. HQ says it cannot tell; it neither blames nor clears.
+  # Seed: Ceremony::over reading an unread turn as talk fails the card step; as a change, the
+  # same; either way a finding opens on a count HQ does not have and fails the desk step.
+  Scenario: A guard that cannot tell says so, and opens no finding
+    Given the project "Home lab upkeep" led by Ada
+    And Ada has the task "Plan the backups" in the project "Home lab upkeep"
+    When Ada talks about "Plan the backups" for 12 turns and changes nothing
+    And one of Ada's turns on "Plan the backups" ended before turns were labelled
+    And HQ looks at how the team is doing
+    Then the guards card says "11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read"
+    And the guards card cannot tell whether "Home lab upkeep" is talking more than working
+    And the owner's desk holds no finding
+    And Ada is not woken by a guard

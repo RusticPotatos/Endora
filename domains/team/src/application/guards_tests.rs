@@ -275,9 +275,19 @@ fn work_waiting_on_a_dropped_task_stays_blocked_and_its_member_is_told_why() {
         .unwrap()
     };
     let after = new("Restore from the backup", vec![first]);
+    // Work already under way on what it waited for is blocked as well, not left running.
+    let under_way = new("Check the restore", vec![first]);
+    hq.store()
+        .set_task_status(under_way, TaskStatus::Doing)
+        .unwrap();
     let successor = new("Clear the downloads another way", Vec::new());
     hq.drop_task_because(first, Closure::Dropped(DropWhy::Obsolete), Some(successor))
         .unwrap();
+    assert_eq!(
+        hq.store().task(under_way).unwrap().unwrap().status,
+        TaskStatus::Blocked,
+        "work under way is blocked too"
+    );
     let closed = hq.store().closure(first).unwrap().expect("why it closed");
     assert_eq!(
         (closed.closure.name(), closed.successor, closed.by.as_str()),
@@ -308,6 +318,73 @@ fn work_waiting_on_a_dropped_task_stays_blocked_and_its_member_is_told_why() {
         Some("wont_do"),
         "the owner's plain drop"
     );
+}
+
+/// A task made to wait on work already done has nothing to wait for, and one made to wait on work
+/// already dropped waits for what will not happen: neither is made.
+#[test]
+fn a_task_may_not_be_made_to_wait_on_work_that_is_already_done_or_dropped() {
+    use super::engine::EngineError;
+    use crate::domain::Refusal;
+    use crate::domain::closure::{Closure, DropWhy};
+    use crate::domain::guards::GuardRefusal;
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, first) = team(&clock, true);
+    let goal = hq.store().task(first).unwrap().unwrap().goal;
+    let new = |title: &str, waits_on: Vec<TaskId>| {
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: title.to_owned(),
+                description: String::new(),
+                assignee: Some(dev),
+                priority: Priority::Normal,
+                waits_on,
+            },
+        )
+    };
+    let done = new("Read the logs", Vec::new()).unwrap();
+    hq.store().set_task_status(done, TaskStatus::Done).unwrap();
+    let dropped = new("Try the old way", Vec::new()).unwrap();
+    hq.drop_task_because(dropped, Closure::Dropped(DropWhy::Obsolete), None)
+        .unwrap();
+    let tasks = hq.store().tasks().unwrap().len();
+    for (wait, status) in [(done, TaskStatus::Done), (dropped, TaskStatus::Dropped)] {
+        assert_eq!(
+            new("Restore from the backup", vec![first, wait]),
+            Err(EngineError::Refused(Refusal::Guard(
+                GuardRefusal::WaitsOnFinished { task: wait, status }
+            ))),
+            "waiting on #{wait}, {}",
+            status.name()
+        );
+    }
+    assert_eq!(hq.store().tasks().unwrap().len(), tasks, "nothing was made");
+    let said = GuardRefusal::WaitsOnFinished {
+        task: dropped,
+        status: TaskStatus::Dropped,
+    }
+    .to_string();
+    assert!(
+        said.contains("was dropped") && said.contains("carries its work on"),
+        "{said}"
+    );
+    let said = GuardRefusal::WaitsOnFinished {
+        task: done,
+        status: TaskStatus::Done,
+    }
+    .to_string();
+    assert!(said.contains("is done already"), "{said}");
+    // Work still open is waited on, as ever; and a task that does not exist is not.
+    let waiting = new("Restore from the backup", vec![first]).unwrap();
+    assert_eq!(
+        hq.store().task(waiting).unwrap().unwrap().waits_on,
+        vec![first]
+    );
+    assert!(new("After nothing", vec![TaskId(9_999)]).is_err());
 }
 
 // ---- process health -------------------------------------------------------------------------
@@ -472,6 +549,88 @@ fn a_project_that_only_talks_about_its_work_is_a_finding_for_its_lead() {
         (precision["real"].clone(), precision["precision"].clone()),
         (1.into(), 100.into())
     );
+}
+
+/// The newest turn of `member`'s on `task`, as one that ended before turns were labelled: HQ
+/// cannot read what it did.
+fn forget_the_label_of_the_newest_turn(hq: &Hq<'_>, member: MemberId, task: TaskId) {
+    let mut run = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .rfind(|r| r.member == member && r.task == Some(task) && r.label.is_some())
+        .expect("a labelled turn");
+    run.label = None;
+    hq.store().save_run(&run).unwrap();
+}
+
+/// A window HQ cannot tell the ceremony of (a turn it cannot read may have been the talk that
+/// puts it over, or the change that keeps it under) opens no finding: it says so on the Guards
+/// card, and waits for what it does not know.
+#[test]
+fn a_ceremony_that_depends_on_a_turn_hq_cannot_read_is_not_found() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, task) = project_work(&clock);
+    for _ in 0..11 {
+        one_turn(&hq, ada, task, false);
+    }
+    // The twelfth ended before turns were labelled.
+    one_turn(&hq, ada, task, false);
+    forget_the_label_of_the_newest_turn(&hq, ada, task);
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let ceremony = guards(&hq)["ceremony"][0].clone();
+    assert_eq!(ceremony["over"], false, "{ceremony}");
+    assert_eq!(ceremony["cannot_tell"], true, "{ceremony}");
+    assert_eq!(ceremony["windows"][0]["verdict"], "cannot_tell");
+    assert_eq!(
+        ceremony["windows"][0]["said"],
+        "11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read"
+    );
+    assert!(
+        hq.store().findings().unwrap().is_empty(),
+        "nothing is found on a count HQ does not have"
+    );
+    assert_eq!(wakes_for(&hq, task, WakeReason::Guard), 0, "no lead woken");
+    assert!(ceremony_notices(&hq).is_empty());
+}
+
+/// A finding that stands is not cleared because a turn behind it can no longer be read: HQ does
+/// not know that it ended, and does not raise it again either.
+#[test]
+fn a_standing_ceremony_finding_is_neither_cleared_nor_raised_again_while_hq_cannot_tell() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, ada, task) = project_work(&clock);
+    for _ in 0..12 {
+        one_turn(&hq, ada, task, false);
+    }
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    assert_eq!(guards(&hq)["ceremony"][0]["over"], true);
+    assert_eq!(ceremony_notices(&hq).len(), 1);
+    let open = |hq: &Hq<'_>| {
+        hq.store()
+            .findings()
+            .unwrap()
+            .iter()
+            .filter(|f| f.cleared_at.is_none())
+            .count()
+    };
+    assert_eq!(open(&hq), 1);
+    // One of the twelve can no longer be read: now it depends on what it was.
+    forget_the_label_of_the_newest_turn(&hq, ada, task);
+    later(&clock, crate::domain::guards::THRESHOLDS.look_every_ms);
+    hq.tick().unwrap();
+    let ceremony = guards(&hq)["ceremony"][0].clone();
+    assert_eq!(
+        (ceremony["over"].clone(), ceremony["cannot_tell"].clone()),
+        (false.into(), true.into()),
+        "{ceremony}"
+    );
+    assert_eq!(open(&hq), 1, "not cleared on a count HQ does not have");
+    assert_eq!(ceremony_notices(&hq).len(), 1, "and not raised again");
+    assert_eq!(wakes_for(&hq, task, WakeReason::Guard), 1, "nor the lead");
 }
 
 /// The same talk beside enough real change (four acts to twelve turns of talk) is healthy.
@@ -1107,6 +1266,17 @@ fn a_task_holds_five_open_sub_tasks_and_work_goes_three_deep() {
         )),
         "{refused}"
     );
+    // It is open sub-tasks that count: with one finished there is room for one more.
+    hq.store()
+        .set_task_status(TaskId(owners.0 + 2), TaskStatus::Done)
+        .unwrap();
+    use_tool(
+        &hq,
+        &t,
+        "create_task",
+        &serde_json::json!({ "title": "Part 5", "description": "a part" }),
+    )
+    .unwrap();
     hq.runner().finish(t.run, true);
     hq.tick().unwrap();
     // Three deep below the owner's task, and no deeper.
@@ -1419,6 +1589,68 @@ fn the_same_ask_from_two_tasks_is_one_card_and_one_answer_reaches_both() {
     assert_eq!(desk.len(), 1, "one card: {desk:?}");
 }
 
+/// An ask the owner has already answered is not waiting, and does not take a new one in: the
+/// same question asked after the answer is a new question, on its own card.
+#[test]
+fn an_ask_already_answered_does_not_take_the_same_ask_again_in() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, a) = team(&clock, false);
+    let goal = hq.store().task(a).unwrap().unwrap().goal;
+    let b = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Check the other branch".to_owned(),
+                description: String::new(),
+                assignee: Some(dev),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    let text = "Install ansible-playbook, ansible-lint and yamllint on the dev node? The check exited 127.";
+    let waiting = |hq: &Hq<'_>| -> Vec<super::ports::DeskItem> {
+        hq.store()
+            .desk()
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.kind == "question" && d.status == "waiting")
+            .collect()
+    };
+    let ask_in = |task: TaskId| {
+        let running = || {
+            hq.tick().unwrap();
+            hq.runner()
+                .started()
+                .into_iter()
+                .rfind(|c| c.task == Some(task) && hq.turn_of(&c.token).unwrap().is_some())
+        };
+        let t = running().unwrap_or_else(|| {
+            hq.wake(dev, Some(task), WakeReason::Mentioned).unwrap();
+            running().expect("a turn on the task")
+        });
+        hq.ask_owner(t.run, text).unwrap();
+        hq.tick().unwrap();
+    };
+    ask_in(a);
+    let first = waiting(&hq);
+    assert_eq!(first.len(), 1, "{first:?}");
+    hq.answer(first[0].id, "Yes: install them.").unwrap();
+    assert!(waiting(&hq).is_empty(), "answered");
+    ask_in(b);
+    let again = waiting(&hq);
+    assert_eq!(again.len(), 1, "its own card: {again:?}");
+    assert_ne!(again[0].id, first[0].id);
+    assert_eq!(again[0].task, Some(b));
+    assert!(
+        hq.store().findings().unwrap().is_empty(),
+        "it was not put with the answered one"
+    );
+}
+
 #[test]
 fn two_different_asks_are_two_cards() {
     let desk = two_asks(
@@ -1511,5 +1743,49 @@ fn pushing_at_the_fence_is_a_notice_and_the_briefing_says_what_is_not_now() {
         notices[1].contains("remove_container was refused for Linus, Ada within a day"),
         "{}",
         notices[1]
+    );
+}
+
+/// Two members refused the same act is a notice only if it was within a day of each other, and
+/// only if it was the same act.
+#[test]
+fn the_same_act_refused_for_two_members_is_a_notice_only_within_a_day_and_only_the_same_act() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task) = team(&clock, true);
+    let ada = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == Role::Lead)
+        .unwrap()
+        .id;
+    let one_turn = |who: MemberId, tool: &str| {
+        hq.wake(who, Some(task), WakeReason::Mentioned).unwrap();
+        let t = turn(&hq, who);
+        refused_act(&hq, &t, tool);
+        hq.runner().finish(t.run, true);
+        hq.tick().unwrap();
+    };
+    one_turn(dev, "remove_container");
+    // More than a day later another member is refused the same act: two attempts, but not "the
+    // team keeps trying it".
+    later(
+        &clock,
+        2 * crate::domain::guards::THRESHOLDS.fence_window_ms,
+    );
+    one_turn(ada, "remove_container");
+    assert!(fence_notices(&hq).is_empty(), "{:?}", fence_notices(&hq));
+    // Within the day, a different act refused for the other member is another act.
+    one_turn(dev, "edit_compose");
+    assert!(fence_notices(&hq).is_empty(), "{:?}", fence_notices(&hq));
+    // And the same act refused for the other member within the day is.
+    one_turn(dev, "remove_container");
+    let notices = fence_notices(&hq);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains("remove_container was refused for Ada, Linus within a day"),
+        "{}",
+        notices[0]
     );
 }

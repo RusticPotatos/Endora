@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use endora_team::application::ports::{StoreError, TeamStore as _};
-use endora_team::domain::RunId;
+use endora_team::domain::{Exit, RunId};
 use endora_team::infrastructure::RemoteRunner;
 
 use crate::api::{State, bearer, same};
@@ -153,7 +153,9 @@ struct Ended {
     /// The lease the turn was handed out with.
     lease: u64,
     /// The worker's exit code, from a runner that says it: 3 when HQ or the relay had
-    /// already ended the turn (its budget, the kill switch, a stale token).
+    /// already ended the turn (its budget, the kill switch, a stale token); 137 or 143 when the
+    /// container was killed from outside. None when the container was gone before the runner saw
+    /// it end (with `why` given), or from a runner that does not say.
     #[serde(default)]
     code: Option<i64>,
     /// Why, in the runner's words: the exit code's meaning and the worker's last words on
@@ -175,6 +177,20 @@ fn reason(code: Option<i64>, why: Option<&str>) -> Option<String> {
     Some(format!("the turn failed: {why}"))
 }
 
+/// How the worker's container ended, from what the runner reported. A runner that gives its
+/// words (`why`) and no exit code found the container gone before it saw it end; an older
+/// runner says neither, and a turn that succeeded has nothing to tell (ADR 0124, amended).
+fn exit_of(req: &Ended) -> Exit {
+    if let Some(code) = req.code {
+        return Exit::Code(code);
+    }
+    let said = req.why.as_deref().is_some_and(|w| !w.trim().is_empty());
+    if !req.succeeded && said {
+        return Exit::Vanished;
+    }
+    Exit::Unsaid
+}
+
 /// How a turn the runner was handed ended. The engine's next tick ends the run. A report from
 /// an attempt that is no longer the run's current one (its lease is out of date) is refused,
 /// 409, and changes nothing.
@@ -187,7 +203,13 @@ async fn ended(
         return no_runner();
     };
     let why = reason(req.code, req.why.as_deref());
-    if !remote.report(RunId(run), req.lease, req.succeeded, why.as_deref()) {
+    if !remote.report(
+        RunId(run),
+        req.lease,
+        req.succeeded,
+        why.as_deref(),
+        exit_of(&req),
+    ) {
         return (
             StatusCode::CONFLICT,
             Json(json!({ "error": "not a turn this runner holds, under that lease" })),

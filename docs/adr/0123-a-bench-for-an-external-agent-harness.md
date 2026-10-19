@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-18, for the owner to accept at the merge. Prepared with AI assistance
+Accepted, 2026-10-19 (proposed 2026-10-18). Prepared with AI assistance
 (Claude). Amends [0102](0102-endora-hq.md) (a second credential on the model relay, which is no
 turn of HQ's), [0110](0110-the-teams-rings.md) (a second image on the Pi's sandbox network, run
 once and fenced as a turn is) and [0117](0117-claude-code-as-a-developer-runtime.md) (the

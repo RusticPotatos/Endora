@@ -65,11 +65,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The last posts of a task's thread, for a briefing.
     fn history(&self, task: TaskId) -> Done<String> {
         let thread = self.store.thread(task)?;
+        let members = self.store.members()?;
         let mut told = String::from("Its history, newest last:\n");
         for p in thread.iter().rev().take(HISTORY).rev() {
             told.push_str(&format!(
                 "- {}\n",
-                Self::post_line(&p.author, &p.text, p.unsupported)
+                Self::post_line(&members, &p.author, &p.text, p.unsupported)
             ));
         }
         Ok(told)

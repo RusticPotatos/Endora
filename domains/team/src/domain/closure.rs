@@ -12,6 +12,25 @@ pub const fn not_a_closure(status: TaskStatus) -> Refusal {
     Refusal::Guard(GuardRefusal::NotAClosure(status))
 }
 
+/// Whether `task`, closed this way, names what it must: work done as superseded says which task
+/// carries it on (ADR 0124, amended), and no task is its own successor.
+///
+/// # Errors
+/// [`GuardRefusal::NoSuccessor`]; [`GuardRefusal::SuccessorIsItself`].
+pub fn may_close(
+    task: TaskId,
+    closure: Closure,
+    successor: Option<TaskId>,
+) -> Result<(), GuardRefusal> {
+    if successor == Some(task) {
+        return Err(GuardRefusal::SuccessorIsItself(task));
+    }
+    if closure == Closure::Done(DoneWhy::Superseded) && successor.is_none() {
+        return Err(GuardRefusal::NoSuccessor);
+    }
+    Ok(())
+}
+
 /// Why work is done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoneWhy {
@@ -198,6 +217,46 @@ mod tests {
             not_a_closure(TaskStatus::Dropped)
                 .to_string()
                 .contains("obsolete, duplicate")
+        );
+    }
+
+    #[test]
+    fn work_closed_as_superseded_names_what_carries_it_on_and_nothing_supersedes_itself() {
+        let superseded = Closure::Done(DoneWhy::Superseded);
+        assert_eq!(
+            may_close(TaskId(4), superseded, None),
+            Err(GuardRefusal::NoSuccessor)
+        );
+        assert_eq!(may_close(TaskId(4), superseded, Some(TaskId(9))), Ok(()));
+        assert_eq!(
+            may_close(TaskId(4), superseded, Some(TaskId(4))),
+            Err(GuardRefusal::SuccessorIsItself(TaskId(4)))
+        );
+        // The other reasons need none, and a drop may name one but not itself.
+        for closure in [
+            Closure::Done(DoneWhy::MetCriteria),
+            Closure::Done(DoneWhy::NotNeeded),
+            Closure::Dropped(DropWhy::Obsolete),
+            Closure::Dropped(DropWhy::WontDo),
+            Closure::Dropped(DropWhy::BlockedForever),
+            Closure::Dropped(DropWhy::Duplicate(TaskId(2))),
+        ] {
+            assert_eq!(may_close(TaskId(4), closure, None), Ok(()), "{closure:?}");
+            assert_eq!(
+                may_close(TaskId(4), closure, Some(TaskId(9))),
+                Ok(()),
+                "{closure:?}"
+            );
+            assert_eq!(
+                may_close(TaskId(4), closure, Some(TaskId(4))),
+                Err(GuardRefusal::SuccessorIsItself(TaskId(4))),
+                "{closure:?}"
+            );
+        }
+        assert!(
+            GuardRefusal::NoSuccessor
+                .to_string()
+                .contains("names the task that carries it on")
         );
     }
 

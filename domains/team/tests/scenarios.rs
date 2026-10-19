@@ -66,6 +66,14 @@ mod caps;
 #[path = "scenarios/criteria.rs"]
 mod criteria;
 
+/// A deploy under a turn is the platform's interruption (ADR 0124, amended), in its own file.
+#[path = "scenarios/deploys.rs"]
+mod deploys;
+
+/// An area's work leaves it only by its lead's hand (ADR 0120, amended), in its own file.
+#[path = "scenarios/areas.rs"]
+mod areas;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

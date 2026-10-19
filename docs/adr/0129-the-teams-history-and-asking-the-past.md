@@ -115,6 +115,21 @@ names none (the answer goes in a task's thread).
   separator characters become spaces, so a line cannot end and a part of a briefing cannot be
   forged; an `@` that begins a word, which would wake a member, is written full-width; and it is
   held to a length.
+- *Amended 2026-10-19 (hygiene, from an audit):* **the same holds wherever one member's words
+  reach another's, or the owner's**, which the first build did only for consults and the record.
+  A thread post a member wrote is kept as written, so a mention in it wakes whoever it names when
+  it is made, and is **cleaned in what another is told of it**, in a briefing and in `my_turn`
+  (`Engine::post_line`: one line under its author's name; what Endora and the owner wrote is as
+  they wrote it), as is a question asked of a member (`asks you:`) and the thread lines on a
+  "ready to read" or "sent back three times" card. The one-line helpers every stored line goes
+  through (`world::one_line`, the engine's `one_line`, `evidence::short`, a decision's parts) now
+  call `record::clean`, where they took out control characters only: so the heading, headline,
+  warrant and story parts of the world, a decision for the board, a lead's reasons and a
+  criterion's text arrive clean. Text whose lines matter, a question or an approval on the
+  owner's desk and a section's body, is **scrubbed** (`record::scrub`): the same characters become
+  spaces and an `@` that begins a word is defused, but its line breaks stay. Scenario: "A
+  colleague's post cannot forge a line, hide text or wake anyone in a briefing", in
+  `domains/team/features/the-history.feature`.
 
 Stored in `consults` (made if missing): asker, the turn it asked in, member consulted, the task it
 is about, the task whose thread the answer goes in, the question, its status (`queued`,

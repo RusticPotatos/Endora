@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
-use crate::domain::closure::{Closed, Closure, DoneWhy, DropWhy, not_a_closure};
+use crate::domain::closure::{Closed, Closure, DoneWhy, DropWhy, may_close, not_a_closure};
 use crate::domain::guards::{
     self, Diagnosis, Finding, Guard, Raised, Stopped, THRESHOLDS, TaskFacts, Verdict,
 };
@@ -586,6 +586,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if closure.status() != TaskStatus::Done {
             return Err(EngineError::Refused(not_a_closure(TaskStatus::Done)));
         }
+        may_close(task, closure, successor)
+            .map_err(|r| EngineError::Refused(super::Refusal::Guard(r)))?;
         let current = self.task(task)?;
         let mine = current.owner == Some(turn.member) || turn.task == Some(task);
         if current.status != TaskStatus::Done || !mine {

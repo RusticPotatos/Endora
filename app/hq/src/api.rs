@@ -1474,10 +1474,11 @@ mod tests {
         // (ADR 0120). It reads the world, tells stories (a lesson is one now), confirms and
         // retires what it stewards, and proposes canon (ADR 0122). And it may play chess (ADR 0121).
         // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
-        // keeps (ADR 0126). And it asks the record, consults and answers a consult (ADR 0129).
-        // And it asks for a kept branch to be checked again (ADR 0115). And it narrows what done
-        // means for work in its area (ADR 0133).
-        assert_eq!(names.len(), 42, "{names:?}");
+        // keeps (ADR 0126). And it asks the record and consults (ADR 0129); the answers to a
+        // consult and to the quiz are the tools of those turns alone (ADR 0131, amended). And it
+        // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
+        // for work in its area (ADR 0133).
+        assert_eq!(names.len(), 38, "{names:?}");
         assert!(names.contains(&"recheck"));
         assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"narrow_criteria"));
@@ -1507,6 +1508,13 @@ mod tests {
             !names.contains(&"report_usage"),
             "the relay charges for model use, not the worker"
         );
+        // A tool only a quiz turn or a consulted turn can use is offered in those turns alone.
+        for special in ["answer_quiz", "answer_consult"] {
+            assert!(
+                !names.contains(&special),
+                "{special} is for its own turn: {names:?}"
+            );
+        }
         let mine = json_of(
             app.clone()
                 .oneshot(speak(rpc(
@@ -1530,7 +1538,7 @@ mod tests {
                 .oneshot(speak(rpc(
                     4,
                     "tools/call",
-                    json!({ "name": "run_gate", "arguments": { "task": 1 } }),
+                    json!({ "name": "format_the_disk", "arguments": {} }),
                 )))
                 .await
                 .unwrap(),
@@ -2403,6 +2411,129 @@ mod tests {
         assert_eq!(
             kept.end_reason,
             "the turn failed: exit 1: worker: the model answered 500"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_container_the_runner_found_gone_or_killed_is_the_platforms_and_a_workers_exit_is_its_own()
+     {
+        let st = state(false);
+        let (run, _) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let next = || {
+            call(
+                "POST",
+                "/v1/runner/next",
+                Some(RUNNER),
+                &json!({ "free": 1 }).to_string(),
+            )
+        };
+        let report = |lease: u64, body: serde_json::Value| {
+            let mut body = body;
+            body["lease"] = json!(lease);
+            call(
+                "POST",
+                &format!("/v1/runner/{}/ended", run.0),
+                Some(RUNNER),
+                &body.to_string(),
+            )
+        };
+        // The retry waits a minute, which the system clock cannot skip: it is made due by hand.
+        let due_now = || {
+            let mut waiting = st.hq.store().run(run).unwrap().unwrap();
+            waiting.retry_at = Some(0);
+            st.hq.store().save_run(&waiting).unwrap();
+            st.hq.tick().unwrap();
+        };
+        let lease = |app: &axum::Router| {
+            let app = app.clone();
+            async move {
+                json_of(app.oneshot(next()).await.unwrap()).await["lease"]
+                    .as_u64()
+                    .unwrap()
+            }
+        };
+
+        // The runner found the worker's container gone before it saw it end: a runner says why
+        // and no exit code. HQ takes that for the platform's, and the member loses nothing.
+        let first = lease(&app).await;
+        let said = app
+            .clone()
+            .oneshot(report(
+                first,
+                json!({ "succeeded": false, "code": null,
+                        "why": "its container was gone before it was seen to end" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(said.status(), StatusCode::NO_CONTENT);
+        assert_eq!(st.hq.tick().unwrap().retrying, 1);
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!(
+            (kept.status, kept.attempts, kept.interrupted),
+            (RunStatus::RetryWaiting, 1, 1)
+        );
+        assert!(
+            kept.end_reason.starts_with("interrupted: "),
+            "{}",
+            kept.end_reason
+        );
+
+        // Killed from outside (Docker stopping it): the same, the second time without the
+        // allowance, which was the first's.
+        due_now();
+        let second = lease(&app).await;
+        let said = app
+            .clone()
+            .oneshot(report(
+                second,
+                json!({ "succeeded": false, "code": 137, "why": "killed (exit 137)" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(said.status(), StatusCode::NO_CONTENT);
+        assert_eq!(st.hq.tick().unwrap().retrying, 1);
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!((kept.attempts, kept.interrupted), (2, 2));
+
+        // Its worker's own exit, or the runner saying nothing at all, is not an interruption.
+        due_now();
+        let third = lease(&app).await;
+        let said = app
+            .clone()
+            .oneshot(report(
+                third,
+                json!({ "succeeded": false, "code": 1, "why": "exit 1: worker: the model answered 500" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(said.status(), StatusCode::NO_CONTENT);
+        st.hq.tick().unwrap();
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!(
+            (kept.attempts, kept.interrupted),
+            (3, 2),
+            "its worker's failure"
+        );
+        assert!(
+            !kept.end_reason.starts_with("interrupted: "),
+            "{}",
+            kept.end_reason
+        );
+        due_now();
+        let fourth = lease(&app).await;
+        let said = app
+            .clone()
+            .oneshot(report(fourth, json!({ "succeeded": false })))
+            .await
+            .unwrap();
+        assert_eq!(said.status(), StatusCode::NO_CONTENT);
+        st.hq.tick().unwrap();
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!(
+            (kept.status, kept.attempts, kept.interrupted),
+            (RunStatus::Failed, 4, 2),
+            "an older runner's bare report is a failure, as ever"
         );
     }
 

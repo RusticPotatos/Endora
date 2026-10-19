@@ -7,8 +7,92 @@ tagged release.
 
 ## [Unreleased]
 
+### Removed
+
+- **Two tools that were never built are gone: `run_gate` and `request_action`**
+  ([ADR 0106](docs/adr/0106-team-contracts.md), amended). Every member was offered both on every
+  turn since the first build, and every call answered "not available yet". They are no longer
+  listed (a developer's list goes from 25 to 23 tools, the tester's from 24 to 22, a lead's from
+  40 to 38), no longer named in what a member is told it can use, and a call to either is a call
+  to a tool that is not there. Nothing used them. No migration.
+
 ### Changed
 
+- **Compiled Python is no longer tracked.** Four `__pycache__/*.pyc` files had been committed
+  under the `endora.homelab` collection's roles, and the repository ignored none. They are
+  untracked, `__pycache__/` and `*.pyc` are ignored, and the collection's own `build_ignore`
+  leaves them out of a built collection (a build with the files on disk holds none).
+- **A guard that cannot tell says so** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),
+  amended). **Talk against work:** a turn that ended before turns were labelled has no label, and
+  was counted as nothing; such turns are now counted apart ("1 turn it cannot read"), and a window
+  that is over only if they talked, or under only if they changed the product, is neither: no
+  finding is opened, none that stands is cleared, and the Guards card says it cannot tell.
+  **The CEO's stepping in:** it was counted over the whole event feed, which the node prunes to
+  its newest 20,000, and a count over a pruned feed was shown as if whole; it is now counted over
+  the last week, and when the feed no longer reaches back that far the roster says HQ cannot tell,
+  and why. No migration. Scenario: `domains/team/features/guards.feature`.
+- **Two holes in the closure contract are shut** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),
+  amended). **Work closed as done, superseded, must name the task that carries it on:** it was
+  meant to (the tool says so) and was not made to; it is refused with no successor, with the
+  task itself, or with a task that is not there, and refused before anything moves. **A task is
+  not made to wait on work already done or dropped:** a wait on done work has nothing to wait
+  for, and a wait on dropped work was stuck by construction; the refusal says to leave it out, or
+  to wait on the task that carries the work on. Closings already recorded are read as they were.
+  No migration. Scenarios: `domains/team/features/guards.feature` and
+  `the-engineering-wing.feature`.
+- **What one member writes reaches another clean** ([ADR 0129](docs/adr/0129-the-teams-history-and-asking-the-past.md),
+  amended). The first build cleaned only a consult's question and what the record returns; a
+  thread post, a world line and a desk card went through raw. **A thread post is kept as written**
+  (a mention in it still wakes whoever it names), **and what another member is told of it, in its
+  briefing and in `my_turn`, is one line under its author's name** with control, direction
+  (bidi), zero-width and separator characters replaced and an `@` that would wake a member
+  written full-width; Endora's and the owner's posts are as written. The same for a question asked
+  of a member, and the thread lines on a card. **The one-line helpers every stored line goes
+  through now do it too** (the world's headings, headlines, warrants and story parts, a decision
+  for the board, a lead's reasons, a criterion's text, a huddle view), and **a question or an
+  approval on the owner's desk and a section's body are scrubbed**: the same characters replaced,
+  their line breaks kept. No migration. Scenario:
+  `domains/team/features/the-history.feature`.
+- **A tool only one kind of turn can use is offered in that turn alone**
+  ([ADR 0131](docs/adr/0131-the-two-kinds-of-turn.md), amended). `answer_quiz` (the nightly
+  quiz on a member's map) and `answer_consult` (a consulted member's answer) were offered to
+  every member in every turn, among 27 tools for a developer, where how many tools a small model
+  is offered is a measured failure mode. HQ's `tools/list` is now asked of the turn: the quiz's
+  answer is offered in the quiz's turn until it is answered, the consult's in a consulted turn,
+  and neither anywhere else (a role's list is two shorter). A downtime briefing names the quiz's
+  tool only when its turn carries a quiz. Calling either elsewhere is refused by the engine as
+  ever. No migration.
+- **The Mac has limits of its own** ([ADR 0130](docs/adr/0130-the-macs-brain.md), amended;
+  [0131](docs/adr/0131-the-two-kinds-of-turn.md)). The first build gave the Mac the NAS's small
+  model's limits on what a turn is told of the team's world (a briefing's 1,800 tokens of it, a
+  map's 1,400 characters) because both are house models, though the Mac runs a large context.
+  **A turn on the Mac is now told up to 2,800 tokens of the world (the CEO's 2,500 stays) and a
+  map of up to 1,900 characters**, between the NAS's model's and Claude's (a lead's 4,000 and
+  2,400); after a gap, a handover or a recall, 1,200 more as for any model. The NAS's model keeps
+  1,800 and 1,400. The numbers are a starting point, tuned from the size each run records against
+  its budget; the reasoning is in ADR 0130. No migration. Scenarios:
+  `domains/team/features/the-macs-brain.feature`.
+- **Work leaves an area only by its lead's hand** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md),
+  amended). Live, the CEO handed an engineering branch task to the Ops lead; the CEO may hand
+  work to a lead only, and the Ops lead is one. `hand_to` now refuses a member outside the task's
+  area ("Ada is outside Kit's area: only Kit, who leads it, or the owner hands its work out of
+  it") unless the caller is that area's lead. Handing a task up to its area's own lead is not
+  leaving the area and stays; the CEO's way to have work moved is `direct`. No migration.
+  Scenario: `domains/team/features/the-engineering-wing.feature`.
+- **A deploy under a turn is the platform's interruption, not the member's failure**
+  ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md), amended). Live, a deploy
+  cut a developer's turn short; HQ read its task as stopped by accident, the lead was asked to
+  look, and the CEO handed the work to another area's lead. HQ now tells whose it was that a turn
+  did not finish: **the platform's** when HQ lost the turn (it restarted), the runner found its
+  container gone, or it was killed from outside before its full time (exit 137 or 143); **the
+  worker's** for every other exit and for a kill at the turn's full time. A turn the platform
+  cut short is tried again a minute later as the same member, **the first interruption does not
+  count against its retries** (four starts, not three), and nothing is found, nudged, climbed or
+  put on a desk while it waits; its reason says `interrupted: …`. HQ reads the runner's report
+  as it always was (an exit code, or its words with none for a container gone): **the runner
+  and the worker are unchanged and need no redeploy.** Migration (idempotent): one column,
+  `runs.interrupted`, added if missing, at none for every old run. Scenarios:
+  `domains/team/features/a-deploy-under-a-turn.feature`.
 - **What done means comes first** ([ADR 0124](docs/adr/0124-guards-against-how-agent-teams-fail.md),
   amended; [0114](docs/adr/0114-evidence-acceptance-criteria-and-the-tester.md)). Live, the
   owner's "no literal passwords in role defaults" went to a lead with no definition of done and

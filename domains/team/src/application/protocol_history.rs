@@ -20,7 +20,8 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
 }
 
 /// The history's tools every member is offered (the CEO's consult is held to leads by the
-/// engine, not by what it is offered).
+/// engine, not by what it is offered), but not the consulted member's answer, which is its own
+/// turn's ([`answer_consult_tool`]).
 #[must_use]
 pub fn tools() -> Vec<Value> {
     vec![
@@ -45,13 +46,20 @@ pub fn tools() -> Vec<Value> {
             }),
             &["member", "question"],
         ),
-        tool(
-            "answer_consult",
-            "Answer the colleague who consulted you (your turn says so): in a few sentences, from what you know and the record; say so if you do not know. It is posted in their thread and wakes them. Then stop.",
-            json!({ "answer": { "type": "string", "maxLength": consult::ANSWER_MOST } }),
-            &["answer"],
-        ),
     ]
+}
+
+/// The tool a consulted member answers with. Offered in a consulted turn and in no other (ADR
+/// 0131, amended): a tool only a consulted member can use is not one more for every other turn
+/// to choose among.
+#[must_use]
+pub fn answer_consult_tool() -> Value {
+    tool(
+        "answer_consult",
+        "Answer the colleague who consulted you (your turn says so): in a few sentences, from what you know and the record; say so if you do not know. It is posted in their thread and wakes them. Then stop.",
+        json!({ "answer": { "type": "string", "maxLength": consult::ANSWER_MOST } }),
+        &["answer"],
+    )
 }
 
 fn text<'a>(args: &'a Value, key: &str) -> &'a str {

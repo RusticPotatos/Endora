@@ -85,7 +85,7 @@ Feature: The team's map
     And Ada's turn starts
     Then Ada's map names "world:area/Ada#backups"
     And Ada's briefing says "The NAS has 16 GB."
-    And Ada's briefing keeps to its budget of 1800 tokens
+    And Ada's briefing keeps to its budget of 2800 tokens
     And nothing was left out of Ada's briefing unnamed
 
   Scenario: Each morning the World shows last night's map check, scored by code

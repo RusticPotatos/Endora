@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use serde_json::json;
 
 use super::engine::{Author, Engine, Settings};
+use super::guard_ports::GuardStore;
 use super::ports::{Clock, DeskItem, NewRoutine, NewTask, RunContext, TeamStore};
 use super::protocol::call;
 use crate::domain::routines::HOUR_MS;
@@ -526,6 +527,13 @@ fn the_tester_passes_on_her_own_readings_and_then_the_lead_accepts_it_as_done() 
     assert_eq!(
         hq.store().task(t.task).unwrap().unwrap().status,
         TaskStatus::Done
+    );
+    // Accepted on its evidence, with no other reason given, it met its criteria (ADR 0124): the
+    // record says so, and that HQ said it.
+    let closed = hq.store().closure(t.task).unwrap().expect("why it closed");
+    assert_eq!(
+        (closed.closure.name(), closed.by.as_str()),
+        ("met_criteria", "endora")
     );
 }
 

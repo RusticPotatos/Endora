@@ -23,6 +23,11 @@ offers a turn*, below). The first build kept every bridged tool from it; the evi
 less than that, and the amendment is narrowed to it. Scenarios:
 `domains/capabilities/features/tools-that-fit-the-turn.feature`.
 
+Amended again 2026-10-19 (hygiene, from a review of the live record): two of HQ's own tools are
+offered in the turn that uses them and in no other (*Tools only a special turn can use*, below),
+and the Mac, a house model with a large context, has limits on what it is told of the world
+between the NAS's model's and Claude's (*Where a turn runs*, and 0130).
+
 ## Context
 
 Until now a member had **one** brain, and every turn it took ran on it: a member on Sonnet did
@@ -111,6 +116,12 @@ and the table test and a scenario hold it.
   the Mac: owner active*), and are never run on the NAS. A member whose work brain is the house's
   model cannot do such work at all: its turn says *this work needs the Mac, and the member's
   work brain is the house's model*, and the owner sees why on the roster.
+- *Amended 2026-10-19:* **the two house models are not told the same amount of the world.** What
+  a turn is told of the team's world (the briefing's budget, 0122) and how long its map is (0126)
+  follow the context of the model it runs on, and not whether that model is in the house: the
+  NAS's small model keeps 1,800 tokens and 1,400 characters; the Mac, with a large context, has
+  2,800 and 1,900 (the CEO's 2,500 stays, its briefings being held short everywhere); Claude has
+  its role's own. The numbers and why are in 0130.
 - **Work costs nothing**, whoever the member is: a member who judges with Claude is not charged
   for the reading it does on the house's models. The pool is shared among every member by role
   weight and the price class of the Claude each judges with; members' shares and a project's cap
@@ -195,6 +206,21 @@ full. The node knows a turn's brain and not its kind. A work turn is on the NAS'
 Mac is busy and the work does not need it; a judgment turn is there only for an alarm out of
 budget (above), and that turn has the contracts and the trusted reads as the rest do. Unknown is
 the NAS's: what is not known to be a stronger model is kept from what can end on the desk.
+
+### Tools only a special turn can use
+
+*Amended 2026-10-19.* HQ's own tools for a member are what `tools/list` answers for its turn. Two
+of them are of use in one kind of turn and in no other: `answer_quiz`, which answers the nightly
+quiz on a member's map (0126), and `answer_consult`, with which a consulted member answers
+(0129). They were offered to every member in every turn, with the rest: 27 tools for a
+developer, where how many tools a small model is offered is a measured failure mode (0085, and
+the failure study above). Now `tools/list` is asked of the turn (`protocol::tools_in`):
+`answer_quiz` is offered in the quiz's turn, a downtime turn of the member the night's quiz is
+open for (`Engine::in_quiz`), until it is answered, and `answer_consult` in a consulted turn
+(`Engine::in_consult`), and each in no other. A role's own list (`protocol::tools`) no longer has
+either, and a downtime briefing names the quiz's tool only when its turn carries a quiz. The list
+is not the enforcement: calling either elsewhere is refused by the engine as it always was ("no
+quiz open for you", "no consult is waiting"). No migration.
 
 ### What the owner sees
 

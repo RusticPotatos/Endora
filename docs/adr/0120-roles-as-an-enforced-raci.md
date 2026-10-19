@@ -7,7 +7,8 @@ by [0124](0124-guards-against-how-agent-teams-fail.md): the ladder climbs only f
 stopped diagnosis calls parked (held work waits for what will bring it back; work HQ cannot tell
 about gets one look from its lead); work sent back three times with no new evidence between goes
 to a huddle at once, and is not reviewed again before the lead decides; a lead's drop says why;
-each briefing carries its goal's "not now". Amends
+each briefing carries its goal's "not now". Amended again 2026-10-19 (hygiene, from a review of
+the live record): work leaves an area only by its lead's hand (below). Amends
 [0111](0111-the-ceo-and-the-chain-of-command.md) (what the CEO does, what wakes it, what it
 reads, its briefings; the house log's lines), [0113](0113-projects-budgets-and-reports-to.md)
 (leads propose projects, the CEO decides them and proposes none; the CEO's planning) and
@@ -74,6 +75,17 @@ alarms; "engineering" the area that works in branches.
   The manager chain's acts (0114 §11) stay for a lead over its members.
 - It creates and hands work **to leads only**, from its own work; a lead's stalled task is no
   longer handed up to it; it accepts only its own work.
+- **Work leaves an area only by its lead's hand** (amended 2026-10-19). Live, a deploy cut a
+  developer's turn short, the work was read as stopped by accident, and the CEO handed the
+  engineering branch task to the Ops lead: a lead, so `hand_to` allowed it. Now `hand_to`
+  refuses a member outside the task's area (`Refusal::OutsideTheArea`: "Ada is outside Kit's
+  area: only Kit, who leads it, or the owner hands its work out of it") unless the caller is
+  that area's lead; the owner hands work out through Give work and the API, not through this
+  tool. Inside the area is not leaving it, so the CEO may still hand a task up to its area's own
+  lead, and a lead's `decide_stuck` hand-on was already limited to its own team (the same test,
+  `staffing::lead_of`). The CEO's way to have an area's work moved elsewhere is `direct`; the
+  lead decides. Scenario: "The CEO cannot hand the wing's branch work to the Ops lead", in
+  `domains/team/features/the-engineering-wing.feature`.
 - **Leads propose; the CEO decides** (`decide_project`: yes, no, not now). The CEO no longer
   proposes projects. It keeps `propose_goal`, `ask_owner` (the board), `read_doc`, the house
   log and the notebook.

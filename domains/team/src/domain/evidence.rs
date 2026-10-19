@@ -108,18 +108,12 @@ impl CallReceipt {
     }
 }
 
-/// Text cut to one line of at most `most` characters, with no control characters. A text that
+/// Text cut to one line of at most `most` characters, cleaned of what could turn text around or
+/// hide in it and of an `@` that would wake a member ([`super::record::clean`]). A text that
 /// does not fit ends in [`super::cut::CUT`], so a reader knows words were lost.
 #[must_use]
 pub fn short(text: &str, most: usize) -> String {
-    let one_line: String = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
-    super::cut::cut(&one_line, most)
+    super::cut::cut(&super::record::clean(text), most)
 }
 
 /// How long the home lab's "no new alarm since" waits from the work's last change, in minutes.
@@ -772,6 +766,41 @@ mod tests {
             criteria_hash(&[Criterion::new("sonarr is down", true)])
         );
         assert_eq!(criteria_hash(&a).len(), 16);
+    }
+
+    /// A change to any criterion changes the hash, not just the first: a pass on a task whose
+    /// second criterion was rewritten, or one was added or taken out, is not a pass on what is
+    /// now asked.
+    #[test]
+    fn criteria_hash_changes_with_any_criterion_added_removed_or_reordered() {
+        let two = [
+            Criterion::new("the links work", false),
+            Criterion::new("the headings are consistent", false),
+        ];
+        let hash = criteria_hash(&two);
+        assert_eq!(hash, criteria_hash(&two.clone()));
+        assert_ne!(
+            hash,
+            criteria_hash(&[
+                two[0].clone(),
+                Criterion::new("the headings are tidy", false)
+            ]),
+            "the second reworded"
+        );
+        assert_ne!(
+            hash,
+            criteria_hash(&[two[0].clone(), Criterion::new(&two[1].text, true)]),
+            "the second made live"
+        );
+        assert_ne!(hash, criteria_hash(&two[..1]), "one taken out");
+        let mut three = two.to_vec();
+        three.push(Criterion::new("the index is rebuilt", false));
+        assert_ne!(hash, criteria_hash(&three), "one added");
+        assert_ne!(
+            hash,
+            criteria_hash(&[two[1].clone(), two[0].clone()]),
+            "put the other way round"
+        );
     }
 
     #[test]

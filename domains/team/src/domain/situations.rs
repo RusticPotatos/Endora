@@ -131,14 +131,18 @@ pub fn decide(facts: &Facts) -> Situation {
     Situation::Continuing
 }
 
-/// The house's model's budget, whatever the role: its context is small.
+/// The NAS's model's budget, whatever the role: its context is small.
 pub const LOCAL_BUDGET: usize = 1_800;
+/// The Mac's budget, whatever the role: more than the NAS's, and short of what a lead has on
+/// Claude.
+pub const MAC_BUDGET: usize = 2_800;
 /// What the dear situations add to any budget.
 pub const DEAR_EXTRA: usize = 1_200;
 
 /// How many tokens of the world a member's briefing may carry: the CEO 2,500 (its briefings
-/// are held short), a lead 4,000 (it stewards its area), anyone else 3,000; on the house's
-/// model never more than 1,800; and 1,200 more after a gap, on a handover or a recall.
+/// are held short), a lead 4,000 (it stewards its area), anyone else 3,000; on the NAS's model
+/// never more than 1,800, and on the Mac never more than 2,800 (ADR 0130, amended); and 1,200
+/// more after a gap, on a handover or a recall.
 #[must_use]
 pub const fn budget(role: Role, brain: Brain, situation: Situation) -> usize {
     let mut most = match role {
@@ -146,8 +150,13 @@ pub const fn budget(role: Role, brain: Brain, situation: Situation) -> usize {
         Role::Lead => 4_000,
         _ => 3_000,
     };
-    if brain.house() && most > LOCAL_BUDGET {
-        most = LOCAL_BUDGET;
+    let cap = match brain {
+        Brain::Local => LOCAL_BUDGET,
+        Brain::Mac => MAC_BUDGET,
+        Brain::Sonnet | Brain::Haiku | Brain::Opus => usize::MAX,
+    };
+    if most > cap {
+        most = cap;
     }
     if situation.dear() {
         most += DEAR_EXTRA;
@@ -417,6 +426,41 @@ mod tests {
         assert_eq!(budget(Role::Developer, Brain::Local, Handover), 3_000);
         assert_eq!(budget(Role::Lead, Brain::Sonnet, AfterGap), 5_200);
         assert_eq!(budget(Role::Ceo, Brain::Opus, Recalled), 3_700);
+    }
+
+    #[test]
+    fn the_mac_has_its_own_budget_between_the_nas_models_and_claudes() {
+        use Situation::{AfterGap, Continuing, Fresh, Handover, Recalled};
+        // The Mac runs a large context, so the NAS's small one is not its limit; it is a model
+        // in the house, so Claude's is not its to have either.
+        for role in [
+            Role::Ceo,
+            Role::Lead,
+            Role::Developer,
+            Role::Reviewer,
+            Role::Researcher,
+        ] {
+            for situation in [Continuing, Fresh, Handover, AfterGap, Recalled] {
+                let nas = budget(role, Brain::Local, situation);
+                let mac = budget(role, Brain::Mac, situation);
+                let claude = budget(role, Brain::Sonnet, situation);
+                assert!(
+                    nas < mac && mac <= claude,
+                    "{role:?} {situation:?}: the NAS's {nas}, the Mac's {mac}, Claude's {claude}"
+                );
+            }
+        }
+        assert_eq!(budget(Role::Lead, Brain::Mac, Continuing), 2_800);
+        assert_eq!(budget(Role::Developer, Brain::Mac, Continuing), 2_800);
+        assert_eq!(budget(Role::Reviewer, Brain::Mac, Fresh), 2_800);
+        assert_eq!(
+            budget(Role::Ceo, Brain::Mac, Continuing),
+            2_500,
+            "the CEO's briefings are held short on every brain"
+        );
+        assert_eq!(budget(Role::Developer, Brain::Mac, AfterGap), 4_000);
+        // And the NAS's model keeps the budget it had.
+        assert_eq!(budget(Role::Lead, Brain::Local, Continuing), LOCAL_BUDGET);
     }
 
     #[test]

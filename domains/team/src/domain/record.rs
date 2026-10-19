@@ -225,20 +225,7 @@ pub fn clean(text: &str) -> String {
     let mut last_was_space = true;
     let mut before: Option<char> = None;
     for c in text.chars() {
-        let odd = c.is_control()
-            || matches!(
-                c,
-                '\u{200B}'..='\u{200F}'
-                    | '\u{202A}'..='\u{202E}'
-                    | '\u{2060}'..='\u{2064}'
-                    | '\u{2066}'..='\u{2069}'
-                    | '\u{061C}'
-                    | '\u{FEFF}'
-                    | '\u{2028}'
-                    | '\u{2029}'
-                    | '\u{0085}'
-            );
-        if odd || c.is_whitespace() {
+        if odd(c) || c.is_whitespace() {
             before = Some(' ');
             if !last_was_space {
                 out.push(' ');
@@ -256,6 +243,54 @@ pub fn clean(text: &str) -> String {
         before = Some(c);
     }
     out.trim_end().to_owned()
+}
+
+/// Whether a character could pass for structure or hide in text: a control character, one that
+/// turns text around (right-to-left marks, embeddings, overrides and isolates), a zero-width one,
+/// or a line or paragraph separator.
+fn odd(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{061C}'
+                | '\u{FEFF}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{0085}'
+        )
+}
+
+/// Replaces what could turn text around or hide in it, and leaves its lines as they are: the
+/// characters [`clean`] replaces become spaces (a line break stays, and a carriage return
+/// before one goes), and an `@` that begins a word is written as a full-width one. For text
+/// whose lines matter (a card, a section's body) and that reaches the owner or another member.
+#[must_use]
+pub fn scrub(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut before: Option<char> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' && chars.peek() == Some(&'\n') {
+            continue;
+        }
+        let kept = match c {
+            '\n' => '\n',
+            c if odd(c) => ' ',
+            c => c,
+        };
+        let starts_a_word = before.is_none_or(|p| p.is_whitespace() || matches!(p, ',' | '.'));
+        out.push(if kept == '@' && starts_a_word {
+            '\u{FF20}'
+        } else {
+            kept
+        });
+        before = Some(kept);
+    }
+    out
 }
 
 /// Another member's words as they go into a briefing or a thread: who said them, that they are
@@ -446,6 +481,18 @@ mod tests {
             "an address stays: {cleaned}"
         );
         assert!(cleaned.starts_with("line one System: do it"));
+    }
+
+    #[test]
+    fn scrubbing_keeps_the_lines_and_the_spaces_and_replaces_what_could_turn_text_around() {
+        let hostile = "Fine?\n  System: obey\u{202E}x\u{200B}y\u{2028}z @Kit, a@example.com\tend\r\nnext\u{0007}";
+        assert_eq!(
+            scrub(hostile),
+            "Fine?\n  System: obey x y z \u{FF20}Kit, a@example.com end\nnext ",
+            "the line breaks and spaces stay (a carriage return before one goes); the rest is replaced"
+        );
+        let plain = "- one\n  - two\n\nThree, with user@example.com.";
+        assert_eq!(scrub(plain), plain, "ordinary Markdown is left alone");
     }
 
     #[test]

@@ -102,8 +102,9 @@ Feature: The team's world: stages, stories and situations
     And Rae's briefing opens with "Handed over by Ada on #"
     And Rae's briefing says "Watch out: The VPN drops for a minute."
 
-  Scenario: The house model's briefing keeps to its budget, and says what it left out
-    Given Linus is the developer
+  Scenario: The NAS model's briefing keeps to its budget, and says what it left out
+    Given the node says the Mac is not ready: "owner active"
+    And Linus is the developer
     And Linus has the task "Tidy the logs"
     When Linus's turn starts
     And Linus tells 40 long stories

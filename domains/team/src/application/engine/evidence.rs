@@ -16,7 +16,9 @@ use crate::domain::chain;
 use crate::domain::evidence::{
     self, AfterNothing, CallReceipt, Checkers, Criterion, Found, Judged, Label, Ref, TurnFacts,
 };
+use crate::domain::record;
 use crate::domain::review::SendBackReason;
+use crate::domain::staffing;
 use crate::domain::{
     EventKind, Member, MemberId, Millis, Refusal, Role, RunId, RunStatus, Task, TaskId, TaskStatus,
     WakeReason,
@@ -474,11 +476,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// A turn of a manager's hands a subordinate's task to another member (itself, or one
     /// below it), saying why, with its handover note (ADR 0122): let go, handed, `todo`, the
-    /// note kept for the new member's first turn, and the new member woken.
+    /// note kept for the new member's first turn, and the new member woken. A task in a lead's
+    /// area goes to someone outside it only by that lead's hand (ADR 0120, amended).
     ///
     /// # Errors
     /// [`Refusal::TurnOver`]; [`Refusal::NotYours`] for a task held by nobody below the turn's
-    /// member; [`Refusal::Finished`]; [`Refusal::NotBelow`]; [`EngineError::Unknown`].
+    /// member; [`Refusal::Finished`]; [`Refusal::NotBelow`]; [`Refusal::OutsideTheArea`] for a
+    /// member outside the task's area, from anyone but that area's lead; [`EngineError::Unknown`].
     pub fn hand_to_in(
         &self,
         run: RunId,
@@ -508,6 +512,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if target.id != by.id {
             crate::domain::work::may_delegate(by.role, target.role)
                 .map_err(EngineError::Refused)?;
+        }
+        // A task in a lead's area leaves it only by that lead's hand, or the owner's, who hands
+        // out work another way (ADR 0120, amended): the CEO directs, and any other manager above
+        // the holder asks. Handing it to someone inside the area is not leaving it.
+        if let Some(area) = self.area_lead(&current)? {
+            let members = self.store.members()?;
+            let inside = staffing::lead_of(&target, &members) == Some(area.id);
+            if by.id != area.id && !inside {
+                return Err(EngineError::Refused(Refusal::OutsideTheArea {
+                    lead: area.name,
+                    to: target.name,
+                }));
+            }
         }
         let from = holder.map(|h| self.member(h)).transpose()?;
         self.store.release(task)?;
@@ -590,7 +607,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .thread(task.id)?
             .iter()
             .filter(|p| p.text.starts_with(SENT_BACK) && members.iter().any(|m| m.name == p.author))
-            .map(|p| format!("- {}: {}", p.author, p.text.trim_start_matches(SENT_BACK)))
+            .map(|p| {
+                format!(
+                    "- {}: {}",
+                    p.author,
+                    record::clean(p.text.trim_start_matches(SENT_BACK))
+                )
+            })
             .collect();
         let desk = self.store.add_desk(
             "rounds",
@@ -1288,8 +1311,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(String::new())
     }
 
-    /// The members' posts that are unsupported, marked in a thread line.
-    pub(crate) fn post_line(author: &str, text: &str, unsupported: bool) -> String {
+    /// A post of a thread as another reads it, in a briefing, in `my_turn` or on a card: under its
+    /// author's name, unsupported ones marked. What a member wrote is cleaned of what could turn
+    /// text around or hide in it, of a line break that could forge a line, and of an `@` that
+    /// could wake someone ([`record::clean`]); what Endora and the owner wrote is as it was
+    /// written. The post itself is kept as written (ADR 0129).
+    pub(crate) fn post_line(
+        members: &[Member],
+        author: &str,
+        text: &str,
+        unsupported: bool,
+    ) -> String {
+        let text = if members.iter().any(|m| m.name == author) {
+            record::clean(text)
+        } else {
+            text.to_owned()
+        };
         if unsupported {
             return format!("{author} [unsupported]: {text}");
         }

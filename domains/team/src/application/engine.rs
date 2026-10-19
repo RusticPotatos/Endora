@@ -16,10 +16,11 @@ use super::scorecard;
 use crate::domain::chain::{self, Decision};
 use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
-use crate::domain::guards::Stopped;
+use crate::domain::guards::{GuardRefusal, Stopped};
 use crate::domain::lessons;
 use crate::domain::mac::{self, MacFacts};
 use crate::domain::money::{self, Micros};
+use crate::domain::record;
 use crate::domain::review::{self, SendBackReason};
 use crate::domain::routines::{self, FireStep, MINUTE_MS};
 use crate::domain::runs::{self, LONGEST_TURN_MS};
@@ -27,9 +28,9 @@ use crate::domain::turns;
 use crate::domain::wakes::{self, LiveTurn};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
-    Brain, CheckBackStatus, EventKind, Firing, GoalId, GoalStatus, Liveness, Member, MemberId,
-    Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId, RunStatus,
-    Task, TaskId, TaskStatus, WakeDecision, WakeReason, WakeSituation,
+    Brain, CheckBackStatus, EventKind, Fault, Firing, GoalId, GoalStatus, Liveness, Member,
+    MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId,
+    RunStatus, Task, TaskId, TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 use crate::domain::{docs, house};
 
@@ -251,15 +252,11 @@ pub enum Fired {
     Skipped(String),
 }
 
-/// One line, at most `most` characters: what a member or an alarm says, as it is stored.
+/// One line, at most `most` characters: what a member or an alarm says, as it is stored,
+/// cleaned of what could turn text around or hide in it and of an `@` that would wake a member
+/// ([`record::clean`]), since the next to read it is another member or the owner.
 fn one_line(text: &str, most: usize) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(most)
-        .collect()
+    record::clean(text).chars().take(most).collect()
 }
 
 /// Where a member's question went.
@@ -877,6 +874,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store
             .goal(task.goal)?
             .ok_or(EngineError::Unknown("goal"))?;
+        // A task waits only on work still to be done: waiting on what is done has nothing to
+        // wait for, and on what was dropped waits for what will not happen (ADR 0124, amended).
+        for wait in &task.waits_on {
+            let found = self.task(*wait)?;
+            if found.status.finished() {
+                return Err(EngineError::Refused(Refusal::Guard(
+                    GuardRefusal::WaitsOnFinished {
+                        task: *wait,
+                        status: found.status,
+                    },
+                )));
+            }
+        }
         let (parent_depth, project) = match task.parent {
             // A sub-task goes in its parent's project, whatever it was asked to go in.
             Some(parent) => {
@@ -1807,6 +1817,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             crate::domain::evidence::Checkers::Owner => {}
         }
+        let members = self.store.members()?;
         let thread: Vec<String> = self
             .store
             .thread(task.id)?
@@ -1814,7 +1825,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .rev()
             .take(12)
             .rev()
-            .map(|p| format!("- {}: {}", p.author, p.text))
+            .map(|p| Self::post_line(&members, &p.author, &p.text, false))
+            .map(|line| format!("- {line}"))
             .collect();
         let desk = self.store.add_desk(
             "ready_to_read",
@@ -2306,9 +2318,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.end(run, status, why)
     }
 
-    /// A failed turn: tried again a minute later, at most twice; then failed for good.
-    fn fail(&self, mut run: Run, why: &str) -> Done<bool> {
+    /// A failed turn: tried again a minute later, at most twice; then failed for good. A turn the
+    /// platform cut short (HQ or the runner restarted under it, its container vanished) did
+    /// nothing wrong: the first time, its start does not count against its retries, and it says
+    /// it was interrupted (ADR 0124, amended).
+    fn fail(&self, mut run: Run, why: &str, fault: Fault) -> Done<bool> {
         let now = self.clock.now();
+        let why = match fault {
+            Fault::Worker => why.to_owned(),
+            Fault::Platform => {
+                run.interrupted = run.interrupted.saturating_add(1);
+                format!("interrupted: {why}")
+            }
+        };
+        let why = why.as_str();
         // A turn on the owner's Mac that failed because the Mac went away (the owner came back,
         // the laptop left its charger) did nothing wrong: it is tried again when the Mac is
         // free, and the failure is not counted against it (ADR 0130).
@@ -2316,7 +2339,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if on_the_mac && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some() {
             run.attempts = run.attempts.saturating_sub(1);
         }
-        let Some(due) = runs::retry_after_failure(run.attempts, now) else {
+        let own = runs::own_attempts(run.attempts, run.interrupted);
+        let Some(due) = runs::retry_after_failure(own, now) else {
             self.end(run, RunStatus::Failed, why)?;
             return Ok(false);
         };
@@ -2333,7 +2357,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.emit(
             EventKind::RunEnded,
             json!({ "run": run.id.0, "member": run.member.0, "task": run.task.map(|t| t.0),
-                    "result": RunStatus::RetryWaiting.name(), "why": why }),
+                    "result": RunStatus::RetryWaiting.name(), "why": why,
+                    "interrupted": fault == Fault::Platform }),
         )?;
         Ok(true)
     }
@@ -2397,10 +2422,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // (ADR 0119).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
             told.push_str(&self.downtime_said(member)?);
+            // The quiz's answer is offered in the quiz's turn alone, so only that one is told of it.
             told.push_str(
                 "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc, \
-                 read_world, answer_quiz.\n",
+                 read_world",
             );
+            told.push_str(if self.in_quiz(run.id)? {
+                ", answer_quiz.\n"
+            } else {
+                ".\n"
+            });
             return Ok(told);
         }
         // The CEO's quiet briefing is held under half its whole one: its read_doc names the
@@ -2519,12 +2550,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 came_back.why
             ));
         }
+        let members = self.store.members()?;
         let new: Vec<String> = self
             .store
             .thread(task.id)?
             .into_iter()
             .filter(|p| p.at > since)
-            .map(|p| Self::post_line(&p.author, &p.text, p.unsupported))
+            .map(|p| Self::post_line(&members, &p.author, &p.text, p.unsupported))
             .collect();
         if new.is_empty() {
             told.push_str("Nothing new in the thread since your last turn.\n");
@@ -2541,7 +2573,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .map(|p| (p.author.as_str(), p.text.as_str()))
                 .collect();
             for (asker, question) in chain::unanswered(&posts, &member.name) {
-                told.push_str(&format!("{asker} asks you: {question}\n"));
+                told.push_str(&format!("{asker} asks you: {}\n", record::clean(&question)));
             }
             told.push_str(if member.role == Role::Ceo {
                 "Answer in the thread with post: whoever asked is woken when you do. Give your \
@@ -2620,11 +2652,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         // The tester is not offered create_task: she passes or sends back (ADR 0114).
         told.push_str(if member.role == Role::Reviewer {
-            "Your tools at HQ: my_turn, claim, post, set_status, ask_owner, check_back, \
-             run_gate, request_action"
+            "Your tools at HQ: my_turn, claim, post, set_status, ask_owner, \
+             check_back"
         } else {
             "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
-             check_back, run_gate, request_action"
+             check_back"
         });
         told.push_str(match member.role {
             Role::Reviewer => {
@@ -3035,14 +3067,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         .runner
                         .why_ended(run.id)
                         .unwrap_or_else(|| "the turn failed".to_owned());
-                    if self.fail(run, &why)? {
+                    // Whose it was: a container the runner found gone, or killed from outside
+                    // before its full time, was cut short by the platform (ADR 0124, amended).
+                    let ran = run.started_at.map_or(0, |started| now - started);
+                    let fault = runs::fault_of(self.runner.exit_of(run.id), ran);
+                    if self.fail(run, &why, fault)? {
                         report.retrying += 1;
                     } else {
                         report.ended += 1;
                     }
                 }
+                // HQ lost the turn: it restarted, and with it the memory of what the runner
+                // was handed. Nothing its member did.
                 Liveness::Gone => {
-                    if self.fail(run, "its container is gone")? {
+                    if self.fail(run, "its container is gone", Fault::Platform)? {
                         report.retrying += 1;
                     } else {
                         report.ended += 1;
@@ -3327,7 +3365,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 effort: self.effort_of(&on, &run)?,
             };
             if let Err(why) = self.runner.start(&context) {
-                self.fail(run, &format!("could not start: {}", why.0))?;
+                self.fail(run, &format!("could not start: {}", why.0), Fault::Worker)?;
                 continue;
             }
             self.store
@@ -3411,8 +3449,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         cited: &[crate::domain::Ref],
     ) -> Done<Asked> {
         let _held = self.held();
-        // Room for the question and the worker's line saying what the turn actually did.
-        let text = cut(text.trim(), 1200);
+        // Room for the question and the worker's line saying what the turn actually did; what
+        // could turn text around or hide in it is replaced, since the owner or the member
+        // above reads it as it stands (ADR 0129).
+        let text = cut(record::scrub(text).trim(), 1200);
         let lab = self.lab_names();
         let turn = self.running(run)?;
         let task = self.task(
@@ -3760,7 +3800,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         serves: Option<&str>,
     ) -> Done<crate::domain::DeskId> {
         let _held = self.held();
-        let text = cut(text.trim(), 1200);
+        let text = cut(record::scrub(text).trim(), 1200);
         let turn = self.running(run)?;
         let task = turn
             .task
@@ -4736,8 +4776,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
                     .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
                     .collect::<Vec<_>>(),
-                // How often the CEO reached into its work (ADR 0124).
-                "rescues": rescues.get(&m.id.0).copied().unwrap_or(0),
+                // How often the CEO reached into its work this week (ADR 0124); null when the
+                // pruned feed no longer holds the week, and HQ cannot tell.
+                "rescues": rescues.as_ref().map(|r| r.get(&m.id.0).copied().unwrap_or(0)),
             }));
         }
         let why = |task: &Task| {
