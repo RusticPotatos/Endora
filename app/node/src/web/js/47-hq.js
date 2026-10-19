@@ -187,6 +187,24 @@ function hqName(id) { const m = hqMember(id); return m ? m.name : "someone"; }
 
 // A task's key, as the office writes it: EL-7.
 function hqKey(id) { return id ? "EL-" + id : ""; }
+// A task's number as a link that opens it under "Looking at", wherever the number is shown.
+function hqKeyLink(id) {
+  return id ? `<button class="hq-link" data-act="hq:pick:task:${Number(id)}">${hqKey(id)}</button>` : "";
+}
+// The task asked for by its number ("EL-687", "687") or by words of its title, open ones and
+// the newest first; null when nothing matches.
+function hqFindTask(q) {
+  const asked = String(q || "").trim().toLowerCase();
+  if (!asked) return null;
+  const tasks = (HQ.snap && HQ.snap.tasks) || [];
+  const number = asked.match(/^(?:el-?)?(\d+)$/);
+  if (number) return tasks.some((t) => t.id === Number(number[1])) ? Number(number[1]) : null;
+  const words = asked.split(/\s+/);
+  const found = tasks
+    .filter((t) => words.every((w) => String(t.title || "").toLowerCase().includes(w)))
+    .sort((a, b) => (a.status === "done" || a.status === "dropped") - (b.status === "done" || b.status === "dropped") || b.id - a.id);
+  return found.length ? found[0].id : null;
+}
 // Money in dollars, from the ledger's micro-dollars: $0.40.
 function hqDollars(micros) { return "$" + ((micros || 0) / 1e6).toFixed(2); }
 // What was really spent apart from what is only held for turns: a free local turn holds money
@@ -1376,7 +1394,7 @@ function viewHQ() {
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
     const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
     return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(shown)}</p>
-      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKey(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
+      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${demoNote}</p>
       ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval) : ""}
@@ -1429,6 +1447,9 @@ function viewHQ() {
         ${hqMacCard(s)}
         ${hqScorecard(s)}`)}
       ${hqPanel("work", `
+        <section class="hq-card"><h2>Find a task</h2>
+          <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
+          <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
         ${hqProjects(s)}
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
@@ -1854,7 +1875,7 @@ function hqGuards(s) {
     const said = f.verdict ? `Judged ${esc(verdicts[f.verdict] || f.verdict)}${f.judged_by ? ` by ${esc(f.judged_by)}` : ""}${f.fix_worked == null ? "" : f.fix_worked ? ", and its fix worked" : ", and its fix did not work"}.` : "Not judged yet.";
     const judge = Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("");
     const fixed = f.verdict ? `<button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:yes">Fix worked</button><button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:no">Fix didn't work</button>` : "";
-    return `<li><p><b>${esc(f.plainly)}</b> (finding ${Number(f.id)}${f.task ? ` · ${hqKey(f.task)}` : ""}${f.cleared_at ? " · cleared" : " · open"}): ${esc(f.evidence)}</p>
+    return `<li><p><b>${esc(f.plainly)}</b> (finding ${Number(f.id)}${f.task ? ` · ${hqKeyLink(f.task)}` : ""}${f.cleared_at ? " · cleared" : " · open"}): ${esc(f.evidence)}</p>
       <p class="hq-note">The rule: ${esc(f.rule)}. ${said}</p><div class="hq-row">${judge}${fixed}</div></li>`;
   };
   const findings = (g.findings || []).map(finding).join("");
@@ -2017,7 +2038,7 @@ function hqNotes(s) {
 function hqRoutines(s) {
   const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
   const rows = (s.routines || []).map((r) => `<li><b>${esc(r.title)}</b>
-      <span>${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.last_fired_at ? "last ran " + esc(when(r.last_fired_at)) : "not run yet"}${r.last_task_open ? ` · ${hqKey(r.last_task)} open` : ""}${r.on_lab_trouble ? " · takes home-lab alarms" : ""}${r.project ? ` · in ${esc(hqProjectTitle(r.project))}` : ""}</span>
+      <span>${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.last_fired_at ? "last ran " + esc(when(r.last_fired_at)) : "not run yet"}${r.last_task_open ? ` · ${hqKeyLink(r.last_task)} open` : ""}${r.on_lab_trouble ? " · takes home-lab alarms" : ""}${r.project ? ` · in ${esc(hqProjectTitle(r.project))}` : ""}</span>
       <div class="hq-row"><button class="hq-btn ${r.enabled ? "ok" : "no"}" aria-pressed="${r.enabled ? "true" : "false"}" data-act="hq:routine:${r.id}:${r.enabled ? "off" : "on"}">${r.enabled ? "On" : "Off"}</button>
         <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div></li>`).join("");
   const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
@@ -2071,6 +2092,13 @@ function hqSelected() {
 async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
   if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; hqSetTab("desk"); render(); return true; }
+  // Find a task by its number or words of its title, and open it.
+  if (noun === "find") {
+    const asked = (document.getElementById("hq-find") || {}).value || "";
+    const found = hqFindTask(asked);
+    if (!found) { flash(asked.trim() ? `No task matches "${asked.trim()}".` : "Type a task's number or a few words of its title.", "warn"); return true; }
+    HQ.selected = { type: "task", id: found }; hqSetTab("desk"); render(); return true;
+  }
   // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
   if (noun === "mac") return hqMacAct(id, arg);
   if (noun === "roster") {
