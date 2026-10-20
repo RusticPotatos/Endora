@@ -377,7 +377,7 @@ function viewData() {
     </div>
     <div class="card nav-list" style="margin-top:14px;">
       <button class="ghost danger" data-act="purge">${icon("purge")}
-        <span class="grow" style="text-align:left;">Delete everything<span class="sub" style="display:block;font-weight:400;">every message, belief and record — this cannot be undone</span></span>
+        <span class="grow" style="text-align:left;">Delete everything<span class="sub" style="display:block;font-weight:400;">every message, belief and record — this cannot be undone. Your settings, keys and models stay, and so does the team</span></span>
       </button>
     </div>`;
 }

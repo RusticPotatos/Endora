@@ -1244,6 +1244,10 @@ impl MemoryStore for SqliteStore {
         // change unrecoverable and invisible, which is strictly worse for the person than
         // keeping it.
         //
+        // Nor are the settings the team runs on (ADR 0136): the skills' stances and settings,
+        // which the bridge offers the team's turns, and the model providers and lists, which
+        // hold the relay's key and house model. They are set up, not learned about the person.
+        //
         // Delete children before parents so foreign keys stay satisfied.
         for table in [
             "audit_log",
@@ -1256,17 +1260,9 @@ impl MemoryStore for SqliteStore {
             "execution_leases",
             "intentions",
             "events",
-            "capability_config",
-            "capability_settings",
             "autonomy_envelope",
             "brief_schedule",
             "deep_model",
-            // The old everyday settings too, key and all: kept, the next start would move
-            // them into the lists again.
-            "butler_model_config",
-            "model_entries",
-            "model_providers",
-            "model_lists_meta",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -1786,6 +1782,57 @@ mod tests {
         (&store as &dyn MemoryStore).purge().unwrap();
         let empty = (&store as &dyn MemoryStore).export().unwrap();
         assert_eq!(empty, endora_application::MemorySnapshot::default());
+    }
+
+    /// Deleting what Endora knows about the person is not unplugging the team (ADR 0136). The
+    /// team's relay takes its key from the providers and its house model from the Everyday
+    /// list, and the bridge offers the house's tools with each skill's stance and settings;
+    /// purging those stopped every team turn, which "every message, belief and record" never
+    /// said it would.
+    #[test]
+    fn purge_keeps_the_settings_the_team_runs_on() {
+        use endora_application::{CapabilityConfigRepository, CapabilitySettingsRepository};
+        use endora_application::MemoryStore;
+        use endora_capabilities::model_lists::{Job, ModelListRepository};
+
+        let store = store();
+        let cfg = cfg_store(&store);
+        let lists: &dyn ModelListRepository = &cfg;
+        let provider = lists
+            .add_provider("house", "http://192.168.1.10:11434/v1", "")
+            .unwrap();
+        lists.add_entry(Job::Everyday, provider, "qwen2.5:7b").unwrap();
+        (&cfg as &dyn CapabilitySettingsRepository)
+            .set_setting("home_assistant", "token", "example-token")
+            .unwrap();
+        (&cfg as &dyn CapabilityConfigRepository)
+            .set_stance("home_assistant", endora_capabilities::Stance::Ask)
+            .unwrap();
+
+        (&store as &dyn MemoryStore).purge().unwrap();
+
+        assert_eq!(lists.providers().unwrap().len(), 1, "the providers went");
+        assert_eq!(
+            lists.entries(Job::Everyday).unwrap().len(),
+            1,
+            "the Everyday list went"
+        );
+        assert_eq!(
+            (&cfg as &dyn CapabilitySettingsRepository)
+                .all_settings()
+                .unwrap()
+                .len(),
+            1,
+            "the skills' settings went"
+        );
+        assert_eq!(
+            (&cfg as &dyn CapabilityConfigRepository).stances().unwrap(),
+            vec![(
+                "home_assistant".to_owned(),
+                endora_capabilities::Stance::Ask
+            )],
+            "the skills' stances went"
+        );
     }
 
     #[test]
