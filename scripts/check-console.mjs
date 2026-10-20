@@ -2217,6 +2217,21 @@ if (failures.length) {
   })()`));
   if (modes.join() !== "listening,live,listening,live,listening,listening,live,listening,listening") fail("live: the way to hear is not chosen by the wires and the owner: " + modes);
 
+  // The screen locked: while this device listens, the page tells iOS it plays media
+  // (navigator.audioSession "playback"), so live sound is not silenced as ambient sound; when it
+  // stops listening, iOS chooses again ("auto"). A browser without the API is left alone.
+  if (ev(`[liveSessionType(true), liveSessionType(false)].join()`) !== "playback,auto") fail("live: the audio session is not media while listening");
+  // Where iOS can be told so, live plays on with the screen locked, and nothing is handed over;
+  // where it cannot, the background still hands over to listening.
+  if (ev(`[liveEffectiveMode("live", true, true), liveEffectiveMode("live", true, false), liveEffectiveMode("listening", true, true)].join()`) !== "live,listening,listening") fail("live: a locked screen hands over where live could play on");
+  context.navigator.audioSession = { type: "auto" };
+  ev(`soundSession(true)`);
+  if (context.navigator.audioSession.type !== "playback") fail("live: listening does not tell iOS the page plays media");
+  ev(`soundSession(false)`);
+  if (context.navigator.audioSession.type !== "auto") fail("live: stopping does not give the audio session back");
+  delete context.navigator.audioSession;
+  ev(`soundSession(true)`);
+
   // The probe: the hub's clock never meets the page's. 20 ms each way, 3 ms in the hub, the tone
   // mixed 8 ms after the request arrived, heard 420 ms after it was mixed.
   const probe = JSON.parse(ev(`JSON.stringify(liveProbeDelay({ tSend: 1000, tRecv: 1043, received: 5000000, injected: 5008000, replied: 5003000,

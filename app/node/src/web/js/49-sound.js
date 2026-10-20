@@ -91,7 +91,17 @@ function soundWantedMode() {
   const mine = soundMine(), st = SOUND.state || {};
   let mode = mine ? liveModeFor(soundPref(), st.sources, st.wires, mine.id) : "listening";
   if (SOUND.liveBlocked || !liveSupported()) mode = "listening";
-  return liveEffectiveMode(mode, typeof document !== "undefined" && document.hidden === true);
+  const playsOn = typeof navigator !== "undefined" && !!navigator.audioSession;
+  return liveEffectiveMode(mode, typeof document !== "undefined" && document.hidden === true, playsOn);
+}
+
+// Tells iOS this page plays media while this device listens, and lets it choose again when it
+// stops (see liveSessionType). A browser without navigator.audioSession is left as it is.
+function soundSession(listening) {
+  try {
+    const session = typeof navigator !== "undefined" ? navigator.audioSession : null;
+    if (session) session.type = liveSessionType(listening);
+  } catch (_) { /* the browser refused: the handover to listening still covers the lock */ }
 }
 
 // Starts hearing `ticket`'s stream, in the way wanted. Called straight from a tap: whatever has
@@ -99,6 +109,7 @@ function soundWantedMode() {
 // made (so later switches need no tap), and in live mode the <audio> element plays a moment of
 // silence, so it may start the MP3 by itself later, when the screen locks.
 function soundPlay(ticket) {
+  soundSession(true);
   const a = soundAudio();
   const mode = soundWantedMode();
   if (liveSupported()) {
@@ -429,7 +440,7 @@ async function soundDispatch(verb, noun, id, arg) {
     const ticket = SOUND.ticket; SOUND.ticket = null;
     SOUND.listening = true; SOUND.liveBlocked = false;
     soundRemember(true); soundBanner("");
-    try { await soundPlay(ticket); } catch (e) { SOUND.listening = false; SOUND.mode = null; flash("Couldn't play: " + e.message, "err"); }
+    try { await soundPlay(ticket); } catch (e) { SOUND.listening = false; SOUND.mode = null; soundSession(false); flash("Couldn't play: " + e.message, "err"); }
     render(); await soundTicket(); return true;
   }
   if (noun === "mode") {
@@ -450,6 +461,7 @@ async function soundDispatch(verb, noun, id, arg) {
   if (noun === "forgetlisten") { soundRemember(false); soundBanner(""); return true; }
   if (noun === "stop") {
     SOUND.listening = false; SOUND.mode = null; SOUND.gen++; SOUND.stat = null;
+    soundSession(false);
     soundRemember(false);
     liveClose(LIVE.session); LIVE.session = null;
     const a = soundAudio(); a.pause(); a.removeAttribute("src"); a.load();

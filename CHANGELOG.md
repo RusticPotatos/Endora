@@ -1001,6 +1001,12 @@ tagged release.
 
 ### Fixed
 
+- **Sound keeps playing on an iPhone with the screen locked** ([ADR 0104](docs/adr/0104-endora-sound.md),
+  amended). In Live mode, locking the phone left it silent until it was unlocked. iOS treated the
+  page's Web Audio as ambient sound and interrupted it, and starting the MP3 from a locked page
+  did not take over. While this device listens, the page now tells iOS it plays media
+  (`navigator.audioSession` "playback", reset when it stops), so live sound plays on through the
+  lock and nothing is handed over. A browser without that API hands over to the MP3 as before.
 - **A long wait for the Mac is said** ([ADR 0130](docs/adr/0130-the-macs-brain.md), amended).
   Work that needs the Mac (testers, the wing's developers and lead) waits for it, and the stuck
   ladder leaves a waiting turn alone, so on 2026-10-19 a tester's turns waited ten hours
