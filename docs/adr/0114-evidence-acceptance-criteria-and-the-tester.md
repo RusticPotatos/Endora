@@ -192,6 +192,15 @@ before is matched by its member, task and time and is shown as matched so. Repla
 call's Confidential excerpt on the owner's screen, as the evidence card does; the node serves it
 to a full credential only.
 
+## Amended (2026-10-19): evidence as the models write it
+
+A reference is read where the models put it, the words around it never kept: leading, with
+words after it (`r228 check c7 (ok)`), and now also last, in brackets after what it showed, as
+the tools' own results end (`owntone-spotify exited with code 137 (receipt r302)`). An object
+is read as the ids among its values, its keys naming the kind of a bare number (`{"receipt":
+"r301", "task": 695}`). A line or an object holding no id is refused as before. Run 1831, a
+post-deploy check, was refused four times for these forms before citing the same ids plainly.
+
 ## Alternatives considered
 
 - **The worker reports its own receipts.** Rejected: the model's process would be the one

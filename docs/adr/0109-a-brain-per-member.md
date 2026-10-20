@@ -32,6 +32,10 @@ use: Haiku until the owner says otherwise, so every member has one); the brain a
 decided per turn by why it was asked for, and the paid share above is reckoned on the judgment
 brain alone. A wake refused for budget is no longer thrown away: its turn waits for budget.
 
+Amended 2026-10-19: moving the turn's own task on with `set_status` (to `in_review`, `blocked`
+or `done`) ends the turn, as a question does; the instructions already said so, and run 1831
+called `set_status` six times more after it. Starting work or moving a sub-task on does not.
+
 ## Context
 
 Every member thought with the house's model (qwen3:8b, thinking). The lead coordinates the
@@ -70,7 +74,8 @@ accepts only `local` or a plain model name, and gives the worker either the loca
 Anthropic relay (`/team-relay/v1`, on the same team listener, so the fence is unchanged) and the
 model's name. The worker speaks Anthropic's Messages API to it, through the same loop as the
 local one: the same rounds, repeat guard, claim before the first round, line saying what the
-turn did, and ends of a turn (401 or 402, a question or an approval on the desk).
+turn did, and ends of a turn (401 or 402, a question or an approval on the desk, the turn's
+own task moved on to `in_review`, `blocked` or `done`).
 
 **The check point.** HQ's answer to the node about a turn (`/v1/team/turn`) says `"cloud":
 true` whenever the member's brain is not local, every call, so a switch takes effect at once.
