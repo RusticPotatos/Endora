@@ -101,8 +101,9 @@ impl fmt::Display for Refused {
                 "you have no game of chess: challenge a member with `challenge` to start one",
             ),
             Self::NotInDowntime => f.write_str(
-                "chess is played in downtime, when you have nothing else to do: you may look at \
-                 the board now, and move in your next downtime turn",
+                "chess is played in a turn on the house's own brains (its model or the Mac), \
+                 never in one on Claude: you may look at the board now, and move in your next \
+                 turn on the house's brains",
             ),
             Self::InAGame(name) => write!(
                 f,
