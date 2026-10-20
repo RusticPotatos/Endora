@@ -610,11 +610,21 @@ pub(super) async fn hq_start_scenario(
     Json(req): Json<serde_json::Value>,
 ) -> Answer {
     let answer = ask(&state, "/v1/scenarios".to_owned(), Some(req.clone())).await?;
+    let whom = match req["crew"].as_array() {
+        Some(crew) => format!(
+            "Silent Station for members {}",
+            crew.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        None => format!("a scenario for member {}", req["member"]),
+    };
     record(
         &state,
         &format!(
-            "you started a scenario for member {} in project {} (seed {}): task {}",
-            req["member"], req["project"], answer.0["seed"], answer.0["task"]
+            "you started {whom} in project {} (seed {}): task {}",
+            req["project"], answer.0["seed"], answer.0["task"]
         ),
     );
     Ok(answer)
@@ -1420,6 +1430,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(started.0["task"], 41);
+        let crewed = hq_start_scenario(
+            State(state.clone()),
+            Json(json!({ "project": 3, "kind": "silent_station", "crew": [2, 7, 8], "seed": 7 })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(crewed.0["task"], 41);
         let shown = hq_scenario(State(state.clone()), Path(41)).await.unwrap();
         assert_eq!(shown.0["end"], "solved");
         let sent: Vec<String> = seen
@@ -1428,19 +1445,18 @@ mod tests {
             .iter()
             .map(|(p, _, _)| p.clone())
             .collect();
-        assert_eq!(sent, ["/v1/scenarios", "/v1/scenarios/41"]);
+        assert_eq!(sent, ["/v1/scenarios", "/v1/scenarios", "/v1/scenarios/41"]);
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
             .unwrap()
             .iter()
             .map(|r| r.summary().to_owned())
             .collect();
-        assert!(
-            audit
-                .iter()
-                .any(|a| a
-                    == "HQ: you started a scenario for member 5 in project 3 (seed 7): task 41"),
-            "{audit:?}"
-        );
+        for line in [
+            "HQ: you started a scenario for member 5 in project 3 (seed 7): task 41",
+            "HQ: you started Silent Station for members 2, 7, 8 in project 3 (seed 7): task 41",
+        ] {
+            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+        }
     }
 
     #[tokio::test]

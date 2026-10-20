@@ -7,8 +7,17 @@ use serde_json::{Value, json};
 use super::engine::Engine;
 use super::ports::{Clock, Run, TeamStore, WorkerAdapter};
 
-/// The tool, offered only in a turn whose task is a scenario.
-pub(super) fn tool() -> Value {
+/// The tool, offered only in a turn whose task is in a scenario, for that world (`kind`).
+pub(super) fn tool(kind: &str) -> Value {
+    if kind == crate::domain::station::SILENT_STATION {
+        return json!({
+            "name": "scenario",
+            "description": "Act in Silent Station, as your role in the crew. look: what the crew has found and where things stand (free). scan_station (science): life signs, power and hazard; 1 tick, 10 energy. inspect_comms (engineer): open the comms junction; 2 ticks, 10 energy. analyze_anomaly (science): what the anomaly is; 2 ticks, 15 energy. route_power (engineer): bypass a dead relay; 2 ticks, 25 energy. send_probe (captain): a probe beside the array as a relay; 1 tick, 35 energy. attempt_contact (captain): call the station; 1 tick, 10 energy. Only your role's actions are yours; a refused action costs nothing. The world says how the mission ends, and closes it itself.",
+            "inputSchema": { "type": "object", "properties": {
+                "action": { "type": "string", "enum": ["look", "scan_station", "inspect_comms", "analyze_anomaly", "route_power", "send_probe", "attempt_contact"] },
+            }, "required": ["action"] },
+        });
+    }
     json!({
         "name": "scenario",
         "description": "Act in the scenario your task is. look: where things stand (free). inspect: open the lamp's housing and look at the bulb (5 minutes). test_circuit: whether current reaches the lamp (10 minutes, housing open). replace_part: fit a new part, bulb or fuse (15 minutes, housing open, each part once). A refused action costs nothing. The world says when it is solved or failed, and closes your task itself.",
