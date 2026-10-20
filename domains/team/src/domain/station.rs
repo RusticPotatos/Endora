@@ -269,7 +269,9 @@ impl Station {
         if self.contact {
             return Some(Outcome::Success);
         }
-        if self.life_support > 0 {
+        // Time runs out, or the ship can pay for no action at all, which stops time too.
+        let cheapest = ACTIONS.iter().map(|a| a.cost().1).min().unwrap_or(0);
+        if self.life_support > 0 && self.ship_energy >= cheapest {
             return None;
         }
         if self.knows(Clue::RelayDamaged) && self.knows(Clue::AnomalyKnown) {
@@ -535,9 +537,9 @@ mod tests {
         assert_eq!(routed.ship_energy, 40);
         let (probed, _) = routed.step(Role::Captain, SendProbe).unwrap();
         assert_eq!(
-            probed.step(Role::Captain, AttemptContact).unwrap_err(),
-            "the ship has 5 energy and attempt_contact needs 10",
-            "both ways leave nothing for the call"
+            (probed.ship_energy, probed.outcome()),
+            (5, Some(Outcome::Partial)),
+            "both ways leave nothing for the call, and that ends it"
         );
     }
 
@@ -604,6 +606,35 @@ mod tests {
         assert_eq!(
             (blind.outcome(), blind.score()),
             (Some(Outcome::Failure), 0)
+        );
+    }
+
+    // Live, a crew routed power and then sent the probe too, and the ship was left with 5
+    // energy: every action refused, so no time passed, and the mission could never end. A
+    // ship that can pay for nothing more ends it there: partial with the cause found.
+    #[test]
+    fn a_ship_that_can_pay_for_nothing_more_ends_the_mission() {
+        let spent = Station::replay(
+            seed_for(Anomaly::IonStorm),
+            &[
+                ScanStation,
+                AnalyzeAnomaly,
+                InspectComms,
+                RoutePower,
+                SendProbe,
+            ],
+        )
+        .unwrap();
+        assert_eq!(spent.ship_energy, 5);
+        assert_eq!(
+            (spent.outcome(), spent.score()),
+            (Some(Outcome::Partial), 30)
+        );
+        assert!(
+            spent
+                .step(Role::Captain, AttemptContact)
+                .unwrap_err()
+                .contains("over: partial")
         );
     }
 

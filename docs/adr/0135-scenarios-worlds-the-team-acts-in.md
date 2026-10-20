@@ -119,6 +119,18 @@ ended, and the worker ends any turn HQ says has ended (three of five turns had g
 `set_status`); a trial records the brain each player's turns will really run on
 (`turn_brain`), since a tester's work is the Mac's (0131), whatever its own work brain.
 
+## Amendment (2026-10-20): what the first live mission taught
+
+The first live Silent Station (task 710) found three holes. The crew routed power and then
+sent the probe as well, leaving the ship 5 energy: every action was refused, no time passed,
+and the mission could never end. **A ship that can pay for no action ends the mission**, as
+partial when the cause was found and failure otherwise. Its parts, waiting for their world by
+design, looked stuck: the stuck-work guards blocked them and the ladder woke the project's lead
+to decide, twice, on Claude. **The stuck-work guards and the ladder leave a scenario's tasks
+alone**: their world wakes their players. And the lead, woken on a part, acted in its role.
+**A role is its task's member's**: the scenario tool is offered to, and acts for, that member
+alone. A world that has ended with its tasks open is closed by the tick.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.
