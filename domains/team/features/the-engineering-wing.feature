@@ -152,7 +152,7 @@ Feature: The engineering wing and the git flow
     When Ada reads the lab and closes "Check the home lab after deploying hq/task-2-add-the-drift-check", citing her reading
     Then it is not refused
     When Ada's turn ends
-    Then the last post in "Add the drift check" starts "After the deploy: healthy."
+    Then the last post in "Add the drift check" starts "Post-deploy infrastructure check: Healthy."
     When the owner says it is deployed
     Then it is refused
 
@@ -171,8 +171,8 @@ Feature: The engineering wing and the git flow
     And the owner says it is deployed
     And Ada's turn on "Check the home lab after deploying hq/task-2-add-the-drift-check" starts
     And Ada's turn ends
-    Then the last post in "Add the drift check" starts "After the deploy: inconclusive."
-    And the owner's desk holds a "deploy_check" card saying "inconclusive"
+    Then the last post in "Add the drift check" starts "Post-deploy infrastructure check: Inconclusive."
+    And the owner's desk holds a "deploy_check" card saying ": Inconclusive"
     And the task "Check the home lab after deploying hq/task-2-add-the-drift-check" is dropped
 
   # Task 670 sat 44 minutes in review, was set blocked out of the tester's reach, and climbed
