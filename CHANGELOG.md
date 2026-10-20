@@ -169,8 +169,10 @@ tagged release.
   lab, in that routine's project, with one live criterion. That turn is narrowed in code: HQ
   offers four of its tools; the node offers and runs `homelab_status`, `container_logs` and
   `nas_status` alone and refuses everything else before it runs; and the runner starts it with no
-  shell. Its one verdict goes to the change's thread: healthy only on a reading of the turn's own,
-  cited; otherwise a problem or inconclusive, which closes the check and puts an interrupting
+  shell. Its one verdict, "Post-deploy infrastructure check: Healthy" (or Unhealthy, or
+  Inconclusive), goes to the change's thread: Healthy only on a reading of the turn's own, cited,
+  and said to check the infrastructure, not the change itself; otherwise Unhealthy or
+  Inconclusive, which closes the check and puts an interrupting
   card on the desk. A second click, or a later wake, starts nothing. Won't deploy closes the
   card with no check.
 - **A drain before every restart** ([ADR 0134](docs/adr/0134-a-drain-before-every-restart.md)).

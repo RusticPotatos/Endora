@@ -2008,7 +2008,9 @@ fn a_check_with_a_fresh_reading_closes_healthy_in_one_turn() {
     );
     let said = thread(&hq, task).pop().unwrap();
     assert!(
-        said.contains("After the deploy: healthy") && said.contains(&format!("r{reading}")),
+        said.contains("Post-deploy infrastructure check: Healthy.")
+            && said.contains(&format!("r{reading}"))
+            && said.contains("not that every part of the change works"),
         "{said}"
     );
     assert!(
@@ -2016,7 +2018,7 @@ fn a_check_with_a_fresh_reading_closes_healthy_in_one_turn() {
             .desk()
             .unwrap()
             .iter()
-            .any(|d| d.kind == "notice" && d.text.contains("healthy")),
+            .any(|d| d.kind == "notice" && d.text.contains(": Healthy")),
         "the digest says it"
     );
     let runs = hq.store().runs().unwrap().len();
@@ -2063,11 +2065,14 @@ fn a_turn_without_a_verdict_is_inconclusive_and_never_healthy() {
         TaskStatus::Dropped
     );
     let said = thread(&hq, task).pop().unwrap();
-    assert!(said.contains("After the deploy: inconclusive"), "{said}");
+    assert!(
+        said.contains("Post-deploy infrastructure check: Inconclusive."),
+        "{said}"
+    );
     assert!(!said.contains("healthy"), "{said}");
     let item = waiting(&hq, "deploy_check");
     assert!(
-        item.text.contains("inconclusive") && !item.text.contains("healthy"),
+        item.text.contains(": Inconclusive") && !item.text.to_lowercase().contains("healthy"),
         "{}",
         item.text
     );
@@ -2102,13 +2107,13 @@ fn a_problem_found_is_reported_as_a_problem() {
     );
     let said = thread(&hq, task).pop().unwrap();
     assert!(
-        said.contains("After the deploy: a problem")
+        said.contains("Post-deploy infrastructure check: Unhealthy.")
             && said.contains("deluge restarts every minute"),
         "{said}"
     );
     let item = waiting(&hq, "deploy_check");
     assert!(
-        item.text.contains("a problem") && !item.text.contains("healthy"),
+        item.text.contains(": Unhealthy") && !item.text.contains(": Healthy"),
         "{}",
         item.text
     );

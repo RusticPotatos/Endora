@@ -90,17 +90,24 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    /// The verdict in a line, for the change's thread and the owner's desk.
+    /// The verdict in a line, for the change's thread and the owner's desk: one of three
+    /// outcomes, Healthy, Unhealthy or Inconclusive, of a check of the infrastructure. A healthy
+    /// one says it is not a test of the change itself.
     #[must_use]
     pub fn said(&self, branch: &str) -> String {
         match self {
-            Self::Healthy(evidence) => {
-                format!("After the deploy: healthy. {branch} checked on the lab ({evidence}).")
-            }
-            Self::Problem(why) => format!("After the deploy: a problem with {branch}. {why}"),
+            Self::Healthy(evidence) => format!(
+                "Post-deploy infrastructure check: Healthy. After {branch} was deployed, a \
+                 reading from the check's own turn showed the lab's containers running clean \
+                 ({evidence}). This checks the infrastructure, not that every part of the change \
+                 works."
+            ),
+            Self::Problem(why) => format!(
+                "Post-deploy infrastructure check: Unhealthy. After {branch} was deployed: {why}"
+            ),
             Self::Inconclusive(why) => format!(
-                "After the deploy: inconclusive. The check of {branch} ended without a verdict \
-                 ({why}); nothing shows the lab is as it should be."
+                "Post-deploy infrastructure check: Inconclusive. The check of {branch} ended \
+                 without a verdict ({why}); nothing shows the lab is as it should be."
             ),
         }
     }
@@ -121,14 +128,38 @@ mod tests {
 
     #[test]
     fn only_a_reading_of_its_own_reads_healthy() {
+        // Three outcomes, named so; a healthy one says what it did not check.
         let healthy = Verdict::Healthy("r12 homelab_status".to_owned());
-        assert!(healthy.said("hq/task-3-x").contains("healthy"));
+        let said = healthy.said("hq/task-3-x");
+        assert!(
+            said.starts_with("Post-deploy infrastructure check: Healthy."),
+            "{said}"
+        );
+        assert!(
+            said.contains("not that every part of the change works"),
+            "{said}"
+        );
+        assert!(!said.contains("fully verified"), "{said}");
         assert_eq!(healthy.desk_kind(), "notice");
+        assert!(
+            Verdict::Problem("deluge restarts".to_owned())
+                .said("hq/task-3-x")
+                .starts_with("Post-deploy infrastructure check: Unhealthy.")
+        );
+        let inconclusive = Verdict::Inconclusive("its turn ended".to_owned()).said("hq/task-3-x");
+        assert!(
+            inconclusive.starts_with("Post-deploy infrastructure check: Inconclusive."),
+            "{inconclusive}"
+        );
+        assert!(
+            !inconclusive.to_lowercase().contains("healthy"),
+            "{inconclusive}"
+        );
         for not in [
             Verdict::Problem("deluge restarts".to_owned()),
             Verdict::Inconclusive("its turn ended".to_owned()),
         ] {
-            assert!(!not.said("hq/task-3-x").contains("healthy"), "{not:?}");
+            assert!(!not.said("hq/task-3-x").contains(": Healthy"), "{not:?}");
             assert_eq!(not.desk_kind(), "deploy_check");
             assert!(super::super::desk::interrupts(not.desk_kind()));
         }

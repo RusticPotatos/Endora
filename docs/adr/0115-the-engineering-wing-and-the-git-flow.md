@@ -60,9 +60,13 @@ cited. Its member may close it, as a routine's check is closed.
 
 **One turn, one verdict.** When that turn ends, HQ gives the verdict once:
 
-- **healthy** if the check was closed done (the digest);
-- **a problem**, in the member's words, if it was set blocked;
-- **inconclusive** otherwise.
+- **Healthy** if the check was closed done (the digest);
+- **Unhealthy**, in the member's words, if it was set blocked;
+- **Inconclusive** otherwise.
+
+Each is said as "Post-deploy infrastructure check: Healthy" (or Unhealthy, or Inconclusive),
+and a Healthy one says it checks the infrastructure, not that every part of the change works:
+never "verified".
 
 A check that is not healthy is closed as dropped, and an interrupting card says so (kind
 `deploy_check`). Each verdict is also posted in the change's thread. A wake on a check that has
