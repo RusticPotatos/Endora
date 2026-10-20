@@ -12,6 +12,7 @@ deploys change in one commit and are checked together.
 | [`docker_egress`](roles/docker_egress/README.md) | Locked-down Docker networks: what a network may reach, enforced by the host's firewall |
 | [`endora_terminal_agent`](roles/endora_terminal_agent/) | The host job agent: allowlisted Ansible jobs for the handheld and Endora, nothing else |
 | [`endora_dev_node`](roles/endora_dev_node/README.md) | The Raspberry Pi that runs the team's runner and sandboxes: Docker CE, a host firewall, SD card care, and the locked `endora_sandbox` network (ADR 0110); run by `deploy/ansible/pi.yml` |
+| [`endora_watch`](roles/endora_watch/README.md) | The house watch: a small machine outside the NAS that checks it once a minute and tells your phone, and a second Pi-hole (ADR 0136); run by `deploy/ansible/watch.yml` |
 
 ## Using it from ansible-nas
 

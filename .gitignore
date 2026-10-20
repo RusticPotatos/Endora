@@ -21,6 +21,7 @@ target/
 .env.*
 !.env.example
 *.local
+*.local.yml
 secrets/
 *.pem
 *.key

@@ -1,0 +1,28 @@
+---
+# One setting validate.yml must refuse (render.yml loops over them as `case`): the good
+# settings, with the case's changes on top.
+- name: "Refused: {{ case.why }}"
+  block:
+    - name: "Check: {{ case.why }}"
+      ansible.builtin.include_tasks: ../tasks/validate.yml
+      vars:
+        endora_watch_lan_cidr: "{{ case.with.endora_watch_lan_cidr | default(good.endora_watch_lan_cidr) }}"
+        endora_watch_alert_url: "{{ case.with.endora_watch_alert_url | default(good.endora_watch_alert_url) }}"
+        endora_watch_checks: "{{ case.with.endora_watch_checks | default(good.endora_watch_checks) }}"
+        endora_watch_pihole_dns_hosts: >-
+          {{ case.with.endora_watch_pihole_dns_hosts | default(good.endora_watch_pihole_dns_hosts) }}
+        endora_watch_pihole_upstreams: "{{ case.with.endora_watch_pihole_upstreams | default(['1.1.1.1']) }}"
+
+    - name: "It passed, and must not have: {{ case.why }}"
+      ansible.builtin.set_fact:
+        endora_watch_let_through: "{{ case.why }}"
+
+    - name: "Stop: {{ case.why }}"
+      ansible.builtin.fail:
+        msg: "validate.yml let through {{ case.why }}"
+  rescue:
+    - name: "It was refused by the checks: {{ case.why }}"
+      ansible.builtin.assert:
+        that:
+          - endora_watch_let_through is not defined
+        fail_msg: "validate.yml let through {{ case.why }}"

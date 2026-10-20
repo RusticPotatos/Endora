@@ -1,0 +1,118 @@
+---
+# A second Pi-hole. Installed once by Pi-hole's own installer, pinned to a release and its
+# checksum, unattended: the installer runs without questions only when it finds a config
+# already there, so a seed goes first. Its settings are then declared as FTLCONF_ variables in
+# a drop-in for pihole-FTL.service, as the NAS's Pi-hole role declares them for its container,
+# and the web interface listens on this machine alone.
+- name: Is Pi-hole installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/pihole
+  register: endora_watch_pihole_installed
+
+- name: Pi-hole's folder
+  ansible.builtin.file:
+    path: /etc/pihole
+    state: directory
+    mode: "0755"
+  when: not endora_watch_pihole_installed.stat.exists
+
+- name: A seed config, so the installer asks nothing
+  ansible.builtin.copy:
+    dest: /etc/pihole/pihole.toml
+    force: false
+    mode: "0644"
+    content: |
+      # Seeded by Ansible (endora_watch role) for an unattended install; Pi-hole rewrites it.
+      [dns]
+        upstreams = {{ endora_watch_pihole_upstreams | to_json }}
+  when: not endora_watch_pihole_installed.stat.exists
+
+- name: Pi-hole's declared settings folder
+  ansible.builtin.file:
+    path: /etc/systemd/system/pihole-FTL.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Pi-hole's declared settings
+  ansible.builtin.template:
+    src: pihole-ftl.conf.j2
+    dest: /etc/systemd/system/pihole-FTL.service.d/endora.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: endora_watch_pihole_settings
+
+- name: The installer, as pinned
+  ansible.builtin.get_url:
+    url: "{{ endora_watch_pihole_installer_url }}"
+    dest: /etc/endora/pihole-install.sh
+    checksum: "sha256:{{ endora_watch_pihole_installer_sha256 }}"
+    owner: root
+    group: root
+    mode: "0700"
+  when: not endora_watch_pihole_installed.stat.exists
+
+# Minutes on a Pi 2: it fetches Pi-hole's components and builds the first blocklist.
+- name: Install Pi-hole
+  ansible.builtin.command:
+    argv: [bash, /etc/endora/pihole-install.sh, --unattended]
+    creates: /usr/local/bin/pihole
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  async: 3600
+  poll: 30
+  when: not endora_watch_pihole_installed.stat.exists
+
+- name: Pi-hole picks up its settings
+  ansible.builtin.systemd:
+    name: pihole-FTL
+    state: restarted
+    enabled: true
+    daemon_reload: true
+  # A dry run before the first install has no pihole-FTL to restart.
+  when:
+    - endora_watch_pihole_settings is changed
+    - endora_watch_pihole_installed.stat.exists or not ansible_check_mode
+
+# The installer leaves the password empty on an unattended run. A long random one, set once and
+# kept nowhere: `sudo pihole setpassword` sets a new one when you want the web interface.
+- name: A password for Pi-hole's web interface
+  ansible.builtin.shell: >-
+    pihole setpassword "$PIHOLE_PASSWORD" > /dev/null &&
+    touch /etc/endora/pihole-password-set
+  args:
+    creates: /etc/endora/pihole-password-set
+  environment:
+    PIHOLE_PASSWORD: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+  no_log: true
+
+# This machine asks its own Pi-hole first, so the watch can still reach ntfy when the NAS (and
+# its Pi-hole) is away; a public resolver second, for when this Pi-hole is the one away.
+- name: The network connection in use
+  ansible.builtin.command: nmcli -g GENERAL.CONNECTION device show {{ ansible_default_ipv4.interface }}
+  check_mode: false
+  changed_when: false
+  register: endora_watch_connection
+
+- name: Its DNS settings
+  ansible.builtin.command:
+    argv: [nmcli, -g, "ipv4.dns,ipv4.ignore-auto-dns", connection, show, "{{ endora_watch_connection.stdout }}"]
+  check_mode: false
+  changed_when: false
+  register: endora_watch_connection_dns
+
+- name: Ask this Pi-hole first
+  ansible.builtin.command:
+    argv: [nmcli, connection, modify, "{{ endora_watch_connection.stdout }}",
+           ipv4.dns, "127.0.0.1,{{ endora_watch_pihole_upstreams | first }}", ipv4.ignore-auto-dns, "yes"]
+  when: endora_watch_connection_dns.stdout_lines != ['127.0.0.1,' ~ (endora_watch_pihole_upstreams | first), 'yes']
+  register: endora_watch_dns_set
+  changed_when: true
+
+- name: Apply it
+  ansible.builtin.command:
+    argv: [nmcli, device, reapply, "{{ ansible_default_ipv4.interface }}"]
+  when: endora_watch_dns_set is changed
+  changed_when: true

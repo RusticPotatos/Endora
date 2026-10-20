@@ -1,0 +1,49 @@
+---
+# What has to be true before anything on the host changes. Pure checks, nothing touched, so
+# tests/render.yml runs them on the controller with good and bad settings. The watch's own
+# settings are checked again, in full, by watch.py --check before they are written.
+- name: Check the LAN that SSH and DNS come from is set
+  ansible.builtin.assert:
+    that:
+      - endora_watch_lan_cidr is string
+      - endora_watch_lan_cidr is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
+      - endora_watch_ssh_extra_cidrs is sequence
+      - endora_watch_ssh_extra_cidrs is not string
+      - endora_watch_ssh_port | int > 0
+    fail_msg: >-
+      endora_watch_lan_cidr must be your LAN as an IPv4 CIDR, e.g. 192.168.1.0/24. The firewall
+      lets SSH and DNS in from there and nowhere else, so the role will not turn it on without it.
+
+- name: Check alerts have somewhere to go
+  ansible.builtin.assert:
+    that:
+      - endora_watch_alert_url is string
+      - endora_watch_alert_url is match('^https://[^/\s]+/\S+$')
+    fail_msg: >-
+      endora_watch_alert_url must be your ntfy topic over https, e.g. https://ntfy.sh/<a long
+      random name>, set in your local inventory. A watch that cannot tell you anything is no
+      watch.
+    quiet: true
+
+- name: Check there is something to watch
+  ansible.builtin.assert:
+    that:
+      - endora_watch_checks is sequence
+      - endora_watch_checks is not string
+      - endora_watch_checks | length > 0
+      - endora_watch_checks | map(attribute='name') | unique | list | length == endora_watch_checks | length
+    fail_msg: >-
+      endora_watch_checks must list at least one check, each with a name of its own (see the
+      role's defaults for the kinds).
+
+- name: Check Pi-hole's records
+  ansible.builtin.assert:
+    that:
+      - endora_watch_pihole_dns_hosts is sequence
+      - endora_watch_pihole_dns_hosts is not string
+      - endora_watch_pihole_dns_hosts | reject('match', '^[0-9]{1,3}(\.[0-9]{1,3}){3} [A-Za-z0-9.-]+$') | list | length == 0
+      - endora_watch_pihole_upstreams | length > 0
+    fail_msg: >-
+      endora_watch_pihole_dns_hosts are "<IPv4 address> <name>" each, e.g. "192.0.2.10
+      nas.home.arpa", and Pi-hole needs at least one upstream.
+  when: endora_watch_pihole | bool
