@@ -70,8 +70,10 @@ impl Contract {
     }
 
     /// Whether a turn of a member in `role` is offered this contract: what it may see, and an
-    /// act only for a member who works on the house. The CEO reads what the lead reads and
-    /// directs; it takes no step on the house itself (ADR 0111, 0120). The wing's git contracts (ADR 0115) go to
+    /// act only for a member who works on the house, as the bridge's profiles say: the lead and
+    /// the developers. The CEO reads what the lead reads and directs; it takes no step on the
+    /// house itself (ADR 0111, 0120), and nor do the reviewer and the researcher (amended
+    /// 2026-10-19). The wing's git contracts (ADR 0115) go to
     /// a lead or a developer, whatever its brain: the fork is public. The tester is offered the
     /// checkout alone (amended 2026-10-19): checking a branch out is her reading of it, the one
     /// receipt of her own she could not otherwise have; she submits nothing.
@@ -83,7 +85,7 @@ impl Contract {
         if self.name == REPO_SUBMIT {
             return matches!(role, "lead" | "developer");
         }
-        if self.kind == Kind::AutomaticAct && role == "ceo" {
+        if self.kind == Kind::AutomaticAct && !crate::bridge::may(role, crate::bridge::Kind::Act) {
             return false;
         }
         self.may_be_seen_by(role, on_a_cloud_model)
@@ -454,6 +456,22 @@ mod tests {
         for cloud in [false, true] {
             assert!(checkout.offered_to("reviewer", cloud));
             assert!(!submit.offered_to("reviewer", cloud));
+        }
+    }
+
+    #[test]
+    fn a_restart_is_offered_only_to_the_roles_that_act() {
+        // The bridge's profiles say who acts on the house: the lead and the developers. The
+        // reviewer, the researcher and the CEO only read, and a role not listed does nothing.
+        let all = all();
+        let restart = all.iter().find(|c| c.name == RESTART_CONTAINER).unwrap();
+        for cloud in [false, true] {
+            for role in ["lead", "developer"] {
+                assert!(restart.offered_to(role, cloud), "a {role}");
+            }
+            for role in ["ceo", "reviewer", "researcher", "owner", ""] {
+                assert!(!restart.offered_to(role, cloud), "a {role}");
+            }
         }
     }
 

@@ -27,6 +27,9 @@ when the record does not let it (*Amended: can't tell*). Scenarios:
 `domains/team/features/a-deploy-under-a-turn.feature`, and in `guards.feature` and
 `the-engineering-wing.feature`.
 
+Amended again 2026-10-19 (durability): the ticks no longer count toward the events the feed keeps
+(*Amended: can't tell*, the CEO's rescues), so the feed reaches back past the week the guards read.
+
 ## Context
 
 A team of models does not fail by going rogue. It fails the way a busy office does, one locally
@@ -94,7 +97,7 @@ finding takes a verdict, so its precision is measured before anyone tunes it.
 | Fence push | Refused acts in one turn, or the same refused act for different members within a day: a deduped desk notice naming the tool and the members; every briefing carries its goal's "not now" | 3 a turn; 2 members in 24 h | `after_refused_act`; the briefing |
 | The same ask once | A question or board decision alike both ways to one waiting from another task attaches to it ("also on #672"); the owner's one answer reaches every attached thread and wakes each asker. Approvals never merge: each runs its own stored action | 60% both ways | `ask_on_the_desk`; `desk_attached` table |
 | Pass bound to criteria | A tester's pass keeps a hash of the criteria; changed since, it reads "needs re-check" and does not count | — | `test_in`, `tested_since_submitted` |
-| CEO rescues | Per member, over the last 7 days: the CEO's directions on a task it holds, and its stuck work that climbed to the CEO, on the roster. *Amended*: the climbs are counted from the event feed, which the node prunes to its newest 20,000; when the oldest event kept is newer than the week's start, the count would be too low and the roster says HQ cannot tell | 7 d | `rescues`, `guards::feed_reaches` |
+| CEO rescues | Per member, over the last 7 days: the CEO's directions on a task it holds, and its stuck work that climbed to the CEO, on the roster. *Amended*: the climbs are counted from the event feed, which the node prunes to its newest 20,000 (not counting ticks, amended 2026-10-19); when the oldest event kept is newer than the week's start, the count would be too low and the roster says HQ cannot tell | 7 d | `rescues`, `guards::feed_reaches` |
 | Reachability | A read that timed out is `unverified`, never `unavailable`: no alarm, and what was last seen stands. `/health` gives the tick's last finish, its age and whether it is within three periods | — | `capabilities::observe_homelab`, `lab_alarms`; HQ `/health` |
 
 **Findings and verdicts.** Every finding (stuck, ceremony, carousel, redundant wake, fence push,
@@ -201,6 +204,11 @@ were found, and now say that they cannot tell:
   (`guards::feed_reaches`: the first event ever is place 1, so a feed that starts later was
   pruned) the roster's `rescues` is null and the console says *how often the CEO stepped in this
   week: HQ cannot tell, the record has lost part of it*. Wakes are counted over the same week.
+  *Amended 2026-10-19 (durability):* the ticks no longer count toward the 20,000. Nine events in
+  ten were the tick's (one every 30 s), so the feed held about two days, and the week was never
+  whole. HQ keeps the newest 20,000 events that are not ticks, everything older goes, and a tick
+  goes too once it is not among the newest 20,000 of all, so the feed holds at most 40,000 rows
+  and, at the live rate, weeks. `SqliteTeamStore::prune_events`; nothing is migrated.
 
 The thresholds, the windows and the findings are as they were; nothing is migrated.
 

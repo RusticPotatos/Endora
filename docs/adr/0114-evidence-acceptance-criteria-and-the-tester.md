@@ -72,7 +72,9 @@ propose and code decides, and the owner is the board.
    A receipt holds its id, run, member, task, tool, a short arguments summary, the first 300
    characters of what the tool gave back (what the turn itself was given, already scrubbed),
    whether it did what was asked, whether the tool acts, and whether its result is
-   Confidential; it is never changed (a trigger refuses it). The model reads the id after each
+   Confidential; it is never changed (a trigger refuses it) and, amended 2026-10-19, never
+   deleted (a second trigger refuses that: evidence cited could otherwise go from under its
+   citation). The model reads the id after each
    result, "(receipt r41)", to cite. A Confidential excerpt is never shown to a member on a
    cloud model: its line says so instead. HQ's own record (tasks, events: alarms, posts, moves)
    counts as evidence too, by number.

@@ -714,6 +714,34 @@ fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Res
     Ok(Done { text, said })
 }
 
+/// HQ's no to a kept checkout of `branch`, as the turn is told it. HQ answers 404 both for a
+/// token that opens no running turn and for a branch it never recorded, and says which: a turn
+/// that ended is told so (401, which ends it), not that the fork has no such branch. Whose the
+/// branch is, HQ says, and that is passed on.
+fn checkout_refused(e: endora_infrastructure::HqError, branch: &str, base: &str) -> Refused {
+    use endora_infrastructure::HqError;
+    match e {
+        HqError::Answered {
+            status: 404,
+            message,
+        } if message.contains("running turn") => (
+            StatusCode::UNAUTHORIZED,
+            "no running turn has that token: this turn is over".to_owned(),
+        ),
+        HqError::Answered { status: 404, .. } => (
+            StatusCode::NOT_FOUND,
+            format!(
+                "the fork has no branch {branch}, and the team has not submitted one of that name: check out {base} to start from it"
+            ),
+        ),
+        HqError::Answered { message, .. } => (StatusCode::FORBIDDEN, message),
+        e @ HqError::Unreachable(_) => (
+            StatusCode::BAD_GATEWAY,
+            format!("HQ could not say whose {branch} is: {e}"),
+        ),
+    }
+}
+
 /// The team's own kept submission of `branch`, for the turn that asked (ADR 0115, amended): HQ
 /// is asked, naming the turn by its token, whether the branch is this turn's (its work, or its
 /// member's) and which head it recorded; the node hands out that head and no other, with the
@@ -732,30 +760,12 @@ fn kept_checkout(
             "HQ is not set up on this node".to_owned(),
         ));
     };
-    let kept = match hq.post(
-        "/v1/team/branch/checkout",
-        &json!({ "token": turn.token, "branch": branch }),
-    ) {
-        Ok(kept) => kept,
-        Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                format!(
-                    "the fork has no branch {branch}, and the team has not submitted one of that name: check out {} to start from it",
-                    mirror.base()
-                ),
-            ));
-        }
-        Err(endora_infrastructure::HqError::Answered { message, .. }) => {
-            return Err((StatusCode::FORBIDDEN, message));
-        }
-        Err(e) => {
-            return Err((
-                StatusCode::BAD_GATEWAY,
-                format!("HQ could not say whose {branch} is: {e}"),
-            ));
-        }
-    };
+    let kept = hq
+        .post(
+            "/v1/team/branch/checkout",
+            &json!({ "token": turn.token, "branch": branch }),
+        )
+        .map_err(|e| checkout_refused(e, branch, mirror.base()))?;
     let head = kept["head"].as_str().unwrap_or("");
     let bundle = mirror
         .kept_bundle(branch, head, now)
@@ -1429,6 +1439,55 @@ mod tests {
     use http_body_util::BodyExt as _;
     use std::sync::Mutex;
     use tower::ServiceExt as _;
+
+    #[test]
+    fn hqs_no_to_a_kept_checkout_says_whether_the_turn_or_the_branch_is_missing() {
+        use endora_infrastructure::HqError;
+        let answered = |status: u16, message: &str| HqError::Answered {
+            status,
+            message: message.to_owned(),
+        };
+        // HQ answers 404 for both, and says which (the engine's `Unknown`).
+        let (status, said) = checkout_refused(
+            answered(404, "no such running turn with that token"),
+            "hq/task-7-x",
+            "main",
+        );
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(said.contains("no running turn has that token"), "{said}");
+        assert!(!said.contains("no branch"), "{said}");
+        let (status, said) = checkout_refused(
+            answered(404, "no such branch of that name"),
+            "hq/task-7-x",
+            "main",
+        );
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            said,
+            "the fork has no branch hq/task-7-x, and the team has not submitted one of that \
+             name: check out main to start from it"
+        );
+        // Whose it is, said by HQ, is passed on; HQ out of reach is said so.
+        let (status, said) = checkout_refused(
+            answered(400, "hq/task-7-x is task #7's"),
+            "hq/task-7-x",
+            "main",
+        );
+        assert_eq!(
+            (status, said.as_str()),
+            (StatusCode::FORBIDDEN, "hq/task-7-x is task #7's")
+        );
+        let (status, said) = checkout_refused(
+            HqError::Unreachable("refused".to_owned()),
+            "hq/task-7-x",
+            "main",
+        );
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(
+            said.starts_with("HQ could not say whose hq/task-7-x is"),
+            "{said}"
+        );
+    }
 
     /// A home lab behind a fake console: Portainer's containers, one log, and the actions
     /// asked of it. `None` containers is Portainer not set up.

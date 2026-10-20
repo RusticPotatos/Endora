@@ -1500,14 +1500,20 @@ fn the_snapshot_counts_what_the_office_shows_and_old_events_can_go() {
     assert_eq!(snap["counts"]["held"], 1);
     assert_eq!(snap["counts"]["open_tasks"], 1);
     assert_eq!(snap["last_tick_at"], NOON);
-    let before = hq.store().events_after(0).unwrap().len();
-    assert!(before > 3);
-    assert_eq!(hq.prune_events(3).unwrap(), before - 3);
+    let events = hq.store().events_after(0).unwrap();
+    let before = events.len();
+    assert!(before > 4);
+    let tick = crate::domain::EventKind::Tick.name();
+    let ticks_among_the_newest_three = events.iter().rev().take(3).filter(|e| e.kind == tick);
+    assert_eq!(ticks_among_the_newest_three.count(), 1);
+    assert_eq!(hq.prune_events(3).unwrap(), before - 4);
+    let kept = hq.store().events_after(0).unwrap();
     assert_eq!(
-        hq.store().events_after(0).unwrap().len(),
+        kept.iter().filter(|e| e.kind != tick).count(),
         3,
-        "the newest three stay"
+        "the newest three that are not ticks stay, and the tick among the newest three"
     );
+    assert_eq!(kept.len(), 4);
 }
 
 #[test]

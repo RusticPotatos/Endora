@@ -34,6 +34,11 @@ built (who manages each container, what depends on what), through one more fixed
 route on the Docker observer; and `ansible_nas_doc`, the lab's ansible-nas docs by an
 allowlist.
 
+Amended 2026-10-19 (durability): `restart_container` is offered only to the roles the bridge's
+profiles let act ([0108](0108-the-bridge.md)): the lead and the developers. It went to every role
+but the CEO, so a reviewer or a researcher, read-only on the bridge, could restart a container
+here. A turn whose rounds run out now posts what its model said on the way (below).
+
 ## Context
 
 The owner gave the team the goal "Keep the home lab healthy", and the team could not see the
@@ -96,7 +101,12 @@ boundary.
   …", "This turn made no tool calls.") and under any question to the owner ("What I actually
   did this turn: …"). The reviewer and the owner read the truth beside the claim. A call
   answered from what the turn already had, and the worker's own claim before the first round,
-  are not listed: they did nothing new.
+  are not listed: they did nothing new. *Amended 2026-10-19:* a turn whose rounds run out with
+  its model still calling tools posts what the model said beside its calls as its last word,
+  the newest kept if it is too long, with "The turn's 12 rounds ran out before it finished: the
+  words above are what it said on the way, not an answer." before the line of what it did. It
+  went silently before, and the next turn started again from the thread alone. A turn that said
+  nothing on the way still posts nothing.
 - **The same call again, with nothing new, is not answered anew**: the worker answers an
   identical call (same tool, same arguments) made straight after itself from what the turn
   already has, without sending it, and one made again later that says just what it said

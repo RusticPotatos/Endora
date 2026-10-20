@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS projects (
     evidence TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 ) STRICT;
 -- What a turn called of Endora's tools, as the node recorded it (ADR 0114): written by the
--- node with the turn's token, never by the model. Never changed.
+-- node with the turn's token, never by the model. Never changed, never deleted.
 CREATE TABLE IF NOT EXISTS call_receipts (
     id INTEGER PRIMARY KEY, run INTEGER NOT NULL REFERENCES runs(id),
     member INTEGER NOT NULL REFERENCES members(id), task INTEGER REFERENCES tasks(id),
@@ -141,6 +141,8 @@ CREATE TABLE IF NOT EXISTS call_receipts (
 CREATE INDEX IF NOT EXISTS call_receipts_by_run ON call_receipts(run);
 CREATE TRIGGER IF NOT EXISTS call_receipts_are_kept_update
     BEFORE UPDATE ON call_receipts BEGIN SELECT RAISE(ABORT, 'a receipt is never changed'); END;
+CREATE TRIGGER IF NOT EXISTS call_receipts_are_kept_delete
+    BEFORE DELETE ON call_receipts BEGIN SELECT RAISE(ABORT, 'a receipt is never deleted'); END;
 -- Evidence cited for a task's criteria, at each stage of its checking (ADR 0114).
 CREATE TABLE IF NOT EXISTS cited (
     id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
@@ -1735,10 +1737,15 @@ impl TeamStore for SqliteTeamStore {
     }
 
     fn prune_events(&self, keep: i64) -> Stored<usize> {
+        // Everything older than the oldest of the newest `keep` that are not ticks goes; a tick
+        // also goes once it is not among the newest `keep` of all.
         self.conn()?
             .execute(
-                "DELETE FROM events WHERE id <= (SELECT COALESCE(MAX(id), 0) FROM events) - ?1",
-                [keep],
+                "DELETE FROM events
+                 WHERE id <= COALESCE((SELECT id FROM events WHERE kind <> ?2
+                                       ORDER BY id DESC LIMIT 1 OFFSET ?1), 0)
+                    OR (kind = ?2 AND id <= (SELECT COALESCE(MAX(id), 0) FROM events) - ?1)",
+                params![keep, crate::domain::EventKind::Tick.name()],
             )
             .map_err(backend)
     }
@@ -3965,5 +3972,81 @@ CREATE TABLE IF NOT EXISTS projects (
         run.brain = Some(Brain::Sonnet);
         store.save_run(&run).unwrap();
         assert_eq!(store.run(id).unwrap().unwrap().brain, Some(Brain::Sonnet));
+    }
+
+    #[test]
+    fn the_ticks_do_not_count_towards_the_events_the_feed_keeps() {
+        // Live, nine events in ten were the tick's, so keeping the newest 20,000 of every kind
+        // kept about two days. The feed keeps the newest `keep` that are not ticks, and of the
+        // ticks only those among the newest `keep` of all.
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let tick = crate::domain::EventKind::Tick.name();
+        for at in 1..=3 {
+            store
+                .emit(at, "task.created", &serde_json::json!({}))
+                .unwrap();
+            for _ in 0..9 {
+                store.emit(at, tick, &serde_json::json!({})).unwrap();
+            }
+        }
+        // 30 events: ids 1, 11 and 21 are the tasks', the other 27 ticks.
+        assert_eq!(store.prune_events(5).unwrap(), 22);
+        let kept: Vec<(i64, String)> = store
+            .events_after(0)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.id, e.kind))
+            .collect();
+        let ticks = |ids: std::ops::RangeInclusive<i64>| ids.map(|id| (id, tick.to_owned()));
+        let mut want = vec![
+            (1, "task.created".to_owned()),
+            (11, "task.created".to_owned()),
+        ];
+        want.extend([(21, "task.created".to_owned())]);
+        want.extend(ticks(26..=30));
+        assert_eq!(kept, want, "every task's event, and the newest five ticks");
+
+        // With more than `keep` of them, the oldest that are not ticks go, and every tick older
+        // than the oldest kept goes with them.
+        assert_eq!(store.prune_events(2).unwrap(), 4);
+        let kept: Vec<i64> = store
+            .events_after(0)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(kept, [11, 21, 29, 30]);
+        // Nothing to prune is nothing pruned.
+        assert_eq!(store.prune_events(2).unwrap(), 0);
+        assert_eq!(SqliteTeamStore::in_memory().unwrap().prune_events(2), Ok(0));
+    }
+
+    #[test]
+    fn a_receipt_is_never_deleted() {
+        // Receipts are what the evidence cites (ADR 0114): an UPDATE trigger kept them from being
+        // changed, and nothing kept them from going.
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let conn = store.conn().unwrap();
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
+                 (1, 'Ada', 'lead', 100, 1);
+             INSERT INTO goals (id, title, reason, status) VALUES (1, 'Keep it up', '', 'active');
+             INSERT INTO wakes (id, member, reason, receipt, at_ms) VALUES
+                 (1, 1, 'mentioned', 'started', 1);
+             INSERT INTO runs (id, member, wake, status, queued_at) VALUES
+                 (1, 1, 1, 'succeeded', 1);
+             INSERT INTO call_receipts (run, member, tool, args, excerpt, ok, act, confidential,
+                 at_ms) VALUES (1, 1, 'homelab_status', '', 'all up', 1, 0, 0, 2);",
+        )
+        .unwrap();
+        let said = conn
+            .execute("DELETE FROM call_receipts", [])
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("a receipt is never deleted"), "{said}");
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM call_receipts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 1);
     }
 }
