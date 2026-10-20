@@ -203,6 +203,14 @@ is read as the ids among its values, its keys naming the kind of a bare number (
 "r301", "task": 695}`). A line or an object holding no id is refused as before. Run 1831, a
 post-deploy check, was refused four times for these forms before citing the same ids plainly.
 
+*Amended again (2026-10-20):* live, findings still cited receipts mid-sentence ("Uptime 'About
+an hour' in r321 and r322 …"), and were refused. A finding is now read for every whole
+reference anywhere in it, each once: `r12`, `receipt r12`, `e340`, `event 340`, `task 12`,
+`task #12`. A bare `#1` is not one ("criterion #1" is common prose), nor a word that only looks
+like one (`e2e`). This loosens nothing that matters: every reference read is judged against
+the record as before (it exists, it is about this work, a live criterion's is fresh), so a
+stray one cannot pass a claim, and a model's words are still not evidence.
+
 ## Alternatives considered
 
 - **The worker reports its own receipts.** Rejected: the model's process would be the one

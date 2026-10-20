@@ -562,7 +562,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         if let Some((name, done)) = next.end() {
             self.scenario_ended(&place, name, done, &said)?;
-            return Ok(said);
+            // The worker ends a turn HQ says has ended: live, models went on to set_status.
+            return Ok(format!(
+                "{said} The world has closed your task, and this turn has ended: stop now."
+            ));
         }
         self.crew_told(&place, turn.member)?;
         Ok(said)

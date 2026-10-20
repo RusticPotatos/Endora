@@ -243,13 +243,19 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                         call,
                     )?,
                 };
-                if reply.asked {
-                    return Ok(Taken::AskedTheOwner);
-                }
-                if reply.moved_on {
-                    return Ok(Taken::MovedOn);
-                }
+                let ended = if reply.asked {
+                    Some(Taken::AskedTheOwner)
+                } else if reply.moved_on {
+                    Some(Taken::MovedOn)
+                } else {
+                    None
+                };
                 replies.push((call.id.clone(), reply));
+                // The call that ends the turn is answered in its transcript like any other.
+                if let Some(taken) = ended {
+                    talk.answered(replies);
+                    return Ok(taken);
+                }
             }
             talk.answered(replies);
         }
@@ -708,7 +714,7 @@ pub(crate) struct Reply {
     pub(crate) refused: bool,
     /// Whether it put something on the owner's desk, which ends the turn.
     pub(crate) asked: bool,
-    /// Whether it moved the turn's own task on, which ends the turn too.
+    /// Whether it moved the turn's own task on, or HQ said the turn has ended: either ends it.
     pub(crate) moved_on: bool,
 }
 
@@ -910,11 +916,14 @@ pub(crate) fn run(
     if nothing_new && !asked {
         return Ok(reply(ALREADY.to_owned(), false));
     }
+    // HQ saying the turn has ended ends it, whatever the tool: a scenario's world when it is
+    // over, the drain's wrap-up.
+    let ended_by_hq = !refused && said.to_lowercase().contains("this turn has ended");
     Ok(Reply {
         text: said,
         refused,
         asked,
-        moved_on: !refused && moves_on(task, tool, &args),
+        moved_on: ended_by_hq || (!refused && moves_on(task, tool, &args)),
     })
 }
 

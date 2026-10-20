@@ -68,9 +68,9 @@ fn ids(what: &str) -> Value {
     })
 }
 
-/// One piece of evidence as the model gave it: an id, a finding with its id in brackets after
-/// it, or an object whose values are ids (`{"receipt": "r301", "task": 695}`, its keys naming
-/// the kind of a bare number). An object holding no id is refused, as words are.
+/// One piece of evidence as the model gave it: an id, a finding with ids in it, or an object
+/// whose values are ids (`{"receipt": "r301", "task": 695}`, its keys naming the kind of a bare
+/// number). A finding or an object holding no id is refused, as words are.
 fn refs_of(v: &Value) -> Result<Vec<Ref>, String> {
     let read: Vec<Ref> = match v {
         Value::Object(fields) => fields
@@ -84,7 +84,10 @@ fn refs_of(v: &Value) -> Result<Vec<Ref>, String> {
                 Ref::parse(&said).or_else(|| Ref::parse(&format!("{kind} {said}")))
             })
             .collect(),
-        other => other.as_str().and_then(Ref::parse).into_iter().collect(),
+        // A reference as written, or every whole one in a finding (ADR 0114, amended).
+        other => other.as_str().map_or_else(Vec::new, |said| {
+            Ref::parse(said).map_or_else(|| Ref::all_in(said), |one| vec![one])
+        }),
     };
     if read.is_empty() {
         return Err(format!(
