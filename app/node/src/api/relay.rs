@@ -104,6 +104,19 @@ pub(super) struct Turn {
     /// lead and developers are offered and run a branch's submission. An older HQ says nothing,
     /// and its role alone decides, as before.
     pub(super) wing: Option<bool>,
+    /// The node's tools the turn may use, when HQ narrows them (ADR 0115, amended: the check
+    /// after a deploy reads the lab's health, logs and metrics alone). `None`: what its role
+    /// and brain give it, as before.
+    pub(super) only: Option<Vec<String>>,
+}
+
+impl Turn {
+    /// Whether HQ lets this turn use the node's tool `name` at all.
+    pub(super) fn may_use(&self, name: &str) -> bool {
+        self.only
+            .as_ref()
+            .is_none_or(|only| only.iter().any(|o| o == name))
+    }
 }
 
 impl Turn {
@@ -255,6 +268,11 @@ pub(super) async fn turn_of(
             brain: v["brain"].as_str().unwrap_or("local").to_owned(),
             claude_code: v["runtime"] == "claude-code",
             wing: v["wing"].as_bool(),
+            only: v["only"].as_array().map(|only| {
+                only.iter()
+                    .filter_map(|n| n.as_str().map(str::to_owned))
+                    .collect()
+            }),
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
             StatusCode::UNAUTHORIZED,

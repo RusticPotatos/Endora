@@ -1278,6 +1278,8 @@ const HQ_DESK_HELP = {
   guard: "A guard noticed a possible problem. Real = the guard was right; False positive = it was wrong; Can't tell; Resolved = the cause is fixed. Your verdicts tune the guards.",
   tripwire: "The team started far more turns in ten minutes than real work does, so HQ stopped it. Resume lets it work again; Seen leaves it stopped for you to look first. The activity log shows what they were doing.",
   push: "Push it sends the accepted branch to your fork; Decline does not. Without a push key on the node, download the bundle and push it yourself.",
+  deploy: "Deployed once you have merged the branch and run the playbook: the lab's routine member then checks the lab once, reading health, logs and metrics only. Won't deploy closes this with no check.",
+  deploy_check: "The check after a deploy did not show the lab healthy: it found a problem, or could not tell. Seen or Dismiss clears it; the change's thread has the details.",
 };
 
 // The choices each kind of desk item offers: [decision, label, style].
@@ -1321,6 +1323,10 @@ const HQ_DESK_CHOICES = {
   guard: [["real", "Real", "ok"], ["false_positive", "False positive", "no"], ["not_enough", "Can't tell", ""], ["resolved", "Resolved", "ok"]],
   // The runaway tripwire stopped the team (ADR 0133): resume it, or look first.
   tripwire: [["resume", "Resume the team", "ok"], ["seen", "Seen", ""]],
+  // The check after a deploy (ADR 0115, amended): the owner's word that a pushed branch is
+  // deployed starts one read-only check of the lab; its verdict, when not healthy, comes back.
+  deploy: [["deployed", "Deployed", "ok"], ["not_deploying", "Won't deploy", "no"]],
+  deploy_check: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]],
 };
 
 function hqDeskChoices(d) {

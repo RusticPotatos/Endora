@@ -8,6 +8,7 @@ pub mod chess;
 pub mod closure;
 pub mod consult;
 pub mod cut;
+pub mod deploy;
 pub mod desk;
 pub mod docs;
 pub mod drain;

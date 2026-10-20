@@ -1720,3 +1720,415 @@ fn the_wing_is_told_the_forks_agents_md_is_its_rules_and_its_lead_that_the_draft
         ada.told
     );
 }
+
+// ---- the check after a deploy (ADR 0115, amended) -------------------------------------------
+
+/// The house's routine that takes the home lab's alarms, as the owner has it: in "Home lab
+/// upkeep", which Ada leads (ADR 0107, 0113, 0120).
+fn lab_routine(hq: &Hq<'_>, t: &Team) -> (crate::domain::RoutineId, crate::domain::ProjectId) {
+    let upkeep = hq
+        .add_project(t.lab, super::engine::LAB_UPKEEP, "", t.ada, None)
+        .unwrap();
+    let routine = hq
+        .add_routine(
+            Author::Owner,
+            super::ports::NewRoutine {
+                title: "Check the home lab".to_owned(),
+                description: String::new(),
+                goal: t.lab,
+                project: Some(upkeep),
+                assignee: t.ada,
+                every_ms: 7 * 24 * 3_600_000,
+                on_lab_trouble: true,
+            },
+        )
+        .unwrap();
+    (routine, upkeep)
+}
+
+/// The newest item of `kind` waiting on the owner's desk.
+fn waiting(hq: &Hq<'_>, kind: &str) -> super::ports::DeskItem {
+    hq.store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == kind && d.status == "waiting")
+        .next_back()
+        .unwrap_or_else(|| panic!("no {kind} waits on the desk"))
+}
+
+/// A wing branch, accepted and pushed on the owner's word: returns its task and the card that
+/// asks the owner to say when it is deployed.
+fn pushed(hq: &Hq<'_>, t: &Team) -> (TaskId, super::ports::DeskItem) {
+    let (task, _, _) = submitted(hq, t, true);
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    let push = waiting(hq, "push");
+    hq.decide(push.id, "approve").unwrap();
+    hq.push_asked(push.id).unwrap().expect("the node is asked");
+    hq.push_outcome(
+        push.id,
+        true,
+        "Pushed hq/task-3-tidy-the-deluge-role (a1b2c3d4e5f6) to the fork: merge it on GitHub.",
+    )
+    .unwrap();
+    all_turns_over(hq);
+    (task, waiting(hq, "deploy"))
+}
+
+/// The deploy check's task, the only one titled for the branch.
+fn deploy_check(hq: &Hq<'_>) -> crate::domain::Task {
+    let checks: Vec<_> = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.title.starts_with("Check the home lab after deploying "))
+        .collect();
+    assert_eq!(checks.len(), 1, "one check: {checks:?}");
+    checks[0].clone()
+}
+
+/// The member's started turn on `task`, the task claimed as the worker claims it before the
+/// model's first round.
+fn turn_on(hq: &Hq<'_>, member: MemberId, task: TaskId) -> RunContext {
+    hq.tell_mac(true, "ready");
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    let context = hq
+        .runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.member == member && c.task == Some(task))
+        .expect("a turn on the check");
+    use_tool(hq, &context, "claim", &json!({ "task": task.0 })).unwrap_or_else(|e| panic!("{e}"));
+    context
+}
+
+/// A reading the node took for the turn, as its receipt: `homelab_status`, read-only.
+fn reads_the_lab(hq: &Hq<'_>, context: &RunContext) -> i64 {
+    hq.record_receipt(
+        &context.token,
+        &super::engine::Called {
+            tool: "homelab_status".to_owned(),
+            args: String::new(),
+            excerpt: "deluge running (healthy), sonarr running (healthy)".to_owned(),
+            ok: true,
+            act: false,
+            confidential: false,
+        },
+    )
+    .unwrap()
+}
+
+/// The turn ends, as the runner reports it, and HQ sees it on its next tick.
+fn ends(hq: &Hq<'_>, context: &RunContext) {
+    hq.runner().finish(context.run, true);
+    hq.tick().unwrap();
+}
+
+/// Behaviour 1: The owner's Deployed starts the check through the routine that takes the lab's alarms:
+/// its goal, its project and the member it hands work to, with one live criterion. The
+/// routine's own task is left to its alarms.
+#[test]
+fn the_deployed_button_hands_the_lab_routines_member_a_live_check() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (routine, upkeep) = lab_routine(&hq, &t);
+    let (task, card) = pushed(&hq, &t);
+    assert_eq!(card.task, Some(task));
+    assert!(
+        card.text.contains("hq/task-3-tidy-the-deluge-role") && card.text.contains("Deployed"),
+        "{}",
+        card.text
+    );
+    let before = hq.store().wakes().unwrap().len();
+    let last_task = |hq: &Hq<'_>| {
+        hq.store()
+            .routines()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == routine)
+            .unwrap()
+            .last_task
+    };
+    let routines_own = last_task(&hq);
+    hq.decide(card.id, "deployed").unwrap();
+    let check = deploy_check(&hq);
+    assert_eq!(
+        check.title,
+        "Check the home lab after deploying hq/task-3-tidy-the-deluge-role"
+    );
+    assert_eq!(
+        (check.goal, check.project, check.assignee),
+        (t.lab, Some(upkeep), Some(t.ada))
+    );
+    assert_eq!(check.criteria.len(), 1);
+    assert!(check.criteria[0].live, "{:?}", check.criteria);
+    assert!(
+        check.description.contains("The branch passes its checks"),
+        "the change's own criteria are quoted: {}",
+        check.description
+    );
+    assert_eq!(
+        hq.store().branches().unwrap().pop().unwrap().status,
+        "deployed"
+    );
+    assert!(wakes_after(&hq, before).contains(&(t.ada, WakeReason::Assigned)));
+    assert_eq!(
+        last_task(&hq),
+        routines_own,
+        "the alarms keep their own task"
+    );
+    assert!(
+        hq.events_after(0)
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == crate::domain::EventKind::BranchDeployed.name()),
+        "the feed says it"
+    );
+}
+
+/// Behaviour 2: A second click, or a click after Won't deploy, starts nothing more.
+#[test]
+fn a_second_click_starts_no_second_check() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    lab_routine(&hq, &t);
+    let (_, card) = pushed(&hq, &t);
+    hq.decide(card.id, "deployed").unwrap();
+    assert!(hq.decide(card.id, "deployed").is_err());
+    assert!(hq.decide(card.id, "not_deploying").is_err());
+    deploy_check(&hq);
+}
+
+/// Behaviour 2b: Won't deploy: the branch says so and no check is made.
+#[test]
+fn wont_deploy_makes_no_check() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    lab_routine(&hq, &t);
+    let (_, card) = pushed(&hq, &t);
+    hq.decide(card.id, "not_deploying").unwrap();
+    assert!(hq.decide(card.id, "deployed").is_err());
+    assert_eq!(
+        hq.store().branches().unwrap().pop().unwrap().status,
+        "not_deployed"
+    );
+    assert!(
+        hq.store()
+            .tasks()
+            .unwrap()
+            .iter()
+            .all(|k| !k.title.starts_with("Check the home lab after deploying "))
+    );
+}
+
+/// Behaviour 3 and 4: The check's turn is offered HQ's four tools to say what it found, and nothing that
+/// makes work or reaches further; the node is told to give it the lab's reads alone, and the
+/// runner to start it without a shell. A call outside them is refused by HQ, whatever the
+/// model was told.
+#[test]
+fn the_checks_turn_has_the_lab_reads_and_nothing_more() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    lab_routine(&hq, &t);
+    let (_, card) = pushed(&hq, &t);
+    hq.decide(card.id, "deployed").unwrap();
+    let check = deploy_check(&hq);
+    let ada = turn_on(&hq, t.ada, check.id);
+    let (run, member) = hq.turn_of(&ada.token).unwrap().unwrap();
+    let mut offered: Vec<String> = super::protocol::tools_in(&hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect();
+    offered.sort();
+    assert_eq!(offered, ["claim", "my_turn", "post", "set_status"]);
+    for (tool, args) in [
+        ("create_task", json!({ "title": "x", "assignee": "Dee" })),
+        ("hand_to", json!({ "task": check.id.0, "to": "Dee" })),
+        ("ask_owner", json!({ "text": "x", "evidence": [] })),
+        ("read_document", json!({ "document": 1 })),
+        ("chess", json!({ "action": "board" })),
+        ("recheck", json!({ "task": check.id.0, "why": "x" })),
+    ] {
+        let said = use_tool(&hq, &ada, tool, &args).unwrap_err();
+        assert!(said.contains("post-deploy check"), "{tool}: {said}");
+    }
+    let said = use_tool(
+        &hq,
+        &ada,
+        "set_status",
+        &json!({ "task": check.id.0, "status": "in_review", "reason": "x", "evidence": [] }),
+    )
+    .unwrap_err();
+    assert!(said.contains("post-deploy check"), "{said}");
+    assert_eq!(
+        hq.lab_tools_of(ada.run).unwrap(),
+        Some(vec!["homelab_status", "container_logs", "nas_status"])
+    );
+    assert!(!hq.may_use_a_shell(ada.run).unwrap());
+    // Any other turn is as it was: no list, and a shell where the runner gives one.
+    let rae = woken_turn(&hq, t.rae, raes_task(&hq, &t));
+    assert_eq!(hq.lab_tools_of(rae.run).unwrap(), None);
+    assert!(hq.may_use_a_shell(rae.run).unwrap());
+}
+
+/// Behaviour 5: A fresh reading, cited: the check closes in its one turn and the change reads healthy,
+/// in its own thread and on the desk; nothing wakes the check again.
+#[test]
+fn a_check_with_a_fresh_reading_closes_healthy_in_one_turn() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    lab_routine(&hq, &t);
+    let (task, card) = pushed(&hq, &t);
+    hq.decide(card.id, "deployed").unwrap();
+    let check = deploy_check(&hq);
+    let ada = turn_on(&hq, t.ada, check.id);
+    let reading = reads_the_lab(&hq, &ada);
+    use_tool(
+        &hq,
+        &ada,
+        "set_status",
+        &json!({ "task": check.id.0, "status": "done", "reason": "deluge and sonarr healthy",
+                 "evidence": [[format!("r{reading}")]] }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    ends(&hq, &ada);
+    assert_eq!(
+        hq.store().task(check.id).unwrap().unwrap().status,
+        TaskStatus::Done
+    );
+    let said = thread(&hq, task).pop().unwrap();
+    assert!(
+        said.contains("After the deploy: healthy") && said.contains(&format!("r{reading}")),
+        "{said}"
+    );
+    assert!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .any(|d| d.kind == "notice" && d.text.contains("healthy")),
+        "the digest says it"
+    );
+    let runs = hq.store().runs().unwrap().len();
+    hq.wake(t.ada, Some(check.id), WakeReason::Mentioned)
+        .unwrap();
+    quiet(&hq);
+    assert!(
+        hq.store()
+            .runs()
+            .unwrap()
+            .iter()
+            .skip(runs)
+            .all(|r| r.task != Some(check.id)),
+        "one turn"
+    );
+}
+
+/// Behaviour 5 and 6: A turn that ends without a verdict is inconclusive: the check is closed, the change
+/// is not called healthy, and the owner is told.
+#[test]
+fn a_turn_without_a_verdict_is_inconclusive_and_never_healthy() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    lab_routine(&hq, &t);
+    let (task, card) = pushed(&hq, &t);
+    hq.decide(card.id, "deployed").unwrap();
+    let check = deploy_check(&hq);
+    let ada = turn_on(&hq, t.ada, check.id);
+    // Done without a reading of her own this turn is refused by the evidence rule.
+    assert!(
+        use_tool(
+            &hq,
+            &ada,
+            "set_status",
+            &json!({ "task": check.id.0, "status": "done", "reason": "looks fine",
+                     "evidence": [[format!("task {}", task.0)]] }),
+        )
+        .is_err()
+    );
+    ends(&hq, &ada);
+    assert_eq!(
+        hq.store().task(check.id).unwrap().unwrap().status,
+        TaskStatus::Dropped
+    );
+    let said = thread(&hq, task).pop().unwrap();
+    assert!(said.contains("After the deploy: inconclusive"), "{said}");
+    assert!(!said.contains("healthy"), "{said}");
+    let item = waiting(&hq, "deploy_check");
+    assert!(
+        item.text.contains("inconclusive") && !item.text.contains("healthy"),
+        "{}",
+        item.text
+    );
+    assert!(crate::domain::desk::interrupts("deploy_check"));
+}
+
+/// Behaviour 6: The member finds a problem and says so: the check is closed as a problem, in her words,
+/// and the owner is told; never healthy.
+#[test]
+fn a_problem_found_is_reported_as_a_problem() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    lab_routine(&hq, &t);
+    let (task, card) = pushed(&hq, &t);
+    hq.decide(card.id, "deployed").unwrap();
+    let check = deploy_check(&hq);
+    let ada = turn_on(&hq, t.ada, check.id);
+    reads_the_lab(&hq, &ada);
+    use_tool(
+        &hq,
+        &ada,
+        "set_status",
+        &json!({ "task": check.id.0, "status": "blocked",
+                 "reason": "deluge restarts every minute since the deploy" }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    ends(&hq, &ada);
+    assert_eq!(
+        hq.store().task(check.id).unwrap().unwrap().status,
+        TaskStatus::Dropped
+    );
+    let said = thread(&hq, task).pop().unwrap();
+    assert!(
+        said.contains("After the deploy: a problem")
+            && said.contains("deluge restarts every minute"),
+        "{said}"
+    );
+    let item = waiting(&hq, "deploy_check");
+    assert!(
+        item.text.contains("a problem") && !item.text.contains("healthy"),
+        "{}",
+        item.text
+    );
+}
+
+/// Behaviour 7: The lab's alarms still reach the routine's own task, not the check.
+#[test]
+fn an_alarm_during_a_check_goes_to_the_routines_own_task() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    lab_routine(&hq, &t);
+    let (_, card) = pushed(&hq, &t);
+    hq.decide(card.id, "deployed").unwrap();
+    let check = deploy_check(&hq);
+    let fired = hq.alarm("sonarr became unhealthy at 11:58").unwrap();
+    let (_, fired) = fired.expect("the routine takes the alarm");
+    let alarm_task = match fired {
+        super::Fired::Created(task) | super::Fired::Posted(task) => task,
+        super::Fired::Skipped(why) => panic!("{why}"),
+    };
+    assert_ne!(alarm_task, check.id);
+}

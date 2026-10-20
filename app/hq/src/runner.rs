@@ -123,12 +123,15 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
                 .flatten()
                 .and_then(|r| r.brain)
                 .or_else(|| member.as_ref().map(|m| m.brain));
-            (handed, member, runtime, on)
+            // A shell where the runner has one, but not for the check after a deploy, which
+            // reads the lab through the node and nothing else (ADR 0115, amended).
+            let shell = hq.may_use_a_shell(handed.turn.run).unwrap_or(false);
+            (handed, member, runtime, on, shell)
         }))
     })
     .await;
     match handed {
-        Ok(Ok(Some((handed, member, runtime, on)))) => Json(json!({
+        Ok(Ok(Some((handed, member, runtime, on, shell)))) => Json(json!({
             "run": handed.turn.run.0,
             "lease": handed.lease,
             "token": handed.turn.token,
@@ -140,6 +143,7 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             "effort": handed.turn.effort.map(endora_team::domain::Effort::name),
             // What runs the turn in the workbench (ADR 0117): `worker` or `claude-code`.
             "runtime": runtime.name(),
+            "shell": shell,
         }))
         .into_response(),
         Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),

@@ -605,6 +605,14 @@ pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if engine.in_consult(run.id).unwrap_or(false) {
         list.push(super::protocol_history::answer_consult_tool());
     }
+    // The check after a deploy is offered its four tools alone (ADR 0115, amended).
+    if engine.lab_tools_of(run.id).ok().flatten().is_some() {
+        list.retain(|t| {
+            t["name"]
+                .as_str()
+                .is_some_and(|n| crate::domain::deploy::HQ_TOOLS.contains(&n))
+        });
+    }
     all
 }
 
@@ -849,6 +857,14 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // A consulted turn reads and answers, and has a few rounds to do it in (ADR 0129).
     if let Some(refusal) = engine
         .consulted_turn_refuses(run.id, tool)
+        .map_err(|e| said(&e))?
+    {
+        return Err(refusal);
+    }
+    // The check after a deploy reads the lab and closes its check, and nothing more (ADR 0115,
+    // amended): refused here, whatever the model was told.
+    if let Some(refusal) = engine
+        .deploy_check_refuses(run.id, tool, args)
         .map_err(|e| said(&e))?
     {
         return Err(refusal);

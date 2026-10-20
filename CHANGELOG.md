@@ -163,6 +163,16 @@ tagged release.
 
 ### Added
 
+- **The check after a deploy** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md),
+  amended). Once the node pushes a branch, the owner's desk asks whether it is deployed.
+  Deployed hands the member of the routine that takes the home lab's alarms one turn to read the
+  lab, in that routine's project, with one live criterion. That turn is narrowed in code: HQ
+  offers four of its tools; the node offers and runs `homelab_status`, `container_logs` and
+  `nas_status` alone and refuses everything else before it runs; and the runner starts it with no
+  shell. Its one verdict goes to the change's thread: healthy only on a reading of the turn's own,
+  cited; otherwise a problem or inconclusive, which closes the check and puts an interrupting
+  card on the desk. A second click, or a later wake, starts nothing. Won't deploy closes the
+  card with no check.
 - **A drain before every restart** ([ADR 0134](docs/adr/0134-a-drain-before-every-restart.md)).
   A deploy, and the NAS's 04:00 security reboot, cut turns of ten or fifteen minutes in the middle
   of a step, and the work was lost with them. A restart is now announced first. **While a drain

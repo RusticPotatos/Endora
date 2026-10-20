@@ -99,6 +99,9 @@ pub enum EventKind {
     CheckDone,
     /// The owner had a branch pushed to the fork, or it failed (ADR 0115).
     BranchPushed,
+    /// The owner said a pushed branch is deployed; the lab routine's member checks it (ADR
+    /// 0115, amended).
+    BranchDeployed,
     /// A member was put on furlough, on the owner's word (ADR 0118).
     MemberFurloughed,
     /// A furloughed member came back to work (ADR 0118).
@@ -208,6 +211,7 @@ impl EventKind {
             Self::BranchSubmitted => "branch.submitted",
             Self::CheckDone => "check.done",
             Self::BranchPushed => "branch.pushed",
+            Self::BranchDeployed => "branch.deployed",
             Self::MemberFurloughed => "member.furloughed",
             Self::MemberRecalled => "member.recalled",
             Self::NoteWritten => "note.written",

@@ -143,11 +143,14 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
         // Whether the member changes the lab (ADR 0120): the node offers and runs a branch's
         // submission only for the engineering wing's lead and developers.
         let wing = hq.changes_the_lab(member.id)?;
-        Ok::<_, endora_team::application::EngineError>(Some((run, member, runtime, wing)))
+        // The node's tools the turn may use, when HQ narrows them: the check after a deploy
+        // reads the lab's health, logs and metrics alone (ADR 0115, amended).
+        let only = hq.lab_tools_of(run.id)?;
+        Ok::<_, endora_team::application::EngineError>(Some((run, member, runtime, wing, only)))
     })
     .await;
     match found {
-        Ok(Ok(Some((run, member, runtime, wing)))) => Json(json!({
+        Ok(Ok(Some((run, member, runtime, wing, only)))) => Json(json!({
             "run": run.id.0,
             "member": member.name,
             "role": member.role.name(),
@@ -161,6 +164,7 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             // The task the turn is on (ADR 0115): the node names the wing's branches by it.
             "task": run.task.map(|t| t.0),
             "wing": wing,
+            "only": only,
         }))
         .into_response(),
         Ok(Ok(None)) => (

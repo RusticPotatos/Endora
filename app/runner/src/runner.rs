@@ -208,6 +208,9 @@ pub struct Turn {
     effort: Option<String>,
     /// Whether Claude Code runs it (ADR 0117), started by the worker in the workbench.
     claude_code: bool,
+    /// Whether it may have the workbench's shell where the runner has one: not the check after
+    /// a deploy, as HQ says (ADR 0115, amended). An older HQ says nothing: it may.
+    shell: bool,
 }
 
 /// Why a turn HQ handed out was refused.
@@ -310,6 +313,7 @@ impl Turn {
             cloud,
             effort,
             claude_code,
+            shell: handed["shell"].as_bool().unwrap_or(true),
         })
     }
 }
@@ -343,12 +347,17 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
     // The image declares a `/data` volume, which would otherwise be an unbounded writable
     // disk: a megabyte in memory instead, gone with the container.
     let mut tmpfs = json!({ "/tmp": "size=64m", "/data": "size=1m" });
+    // The workbench's shell and git, unless HQ says the turn has none (ADR 0115, amended):
+    // then the worker offers neither, in the same fence.
+    let shell = work.workbench && turn.shell;
     if work.workbench {
-        env.push("ENDORA_WORKBENCH=1".to_owned());
         tmpfs["/work"] = json!(WORK_FOLDER);
     }
+    if shell {
+        env.push("ENDORA_WORKBENCH=1".to_owned());
+    }
     // Claude Code (ADR 0117) is in the workbench image alone; the worker starts it there.
-    if turn.claude_code && work.workbench {
+    if turn.claude_code && shell {
         env.push("ENDORA_RUNTIME=claude-code".to_owned());
     }
     let mut spec = json!({
@@ -1180,6 +1189,56 @@ mod tests {
             "asked again with the place left, and HQ had nothing more"
         );
         assert!(hq.told().is_empty(), "nothing has ended");
+    }
+
+    /// The check after a deploy (ADR 0115, amended): HQ says its turn has no shell, and the
+    /// runner starts it in the same fence without the workbench's shell, git or Claude Code: the
+    /// worker offers none, whatever the model asks. An older HQ says nothing: as before.
+    #[test]
+    fn a_turn_handed_without_a_shell_is_started_without_one() {
+        let gateway = "http://192.168.1.10:8788";
+        let pi = Work {
+            image: "endora-workbench:latest".to_owned(),
+            network: "endora_sandbox".to_owned(),
+            model_url: format!("{gateway}/team-relay/local/v1"),
+            cloud_url: format!("{gateway}/team-relay/v1"),
+            hq_mcp: format!("{gateway}/team-gateway/mcp"),
+            capacity: 1,
+            workbench: true,
+            check_bundle: format!("{gateway}/team-relay/check/"),
+            check_done: format!("{gateway}/team-gateway/runner/check/"),
+        };
+        let env_of = |handed: &Value| {
+            let started = spec(&pi, &Turn::from_hq(handed).expect("a turn"));
+            (
+                started["Env"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|e| e.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>(),
+                started["HostConfig"]["NetworkMode"].clone(),
+                started["HostConfig"]["Dns"].clone(),
+            )
+        };
+        let mut checking = turn(12);
+        checking["shell"] = json!(false);
+        checking["brain"] = json!("claude-haiku-5-5");
+        checking["runtime"] = json!("claude-code");
+        let (env, network, dns) = env_of(&checking);
+        assert!(
+            !env.iter()
+                .any(|e| e.starts_with("ENDORA_WORKBENCH") || e.starts_with("ENDORA_RUNTIME")),
+            "{env:?}"
+        );
+        assert_eq!(network, "endora_sandbox", "the same fence");
+        assert_eq!(dns, json!([NO_RESOLVER]), "the same fence");
+        let (env, _, _) = env_of(&turn(13));
+        assert!(env.contains(&"ENDORA_WORKBENCH=1".to_owned()), "{env:?}");
+        let mut with = turn(14);
+        with["shell"] = json!(true);
+        let (env, _, _) = env_of(&with);
+        assert!(env.contains(&"ENDORA_WORKBENCH=1".to_owned()), "{env:?}");
     }
 
     #[test]
