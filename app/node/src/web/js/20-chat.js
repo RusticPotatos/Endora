@@ -13,14 +13,11 @@
 // What Endora has done is not here: it is a record, not a setting, and sits beside the Inbox
 // in the menu. What you told Endora and what it has learned are one screen, "About you":
 // they were two, side by side, and nothing said which was which.
+// What HQ and the house are set up with (ADR 0136).
 const UNDER_SETTINGS = [
-  { view: "display", icon: "speakerOn", label: "Notifications & voice", short: "Notifications", note: "your daily brief, check-ins, reading aloud and vibration" },
   { view: "models", icon: "sparkle", label: "AI", note: "every model Endora and its team use, where it runs (the NAS, your Mac, a cloud), and what it sees" },
   { view: "connections", icon: "gear", label: "Connections", note: "Home Assistant, your home lab's services, and tool servers" },
-  { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do in chat, and skills you teach it" },
-  { view: "permissions", icon: "scale", label: "Permissions", note: "how far Endora may act on its own" },
-  { view: "watching", icon: "clock", label: "What Endora watches", short: "Watching", note: "what it does about each kind of thing, and what you told it to leave alone" },
-  { view: "understanding", icon: "person", label: "About you", note: "what you've told it, and the pages of what it knows" },
+  { view: "skills", icon: "skills", label: "Tools", note: "what the team may use from the house, and which ask you first" },
   { view: "signin", icon: "lock", label: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
   { view: "vault", icon: "lock", label: "Vault", note: "the house's secrets, and the passkeys that unlock them" },
   { view: "data", icon: "export", label: "Your data", note: "take a copy of what Endora knows, or delete it" },
@@ -32,7 +29,7 @@ function settingsCrumbs(view) {
   const page = UNDER_SETTINGS.find((p) => p.view === view);
   const here = page ? (page.short || page.label) : view;
   return crumbs([
-    { label: "Home", act: "go:chat" },
+    { label: "HQ", act: "go:hq" },
     { label: "Settings", act: "go:settings" },
     { label: here },
   ]);
@@ -84,7 +81,7 @@ function viewAudit() {
     <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
       <div>${esc(a.summary)}</div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Activity" }])}
+    ${crumbs([{ label: "HQ", act: "go:hq" }, { label: "Activity" }])}
     <h2>What Endora has done</h2>
     <div class="note">Its own account of its work — what it tried, whether it checked, and what it changed. Nothing here needs anything from you.</div>
     ${viewHowItLands()}

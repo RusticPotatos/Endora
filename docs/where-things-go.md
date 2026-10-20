@@ -11,14 +11,15 @@ lived in AI. Each placement was reasonable on its own; none asked where models l
 
 ## The console (the web app)
 
-The menu holds the everyday destinations; everything that configures lives in Settings.
+Endora is HQ ([ADR 0136](adr/0136-endora-is-hq.md)): every device opens on HQ, and the butler's
+chat is retired. The menu holds the everyday destinations; everything that configures lives in
+Settings.
 
 | Destination | What belongs there | What does not |
 |---|---|---|
-| **Home** (chat) | Talking with Endora, the daily brief | Settings of any kind |
-| **Mail, Music, Speakers, Smart home, Media** | Using that thing, and its own status | How it is connected (Connections) |
+| **HQ** (where every device opens) | The team at work: your desk, giving work, the team, its work, its knowledge, the office. Status and switches you flip often (kill switch, Mac busy) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
 | **Home lab** | The lab's containers, logs, jobs, now | Credentials (Vault), models (AI) |
-| **HQ** | The team at work: your desk, giving work, the team, its work, its knowledge, the office. Status and switches you flip often (kill switch, Mac busy) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
+| **Music, Speakers, Smart home, Media** | Using that thing, and its own status | How it is connected (Connections) |
 | **Activity** | The record of what Endora did | Anything you change |
 | **Settings** | Everything you set up once, in the sections below | Day-to-day controls |
 
@@ -26,16 +27,12 @@ The menu holds the everyday destinations; everything that configures lives in Se
 
 | Section | What belongs there |
 |---|---|
-| Notifications & voice | How and when Endora reaches you, and speaks |
 | **AI** | **Every model** Endora or its team uses: which, where it runs (the NAS, the Mac, a cloud), its address and key, what it sees. A new model or model host goes here |
 | Connections | Outside services and tool servers Endora talks to (Home Assistant, the lab's services) |
-| Skills | What Endora can do in chat |
-| Permissions | How far Endora may act on its own |
-| What Endora watches | What it does about each kind of thing |
-| About you | What you told it and what it knows |
+| Tools | What the team's turns may use from the house, and which ask you first (each skill's stance, ADR 0108) |
 | Your sign-in | Your password, authenticator, script tokens |
 | Vault | The house's secrets and the passkeys that unlock them |
-| Your data | Export, delete |
+| Your data | Export, delete; never what the team runs on |
 
 **Rules of thumb**
 

@@ -284,14 +284,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", endora_application::platform_identity());
     println!("drafting model: {model} via {model_url}  (optional; 503 if unavailable)");
 
-    // The butler's heartbeat: proactive check-ins on the person's cadence (off
-    // until they enable it). Runs for the life of the process.
-    api::spawn_heartbeat(state.clone());
+    // The tool servers the team's bridge reaches, kept connected (ADR 0108).
+    api::spawn_tool_server_upkeep(state.clone());
     // A consistent copy of the database every night, for the house's backup to find.
     api::spawn_snapshots(state.clone(), std::path::PathBuf::from(&db_path));
-    api::spawn_research_worker(state.clone());
-    // What it noted, organised: page summaries written again in quiet time (ADR 0101).
-    api::spawn_brain_folding(state.clone());
     api::spawn_homelab(state.clone());
     // Keeps HQ told whether the owner's Mac is free for the team's turns (ADR 0130).
     api::spawn_mac(state.clone());
@@ -307,11 +303,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => state,
     };
-    if state.mail_copy.is_some() {
-        api::spawn_mail_reader(state.clone());
-    }
-    // The agenda loop (ADR 0103): what the readers saw becomes items, every minute.
-    api::spawn_agenda(state.clone());
 
     // The team listener, in plain HTTP: HQ's model relays (ADR 0102, phase 4), the team's
     // contracts (ADR 0106) and the team gateway (ADR 0110), served nowhere else. Published to
@@ -382,4 +373,33 @@ fn mail_copy(root: &str) -> Option<endora_mail::MaildirCopy> {
         .flatten()
         .any(|entry| entry.path().join("new").is_dir() || entry.path().join("cur").is_dir());
     any.then(|| endora_mail::MaildirCopy::new(root))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Endora is HQ (ADR 0136): the node starts what HQ and the house run on, and none of the
+    /// butler's own loops (the daily brief, research, brain folding, the mail reader, the
+    /// agenda). Their routes and data stay until the owner has taken a copy.
+    #[test]
+    fn the_node_starts_hqs_loops_and_none_of_the_butlers() {
+        let source = include_str!("main.rs");
+        let boot = source.split("#[cfg(test)]").next().unwrap_or_default();
+        for butler in [
+            "spawn_heartbeat(",
+            "spawn_research_worker(",
+            "spawn_brain_folding(",
+            "spawn_mail_reader(",
+            "spawn_agenda(",
+        ] {
+            assert!(!boot.contains(butler), "the node still starts {butler}");
+        }
+        for kept in [
+            "spawn_tool_server_upkeep(",
+            "spawn_snapshots(",
+            "spawn_homelab(",
+            "spawn_mac(",
+        ] {
+            assert!(boot.contains(kept), "the node no longer starts {kept}");
+        }
+    }
 }

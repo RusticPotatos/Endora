@@ -123,24 +123,18 @@ function viewSkills() {
   }).join("");
   const connections = (CAPS || []).filter((c) => c.settings_only || c.id === "home_assistant");
   const ready = connections.filter(connectionReady).length;
-  const recipes = (RECIPES || []).length;
   const nav = (act, ic, label, note) => `
     <button class="ghost" data-act="${act}">${icon(ic)}
       <span class="grow" style="text-align:left;">${label}<span class="sub" style="display:block;font-weight:400;">${note}</span></span>
       ${icon("chevron", 15)}</button>`;
   return `
     ${settingsCrumbs("skills")}
-    <h2>Skills</h2>
-    <div class="note">What Endora can do in chat. Tap one to turn it on or off, choose whether it asks first, or set it up.</div>
-    ${groups || `<div class="empty">No skills registered.</div>`}
-    <div class="group-title">Skills you teach it</div>
-    <div class="card nav-list">
-      ${nav("go:recipes", "plus", "Recipes", recipes ? `${recipes} taught so far` : "read one web address and say one sentence about it — no code")}
-    </div>
+    <h2>Tools</h2>
+    <div class="note">What the team's turns may use from the house. Tap one to turn it on or off, choose whether it asks you first, or set it up.</div>
+    ${groups || `<div class="empty">No tools registered.</div>`}
     <div class="group-title">Also</div>
     <div class="card nav-list">
-      ${nav("go:connections", "gear", "Connections", `where skills get their data — ${ready} of ${connections.length} set up`)}
-      ${nav("go:permissions", "scale", "Permissions", "how far Endora may act on its own")}
+      ${nav("go:connections", "gear", "Connections", `where the tools get their data — ${ready} of ${connections.length} set up`)}
     </div>`;
 }
 
@@ -152,7 +146,7 @@ function viewSkill() {
     ? { label: "Connections", act: "go:connections" }
     : { label: "Skills", act: "go:skills" };
   const trail = crumbs([
-    { label: "Home", act: "go:chat" },
+    { label: "HQ", act: "go:hq" },
     { label: "Settings", act: "go:settings" },
     parent,
     { label: c ? c.name : "Skill" },
@@ -374,7 +368,7 @@ function mcpSection() {
 function viewToolServer() {
   const s = ((MCP_SERVERS && MCP_SERVERS.servers) || []).find((x) => x.name === NAV.id);
   const trail = crumbs([
-    { label: "Home", act: "go:chat" },
+    { label: "HQ", act: "go:hq" },
     { label: "Settings", act: "go:settings" },
     { label: "Connections", act: "go:connections" },
     { label: s ? s.name : "Tool server" },
@@ -543,7 +537,7 @@ function viewRecipes() {
     </details>`;
   return `
     ${crumbs([
-      { label: "Home", act: "go:chat" },
+      { label: "HQ", act: "go:hq" },
       { label: "Settings", act: "go:settings" },
       { label: "Skills", act: "go:skills" },
       { label: "Recipes" },
@@ -568,7 +562,7 @@ const BELIEF_KIND_ORDER = ["intent","value","motivation","pattern","preference",
 // the handheld shows here as waiting and can be finished here, and the other way round.
 function viewSpotify() {
   const trail = crumbs([
-    { label: "Home", act: "go:chat" },
+    { label: "HQ", act: "go:hq" },
     { label: "Settings", act: "go:settings" },
     { label: "Connections", act: "go:connections" },
     { label: "Spotify" },

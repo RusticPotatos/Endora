@@ -433,7 +433,7 @@ if (failures.length) {
     console.error("data: export and delete are not on Your data");
     process.exit(1);
   }
-  for (const here of ["go:connections", "go:skills", "go:permissions", "go:data"]) {
+  for (const here of ["go:connections", "go:skills", "go:data"]) {
     if (!settings.includes(here)) {
       console.error(`settings: ${here} is missing from the Settings list`);
       process.exit(1);
@@ -449,9 +449,9 @@ if (failures.length) {
     process.exit(1);
   }
   if (skills.includes("skillcfg:") || skills.includes("go:skill:terminal-portainer")
-      || !skills.includes("go:skill:home_assistant") || !skills.includes("go:recipes")
+      || !skills.includes("go:skill:home_assistant") || skills.includes("go:recipes")
       || !skills.includes("go:connections")) {
-    console.error("skills: the list grew a form or a connection, or lost a way somewhere");
+    console.error("skills: the list grew a form, a connection or the chat's recipes, or lost a way somewhere");
     process.exit(1);
   }
   if (!skills.includes("Needs a connection")) {
@@ -3478,31 +3478,34 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   console.log("holodeck: scenarios, trials and match replays are listed and opened, escaped");
 }
 
-// Where this device starts (the owner's ask): the chat, as before, or HQ. A per-device choice
-// in Preferences, kept in this browser's storage like the other preferences; anything else
-// stored, or nothing, starts on the chat.
+// Endora is HQ (ADR 0136): every device opens on HQ, the menu leads to HQ and the house's own
+// screens and never to the chat, Settings holds only what HQ and the house are set up with, and
+// every trail starts at HQ.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
-  const realStore = context.localStorage, kept = {};
-  context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = String(v); }, removeItem: (k) => { delete kept[k]; } };
-  runInContext(`__keepStart = [render, flash]; render = () => {}; flash = () => {};`, context);
-  if (runInContext("startOn()", context) !== "chat") fail("start on: a device that chose nothing does not start on the chat");
-  const prefs = String(runInContext("viewDisplay()", context));
-  if (!prefs.includes("Start on") || !prefs.includes('data-act="starton:hq"') || !prefs.includes('data-act="starton:chat"')) fail("start on: Preferences does not offer the chat or HQ: " + prefs);
-  await runInContext(`dispatch("starton:hq")`, context);
-  if (runInContext(`localStorage.getItem("endora.startOn")`, context) !== "hq" || runInContext("startOn()", context) !== "hq") fail("start on: choosing HQ is not kept on this device");
-  if (!String(runInContext("viewDisplay()", context)).match(/class="primary"[^>]*data-act="starton:hq"/)) fail("start on: the choice made is not the one shown as chosen");
-  runInContext(`localStorage.setItem("endora.startOn", "nonsense")`, context);
-  if (runInContext("startOn()", context) !== "chat") fail("start on: an unknown choice does not fall back to the chat");
-  await runInContext(`dispatch("starton:chat")`, context);
-  if (runInContext("startOn()", context) !== "chat") fail("start on: choosing the chat again is not kept");
-  // Storage a browser blocks starts on the chat, and choosing does no harm.
-  context.localStorage = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); }, removeItem() {} };
-  if (runInContext("startOn()", context) !== "chat") fail("start on: blocked storage does not start on the chat");
-  await runInContext(`dispatch("starton:hq")`, context);
-  context.localStorage = realStore;
-  runInContext(`[render, flash] = __keepStart;`, context);
-  console.log("start on: each device starts on the chat or HQ, as chosen");
+  if (!/let NAV = \{ v: "hq" \};/.test(source)) fail("hq first: a device does not open on HQ");
+  if (/startOn|starton|endora\.startOn/.test(source)) fail("hq first: the Start on choice is still there");
+  const header = (source.match(/function setupHeader\([\s\S]*?\n}\n/) || [""])[0];
+  const menu = [...header.matchAll(/item\("go:([a-z]+)"/g)].map((m) => m[1]);
+  const wanted = ["hq", "lab", "music", "speakers", "house", "media", "audit", "settings"];
+  if (JSON.stringify(menu) !== JSON.stringify(wanted)) fail(`hq first: the menu is ${menu.join(", ")}, not ${wanted.join(", ")}`);
+  const sections = runInContext("UNDER_SETTINGS.map((p) => p.view)", context);
+  const kept = ["models", "connections", "skills", "signin", "vault", "data"];
+  if (JSON.stringify(sections) !== JSON.stringify(kept)) fail(`hq first: Settings holds ${sections.join(", ")}, not ${kept.join(", ")}`);
+  if (runInContext(`UNDER_SETTINGS.find((p) => p.view === "skills").label`, context) !== "Tools") fail("hq first: Skills is not shown as the tools the team may use");
+  const settings = String(runInContext("viewSettings()", context));
+  for (const gone of ["go:display", "go:permissions", "go:watching", "go:understanding"]) {
+    if (settings.includes(gone)) fail(`hq first: Settings still leads to ${gone}`);
+  }
+  // No screen anyone can reach leads back to the chat, and every trail starts at HQ.
+  if (/act: "go:chat"|data-act="go:chat"|go\("chat"\)/.test(source)) fail("hq first: something still leads to the chat");
+  for (const screen of ["viewSettings()", "viewData()", "viewAudit()", "viewLab()"]) {
+    const html = String(runInContext(screen, context));
+    if (!html.includes('data-act="go:hq">HQ</a>')) fail(`hq first: ${screen}'s trail does not start at HQ`);
+  }
+  // A screen nobody knows any more opens HQ, not the chat or About you.
+  if (!/:\s*viewHQ\(\);\n/.test((source.match(/function render\(\)[\s\S]*?\n}\n/) || [""])[0])) fail("hq first: an unknown screen does not open HQ");
+  console.log("hq first: every device opens on HQ, the menu and Settings hold what HQ and the house use, every trail starts at HQ");
 }
 
 // Signing in with a password manager (Apple Passwords in Safari, and the rest): with no

@@ -76,7 +76,7 @@ function viewPinned() {
 
 // Everything that needs the owner, then what Endora is keeping an eye on.
 function viewNeeds() {
-  const head = `${crumbs([{ label: "Home", act: "go:chat" }, { label: "Needs you" }])}<h2>Needs you</h2>`;
+  const head = `${crumbs([{ label: "HQ", act: "go:hq" }, { label: "Needs you" }])}<h2>Needs you</h2>`;
   if (!AGENDA) return `${head}<div class="empty">Loading…</div>`;
   const pinned = agendaPinned();
   const quiet = (AGENDA.items || []).filter((i) => i.level === "fyi")
@@ -135,7 +135,7 @@ async function agendaDispatch(verb, noun, id, arg) {
   }
   await loadAgenda();
   // The last one answered on its own screen: back to the chat.
-  if (NAV.v === "needs" && !agendaPinned().length && !((AGENDA && AGENDA.items) || []).some((i) => i.level === "fyi")) { go("chat"); return true; }
+  if (NAV.v === "needs" && !agendaPinned().length && !((AGENDA && AGENDA.items) || []).some((i) => i.level === "fyi")) { go("hq"); return true; }
   if (NAV.v === "watching") { try { AGENDA_RULES = await api("GET", "/v1/agenda/rules"); } catch (_) {} }
   render();
   return true;
