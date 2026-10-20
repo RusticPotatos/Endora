@@ -3478,6 +3478,33 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   console.log("holodeck: scenarios, trials and match replays are listed and opened, escaped");
 }
 
+// Where this device starts (the owner's ask): the chat, as before, or HQ. A per-device choice
+// in Preferences, kept in this browser's storage like the other preferences; anything else
+// stored, or nothing, starts on the chat.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const realStore = context.localStorage, kept = {};
+  context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = String(v); }, removeItem: (k) => { delete kept[k]; } };
+  runInContext(`__keepStart = [render, flash]; render = () => {}; flash = () => {};`, context);
+  if (runInContext("startOn()", context) !== "chat") fail("start on: a device that chose nothing does not start on the chat");
+  const prefs = String(runInContext("viewDisplay()", context));
+  if (!prefs.includes("Start on") || !prefs.includes('data-act="starton:hq"') || !prefs.includes('data-act="starton:chat"')) fail("start on: Preferences does not offer the chat or HQ: " + prefs);
+  await runInContext(`dispatch("starton:hq")`, context);
+  if (runInContext(`localStorage.getItem("endora.startOn")`, context) !== "hq" || runInContext("startOn()", context) !== "hq") fail("start on: choosing HQ is not kept on this device");
+  if (!String(runInContext("viewDisplay()", context)).match(/class="primary"[^>]*data-act="starton:hq"/)) fail("start on: the choice made is not the one shown as chosen");
+  runInContext(`localStorage.setItem("endora.startOn", "nonsense")`, context);
+  if (runInContext("startOn()", context) !== "chat") fail("start on: an unknown choice does not fall back to the chat");
+  await runInContext(`dispatch("starton:chat")`, context);
+  if (runInContext("startOn()", context) !== "chat") fail("start on: choosing the chat again is not kept");
+  // Storage a browser blocks starts on the chat, and choosing does no harm.
+  context.localStorage = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); }, removeItem() {} };
+  if (runInContext("startOn()", context) !== "chat") fail("start on: blocked storage does not start on the chat");
+  await runInContext(`dispatch("starton:hq")`, context);
+  context.localStorage = realStore;
+  runInContext(`[render, flash] = __keepStart;`, context);
+  console.log("start on: each device starts on the chat or HQ, as chosen");
+}
+
 // Signing in with a password manager (Apple Passwords in Safari, and the rest): with no
 // username field and no form, Apple Passwords took the code field for the username and filled
 // the owner's name into it. Each form a password is typed in is a real form; a hidden field

@@ -271,6 +271,12 @@ async function dispatch(act) {
       buzz(25); // confirm the change in the medium it controls
       return render();
     }
+    // Where this device starts: kept on this device alone.
+    if (verb === "starton" && (noun === "chat" || noun === "hq")) {
+      try { localStorage.setItem("endora.startOn", noun); } catch (_) {}
+      flash(`This device starts on ${noun === "hq" ? "HQ" : "the chat"}.`, "ok");
+      return render();
+    }
     if (verb === "toggle" && noun === "activity") {
       SHOW_ACTIVITY = !SHOW_ACTIVITY;
       localStorage.setItem("endora.showActivity", SHOW_ACTIVITY ? "1" : "0");

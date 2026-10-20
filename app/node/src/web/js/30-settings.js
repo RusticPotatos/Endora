@@ -438,6 +438,10 @@ function viewDisplay() {
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
       ${navigator.vibrate ? row(HAPTIC, "toggle:haptic", "Vibrate", "a short buzz when a reply lands and when the mic starts listening") : ""}
+      <div class="row" style="align-items:flex-start;gap:10px;">
+        <div class="grow"><div class="title" style="font-weight:500;">Start on</div><div class="sub">the screen this device opens on; each device keeps its own</div></div>
+        ${[["chat", "Chat"], ["hq", "HQ"]].map(([v, l]) => `<button class="${startOn() === v ? "primary" : "ghost"}" data-act="starton:${v}">${l}</button>`).join("")}
+      </div>
     </div>
     ${proactivitySection()}`;
 }

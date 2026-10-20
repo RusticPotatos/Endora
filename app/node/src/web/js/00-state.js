@@ -81,7 +81,12 @@ let LAST_CHAT_REQUEST = null;  // reuse the key when retrying an interrupted tur
 let CHAT_INFLIGHT = null;      // the user message whose reply is streaming now (not yet persisted)
 let LIVE_REPLY = "";           // the reply text accumulated so far, so a re-render can rebuild it
 let CHAT_ABORT = null;         // AbortController for the in-flight turn (the Stop button)
-let NAV = { v: "chat" };       // current view (the butler is the landing page)
+// The screen this device starts on: the chat, or HQ, as chosen in Preferences and kept on this
+// device alone (a phone may open HQ while the Mac opens the chat). Anything else is the chat.
+function startOn() {
+  try { return localStorage.getItem("endora.startOn") === "hq" ? "hq" : "chat"; } catch (_) { return "chat"; }
+}
+let NAV = { v: startOn() };   // current view (the chat, or HQ where this device chose it)
 
 const app = document.getElementById("app");
 const msgEl = document.getElementById("msg");
