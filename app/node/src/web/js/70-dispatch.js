@@ -900,6 +900,16 @@ document.body.addEventListener("click", (ev) => {
   if (!ev.target.closest("#menu")) closeMenu();
 });
 
+// A form a password is typed in is a real form, so a password manager knows it (Apple
+// Passwords offers to save on its submit): Return or its button submits it, and the console
+// does the form's action instead of leaving the page.
+document.body.addEventListener("submit", (ev) => {
+  const form = ev.target.closest("form[data-submit]");
+  if (!form) return;
+  ev.preventDefault();
+  dispatch(form.getAttribute("data-submit"));
+});
+
 // Enter sends the chat message (Shift+Enter is free for a newline if the input
 // ever becomes multi-line).
 document.body.addEventListener("keydown", (ev) => {
