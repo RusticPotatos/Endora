@@ -346,6 +346,63 @@ impl Ref {
         None
     }
 
+    /// Every whole reference in a finding, wherever it stands, each once, in order: `r321`,
+    /// `receipt r5`, `receipt 6`, `e340`, `event 340`, `task 12`, `task #12`. The words are the
+    /// model's and are not kept. A bare `#1` is not one ("criterion #1" is common), nor a word
+    /// that only looks like one (`e2e`, `r2d2`); each reference read is still judged against
+    /// the record, so a stray one cannot pass a claim.
+    #[must_use]
+    pub fn all_in(text: &str) -> Vec<Self> {
+        let lower = text.to_ascii_lowercase();
+        let words: Vec<&str> = lower
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '#'))
+            .filter(|w| !w.is_empty())
+            .collect();
+        let number = |w: &str| w.parse::<i64>().ok().filter(|n| *n > 0);
+        let lettered = |w: &str, letter: char| w.strip_prefix(letter).and_then(number);
+        let mut found = Vec::new();
+        let mut i = 0;
+        while i < words.len() {
+            let next = words.get(i + 1).copied().unwrap_or("");
+            let (it, used) = match words[i] {
+                "receipt" => (
+                    lettered(next, 'r')
+                        .or_else(|| number(next))
+                        .map(Self::Receipt),
+                    2,
+                ),
+                "event" => (
+                    lettered(next, 'e')
+                        .or_else(|| number(next))
+                        .map(Self::Event),
+                    2,
+                ),
+                "task" => (
+                    lettered(next, '#')
+                        .or_else(|| number(next))
+                        .map(|n| Self::Task(TaskId(n))),
+                    2,
+                ),
+                word => (
+                    lettered(word, 'r')
+                        .map(Self::Receipt)
+                        .or_else(|| lettered(word, 'e').map(Self::Event)),
+                    1,
+                ),
+            };
+            match it {
+                Some(r) => {
+                    if !found.contains(&r) {
+                        found.push(r);
+                    }
+                    i += used;
+                }
+                None => i += 1,
+            }
+        }
+        found
+    }
+
     /// As it is kept, a list of them: `r12,task 5`.
     #[must_use]
     pub fn kept(all: &[Self]) -> String {
@@ -770,6 +827,44 @@ mod tests {
     // its receipt in brackets after it, as the tools' own results end: "owntone-spotify exited
     // with code 137 (receipt r302)". The finding is the model's word and is not kept; the
     // receipt it names is the evidence.
+    #[test]
+    fn a_finding_reads_as_the_whole_references_anywhere_in_it_and_nothing_else() {
+        // Live, after the brackets were read: "Uptime 'About an hour' in r321 an…" and
+        // "Criterion 1 (every alarmed contai…" were refused, each citing receipts mid-sentence.
+        assert_eq!(
+            Ref::all_in("Uptime 'About an hour' in r321 and r322 shows them back"),
+            [Ref::Receipt(321), Ref::Receipt(322)]
+        );
+        assert_eq!(
+            Ref::all_in("Criterion 1 (every alarmed container running) holds on r310."),
+            [Ref::Receipt(310)]
+        );
+        assert_eq!(
+            Ref::all_in(
+                "see task 12 and task #13, event 340, E341, receipt r5, receipt 6, r5 again"
+            ),
+            [
+                Ref::Task(TaskId(12)),
+                Ref::Task(TaskId(13)),
+                Ref::Event(340),
+                Ref::Event(341),
+                Ref::Receipt(5),
+                Ref::Receipt(6)
+            ]
+        );
+        // A bare number, a #1 of a criterion, and words that only look like ids are not.
+        for none in [
+            "criterion #1 holds",
+            "e2e tests and R2D2",
+            "the log at 05:48, version 1.2",
+            "r0 and task 0",
+            "rx12, task twelve",
+            "",
+        ] {
+            assert_eq!(Ref::all_in(none), [], "{none:?}");
+        }
+    }
+
     #[test]
     fn a_finding_with_its_reference_in_brackets_after_it_reads_as_that_reference() {
         assert_eq!(

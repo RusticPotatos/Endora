@@ -847,6 +847,7 @@ fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() 
         json!([{ "task": format!("task {}", s.task.0) }]),
         json!([{ "task": s.task.0, "criterion": "the list is there" }]),
         json!([format!("the list is not there yet (task {})", s.task.0)]),
+        json!([format!("as task {} shows, the list is there", s.task.0)]),
     ] {
         cite(read.clone()).unwrap_or_else(|why| panic!("{read}: {why}"));
     }
@@ -854,6 +855,7 @@ fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() 
         json!([{ "criterion": "the list is there" }]),
         json!([{ "receipt": "the log" }]),
         json!(["the list is there"]),
+        json!(["criterion #1 holds"]),
     ] {
         let why = cite(refused.clone()).unwrap_err();
         assert!(why.contains("is not evidence"), "{refused}: {why}");

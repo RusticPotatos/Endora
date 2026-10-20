@@ -155,6 +155,11 @@ fn hq_moving(stopped: Option<&'static str>, moves: bool) -> (String, Seen) {
                         false,
                     ),
                     "set_status" if moves => ("Task 7 is moved on.", false),
+                    "scenario" => (
+                        "You fit a new bulb. The lamp lights. Solved in 20 minutes. The world has \
+                         closed your task, and this turn has ended: stop now.",
+                        false,
+                    ),
                     _ => ("`status` must be todo, doing, in_review or blocked", true),
                 };
                 json!({ "content": [{ "type": "text", "text": text }], "isError": refused })
@@ -635,7 +640,8 @@ fn moving_its_own_task_on_ends_the_turn_there_and_exits_0() {
             ),
             (200, says("Done.")),
         ]);
-        let out = worker(&usual(&hq_url, &model_url));
+        let (node_url, to_node) = node(json!([]), None);
+        let out = worker(&with_node(&hq_url, &model_url, &node_url));
         assert_eq!(out.status.code(), Some(0), "{to}: {}", said(&out));
         assert_eq!(
             to_model.lock().unwrap().len(),
@@ -654,7 +660,56 @@ fn moving_its_own_task_on_ends_the_turn_there_and_exits_0() {
             sent.last().map(String::as_str),
             Some("tools/call set_status")
         );
+        // What HQ answered is in the turn's transcript, as every other call's is: live, the
+        // turns that ended on set_status were kept with the call and no reply.
+        let told = to_node.lock().unwrap().clone();
+        let transcript = told
+            .iter()
+            .find(|s| s.path == "/team-relay/transcript")
+            .expect("the transcript is told");
+        let text = transcript.body["text"].as_str().unwrap();
+        assert!(
+            text.contains("--- result ---\nTask 7 is moved on."),
+            "{to}: {text}"
+        );
     }
+}
+
+// A reply from HQ that says the turn has ended ends it, whatever the tool: the world's last
+// word when a scenario is over, as the drain's wrap-up already said it. Live, three of five
+// scenario turns went on to set_status once the world had closed their task.
+#[test]
+fn hq_saying_the_turn_has_ended_ends_it_there() {
+    let (hq_url, to_hq) = hq_moving(None, true);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[
+                (
+                    "call_1",
+                    "scenario",
+                    r#"{"action": "replace_part", "part": "bulb"}"#,
+                ),
+                (
+                    "call_2",
+                    "set_status",
+                    r#"{"task": 7, "status": "done", "reason": "lit"}"#,
+                ),
+            ]),
+        ),
+        (200, says("Done.")),
+    ]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(
+        to_model.lock().unwrap().len(),
+        1,
+        "the model is not asked again"
+    );
+    assert_eq!(
+        methods(&to_hq).last().map(String::as_str),
+        Some("tools/call scenario")
+    );
 }
 
 #[test]

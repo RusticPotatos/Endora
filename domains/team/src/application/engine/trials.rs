@@ -21,6 +21,23 @@ fn key(name: &str) -> String {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
+    /// The brain a member's turns in a scenario will really run on, as the engine places a
+    /// turn it was handed (ADR 0131): its Claude for judgment; for work, the house's model, the
+    /// Mac, or its own work brain where either may do. The Mac is named even when it is busy:
+    /// the turn waits for it rather than going elsewhere.
+    fn turn_brain_of(&self, member: &crate::domain::Member) -> Done<&'static str> {
+        use crate::domain::turns::{Allowed, TurnKind};
+        let need = self.need_of_wake(member, None, crate::domain::WakeReason::Assigned)?;
+        if need.kind == TurnKind::Judgment {
+            return Ok(member.brain.name());
+        }
+        Ok(match need.allowed {
+            Allowed::Local => crate::domain::Brain::Local.name(),
+            Allowed::Mac => crate::domain::Brain::Mac.name(),
+            Allowed::Either => member.work_brain.name(),
+        })
+    }
+
     /// The owner starts a trial named `name`: `kind` (`lighthouse` or `silent_station`) in
     /// `project`, every condition on every seed, in that order. Returns the scenarios' tasks.
     ///
@@ -85,11 +102,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .members
                     .iter()
                     .map(|m| {
-                        self.member(*m).map(|found| {
+                        let found = self.member(*m)?;
+                        let turn_brain = self.turn_brain_of(&found)?;
+                        Ok(
                             json!({ "id": m.0, "name": found.name, "role": found.role.name(),
-                                    "brain": found.brain.name(),
-                                    "work_brain": found.work_brain.name() })
-                        })
+                                   "brain": found.brain.name(),
+                                   "work_brain": found.work_brain.name(),
+                                   "turn_brain": turn_brain }),
+                        )
                     })
                     .collect::<Done<_>>()?;
                 let task = match arm.members.as_slice() {

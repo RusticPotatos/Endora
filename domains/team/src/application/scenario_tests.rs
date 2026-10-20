@@ -155,8 +155,10 @@ fn a_scenario_is_played_through_its_tool_alone_and_the_world_closes_it() {
     )
     .unwrap();
     assert!(
-        lit.contains("The lamp lights") && lit.contains("Solved"),
-        "{lit}"
+        lit.contains("The lamp lights")
+            && lit.contains("Solved")
+            && lit.ends_with("this turn has ended: stop now."),
+        "the world's last word ends the turn: {lit}"
     );
 
     let closed = hq.store().task(task).unwrap().unwrap();
@@ -707,4 +709,21 @@ fn a_trial_compares_two_conditions_or_more_once_and_within_bounds() {
             .len(),
         2
     );
+
+    // What a run is configured with is the brain its turns will really get, as the engine
+    // places them: live, a reviewer whose own work brain was the house's model played on the
+    // Mac, since a tester's work is the Mac's (ADR 0131), and the trial said "local".
+    let ivy = hq.hire("Ivy", Role::Reviewer, 20, 2, 1).unwrap();
+    hq.start_trial(
+        "roles",
+        project,
+        "lighthouse",
+        &[arm("dev", &[a]), arm("tester", &[ivy])],
+        &[1],
+    )
+    .unwrap();
+    let report = hq.trial_report("roles").unwrap();
+    let turn_brain = |i: usize| report["runs"][i]["config"]["members"][0]["turn_brain"].clone();
+    assert_eq!(turn_brain(1), json!("mac"), "{}", report["runs"][1]);
+    assert!(turn_brain(0).is_string());
 }
