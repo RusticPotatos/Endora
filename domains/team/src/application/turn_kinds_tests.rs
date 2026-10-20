@@ -824,3 +824,78 @@ fn work_whose_turn_waits_for_the_mac_is_held_the_same_way() {
         "nobody was nudged"
     );
 }
+
+/// The Phase 0 audit's P5, from the live record of 2026-10-19: a tester's turns waited for the
+/// Mac for ten hours overnight, and nothing reached the owner. Work that has waited for the Mac
+/// past [`crate::domain::mac::LONG_WAIT_MS`] puts one note in the owner's digest, saying who
+/// waits, on what, and why; once while the waiting lasts, and again only after it has cleared
+/// and begun again. The work still waits for the Mac: it is never moved to another brain.
+#[test]
+fn work_that_waits_long_for_the_mac_is_said_once_in_the_owners_digest() {
+    use crate::domain::mac::LONG_WAIT_MS;
+    const MINUTE: i64 = 60_000;
+    let clock = hands();
+    let hq = hq(&clock, 5);
+    let t = team(&hq);
+    let notes = |hq: &Hq<'_>| {
+        hq.store()
+            .desk()
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.kind == "notice" && d.text.contains("waited for the Mac"))
+            .collect::<Vec<_>>()
+    };
+    let wait = |minutes: i64| {
+        clock.forward(minutes * MINUTE);
+        hq.tell_mac(false, "owner active");
+        hq.tick().unwrap();
+    };
+    let work = task(&hq, t.goal, "Mend the proxy");
+    hq.tell_mac(false, "owner active");
+    hq.wake(t.reviewer, Some(work), WakeReason::SentBack)
+        .unwrap();
+    hq.tick().unwrap();
+    wait(LONG_WAIT_MS / MINUTE - 30);
+    assert!(notes(&hq).is_empty(), "a working day's wait is not news");
+    wait(31);
+    let said = notes(&hq);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].text.contains("Grace")
+            && said[0].text.contains(&format!("#{}", work.0))
+            && said[0].text.contains("owner active"),
+        "{}",
+        said[0].text
+    );
+    assert!(!crate::domain::desk::interrupts(&said[0].kind));
+    let waiting = latest(&hq, t.reviewer);
+    assert_eq!(waiting.status, RunStatus::Queued, "the work still waits");
+    assert!(crate::domain::mac::is_waiting_words(&waiting.end_reason));
+    wait(60);
+    assert_eq!(notes(&hq).len(), 1, "once while the waiting lasts");
+    // The Mac is back: the turn runs, and the waiting is over.
+    hq.tell_mac(true, "ready");
+    hq.tick().unwrap();
+    let ran = latest(&hq, t.reviewer);
+    assert_eq!(
+        (ran.status, ran.brain),
+        (RunStatus::Running, Some(Brain::Mac))
+    );
+    hq.runner().finish(ran.id, true);
+    hq.tick().unwrap();
+    // Another long wait later is news again.
+    let again = task(&hq, t.goal, "Mend the dns");
+    hq.tell_mac(false, "on battery");
+    hq.wake(t.reviewer, Some(again), WakeReason::SentBack)
+        .unwrap();
+    hq.tick().unwrap();
+    let wait_on_battery = |minutes: i64| {
+        clock.forward(minutes * MINUTE);
+        hq.tell_mac(false, "on battery");
+        hq.tick().unwrap();
+    };
+    wait_on_battery(LONG_WAIT_MS / MINUTE + 1);
+    let said = notes(&hq);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(said[1].text.contains("on battery"), "{}", said[1].text);
+}

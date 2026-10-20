@@ -22,6 +22,16 @@ not members.
 Amended 2026-10-19 (hygiene, from a review of the live record): the Mac has limits of its own,
 between the NAS's model's and Claude's (*The Mac's limits*, below).
 
+Amended 2026-10-19, from the live record (the Phase 0 audit's P5): **a long wait for the Mac
+is said.** Work that needs the Mac waits for it, never moved to the NAS's model or to Claude
+(0131), and the stuck ladder rightly leaves a waiting turn alone. Live, a tester's turns waited
+ten hours overnight while the Mac could not be reached, and nothing reached the owner. Now,
+when the oldest turn waiting for the Mac has waited more than three hours
+(`mac::LONG_WAIT_MS`), one note goes in the owner's digest, which does not interrupt. It says who
+waits and on which tasks, the Mac's reason, and what the owner can do: free the Mac, or change
+who works on it from the roster. The note is said once while any turn waits for the Mac, and
+again only after none has (`mac_long_wait_said`). The work keeps waiting.
+
 ## Context
 
 The owner's laptop (an Apple Silicon Mac) can run a far stronger coding model than the NAS can.

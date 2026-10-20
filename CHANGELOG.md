@@ -1001,6 +1001,12 @@ tagged release.
 
 ### Fixed
 
+- **A long wait for the Mac is said** ([ADR 0130](docs/adr/0130-the-macs-brain.md), amended).
+  Work that needs the Mac (testers, the wing's developers and lead) waits for it, and the stuck
+  ladder leaves a waiting turn alone, so on 2026-10-19 a tester's turns waited ten hours
+  overnight with nobody told. When the oldest turn waiting for the Mac passes three hours, one
+  note now goes in the owner's digest (it does not interrupt), naming who waits, on what, and
+  why, and what to do. The work keeps waiting: it is never moved to another brain.
 - **Branches are the wing's** ([ADR 0120](docs/adr/0120-roles-as-an-enforced-raci.md),
   amended). The RACI gave changing the lab to the engineering lead and its members, but any
   lead was offered `repo_submit`. On task 687 the Ops lead built and submitted a branch

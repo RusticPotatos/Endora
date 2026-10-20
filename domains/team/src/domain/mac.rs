@@ -57,6 +57,25 @@ pub fn waiting_words(why: &str) -> String {
     format!("waiting for the Mac: {why}")
 }
 
+/// How long work may wait for the Mac before the owner's digest says so (the Phase 0 audit's
+/// P5): longer than a working day's "owner active", shorter than a night lost to a Mac that is
+/// asleep or out of reach. The work still waits; only the owner is told.
+pub const LONG_WAIT_MS: Millis = 3 * 60 * 60 * 1000;
+
+/// The setting that marks a long wait as said, so it is said once while it lasts.
+pub const LONG_WAIT_SAID: &str = "mac_long_wait_said";
+
+/// The digest's note for work that has waited long for the Mac: who, on what, how long, why,
+/// and what the owner can do.
+#[must_use]
+pub fn long_wait_said(waiting: &[String], hours: i64, why: &str) -> String {
+    format!(
+        "Work has waited for the Mac for over {hours} h ({}): {why}. It still waits: free the \
+         Mac, or change who works on it from the roster.",
+        waiting.join(", ")
+    )
+}
+
 /// Whether `said` is a turn's waiting words (see [`waiting_words`]): the turn's reason, which
 /// the engine clears when the turn starts.
 #[must_use]
