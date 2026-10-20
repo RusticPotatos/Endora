@@ -35,6 +35,46 @@ a lead or a developer may ask for a **recheck**, work in review is never demoted
 draft never closes work, and a new head sends work back for a new review (decision 6). Each is
 marked where it lands.
 
+Amended 2026-10-19, at the owner's request: **the check after a deploy.** HQ never sees the
+owner merge a branch or run the playbook, so nobody looked at the lab after a change landed.
+Now a push the node reports done puts a card on the owner's desk (kind `deploy`): **Deployed**
+or **Won't deploy**. Deployed hands the member of the routine that takes the home lab's alarms
+(the Ops lead today) one task, in that routine's goal and project, "Check the home lab after
+deploying <branch>", with one live criterion and the change's own criteria quoted. The routine's
+own task is left to its alarms. The card takes one word: a second click is refused, as any
+answered desk item is.
+
+That check's turn is narrowed in code at three layers, whatever the model is told:
+
+- HQ offers it four of its own tools (`my_turn`, `claim`, `post`, `set_status` to done or
+  blocked) and refuses every other one.
+- HQ's answer to the node's `/v1/team/turn` names its node tools (`only`: `homelab_status`,
+  `container_logs`, `nas_status`), and the node lists and runs those alone. Every other
+  contract or bridged tool (a restart, the fork, its docs, the lab's map, anything a tool server
+  offers) is refused before it runs, and the refusal is kept as a failed receipt.
+- HQ tells the runner `shell: false`, and the runner starts the turn in the same fence without
+  the workbench's shell, git or Claude Code.
+
+The check closes as done only on the evidence rule's terms: a reading of the turn's own,
+cited. Its member may close it, as a routine's check is closed.
+
+**One turn, one verdict.** When that turn ends, HQ gives the verdict once:
+
+- **healthy** if the check was closed done (the digest);
+- **a problem**, in the member's words, if it was set blocked;
+- **inconclusive** otherwise.
+
+A check that is not healthy is closed as dropped, and an interrupting card says so (kind
+`deploy_check`). Each verdict is also posted in the change's thread. A wake on a check that has
+its verdict is refused (`checked`).
+
+Limits, accepted: the reads see container health, logs and the NAS's metrics, not files on the
+NAS or the rules Prometheus loaded, so a healthy verdict means the lab ran clean after the
+deploy, not that every line of the change was seen working. The owner's Deployed is the only
+signal that a deploy happened. Scenarios: "Deployed starts one read-only check of the lab, and
+its healthy verdict comes back" and "A deploy check that ends without a verdict is
+inconclusive, never healthy".
+
 Amended 2026-10-18: the check job has every collection and role the fork needs, offline. The
 image builds `endora.homelab` from the Endora source it was built from, into the same path as
 the other baked collections, because the fork pins it to a git commit the sandbox cannot fetch;

@@ -109,6 +109,7 @@ pub(super) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
         Err(refused) => return refused,
     };
     let switches = switches_of(&state);
+    let only = turn.only.clone();
     let mut tools: Vec<serde_json::Value> = offered(switches)
         .iter()
         .filter(|c| may_see(c, &turn))
@@ -134,6 +135,14 @@ pub(super) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
                 .iter()
                 .map(endora_capabilities::bridge::Bridged::as_tool),
         );
+    }
+    // A turn HQ narrows is offered what it may use and nothing else (ADR 0115, amended).
+    if let Some(only) = only {
+        tools.retain(|t| {
+            t["name"]
+                .as_str()
+                .is_some_and(|n| only.iter().any(|o| o == n))
+        });
     }
     Json(json!({ "tools": tools })).into_response()
 }
@@ -277,6 +286,26 @@ async fn called(
             "the arguments must be one JSON object",
         );
         return (refused, None);
+    }
+    // HQ's narrowing comes first, for a contract and a bridged tool alike: the check after a
+    // deploy reads the lab's health, logs and metrics, and nothing it is not given runs
+    // (ADR 0115, amended). The refusal is kept as a receipt that failed.
+    if !turn.may_use(&name) {
+        let why = format!(
+            "{name} is not for a post-deploy check: this turn reads the lab with {} and nothing \
+             else",
+            turn.only.as_deref().unwrap_or_default().join(", ")
+        );
+        refused_for(&why);
+        let came = Came {
+            tool: one_line(&name),
+            args: String::new(),
+            said: why.clone(),
+            ok: false,
+            act: false,
+            confidential: false,
+        };
+        return (refuse(StatusCode::FORBIDDEN, "", &why), Some(came));
     }
     if !contracts::all().iter().any(|c| c.name == name) {
         return bridged(state, turn, name, args).await;
@@ -1555,6 +1584,73 @@ mod tests {
             .filter(|(p, _, _)| p == "/v1/team/notice")
             .map(|(_, _, b)| serde_json::from_str(b).unwrap())
             .collect()
+    }
+
+    /// The check after a deploy (ADR 0115, amended): HQ names the lab's three reads as all the
+    /// turn may use, and the node offers and runs those alone. An act, a branch, the fork's
+    /// docs, the lab's map or any bridged tool is refused here, before it runs, whatever the
+    /// model was told; a refusal is kept as a receipt that failed.
+    #[tokio::test]
+    async fn a_deploy_checks_turn_is_given_the_lab_reads_and_refused_everything_else() {
+        use super::super::relay::tests::fake;
+        let (hq_url, seen) = fake(Arc::new(move |path, body| match path {
+            "/v1/team/turn" if body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Ada", "role": "lead", "left": 0, "cloud": false,
+                        "brain": "local", "task": 9, "wing": false,
+                        "only": ["homelab_status", "container_logs", "nas_status"] })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            "/v1/team/receipt" => (200, "application/json", r#"{"receipt":41}"#.to_owned()),
+            _ => (200, "application/json", "{}".to_owned()),
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        let names = listed(&state).await;
+        assert!(!names.is_empty());
+        assert!(
+            names
+                .iter()
+                .all(|n| ["homelab_status", "container_logs", "nas_status"].contains(&n.as_str())),
+            "the lab's reads alone: {names:?}"
+        );
+        assert!(names.contains(&"homelab_status".to_owned()), "{names:?}");
+        for name in [
+            "restart_container",
+            "repo_checkout",
+            "repo_submit",
+            "ansible_nas_doc",
+            "homelab_map",
+            "sonarr_queue",
+            "read_file",
+        ] {
+            let (status, said) = use_contract(&state, name, json!({ "why": "look" })).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{name}: {said}");
+            assert!(
+                said["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("post-deploy check"),
+                "{name}: {said}"
+            );
+        }
+        let refusals: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/receipt")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(refusals.len(), 7, "each refusal is kept: {refusals:?}");
+        assert!(
+            refusals
+                .iter()
+                .all(|r| r["ok"] == false && r["act"] == false)
+        );
+        let (status, said) = use_contract(&state, "homelab_status", json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
     }
 
     #[tokio::test]

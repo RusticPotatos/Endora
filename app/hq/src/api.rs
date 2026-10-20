@@ -2283,6 +2283,42 @@ mod tests {
         }
     }
 
+    /// The check after a deploy (ADR 0115, amended): HQ tells the runner to start its turn
+    /// without a shell, and the node to give it the lab's three reads and nothing else; every
+    /// other turn is told nothing new, and is as it was.
+    #[tokio::test]
+    async fn a_deploy_checks_turn_is_handed_without_a_shell_and_with_the_lab_reads_alone() {
+        let st = state(false);
+        let (run, task) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let next = || call("POST", "/v1/runner/next", Some(RUNNER), r#"{"free":2}"#);
+        let whose = |token: &str| {
+            call(
+                "POST",
+                "/v1/team/turn",
+                Some(TOKEN),
+                &json!({ "token": token }).to_string(),
+            )
+        };
+        // An ordinary turn first: a shell where the runner has one, and no list.
+        let other = st.hq.store().runs().unwrap()[0].clone();
+        assert_eq!(other.id, run);
+        st.hq
+            .store()
+            .set_setting(&format!("deploy_check:{}", task.0), "1")
+            .unwrap();
+        let handed = json_of(app.clone().oneshot(next()).await.unwrap()).await;
+        assert_eq!(handed["run"], run.0);
+        assert_eq!(handed["shell"], false, "{handed}");
+        let token = handed["token"].as_str().unwrap().to_owned();
+        let found = json_of(app.clone().oneshot(whose(&token)).await.unwrap()).await;
+        assert_eq!(
+            found["only"],
+            json!(["homelab_status", "container_logs", "nas_status"]),
+            "{found}"
+        );
+    }
+
     #[tokio::test]
     async fn the_runner_is_handed_a_started_turn_once_and_its_end_ends_the_run() {
         let st = state(false);
@@ -2310,6 +2346,10 @@ mod tests {
             "the house's model unless the owner says"
         );
         assert_eq!(turn["effort"], json!(null), "the house's model takes none");
+        assert_eq!(
+            turn["shell"], true,
+            "a turn has a shell where the runner gives one"
+        );
         let token = turn["token"].as_str().unwrap();
         assert_eq!(
             st.hq.turn_of(token).unwrap().unwrap().0.id,

@@ -264,6 +264,8 @@ pub enum Refused {
     /// A wake that brings nothing new, for a member woken on the task again and again for
     /// nothing (ADR 0124): it is parked, and its area's lead decides it.
     Redundant,
+    /// The check after a deploy has had its one turn and its verdict (ADR 0115, amended).
+    Checked,
 }
 
 impl Refused {
@@ -281,6 +283,7 @@ impl Refused {
             Self::ProjectPaused => "project_paused",
             Self::Furloughed => "furloughed",
             Self::Redundant => "redundant",
+            Self::Checked => "checked",
         }
     }
 
@@ -298,6 +301,7 @@ impl Refused {
             Self::ProjectPaused => "its project is paused",
             Self::Furloughed => "the member is on furlough",
             Self::Redundant => "it was woken on this again and again for nothing",
+            Self::Checked => "the check after the deploy has had its one turn",
         }
     }
 
@@ -315,6 +319,7 @@ impl Refused {
             Self::ProjectPaused,
             Self::Furloughed,
             Self::Redundant,
+            Self::Checked,
         ]
         .into_iter()
         .find(|r| r.name() == name)

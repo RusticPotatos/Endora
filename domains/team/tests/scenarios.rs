@@ -1172,6 +1172,186 @@ fn no_branch_kept(w: &mut Office) {
     );
 }
 
+// --- The check after a deploy (ADR 0115, amended) ----------------------------------------------
+
+/// The routine that takes the home lab's alarms, the member's, in a project it leads.
+#[given(expr = "the lab's routine is {word}'s, in {string}")]
+fn lab_routine_is(w: &mut Office, name: String, project: String) {
+    let lead = w.member(&name);
+    let goal = w.goal();
+    let project =
+        w.hq.add_project(goal, &project, "", lead, None)
+            .expect("the owner adds the project");
+    w.hq.add_routine(
+        Author::Owner,
+        NewRoutine {
+            title: "Check the home lab".to_owned(),
+            description: String::new(),
+            goal,
+            project: Some(project),
+            assignee: lead,
+            every_ms: 7 * DAY_MS,
+            on_lab_trouble: true,
+        },
+    )
+    .expect("the owner adds the routine");
+}
+
+/// The tester and the lead have done their part, and the owner had the branch pushed: the node
+/// says it pushed it.
+#[when(expr = "{string} is accepted and pushed")]
+fn accepted_and_pushed(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    w.hq.store()
+        .set_task_status(task, endora_team::domain::TaskStatus::Done)
+        .expect("the store answers");
+    w.hq.offer_push(task).expect("the push is offered");
+    let push = newest_card(w, "push");
+    w.hq.decide(push, "approve").expect("the owner approves");
+    let branch =
+        w.hq.push_asked(push)
+            .expect("the store answers")
+            .expect("asked");
+    w.hq.push_outcome(push, true, &format!("Pushed {} to the fork.", branch.name))
+        .expect("the node's word is taken");
+}
+
+/// The newest desk item of `kind`, whatever its status.
+fn newest_card(w: &Office, kind: &str) -> DeskId {
+    w.hq.store()
+        .desk()
+        .expect("the store answers")
+        .into_iter()
+        .filter(|d| d.kind == kind)
+        .map(|d| d.id)
+        .max_by_key(|id| id.0)
+        .unwrap_or_else(|| panic!("no {kind} card"))
+}
+
+#[then(expr = "the owner's desk asks whether {string} is deployed")]
+fn desk_asks_deployed(w: &mut Office, branch: String) {
+    let items = w.waiting_on_desk("deploy");
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(items[0].text.contains(&branch), "{}", items[0].text);
+}
+
+#[when("the owner says it is deployed")]
+fn owner_says_deployed(w: &mut Office) {
+    let card = newest_card(w, "deploy");
+    let said = w.hq.decide(card, "deployed");
+    w.note(said);
+}
+
+/// The member's turn on that task: other turns under way end first, as the Mac takes one at a
+/// time; the worker claims the task before the model's first round.
+#[when(expr = "{word}'s turn on {string} starts")]
+fn turn_on_starts(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let id = w.member(&name);
+    for _ in 0..8 {
+        w.tick();
+        let started = w.hq.runner().started();
+        if let Some(context) = started
+            .iter()
+            .rfind(|c| c.member == id && c.task == Some(task))
+            .cloned()
+        {
+            w.turns.insert(name.clone(), context);
+            w.use_tool(&name, "claim", &json!({ "task": task.0 }));
+            return;
+        }
+        for other in started {
+            w.hq.runner().finish(other.run, true);
+        }
+    }
+    panic!("{name}'s turn on {title:?} never started");
+}
+
+#[then(expr = "{word}'s turn is offered {string} alone")]
+fn offered_alone(w: &mut Office, name: String, tools: String) {
+    let context = w.turns.get(&name).expect("the turn started").clone();
+    let (run, member) =
+        w.hq.turn_of(&context.token)
+            .expect("the store answers")
+            .expect("a running turn");
+    let mut offered: Vec<String> =
+        endora_team::application::protocol::tools_in(&w.hq, &run, &member)
+            .as_array()
+            .expect("a list")
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect();
+    offered.sort();
+    let wanted: Vec<String> = tools.split(", ").map(str::to_owned).collect();
+    assert_eq!(offered, wanted);
+}
+
+#[then(expr = "{word}'s turn may use the lab's {string} alone, with no shell")]
+fn lab_reads_alone(w: &mut Office, name: String, tools: String) {
+    let run = w.turns.get(&name).expect("the turn started").run;
+    let wanted: Vec<&str> = tools.split(", ").collect();
+    assert_eq!(
+        w.hq.lab_tools_of(run).expect("the store answers"),
+        Some(wanted)
+    );
+    assert!(!w.hq.may_use_a_shell(run).expect("the store answers"));
+}
+
+#[when(expr = "{word} uses {string} in her turn")]
+fn uses_in_turn(w: &mut Office, name: String, tool: String) {
+    w.use_tool(
+        &name,
+        &tool,
+        &json!({ "title": "Restart deluge", "assignee": "Dee" }),
+    );
+}
+
+/// The node's reading of the lab, kept as the turn's receipt, cited to close the check.
+#[when(expr = "{word} reads the lab and closes {string}, citing her reading")]
+fn reads_and_closes(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let context = w.turns.get(&name).expect("the turn started").clone();
+    let reading =
+        w.hq.record_receipt(
+            &context.token,
+            &Called {
+                tool: "homelab_status".to_owned(),
+                args: String::new(),
+                excerpt: "every container running (healthy)".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .expect("the node's receipt");
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "done", "reason": "the lab is healthy",
+                 "evidence": [[format!("r{reading}")]] }),
+    );
+}
+
+#[then(expr = "the last post in {string} starts {string}")]
+fn last_post_starts(w: &mut Office, title: String, start: String) {
+    let task = w.task(&title);
+    let last =
+        w.hq.store()
+            .thread(task)
+            .expect("the store answers")
+            .pop()
+            .expect("something was posted");
+    assert!(last.text.starts_with(&start), "{}", last.text);
+}
+
+#[then(expr = "the owner's desk holds a {string} card saying {string}")]
+fn desk_card_saying(w: &mut Office, kind: String, text: String) {
+    let items = w.waiting_on_desk(&kind);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(items[0].text.contains(&text), "{}", items[0].text);
+    assert!(!items[0].text.contains("healthy"), "{}", items[0].text);
+}
+
 /// The dev node's runner takes the check and reports with the job's own token.
 #[when(expr = "the check of {string} passes")]
 fn check_passes(w: &mut Office, branch: String) {

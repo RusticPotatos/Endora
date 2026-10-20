@@ -656,7 +656,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.reach(&turn, task, false)?;
         let current = self.task(task)?;
         self.ceo_keeps_out(turn.member, &current)?;
-        let check = to == TaskStatus::Done && self.routine_of(task)?.is_some();
+        let check = to == TaskStatus::Done && self.is_a_check(task)?;
         if to == TaskStatus::Done && !check && self.leads_own(&current, turn.member)? {
             return self.lead_closes_own(&current, &turn, reason, cited);
         }

@@ -38,6 +38,7 @@ mod allowance;
 mod areas;
 mod budget;
 mod consult;
+mod deploy;
 mod digest;
 mod discipline;
 mod drain;
@@ -1152,7 +1153,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.bring_forward(task)?;
         }
         let situation = self.situation(&who, task, reason)?;
-        let decision = wakes::decide(member, &situation);
+        let decision = match task {
+            // The check after a deploy has one turn (ADR 0115, amended): once its verdict is
+            // given, nothing wakes it again.
+            Some(task) if self.deploy_check_given(task)? => {
+                WakeDecision::Refuse(wakes::Refused::Checked)
+            }
+            _ => wakes::decide(member, &situation),
+        };
         let now = self.clock.now();
         let mut about = json!({
             "member": member.0, "task": task.map(|t| t.0), "reason": reason.name(),
@@ -1714,7 +1722,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Err(EngineError::Refused(Refusal::NotYours));
         };
         // A routine's check changes no code: its member closes it (ADR 0107).
-        let check = to == TaskStatus::Done && self.routine_of(task)?.is_some();
+        let check = to == TaskStatus::Done && self.is_a_check(task)?;
         if check {
             work::may_close_check(current.status).map_err(EngineError::Refused)?;
         } else {
@@ -2315,6 +2323,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // A consulted member that did not answer is answered for from the record, and an asker
         // whose answer came while its turn ran is woken now (ADR 0129).
         self.consults_after(&run, consulted)?;
+        // A deploy check's one turn is over: its verdict, once (ADR 0115, amended).
+        self.after_a_deploy_check(&run)?;
         Ok(())
     }
 
@@ -4089,6 +4099,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // The wing (ADR 0115): a lead's request to hire, and a branch to push.
             ("hire", "approve" | "decline") => self.decide_hire(found, decision == "approve")?,
             ("push", "approve" | "decline") => self.decide_push(found, decision == "approve")?,
+            // The check after a deploy (ADR 0115, amended): the owner's word that it is deployed.
+            ("deploy", "deployed" | "not_deploying") => {
+                self.decide_deploy(found, decision == "deployed")?;
+            }
             // Elastic staffing (ADR 0118): furlough an idle member or keep it, and bring a
             // furloughed one back for a lead with a backlog.
             ("furlough", "approve" | "decline") => {
@@ -4109,7 +4123,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             | ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
             | ("question", "dismiss")
-            | ("notice", "seen" | "dismiss") => {}
+            | ("notice", "seen" | "dismiss")
+            | ("deploy_check", "seen" | "dismiss") => {}
             _ => return Err(EngineError::Unknown("decision for this item")),
         }
         self.store.set_desk_status(item, decision)?;
@@ -4355,6 +4370,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- routines, alarms and check-backs (ADR 0107) -------------------------------------
 
     /// The routine whose last task this is, if any: the one task a routine has open.
+    /// Whether a task is a check its member closes itself: a routine's, or the check after a
+    /// deploy (ADR 0107; 0115, amended). A check changes no code.
+    fn is_a_check(&self, task: TaskId) -> Done<bool> {
+        Ok(self.routine_of(task)?.is_some() || self.deploy_check_of(task)?.is_some())
+    }
+
     fn routine_of(&self, task: TaskId) -> Done<Option<Routine>> {
         Ok(self
             .store
