@@ -357,7 +357,7 @@ function viewSettings() {
   // a pile of toggles with a "Manage" list buried under it; this is the Manage list all
   // the way down, so every category is findable in one glance.
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings" }])}
+    ${crumbs([{ label: "HQ", act: "go:hq" }, { label: "Settings" }])}
     <h2>Settings</h2>
     <div class="card nav-list">
       ${UNDER_SETTINGS.map((p) => nav(`go:${p.view}`, p.icon, p.label, p.note)).join("")}
@@ -387,7 +387,7 @@ function viewData() {
 // link to follow: nothing on this screen opens anything in the mail.
 function viewMail() {
   const head = `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Mail" }])}
+    ${crumbs([{ label: "HQ", act: "go:hq" }, { label: "Mail" }])}
     <h2>Mail</h2>`;
   if (!MAIL) return `${head}<div class="note">Loading…</div>`;
   if (!MAIL.mounted) {
@@ -438,10 +438,6 @@ function viewDisplay() {
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
       ${navigator.vibrate ? row(HAPTIC, "toggle:haptic", "Vibrate", "a short buzz when a reply lands and when the mic starts listening") : ""}
-      <div class="row" style="align-items:flex-start;gap:10px;">
-        <div class="grow"><div class="title" style="font-weight:500;">Start on</div><div class="sub">the screen this device opens on; each device keeps its own</div></div>
-        ${[["chat", "Chat"], ["hq", "HQ"]].map(([v, l]) => `<button class="${startOn() === v ? "primary" : "ghost"}" data-act="starton:${v}">${l}</button>`).join("")}
-      </div>
     </div>
     ${proactivitySection()}`;
 }

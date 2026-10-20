@@ -48,7 +48,7 @@ async function labAct(kind, action, target) {
 
 const labItems = (page) => (page && Array.isArray(page.items) ? page.items : []);
 const labError = (page) => (page && page.error ? `<div class="note">${esc(page.error)}</div>` : "");
-const labCrumbs = (...rest) => crumbs([{ label: "Home", act: "go:chat" }, ...rest]);
+const labCrumbs = (...rest) => crumbs([{ label: "HQ", act: "go:hq" }, ...rest]);
 const stateClass = (state) =>
   state === "running" ? "concluded" : state === "unhealthy" ? "rejected" : state === "unknown" ? "" : "pending";
 

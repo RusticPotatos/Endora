@@ -50,7 +50,8 @@ function render() {
     : v === "signin" ? viewSignin()
     : v === "vault" ? viewVault()
     : v === "recipes" ? viewRecipes()
-    : viewUnderstanding();
+    // A screen nobody knows any more opens HQ.
+    : viewHQ();
   if (kept) {
     for (const [name, top] of kept.boxes) {
       const box = document.querySelector(`[data-keep-scroll="${name}"]`);
@@ -269,12 +270,6 @@ async function dispatch(act) {
       HAPTIC = !HAPTIC;
       localStorage.setItem("endora.haptic", HAPTIC ? "1" : "0");
       buzz(25); // confirm the change in the medium it controls
-      return render();
-    }
-    // Where this device starts: kept on this device alone.
-    if (verb === "starton" && (noun === "chat" || noun === "hq")) {
-      try { localStorage.setItem("endora.startOn", noun); } catch (_) {}
-      flash(`This device starts on ${noun === "hq" ? "HQ" : "the chat"}.`, "ok");
       return render();
     }
     if (verb === "toggle" && noun === "activity") {
@@ -957,8 +952,8 @@ document.body.addEventListener("change", (ev) => {
   if (sel) dispatch(sel.getAttribute("data-change") + ":" + sel.value);
 });
 
-// Build the header: a single menu button, and the menu it opens. Everything
-// beyond the butler chat lives in here, so the main surface stays clean.
+// Build the header: a single menu button, and the menu it opens: HQ first, then the house's own
+// screens (ADR 0136).
 function setupHeader(health) {
   const service = (health && health.service) || "";
   const menuBtn = document.getElementById("menu-btn");
@@ -967,17 +962,15 @@ function setupHeader(health) {
     `<button class="${cls}" data-act="${act}">${icon(name)}<span>${label}</span>${extra}</button>`;
   const menu = document.getElementById("menu");
   if (menu) {
-    // A short, focused menu: the everyday destinations. Everything else
-    // (Skills, preferences, export) lives inside Settings.
+    // A short, focused menu: the everyday destinations. Everything set up once lives inside
+    // Settings.
     menu.innerHTML =
-      item("go:chat", "chat", "Home") +
-      item("go:mail", "inbox", "Mail") +
+      item("go:hq", "sparkle", "HQ") +
+      item("go:lab", "server", "Home lab") +
       item("go:music", "music", "Music") +
       item("go:speakers", "speakerOn", "Speakers") +
       item("go:house", "house", "Smart home") +
       item("go:media", "film", "Media") +
-      item("go:lab", "server", "Home lab") +
-      item("go:hq", "sparkle", "HQ") +
       item("go:audit", "audit", "Activity") +
       item("go:settings", "gear", "Settings") +
       `<div class="divider"></div>` +
