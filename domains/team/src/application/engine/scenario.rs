@@ -41,6 +41,17 @@ fn key(task: TaskId) -> String {
     format!("scenario:{}", task.0)
 }
 
+/// How long a world whose players have no turn coming sits before they are woken again.
+const IDLE_MS: i64 = 10 * 60 * 1000;
+
+/// How many times its players are woken again with nothing done before the world is abandoned.
+const REWAKES: i64 = 3;
+
+/// Where a world's idleness is kept, by its task.
+fn idle_key(world: TaskId) -> String {
+    format!("scenario_idle:{}", world.0)
+}
+
 /// Which world a scenario is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -493,14 +504,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.setting(&key(task))?.is_some())
     }
 
-    /// The worlds that have ended with their tasks still open (an end a rule added after their
-    /// last action gives them) are closed, each once: by the tick.
+    /// What the tick does for the scenarios: a world that has ended with its tasks still open
+    /// (an end a rule added after its last action gives it) is closed; and a world whose
+    /// players have no turn coming, and that has sat idle, has them woken again, three times at
+    /// most, and is then abandoned. Live, a turn stopped for its time had folded into it the
+    /// wake that would have brought its player back, and a match waited for ever.
     pub(super) fn close_ended_scenarios(&self) -> Done<()> {
+        let runs = self.store.runs()?;
         for listed in self.scenarios_listed(usize::MAX)? {
-            if listed["end"].is_null()
-                || listed["status"] == "done"
-                || listed["status"] == "dropped"
-            {
+            if listed["status"] == "done" || listed["status"] == "dropped" {
                 continue;
             }
             let task = TaskId(listed["task"].as_i64().unwrap_or_default());
@@ -510,8 +522,110 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let now = self.world_at(&place)?;
             if let Some((name, done)) = now.end() {
                 self.scenario_ended(&place, name, done, &now.look(None))?;
+                continue;
+            }
+            self.wake_the_idle(&place, &now, &runs)?;
+        }
+        Ok(())
+    }
+
+    /// Wakes a world's players again when none has a turn coming and it has sat idle since its
+    /// last action or its last such wake; after [`REWAKES`] wakes with nothing done, abandons
+    /// it. Kept as a setting a world: `<actions logged>:<wakes>:<when>`.
+    fn wake_the_idle(
+        &self,
+        place: &Place,
+        now: &World,
+        runs: &[crate::application::ports::Run],
+    ) -> Done<()> {
+        let tasks: Vec<TaskId> = std::iter::once(place.world)
+            .chain(place.parts.iter().copied())
+            .collect();
+        let coming = runs.iter().any(|r| {
+            r.task.is_some_and(|t| tasks.contains(&t))
+                && matches!(
+                    r.status,
+                    crate::domain::RunStatus::Queued
+                        | crate::domain::RunStatus::Running
+                        | crate::domain::RunStatus::RetryWaiting
+                )
+        });
+        let mut held = false;
+        for task in &tasks {
+            held |= !self.store.held_wakes(*task)?.is_empty();
+        }
+        if coming || held {
+            return Ok(());
+        }
+        let log = self.store.scenario_actions(place.world)?;
+        let last_act = log.last().map_or(0, |a| a.at);
+        let logged_now = i64::try_from(log.len()).unwrap_or(i64::MAX);
+        // The idle clock starts when the tick first sees the world, not at the epoch.
+        let Some(kept) = self.store.setting(&idle_key(place.world))? else {
+            self.store.set_setting(
+                &idle_key(place.world),
+                &format!("{logged_now}:0:{}", self.clock.now()),
+            )?;
+            return Ok(());
+        };
+        let mut parts = kept.split(':').map(|p| p.parse::<i64>().unwrap_or(0));
+        let (seen, wakes, at) = (
+            parts.next().unwrap_or(-1),
+            parts.next().unwrap_or(0),
+            parts.next().unwrap_or(0),
+        );
+        let logged = i64::try_from(log.len()).unwrap_or(i64::MAX);
+        let (wakes, since) = if seen == logged {
+            (wakes, at.max(last_act))
+        } else {
+            (0, last_act)
+        };
+        let now_ms = self.clock.now();
+        if since > 0 && now_ms - since < IDLE_MS {
+            if seen != logged {
+                self.store
+                    .set_setting(&idle_key(place.world), &format!("{logged}:0:{since}"))?;
+            }
+            return Ok(());
+        }
+        if wakes >= REWAKES {
+            self.scenario_ended(
+                place,
+                "abandoned",
+                false,
+                &format!("nobody acted in it after {REWAKES} wakes"),
+            )?;
+            return Ok(());
+        }
+        // Who is to act: a match's side to move; otherwise every player still at it.
+        let to_wake: Vec<TaskId> = match now.to_move() {
+            Some(side) => tasks
+                .iter()
+                .copied()
+                .filter(|t| {
+                    self.place_of(*t)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|p| p.role == Some(side))
+                })
+                .collect(),
+            None => tasks.clone(),
+        };
+        for task in to_wake {
+            let Some(found) = self.store.task(task)? else {
+                continue;
+            };
+            if found.status.finished() {
+                continue;
+            }
+            if let Some(player) = found.assignee.or(found.owner) {
+                self.wake_held_lock(player, Some(task), WakeReason::Mentioned)?;
             }
         }
+        self.store.set_setting(
+            &idle_key(place.world),
+            &format!("{logged}:{}:{now_ms}", wakes + 1),
+        )?;
         Ok(())
     }
 
@@ -622,6 +736,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut shown = json!({ "task": place.world.0, "kind": place.kind.name(),
                                 "seed": place.seed, "end": now.end().map(|(name, _)| name),
                                 "elapsed": now.elapsed(), "said": now.look(None),
+                                "status": self.task(place.world)?.status.name(),
                                 "log": log });
         let over = now.end().is_some();
         match &now {

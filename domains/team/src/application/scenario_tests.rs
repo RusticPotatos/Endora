@@ -1076,3 +1076,94 @@ fn the_tick_closes_a_world_that_has_ended() {
     }
     assert_eq!(hq.scenario_shown(mission).unwrap()["end"], "partial");
 }
+
+// Live, black's turn on the Mac ran past its time and was stopped, the wake that would have
+// brought it back had been folded into that turn, and the match waited for ever. A world whose
+// player has no turn coming is woken again when it has sat idle, three times at most; then the
+// world abandons it, and says so.
+#[test]
+fn an_idle_player_is_woken_again_three_times_and_then_the_world_abandons_it() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([white, black, _], project) = crew(&hq);
+    let game = hq.start_chess(project, [white, black], 1).unwrap();
+    let part = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.parent == Some(game))
+        .unwrap();
+    let [w, _b] = <[RunContext; 2]>::try_from(turns(&hq, &[white, black]))
+        .ok()
+        .unwrap();
+    play(&hq, &w, "e4").unwrap();
+    let woken = |hq: &Hq<'_>| {
+        hq.store()
+            .wakes()
+            .unwrap()
+            .iter()
+            .filter(|x| x.member == black && x.task == Some(part.id))
+            .count()
+    };
+    // Black's turns all end without a move; nothing else would bring it back.
+    let mut counts = Vec::new();
+    for _ in 0..6 {
+        for started in hq.runner().started() {
+            hq.runner().finish(started.run, true);
+        }
+        clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+        hq.tick().unwrap();
+        counts.push(woken(&hq));
+    }
+    let first = counts[0];
+    assert!(
+        counts.iter().max().unwrap() - first <= 3,
+        "woken again three times at most: {counts:?}"
+    );
+    assert!(
+        counts.iter().max().unwrap() > &first,
+        "woken again: {counts:?}"
+    );
+    for task in [game, part.id] {
+        assert_eq!(
+            hq.store().task(task).unwrap().unwrap().status,
+            TaskStatus::Dropped,
+            "abandoned: {counts:?}"
+        );
+    }
+    let shown = hq.scenario_shown(game).unwrap();
+    assert_eq!(shown["status"], "dropped");
+    assert!(
+        hq.store()
+            .thread(game)
+            .unwrap()
+            .iter()
+            .any(|p| p.text.contains("abandoned")),
+        "the world says why"
+    );
+}
+
+// A move resets it: a player who acts is never counted idle for its earlier silences.
+#[test]
+fn acting_again_resets_the_count_of_wakes() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([white, black, _], project) = crew(&hq);
+    let game = hq.start_chess(project, [white, black], 1).unwrap();
+    let [w, b] = <[RunContext; 2]>::try_from(turns(&hq, &[white, black]))
+        .ok()
+        .unwrap();
+    play(&hq, &w, "e4").unwrap();
+    for _ in 0..2 {
+        for started in hq.runner().started() {
+            if started.run != b.run {
+                hq.runner().finish(started.run, true);
+            }
+        }
+        clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+        hq.tick().unwrap();
+    }
+    play(&hq, &b, "e5").unwrap();
+    assert!(!hq.store().task(game).unwrap().unwrap().status.finished());
+}
