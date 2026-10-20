@@ -3427,6 +3427,55 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   console.log("world editor: paste, preview, apply and the section editor behave");
 }
 
+// The Holodeck on the HQ screen (ADR 0135): the Work tab lists the scenarios and trials, and
+// opens one step by step (a lighthouse's log, a mission's state, a match's board and each
+// side's illegal moves, a trial's conditions side by side); the Office replays a match of pool
+// or ping-pong shot by shot or rally by rally (ADR 0121). Everything shown is the team's or
+// the world's words, so all of it is escaped.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const html = (code) => String(runInContext(code, context));
+  runInContext(`__keepHolo = [HQ.snap, HQ.holo, api, render, flash]; render = () => {}; flash = () => {};
+    HQ.snap = Object.assign({}, HQ.snap, { holodeck: {
+      scenarios: [{ task: 708, kind: "chess", title: "Chess (game 1)", status: "doing", end: null, elapsed: 4 },
+                  { task: 701, kind: "lighthouse", title: "The dark <b>lighthouse</b>", status: "done", end: "solved", elapsed: 45 }],
+      trials: [{ name: "bo-vs-dee", kind: "lighthouse", runs: 4 }] } });`, context);
+  const card = html("hqHolodeck(HQ.snap)");
+  if (!card.includes("Holodeck") || !card.includes('data-act="hq:holo:open:708"') || !card.includes('data-act="hq:holo:trial:bo-vs-dee"')) fail("holodeck: the card does not list and open the scenarios and trials: " + card);
+  if (card.includes("<b>lighthouse</b>")) fail("holodeck: a title is not escaped");
+  const shown = (data) => { runInContext(`HQ.holo = ${JSON.stringify(data)};`, context); return html("hqHoloDetail()"); };
+  const chess = shown({ what: "scenario", data: { task: 708, kind: "chess", end: "black_won", result: "black_won", reason: "checkmate", moves: "1. f3 e5 2. g4 Qh4#",
+    fen: "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3", rows: ["rnb.kbnr", "pppp.ppp", "........", "....p...", "......Pq", ".....P..", "PPPPP..P", "RNBQKBNR"],
+    sides: { white: "Bo", black: "<i>Dee</i>" }, by_role: [{ role: "black", by: "<i>Dee</i>", accepted: 2, refused: 0 }, { role: "white", by: "Bo", accepted: 2, refused: 2 }],
+    log: [{ action: "move e5", ok: false, said: "e5 is not a legal move", by: "Bo", role: "white" }, { action: "move f3", ok: true, said: "white played f3.", by: "Bo", role: "white" }] } });
+  if (!chess.includes("hq-chess") || !chess.includes("1. f3 e5 2. g4 Qh4#") || !chess.includes("black_won")) fail("holodeck: a match does not show its board, moves and result: " + chess);
+  if (!/white[^<]*Bo[^<]*2 legal, 2 illegal/.test(chess.replace(/<[^>]+>/g, ""))) fail("holodeck: a match does not show each side's illegal moves: " + chess);
+  if (chess.includes("<i>Dee</i>")) fail("holodeck: a member's name is not escaped");
+  const station = shown({ what: "scenario", data: { task: 709, kind: "silent_station", end: "success", score: 75, anomaly: "magnetic field",
+    state: { life_support: 5, ship_energy: 35, station_power: 20, hazard: 1, crew_safe: true, power_routed: false, probe_out: true, contact: true }, log: [] } });
+  if (!station.includes("75") || !station.includes("magnetic field") || !station.includes("Life support")) fail("holodeck: a mission does not show its state and score: " + station);
+  const trial = shown({ what: "trial", data: { name: "bo-vs-dee", kind: "lighthouse", version: 1, seeds: [2, 3],
+    conditions: [{ label: "bo", runs: 2, done: 2, not_done: 0, unfinished: 0, mean_score: 100, mean_elapsed: 25, refused: 0, unsafe_runs: 0, turns: 2, idle_turns: 0, spent: 0, brains: ["local"] },
+                 { label: "<b>dee</b>", runs: 2, done: 2, not_done: 0, unfinished: 0, mean_score: 100, mean_elapsed: 25, refused: 0, unsafe_runs: 0, turns: 2, idle_turns: 0, spent: 0, brains: ["mac"] }],
+    runs: [], markdown: "# Trial" } });
+  if (!trial.includes("<table") || !trial.includes("mac") || trial.includes("<b>dee</b>")) fail("holodeck: a trial is not compared side by side, or not escaped: " + trial);
+  const replay = shown({ what: "replay", data: { id: 218, kind: "pool", players: ["Kit", "Bo"], score: [5, 8], winner: "Bo", matches: true,
+    steps: [{ step: "shot", by: "Kit", potted: false, balls: [0, 0] }, { step: "shot", by: "Bo", potted: true, balls: [0, 1] }, { step: "scratch", by: "Kit" }] } });
+  if (!replay.includes("Bo potted") || !replay.includes("Kit missed") || !replay.includes("scratch")) fail("holodeck: a game of pool is not replayed shot by shot: " + replay);
+  const pong = shown({ what: "replay", data: { id: 219, kind: "ping_pong", players: ["Bo", "Dee"], score: [11, 6], winner: "Bo", matches: true,
+    steps: [{ step: "rally", won_by: "Bo", score: [1, 0] }, { step: "rally", won_by: "Dee", score: [1, 1] }] } });
+  if (!pong.includes("1–0") || !pong.includes("1–1")) fail("holodeck: a game of ping-pong is not replayed rally by rally: " + pong);
+  // Tapping Open fetches the scenario and shows it; tapping Replay fetches the match.
+  runInContext(`__asked = []; api = async (method, path) => { __asked.push(method + " " + path); return { task: 708, kind: "chess", log: [] }; };`, context);
+  await runInContext(`hqDispatch("hq", "holo", "open", "708")`, context);
+  await runInContext(`hqDispatch("hq", "holo", "replay", "218")`, context);
+  await runInContext(`hqDispatch("hq", "holo", "trial", "bo-vs-dee")`, context);
+  const asked = JSON.parse(runInContext("JSON.stringify(__asked)", context));
+  if (asked.join("|") !== "GET /v1/hq/scenarios/708|GET /v1/hq/games/218/replay|GET /v1/hq/trials/bo-vs-dee") fail("holodeck: the taps do not fetch what they open: " + asked.join("|"));
+  runInContext(`[HQ.snap, HQ.holo, api, render, flash] = __keepHolo;`, context);
+  console.log("holodeck: scenarios, trials and match replays are listed and opened, escaped");
+}
+
 // Signing in with a password manager (Apple Passwords in Safari, and the rest): with no
 // username field and no form, Apple Passwords took the code field for the username and filled
 // the owner's name into it. Each form a password is typed in is a real form; a hidden field

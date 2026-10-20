@@ -650,6 +650,45 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
+    /// The scenarios as the owner's screen lists them, newest first, the latest `most`: each
+    /// world's task, kind, title and status, how it ended and its time. Read from the projects
+    /// that give their work the scenario tool alone, where every scenario is.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub(super) fn scenarios_listed(&self, most: usize) -> Done<Vec<Value>> {
+        let mut holding = Vec::new();
+        for project in self.store.projects()? {
+            if self.project_tools(project.id)?.as_deref() == Some(&[TOOL.to_owned()][..]) {
+                holding.push(project.id);
+            }
+        }
+        let mut tasks: Vec<_> = self
+            .store
+            .tasks()?
+            .into_iter()
+            .filter(|t| t.parent.is_none() && t.project.is_some_and(|p| holding.contains(&p)))
+            .collect();
+        tasks.sort_by_key(|t| std::cmp::Reverse(t.id));
+        let mut listed = Vec::new();
+        for task in tasks {
+            if listed.len() >= most {
+                break;
+            }
+            let Some(place) = self.place_of(task.id)?.filter(|p| p.world == task.id) else {
+                continue;
+            };
+            let now = self.world_at(&place)?;
+            listed.push(
+                json!({ "task": task.id.0, "kind": place.kind.name(), "title": task.title,
+                                "status": task.status.name(),
+                                "end": now.end().map(|(name, _)| name),
+                                "elapsed": now.elapsed() }),
+            );
+        }
+        Ok(listed)
+    }
+
     /// What the record says of one scenario, for a trial: its world, how it ended, its score
     /// and time, its accepted and refused actions, whether anyone was hurt, and the tasks its
     /// turns were taken on.
