@@ -565,11 +565,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if asked != branch.member && self.member(asked)?.at_work() {
             self.wake_held_lock(asked, Some(task.id), WakeReason::CheckDone)?;
         }
-        for tester in self
-            .store
-            .members()?
-            .iter()
-            .filter(|m| m.role == Role::Reviewer && m.at_work() && m.id != branch.member)
+        // The tester only for work already in review, which she may be waiting on, and only
+        // the one review wakes: before it, a pass gave her nothing to judge (18-19 Oct, eight
+        // such turns, five asking the lead what to do).
+        if task.status != TaskStatus::InReview {
+            return Ok(());
+        }
+        if let Some(tester) = self
+            .reviewer()?
+            .filter(|m| m.at_work() && m.id != branch.member)
         {
             self.wake_held_lock(tester.id, Some(task.id), WakeReason::CheckDone)?;
         }

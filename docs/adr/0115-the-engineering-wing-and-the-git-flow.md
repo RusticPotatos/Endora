@@ -194,8 +194,10 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    where "develop failed too" had read as "no worse". A branch's own check that could not run
    is never excused by a failing base either. HQ keeps the
    result as a **receipt** on the task and a document with the report, and as the task's
-   **gate** (0114: code work closes only once it passed); a pass wakes the submitter and the
-   tester, and **a branch that fails its checks is sent back** by HQ itself, the tester
+   **gate** (0114: code work closes only once it passed); a pass wakes the submitter and,
+   for work already in review, its tester (*amended 2026-10-20*: before review a pass gave the
+   tester nothing to judge; of eight such wakes on 18-19 Oct, five turns asked the lead what
+   to do), and **a branch that fails its checks is sent back** by HQ itself, the tester
    untroubled. A check that never reports is given up after thirty minutes; the runner reports
    one that never started or ended without reporting. *Amended 2026-10-19:* a check was queued
    only by submitting, from a sandbox that held the branch, so a check that failed for the
