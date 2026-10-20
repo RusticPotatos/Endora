@@ -131,6 +131,13 @@ alone**: their world wakes their players. And the lead, woken on a part, acted i
 **A role is its task's member's**: the scenario tool is offered to, and acts for, that member
 alone. A world that has ended with its tasks open is closed by the tick.
 
+Then the live match stalled: black's turn on the Mac ran past its time and was stopped, the
+wake that would have brought it back had been folded into that turn, and, with the guards now
+leaving scenarios alone, nothing woke it again. **A world whose players have no turn coming
+and that has sat idle ten minutes has them woken again** (a match's side to move; otherwise
+every player still at it), **three times at most with nothing done; then the world abandons
+it**, dropping its tasks and saying why. Any action resets the count.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.
