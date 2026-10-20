@@ -407,8 +407,34 @@ fn a_kept_branch_may_be_checked_out_by_its_own_work_and_its_own_member_and_no_on
     );
 }
 
+// Of the eight times a passing check woke the tester (18-19 Oct), the work was never in
+// review: five of those turns asked the lead what to do, two did nothing, one checked. Review
+// wakes the tester when the work is submitted; a pass wakes her only for work already in
+// review, which she may have been waiting on, and only the tester review wakes.
 #[test]
-fn a_check_that_passes_is_a_receipt_that_wakes_the_submitter_and_the_tester() {
+fn a_check_that_passes_on_work_in_review_wakes_its_tester_and_no_other() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let other = hq.hire("Ivy", Role::Reviewer, 20, 2, 1).unwrap();
+    let (task, _rae, _) = submitted(&hq, &t, true);
+    hq.store()
+        .set_task_status(task, TaskStatus::InReview)
+        .unwrap();
+    let handed = hq.next_check().unwrap().unwrap();
+    let before = hq.store().wakes().unwrap().len();
+    hq.check_done(handed.id, &handed.token, true, "syntax ok", "")
+        .unwrap();
+    let woken = wakes_after(&hq, before);
+    assert!(woken.contains(&(t.dee, WakeReason::CheckDone)), "{woken:?}");
+    assert!(
+        !woken.iter().any(|(m, _)| *m == other),
+        "one tester, as review wakes: {woken:?}"
+    );
+}
+
+#[test]
+fn a_check_that_passes_is_a_receipt_that_wakes_the_submitter() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq);
@@ -448,7 +474,10 @@ fn a_check_that_passes_is_a_receipt_that_wakes_the_submitter_and_the_tester() {
     );
     let woken = wakes_after(&hq, before);
     assert!(woken.contains(&(t.rae, WakeReason::CheckDone)), "{woken:?}");
-    assert!(woken.contains(&(t.dee, WakeReason::CheckDone)), "{woken:?}");
+    assert!(
+        !woken.iter().any(|(m, _)| *m == t.dee),
+        "the work is not in review yet: nothing for the tester: {woken:?}"
+    );
     assert_eq!(
         hq.check_done(handed.id, &handed.token, true, "again", ""),
         Err(super::EngineError::Refused(Refusal::Finished)),
@@ -616,7 +645,10 @@ fn a_kept_branch_is_checked_again_without_a_new_submission() {
         "{}",
         receipt.args
     );
-    assert!(wakes_after(&hq, before).contains(&(t.dee, WakeReason::CheckDone)));
+    assert!(
+        !wakes_after(&hq, before).iter().any(|(m, _)| *m == t.dee),
+        "not in review: the tester is woken when it is"
+    );
     // The branch is not offered anew, and a checked-again branch is still one branch.
     assert_eq!(hq.store().branches().unwrap().len(), branches);
     // A lead asks too, for work under hers, and is told the result with the branch's member.
@@ -954,7 +986,7 @@ fn a_testers_approve_on_a_draft_is_refused_and_no_push_is_offered() {
     .unwrap();
     assert_eq!(hq.store().gate(task).unwrap(), Some(true));
     hq.runner().finish(rae.run, true);
-    let dee = turn(&hq, t.dee);
+    let dee = woken_turn(&hq, t.dee, task);
     // Mara, the CEO, has put a decision for the board on the task: what her `ask_owner` leaves
     // is a draft in the task's thread and the work task itself in review (the reviewer is
     // asked to check it before it reaches the board).
