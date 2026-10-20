@@ -68,15 +68,31 @@ fn ids(what: &str) -> Value {
     })
 }
 
-/// One piece of evidence as the model gave it.
-fn one_ref(v: &Value) -> Result<Ref, String> {
-    let said = v.as_str().unwrap_or_default();
-    Ref::parse(said).ok_or_else(|| {
-        format!(
+/// One piece of evidence as the model gave it: an id, a finding with its id in brackets after
+/// it, or an object whose values are ids (`{"receipt": "r301", "task": 695}`, its keys naming
+/// the kind of a bare number). An object holding no id is refused, as words are.
+fn refs_of(v: &Value) -> Result<Vec<Ref>, String> {
+    let read: Vec<Ref> = match v {
+        Value::Object(fields) => fields
+            .iter()
+            .filter_map(|(kind, value)| {
+                let said = match value {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    _ => return None,
+                };
+                Ref::parse(&said).or_else(|| Ref::parse(&format!("{kind} {said}")))
+            })
+            .collect(),
+        other => other.as_str().and_then(Ref::parse).into_iter().collect(),
+    };
+    if read.is_empty() {
+        return Err(format!(
             "`{}` is not evidence: cite a receipt as r12, a task as task 12, an event as event 340",
             crate::domain::evidence::short(&v.to_string(), 40)
-        )
-    })
+        ));
+    }
+    Ok(read)
 }
 
 /// The `evidence` argument, one list per criterion: each item an id or a list of ids.
@@ -87,8 +103,12 @@ fn evidence_lists(args: &Value) -> Result<Vec<Vec<Ref>>, String> {
     items
         .iter()
         .map(|item| match item {
-            Value::Array(list) => list.iter().map(one_ref).collect(),
-            other => one_ref(other).map(|r| vec![r]),
+            Value::Array(list) => Ok(list
+                .iter()
+                .map(refs_of)
+                .collect::<Result<Vec<_>, _>>()?
+                .concat()),
+            other => refs_of(other),
         })
         .collect()
 }

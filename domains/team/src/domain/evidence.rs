@@ -311,9 +311,19 @@ impl Ref {
     /// `task 12`, `e340`, `event 340`, case aside. Also as the tools name a receipt after every
     /// result, `(receipt r12)`: the word with its letter (`event e340`, `task #12`), and with
     /// words after it saying what it showed (`r12 check on hq/… (ok)`). It leads, is whole and
-    /// names one kind: `r12abc`, `receipt e12` and `the check, r12` are not references.
+    /// names one kind: `r12abc`, `receipt e12` and `the check, r12` are not references. Or
+    /// last, in brackets after what it showed, as the tools' results end: `owntone-spotify
+    /// exited (receipt r302)`. The words are the model's and are not kept; the reference is.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
+        Self::leading(text).or_else(|| {
+            let inside = text.trim_end().strip_suffix(')')?;
+            Self::leading(&inside[inside.rfind('(')? + 1..])
+        })
+    }
+
+    /// A reference at the start of `text`.
+    fn leading(text: &str) -> Option<Self> {
         let text = text
             .trim()
             .trim_start_matches('(')
@@ -751,6 +761,36 @@ mod tests {
             "r12-r14",
             "the check, r228",
             "(r0)",
+        ] {
+            assert_eq!(Ref::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    // Run 1831, a post-deploy check on the local brain, was refused twice for a finding with
+    // its receipt in brackets after it, as the tools' own results end: "owntone-spotify exited
+    // with code 137 (receipt r302)". The finding is the model's word and is not kept; the
+    // receipt it names is the evidence.
+    #[test]
+    fn a_finding_with_its_reference_in_brackets_after_it_reads_as_that_reference() {
+        assert_eq!(
+            Ref::parse("owntone-spotify exited with code 137 (receipt r302)"),
+            Some(Ref::Receipt(302))
+        );
+        assert_eq!(
+            Ref::parse("stuck imports in sonarr/radarr (r301) "),
+            Some(Ref::Receipt(301))
+        );
+        assert_eq!(
+            Ref::parse("the parent asked for it (task #12)"),
+            Some(Ref::Task(TaskId(12)))
+        );
+        // Only a whole reference in the last brackets: a number in the words is not one.
+        for bad in [
+            "exited with code 137",
+            "restart failed (exit 1)",
+            "see the log (e.g. 4)",
+            "it ran (r12abc)",
+            "it ran (r0)",
         ] {
             assert_eq!(Ref::parse(bad), None, "{bad:?}");
         }

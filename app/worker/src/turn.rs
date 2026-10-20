@@ -107,6 +107,8 @@ pub enum Taken {
     /// The model asked the owner, which ends the turn: HQ wakes the member again when the
     /// owner has seen it.
     AskedTheOwner,
+    /// The model moved its task on with `set_status`, the turn's last step.
+    MovedOn,
 }
 
 /// Why a turn stopped short. The reason never carries the token.
@@ -225,10 +227,21 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                         &mut did,
                         call,
                     )?,
-                    _ => run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?,
+                    _ => run(
+                        &mut hq,
+                        &node,
+                        &on_the_node,
+                        task,
+                        &mut answered,
+                        &mut did,
+                        call,
+                    )?,
                 };
                 if reply.asked {
                     return Ok(Taken::AskedTheOwner);
+                }
+                if reply.moved_on {
+                    return Ok(Taken::MovedOn);
                 }
                 replies.push((call.id.clone(), reply));
             }
@@ -518,6 +531,7 @@ pub(crate) fn in_the_repo(
         text: format!("Refused: {text}"),
         refused: true,
         asked: false,
+        moved_on: false,
     };
     let args = match arguments(&call.arguments) {
         Ok(args) => args,
@@ -553,6 +567,7 @@ pub(crate) fn in_the_repo(
             text: said,
             refused: false,
             asked: false,
+            moved_on: false,
         });
     }
     let sent = json!({ "branch": args["branch"], "why": args["why"] });
@@ -581,6 +596,7 @@ pub(crate) fn in_the_repo(
                 text: said_after_checkout(&out, &base, kept, can_submit, task, &receipt),
                 refused: false,
                 asked: false,
+                moved_on: false,
             })
         }
         Err(why) => {
@@ -676,6 +692,8 @@ pub(crate) struct Reply {
     pub(crate) refused: bool,
     /// Whether it put something on the owner's desk, which ends the turn.
     pub(crate) asked: bool,
+    /// Whether it moved the turn's own task on, which ends the turn too.
+    pub(crate) moved_on: bool,
 }
 
 /// The conversation with the model, in the API the relay speaks: the instructions, the
@@ -812,6 +830,7 @@ pub(crate) fn run(
     hq: &mut Hq<'_>,
     node: &Node<'_>,
     on_the_node: &[String],
+    task: Option<i64>,
     answered: &mut Answered,
     did: &mut Ledger,
     call: &Call,
@@ -821,6 +840,7 @@ pub(crate) fn run(
         text,
         refused,
         asked: false,
+        moved_on: false,
     };
     let args = match arguments(&call.arguments) {
         Ok(args) => args,
@@ -878,7 +898,21 @@ pub(crate) fn run(
         text: said,
         refused,
         asked,
+        moved_on: !refused && moves_on(task, tool, &args),
     })
+}
+
+/// Whether a call moves the turn's own task on, the turn's last step: to `in_review`,
+/// `blocked` or `done`. Run 1831, told only in its instructions that this ends the turn, set
+/// its task blocked and then called `set_status` six times more. Starting work (`doing`) or
+/// moving a sub-task on is not the turn's end.
+pub(crate) fn moves_on(task: Option<i64>, tool: &str, args: &Value) -> bool {
+    tool == "set_status"
+        && task.is_some_and(|t| args["task"].as_i64() == Some(t))
+        && matches!(
+            args["status"].as_str(),
+            Some("in_review" | "blocked" | "done")
+        )
 }
 
 /// The workbench's shell, as MCP lists a tool.
@@ -912,6 +946,7 @@ fn in_the_shell(shell: &Shell, did: &mut Ledger, call: &Call) -> Reply {
         text: format!("Refused: {text}"),
         refused: true,
         asked: false,
+        moved_on: false,
     };
     let args = match arguments(&call.arguments) {
         Ok(args) => args,
@@ -949,6 +984,7 @@ fn in_the_shell(shell: &Shell, did: &mut Ledger, call: &Call) -> Reply {
         text: ran.said(within),
         refused: !ran.ok(),
         asked: false,
+        moved_on: false,
     }
 }
 

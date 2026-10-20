@@ -123,6 +123,11 @@ fn tools() -> Value {
 /// HQ's team protocol: `my_turn` says [`BRIEFING`], `claim` and `post` work, and anything else
 /// is refused. The tool named in `stopped` answers 401, as for a turn HQ has just stopped.
 fn hq(stopped: Option<&'static str>) -> (String, Seen) {
+    hq_moving(stopped, false)
+}
+
+/// The same, and with `moves`, `set_status` does what it is asked, as HQ says it.
+fn hq_moving(stopped: Option<&'static str>, moves: bool) -> (String, Seen) {
     fake(Box::new(move |sent, _| {
         let id = sent.body["id"].clone();
         let tool = sent.body["params"]["name"].as_str().unwrap_or("");
@@ -149,6 +154,7 @@ fn hq(stopped: Option<&'static str>) -> (String, Seen) {
                         "It is on the owner's desk, and this turn has ended: stop now.",
                         false,
                     ),
+                    "set_status" if moves => ("Task 7 is moved on.", false),
                     _ => ("`status` must be todo, doing, in_review or blocked", true),
                 };
                 json!({ "content": [{ "type": "text", "text": text }], "isError": refused })
@@ -602,6 +608,81 @@ fn asking_the_owner_ends_the_turn_there_and_exits_0() {
         Some("tools/call ask_owner"),
         "nothing after the question, not even a last word"
     );
+}
+
+// Run 1831 set its task blocked, then called set_status six times more, to "already have
+// this" and "blocked to blocked": the instructions end a turn with set_status, and the loop
+// went on. Moving its own task on to in_review, blocked or done ends the turn there.
+#[test]
+fn moving_its_own_task_on_ends_the_turn_there_and_exits_0() {
+    for to in ["in_review", "blocked", "done"] {
+        let (hq_url, to_hq) = hq_moving(None, true);
+        let (model_url, to_model) = model(vec![
+            (
+                200,
+                calls(&[
+                    (
+                        "call_1",
+                        "set_status",
+                        &format!(r#"{{"task": 7, "status": "{to}", "reason": "r1 shows it"}}"#),
+                    ),
+                    (
+                        "call_2",
+                        "set_status",
+                        r#"{"task": 7, "status": "blocked", "reason": "again"}"#,
+                    ),
+                ]),
+            ),
+            (200, says("Done.")),
+        ]);
+        let out = worker(&usual(&hq_url, &model_url));
+        assert_eq!(out.status.code(), Some(0), "{to}: {}", said(&out));
+        assert_eq!(
+            to_model.lock().unwrap().len(),
+            1,
+            "{to}: the model is not asked again"
+        );
+        let sent = methods(&to_hq);
+        assert_eq!(
+            sent.iter()
+                .filter(|m| *m == "tools/call set_status")
+                .count(),
+            1,
+            "{to}: nothing after it, not even a last word: {sent:?}"
+        );
+        assert_eq!(
+            sent.last().map(String::as_str),
+            Some("tools/call set_status")
+        );
+    }
+}
+
+#[test]
+fn starting_work_moving_a_sub_task_or_being_refused_does_not_end_the_turn() {
+    for (moves, call) in [
+        (true, r#"{"task": 7, "status": "doing", "reason": "on it"}"#),
+        (
+            true,
+            r#"{"task": 9, "status": "in_review", "reason": "the sub-task is ready"}"#,
+        ),
+        (
+            false,
+            r#"{"task": 7, "status": "blocked", "reason": "waiting"}"#,
+        ),
+    ] {
+        let (hq_url, _) = hq_moving(None, moves);
+        let (model_url, to_model) = model(vec![
+            (200, calls(&[("call_1", "set_status", call)])),
+            (200, says("Done.")),
+        ]);
+        let out = worker(&usual(&hq_url, &model_url));
+        assert!(out.status.success(), "{call}: {}", said(&out));
+        assert_eq!(
+            to_model.lock().unwrap().len(),
+            2,
+            "{call}: the turn goes on"
+        );
+    }
 }
 
 #[test]

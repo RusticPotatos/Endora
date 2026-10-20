@@ -660,6 +660,7 @@ pub fn serve() -> i32 {
     };
     let mut answered = Answered::default();
     let mut asked = false;
+    let mut moved_on = false;
     let mut over: Option<String> = None;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -697,12 +698,13 @@ pub fn serve() -> i32 {
                         &setup.token,
                     ),
                 };
-                let reply = if asked || over.is_some() {
+                let reply = if asked || moved_on || over.is_some() {
                     Reply {
                         text: "Your turn has ended: stop calling tools and reply in one sentence."
                             .to_owned(),
                         refused: true,
                         asked: false,
+                        moved_on: false,
                     }
                 } else {
                     let done = if is_repo_tool(&call.name) {
@@ -716,7 +718,15 @@ pub fn serve() -> i32 {
                             &call,
                         )
                     } else {
-                        run(&mut hq, &node, &on_the_node, &mut answered, &mut did, &call)
+                        run(
+                            &mut hq,
+                            &node,
+                            &on_the_node,
+                            setup.task,
+                            &mut answered,
+                            &mut did,
+                            &call,
+                        )
                     };
                     match done {
                         Ok(reply) => reply,
@@ -726,18 +736,21 @@ pub fn serve() -> i32 {
                                 text: "The turn is over: stop now.".to_owned(),
                                 refused: true,
                                 asked: false,
+                                moved_on: false,
                             }
                         }
                         Err(Stopped::Failed(why)) => Reply {
                             text: format!("Failed: {}", quiet(&why, &setup.token)),
                             refused: true,
                             asked: false,
+                            moved_on: false,
                         },
                     }
                 };
                 let mut text = reply.text.replace(&setup.token, "[the turn's token]");
-                if reply.asked {
-                    asked = true;
+                if reply.asked || reply.moved_on {
+                    asked |= reply.asked;
+                    moved_on |= reply.moved_on;
                     text.push_str("\n\nThat ends your turn: reply in one sentence and stop.");
                 }
                 write_kept(&setup.ledger, &did, asked, over.as_deref());

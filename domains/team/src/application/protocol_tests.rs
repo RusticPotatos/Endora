@@ -824,3 +824,38 @@ fn the_leads_briefing_names_the_team_and_says_to_hand_work_on() {
     let told = call(&hq, &run, &me, "my_turn", &json!({})).unwrap();
     assert!(!told.contains("Your team:"), "only the lead's: {told}");
 }
+
+// Run 1831 was refused for evidence written as objects, `{"receipt": "r301", "task": "task
+// 695"}`, and for a finding with its receipt in brackets after it, then cited the same ids
+// plainly: four refusals for one status. What each holds is read as its references; an object
+// or a line that names none is refused still.
+#[test]
+fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
+    use_tool("claim", json!({ "task": s.task.0 })).unwrap();
+    let cite = |evidence: serde_json::Value| {
+        use_tool(
+            "post",
+            json!({ "task": s.task.0, "text": "Found it.", "evidence": evidence }),
+        )
+    };
+
+    for read in [
+        json!([{ "task": format!("task {}", s.task.0) }]),
+        json!([{ "task": s.task.0, "criterion": "the list is there" }]),
+        json!([format!("the list is not there yet (task {})", s.task.0)]),
+    ] {
+        cite(read.clone()).unwrap_or_else(|why| panic!("{read}: {why}"));
+    }
+    for refused in [
+        json!([{ "criterion": "the list is there" }]),
+        json!([{ "receipt": "the log" }]),
+        json!(["the list is there"]),
+    ] {
+        let why = cite(refused.clone()).unwrap_err();
+        assert!(why.contains("is not evidence"), "{refused}: {why}");
+    }
+}

@@ -169,6 +169,10 @@ fn main() {
             eprintln!("worker: asked the owner, which ends the turn");
             TAKEN
         }
+        Ok(Taken::MovedOn) => {
+            eprintln!("worker: moved its task on, which ends the turn");
+            TAKEN
+        }
         Ok(Taken::OutOfRounds) => {
             eprintln!(
                 "worker: the {} rounds ran out before the model finished",
