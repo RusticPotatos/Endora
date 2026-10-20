@@ -199,6 +199,9 @@ pub struct Arm {
     pub label: String,
     /// Who plays it.
     pub members: Vec<super::work::MemberId>,
+    /// How the players are briefed, when not as usual: `plan_first` (a mission's captain posts
+    /// the crew's plan before anyone acts).
+    pub brief: Option<String>,
 }
 
 #[cfg(test)]

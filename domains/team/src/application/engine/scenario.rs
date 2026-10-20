@@ -28,7 +28,10 @@ use crate::domain::{
 pub const TOOL: &str = "scenario";
 
 /// The longest action, as written, the log keeps.
-const ACTION_MOST: usize = 60;
+const ACTION_MOST: usize = 400;
+
+/// A mission's mark word where nothing is done before the captain's plan (a trial's briefing).
+const PLAN_FIRST: &str = "silent_station_plan";
 
 fn refused(why: impl Into<String>) -> EngineError {
     EngineError::Refused(Refusal::Scenario(why.into()))
@@ -104,6 +107,8 @@ struct Place {
     parts: Vec<TaskId>,
     /// The role this task's member wears: in a mission, or a side in a match.
     role: Option<&'static str>,
+    /// Whether nothing is done before the captain posts the crew's plan.
+    plan_first: bool,
 }
 
 /// What the record says of one scenario: what a trial sums.
@@ -137,7 +142,7 @@ enum World {
 }
 
 impl World {
-    fn replay(kind: Kind, seed: u64, actions: &[String]) -> Result<Self, String> {
+    fn replay(kind: Kind, seed: u64, plan_first: bool, actions: &[String]) -> Result<Self, String> {
         match kind {
             Kind::Lighthouse => {
                 let acts: Vec<_> = actions
@@ -146,13 +151,7 @@ impl World {
                     .collect();
                 Lighthouse::replay(seed, &acts).map(Self::Lighthouse)
             }
-            Kind::Station => {
-                let acts: Vec<_> = actions
-                    .iter()
-                    .filter_map(|a| station::Action::read(a))
-                    .collect();
-                Station::replay(seed, &acts).map(Self::Station)
-            }
+            Kind::Station => Station::replay_logged(seed, plan_first, actions).map(Self::Station),
             Kind::Chess => {
                 let moves: Vec<String> = actions
                     .iter()
@@ -175,6 +174,14 @@ impl World {
                     .map(|(next, said)| (Self::Lighthouse(next), said))
             }
             Self::Station(now) => {
+                if let Some(text) = written.strip_prefix("plan ") {
+                    let role = role
+                        .and_then(station::Role::from_name)
+                        .ok_or("this task wears no role in the mission")?;
+                    return now
+                        .post_plan(role, text)
+                        .map(|(next, said)| (Self::Station(next), said));
+                }
                 let act = station::Action::read(written).ok_or(
                     "`action` is look, scan_station, inspect_comms, analyze_anomaly, \
                      route_power, send_probe or attempt_contact",
@@ -294,6 +301,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         crew: [MemberId; 3],
         seed: u64,
     ) -> Done<TaskId> {
+        self.start_station_with(project, crew, seed, false)
+    }
+
+    /// The same, and with `plan_first` nothing is done before the captain posts the crew's
+    /// plan, as the crew is told: a trial's briefing.
+    ///
+    /// # Errors
+    /// As [`Self::start_station`].
+    pub fn start_station_with(
+        &self,
+        project: ProjectId,
+        crew: [MemberId; 3],
+        seed: u64,
+        plan_first: bool,
+    ) -> Done<TaskId> {
         let _held = self.held();
         let _asked = self.for_owner();
         let found = self.holds_scenarios(project)?;
@@ -309,7 +331,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             project: Some(project),
             parent,
             title,
-            description: station::brief(role),
+            description: if plan_first {
+                station::brief_plan_first(role)
+            } else {
+                station::brief(role)
+            },
             assignee: Some(to),
             priority: Priority::Normal,
             waits_on: Vec::new(),
@@ -325,10 +351,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 None,
             ),
         )?;
-        self.store.set_setting(
-            &key(mission),
-            &format!("{}:{seed}", station::SILENT_STATION),
-        )?;
+        let word = if plan_first {
+            PLAN_FIRST
+        } else {
+            station::SILENT_STATION
+        };
+        self.store
+            .set_setting(&key(mission), &format!("{word}:{seed}"))?;
         let mut parts = Vec::new();
         for (role, member) in [
             (station::Role::Science, science),
@@ -347,10 +376,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .set_setting(&key(part), &format!("crew:{}:{}", mission.0, role.name()))?;
             parts.push(part.0.to_string());
         }
-        self.store.set_setting(
-            &key(mission),
-            &format!("{}:{seed}:{}", station::SILENT_STATION, parts.join(":")),
-        )?;
+        self.store
+            .set_setting(&key(mission), &format!("{word}:{seed}:{}", parts.join(":")))?;
         Ok(mission)
     }
 
@@ -426,10 +453,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 seed,
                 parts: Vec::new(),
                 role: None,
+                plan_first: false,
             }),
             [kind, seed, parts @ ..]
-                if *kind == station::SILENT_STATION || *kind == chess_match::CHESS =>
+                if *kind == station::SILENT_STATION
+                    || *kind == PLAN_FIRST
+                    || *kind == chess_match::CHESS =>
             {
+                let plan_first = *kind == PLAN_FIRST;
                 let kind = if *kind == chess_match::CHESS {
                     Kind::Chess
                 } else {
@@ -444,6 +475,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         .filter_map(|p| p.parse().ok().map(TaskId))
                         .collect(),
                     role: kind.holder(),
+                    plan_first,
                 })
             }
             ["crew", mission, role] => {
@@ -641,7 +673,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     fn world_at(&self, place: &Place) -> Done<World> {
-        World::replay(place.kind, place.seed, &self.accepted(place.world)?).map_err(refused)
+        World::replay(
+            place.kind,
+            place.seed,
+            place.plan_first,
+            &self.accepted(place.world)?,
+        )
+        .map_err(refused)
     }
 
     /// A lighthouse as its log replays.
@@ -752,6 +790,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             World::Station(at) => {
                 shown["score"] = json!(at.score());
                 shown["anomaly"] = json!(over.then_some(at.anomaly.name()));
+                shown["plan"] = json!(at.plan);
+                shown["brief"] = json!(if at.plan_first {
+                    "plan_first"
+                } else {
+                    "standard"
+                });
                 shown["state"] = json!({ "station_power": at.station_power,
                     "life_support": at.life_support, "ship_energy": at.ship_energy,
                     "hazard": at.hazard, "crew_safe": at.crew_safe,
@@ -939,10 +983,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 format!("replace_part {}", part.trim())
             }
             Some(san) if action.trim() == "move" => format!("move {}", san.trim()),
+            Some(text) if action.trim() == "plan" => format!("plan {}", text.trim()),
             _ => action.trim().to_owned(),
         };
         let kept: String = written.chars().take(ACTION_MOST).collect();
-        let (next, said) = match now.step(place.role, &written) {
+        // What is kept is what is played, so the log replays to the same world.
+        let (next, said) = match now.step(place.role, &kept) {
             Ok(done) => done,
             Err(why) => {
                 self.act_kept(&place, run, turn.member, &kept, false, &why, &now)?;

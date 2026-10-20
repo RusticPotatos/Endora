@@ -138,6 +138,19 @@ and that has sat idle ten minutes has them woken again** (a match's side to move
 every player still at it), **three times at most with nothing done; then the world abandons
 it**, dropping its tasks and saying why. Any action resets the count.
 
+## Amendment (2026-10-20): a trial may vary the briefing
+
+The first Silent Station trial varied who captains, and three of four missions ended the same
+way: the engineer routed power while the captain sent the probe too, and the energy for the
+call was gone. The crew acted side by side, with no plan. A trial's condition may now carry a
+briefing (`brief: "plan_first"`, for a mission), kept in each run's configuration, so the crew
+and the seeds stay fixed and the briefing is what changes. Plan first is told and held: the
+captain is told to post the crew's plan (the scenario tool's `plan`, with its text: who does
+what, in which order, and which one way to restore contact) before anyone acts, and the others
+to wait for it and do their part; the world refuses every action until a plan is posted. The
+plan is free, every member's look shows it, the crew is woken to it, and it is kept in the log
+(`plan <text>`), so the mission replays. Its mark is `silent_station_plan`.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.

@@ -105,6 +105,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
             }));
         }
+        // A briefing is a condition's own: a mission's captain posts the plan first.
+        for arm in arms {
+            match arm.brief.as_deref() {
+                None => {}
+                Some("plan_first") if kind == station::SILENT_STATION => {}
+                Some(other) => {
+                    return Err(refused(format!(
+                        "no briefing {other:?} for {kind}: a mission's condition may be briefed \
+                         plan_first"
+                    )));
+                }
+            }
+        }
         let mut names = self.trial_names()?;
         names.push(name.to_owned());
         self.store.set_setting(INDEX, &json!(names).to_string())?;
@@ -129,15 +142,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 let task = match arm.members.as_slice() {
                     [one] => self.start_scenario(project, *one, *seed)?,
                     [white, black] => self.start_chess(project, [*white, *black], *seed)?,
-                    [captain, science, engineer] => {
-                        self.start_station(project, [*captain, *science, *engineer], *seed)?
-                    }
+                    [captain, science, engineer] => self.start_station_with(
+                        project,
+                        [*captain, *science, *engineer],
+                        *seed,
+                        arm.brief.as_deref() == Some("plan_first"),
+                    )?,
                     _ => unreachable!("the number of players was checked"),
                 };
                 started.push(task);
                 runs.push(
                     json!({ "task": task.0, "condition": arm.label, "seed": seed,
-                                  "config": { "members": members } }),
+                                  "config": { "members": members, "brief": arm.brief } }),
                 );
                 // Kept as each run starts, so a refusal part way leaves the record true.
                 self.store.set_setting(

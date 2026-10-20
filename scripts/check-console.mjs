@@ -3452,8 +3452,10 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (!/white[^<]*Bo[^<]*2 legal, 2 illegal/.test(chess.replace(/<[^>]+>/g, ""))) fail("holodeck: a match does not show each side's illegal moves: " + chess);
   if (chess.includes("<i>Dee</i>")) fail("holodeck: a member's name is not escaped");
   const station = shown({ what: "scenario", data: { task: 709, kind: "silent_station", end: "success", score: 75, anomaly: "magnetic field",
-    state: { life_support: 5, ship_energy: 35, station_power: 20, hazard: 1, crew_safe: true, power_routed: false, probe_out: true, contact: true }, log: [] } });
+    state: { life_support: 5, ship_energy: 35, station_power: 20, hazard: 1, crew_safe: true, power_routed: false, probe_out: true, contact: true },
+    brief: "plan_first", plan: "Science scans; I call. <b>now</b>", log: [] } });
   if (!station.includes("75") || !station.includes("magnetic field") || !station.includes("Life support")) fail("holodeck: a mission does not show its state and score: " + station);
+  if (!station.includes("Briefed plan first") || !station.includes("Science scans; I call.") || station.includes("<b>now</b>")) fail("holodeck: a mission does not show its briefing and plan, escaped: " + station);
   const trial = shown({ what: "trial", data: { name: "bo-vs-dee", kind: "lighthouse", version: 1, seeds: [2, 3],
     conditions: [{ label: "bo", runs: 2, done: 2, not_done: 0, unfinished: 0, mean_score: 100, mean_elapsed: 25, refused: 0, unsafe_runs: 0, turns: 2, idle_turns: 0, spent: 0, brains: ["local"] },
                  { label: "<b>dee</b>", runs: 2, done: 2, not_done: 0, unfinished: 0, mean_score: 100, mean_elapsed: 25, refused: 0, unsafe_runs: 0, turns: 2, idle_turns: 0, spent: 0, brains: ["mac"] }],
