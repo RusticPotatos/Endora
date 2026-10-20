@@ -106,6 +106,13 @@ Endora gets a sound hub, **endora-sound**: the owner's own program, not a fork.
     (kept in the browser). When the page goes to the background the page plays the MP3 in its
     `<audio>` element, which is what plays on with the screen locked, and takes live back when
     the page returns. The element is unlocked by playing a moment of silence in the tap.
+    *Amended 2026-10-19:* on an iPhone that handover left the phone silent until it was unlocked.
+    While this device listens, the page now tells iOS it plays media
+    (`navigator.audioSession.type = "playback"`, Safari 16.4 and later; back to `"auto"` when it
+    stops). Under `"auto"` iOS treats Web Audio as ambient sound and interrupts it at the lock;
+    under `"playback"` live sound plays on through it (both seen in the iOS simulator). So where
+    the browser has that API, live is kept with the screen locked and nothing is handed over.
+    Only a browser without it hands over to the MP3 as above.
   - *Measuring.* **Measure delay** asks the hub to replace the speaker's mix for 80 ms with a
     2 kHz tone (a short gap and a beep; replaced, not added, so music cannot hide it). The
     answer carries the hub's clock at request, at the tone and at reply, so the page takes the

@@ -7,8 +7,9 @@
 //
 // Live is chosen by itself when an AirPlay door is wired to this speaker (somebody is casting
 // video or music from a device, and the picture is in front of you), or when the owner picks it.
-// A page that goes to the background hands over to listening, because only a media element
-// plays on with the screen locked, and takes live back when the page returns.
+// While it listens, the page tells iOS it plays media (liveSessionType), so live sound plays on
+// with the screen locked. A browser that cannot be told so hands over to listening when the page
+// goes to the background, and takes live back when it returns.
 //
 // Everything that decides something is a plain function with no outside names, so the console
 // check can run it, and so the worklet can be built out of the very same text: the worklet's
@@ -174,8 +175,21 @@ function liveModeFor(pref, sources, wires, speaker) {
 }
 
 // What actually plays: in the background only a media element carries on, so it is listening.
-function liveEffectiveMode(mode, hidden) {
-  return hidden ? "listening" : mode;
+// The way to hear while the page is hidden. Where iOS can be told the page plays media
+// (`playsOn`: navigator.audioSession exists), live plays on with the screen locked and nothing is
+// handed over: starting the MP3 from a locked page is what failed on the owner's iPhone (2026-10-19).
+// Where it cannot, the background hands over to listening, a media element, as before.
+function liveEffectiveMode(mode, hidden, playsOn) {
+  return hidden && !playsOn ? "listening" : mode;
+}
+
+// The kind of sound the page makes, as iOS is told it (navigator.audioSession, Safari 16.4 and
+// later). Left "auto", a page whose sound is Web Audio is ambient sound to iOS, which interrupts
+// it when the screen locks: the phone went silent until it was unlocked. "playback" says it is
+// media, as music is. Seen in the iOS simulator on 2026-10-19: under "auto" the audio context went
+// "interrupted" at the lock; under "playback" it kept running and its clock went on through it.
+function liveSessionType(listening) {
+  return listening ? "playback" : "auto";
 }
 
 // ---- pure: the delay probe's arithmetic -----------------------------------------------------
