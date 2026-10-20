@@ -50,6 +50,7 @@ mod health;
 mod history;
 mod kinds;
 mod ladder;
+mod long_waits;
 mod map;
 mod memory;
 mod notebook;
@@ -3149,6 +3150,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         //    runner has room: urgent work first, then the oldest. The tripwire may stop the team
         //    here (ADR 0133): then nothing else in this tick is done, as when the owner stops it.
         report.started = self.start_queued(now)?;
+        // Work that waits long for the Mac is said in the owner's digest (Phase 0 audit, P5).
+        self.long_mac_waits(now)?;
         if self.store.stopped()? {
             return Ok(report);
         }
