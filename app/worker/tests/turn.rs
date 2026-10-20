@@ -769,6 +769,37 @@ fn the_rounds_run_out() {
 }
 
 #[test]
+fn the_rounds_run_out_and_what_the_model_said_on_the_way_is_its_last_word() {
+    // Live, a turn that ran out of rounds went silently: what it had found was in no thread,
+    // and the next turn started again from the thread alone.
+    let saying = |text: &str| {
+        let mut said = calls(&[("call_1", "claim", r#"{"task": 7}"#)]);
+        said["choices"][0]["message"]["content"] = json!(text);
+        (200, said)
+    };
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, _) = model(vec![
+        saying("Sonarr is down; claiming first."),
+        saying(""),
+        saying("Its log says the disk is full."),
+    ]);
+    let mut env = usual(&hq_url, &model_url);
+    env.push(("ENDORA_MOST_ROUNDS", "3".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    assert_eq!(methods(&to_hq).last().unwrap(), "tools/call post");
+    let posted = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"].clone();
+    assert_eq!(
+        posted,
+        json!({ "task": 7, "last_word": true, "text": "Sonarr is down; claiming first.\n\n\
+            Its log says the disk is full.\n\nThe turn's 3 rounds ran out before it finished: \
+            the words above are what it said on the way, not an answer. This turn made no tool \
+            calls." }),
+        "its words, and that the rounds ran out, beside what it did"
+    );
+}
+
+#[test]
 fn a_failure_exits_1_and_never_prints_the_token() {
     let (hq_url, _) = hq(None);
     // A relay that says back the token it was sent, early in its refusal.

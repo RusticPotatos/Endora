@@ -961,7 +961,7 @@ closed and how many stay open; what reached the desk, split approvals, questions
 notices, with what still waits; and the prompt cache's share of the paid turns' input (HQ keeps
 tokens, not the relay's prices, so the share is shown and not the dollars). A turn from before
 labels is **unlabelled**, counted and shown as such, never guessed. The node prunes the feed to
-its newest 20,000 events, so each window says where its record starts when that is later than
+its newest 20,000 events that are not ticks, so each window says where its record starts when that is later than
 the window; nothing older is counted. Scenarios: `features/how-the-team-is-doing.feature`.
 
 ### The engineering wing and the git flow (owner's decisions of 2026-10-17, [ADR 0115](../adr/0115-the-engineering-wing-and-the-git-flow.md))
@@ -1073,7 +1073,7 @@ its member, or naming no member about its task, between when it was queued and w
 and its member's posts in its task's thread then; each moment matched so says "matched by time".
 Not shown: what the model thought between calls (HQ never sees it), calls made in the
 workbench's own shell (they never pass the node), and anything the feed pruned (the newest
-20,000 events are kept; a turn's end is then said from its row).
+20,000 events that are not ticks are kept; a turn's end is then said from its row).
 
 ### Claude Code as a developer runtime (as built 2026-10-18, [ADR 0117](../adr/0117-claude-code-as-a-developer-runtime.md))
 

@@ -5031,7 +5031,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }))
     }
 
-    /// Keeps the newest `keep` events and deletes the rest. Returns how many went.
+    /// Keeps the newest `keep` events that are not ticks, and the ticks among the newest `keep`
+    /// of all, and deletes the rest. Returns how many went.
     ///
     /// # Errors
     /// [`EngineError::Store`] if the store fails.

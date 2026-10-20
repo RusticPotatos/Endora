@@ -102,7 +102,8 @@ pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 pub enum Taken {
     /// The model answered without calling a tool.
     Answered,
-    /// The rounds ran out with the model still calling tools.
+    /// The rounds ran out with the model still calling tools. What it said on the way is posted
+    /// as its last word, said to be unfinished.
     OutOfRounds,
     /// The model asked the owner, which ends the turn: HQ wakes the member again when the
     /// owner has seen it.
@@ -206,13 +207,18 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     // One loop whichever API the relay speaks: the rounds limit, the repeat guard, the line
     // saying what the turn did, and the ends of a turn are the same for every brain.
     let taken = (|| {
+        // What the model said beside its calls: its last word should the rounds run out.
+        let mut on_the_way: Vec<String> = Vec::new();
         for _ in 0..setup.most_rounds {
             let said = model.ask(&talk)?;
             // Its words are part of what the turn said, its last ones too.
             talk.said(&said);
             if said.calls.is_empty() {
-                last_word(&mut hq, task, said.text.trim(), &did)?;
+                last_word(&mut hq, task, said.text.trim(), &did.line())?;
                 return Ok(Taken::Answered);
+            }
+            if !said.text.trim().is_empty() {
+                on_the_way.push(said.text.trim().to_owned());
             }
             let mut replies = Vec::new();
             for call in &said.calls {
@@ -247,6 +253,16 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             }
             talk.answered(replies);
         }
+        // Out of rounds, what it found so far goes in the thread, said to be unfinished: else
+        // the next turn starts again from the thread alone.
+        let line = format!(
+            "The turn's {} rounds ran out before it finished: the words above are what it said \
+             on the way, not an answer. {}",
+            setup.most_rounds,
+            did.line()
+        );
+        let room = POST_AT_MOST.saturating_sub(line.chars().count() + 2);
+        last_word(&mut hq, task, &newest(&on_the_way, room), &line)?;
         Ok(Taken::OutOfRounds)
     })();
     // What the turn said is kept by HQ for a while (ADR 0129), however the turn ended: the
@@ -1002,13 +1018,13 @@ fn cut(command: &str) -> String {
     format!("{kept}…")
 }
 
-/// Posts the model's last word in the task's thread, with a line saying what the turn
-/// actually did beside it. With no task, or no words, there is nothing to post.
+/// Posts the model's last word in the task's thread, with `line`, saying what the turn
+/// actually did, beside it. With no task, or no words, there is nothing to post.
 pub(crate) fn last_word(
     hq: &mut Hq<'_>,
     task: Option<i64>,
     answer: &str,
-    did: &Ledger,
+    line: &str,
 ) -> Result<(), Stopped> {
     let Some(task) = task else {
         return Ok(());
@@ -1016,7 +1032,7 @@ pub(crate) fn last_word(
     if answer.is_empty() {
         return Ok(());
     }
-    let text = beside(answer, &did.line(), POST_AT_MOST);
+    let text = beside(answer, line, POST_AT_MOST);
     // Marked as the worker's last word: HQ posts it, but does not count it as progress.
     let (said, refused) = hq.call(
         "post",
@@ -1235,6 +1251,21 @@ pub(crate) fn beside(text: &str, line: &str, most: usize) -> String {
     let room = most.saturating_sub(line.chars().count() + 2);
     let kept: String = text.trim().chars().take(room).collect();
     format!("{}\n\n{line}", kept.trim_end())
+}
+
+/// The words said, a paragraph each, in at most `most` characters: the newest kept when they
+/// are too many, since they are the nearest to where the turn got to.
+pub(crate) fn newest(words: &[String], most: usize) -> String {
+    let all = words.join("\n\n");
+    let count = all.chars().count();
+    if count <= most {
+        return all;
+    }
+    if most == 0 {
+        return String::new();
+    }
+    let kept: String = all.chars().skip(count + 1 - most).collect();
+    format!("…{}", kept.trim_start())
 }
 
 /// A question's arguments with what the turn actually did under its text.
@@ -1603,6 +1634,16 @@ mod tests {
         fn now(&self) -> i64 {
             1_792_166_400_000
         }
+    }
+
+    #[test]
+    fn the_words_on_the_way_keep_the_newest_when_they_are_too_many() {
+        let words = ["Sonarr is down.".to_owned(), "Its disk is full.".to_owned()];
+        assert_eq!(newest(&words, 100), "Sonarr is down.\n\nIts disk is full.");
+        assert_eq!(newest(&words, 18), "…Its disk is full.");
+        assert_eq!(newest(&words, 18).chars().count(), 18);
+        assert_eq!(newest(&words, 0), "");
+        assert_eq!(newest(&[], 10), "");
     }
 
     fn checked_out(branch: &str) -> repo::CheckedOut {

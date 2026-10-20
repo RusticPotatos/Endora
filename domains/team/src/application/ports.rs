@@ -706,8 +706,10 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn count_events(&self, kind: &str) -> Stored<(i64, Option<Millis>)>;
-    /// Deletes all but the newest `keep` events: the feed is for display, and a reader that
-    /// fell that far behind starts again from a snapshot. Endora's audit log is the record.
+    /// Deletes all but the newest `keep` events that are not ticks, and every tick not among the
+    /// newest `keep` of all: the feed is for display, and a reader that fell that far behind
+    /// starts again from a snapshot. The ticks do not count, or the heartbeat pushes out the
+    /// week the guards read. Endora's audit log is the record.
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.

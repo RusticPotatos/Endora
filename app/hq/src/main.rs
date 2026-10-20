@@ -26,7 +26,7 @@ pub type Hq = Engine<SqliteTeamStore, Runner, api::SystemClock>;
 /// can never be set up with a guessable one.
 const SHORTEST_TOKEN: usize = 32;
 
-/// How many events the feed keeps.
+/// How many events the feed keeps, not counting the ticks.
 const KEEP_EVENTS: i64 = 20_000;
 
 /// The owner's goal for the home lab, as they set it.
@@ -450,8 +450,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ),
                     Err(e) => eprintln!("hq: the tick failed: {e}"),
                 }
-                // The feed is for display: the newest 20,000 events are kept, and a reader
-                // further behind than that starts again from a snapshot.
+                // The feed is for display: the newest 20,000 events that are not ticks are kept
+                // (and the ticks among the newest 20,000 of all), and a reader further behind
+                // than that starts again from a snapshot.
                 if prune {
                     if let Err(e) = hq.prune_events(KEEP_EVENTS) {
                         eprintln!("hq: could not prune the event feed: {e}");

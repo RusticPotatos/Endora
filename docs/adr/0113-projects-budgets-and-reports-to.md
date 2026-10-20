@@ -217,8 +217,8 @@ is the pool's, not the member's" and "A member may borrow one more share, then a
   spend in a day. A project the owner caps cannot quietly eat the pool; one it does not cap
   costs what it did before.
 - The CEO's planning reads 30 days of HQ's events once a week. HQ prunes its feed at 20,000
-  events, so a very busy month may show less than a month; the counts are a pattern, not an
-  account.
+  events, not counting its ticks (amended 2026-10-19, [0124](0124-guards-against-how-agent-teams-fail.md)),
+  so a very busy month may show less than a month; the counts are a pattern, not an account.
 - A task's project is fixed when it is made (and by the migration); moving a task between
   projects is not built.
 - **Deferred:** hiring that acts (a proposal to hire is still a decision for the board, made by

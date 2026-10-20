@@ -126,7 +126,10 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    by the turn's member, and HQ answers with the head and base it recorded. The node hands
    out one bundle of the base and that kept ref, at that head only (a branch submitted again
    since is refused, not swapped), and the checkout's receipt names the branch and its head.
-   A branch the fork has is handed out from the fork as before. The worker, in the
+   HQ answers 404 both for a token that opens no running turn and for a name it never
+   recorded, and says which; *amended again 2026-10-19,* the node tells them apart: a turn
+   that has ended is told "no running turn has that token: this turn is over" (401, which
+   ends it), not that the fork has no such branch. A branch the fork has is handed out from the fork as before. The worker, in the
    workbench only, unpacks it into `/work/repo` with git set up the team's way: commits authored
    `Endora HQ <hq@endora.invalid>`, no remote at all, and a `prepare-commit-msg` hook that adds
    the trailer `Made-by: Endora HQ (<members>) for task #N` when a commit lacks it. The model
