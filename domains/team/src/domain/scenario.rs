@@ -12,6 +12,9 @@ use super::games::Rng;
 /// The lighthouse's kind, as a scenario names it.
 pub const LIGHTHOUSE: &str = "lighthouse";
 
+/// The lighthouse's rules, by version: a trial compares runs of one version alone.
+pub const VERSION: u32 = 1;
+
 /// How long the keeper has, in minutes: the lamp lit within it solves the scenario, and an
 /// action that reaches it with the lamp still dark fails it.
 pub const TIME_LIMIT: u32 = 60;

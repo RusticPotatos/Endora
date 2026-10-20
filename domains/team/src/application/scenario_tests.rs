@@ -13,6 +13,7 @@ use super::protocol::{call, tools_in};
 use crate::domain::closure::{Closure, DoneWhy, DropWhy};
 use crate::domain::scenario::{Action, Cause, Lighthouse, Part};
 use crate::domain::station::{Action as StationAction, Anomaly, Station};
+use crate::domain::trials::Arm;
 use crate::domain::{MemberId, ProjectId, Refusal, Role, TaskId, TaskStatus};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -559,5 +560,151 @@ fn rushing_the_storm_fails_the_mission_and_drops_every_part_of_it() {
         Err(EngineError::Refused(Refusal::Scenario(
             "a crew is three different members".to_owned()
         )))
+    );
+}
+
+fn arm(label: &str, members: &[MemberId]) -> Arm {
+    Arm {
+        label: label.to_owned(),
+        members: members.to_vec(),
+    }
+}
+
+// The Holodeck plan's phase 7: one thing changes between conditions, here who plays, and the
+// world, its version and its seeds do not. Each condition plays every seed; what each run was
+// configured with is kept when it starts; the report puts the conditions side by side from the
+// record, every run with its own, and says what a few runs cannot.
+#[test]
+fn a_trial_plays_each_condition_on_the_same_seeds_and_reports_them_side_by_side() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([linus, zed, _], project) = crew(&hq);
+    let seed = seed_for(Cause::Bulb);
+    let started = hq
+        .start_trial(
+            "who-lights-it",
+            project,
+            "lighthouse",
+            &[arm("linus", &[linus]), arm("zed", &[zed])],
+            &[seed],
+        )
+        .unwrap();
+    assert_eq!(started.len(), 2);
+    assert!(
+        started
+            .iter()
+            .all(|t| hq.scenario_of(*t).unwrap() == Some(seed))
+    );
+    let [l, z] = <[RunContext; 2]>::try_from(turns(&hq, &[linus, zed]))
+        .ok()
+        .unwrap();
+    // Linus goes straight to it; Zed tries the circuit first and the wrong part.
+    for (context, actions) in [
+        (&l, &[("inspect", None), ("replace_part", Some("bulb"))][..]),
+        (
+            &z,
+            &[
+                ("test_circuit", None),
+                ("inspect", None),
+                ("replace_part", Some("fuse")),
+                ("replace_part", Some("bulb")),
+            ][..],
+        ),
+    ] {
+        for (action, part) in actions {
+            let _ = use_tool(
+                &hq,
+                context,
+                "scenario",
+                &json!({ "action": action, "part": part }),
+            );
+        }
+    }
+
+    let report = hq.trial_report("who-lights-it").unwrap();
+    assert_eq!(
+        (&report["kind"], &report["version"], &report["seeds"]),
+        (&json!("lighthouse"), &json!(1), &json!([seed]))
+    );
+    let conditions = report["conditions"].as_array().unwrap();
+    let by = |i: usize, key: &str| conditions[i][key].clone();
+    assert_eq!(
+        (
+            by(0, "label"),
+            by(0, "done"),
+            by(0, "mean_score"),
+            by(0, "mean_elapsed"),
+            by(0, "refused")
+        ),
+        (json!("linus"), json!(1), json!(100), json!(20), json!(0))
+    );
+    assert_eq!(
+        (
+            by(1, "label"),
+            by(1, "done"),
+            by(1, "mean_elapsed"),
+            by(1, "refused"),
+            by(1, "turns")
+        ),
+        (json!("zed"), json!(1), json!(35), json!(1), json!(1))
+    );
+    let first = &report["runs"][0];
+    assert_eq!(
+        (&first["condition"], &first["config"]["members"][0]["name"]),
+        (&json!("linus"), &json!("Linus"))
+    );
+    assert!(first["config"]["members"][0]["work_brain"].is_string());
+    let markdown = report["markdown"].as_str().unwrap();
+    assert!(markdown.starts_with("# Trial who-lights-it"), "{markdown}");
+    assert!(
+        markdown.contains("| zed | 1 | 1 | 0 | 0 | 100 | 35 | 1 |"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn a_trial_compares_two_conditions_or_more_once_and_within_bounds() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([a, b, c], project) = crew(&hq);
+    let refused = |name: &str, kind: &str, arms: &[Arm], seeds: &[u64]| match hq
+        .start_trial(name, project, kind, arms, seeds)
+    {
+        Err(EngineError::Refused(Refusal::Scenario(why))) => why,
+        other => panic!("{name}: {other:?}"),
+    };
+    let two = [arm("a", &[a]), arm("b", &[b])];
+    assert!(refused("Bad Name", "lighthouse", &two, &[1]).contains("name"));
+    assert!(refused("one", "lighthouse", &two[..1], &[1]).contains("two conditions"));
+    assert!(
+        refused(
+            "same",
+            "lighthouse",
+            &[arm("a", &[a]), arm("a", &[b])],
+            &[1]
+        )
+        .contains("label")
+    );
+    assert!(refused("no-seeds", "lighthouse", &two, &[]).contains("seed"));
+    assert!(refused("big", "lighthouse", &two, &(0..13).collect::<Vec<_>>()).contains("24"));
+    assert!(refused("crew", "silent_station", &two, &[1]).contains("three"));
+    assert!(refused("what", "holodeck", &two, &[1]).contains("lighthouse or silent_station"));
+    assert_eq!(
+        hq.start_trial("ok", project, "lighthouse", &two, &[1])
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(refused("ok", "lighthouse", &two, &[2]).contains("already"));
+    assert_eq!(
+        hq.trial_report("nothing"),
+        Err(EngineError::Unknown("trial"))
+    );
+    let crews = [arm("x", &[a, b, c]), arm("y", &[c, b, a])];
+    assert_eq!(
+        hq.start_trial("crews", project, "silent_station", &crews, &[1])
+            .unwrap()
+            .len(),
+        2
     );
 }
