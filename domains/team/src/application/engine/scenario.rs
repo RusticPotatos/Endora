@@ -70,6 +70,26 @@ struct Place {
     role: Option<station::Role>,
 }
 
+/// What the record says of one scenario: what a trial sums.
+pub(super) struct Facts {
+    /// How it ended, if it has.
+    pub end: Option<&'static str>,
+    /// Whether that end is the work done.
+    pub done: bool,
+    /// What it scored.
+    pub score: u32,
+    /// Time spent in the world.
+    pub elapsed: u32,
+    /// Actions the world accepted.
+    pub accepted: u32,
+    /// Actions it refused.
+    pub refused: u32,
+    /// Whether anyone was hurt.
+    pub unsafe_act: bool,
+    /// The tasks its turns were taken on: the world's, and a mission's parts.
+    pub tasks: Vec<TaskId>,
+}
+
 /// A world as it stands, whichever it is.
 enum World {
     Lighthouse(Lighthouse),
@@ -447,6 +467,38 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(shown)
+    }
+
+    /// What the record says of one scenario, for a trial: its world, how it ended, its score
+    /// and time, its accepted and refused actions, whether anyone was hurt, and the tasks its
+    /// turns were taken on.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a task that is no scenario; a store failure.
+    pub(super) fn scenario_facts(&self, task: TaskId) -> Done<Facts> {
+        let place = self
+            .place_of(task)?
+            .ok_or(EngineError::Unknown("scenario"))?;
+        let now = self.world_at(&place)?;
+        let log = self.store.scenario_actions(place.world)?;
+        let count =
+            |ok: bool| u32::try_from(log.iter().filter(|a| a.ok == ok).count()).unwrap_or(0);
+        let (score, unsafe_act) = match &now {
+            World::Lighthouse(lamp) => (if lamp.lit { 100 } else { 0 }, false),
+            World::Station(at) => (at.score(), !at.crew_safe),
+        };
+        Ok(Facts {
+            end: now.end().map(|(name, _)| name),
+            done: now.end().is_some_and(|(_, done)| done),
+            score,
+            elapsed: now.elapsed(),
+            accepted: count(true),
+            refused: count(false),
+            unsafe_act,
+            tasks: std::iter::once(place.world)
+                .chain(place.parts.iter().copied())
+                .collect(),
+        })
     }
 
     /// Why a turn is refused one of HQ's tools on a scenario, if it is: moving a scenario's

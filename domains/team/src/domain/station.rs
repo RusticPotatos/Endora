@@ -16,6 +16,9 @@ use super::games::Rng;
 /// The station's kind, as a scenario names it.
 pub const SILENT_STATION: &str = "silent_station";
 
+/// The station's rules, by version: a trial compares runs of one version alone.
+pub const VERSION: u32 = 1;
+
 /// The ship's energy at the start.
 pub const ENERGY: u32 = 100;
 

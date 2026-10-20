@@ -126,6 +126,9 @@ pub fn app(state: State) -> Router {
         // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
         .route("/v1/scenarios", post(start_scenario))
         .route("/v1/scenarios/{task}", get(scenario_shown))
+        // Trials (phase 7): one scenario under two conditions or more, compared.
+        .route("/v1/trials", post(start_trial))
+        .route("/v1/trials/{name}", get(trial_report))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
         // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
@@ -973,6 +976,60 @@ async fn start_scenario(
         }
     };
     Ok(Json(json!({ "task": task.0, "seed": seed })))
+}
+
+#[derive(Deserialize)]
+struct TrialArm {
+    label: String,
+    members: Vec<i64>,
+}
+
+#[derive(Deserialize)]
+struct StartTrial {
+    name: String,
+    project: i64,
+    kind: String,
+    conditions: Vec<TrialArm>,
+    seeds: Vec<u64>,
+}
+
+/// The owner starts a trial: one scenario, every condition on every seed.
+async fn start_trial(
+    Extract(state): Extract<State>,
+    Json(req): Json<StartTrial>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let name = req.name.clone();
+    let arms: Vec<endora_team::domain::trials::Arm> = req
+        .conditions
+        .into_iter()
+        .map(|c| endora_team::domain::trials::Arm {
+            label: c.label,
+            members: c.members.into_iter().map(MemberId).collect(),
+        })
+        .collect();
+    let tasks = blocking(move || {
+        hq.start_trial(
+            &req.name,
+            ProjectId(req.project),
+            &req.kind,
+            &arms,
+            &req.seeds,
+        )
+    })
+    .await?;
+    Ok(Json(
+        json!({ "name": name, "tasks": tasks.iter().map(|t| t.0).collect::<Vec<_>>() }),
+    ))
+}
+
+/// A trial compared.
+async fn trial_report(
+    Extract(state): Extract<State>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || hq.trial_report(&name)).await?))
 }
 
 /// A scenario, its state and its log step by step.

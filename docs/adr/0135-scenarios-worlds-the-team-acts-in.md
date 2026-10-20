@@ -78,6 +78,25 @@ anyone (`domain/station.rs`).
   probe, contact), its score, its crew by role, each step's role, and, once it is over, the
   anomaly.
 
+## Amendment (2026-10-20): trials, conditions compared
+
+Phase 7 of the plan, and the roadmap's G5: repeated trials whose records can be compared. A
+**trial** is one scenario played under two conditions or more, each condition on the same
+seeds, so that one thing changes between them (who plays, and so on which brains) and the
+world, its version and its seeds do not.
+
+- The owner starts one (`POST /v1/trials {name, project, kind, conditions: [{label,
+  members}], seeds}`, through the node's `/v1/hq/trials`): every condition on every seed, at
+  most 24 runs, under a name used once. Each run's configuration (world, version, seed, and
+  each player's role and brains as they were) is kept as the run starts.
+- The comparison (`GET /v1/trials/{name}`) is summed from the record, never from a model's
+  account: per condition, runs done, not done and unfinished, mean score and time over the runs
+  that ended, actions refused, runs in which someone was hurt, turns, turns that changed
+  nothing, cost, and the brains the turns really ran on; then every run with its own; and a
+  short report in Markdown to keep or share, which says that a few runs show a difference,
+  not a reason. Each run's step-by-step log is the scenario's own view.
+- Not measured yet: hand-offs between members, and the owner's interventions.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.

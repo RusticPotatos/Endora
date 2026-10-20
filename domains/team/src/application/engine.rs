@@ -67,6 +67,7 @@ mod runaway;
 mod runtime;
 mod scenario;
 mod staffing;
+mod trials;
 mod wing;
 mod world;
 

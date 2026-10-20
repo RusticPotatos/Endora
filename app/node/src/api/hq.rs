@@ -630,6 +630,29 @@ pub(super) async fn hq_start_scenario(
     Ok(answer)
 }
 
+/// The owner starts a trial (the Holodeck plan's phase 7): `{name, project, kind, conditions:
+/// [{label, members}], seeds}`.
+pub(super) async fn hq_start_trial(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Answer {
+    let answer = ask(&state, "/v1/trials".to_owned(), Some(req.clone())).await?;
+    let runs = answer.0["tasks"].as_array().map_or(0, Vec::len);
+    record(
+        &state,
+        &format!(
+            "you started trial {}: {runs} runs",
+            req["name"].as_str().unwrap_or_default()
+        ),
+    );
+    Ok(answer)
+}
+
+/// A trial compared: its conditions side by side, every run, and a report to keep.
+pub(super) async fn hq_trial(State(state): State<AppState>, Path(name): Path<String>) -> Answer {
+    ask(&state, format!("/v1/trials/{name}"), None).await
+}
+
 /// A scenario as the owner's screen shows it: where it stands and its log, step by step.
 pub(super) async fn hq_scenario(State(state): State<AppState>, Path(task): Path<i64>) -> Answer {
     ask(&state, format!("/v1/scenarios/{task}"), None).await
@@ -1410,6 +1433,53 @@ mod tests {
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_owner_starts_and_reads_a_trial_through_the_node() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            let body = if path == "/v1/trials" {
+                json!({ "name": "who-lights-it", "tasks": [41, 42] })
+            } else {
+                json!({ "name": "who-lights-it", "markdown": "# Trial who-lights-it" })
+            };
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let started = hq_start_trial(
+            State(state.clone()),
+            Json(
+                json!({ "name": "who-lights-it", "project": 3, "kind": "lighthouse",
+                         "conditions": [{ "label": "a", "members": [2] },
+                                        { "label": "b", "members": [7] }],
+                         "seeds": [7] }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(started.0["tasks"], json!([41, 42]));
+        let read = hq_trial(State(state.clone()), Path("who-lights-it".to_owned()))
+            .await
+            .unwrap();
+        assert!(read.0["markdown"].as_str().unwrap().starts_with("# Trial"));
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/trials", "/v1/trials/who-lights-it"]);
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a == "HQ: you started trial who-lights-it: 2 runs"),
+            "{audit:?}"
+        );
     }
 
     #[tokio::test]
