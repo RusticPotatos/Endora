@@ -154,6 +154,13 @@ async function api(method, path, body) {
 // the machine, or the first stranger to reach a new node claims somebody's butler — and
 // reading the log needs a shell on the box, which is exactly that proof. What it can do is
 // say so, and say where to look.
+//
+// A node has one owner and no usernames, but a password manager needs one to file a password
+// under: with none, Apple Passwords took the next text box, the code, for it. So every form a
+// password is typed in carries this hidden field first, always the same, and the manager saves
+// and fills the password against "owner".
+const OWNER_USERNAME_FIELD = `<input name="username" type="text" autocomplete="username" value="owner" hidden readonly />`;
+
 function viewNeedsToken() {
   // Just claimed: the secret is handed over once, in the reply to claiming, and never again.
   if (JUST_ENROLLED) {
@@ -174,10 +181,11 @@ function viewNeedsToken() {
       <h2>Set up Endora</h2>
       <div class="card">
         <div class="note" style="margin-bottom:10px;">Nobody has claimed this node yet. Choose a password and it's yours.</div>
-        <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
-          <input id="setup-password" type="password" autocomplete="new-password" placeholder="a password (12 characters or more)" />
-          <button class="primary" data-act="signin:setup">Claim this node</button>
-        </div>
+        <form class="form" data-submit="signin:setup" style="flex-direction:column;align-items:stretch;gap:8px;">
+          ${OWNER_USERNAME_FIELD}
+          <input id="setup-password" name="password" type="password" autocomplete="new-password" placeholder="a password (12 characters or more)" />
+          <button class="primary" type="submit">Claim this node</button>
+        </form>
         <div class="sub" style="margin-top:10px;">Next you'll add Endora to your authenticator, so signing in needs both.</div>
       </div>
       <details style="margin-top:12px;">
@@ -195,11 +203,12 @@ function viewNeedsToken() {
   return `
     <h2>Sign in</h2>
     <div class="card">
-      <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
-        <input id="signin-password" type="password" autocomplete="current-password" placeholder="password" />
-        <input id="signin-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code from your authenticator" />
-        <button class="primary" data-act="signin">Sign in</button>
-      </div>
+      <form class="form" data-submit="signin" style="flex-direction:column;align-items:stretch;gap:8px;">
+        ${OWNER_USERNAME_FIELD}
+        <input id="signin-password" name="password" type="password" autocomplete="current-password" placeholder="password" />
+        <input id="signin-code" name="code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" placeholder="6-digit code from your authenticator" />
+        <button class="primary" type="submit">Sign in</button>
+      </form>
     </div>
     <details style="margin-top:12px;">
       <summary class="sub">Lost your phone, or setting this up for the first time?</summary>
@@ -258,11 +267,12 @@ function viewYourCredentials() {
     <h3 style="margin-top:22px;">Your sign-in</h3>
     <div class="card">
       <div class="title" style="font-weight:500;margin-bottom:6px;">Change your password</div>
-      <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
-        <input id="pw-current" type="password" autocomplete="current-password" placeholder="current password" />
-        <input id="pw-new" type="password" autocomplete="new-password" placeholder="new password (12 characters or more)" />
-        <button class="ghost" data-act="password:change">Change it</button>
-      </div>
+      <form class="form" data-submit="password:change" style="flex-direction:column;align-items:stretch;gap:8px;">
+        ${OWNER_USERNAME_FIELD}
+        <input id="pw-current" name="current-password" type="password" autocomplete="current-password" placeholder="current password" />
+        <input id="pw-new" name="new-password" type="password" autocomplete="new-password" placeholder="new password (12 characters or more)" />
+        <button class="ghost" type="submit">Change it</button>
+      </form>
     </div>
     <div class="card" style="margin-top:8px;">
       <div class="title" style="font-weight:500;margin-bottom:6px;">Your authenticator</div>
@@ -293,10 +303,11 @@ function viewSetUpSignIn() {
       <div class="sub" style="margin-bottom:8px;">So you don't have to paste the long token on every device. Add this to Google Authenticator, then choose a password.</div>
       <div style="background:#fff;padding:12px;border-radius:8px;display:inline-block;line-height:0;margin-bottom:8px;">${SIGNIN.qr || ""}</div>
       <details style="margin-bottom:8px;"><summary class="sub">Can't scan it?</summary><div class="sub" style="word-break:break-all;margin-top:6px;user-select:all;">${esc(SIGNIN.otpauth || "")}</div></details>
-      <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
-        <input id="setup-password" type="password" autocomplete="new-password" placeholder="a password (12 characters or more)" />
-        <button class="primary" data-act="signin:setup">Save</button>
-      </div>
+      <form class="form" data-submit="signin:setup" style="flex-direction:column;align-items:stretch;gap:8px;">
+        ${OWNER_USERNAME_FIELD}
+        <input id="setup-password" name="password" type="password" autocomplete="new-password" placeholder="a password (12 characters or more)" />
+        <button class="primary" type="submit">Save</button>
+      </form>
     </div>`;
 }
 

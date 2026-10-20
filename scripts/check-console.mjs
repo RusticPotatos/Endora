@@ -3427,4 +3427,40 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   console.log("world editor: paste, preview, apply and the section editor behave");
 }
 
+// Signing in with a password manager (Apple Passwords in Safari, and the rest): with no
+// username field and no form, Apple Passwords took the code field for the username and filled
+// the owner's name into it. Each form a password is typed in is a real form; a hidden field
+// marked as the username, always the same, comes before the password, so the password is saved
+// and filled against it; the code is a one-time code by name, so the manager fills it from its
+// own verification codes. Pressing Return or the button submits the form, which the console
+// turns into its action, without leaving the page.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const fields = (html) =>
+    [...html.matchAll(/<input\b[^>]*>/g)].map((m) => {
+      const tag = m[0];
+      const attr = (name) => (tag.match(new RegExp(`\\b${name}="([^"]*)"`)) || [])[1] || "";
+      return { auto: attr("autocomplete"), name: attr("name"), type: attr("type"), value: attr("value"), hidden: /\bhidden\b/.test(tag) };
+    });
+  const formOf = (html, act) => {
+    const m = html.match(new RegExp(`<form\\b[^>]*data-submit="${act}"[^>]*>([\\s\\S]*?)</form>`));
+    if (!m) fail(`sign-in: no <form data-submit="${act}">`);
+    if (!/<button\b[^>]*type="submit"/.test(m[1])) fail(`sign-in: the ${act} form has no submit button`);
+    return fields(m[1]);
+  };
+  runInContext(`__keep = [SIGNIN_EXISTS, JUST_ENROLLED]; SIGNIN_EXISTS = true; JUST_ENROLLED = "";`, context);
+  const signin = formOf(runInContext("viewNeedsToken()", context), "signin");
+  const order = signin.map((f) => f.auto).join(",");
+  if (order !== "username,current-password,one-time-code") fail("sign-in: the fields are not username, password, code in that order: " + order);
+  const [user, password, code] = signin;
+  if (!user.hidden || user.value !== "owner" || user.name !== "username") fail("sign-in: the username is not a hidden field holding the owner: " + JSON.stringify(user));
+  if (password.name !== "password" || password.type !== "password") fail("sign-in: the password is not named so: " + JSON.stringify(password));
+  if (code.name !== "code" || code.type !== "text") fail("sign-in: the code is not named so: " + JSON.stringify(code));
+  runInContext(`SIGNIN_EXISTS = false;`, context);
+  const claim = formOf(runInContext("viewNeedsToken()", context), "signin:setup");
+  if (claim.map((f) => f.auto).join(",") !== "username,new-password" || claim[0].value !== "owner") fail("sign-in: claiming saves the password against no username: " + JSON.stringify(claim));
+  runInContext(`[SIGNIN_EXISTS, JUST_ENROLLED] = __keep;`, context);
+  console.log("sign-in: a password manager sees a username, a password and a one-time code");
+}
+
 console.log(`console check: ${named.length} screens render`);
