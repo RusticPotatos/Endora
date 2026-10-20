@@ -690,7 +690,9 @@ fn a_trial_compares_two_conditions_or_more_once_and_within_bounds() {
     assert!(refused("no-seeds", "lighthouse", &two, &[]).contains("seed"));
     assert!(refused("big", "lighthouse", &two, &(0..13).collect::<Vec<_>>()).contains("24"));
     assert!(refused("crew", "silent_station", &two, &[1]).contains("three"));
-    assert!(refused("what", "holodeck", &two, &[1]).contains("lighthouse or silent_station"));
+    assert!(
+        refused("what", "holodeck", &two, &[1]).contains("lighthouse, silent_station or chess")
+    );
     assert_eq!(
         hq.start_trial("ok", project, "lighthouse", &two, &[1])
             .unwrap()
@@ -726,4 +728,141 @@ fn a_trial_compares_two_conditions_or_more_once_and_within_bounds() {
     let turn_brain = |i: usize| report["runs"][i]["config"]["members"][0]["turn_brain"].clone();
     assert_eq!(turn_brain(1), json!("mac"), "{}", report["runs"][1]);
     assert!(turn_brain(0).is_string());
+}
+
+fn play(hq: &Hq<'_>, context: &RunContext, san: &str) -> Result<String, String> {
+    use_tool(
+        hq,
+        context,
+        "scenario",
+        &json!({ "action": "move", "san": san }),
+    )
+}
+
+// Chess as a scenario: the owner wanted to see a game move by move, which model played what,
+// and the illegal moves, and none of it was kept (and no game was ever played: moves came only
+// in downtime turns). A match is two members' world: a move a turn, every move tried kept, the
+// side not to move told its turn is over, the other side woken by a legal move, and the rules
+// close it.
+#[test]
+fn a_chess_match_is_played_a_move_a_turn_with_its_illegal_moves_kept() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([white, black, _], project) = crew(&hq);
+    let game = hq.start_chess(project, [white, black], 1).unwrap();
+    let part = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.parent == Some(game))
+        .expect("black's part");
+    assert_eq!(part.assignee, Some(black));
+    let [w, b] = <[RunContext; 2]>::try_from(turns(&hq, &[white, black]))
+        .ok()
+        .unwrap();
+    let (run, member) = hq.turn_of(&b.token).unwrap().unwrap();
+    let tool = tools_in(&hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "scenario")
+        .cloned()
+        .unwrap();
+    assert!(tool.to_string().contains("san"), "{tool}");
+
+    let waiting = act(&hq, &b, "look").unwrap();
+    assert!(
+        waiting.contains("not your move: this turn has ended"),
+        "{waiting}"
+    );
+    assert!(
+        play(&hq, &w, "e5").unwrap_err().contains("e4"),
+        "illegal, with the legal moves"
+    );
+    let woken_before = hq.store().wakes().unwrap().len();
+    let moved = play(&hq, &w, "f3").unwrap();
+    assert!(
+        moved.contains("white played f3") && moved.contains("this turn has ended"),
+        "{moved}"
+    );
+    let woken: Vec<(MemberId, Option<TaskId>)> = hq
+        .store()
+        .wakes()
+        .unwrap()
+        .into_iter()
+        .skip(woken_before)
+        .map(|w| (w.member, w.task))
+        .collect();
+    assert_eq!(woken, [(black, Some(part.id))], "the other side is woken");
+    assert!(play(&hq, &w, "e4").unwrap_err().contains("black's move"));
+    play(&hq, &b, "e5").unwrap();
+    play(&hq, &w, "g4").unwrap();
+    let mate = play(&hq, &b, "Qh4").unwrap();
+    assert!(
+        mate.contains("over: black_won") && mate.contains("this turn has ended"),
+        "{mate}"
+    );
+    for task in [game, part.id] {
+        assert_eq!(
+            hq.store().task(task).unwrap().unwrap().status,
+            TaskStatus::Done
+        );
+    }
+
+    let shown = hq.scenario_shown(game).unwrap();
+    assert_eq!(
+        (
+            &shown["kind"],
+            &shown["result"],
+            &shown["score"],
+            &shown["moves"]
+        ),
+        (
+            &json!("chess"),
+            &json!("black_won"),
+            &json!(0),
+            &json!("1. f3 e5 2. g4 Qh4#")
+        )
+    );
+    assert_eq!(shown["sides"]["white"], json!("Linus"));
+    let by_role: Vec<(String, u64, u64)> = shown["by_role"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["role"].as_str().unwrap().to_owned(),
+                r["accepted"].as_u64().unwrap(),
+                r["refused"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        by_role,
+        [("black".to_owned(), 2, 0), ("white".to_owned(), 2, 2)],
+        "white's illegal move and its move out of turn are kept"
+    );
+    assert_eq!(
+        hq.replay_chess(game).unwrap().move_text(),
+        "1. f3 e5 2. g4 Qh4#"
+    );
+
+    // Model against model: the same two, colours swapped between conditions.
+    let started = hq
+        .start_trial(
+            "colours",
+            project,
+            "chess",
+            &[
+                arm("linus-white", &[white, black]),
+                arm("zed-white", &[black, white]),
+            ],
+            &[1],
+        )
+        .unwrap();
+    assert_eq!(started.len(), 2);
+    let report = hq.trial_report("colours").unwrap();
+    assert_eq!(report["kind"], "chess");
+    assert!(report["runs"][0]["by_role"].is_array());
 }

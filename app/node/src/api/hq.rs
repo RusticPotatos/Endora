@@ -610,15 +610,16 @@ pub(super) async fn hq_start_scenario(
     Json(req): Json<serde_json::Value>,
 ) -> Answer {
     let answer = ask(&state, "/v1/scenarios".to_owned(), Some(req.clone())).await?;
-    let whom = match req["crew"].as_array() {
-        Some(crew) => format!(
-            "Silent Station for members {}",
-            crew.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        None => format!("a scenario for member {}", req["member"]),
+    let listed = |all: &Vec<serde_json::Value>| {
+        all.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let whom = match (req["crew"].as_array(), req["players"].as_array()) {
+        (Some(crew), _) => format!("Silent Station for members {}", listed(crew)),
+        (None, Some(players)) => format!("a chess match between members {}", listed(players)),
+        (None, None) => format!("a scenario for member {}", req["member"]),
     };
     record(
         &state,
@@ -646,6 +647,11 @@ pub(super) async fn hq_start_trial(
         ),
     );
     Ok(answer)
+}
+
+/// A match of ping-pong or pool from the office, played again step by step.
+pub(super) async fn hq_game_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    ask(&state, format!("/v1/games/{id}/replay"), None).await
 }
 
 /// A trial compared: its conditions side by side, every run, and a report to keep.
@@ -1507,15 +1513,35 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(crewed.0["task"], 41);
+        let matched = hq_start_scenario(
+            State(state.clone()),
+            Json(json!({ "project": 3, "kind": "chess", "players": [2, 7], "seed": 7 })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(matched.0["task"], 41);
         let shown = hq_scenario(State(state.clone()), Path(41)).await.unwrap();
         assert_eq!(shown.0["end"], "solved");
+        let replayed = hq_game_replay(State(state.clone()), Path(219))
+            .await
+            .unwrap();
+        assert_eq!(replayed.0["end"], "solved", "passed through as HQ said it");
         let sent: Vec<String> = seen
             .lock()
             .unwrap()
             .iter()
             .map(|(p, _, _)| p.clone())
             .collect();
-        assert_eq!(sent, ["/v1/scenarios", "/v1/scenarios", "/v1/scenarios/41"]);
+        assert_eq!(
+            sent,
+            [
+                "/v1/scenarios",
+                "/v1/scenarios",
+                "/v1/scenarios",
+                "/v1/scenarios/41",
+                "/v1/games/219/replay"
+            ]
+        );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
             .unwrap()
             .iter()
@@ -1524,6 +1550,7 @@ mod tests {
         for line in [
             "HQ: you started a scenario for member 5 in project 3 (seed 7): task 41",
             "HQ: you started Silent Station for members 2, 7, 8 in project 3 (seed 7): task 41",
+            "HQ: you started a chess match between members 2, 7 in project 3 (seed 7): task 41",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }

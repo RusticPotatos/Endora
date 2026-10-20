@@ -390,6 +390,49 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         })
     }
 
+    /// A kept match of ping-pong or pool played again, step by step, from what it was played
+    /// from (its seed and the players' skills then): every rally or shot with the score after
+    /// it, and whether the replay ends as the record does.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a match there is not; a store failure.
+    pub fn game_replay(&self, id: i64) -> Done<Value> {
+        let mut records = self.store.games()?;
+        records.sort_by_key(|r| r.id);
+        let at = records
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or(EngineError::Unknown("match"))?;
+        let record = &records[at];
+        let again = games::replay(record, &records[..at]);
+        let names = self.names()?;
+        let name = |id: MemberId| names.get(&id).cloned().unwrap_or_default();
+        let player = |by: u8| {
+            if by == 0 {
+                name(record.a)
+            } else {
+                name(record.b)
+            }
+        };
+        let steps: Vec<Value> = again
+            .steps
+            .iter()
+            .map(|step| match *step {
+                games::Step::Rally { a_won, a, b } => json!({ "step": "rally",
+                    "won_by": player(u8::from(!a_won)), "score": [a, b] }),
+                games::Step::Shot { by, potted, a, b } => json!({ "step": "shot",
+                    "by": player(by), "potted": potted, "balls": [a, b] }),
+                games::Step::Scratch { by } => json!({ "step": "scratch", "by": player(by) }),
+            })
+            .collect();
+        Ok(json!({ "id": record.id, "kind": record.kind.name(),
+                   "players": [name(record.a), name(record.b)],
+                   "skills": [again.skills.0, again.skills.1], "seed": again.seed.to_string(),
+                   "score": [record.score_a, record.score_b], "winner": name(record.winner),
+                   "note": record.note, "at": record.at, "matches": again.matches,
+                   "steps": steps }))
+    }
+
     /// The games as the HQ screen shows them: the leaderboards, the latest results, and the
     /// games of chess being played and the last ones finished.
     pub(super) fn games_shown(&self) -> Done<Value> {

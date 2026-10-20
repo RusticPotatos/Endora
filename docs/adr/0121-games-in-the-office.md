@@ -105,6 +105,18 @@ at ping-pong is not worth a turn, and a model is the worst referee for a rally.
 - Matches are seeded from the clock, so a replay of the engine on the same clock plays the same
   matches; a test pins a fixed seed's score.
 
+## Amendment (2026-10-20): every match plays again, step by step
+
+The owner saw the office's matches only as scores. Each match of ping-pong and pool is played
+in code from a seed made of its time, its players and how many matches came before it, with
+the skills the matches before it made, so every kept match, the past ones too, plays again
+exactly: `GET /v1/games/{id}/replay` (through the node's `/v1/hq/games/{id}/replay`) gives
+every rally (who won it, the score after) or every shot (who took it, whether it dropped, the
+balls each had potted, and a scratch on the eight), and whether the replay ends as the record
+says. The match code draws the same numbers in the same order as before, so nothing already
+played changes. Chess, which models play, is kept move by move as a scenario (ADR 0135,
+amended).
+
 ## Deferred
 
 - Chess clocks, a draw offered or resigned: a game ends by the rules or by the week.

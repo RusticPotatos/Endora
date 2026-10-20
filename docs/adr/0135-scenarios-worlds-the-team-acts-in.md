@@ -99,6 +99,26 @@ world, its version and its seeds do not.
   not a reason. Each run's step-by-step log is the scenario's own view.
 - Not measured yet: hand-offs between members, and the owner's interventions.
 
+## Amendment (2026-10-20): chess as a world, and what the first live run taught
+
+The owner wanted to see a chess game move by move, which model played what, and the illegal
+moves; none of it was kept, and no game had ever been played (moves came only in downtime
+turns, nine in all). Chess is now a third world (`domain/chess_match.rs`, by the rules of
+0121's chess): the owner starts a match between two different members (`kind: "chess"`,
+`players: [white, black]`); white holds the match and black a part of it; every move tried
+goes in the log, illegal ones and moves out of turn too; a legal move ends the mover's turn
+and wakes the other side; a side that looks on the other's move is told its turn has ended;
+the rules end it (mate, stalemate, repetition, too little material) or the move limit does,
+at 60 half-moves, as a draw. Its view adds the moves as written down, the board (FEN and
+rows), the result and why, and each side's legal and illegal moves (`by_role`, which a trial's
+runs carry too, so two brains can be compared move for move, colours swapped between
+conditions). Office chess in downtime is unchanged.
+
+From the first live run: the world's last word now says the task is closed and the turn has
+ended, and the worker ends any turn HQ says has ended (three of five turns had gone on to
+`set_status`); a trial records the brain each player's turns will really run on
+(`turn_brain`), since a tester's work is the Mac's (0131), whatever its own work brain.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.
