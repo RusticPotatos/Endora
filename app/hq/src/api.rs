@@ -129,6 +129,8 @@ pub fn app(state: State) -> Router {
         // Trials (phase 7): one scenario under two conditions or more, compared.
         .route("/v1/trials", post(start_trial))
         .route("/v1/trials/{name}", get(trial_report))
+        // A match of ping-pong or pool played again, step by step.
+        .route("/v1/games/{id}/replay", get(game_replay))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
         // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
@@ -932,7 +934,7 @@ async fn project_cap(
 #[derive(Deserialize)]
 struct StartScenario {
     project: i64,
-    /// `lighthouse` (the default) or `silent_station`.
+    /// `lighthouse` (the default), `silent_station` or `chess`.
     #[serde(default)]
     kind: Option<String>,
     /// The lighthouse's member.
@@ -941,6 +943,9 @@ struct StartScenario {
     /// Silent Station's crew: the captain, science and the engineer.
     #[serde(default)]
     crew: Option<[i64; 3]>,
+    /// A chess match's players: white, then black.
+    #[serde(default)]
+    players: Option<[i64; 2]>,
     /// The world's seed: the same seed is the same world. Today's clock when not given.
     #[serde(default)]
     seed: Option<u64>,
@@ -960,22 +965,34 @@ async fn start_scenario(
     });
     let hq = state.hq.clone();
     let project = ProjectId(req.project);
-    let task = match (req.kind.as_deref(), req.member, req.crew) {
-        (Some("silent_station"), _, Some(crew)) => {
+    let task = match (req.kind.as_deref(), req.member, req.crew, req.players) {
+        (Some("silent_station"), _, Some(crew), _) => {
             blocking(move || hq.start_station(project, crew.map(MemberId), seed)).await?
         }
-        (None | Some("lighthouse"), Some(member), _) => {
+        (Some("chess"), _, _, Some(players)) => {
+            blocking(move || hq.start_chess(project, players.map(MemberId), seed)).await?
+        }
+        (None | Some("lighthouse"), Some(member), _, _) => {
             blocking(move || hq.start_scenario(project, MemberId(member), seed)).await?
         }
         _ => {
             return Err(Failed(EngineError::Refused(Refusal::Scenario(
                 "a lighthouse names its member; silent_station names its crew: [captain, \
-                 science, engineer]"
+                 science, engineer]; chess names its players: [white, black]"
                     .to_owned(),
             ))));
         }
     };
     Ok(Json(json!({ "task": task.0, "seed": seed })))
+}
+
+/// A kept match of ping-pong or pool, step by step.
+async fn game_replay(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || hq.game_replay(id)).await?))
 }
 
 #[derive(Deserialize)]

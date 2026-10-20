@@ -5,6 +5,7 @@ pub mod brain;
 pub mod caps;
 pub mod chain;
 pub mod chess;
+pub mod chess_match;
 pub mod closure;
 pub mod consult;
 pub mod cut;

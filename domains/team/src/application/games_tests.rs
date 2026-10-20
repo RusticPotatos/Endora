@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use serde_json::{Value, json};
 
-use super::engine::{Author, Engine, Settings};
+use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::{call, tools};
 use crate::domain::chess::{self, Status};
@@ -697,4 +697,36 @@ fn a_member_without_a_game_is_told_it_may_challenge_someone() {
     let ada = downtime_for(&hq, &clock, t.ada);
     assert!(ada.told.contains("challenge"), "{}", ada.told);
     let _ = (t.cy, t.dee);
+}
+
+// Every match HQ plays in the office plays again step by step as it went: the owner sees how
+// a game of pool or ping-pong went, not only its score, and the replay checks itself against
+// the record.
+#[test]
+fn every_match_the_office_played_replays_step_by_step_as_kept() {
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock, false, true);
+    team(&hq);
+    for _ in 0..40 {
+        clock.0.fetch_add(GAP, Ordering::SeqCst);
+        hq.tick().unwrap();
+    }
+    let all = hq.store().games().unwrap();
+    assert!(all.len() > 20, "{} matches", all.len());
+    for g in &all {
+        let again = hq.game_replay(g.id).unwrap();
+        assert_eq!(again["matches"], true, "{again}");
+        let steps = again["steps"].as_array().unwrap();
+        assert!(!steps.is_empty());
+        let last = steps.last().unwrap();
+        match g.kind {
+            Kind::PingPong => {
+                assert_eq!(last["step"], "rally");
+                assert_eq!(last["score"], json!([g.score_a, g.score_b]));
+            }
+            Kind::Pool => assert!(last["step"] == "shot" || last["step"] == "scratch"),
+        }
+        assert!(again["players"][0].is_string() && again["winner"].is_string());
+    }
+    assert_eq!(hq.game_replay(99_999), Err(EngineError::Unknown("match")));
 }

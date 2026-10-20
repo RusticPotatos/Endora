@@ -148,27 +148,67 @@ fn rally_chance(a: u32, b: u32) -> u32 {
     (50 + (i64::from(a) - i64::from(b)) / 2).clamp(10, 90) as u32
 }
 
+/// One step of a match, as a replay shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// A rally of ping-pong: whether the first player won it, and the score after it.
+    Rally {
+        /// Whether the first player won the rally.
+        a_won: bool,
+        /// The first player's points after it.
+        a: u32,
+        /// The second player's points after it.
+        b: u32,
+    },
+    /// A shot at pool: who took it (`0` the first player), whether it dropped, and the balls
+    /// each had potted after it.
+    Shot {
+        /// Who took it.
+        by: u8,
+        /// Whether it dropped.
+        potted: bool,
+        /// The first player's balls after it.
+        a: u32,
+        /// The second player's balls after it.
+        b: u32,
+    },
+    /// A miss at the eight that scratched, losing the game: who.
+    Scratch {
+        /// Who scratched.
+        by: u8,
+    },
+}
+
 /// A match of ping-pong between players of these skills: first to eleven, and two clear.
 pub fn play_ping_pong(skill_a: u32, skill_b: u32, rng: &mut Rng) -> Played {
+    play_ping_pong_steps(skill_a, skill_b, rng).0
+}
+
+/// The same match, rally by rally: the same draws in the same order, so the same match.
+pub fn play_ping_pong_steps(skill_a: u32, skill_b: u32, rng: &mut Rng) -> (Played, Vec<Step>) {
     let chance = rally_chance(skill_a, skill_b);
     let (mut a, mut b) = (0u32, 0u32);
+    let mut steps = Vec::new();
     for _ in 0..MOST_STEPS {
-        if rng.percent(chance) {
+        let a_won = rng.percent(chance);
+        if a_won {
             a += 1;
         } else {
             b += 1;
         }
+        steps.push(Step::Rally { a_won, a, b });
         let top = a.max(b);
         if top >= PING_PONG_TO && a.abs_diff(b) >= 2 {
             break;
         }
     }
-    Played {
+    let played = Played {
         a,
         b,
         a_won: a > b,
         note: String::new(),
-    }
+    };
+    (played, steps)
 }
 
 /// A game of pool, eight-ball simplified: the players take turns at the table, each shot
@@ -177,24 +217,49 @@ pub fn play_ping_pong(skill_a: u32, skill_b: u32, rng: &mut Rng) -> Played {
 /// loses. The scores are the balls each potted, the eight counting as the eighth.
 /// `names` are how the two are called in a note about a scratch.
 pub fn play_pool(skill_a: u32, skill_b: u32, names: (&str, &str), rng: &mut Rng) -> Played {
+    play_pool_steps(skill_a, skill_b, names, rng).0
+}
+
+/// The same game, shot by shot: the same draws in the same order, so the same game.
+pub fn play_pool_steps(
+    skill_a: u32,
+    skill_b: u32,
+    names: (&str, &str),
+    rng: &mut Rng,
+) -> (Played, Vec<Step>) {
     let pot = |skill: u32| skill.clamp(25, 85);
     let skills = [pot(skill_a), pot(skill_b)];
     let mut potted = [0u32, 0u32];
     let mut at = 0usize;
     let (mut winner, mut note) = (None, String::new());
+    let mut steps = Vec::new();
+    let by = |at: usize| if at == 0 { 0u8 } else { 1u8 };
     'match_: for _ in 0..MOST_STEPS {
         // One visit to the table: shots go on while they drop.
         loop {
             if rng.percent(skills[at]) {
                 potted[at] += 1;
+                steps.push(Step::Shot {
+                    by: by(at),
+                    potted: true,
+                    a: potted[0],
+                    b: potted[1],
+                });
                 if potted[at] > GROUP {
                     winner = Some(at);
                     break 'match_;
                 }
                 continue;
             }
+            steps.push(Step::Shot {
+                by: by(at),
+                potted: false,
+                a: potted[0],
+                b: potted[1],
+            });
             if potted[at] == GROUP && rng.percent(SCRATCH_ON_EIGHT) {
                 winner = Some(1 - at);
+                steps.push(Step::Scratch { by: by(at) });
                 let who = if at == 0 { names.0 } else { names.1 };
                 note = format!("{who} scratched on the 8");
                 break 'match_;
@@ -205,11 +270,48 @@ pub fn play_pool(skill_a: u32, skill_b: u32, names: (&str, &str), rng: &mut Rng)
     }
     // A match that never ended goes to whoever had potted more, the first player on a tie.
     let a_won = winner.map_or(potted[0] >= potted[1], |w| w == 0);
-    Played {
+    let played = Played {
         a: potted[0],
         b: potted[1],
         a_won,
         note,
+    };
+    (played, steps)
+}
+
+/// A kept match played again, step by step, from what it was played from: its seed (the
+/// time, the players, and how many matches came before it) and the players' skills then (as
+/// the matches before it made them). `before` is every match kept before it, in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replay {
+    /// Its steps.
+    pub steps: Vec<Step>,
+    /// The players' skills it was played with.
+    pub skills: (u32, u32),
+    /// Its seed.
+    pub seed: u64,
+    /// Whether the replay ends as the record says: the same scores and the same winner.
+    pub matches: bool,
+}
+
+/// Plays `record` again from what it was played from.
+#[must_use]
+pub fn replay(record: &Record, before: &[Record]) -> Replay {
+    let seed = seed(record.at, record.a, record.b, before.len());
+    let skill = |m: MemberId| skill(m, record.kind, played_by(m, record.kind, before));
+    let skills = (skill(record.a), skill(record.b));
+    let mut rng = Rng::new(seed);
+    let (played, steps) = match record.kind {
+        Kind::PingPong => play_ping_pong_steps(skills.0, skills.1, &mut rng),
+        Kind::Pool => play_pool_steps(skills.0, skills.1, ("", ""), &mut rng),
+    };
+    let matches = (played.a, played.b) == (record.score_a, record.score_b)
+        && (played.a_won == (record.winner == record.a));
+    Replay {
+        steps,
+        skills,
+        seed,
+        matches,
     }
 }
 
@@ -577,5 +679,57 @@ mod tests {
             assert_eq!(Kind::from_name(kind.name()), Some(kind));
         }
         assert_eq!(Kind::from_name("darts"), None);
+    }
+
+    // The owner sees the office's matches only as scores. Each was played in code from a seed
+    // made of its time, its players and how many matches came before it, and with skills the
+    // matches before it made, so every kept match, past ones too, plays again step by step.
+    #[test]
+    fn a_kept_match_plays_again_rally_by_rally_or_shot_by_shot_as_it_went() {
+        let (a, b) = (MemberId(2), MemberId(4));
+        let mut kept: Vec<Record> = Vec::new();
+        for (n, kind) in [Kind::PingPong, Kind::Pool, Kind::PingPong, Kind::Pool]
+            .into_iter()
+            .enumerate()
+        {
+            let at = 1_792_238_400_000 + n as i64 * GAP_MS;
+            let mut rng = Rng::new(seed(at, a, b, kept.len()));
+            let skill = |m: MemberId| skill(m, kind, played_by(m, kind, &kept));
+            let played = match kind {
+                Kind::PingPong => play_ping_pong(skill(a), skill(b), &mut rng),
+                Kind::Pool => play_pool(skill(a), skill(b), ("Bo", "Dee"), &mut rng),
+            };
+            kept.push(Record {
+                id: n as i64 + 1,
+                kind,
+                a,
+                b,
+                score_a: played.a,
+                score_b: played.b,
+                winner: if played.a_won { a } else { b },
+                note: played.note,
+                at,
+            });
+        }
+        for (i, record) in kept.iter().enumerate() {
+            let again = replay(record, &kept[..i]);
+            assert!(again.matches, "match {}: {again:?}", record.id);
+            let last = *again.steps.last().unwrap();
+            match (record.kind, last) {
+                (Kind::PingPong, Step::Rally { a: x, b: y, .. }) => {
+                    assert_eq!((x, y), (record.score_a, record.score_b));
+                    assert_eq!(again.steps.len() as u32, x + y, "one step a rally");
+                }
+                (Kind::Pool, Step::Shot { a: x, b: y, .. }) => {
+                    assert_eq!((x, y), (record.score_a, record.score_b));
+                }
+                (Kind::Pool, Step::Scratch { .. }) => assert!(!record.note.is_empty()),
+                other => panic!("{other:?}"),
+            }
+        }
+        // A record that is not what its seed plays says so.
+        let mut wrong = kept[0].clone();
+        wrong.score_a += 1;
+        assert!(!replay(&wrong, &[]).matches);
     }
 }

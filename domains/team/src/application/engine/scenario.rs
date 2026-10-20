@@ -4,9 +4,11 @@
 //! never kept: it is the seed's world with the log's accepted actions replayed, and the log is
 //! append-only, so a reset is a new task with the same seed.
 //!
-//! Two worlds. The lighthouse is one member's task. Silent Station is a crew's: the captain
+//! Three worlds. The lighthouse is one member's task. Silent Station is a crew's: the captain
 //! holds the mission, science and the engineer a part of it each, all acting in the mission's
 //! one world and log, each as its role alone; an accepted action wakes the rest of the crew.
+//! A chess match is two members': white holds the match and black a part of it, a move a turn,
+//! the opponent woken when it is its move.
 
 use std::collections::HashMap;
 
@@ -14,6 +16,7 @@ use serde_json::{Value, json};
 
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, NewTask, ScenarioAction, TeamStore, WorkerAdapter};
+use crate::domain::chess_match::{self, Match, Side};
 use crate::domain::closure::{Closure, DoneWhy, DropWhy};
 use crate::domain::scenario::{self, Lighthouse};
 use crate::domain::station::{self, Station};
@@ -33,7 +36,7 @@ fn refused(why: impl Into<String>) -> EngineError {
 
 /// Where a task's place in a scenario is kept: `<seed>` for a lighthouse;
 /// `silent_station:<seed>:<science's task>:<engineer's task>` for a mission;
-/// `crew:<mission>:<role>` for a part of one.
+/// `chess:<seed>:<black's task>` for a match; `crew:<mission>:<role>` for a part of either.
 fn key(task: TaskId) -> String {
     format!("scenario:{}", task.0)
 }
@@ -45,6 +48,8 @@ enum Kind {
     Lighthouse,
     /// Silent Station (phase 6).
     Station,
+    /// A chess match.
+    Chess,
 }
 
 impl Kind {
@@ -53,6 +58,26 @@ impl Kind {
         match self {
             Self::Lighthouse => scenario::LIGHTHOUSE,
             Self::Station => station::SILENT_STATION,
+            Self::Chess => chess_match::CHESS,
+        }
+    }
+
+    /// The role of the member who holds the world's own task: a mission's captain, a match's
+    /// white.
+    const fn holder(self) -> Option<&'static str> {
+        match self {
+            Self::Lighthouse => None,
+            Self::Station => Some(station::Role::Captain.name()),
+            Self::Chess => Some(Side::White.name()),
+        }
+    }
+
+    /// A role's name in this world, as its own.
+    fn role(self, name: &str) -> Option<&'static str> {
+        match self {
+            Self::Lighthouse => None,
+            Self::Station => station::Role::from_name(name).map(station::Role::name),
+            Self::Chess => Side::from_name(name).map(Side::name),
         }
     }
 }
@@ -64,10 +89,10 @@ struct Place {
     world: TaskId,
     kind: Kind,
     seed: u64,
-    /// The mission's parts, science's then the engineer's.
+    /// The world's parts: a mission's science's then engineer's, a match's black's.
     parts: Vec<TaskId>,
-    /// The role this task's member wears, in a mission.
-    role: Option<station::Role>,
+    /// The role this task's member wears: in a mission, or a side in a match.
+    role: Option<&'static str>,
 }
 
 /// What the record says of one scenario: what a trial sums.
@@ -86,14 +111,18 @@ pub(super) struct Facts {
     pub refused: u32,
     /// Whether anyone was hurt.
     pub unsafe_act: bool,
-    /// The tasks its turns were taken on: the world's, and a mission's parts.
+    /// The tasks its turns were taken on: the world's, and its parts.
     pub tasks: Vec<TaskId>,
+    /// Each role's actions, accepted and refused, with the member who wore it: a match's
+    /// illegal moves by side.
+    pub by_role: Vec<Value>,
 }
 
 /// A world as it stands, whichever it is.
 enum World {
     Lighthouse(Lighthouse),
     Station(Station),
+    Chess(Match),
 }
 
 impl World {
@@ -113,11 +142,18 @@ impl World {
                     .collect();
                 Station::replay(seed, &acts).map(Self::Station)
             }
+            Kind::Chess => {
+                let moves: Vec<String> = actions
+                    .iter()
+                    .filter_map(|a| a.strip_prefix("move ").map(str::to_owned))
+                    .collect();
+                Match::replay(&moves).map(Self::Chess)
+            }
         }
     }
 
-    /// One action, as written, by a member in `role` (a mission's).
-    fn step(&self, role: Option<station::Role>, written: &str) -> Result<(Self, String), String> {
+    /// One action, as written, by a member in `role` (a mission's, or a match's side).
+    fn step(&self, role: Option<&str>, written: &str) -> Result<(Self, String), String> {
         match self {
             Self::Lighthouse(now) => {
                 let act = scenario::Action::read(written).ok_or(
@@ -132,35 +168,61 @@ impl World {
                     "`action` is look, scan_station, inspect_comms, analyze_anomaly, \
                      route_power, send_probe or attempt_contact",
                 )?;
-                let role = role.ok_or("this task wears no role in the mission")?;
+                let role = role
+                    .and_then(station::Role::from_name)
+                    .ok_or("this task wears no role in the mission")?;
                 now.step(role, act)
                     .map(|(next, said)| (Self::Station(next), said))
+            }
+            Self::Chess(now) => {
+                let san = written
+                    .strip_prefix("move ")
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or("`action` is look, or move with san: the move in standard notation")?;
+                let side = role
+                    .and_then(Side::from_name)
+                    .ok_or("this task plays no side in the match")?;
+                now.step(side, san)
+                    .map(|(next, said)| (Self::Chess(next), said))
             }
         }
     }
 
-    /// How it ended: its name, and whether that is the work done.
+    /// How it ended: its name, and whether that is the work done (a match is, however it
+    /// ended: playing it out was the work).
     fn end(&self) -> Option<(&'static str, bool)> {
         match self {
             Self::Lighthouse(now) => now.end().map(|e| (e.name(), e == scenario::End::Solved)),
             Self::Station(now) => now
                 .outcome()
                 .map(|o| (o.name(), o == station::Outcome::Success)),
+            Self::Chess(now) => now.outcome().map(|(result, _)| (result, true)),
         }
     }
 
-    fn look(&self) -> String {
+    /// Where things stand, as a member in `role` sees it.
+    fn look(&self, role: Option<&str>) -> String {
         match self {
             Self::Lighthouse(now) => now.look(),
             Self::Station(now) => now.look(),
+            Self::Chess(now) => now.look(role.and_then(Side::from_name)),
         }
     }
 
-    /// Time spent, in the world's own unit.
+    /// Time spent, in the world's own unit: a match's half-moves.
     fn elapsed(&self) -> u32 {
         match self {
             Self::Lighthouse(now) => now.minutes,
             Self::Station(now) => now.elapsed,
+            Self::Chess(now) => u32::try_from(now.moves().len()).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// Whose move it is, in a match.
+    fn to_move(&self) -> Option<&'static str> {
+        match self {
+            Self::Chess(now) if now.outcome().is_none() => Some(now.to_move().name()),
+            _ => None,
         }
     }
 }
@@ -281,6 +343,65 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(mission)
     }
 
+    /// The owner starts a chess match between two different members, white and black, in
+    /// `project`: the match is white's task, and black has a part of it. `seed` names the game
+    /// among a trial's (chess has no chance in it). Black's first turn finds it is white's move
+    /// and ends; each legal move wakes the other side.
+    ///
+    /// # Errors
+    /// As [`Self::start_scenario`]; [`Refusal::Scenario`] for one member on both sides.
+    pub fn start_chess(
+        &self,
+        project: ProjectId,
+        players: [MemberId; 2],
+        seed: u64,
+    ) -> Done<TaskId> {
+        let _held = self.held();
+        let _asked = self.for_owner();
+        let found = self.holds_scenarios(project)?;
+        let [white, black] = players;
+        if white == black {
+            return Err(refused("a match is two different members"));
+        }
+        for member in players {
+            self.member(member)?;
+        }
+        let task = |title: String, side: Side, to: MemberId, parent| NewTask {
+            goal: found.goal,
+            project: Some(project),
+            parent,
+            title,
+            description: chess_match::brief(side),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        };
+        let game = self.add_task_held_lock(
+            Author::Owner,
+            task(format!("Chess (game {seed})"), Side::White, white, None),
+        )?;
+        self.store
+            .set_setting(&key(game), &format!("{}:{seed}", chess_match::CHESS))?;
+        let part = self.add_task_held_lock(
+            Author::Owner,
+            task(
+                format!("Chess (game {seed}): black"),
+                Side::Black,
+                black,
+                Some(game),
+            ),
+        )?;
+        self.store.set_setting(
+            &key(part),
+            &format!("crew:{}:{}", game.0, Side::Black.name()),
+        )?;
+        self.store.set_setting(
+            &key(game),
+            &format!("{}:{seed}:{}", chess_match::CHESS, part.0),
+        )?;
+        Ok(game)
+    }
+
     /// Where a task stands in a scenario, if it is in one.
     fn place_of(&self, task: TaskId) -> Done<Option<Place>> {
         let Some(kept) = self.store.setting(&key(task))? else {
@@ -295,16 +416,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 parts: Vec::new(),
                 role: None,
             }),
-            [kind, seed, parts @ ..] if *kind == station::SILENT_STATION => {
+            [kind, seed, parts @ ..]
+                if *kind == station::SILENT_STATION || *kind == chess_match::CHESS =>
+            {
+                let kind = if *kind == chess_match::CHESS {
+                    Kind::Chess
+                } else {
+                    Kind::Station
+                };
                 seed.parse().ok().map(|seed| Place {
                     world: task,
-                    kind: Kind::Station,
+                    kind,
                     seed,
                     parts: parts
                         .iter()
                         .filter_map(|p| p.parse().ok().map(TaskId))
                         .collect(),
-                    role: Some(station::Role::Captain),
+                    role: kind.holder(),
                 })
             }
             ["crew", mission, role] => {
@@ -315,7 +443,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     return Ok(None);
                 };
                 Some(Place {
-                    role: station::Role::from_name(role),
+                    role: at.kind.role(role),
                     ..at
                 })
             }
@@ -324,11 +452,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(place)
     }
 
-    /// A mission's own place, never a part's: what a part points at.
+    /// A shared world's own place, never a part's: what a part points at.
     fn place_of_world(&self, mission: TaskId) -> Done<Option<Place>> {
         Ok(self
             .place_of(mission)?
-            .filter(|p| p.world == mission && p.kind == Kind::Station))
+            .filter(|p| p.world == mission && p.kind != Kind::Lighthouse))
     }
 
     /// A task's scenario, by its seed, if it is in one.
@@ -374,7 +502,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .ok_or(EngineError::Unknown("scenario"))?;
         match self.world_at(&place)? {
             World::Lighthouse(now) => Ok(now),
-            World::Station(_) => Err(EngineError::Unknown("scenario")),
+            World::Station(_) | World::Chess(_) => Err(EngineError::Unknown("scenario")),
         }
     }
 
@@ -389,14 +517,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .ok_or(EngineError::Unknown("scenario"))?;
         match self.world_at(&place)? {
             World::Station(now) => Ok(now),
-            World::Lighthouse(_) => Err(EngineError::Unknown("scenario")),
+            World::Lighthouse(_) | World::Chess(_) => Err(EngineError::Unknown("scenario")),
         }
     }
 
-    /// Who wears which role in a world: the mission's captain and its parts' members.
-    fn roles_in(&self, place: &Place) -> Done<HashMap<MemberId, station::Role>> {
+    /// A chess match as its log replays.
+    ///
+    /// # Errors
+    /// As [`Self::replay_scenario`], for a task in no match.
+    pub fn replay_chess(&self, task: TaskId) -> Done<Match> {
+        let place = self
+            .place_of(task)?
+            .filter(|p| p.kind == Kind::Chess)
+            .ok_or(EngineError::Unknown("scenario"))?;
+        match self.world_at(&place)? {
+            World::Chess(now) => Ok(now),
+            World::Lighthouse(_) | World::Station(_) => Err(EngineError::Unknown("scenario")),
+        }
+    }
+
+    /// Who wears which role in a world: the holder of its own task and its parts' members.
+    fn roles_in(&self, place: &Place) -> Done<HashMap<MemberId, &'static str>> {
         let mut roles = HashMap::new();
-        if place.kind != Kind::Station {
+        if place.kind == Kind::Lighthouse {
             return Ok(roles);
         }
         for task in std::iter::once(place.world).chain(place.parts.iter().copied()) {
@@ -433,12 +576,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .map(|a| {
                 json!({ "action": a.action, "ok": a.ok, "said": a.said, "run": a.run.0,
                         "member": a.member.0, "by": names.get(&a.member),
-                        "role": roles.get(&a.member).map(|r| r.name()), "at": a.at })
+                        "role": roles.get(&a.member), "at": a.at })
             })
             .collect();
         let mut shown = json!({ "task": place.world.0, "kind": place.kind.name(),
                                 "seed": place.seed, "end": now.end().map(|(name, _)| name),
-                                "elapsed": now.elapsed(), "said": now.look(), "log": log });
+                                "elapsed": now.elapsed(), "said": now.look(None),
+                                "log": log });
         let over = now.end().is_some();
         match &now {
             World::Lighthouse(lamp) => {
@@ -461,12 +605,49 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 shown["crew"] = json!(
                     roles
                         .iter()
-                        .map(|(m, r)| (r.name().to_owned(), json!(names.get(m))))
+                        .map(|(m, r)| ((*r).to_owned(), json!(names.get(m))))
+                        .collect::<serde_json::Map<_, _>>()
+                );
+            }
+            World::Chess(game) => {
+                shown["score"] = json!(game.score());
+                shown["result"] = json!(game.outcome().map(|(r, _)| r));
+                shown["reason"] = json!(game.outcome().map(|(_, why)| why));
+                shown["moves"] = json!(game.move_text());
+                shown["to_move"] = json!(now.to_move());
+                if let Some((fen, rows)) = game.board() {
+                    shown["fen"] = json!(fen);
+                    shown["rows"] = json!(rows);
+                }
+                shown["sides"] = json!(
+                    roles
+                        .iter()
+                        .map(|(m, r)| ((*r).to_owned(), json!(names.get(m))))
                         .collect::<serde_json::Map<_, _>>()
                 );
             }
         }
+        shown["by_role"] = json!(self.by_role(&place, &roles)?);
         Ok(shown)
+    }
+
+    /// Each role's actions in a world, accepted and refused, and who wore it: a match's legal
+    /// and illegal moves by side, for the owner and for comparing brains.
+    fn by_role(&self, place: &Place, roles: &HashMap<MemberId, &'static str>) -> Done<Vec<Value>> {
+        let log = self.store.scenario_actions(place.world)?;
+        let names = self.names()?;
+        let mut worn: Vec<(&'static str, MemberId)> = roles.iter().map(|(m, r)| (*r, *m)).collect();
+        worn.sort_unstable();
+        Ok(worn
+            .into_iter()
+            .map(|(role, member)| {
+                let mine = log.iter().filter(|a| a.member == member);
+                let accepted = mine.clone().filter(|a| a.ok).count();
+                let refused = mine.filter(|a| !a.ok).count();
+                json!({ "role": role, "member": member.0, "by": names.get(&member),
+                        "accepted": accepted, "refused": refused })
+            })
+            .collect())
     }
 
     /// What the record says of one scenario, for a trial: its world, how it ended, its score
@@ -486,7 +667,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let (score, unsafe_act) = match &now {
             World::Lighthouse(lamp) => (if lamp.lit { 100 } else { 0 }, false),
             World::Station(at) => (at.score(), !at.crew_safe),
+            World::Chess(game) => (game.score(), false),
         };
+        let roles = self.roles_in(&place)?;
         Ok(Facts {
             end: now.end().map(|(name, _)| name),
             done: now.end().is_some_and(|(_, done)| done),
@@ -498,6 +681,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             tasks: std::iter::once(place.world)
                 .chain(place.parts.iter().copied())
                 .collect(),
+            by_role: self.by_role(&place, &roles)?,
         })
     }
 
@@ -539,12 +723,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let place = self.place_of(task)?.ok_or_else(no_scenario)?;
         let now = self.world_at(&place)?;
         if action.trim() == "look" {
-            return Ok(now.look());
+            let seen = now.look(place.role);
+            // A side that looks on the other's move has nothing to do until it is woken.
+            if now.to_move().is_some_and(|side| Some(side) != place.role) {
+                return Ok(format!(
+                    "{seen}\nIt is not your move: this turn has ended, and you are woken when \
+                     it is."
+                ));
+            }
+            return Ok(seen);
         }
         let written = match part {
             Some(part) if action.trim() == "replace_part" => {
                 format!("replace_part {}", part.trim())
             }
+            Some(san) if action.trim() == "move" => format!("move {}", san.trim()),
             _ => action.trim().to_owned(),
         };
         let kept: String = written.chars().take(ACTION_MOST).collect();
@@ -568,12 +761,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         self.crew_told(&place, turn.member)?;
+        // A match is a move a turn: the mover's turn ends, and the other side is woken.
+        if place.kind == Kind::Chess {
+            return Ok(format!(
+                "{said} Your move is made: this turn has ended, and you are woken when it is \
+                 your move again."
+            ));
+        }
         Ok(said)
     }
 
-    /// The rest of a crew is woken on its own part, to act on what changed.
+    /// The rest of a crew, or a match's other side, is woken on its own part, to act on what
+    /// changed.
     fn crew_told(&self, place: &Place, actor: MemberId) -> Done<()> {
-        if place.kind != Kind::Station {
+        if place.kind == Kind::Lighthouse {
             return Ok(());
         }
         for task in std::iter::once(place.world).chain(place.parts.iter().copied()) {
@@ -617,7 +818,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.emit(
             EventKind::ScenarioActed,
             json!({ "task": place.world.0, "kind": place.kind.name(), "run": run.0,
-                    "member": member.0, "by": by, "role": place.role.map(station::Role::name),
+                    "member": member.0, "by": by, "role": place.role,
                     "action": action, "ok": ok, "said": said, "elapsed": after.elapsed(),
                     "end": after.end().map(|(name, _)| name) }),
         )

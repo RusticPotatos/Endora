@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::trials::{self, Arm};
-use crate::domain::{ProjectId, Refusal, TaskId, scenario, station};
+use crate::domain::{ProjectId, Refusal, TaskId, chess_match, scenario, station};
 
 fn refused(why: impl Into<String>) -> EngineError {
     EngineError::Refused(Refusal::Scenario(why.into()))
@@ -85,13 +85,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let (players, version) = match kind {
             scenario::LIGHTHOUSE => (1, scenario::VERSION),
             station::SILENT_STATION => (3, station::VERSION),
-            _ => return Err(refused("a trial's world is lighthouse or silent_station")),
+            chess_match::CHESS => (2, chess_match::VERSION),
+            _ => {
+                return Err(refused(
+                    "a trial's world is lighthouse, silent_station or chess",
+                ));
+            }
         };
         if arms.iter().any(|a| a.members.len() != players) {
-            return Err(refused(if players == 1 {
-                "a lighthouse's condition names one member"
-            } else {
-                "a mission's condition names three members: the captain, science and the engineer"
+            return Err(refused(match players {
+                1 => "a lighthouse's condition names one member",
+                2 => "a match's condition names two members: white, then black",
+                _ => {
+                    "a mission's condition names three members: the captain, science and the \
+                     engineer"
+                }
             }));
         }
         let mut runs: Vec<Value> = Vec::new();
@@ -114,6 +122,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .collect::<Done<_>>()?;
                 let task = match arm.members.as_slice() {
                     [one] => self.start_scenario(project, *one, *seed)?,
+                    [white, black] => self.start_chess(project, [*white, *black], *seed)?,
                     [captain, science, engineer] => {
                         self.start_station(project, [*captain, *science, *engineer], *seed)?
                     }
@@ -189,7 +198,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                                "accepted": one.accepted, "refused": one.refused,
                                "unsafe": one.unsafe_act, "turns": one.turns,
                                "idle_turns": one.idle_turns, "spent": one.spent,
-                               "brains": one.brains }),
+                               "brains": one.brains, "by_role": facts.by_role }),
             );
             summed.push(one);
         }
