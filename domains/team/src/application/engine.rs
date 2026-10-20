@@ -3144,6 +3144,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Games (ADR 0121): free members play a match in code, and a game of chess nobody
         // has moved in a week is adjourned. No model is asked.
         self.games_tick(now)?;
+        // Scenarios (ADR 0135): a world that has ended with its tasks open is closed.
+        self.close_ended_scenarios()?;
         // 3c. A wake held for a task with no turn live on it has nothing to wait behind (ADR
         //     0133): it is asked again, and goes once the task's budget of talk is in hand.
         self.release_held_talk()?;
@@ -3176,6 +3178,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(owner) = task.owner else {
                 continue;
             };
+            // A scenario's world wakes its players (ADR 0135): waiting for it is no stall.
+            if self.in_a_scenario(task.id)? {
+                continue;
+            }
             // Its member said when it comes back, or it waits on open work: that is its plan,
             // not a stall (live, #667 was woken every ten seconds while its check-back waited).
             let Some(found) = self.diagnosis(task.id)? else {
@@ -4161,6 +4167,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 TaskStatus::Todo | TaskStatus::Blocked | TaskStatus::InReview
             ) || live.contains(&Some(task.id))
                 || !self.store.held_wakes(task.id)?.is_empty()
+                || self.in_a_scenario(task.id)?
             {
                 continue;
             }

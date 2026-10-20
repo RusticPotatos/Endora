@@ -469,10 +469,50 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Which world a turn's work is in, by name, if any: the scenario tool it is offered.
     pub(crate) fn scenario_kind_of_run(&self, run: RunId) -> Done<Option<&'static str>> {
-        let Some(task) = self.store.run(run)?.and_then(|r| r.task) else {
+        let Some(found) = self.store.run(run)? else {
             return Ok(None);
         };
+        let Some(task) = found.task else {
+            return Ok(None);
+        };
+        // Offered only to the member who plays that task: anyone else woken on it is not.
+        if self.player_of(task)? != Some(found.member) {
+            return Ok(None);
+        }
         Ok(self.place_of(task)?.map(|p| p.kind.name()))
+    }
+
+    /// The member who plays a scenario's task: its assignee, or its owner.
+    fn player_of(&self, task: TaskId) -> Done<Option<MemberId>> {
+        Ok(self.store.task(task)?.and_then(|t| t.assignee.or(t.owner)))
+    }
+
+    /// Whether a task is in a scenario: its world wakes its players, so the stuck-work guards
+    /// and the ladder leave it alone.
+    pub(super) fn in_a_scenario(&self, task: TaskId) -> Done<bool> {
+        Ok(self.store.setting(&key(task))?.is_some())
+    }
+
+    /// The worlds that have ended with their tasks still open (an end a rule added after their
+    /// last action gives them) are closed, each once: by the tick.
+    pub(super) fn close_ended_scenarios(&self) -> Done<()> {
+        for listed in self.scenarios_listed(usize::MAX)? {
+            if listed["end"].is_null()
+                || listed["status"] == "done"
+                || listed["status"] == "dropped"
+            {
+                continue;
+            }
+            let task = TaskId(listed["task"].as_i64().unwrap_or_default());
+            let Some(place) = self.place_of(task)? else {
+                continue;
+            };
+            let now = self.world_at(&place)?;
+            if let Some((name, done)) = now.end() {
+                self.scenario_ended(&place, name, done, &now.look(None))?;
+            }
+        }
+        Ok(())
     }
 
     /// The accepted actions of a world's log, in order.
@@ -760,6 +800,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let no_scenario = || refused("this turn's task is no scenario: there is nothing to act in");
         let task = turn.task.ok_or_else(no_scenario)?;
         let place = self.place_of(task)?.ok_or_else(no_scenario)?;
+        // A role is its task's member's: anyone else woken on the task does not play it.
+        if let Some(player) = self.player_of(task)?.filter(|p| *p != turn.member) {
+            return Err(refused(format!(
+                "this task is {}'s to play in the world, not yours",
+                self.member(player)?.name
+            )));
+        }
         let now = self.world_at(&place)?;
         if action.trim() == "look" {
             let seen = now.look(place.role);

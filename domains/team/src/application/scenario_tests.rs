@@ -14,7 +14,7 @@ use crate::domain::closure::{Closure, DoneWhy, DropWhy};
 use crate::domain::scenario::{Action, Cause, Lighthouse, Part};
 use crate::domain::station::{Action as StationAction, Anomaly, Station};
 use crate::domain::trials::Arm;
-use crate::domain::{MemberId, ProjectId, Refusal, Role, TaskId, TaskStatus};
+use crate::domain::{MemberId, ProjectId, Refusal, Role, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -905,4 +905,174 @@ fn the_screen_lists_the_scenarios_and_the_trials() {
         shown["trials"],
         json!([{ "name": "pair", "kind": "lighthouse", "runs": 2 }])
     );
+}
+
+// Live, the project's lead was woken on the crew's parts by the stuck-work ladder and acted in
+// their roles: a role is its task's member's, and nobody else's, whoever is woken on it.
+#[test]
+fn only_a_tasks_own_member_acts_in_its_role() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([captain, science, engineer], project) = crew(&hq);
+    let ada = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.name == "Ada")
+        .unwrap()
+        .id;
+    let mission = hq
+        .start_station(
+            project,
+            [captain, science, engineer],
+            station_seed(Anomaly::IonStorm),
+        )
+        .unwrap();
+    let part = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.parent == Some(mission))
+        .unwrap();
+    // The crew's first turns end, so a wake on a part is not held behind its own member's.
+    for c in turns(&hq, &[captain, science, engineer]) {
+        hq.runner().finish(c.run, true);
+    }
+    hq.tick().unwrap();
+    hq.wake(ada, Some(part.id), WakeReason::Mentioned).unwrap();
+    let [lead] = <[RunContext; 1]>::try_from(turns(&hq, &[ada]))
+        .ok()
+        .unwrap();
+    let (run, member) = hq.turn_of(&lead.token).unwrap().unwrap();
+    assert_eq!(run.task, Some(part.id));
+    assert!(
+        !tools_in(&hq, &run, &member)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "scenario"),
+        "not offered to her"
+    );
+    let refused = act(&hq, &lead, "scan_station").unwrap_err();
+    assert!(refused.contains("Zed's"), "{refused}");
+    assert!(
+        hq.store().scenario_actions(mission).unwrap().is_empty(),
+        "nothing kept as an act"
+    );
+}
+
+// A scenario's parts wait for their world to wake them, by design: the stuck-work guards and
+// the ladder leave them alone (live, the parts were blocked and the lead woken to decide).
+#[test]
+fn the_stuck_work_guards_leave_a_scenario_alone() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([captain, science, engineer], project) = crew(&hq);
+    let mission = hq
+        .start_station(
+            project,
+            [captain, science, engineer],
+            station_seed(Anomaly::IonStorm),
+        )
+        .unwrap();
+    let contexts = turns(&hq, &[captain, science, engineer]);
+    for (context, task) in contexts.iter().zip(
+        hq.store()
+            .tasks()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.id == mission || t.parent == Some(mission)),
+    ) {
+        use_tool(&hq, context, "claim", &json!({ "task": task.id.0 })).unwrap();
+    }
+    for c in &contexts {
+        hq.runner().finish(c.run, true);
+    }
+    let decided_before = hq
+        .store()
+        .wakes()
+        .unwrap()
+        .iter()
+        .filter(|w| w.reason == WakeReason::Decide)
+        .count();
+    for _ in 0..40 {
+        clock.0.fetch_add(15 * 60 * 1000, Ordering::SeqCst);
+        hq.tick().unwrap();
+        for started in hq.runner().started() {
+            hq.runner().finish(started.run, true);
+        }
+    }
+    let statuses: Vec<TaskStatus> = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.id == mission || t.parent == Some(mission))
+        .map(|t| t.status)
+        .collect();
+    assert!(!statuses.contains(&TaskStatus::Blocked), "{statuses:?}");
+    let decided = hq
+        .store()
+        .wakes()
+        .unwrap()
+        .iter()
+        .filter(|w| w.reason == WakeReason::Decide)
+        .count();
+    assert_eq!(decided, decided_before, "no lead woken to decide it");
+}
+
+// A world that has ended with its tasks still open (as live, when its end came from a rule
+// added after its last action) is closed by the tick.
+#[test]
+fn the_tick_closes_a_world_that_has_ended() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([captain, science, engineer], project) = crew(&hq);
+    let mission = hq
+        .start_station(
+            project,
+            [captain, science, engineer],
+            station_seed(Anomaly::IonStorm),
+        )
+        .unwrap();
+    let [c] = <[RunContext; 1]>::try_from(turns(&hq, &[captain]))
+        .ok()
+        .unwrap();
+    for action in [
+        "scan_station",
+        "analyze_anomaly",
+        "inspect_comms",
+        "route_power",
+        "send_probe",
+    ] {
+        hq.store()
+            .add_scenario_action(&super::ports::ScenarioAction {
+                id: 0,
+                task: mission,
+                run: c.run,
+                member: captain,
+                action: action.to_owned(),
+                ok: true,
+                said: String::new(),
+                at: OCT_17,
+            })
+            .unwrap();
+    }
+    hq.tick().unwrap();
+    for task in hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.id == mission || t.parent == Some(mission))
+    {
+        assert_eq!(
+            task.status,
+            TaskStatus::Dropped,
+            "partial is not the work done"
+        );
+    }
+    assert_eq!(hq.scenario_shown(mission).unwrap()["end"], "partial");
 }
