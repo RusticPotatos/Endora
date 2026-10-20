@@ -14,7 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 axum = "0.8.9"
-endora-infrastructure = { path = "../../crates/endora-infrastructure" }
+# The owner's time zone (src/time_zone.rs), as the node reads it.
+chrono = { version = "0.4", default-features = false }
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 endora-team = { path = "../../domains/team" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.150"

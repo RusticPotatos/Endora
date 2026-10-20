@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Eighty-five records stand, all accepted but three still proposed (marked in the *Consolidates*
+Eighty-six records stand, all accepted but three still proposed (marked in the *Consolidates*
 column below), and forty-nine earlier ones are archived into them (the same column). A handful of
 ideas sit underneath all of them. Read this before reading any individual record; each line is a
 rule the code actually follows, with the decision that established it.
@@ -314,6 +314,7 @@ of an existing record and take the next number.
 | [0133](0133-caps-on-talk-and-runaway.md) | Caps on talk and runaway | — |
 | [0134](0134-a-drain-before-every-restart.md) | A drain before every restart | - |
 | [0135](0135-scenarios-worlds-the-team-acts-in.md) | Scenarios: worlds the team acts in, which only the world closes | - |
+| [0136](0136-endora-is-hq.md) | Endora is HQ | - |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
