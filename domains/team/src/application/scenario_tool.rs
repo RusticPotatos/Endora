@@ -1,0 +1,34 @@
+//! The `scenario` team tool (the Holodeck plan's phase 5): look at the scenario a turn's task
+//! is, or act in it. The world's rules are in [`crate::domain::scenario`] and the engine's side
+//! is in `engine/scenario.rs`; this is only the tool's schema and how its actions are read.
+
+use serde_json::{Value, json};
+
+use super::engine::Engine;
+use super::ports::{Clock, Run, TeamStore, WorkerAdapter};
+
+/// The tool, offered only in a turn whose task is a scenario.
+pub(super) fn tool() -> Value {
+    json!({
+        "name": "scenario",
+        "description": "Act in the scenario your task is. look: where things stand (free). inspect: open the lamp's housing and look at the bulb (5 minutes). test_circuit: whether current reaches the lamp (10 minutes, housing open). replace_part: fit a new part, bulb or fuse (15 minutes, housing open, each part once). A refused action costs nothing. The world says when it is solved or failed, and closes your task itself.",
+        "inputSchema": { "type": "object", "properties": {
+            "action": { "type": "string", "enum": ["look", "inspect", "test_circuit", "replace_part"] },
+            "part": { "type": "string", "enum": ["bulb", "fuse"], "description": "for replace_part: the part to fit" },
+        }, "required": ["action"] },
+    })
+}
+
+/// Runs one action of the tool for a turn.
+pub(super) fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    let action = args["action"]
+        .as_str()
+        .ok_or("`action` is look, inspect, test_circuit or replace_part")?;
+    engine
+        .scenario_in(run.id, action, args["part"].as_str())
+        .map_err(|e| e.to_string())
+}

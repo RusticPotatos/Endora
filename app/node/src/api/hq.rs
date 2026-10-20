@@ -603,6 +603,28 @@ pub(super) async fn hq_project_cap(
     Ok(answer)
 }
 
+/// The owner starts a scenario (the Holodeck plan's phase 5): `{project, member, seed}`, the
+/// seed optional.
+pub(super) async fn hq_start_scenario(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Answer {
+    let answer = ask(&state, "/v1/scenarios".to_owned(), Some(req.clone())).await?;
+    record(
+        &state,
+        &format!(
+            "you started a scenario for member {} in project {} (seed {}): task {}",
+            req["member"], req["project"], answer.0["seed"], answer.0["task"]
+        ),
+    );
+    Ok(answer)
+}
+
+/// A scenario as the owner's screen shows it: where it stands and its log, step by step.
+pub(super) async fn hq_scenario(State(state): State<AppState>, Path(task): Path<i64>) -> Answer {
+    ask(&state, format!("/v1/scenarios/{task}"), None).await
+}
+
 #[derive(Deserialize)]
 pub(super) struct HqProjectTools {
     #[serde(default)]
@@ -1378,6 +1400,47 @@ mod tests {
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_owner_starts_and_reads_a_scenario_through_the_node() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            let body = if path == "/v1/scenarios" {
+                json!({ "task": 41, "seed": 7 })
+            } else {
+                json!({ "task": 41, "end": "solved", "log": [] })
+            };
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let started = hq_start_scenario(
+            State(state.clone()),
+            Json(json!({ "project": 3, "member": 5, "seed": 7 })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(started.0["task"], 41);
+        let shown = hq_scenario(State(state.clone()), Path(41)).await.unwrap();
+        assert_eq!(shown.0["end"], "solved");
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/scenarios", "/v1/scenarios/41"]);
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a
+                    == "HQ: you started a scenario for member 5 in project 3 (seed 7): task 41"),
+            "{audit:?}"
+        );
     }
 
     #[tokio::test]

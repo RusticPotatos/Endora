@@ -65,6 +65,7 @@ mod replay;
 mod retract;
 mod runaway;
 mod runtime;
+mod scenario;
 mod staffing;
 mod wing;
 mod world;
