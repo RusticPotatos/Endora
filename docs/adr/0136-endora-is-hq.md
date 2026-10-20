@@ -2,9 +2,12 @@
 
 ## Status
 
-Proposed, 2026-10-20. Prepared with AI assistance (Claude). Waits for the owner's yes; the
-questions it leaves to them are at the end of [the proposal](../proposals/hq-first.md). Nothing
-it removes has been removed.
+Accepted, 2026-10-20, by the owner, answering the four questions at the end of
+[the proposal](../proposals/hq-first.md): retire the chat and its data; delete the brain's pages
+after the export; retire the Mail screen and its reader as they are, with mail to come back later
+(below); and, left unanswered, the recommendation that nothing pushes to the phone for now. The
+owner also asked to keep sound and Spotify. Prepared with AI assistance (Claude). Built in the
+proposal's order; nothing is removed until the owner has taken a copy (step 4).
 
 When accepted it supersedes the chat parts of earlier records, each of which will carry a dated
 note: the turn and its context ([0056](0056-how-it-behaves-toward-you.md),
@@ -18,8 +21,8 @@ note: the turn and its context ([0056](0056-how-it-behaves-toward-you.md),
 ([0071](0071-capabilities-it-writes-itself.md)); the agenda loop
 ([0103](0103-the-agenda-loop.md)); the chat's parts of the model lists
 ([0105](0105-models-in-ordered-lists-by-data-tier.md): the composer's lock, the Deep list and
-Ask deep); and, if the owner agrees, the brain ([0101](0101-the-brain.md)) and the mail reader
-([0097](0097-it-reads-the-mail.md)).
+Ask deep); the brain ([0101](0101-the-brain.md)); and the mail reader and its screen
+([0097](0097-it-reads-the-mail.md)), whose rules are kept (decision 7).
 
 ## Context
 
@@ -53,18 +56,35 @@ own ledger.
 3. **Kept as shared infrastructure**: sign-in, the vault, Activity and the audit log, the AI
    providers and the Everyday list, skills with their stances and settings (shown as the tools
    the team may use), tool servers, Connections, the home lab, and the house's own screens
-   (music, speakers, smart home, media), which never depended on the chat.
+   (music and Spotify, speakers and the sound hub, smart home, media), which never depended on
+   the chat.
 4. **Settings holds six sections**: AI, Connections, Tools, Your sign-in, Vault, Your data.
 5. **The work goes in order**: prepare without visible change, then hide (reversible), then the
    handheld, then a copy the owner takes, then removal, then the documents. A step deploys and
    is looked at before the next starts.
 6. **Your data stops deleting what the team needs.** Delete everything no longer wipes the model
    lists or the skills' settings.
+7. **Mail: the reader goes, its rules stay.** The owner wants mail back later, read by the
+   house's local models, for alerts. Endora never held mail credentials or spoke IMAP: it reads a
+   read-only Maildir copy that the lab's `mail_mirror` role keeps, mounted at `/mail`. What took
+   work in 0097 is the rules over adversarial input: parsing MIME, the cautions about senders and
+   links, the buckets, what counts as a bill or a date, and a sentence that carries no link.
+   Those live in `domains/mail`, which depends on nothing of the butler's (the kernel and
+   persistence only) and is tested on its own. It stays as a library. What goes is everything
+   that made it the butler's: the reader loop in the node, its use case in `endora-application`,
+   `/v1/mail`, the Mail screen, the `/mail` mount, and the digest's tables (a digest of the
+   owner's mail that nothing reads is dropped, as 0100 requires; it can be rebuilt from the
+   copy). Mail comes back as an HQ contract that reads the copy locally and raises alerts on the
+   desk, designed then, on these rules. Whether the lab keeps making the copy meanwhile is the
+   owner's.
+8. **Nothing pushes to the phone for now.** The brief and the agenda loop were the only things
+   that did. A ping when the desk needs a decision is new work, proposed on its own.
 
 ## Consequences
 
 - Endora does nothing unasked outside HQ and the home lab's own pages: no brief, no pushes to
-  the phone. A ping when the desk needs a decision would be new work.
+  the phone, no mail alerts. Two known future needs: mail alerts read locally (decision 7) and a
+  ping when the desk needs a decision (decision 8).
 - Roughly 25,000 lines and their tests go; `endora-application` shrinks to what the node still
   composes, and HQ no longer builds against the butler's contexts.
 - What the chat knew is gone after the copy. The export loses its chat fields: a breaking change,

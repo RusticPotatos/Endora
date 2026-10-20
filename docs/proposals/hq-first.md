@@ -1,8 +1,8 @@
 # Proposal: Endora becomes HQ
 
-Written 2026-10-20 for the owner's decision. Prepared with AI assistance (Claude). Nothing in
-here has been removed yet; the decision record is [ADR 0136](../adr/0136-endora-is-hq.md)
-(proposed). The owner's words: the chat "is just kinda bad", and Endora should be
+Written 2026-10-20 for the owner's decision. Prepared with AI assistance (Claude). The owner
+said yes the same day; their answers to the four questions, and what follows for mail, are in
+[ADR 0136](../adr/0136-endora-is-hq.md), which this proposal now only explains. The owner's words: the chat "is just kinda bad", and Endora should be
 "primarily just the HQ and not the butler chat".
 
 ## What is there today, and where each piece goes
