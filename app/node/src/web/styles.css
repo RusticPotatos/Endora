@@ -153,74 +153,17 @@
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-word; }
   /* overflow-wrap: a token longer than the bubble (a URL, an entity id) breaks
      inside it instead of punching the whole page wide open. */
-  .bubble { max-width: 100%; line-height: 1.65; font-size: 16px; overflow-wrap: anywhere; }
-  .bubble a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-  .bubble code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .86em; background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 5px; border-radius: 5px; }
   /* Yours: a soft pill on the right, as in the apps this is modelled on. */
-  .bubble.me { max-width: 82%; white-space: pre-wrap; padding: 9px 15px; border-radius: 20px; background: color-mix(in srgb, var(--ink) 7%, var(--card)); color: var(--ink); }
   /* Endora's: no box. The text sits on the page, the full width of the column. */
-  .bubble.butler { padding: 2px 0; background: transparent; border: none; }
-  .bubble.butler > :first-child { margin-top: 0; }
-  .bubble.butler > :last-child { margin-bottom: 0; }
-  .bubble p { margin: 0 0 .8em; }
-  .bubble p.h { font-weight: 650; margin: 1.1em 0 .4em; }
-  .bubble ul, .bubble ol { margin: 0 0 .8em; padding-left: 1.5em; }
-  .bubble li { margin: .25em 0; padding-left: .15em; }
-  .bubble li::marker { color: var(--muted); }
-  .bubble blockquote { margin: 0 0 .8em; padding: 2px 0 2px 14px; border-left: 3px solid var(--line); color: var(--muted); }
-  .bubble hr { border: none; border-top: 1px solid var(--line); margin: 1em 0; }
-  .bubble pre.code { margin: 0 0 .9em; padding: 12px 14px; background: color-mix(in srgb, var(--ink) 6%, var(--card)); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; font-size: 13.5px; line-height: 1.5; }
-  .bubble pre.code code { background: none; padding: 0; font-size: inherit; white-space: pre; }
-  .msg-row { align-items: flex-start; justify-content: flex-start; margin: 14px 0; }
-  .msg-row.mine { justify-content: flex-end; }
-  .msg-row.aux { margin: 6px 0 -4px; }
   /* "thinking…" indicator while the butler composes a reply */
-  .bubble.thinking { padding: 12px 14px; }
-  .dots { display: inline-flex; gap: 4px; align-items: center; }
-  .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); display: inline-block; animation: blink 1.2s infinite ease-in-out both; }
-  .dots i:nth-child(2) { animation-delay: .2s; }
-  .dots i:nth-child(3) { animation-delay: .4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 
   /* Chat: the window is the app. The thread scrolls in its own pane and the composer is
      docked beneath it, so nothing slides under the box and the page never moves. */
-  body.on-chat { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
-  body.on-chat header { position: static; flex: none; }
-  body.on-chat main { flex: 1; min-height: 0; max-width: none; padding: 0; display: flex; flex-direction: column; margin: 0; width: 100%; }
-  body.on-chat #app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%; }
-  .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 16px 8px; }
-  .chat-col { max-width: 720px; margin: 0 auto; width: 100%; }
-  .chat-thread { display: flex; flex-direction: column; margin-bottom: 12px; }
-  .chat-thread .row { flex-wrap: nowrap; }
-  .composer-dock { flex: none; padding: 6px 16px 14px; }
-  .composer {
-    border: 1px solid var(--line); border-radius: 24px; background: var(--card);
-    box-shadow: var(--shadow); padding: 10px 12px 8px 16px;
-    transition: border-color .15s, box-shadow .15s;
-  }
-  .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); box-shadow: 0 0 0 3px var(--accent-weak), var(--shadow); }
-  .composer textarea {
-    border: none; background: transparent; box-shadow: none; resize: none; width: 100%;
-    min-height: 26px; padding: 4px 0; max-height: 40vh; overflow-y: auto; outline: none;
-    font-size: 16px; line-height: 1.5;
-  }
-  .composer-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .composer-chips:not(:empty) { margin-bottom: 6px; }
-  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px 3px 9px; font-size: 12.5px; border-radius: 999px; background: var(--accent-weak); color: var(--accent); border: 1px solid transparent; }
-  .chip:hover { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-weak); }
-  .composer-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
   .tools { position: relative; }
   .icon-btn { width: 34px; height: 34px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: transparent; border-color: transparent; color: var(--muted); }
   .icon-btn:hover { background: var(--accent-weak); color: var(--ink); border-color: transparent; }
-  .send-round { width: 34px; height: 34px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex: none; background: var(--ink); border-color: var(--ink); color: var(--card); box-shadow: none; }
-  .send-round:hover { background: color-mix(in srgb, var(--ink) 82%, var(--card)); border-color: transparent; }
-  .tools-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; min-width: 230px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow-lift); padding: 6px; display: flex; flex-direction: column; gap: 1px; }
-  .tools-menu[hidden] { display: none; }
-  .tools-menu button { width: 100%; justify-content: flex-start; gap: 10px; border: none; background: transparent; border-radius: 9px; color: var(--ink); font-weight: 500; padding: 9px 11px; }
-  .tools-menu button:hover { background: var(--accent-weak); }
-  .tools-menu button > span { flex: 1; text-align: left; }
-  .tools-menu button.on { color: var(--accent); }
   /* "what Endora did" note under the latest reply */
   .activity { font-size: 12px; color: var(--muted); font-style: italic; margin: 2px 4px 10px; display: flex; align-items: center; gap: 6px; opacity: .85; }
   .activity .ic { color: var(--accent); opacity: .8; }
@@ -232,15 +175,6 @@
   details.steps > summary::-webkit-details-marker { display: none; }
   details.steps > summary::after { content: "›"; font-size: 15px; line-height: 1; opacity: .6; transition: transform .15s; }
   details.steps[open] > summary::after { transform: rotate(90deg); }
-  .step-list { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 6px 6px; padding: 2px 0 2px 12px; border-left: 2px solid var(--line); }
-  .step-row { display: flex; align-items: center; gap: 7px; }
-  .step-row .sdone { color: #22a06b; } .step-row .sfail { color: #d9534f; } .step-row .sblock { color: var(--muted); opacity: .8; }
-  details.step-item > summary { cursor: pointer; list-style: none; }
-  details.step-item > summary::-webkit-details-marker { display: none; }
-  details.step-item > summary .step-more { margin-left: auto; font-size: 11px; color: var(--accent); opacity: .8; }
-  details.step-item[open] > summary .step-more::after { content: " ▾"; }
-  .step-out.thought { font-family: inherit; font-size: 13.5px; line-height: 1.55; background: none; padding: 0; margin: 4px 0 6px 18px; border-radius: 0; max-height: none; color: var(--muted); }
-  .step-out { margin: 4px 0 6px 18px; padding: 8px 10px; background: rgba(127,127,127,.10); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; overflow-x: auto; max-height: 240px; overflow-y: auto; color: var(--fg); }
   /* Model configuration cards (Everyday + Deep) — one consistent layout each. */
   .model-card { display: flex; flex-direction: column; gap: 12px; }
   .model-role { font-weight: 650; font-size: 15px; }
@@ -274,14 +208,8 @@
   .nav-list > button:hover { background: rgba(127,127,127,.06); }
   /* Sources: the real links a turn's skills returned, shown under the reply. */
   .sources { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 82%; font-size: 12px; }
-  .sources .src-label { color: var(--muted); font-weight: 600; margin-right: 2px; }
-  .sources a.src-link { color: var(--accent); text-decoration: none; background: rgba(127,127,127,.10); border: 1px solid rgba(127,127,127,.16); border-radius: 999px; padding: 2px 9px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sources a.src-link:hover { text-decoration: underline; }
-  .sspin { width: 11px; height: 11px; border: 2px solid rgba(127,127,127,.35); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: sspin .7s linear infinite; }
   @keyframes sspin { to { transform: rotate(360deg); } }
   /* push-to-talk: a prominent hold-to-talk control that pulses while held */
-  button.ptt { padding: 8px 14px; font-weight: 600; border-radius: 999px; touch-action: none; user-select: none; -webkit-user-select: none; }
-  button.recording { background: var(--accent); color: #fff; border-color: var(--accent); animation: ptt-pulse 1s ease-in-out infinite; transform: scale(1.04); }
   @keyframes ptt-pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
 
   /* Phone browsers: tighten the frame and stack forms so inputs are never
@@ -299,41 +227,11 @@
   }
 
   /* What is sent to the model: a ring that fills with the window, and the inspector it opens. */
-  .composer-right { display: flex; align-items: center; gap: 6px; }
-  .ctx-ring { width: 34px; height: 34px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: transparent; border-color: transparent; color: var(--muted); }
-  .ctx-ring:hover { background: var(--accent-weak); border-color: transparent; }
-  .ctx-ring .ring-ok { stroke: var(--accent); } .ctx-ring .ring-warn { stroke: var(--warn); } .ctx-ring .ring-bad { stroke: var(--bad); }
-  .ctx-panel { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); max-height: 46vh; overflow-y: auto; font-size: 13.5px; }
-  .ctx-panel[hidden] { display: none; }
-  .ctx-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
-  .ctx-bar { display: flex; height: 8px; border-radius: 99px; overflow: hidden; background: color-mix(in srgb, var(--ink) 8%, transparent); margin-bottom: 8px; }
   .seg { display: block; height: 100%; }
   .c0 { background: #6c8cff; } .c1 { background: #5cc8a8; } .c2 { background: #f0b45a; } .c3 { background: #e57f9c; }
   .c4 { background: #a58cf0; } .c5 { background: #5ab4e0; } .c6 { background: #9bc45a; } .c7 { background: #c8a07a; }
-  .ctx-row > summary { display: flex; align-items: center; gap: 8px; padding: 5px 0; cursor: pointer; list-style: none; }
-  .ctx-row > summary::-webkit-details-marker { display: none; }
-  .ctx-row .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-  .ctx-row .lbl { flex: 1; min-width: 0; }
-  .ctx-row .n { color: var(--muted); font-variant-numeric: tabular-nums; }
-  .deep-tag { font-weight: 500; font-size: 11px; color: var(--accent); background: var(--accent-weak); padding: 1px 6px; border-radius: 99px; margin-left: 4px; }
-  .ctx-body { margin: 0 0 6px 17px; color: var(--muted); }
-  .ctx-body p { margin: 0 0 4px; }
-  .ctx-body ul { list-style: none; margin: 0; padding: 0; }
-  .ctx-body li { display: flex; gap: 10px; justify-content: space-between; padding: 2px 0; border-top: 1px dashed var(--line); }
-  .ctx-body li span { min-width: 0; overflow-wrap: anywhere; }
-  .ctx-body li em { font-style: normal; flex: none; font-variant-numeric: tabular-nums; }
-  .ctx-foot { margin: 8px 0 4px; }
-  .ctx-actions { display: flex; justify-content: flex-end; }
-  .topic-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 6px; color: var(--muted); font-size: 12px; }
-  .topic-divider::before, .topic-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 
   /* What the deep model costs: the provider's balance, then what Endora's calls have used. */
-  .ctx-spend { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 13px; }
-  .ctx-spend:empty { display: none; }
-  .spend-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 2px 0; }
-  .spend-row span { color: var(--muted); min-width: 5.5em; }
-  .spend-row em { font-style: normal; color: var(--muted); font-size: 12px; }
-  .spend-row.warn b, .spend-row.warn { color: var(--warn); }
 
   /* ---- Endora HQ: the office, its own bright world (ADR 0102) ---------------------------- */
   .hq {
@@ -547,31 +445,11 @@
   }
 
   /* ---- The agenda (ADR 0103): the Now line and what is pinned above the chat ------------- */
-  .chat-top { flex: none; padding: 6px 16px 0; overflow: hidden; }
-  .now-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .now-line {
-    display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; text-align: left;
-    background: none; border: 0; box-shadow: none; padding: 4px 2px; cursor: pointer;
-    font-size: 13px; color: var(--muted);
-  }
   /* Two lines on a narrow screen rather than one ellipsised: "Watching N things · checked X". */
-  .now-text { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; min-width: 0; }
-  .now-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none;
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
-  .now-pill {
-    flex: none; font-size: 12.5px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
-    background: color-mix(in srgb, var(--warn) 12%, var(--card)); color: var(--ink); box-shadow: none;
-  }
   .card.pinned { margin: 6px 0; border-left: 3px solid var(--warn); }
   .card.pinned.urgent { border-left-color: var(--bad); }
   .card.pinned.quiet { border-left-color: var(--line); }
   .card.pinned.compact { padding: 8px 12px; margin: 4px 0 6px; }
-  .pinned-meta { font-size: 12px; color: var(--muted); }
-  .pinned-text { font-size: 15px; line-height: 1.35; margin: 2px 0; }
-  .compact .pinned-text { font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .pinned-acts { gap: 4px; justify-content: flex-end; margin-top: 4px; flex-wrap: wrap; }
-  .pinned-acts .small { padding: 3px 10px; font-size: 13px; min-height: 0; }
 
   /* ---- Models in ordered lists (ADR 0105) -------------------------------------------- */
   .mlist { list-style: none; margin: 4px 0 8px; padding: 0; display: grid; gap: 6px; }
@@ -584,7 +462,6 @@
   .mlist-acts .small, .mlist-add .small { padding: 3px 10px; font-size: 13px; min-height: 0; }
   .mlist-add { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
   .mlist-add select, .mlist-add input { flex: 1 1 9em; min-width: 0; }
-  .private-lock { display: inline-flex; vertical-align: -1px; margin-right: 5px; opacity: .7; }
 
   /* A level (endora-sound): the console's own slider. The fill ends at the knob's centre, which
      travels from half a knob in from one end to half a knob in from the other, so 0 and 100 sit

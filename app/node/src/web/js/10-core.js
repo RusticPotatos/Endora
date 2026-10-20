@@ -2,97 +2,6 @@
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// Butler prose, rendered as the markdown the models actually write. Escaped FIRST —
-// everything below works on already-escaped text, so nothing a headline or a tool result
-// carries can become markup — and only then dressed:
-//   blocks:  paragraphs, "- " / "* " / "1." lists, # headings, > quotes, --- rules and
-//            ``` fenced code (kept verbatim, never dressed inside);
-//   inline:  [label](url) and bare links (shown as their site's name — a 200-character
-//            news URL used to punch every bubble wide open), **bold**, *italic*, `code`.
-// A fence still open at the end of the text is closed for display, so a reply that is
-// halfway through a code block while streaming reads as code, not as stray backticks.
-function inlineRich(text) {
-  const spans = [];
-  // Code spans first, held aside so nothing inside them is dressed.
-  let s = text.replace(/`([^`\n]+)`/g, (_m, code) => {
-    spans.push(`<code>${code}</code>`);
-    return `\u0001${spans.length - 1}\u0001`;
-  });
-  // [label](url) first, so its url is not also linkified as a bare one below.
-  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
-  // Bare links, shown as their host so the words break, not the bubble. The guard
-  // group skips urls already sitting inside an href="..." from the pass above (a
-  // raw quote cannot appear in escaped text, so the only `"` here is ours).
-  s = s.replace(/(^|[^"'>])(https?:\/\/[^\s<)]+)/g, (_m, before, url) => {
-    const trimmed = url.replace(/[.,;:!?]+$/, "");
-    const tail = url.slice(trimmed.length);
-    let shown = trimmed;
-    try { shown = new URL(trimmed).hostname.replace(/^www\./, ""); } catch (_) { /* shown stays the url */ }
-    return `${before}<a href="${trimmed}" target="_blank" rel="noopener noreferrer">${shown}</a>${tail}`;
-  });
-  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  // One asterisk, hugging its words: "2 * 3 * 4" is arithmetic, not emphasis.
-  s = s.replace(/(^|[^*\w])\*([^*\s][^*\n]*?)\*(?![*\w])/g, "$1<i>$2</i>");
-  return s.replace(/\u0001(\d+)\u0001/g, (_m, i) => spans[Number(i)]);
-}
-function rich(text) {
-  const fences = [];
-  const held = esc(text).replace(/\r\n/g, "\n")
-    .replace(/```[^\n`]*\n([\s\S]*?)(?:```|$)/g, (_m, code) => {
-      fences.push(code.replace(/\n$/, ""));
-      return `\n\u0000${fences.length - 1}\u0000\n`;
-    });
-  const out = [];
-  let para = [];
-  let list = null; // { tag, items: [html] }
-  const flushPara = () => {
-    if (para.length) out.push(`<p>${para.map(inlineRich).join("<br>")}</p>`);
-    para = [];
-  };
-  const flushList = () => {
-    if (list) out.push(`<${list.tag}${list.start > 1 ? ` start="${list.start}"` : ""}>${list.items.map((i) => `<li>${i}</li>`).join("")}</${list.tag}>`);
-    list = null;
-  };
-  const flush = () => { flushPara(); flushList(); };
-  for (const line of held.split("\n")) {
-    let m;
-    if ((m = /^\u0000(\d+)\u0000$/.exec(line))) {
-      flush();
-      out.push(`<pre class="code"><code>${fences[Number(m[1])]}</code></pre>`);
-    } else if (/^\s*$/.test(line)) {
-      flush();
-    } else if ((m = /^#{1,6}\s+(.+)$/.exec(line))) {
-      flush();
-      out.push(`<p class="h">${inlineRich(m[1])}</p>`);
-    } else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
-      flush();
-      out.push("<hr>");
-    } else if ((m = /^\s*[-*•]\s+(.+)$/.exec(line))) {
-      flushPara();
-      if (!list || list.tag !== "ul") { flushList(); list = { tag: "ul", start: 1, items: [] }; }
-      list.items.push(inlineRich(m[1]));
-    } else if ((m = /^\s*(\d+)[.)]\s+(.+)$/.exec(line))) {
-      flushPara();
-      if (!list || list.tag !== "ol") { flushList(); list = { tag: "ol", start: Number(m[1]), items: [] }; }
-      list.items.push(inlineRich(m[2]));
-    } else if ((m = /^&gt;\s?(.*)$/.exec(line))) {
-      flush();
-      const last = out[out.length - 1];
-      const html = inlineRich(m[1]);
-      if (last && last.startsWith("<blockquote>")) out[out.length - 1] = last.replace(/<\/blockquote>$/, `<br>${html}</blockquote>`);
-      else out.push(`<blockquote>${html}</blockquote>`);
-    } else if (list && /^\s+\S/.test(line)) {
-      // An indented line under a list item belongs to that item.
-      list.items[list.items.length - 1] += `<br>${inlineRich(line.trim())}`;
-    } else {
-      flushList();
-      para.push(line);
-    }
-  }
-  flush();
-  return out.join("");
-}
 const byId = (list, id) => (list || []).find((x) => x.id === id);
 const shortId = (id) => id.slice(0, 6) + "…";
 
@@ -114,7 +23,7 @@ function token() {
 // Every request to this node goes through here, so signing is not something a call site can
 // forget.
 //
-// It was: `/v1/chat/stream` was fetched directly with only a content-type, so the moment the
+// It was: the chat's stream was fetched directly with only a content-type, so the moment the
 // node started requiring a credential, **every message failed to send**. Nothing caught it —
 // the console harness renders screens and makes no requests, and the Rust tests exercise the
 // router rather than the browser. It took a screenshot.
@@ -323,42 +232,19 @@ async function reload() {
   // can answer nothing else, so the unlock is all there is to draw.
   await loadVault();
   if (VAULT && VAULT.node_waiting) { render(); return; }
-  // The export snapshot, the derived activity feed, and the everyday settings.
-  // Whether the node is mid-turn, asked every reload — the answer that outlives this tab.
-  try { NODE_BUSY = !!(await api("GET", "/health")).busy; } catch (_) { NODE_BUSY = false; }
-  const [db, activity, caps, autonomy] = await Promise.all([
-    api("GET", "/v1/export"),
+  // The activity feed and the house's tools, then what the screen showing needs.
+  const [activity, caps] = await Promise.all([
     api("GET", `/v1/activity?limit=${ACTIVITY_PAGE}`),
     api("GET", "/v1/capabilities"),
-    api("GET", "/v1/autonomy"),
   ]);
-  try { BRIEF_SCHED = await api("GET", "/v1/brief/schedule"); } catch (_) {}
-  try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
   try { MCP_SERVERS = await api("GET", "/v1/mcp/servers"); } catch (_) {}
-  // What the next message would send. Only asked for on the chat, since it builds the same
-  // context a turn does.
-  if (NAV.v === "chat") { try { CTX = await api("GET", "/v1/chat/context"); } catch (_) { CTX = null; } }
   await loadView(NAV.v, NAV.id);
-  try { RECIPES = await api("GET", "/v1/recipes"); } catch (_) { RECIPES = []; }
-  DB = db;
-  // Attach each butler reply's persisted action trail (steps + sources) from the
-  // chat endpoint, so past answers keep their expandable actions after a reload.
-  // Just the day being shown, with its action trails already attached — rather than
-  // every message there has ever been so the browser can throw most of them away.
-  await loadChatDay(CHAT_DAY);
   ACTIVITY = activity;
   ACTIVITY_MORE = activity.length >= ACTIVITY_PAGE;
   CAPS = caps;
-  AUTONOMY = autonomy;
-  try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
-  try { RESEARCH = await api("GET", "/v1/research"); } catch (_) { RESEARCH = { items: [] }; }
-  try { RESEARCH_READY = await api("GET", "/v1/research/readiness"); } catch (_) {}
   try { CONNECTED = await api("GET", "/v1/connect/connected"); } catch (_) { CONNECTED = []; }
   try { SIGNIN = await api("GET", "/v1/session/setup"); } catch (_) { SIGNIN = null; }
-  try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
-  try { LANDING = await api("GET", "/v1/reliability"); } catch (_) { LANDING = null; }
   try { CONFIG_WRITES = await api("GET", "/v1/config-writes"); } catch (_) { CONFIG_WRITES = []; }
-  await loadAgenda();
   render();
 }
 
@@ -369,14 +255,12 @@ function subscribeToActivity() {
     const es = new EventSource("/v1/activity/stream?token=" + encodeURIComponent(token()));
     // A background "changed" event refreshes the snapshot — but a full re-render
     // must never yank unsaved work out from under the person:
-    //  - not while a reply is streaming (it would wipe the live bubble),
     //  - not while they're on Settings or the AI screen (unsaved form input — an
     //    endpoint, a typed API key, a picked preset, a provider chosen for a list —
     //    would be reset to stored values),
     //  - not while they're typing in any field.
     // Their own saves call reload() explicitly, so the view still updates on action.
     es.addEventListener("changed", () => {
-      if (CHAT_STREAMING) return;
       if (NAV.v === "settings" || NAV.v === "models") return;
       const ae = document.activeElement;
       if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
@@ -385,32 +269,10 @@ function subscribeToActivity() {
   } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
 }
 
-// While research runs unattended, refresh every so often so its
-// progress and its ending show up without the person having to reload.
-function pollActiveWork() {
-  setInterval(() => {
-    const researching = ((RESEARCH && RESEARCH.items) || []).some((item) =>
-      !["delivered", "blocked", "budget_exhausted", "cancelled", "failed"].includes(item.status));
-    const ae = document.activeElement;
-    if (!researching || CHAT_STREAMING || (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return;
-    reload().catch(() => {});
-  }, 15000);
-}
-
 // What one screen shows that nothing else needs, fetched when it opens and on a reload while it
 // is showing. Opening Mail from the menu used to show "Loading…" until something else happened
 // to reload the console, because only `reload` fetched it.
 async function loadView(v, id) {
-  // The mail digest: only on its own screen, so the rest of the console never carries it.
-  if (v === "mail") { try { MAIL = await api("GET", "/v1/mail"); } catch (_) { MAIL = null; } }
-  // What Endora knows about you: the brain, on About you and on a page's own screen.
-  if (v === "understanding" || v === "prefs") {
-    try { BRAIN = await api("GET", "/v1/brain"); } catch (_) { BRAIN = null; }
-  }
-  if (v === "brainpage") {
-    BRAIN_EDITING = false;
-    try { BRAIN_PAGE = await api("GET", `/v1/brain/pages/${id}`); } catch (_) { BRAIN_PAGE = null; }
-  }
   // What Endora runs: it asks the model server, so only on the screen that shows it.
   if (v === "models") { try { AI = await api("GET", "/v1/ai"); } catch (_) { AI = null; } }
   if (v === "models") { try { MODEL_LISTS = await api("GET", "/v1/model-lists"); } catch (_) { MODEL_LISTS = null; } }
@@ -418,30 +280,22 @@ async function loadView(v, id) {
   if (v === "connections" || v === "spotify") {
     try { SPOTIFY = await api("GET", "/v1/connections/spotify"); } catch (_) { SPOTIFY = null; }
   }
-  // What the deep model has cost, and what is left. The balance asks the provider, so it is
-  // fetched only on the screens that show it, never on a timer.
-  if ((v === "models" || v === "settings") && DEEP_MODEL.configured) { await loadDeepSpend(); }
   await loadLab(v, id);
   if (v === "hq") await loadHQ();
   if (v === "models") await hqLoadMac();
   if (v === "replay") await loadReplay(id);
-  if (v === "needs") await loadAgenda();
-  if (v === "watching") { try { AGENDA_RULES = await api("GET", "/v1/agenda/rules"); } catch (_) { AGENDA_RULES = null; } }
   if (v === "speakers") await loadSound();
   if (v === "vault") { await loadVault(); await loadVaultPasskeys(); }
 }
 
 // The screens `loadView` fetches for.
-const FETCHES_ITS_OWN = ["mail", "models", "settings", "connections", "spotify",
-  "understanding", "prefs", "brainpage",
-  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "replay", "watching", "needs", "speakers", "vault"];
+const FETCHES_ITS_OWN = ["models", "connections", "spotify",
+  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "replay", "speakers", "vault"];
 
 function go(v, id) {
   // One container's logs must never show under another's name while the new ones load.
   if (v === "logs") LAB.logs = null;
   if (v === "job") LAB.job = null;
-  // A page must never show under another's name while the new one loads.
-  if (v === "brainpage") BRAIN_PAGE = null;
   NAV = { v, id }; clearMsg(); closeMenu(); render();
   if (!FETCHES_ITS_OWN.includes(v)) return;
   // Drawn at once with what is known, then again with what the screen fetched — unless the

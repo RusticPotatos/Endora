@@ -1,4 +1,4 @@
-// The butler's skills: what chat can do. A short list in four groups, each skill opening to
+// The house's tools (skills): what the team's turns may use, through the bridge (ADR 0108). A short list in four groups, each skill opening to
 // its own screen. Where skills get their data (Home Assistant, the home lab, tool servers) is
 // under Connections, and how far Endora may act on its own is under Permissions: all three
 // were one page, about twelve phone screens long, with every setup form open on it.
@@ -194,31 +194,54 @@ function viewConnections() {
     <h3>Accounts</h3>
     <div class="card nav-list">
       <button class="ghost" data-act="go:spotify">
-        <span class="grow" style="text-align:left;">Spotify<span class="sub one-line">one sign-in for the web console, the handheld and chat</span></span>
+        <span class="grow" style="text-align:left;">Spotify<span class="sub one-line">one sign-in for the web console and the handheld</span></span>
         <span class="pill ${SPOTIFY && SPOTIFY.state === "connected" ? "concluded" : ""}">${esc(SPOTIFY ? ({ connected: "Connected", waiting: "Waiting" }[SPOTIFY.state] || "Not connected") : "…")}</span>${icon("chevron", 15)}</button>
     </div>
     <h3>Home lab</h3>
-    <div class="note">Services on your network. The handheld uses them, and chat reads from the ones its skills name.</div>
+    <div class="note">Services on your network. The handheld uses them, and the team reads the lab through them.</div>
     ${lab.length ? `<div class="card nav-list">${lab.map(labRow).join("")}</div>` : `<div class="empty">No home-lab services are offered by this node.</div>`}
     ${mcpSection()}`;
 }
 
-// How far Endora may go on its own. Per-skill "asks first" stays on each skill's screen, and a
-// tool server's tools on Connections; this is the boundary around all of them.
-function viewPermissions() {
-  const env = AUTONOMY || {};
-  const envelope = `
-    <div class="card">
-      <div class="title">How independently should Endora act?</div>
-      <div class="sub" style="margin:4px 0 2px;">Endora acts on its own inside the boundary you set here, and asks you at its edges. You can widen or narrow it any time.</div>
-      ${onOffRow(env.auto_external !== false, "autonomy:external", "Use read-only skills on its own", "Check weather, news, safety alerts and web pages without asking. (Recommended)")}
-      ${onOffRow(env.auto_consequential === true, "autonomy:consequential", "Take consequential actions on its own", "Let it carry out actions that normally need your confirmation — spending, sending, or things that can't be undone. Off is safer; turn on only if you're sure.")}
-    </div>`;
+// Nominate the tool that reads a server's state (ADR 0054). Blank clears it.
+async function setReader(el) {
+  const server = el.getAttribute("data-reader-for");
+  try {
+    await api("POST", "/v1/mcp/servers/" + encodeURIComponent(server) + "/reader", { reader_tool: el.value });
+    flash(el.value ? `Endora will check ${server} with ${el.value}.` : `No read-back for ${server}.`, "ok");
+  } catch (e) {
+    flash("Couldn't set that: " + e.message, "err");
+  }
+  return reload();
+}
+
+// Which of a server's tools READS its state (ADR 0054).
+//
+// One answer settles two things: that tool's result becomes an observation rather than
+// a receipt, and everything else on the server is checked through it after it acts.
+// Without it Endora can only repeat what a tool claimed about its own work — honest,
+// but unverifiable. Endora never picks this itself: a server's own say-so about what
+// it does is not evidence.
+function readerRow(s) {
+  // Tools arrive namespaced as `server.tool`; the nomination is the bare tool name.
+  const prefix = s.name + ".";
+  const tools = (s.tools || [])
+    .map((t) => (t.id || "").startsWith(prefix) ? t.id.slice(prefix.length) : t.id)
+    .filter(Boolean);
+  if (!tools.length) return "";
+  const opts = ['<option value="">— nobody has said —</option>']
+    .concat(tools.map((t) => `<option value="${esc(t)}"${t === s.reader_tool ? " selected" : ""}>${esc(t)}</option>`))
+    .join("");
+  // Stacked, not side by side. A `<select>` sizes itself to its longest option, and
+  // `HassMediaSearchAndPlay` is long enough to squeeze the label beside it down to one word
+  // per line — which is what it did on a real screen. Label above, control below, full
+  // width: the same shape as every other field, and nothing to squeeze.
   return `
-    ${settingsCrumbs("permissions")}
-    <h2>Permissions</h2>
-    <div class="note">How far Endora may go on its own. Each skill can also be set to ask first, on its own screen under Skills; a tool server's tools stay blocked until you allow each one, under Connections.</div>
-    ${envelope}`;
+    <div class="field" style="margin-top:8px;">
+      <label>Which tool reads this server's state?</label>
+      <div class="sub" style="margin:-2px 0 4px;">Endora uses it to check what an action actually did, and the team's bridge treats it as a read.</div>
+      <select data-reader-for="${esc(s.name)}" onchange="setReader(this)" style="width:100%;">${opts}</select>
+    </div>`;
 }
 
 // Tool servers (ADR 0054), on Connections: one row each, opening to its own screen.
@@ -238,12 +261,10 @@ function toolServerCard(s) {
           <div class="title" style="font-weight:500;">${esc(t.id)}${t.enabled === false ? ` <span class="pill">turned off</span>` : ""}</div>
           <div class="sub">${esc(t.description || "")}</div>
           <div class="sub">${t.enabled === false
-            ? "Turned off — the butler isn't offered this tool at all."
+            ? "Turned off — it is not offered at all."
             : t.opened
-              ? (AUTONOMY.auto_consequential
-                  ? "Allowed — and because you let consequential skills act on their own, it runs without asking."
-                  : "Allowed — asks before every use.")
-              : "Blocked — the butler can see it but cannot use it."}</div>
+              ? "Allowed — asks before every use."
+              : "Blocked — it is listed but cannot be used."}</div>
         </div>
         ${t.enabled === false
           ? `<button class="ghost" data-act="skill:enable:${t.id}:1">Offer it again</button>`
@@ -381,183 +402,6 @@ function viewToolServer() {
     ${toolServerForms(false)}`;
 }
 
-// One recipe: what it does, what it needs, and — folded, since it's the
-// mechanism rather than the point — exactly what it fetches and says.
-function recipeCard(r) {
-  const needs = (r.inputs || []).map((i) => `${i.name} (${i.type})`).join(", ") || "nothing extra";
-  return `
-    <div class="card">
-      <div class="row">
-        <div class="grow">
-          <div class="title">${esc(r.description)}</div>
-          <div class="sub">${esc(r.id)} · needs: ${esc(needs)}</div>
-        </div>
-        <span class="pill ${r.enabled ? "concluded" : ""}">${r.enabled ? "On" : "Off"}</span>
-      </div>
-      <details class="steps" style="margin-top:6px;">
-        <summary>How it works</summary>
-        <div class="sub" style="word-break:break-all;margin-top:4px;">Fetches: ${esc(r.get)}</div>
-        <div class="sub" style="margin-top:4px;">Says: "${esc(r.say)}"</div>
-      </details>
-      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px;">
-        <button class="ghost" data-act="recipe:enable:${esc(r.id)}:${r.enabled ? "0" : "1"}">${r.enabled ? "Turn off" : "Turn on"}</button>
-        <button class="ghost danger" data-act="recipe:delete:${esc(r.id)}">Delete</button>
-      </div>
-    </div>`;
-}
-
-// The `name:type` lines of the "what it needs" box, as objects. One parser, used
-// by the sample-value fields, by Try, and by Save — three readings of the same
-// text would drift.
-// Ready-made recipes, to answer the blank page. Every one of these was run
-// against its real API before shipping — a starter that does not work is worse
-// than no starter, because it teaches the person the feature is broken.
-//
-// **None of them declare inputs**, and that is deliberate rather than lazy: an
-// input has to be supplied by the model at ask time, and asked "what's the air
-// quality?" a small local model does not know anybody's coordinates and will
-// invent some. A constant in the address is a number the person edits once and
-// is then simply right, forever. Inputs remain for the case they are actually
-// for — something that genuinely varies per question.
-//
-// The coordinates below are a public example (New York), not anybody's home;
-// the person swaps them for theirs. Same rule as every other fixture here.
-const RECIPE_STARTERS = [
-  {
-    id: "air_quality",
-    description: "Today's air quality.",
-    get: "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=40.71&longitude=-74.01&current=us_aqi",
-    say: "The air quality index is {current.us_aqi} right now.",
-    note: "swap the latitude and longitude for yours",
-  },
-  {
-    id: "uv_index",
-    description: "How strong the sun is right now.",
-    get: "https://api.open-meteo.com/v1/forecast?latitude=40.71&longitude=-74.01&current=uv_index",
-    say: "The UV index is {current.uv_index} right now.",
-    note: "swap the latitude and longitude for yours",
-  },
-  {
-    id: "sunset",
-    description: "When the sun sets today.",
-    get: "https://api.sunrise-sunset.org/json?lat=40.71&lng=-74.01&formatted=0",
-    say: "The sun sets at {results.sunset}.",
-    note: "swap the lat and lng for yours",
-  },
-  {
-    id: "dollar_in_euro",
-    description: "What a dollar is worth in euro.",
-    get: "https://api.frankfurter.app/latest?from=USD&to=EUR",
-    say: "One US dollar is {rates.EUR} euro.",
-    note: "change USD, EUR and the sentence together — the field name follows the currency",
-  },
-];
-
-function recipeInputsFrom(text) {
-  return (text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
-    const [name, type] = line.split(":").map((s) => (s || "").trim());
-    return { name, type };
-  });
-}
-
-// Regenerates a sample-value box per declared input, so Try has something to fill
-// the address with. Called from the textarea's own `oninput` — it rewrites one
-// div and nothing else, because a re-render here would wipe the half-typed form
-// around it.
-function recipeSamplesChanged(text) {
-  const box = document.getElementById("recipe-samples");
-  if (!box) return;
-  const inputs = recipeInputsFrom(text).filter((i) => i.name);
-  box.innerHTML = inputs.length
-    ? `<div class="sub" style="margin:8px 0 4px;">Sample values, so you can try it:</div>` +
-      inputs.map((i) => `
-        <div class="field"><label>${esc(i.name)} <span class="sub" style="font-weight:400;">· ${esc(i.type || "string")}</span></label>
-          <input data-sample="${esc(i.name)}" data-sample-type="${esc(i.type || "string")}" placeholder="a value to test with" /></div>`).join("")
-    : "";
-}
-
-// What a trial found: the address it really fetched, the fields it can read
-// (tap one to use it), and the sentence as it reads. This is the whole point of
-// the authoring loop — nobody should be guessing a JSON path against an API
-// they cannot see.
-function recipeTrialHtml(r) {
-  if (!r) return "";
-  if (!r.ok) {
-    return `<div class="msg show err" style="margin-top:8px;">${esc(r.error || "that didn't work")}</div>`;
-  }
-  const chips = (r.fields || []).map((f) => `
-    <button class="pill pick" data-act="recipe:pick:${esc(f.path)}" title="use this field"
-      style="margin:2px 4px 2px 0;">${esc(f.path)} <span class="sub">${esc(String(f.sample).slice(0, 24))}</span></button>`).join("");
-  const preview = r.preview
-    ? `<div class="card" style="margin-top:8px;"><div class="sub">It would say:</div>
-         <div class="title" style="font-weight:500;">${esc(r.preview)}</div></div>`
-    : `<div class="msg show err" style="margin-top:8px;">${esc(r.preview_error || "the sentence didn't resolve")}</div>`;
-  return `
-    <div style="margin-top:10px;">
-      <div class="sub" style="word-break:break-all;">Fetched: ${esc(r.url)}</div>
-      ${chips ? `<div class="sub" style="margin:8px 0 4px;">Tap a field to put it in your sentence:</div><div>${chips}</div>` : ""}
-      ${r.skipped_a_list ? `<div class="sub" style="margin-top:6px;">This answer also had a list in it. A recipe can only read plain fields, so those aren't offered.</div>` : ""}
-      ${preview}
-    </div>`;
-}
-
-// Recipes: capabilities the person teaches Endora themselves — five fields, no
-// code (ADR 0071). The whole screen is a list plus one folded form, because the
-// form is a rarer action than reading what already exists — the same call the
-// MCP "add a server by hand" form makes.
-function viewRecipes() {
-  const recipes = RECIPES || [];
-  const addForm = `
-    <details class="adv">
-      <summary>Teach it a new one</summary>
-      <div class="card">
-        <div class="sub" style="margin:4px 0 8px;">Five things: a short name, what it does, what it needs from you, a web address to fetch (with those things filled in), and the one sentence to read back from what comes back. That's the whole capability — it can only read, never act.</div>
-        <div class="sub" style="margin:8px 0 4px;">Start from one of these, then edit it:</div>
-        <div style="margin-bottom:10px;">
-          ${RECIPE_STARTERS.map((s, n) => `
-            <button class="pill pick" data-act="recipe:start:${n}" style="margin:2px 4px 2px 0;"
-              title="${esc(s.get)}">${esc(s.description)}</button>`).join("")}
-        </div>
-        <div class="field"><label>Short name</label><input id="recipe-id" placeholder="e.g. air_quality — lowercase, no spaces" /></div>
-        <div class="field"><label>What it does</label><input id="recipe-description" placeholder="e.g. Today's air quality where you are." /></div>
-        <div class="field"><label>What it needs <span class="sub" style="font-weight:400;">· one per line, name:type — type is "string" or "number"</span></label>
-          <textarea id="recipe-inputs" rows="2" placeholder="lat:number&#10;lon:number" oninput="recipeSamplesChanged(this.value)"></textarea></div>
-        <div id="recipe-samples"></div>
-        <div class="field"><label>Web address to fetch <span class="sub" style="font-weight:400;">· use {name} for each thing above</span></label>
-          <input id="recipe-get" placeholder="https://example.com/api?lat={lat}&lon={lon}" /></div>
-        <div class="row" style="justify-content:flex-start;">
-          <button class="ghost" data-act="recipe:try">Try it →</button>
-          <span class="sub">fetch it once and see what comes back</span>
-        </div>
-        <div id="recipe-trial"></div>
-        <div class="field" style="margin-top:10px;"><label>What to say <span class="sub" style="font-weight:400;">· tap a field above, or type {path.into.the.answer}</span></label>
-          <input id="recipe-say" placeholder="The air quality index is {current.us_aqi} right now." /></div>
-        <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="recipe:add">Save recipe</button></div>
-      </div>
-    </details>`;
-  return `
-    ${crumbs([
-      { label: "HQ", act: "go:hq" },
-      { label: "Settings", act: "go:settings" },
-      { label: "Skills", act: "go:skills" },
-      { label: "Recipes" },
-    ])}
-    <h2>Recipes</h2>
-    <div class="note">A recipe is a capability you teach Endora yourself — no code. It can only read one web address and say one sentence about it; it can't act on anything. A new one stays off until you turn it on.</div>
-    ${listOr(recipes.map(recipeCard), "No recipes yet — teach it one below.")}
-    ${addForm}`;
-}
-
-// The home surface: what Endora currently understands about you. Not a task list —
-// beliefs it has formed (with the evidence and how sure it is), which you can
-// affirm or correct. This is the point of the product (ADR 0052).
-const BELIEF_KIND_LABEL = {
-  intent: "What you're really after", value: "What you value", preference: "Preferences",
-  pattern: "Patterns", motivation: "What drives you", frustration: "Frustrations",
-  stressor: "Stressors", relationship: "People who matter", other: "Other",
-};
-const BELIEF_KIND_ORDER = ["intent","value","motivation","pattern","preference","frustration","stressor","relationship","other"];
-
 // Spotify, held by the node (plan phase 4). The same sign-in for every device: one started on
 // the handheld shows here as waiting and can be finished here, and the other way round.
 function viewSpotify() {
@@ -578,7 +422,7 @@ function viewSpotify() {
   if (s.state === "connected") {
     return `${trail}<h2>Spotify</h2>
       <div class="card"><div class="title">${esc(s.detail)} <span class="pill concluded">Connected</span></div>
-        <div class="sub">The web console, the handheld and chat all use this one sign-in; it stays on Endora.</div>
+        <div class="sub">The web console and the handheld both use this one sign-in; it stays on Endora.</div>
         <div class="sub">Connect again when Endora says its sign-in doesn't allow something: you approve on Spotify and come back, and this sign-in keeps working until then.</div>
         <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px;"><button class="ghost danger" data-act="spotify:disconnect">Disconnect</button><button class="primary" data-act="spotify:begin:endora">Connect again</button></div>
       </div>${setup}`;
@@ -600,7 +444,7 @@ function viewSpotify() {
   }
   return `${trail}<h2>Spotify</h2>
     <div class="card"><div class="title">Not connected</div>
-      <div class="sub">Connect once here or on the handheld; both use it, and chat can say what is playing and play things.</div>
+      <div class="sub">Connect once here or on the handheld; both use it.</div>
       ${s.client_id_set ? "" : `<div class="form" style="margin-top:8px;"><input id="spotify-client" placeholder="your Spotify app's client id" autocomplete="off" /></div>`}
       <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px;">
         <button class="primary" data-act="spotify:begin:endora">Approve on this device</button>

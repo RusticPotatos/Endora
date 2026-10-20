@@ -393,7 +393,7 @@ function viewMusic() {
   if (!SPOTIFY) return `${head}<div class="note">Asking Endora…</div>`;
   if (!spotifyUsable()) {
     return `${head}<div class="card"><div class="title">Spotify is not connected</div>
-      <div class="sub">Connect it once and every device plays with it: this one, the handheld and chat.</div>
+      <div class="sub">Connect it once and every device plays with it: this one and the handheld.</div>
       <div class="row" style="justify-content:flex-end;margin-top:8px;"><button class="primary" data-act="go:spotify">Connect Spotify</button></div></div>`;
   }
   // An older sign-in that Spotify refused something to, or a new approval started and not
