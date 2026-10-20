@@ -599,6 +599,12 @@ impl LabKnowledge {
         }
     }
 
+    /// No fork, nothing retired and no deploy key: what a node has until `main` reads its
+    /// environment, so a test never sees the developer's fork.
+    pub(crate) fn unconfigured() -> Self {
+        Self::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new())
+    }
+
     /// From the node's environment: `ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`,
     /// `ENDORA_LAB_RETIRED`, the data folder beside `ENDORA_DB`, and
     /// `ENDORA_GIT_PUSH_KEY_FILE`.

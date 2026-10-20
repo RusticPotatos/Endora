@@ -208,7 +208,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_brain(brain)
     .with_time_zone(time_zone)
-    .with_vault(the_vault);
+    .with_vault(the_vault)
+    .with_lab_from_env();
     // Endora HQ (ADR 0102), when this node has one: signing with a token given here (32+
     // characters, or HQ is left off rather than reachable with a guessable one), or with the one
     // HQ made for itself in the volume the two share.

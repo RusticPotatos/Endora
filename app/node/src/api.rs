@@ -132,7 +132,8 @@ pub struct AppState {
     pub(crate) bench: Option<Arc<bench::Bench>>,
     /// How the home lab is built (ADR 0112): the lab's ansible-nas docs, the owner's retired
     /// list, and the map the team reads, kept a minute. From the environment
-    /// (`ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`, `ENDORA_LAB_RETIRED`).
+    /// (`ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`, `ENDORA_LAB_RETIRED`), read by
+    /// [`with_lab_from_env`](Self::with_lab_from_env); none until then.
     pub(crate) lab: Arc<contracts::LabKnowledge>,
     /// The agenda loop's items, restarts and taught rules (ADR 0103).
     pub agenda: Arc<endora_agenda::infrastructure::SqliteAgendaStore>,
@@ -328,7 +329,7 @@ impl AppState {
             // Read as `main` reads them, with its defaults.
             relay_calls: Arc::default(),
             bench: None,
-            lab: Arc::new(contracts::LabKnowledge::from_env()),
+            lab: Arc::new(contracts::LabKnowledge::unconfigured()),
             installed_model: Arc::new((
                 std::env::var("ENDORA_MODEL_URL")
                     .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned()),
@@ -382,6 +383,14 @@ impl AppState {
             "bench: a credential for the model relay alone, Haiku or Sonnet, ${dollars:.2} a day"
         );
         self.with_bench(bench)
+    }
+
+    /// Reads how the home lab is built (ADR 0112) from the environment: the ansible-nas fork,
+    /// the retired list and the deploy key. Until then the node has no fork.
+    #[must_use]
+    pub fn with_lab_from_env(mut self) -> Self {
+        self.lab = Arc::new(contracts::LabKnowledge::from_env());
+        self
     }
 
     pub(crate) fn with_bench(mut self, bench: bench::Bench) -> Self {
