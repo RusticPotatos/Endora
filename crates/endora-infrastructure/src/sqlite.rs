@@ -1791,8 +1791,8 @@ mod tests {
     /// said it would.
     #[test]
     fn purge_keeps_the_settings_the_team_runs_on() {
-        use endora_application::{CapabilityConfigRepository, CapabilitySettingsRepository};
         use endora_application::MemoryStore;
+        use endora_application::{CapabilityConfigRepository, CapabilitySettingsRepository};
         use endora_capabilities::model_lists::{Job, ModelListRepository};
 
         let store = store();
@@ -1801,7 +1801,9 @@ mod tests {
         let provider = lists
             .add_provider("house", "http://192.168.1.10:11434/v1", "")
             .unwrap();
-        lists.add_entry(Job::Everyday, provider, "qwen2.5:7b").unwrap();
+        lists
+            .add_entry(Job::Everyday, provider, "qwen2.5:7b")
+            .unwrap();
         (&cfg as &dyn CapabilitySettingsRepository)
             .set_setting("home_assistant", "token", "example-token")
             .unwrap();
