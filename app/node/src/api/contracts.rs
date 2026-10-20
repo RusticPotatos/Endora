@@ -288,13 +288,17 @@ async fn called(
         return (refused, None);
     }
     // HQ's narrowing comes first, for a contract and a bridged tool alike: the check after a
-    // deploy reads the lab's health, logs and metrics, and nothing it is not given runs
-    // (ADR 0115, amended). The refusal is kept as a receipt that failed.
+    // deploy reads the lab's health, logs and metrics (ADR 0115, amended), a project that lists
+    // its tools gives its work those (the Holodeck plan's phase 4), and nothing a turn is not
+    // given runs. The refusal is kept as a receipt that failed.
     if !turn.may_use(&name) {
         let why = format!(
-            "{name} is not for a post-deploy check: this turn reads the lab with {} and nothing \
-             else",
-            turn.only.as_deref().unwrap_or_default().join(", ")
+            "{name} is not among this turn's tools: HQ gives it {} of the node's and nothing \
+             else (a post-deploy check, or a project that lists its tools)",
+            match turn.only.as_deref().unwrap_or_default() {
+                [] => "none".to_owned(),
+                given => given.join(", "),
+            }
         );
         refused_for(&why);
         let came = Came {
@@ -1697,7 +1701,7 @@ mod tests {
                 said["error"]
                     .as_str()
                     .unwrap()
-                    .contains("post-deploy check"),
+                    .contains("is not among this turn's tools"),
                 "{name}: {said}"
             );
         }

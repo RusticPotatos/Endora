@@ -351,6 +351,27 @@ pub fn read_dollars(text: &str) -> Option<Micros> {
     (amount > 0).then_some(amount)
 }
 
+/// The tools a project's work is given, when the owner narrows them (the Holodeck plan's phase
+/// 4): kept as one setting a project, a JSON list of tool names, or `null` for none. A turn on
+/// the project's work is given these and its own four ([`super::deploy::HQ_TOOLS`]) alone;
+/// with no list, what its role and brain give it, as before.
+#[must_use]
+pub fn tools_key(id: ProjectId) -> String {
+    format!("project_tools:{}", id.0)
+}
+
+/// A project's tools, as [`tools_key`] keeps them: `None` for no list.
+#[must_use]
+pub fn tools_read(kept: Option<&str>) -> Option<Vec<String>> {
+    serde_json::from_str::<Option<Vec<String>>>(kept?)
+        .ok()
+        .flatten()
+}
+
+/// The workbench's shell, by the name the worker offers it: given only when a project's list
+/// names it.
+pub const SHELL: &str = "shell";
+
 #[cfg(test)]
 mod tests {
     use super::*;

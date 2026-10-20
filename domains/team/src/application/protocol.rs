@@ -625,12 +625,23 @@ pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if engine.in_consult(run.id).unwrap_or(false) {
         list.push(super::protocol_history::answer_consult_tool());
     }
-    // The check after a deploy is offered its four tools alone (ADR 0115, amended).
+    // The check after a deploy is offered its four tools alone (ADR 0115, amended); a turn on
+    // the work of a project that lists its tools, those four and the list (the Holodeck plan's
+    // phase 4).
     if engine.lab_tools_of(run.id).ok().flatten().is_some() {
+        let given = if engine.in_deploy_check(run.id).unwrap_or(true) {
+            Vec::new()
+        } else {
+            engine
+                .lab_tools_of(run.id)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        };
         list.retain(|t| {
-            t["name"]
-                .as_str()
-                .is_some_and(|n| crate::domain::deploy::HQ_TOOLS.contains(&n))
+            t["name"].as_str().is_some_and(|n| {
+                crate::domain::deploy::HQ_TOOLS.contains(&n) || given.iter().any(|g| g == n)
+            })
         });
     }
     all
@@ -887,6 +898,11 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
         .deploy_check_refuses(run.id, tool, args)
         .map_err(|e| said(&e))?
     {
+        return Err(refusal);
+    }
+    // A project that lists its tools gives its work those and the turn's own four (the
+    // Holodeck plan's phase 4): refused here too, whatever the model was told.
+    if let Some(refusal) = engine.project_refuses(run.id, tool).map_err(|e| said(&e))? {
         return Err(refusal);
     }
     // The team's world (ADR 0122), and asking the past (ADR 0129).

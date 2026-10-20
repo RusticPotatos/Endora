@@ -1039,3 +1039,125 @@ fn a_question_on_a_projects_task_goes_to_the_projects_lead() {
         (t.ceo, Some(his), WakeReason::QuestionAsked, Receipt::Queued)
     );
 }
+
+/// The names of the tools a turn is offered by HQ.
+fn offered_by_hq(hq: &Hq<'_>, context: &RunContext) -> Vec<String> {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    super::protocol::tools_in(hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+// Phase 4 of the Holodeck plan: a project may carry the tools its work is given. A read-only
+// mission on the real lab reads and never restarts; the turn's own four (my_turn, claim, post,
+// set_status) always come with it. HQ offers and runs nothing else, tells the node which of its
+// tools the turn may use, and gives a shell only when the list names it.
+#[test]
+fn a_projects_tools_are_all_its_turns_are_given_besides_their_own_four() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let survey = hq
+        .add_project(t.goal, "Read-only survey", "", t.lead, None)
+        .unwrap();
+    hq.set_project_tools(
+        survey,
+        Some(vec![
+            "homelab_status".to_owned(),
+            "container_logs".to_owned(),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(
+        hq.project_tools(survey).unwrap(),
+        Some(vec![
+            "homelab_status".to_owned(),
+            "container_logs".to_owned()
+        ])
+    );
+    let look = task_in(&hq, t.goal, Some(survey), t.lead, "Survey the lab").unwrap();
+    let context = turn(&hq, t.lead);
+    let (run, _) = hq.turn_of(&context.token).unwrap().unwrap();
+    assert_eq!(run.task, Some(look));
+
+    let mut offered = offered_by_hq(&hq, &context);
+    offered.sort();
+    assert_eq!(offered, ["claim", "my_turn", "post", "set_status"]);
+    assert_eq!(
+        hq.lab_tools_of(run.id).unwrap(),
+        Some(vec![
+            "homelab_status".to_owned(),
+            "container_logs".to_owned()
+        ]),
+        "the node offers and runs these alone: no restart_container"
+    );
+    assert!(
+        !hq.may_use_a_shell(run.id).unwrap(),
+        "no shell unless named"
+    );
+
+    use_tool(&hq, &context, "claim", &json!({ "task": look.0 })).unwrap();
+    let refused = use_tool(
+        &hq,
+        &context,
+        "create_task",
+        &json!({ "title": "Restart sonarr", "description": "x" }),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("create_task") && refused.contains("Read-only survey"),
+        "{refused}"
+    );
+    use_tool(
+        &hq,
+        &context,
+        "post",
+        &json!({ "task": look.0, "text": "Looked." }),
+    )
+    .expect("its own four stay");
+}
+
+// A scenario (Phase 5) gets no lab, bridge or repo tool: an empty list leaves the turn its own
+// four, nothing from the node, and no shell. With no list, a project's turns are as before.
+#[test]
+fn an_empty_list_gives_nothing_of_the_nodes_and_no_list_changes_nothing() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let scenario = hq
+        .add_project(t.goal, "Silent Station", "", t.lead, None)
+        .unwrap();
+    hq.set_project_tools(scenario, Some(vec!["shell".to_owned()]))
+        .unwrap();
+    hq.set_project_tools(scenario, Some(Vec::new())).unwrap();
+    task_in(&hq, t.goal, Some(scenario), t.lead, "Play").unwrap();
+    let context = turn(&hq, t.lead);
+    let (run, _) = hq.turn_of(&context.token).unwrap().unwrap();
+    assert_eq!(hq.lab_tools_of(run.id).unwrap(), Some(Vec::new()));
+    assert!(!hq.may_use_a_shell(run.id).unwrap());
+
+    let upkeep = hq
+        .add_project(t.goal, "Home lab upkeep", "", t.lead, None)
+        .unwrap();
+    hq.set_project_tools(upkeep, Some(vec!["shell".to_owned()]))
+        .unwrap();
+    hq.set_project_tools(upkeep, None).unwrap();
+    assert_eq!(hq.project_tools(upkeep).unwrap(), None);
+    task_in(&hq, t.goal, Some(upkeep), t.dev, "Fix sonarr").unwrap();
+    let context = turn(&hq, t.dev);
+    let (run, member) = hq.turn_of(&context.token).unwrap().unwrap();
+    assert_eq!(hq.lab_tools_of(run.id).unwrap(), None);
+    assert!(hq.may_use_a_shell(run.id).unwrap());
+    assert_eq!(
+        offered_by_hq(&hq, &context).len(),
+        tools(member.role).as_array().unwrap().len(),
+        "as its role gives"
+    );
+    assert_eq!(
+        hq.set_project_tools(ProjectId(99), None),
+        Err(EngineError::Unknown("project"))
+    );
+}

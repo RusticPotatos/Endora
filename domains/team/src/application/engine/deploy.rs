@@ -111,7 +111,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Whether a turn is a deploy check's.
-    fn in_deploy_check(&self, run: RunId) -> Done<bool> {
+    pub(crate) fn in_deploy_check(&self, run: RunId) -> Done<bool> {
         let Some(task) = self.store.run(run)?.and_then(|r| r.task) else {
             return Ok(false);
         };
@@ -119,24 +119,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The node's tools a turn may use, when HQ narrows them: a deploy check's turn has the
-    /// lab's reads alone ([`deploy::LAB_READS`]). `None` for every other turn, which has what
-    /// its role and brain give it.
+    /// lab's reads alone ([`deploy::LAB_READS`]), and a turn on the work of a project that lists
+    /// its tools has that list (the Holodeck plan's phase 4; the node uses the names that are
+    /// its own). `None` for every other turn, which has what its role and brain give it.
     ///
     /// # Errors
     /// A store failure.
-    pub fn lab_tools_of(&self, run: RunId) -> Done<Option<Vec<&'static str>>> {
-        Ok(self
-            .in_deploy_check(run)?
-            .then(|| deploy::LAB_READS.to_vec()))
+    pub fn lab_tools_of(&self, run: RunId) -> Done<Option<Vec<String>>> {
+        if self.in_deploy_check(run)? {
+            return Ok(Some(
+                deploy::LAB_READS.iter().map(|t| (*t).to_owned()).collect(),
+            ));
+        }
+        Ok(self.project_tools_of_run(run)?.map(|(_, tools)| tools))
     }
 
     /// Whether a turn may be given a shell where the runner has one: not a deploy check's,
-    /// which reads the lab through the node and nothing else.
+    /// which reads the lab through the node and nothing else, nor one on a project's work whose
+    /// list does not name the shell.
     ///
     /// # Errors
     /// A store failure.
     pub fn may_use_a_shell(&self, run: RunId) -> Done<bool> {
-        Ok(!self.in_deploy_check(run)?)
+        if self.in_deploy_check(run)? {
+            return Ok(false);
+        }
+        Ok(self
+            .project_tools_of_run(run)?
+            .is_none_or(|(_, tools)| tools.iter().any(|t| t == crate::domain::projects::SHELL)))
     }
 
     /// Why a deploy check's turn is refused one of HQ's tools, if it is: anything but its four,
