@@ -494,6 +494,78 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.emit_project(project, "owner", "capped")
     }
 
+    /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or
+    /// (`None`) takes the list away: names trimmed, each once, in the owner's order.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a project there is not; a store failure.
+    pub fn set_project_tools(&self, id: ProjectId, tools: Option<Vec<String>>) -> Done<()> {
+        let _held = self.held();
+        let project = self.project(id)?;
+        let tools = tools.map(|all| {
+            let mut kept: Vec<String> = Vec::new();
+            for name in all.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+                if !kept.iter().any(|k| k == name) {
+                    kept.push(name.to_owned());
+                }
+            }
+            kept
+        });
+        self.store
+            .set_setting(&projects::tools_key(id), &json!(tools).to_string())?;
+        self.emit(
+            EventKind::ProjectChanged,
+            json!({ "project": id.0, "title": project.title, "by": "owner", "what": "tools",
+                    "tools": tools }),
+        )
+    }
+
+    /// The tools a project's work is given, if the owner narrowed them.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn project_tools(&self, id: ProjectId) -> Done<Option<Vec<String>>> {
+        Ok(projects::tools_read(
+            self.store.setting(&projects::tools_key(id))?.as_deref(),
+        ))
+    }
+
+    /// The project a turn's work is in and the tools it gives that work, if it narrows them.
+    pub(super) fn project_tools_of_run(&self, run: RunId) -> Done<Option<(Project, Vec<String>)>> {
+        let task = self.store.run(run)?.and_then(|r| r.task);
+        let Some(id) = self.project_of(task)? else {
+            return Ok(None);
+        };
+        let Some(tools) = self.project_tools(id)? else {
+            return Ok(None);
+        };
+        Ok(Some((self.project(id)?, tools)))
+    }
+
+    /// Why a turn on a narrowed project's work is refused one of HQ's tools, if it is: any
+    /// but its own four and what the project gives it.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn project_refuses(&self, run: RunId, tool: &str) -> Done<Option<String>> {
+        let Some((project, tools)) = self.project_tools_of_run(run)? else {
+            return Ok(None);
+        };
+        if crate::domain::deploy::HQ_TOOLS.contains(&tool) || tools.iter().any(|t| t == tool) {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "{tool} is not among the tools of project \"{}\": its work is given {} and nothing else",
+            project.title,
+            crate::domain::deploy::HQ_TOOLS
+                .iter()
+                .map(|t| (*t).to_owned())
+                .chain(tools)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
+    }
+
     /// The owner decides a cap the CEO asked for (`approve`, at what the owner writes or what
     /// was asked; `decline`), or a budget pause (`raise`, to what the owner writes; `wait` for
     /// the month to turn).

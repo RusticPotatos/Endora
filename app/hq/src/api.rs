@@ -122,6 +122,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects", post(add_project))
         .route("/v1/projects/{id}", post(change_project))
         .route("/v1/projects/{id}/cap", post(project_cap))
+        .route("/v1/projects/{id}/tools", post(project_tools))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
         // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
@@ -920,6 +921,28 @@ async fn project_cap(
     let hq = state.hq.clone();
     blocking(move || hq.set_project_cap(ProjectId(id), cap)).await?;
     Ok(Json(json!({ "project": id, "cap": cap })))
+}
+
+#[derive(Deserialize)]
+struct ProjectTools {
+    #[serde(default)]
+    tools: Option<Vec<String>>,
+}
+
+/// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or with
+/// `null` takes the list away.
+async fn project_tools(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<ProjectTools>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let tools = req.tools;
+    let set = tools.clone();
+    blocking(move || hq.set_project_tools(ProjectId(id), set)).await?;
+    let hq = state.hq.clone();
+    let kept = blocking(move || hq.project_tools(ProjectId(id))).await?;
+    Ok(Json(json!({ "project": id, "tools": kept })))
 }
 
 #[derive(Deserialize)]

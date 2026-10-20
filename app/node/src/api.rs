@@ -569,6 +569,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/projects", post(hq_add_project))
         .route("/v1/hq/projects/{id}", post(hq_change_project))
         .route("/v1/hq/projects/{id}/cap", post(hq_project_cap))
+        .route("/v1/hq/projects/{id}/tools", post(hq_project_tools))
         .route("/v1/hq/members/{id}/reports_to", post(hq_reports_to))
         // Elastic staffing (ADR 0118): the owner furloughs and recalls; there is no route that
         // removes a member.

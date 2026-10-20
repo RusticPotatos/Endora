@@ -604,6 +604,43 @@ pub(super) async fn hq_project_cap(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqProjectTools {
+    #[serde(default)]
+    tools: Option<Vec<String>>,
+}
+
+/// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or takes
+/// the list away.
+pub(super) async fn hq_project_tools(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqProjectTools>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/tools"),
+        Some(json!({ "tools": req.tools })),
+    )
+    .await?;
+    let said = match answer.0["tools"].as_array() {
+        Some(tools) if tools.is_empty() => {
+            format!("you gave project {id}'s work none of the node's tools")
+        }
+        Some(tools) => format!(
+            "you gave project {id}'s work these tools alone: {}",
+            tools
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        None => format!("you took project {id}'s list of tools away"),
+    };
+    record(&state, &said);
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqReportsTo {
     to: i64,
 }
@@ -1338,6 +1375,62 @@ mod tests {
             "HQ: you added a note to member 5's notebook",
             "HQ: you edited note 2 in member 5's notebook",
             "HQ: you deleted note 2 from member 5's notebook",
+        ] {
+            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owners_list_of_a_projects_tools_passes_through_and_is_recorded() {
+        let (url, seen) = fake(Arc::new(|_, body| {
+            let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+            let body = json!({ "project": 3, "tools": sent["tools"] });
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        for tools in [
+            Some(vec![
+                "homelab_status".to_owned(),
+                "container_logs".to_owned(),
+            ]),
+            Some(Vec::new()),
+            None,
+        ] {
+            let answer = hq_project_tools(
+                State(state.clone()),
+                Path(3),
+                Json(HqProjectTools { tools }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(answer.0["project"], 3);
+        }
+        let sent: Vec<(String, serde_json::Value)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), serde_json::from_str(b).unwrap()))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (
+                    "/v1/projects/3/tools".to_owned(),
+                    json!({ "tools": ["homelab_status", "container_logs"] })
+                ),
+                ("/v1/projects/3/tools".to_owned(), json!({ "tools": [] })),
+                ("/v1/projects/3/tools".to_owned(), json!({ "tools": null })),
+            ]
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        for line in [
+            "HQ: you gave project 3's work these tools alone: homelab_status, container_logs",
+            "HQ: you gave project 3's work none of the node's tools",
+            "HQ: you took project 3's list of tools away",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }

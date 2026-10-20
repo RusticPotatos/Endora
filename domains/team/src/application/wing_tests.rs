@@ -2003,7 +2003,11 @@ fn the_checks_turn_has_the_lab_reads_and_nothing_more() {
     assert!(said.contains("post-deploy check"), "{said}");
     assert_eq!(
         hq.lab_tools_of(ada.run).unwrap(),
-        Some(vec!["homelab_status", "container_logs", "nas_status"])
+        Some(
+            ["homelab_status", "container_logs", "nas_status"]
+                .map(str::to_owned)
+                .to_vec()
+        )
     );
     assert!(!hq.may_use_a_shell(ada.run).unwrap());
     // Any other turn is as it was: no list, and a shell where the runner gives one.

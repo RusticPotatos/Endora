@@ -211,6 +211,25 @@ Scenarios: "A member past its share borrows what the others left", "The owner's 
 is the pool's, not the member's" and "A member may borrow one more share, then asks the owner"
 (`features/projects-and-their-money.feature`).
 
+## Amendment (2026-10-20): the tools a project's work is given
+
+The Holodeck plan's phase 4. A project may carry a list of the tools its work is given, set by
+the owner (`POST /v1/projects/{id}/tools` with `{"tools": [...]}`, through the node's
+`/v1/hq/projects/{id}/tools`; `null` takes the list away). With no list, nothing changes: a
+turn has what its role and brain give it. With one, a turn on the project's work, its
+sub-tasks' too, is given its own four (`my_turn`, `claim`, `post`, `set_status`) and the list,
+and nothing else, in the three places the check after a deploy is narrowed (ADR 0115, amended):
+
+- HQ offers only those of its tools, and refuses any other, whatever the model was told.
+- HQ tells the node the list (`only` on `/v1/team/turn`); the node offers and runs only the
+  contracts and bridged tools named in it, and keeps a refusal as a receipt that failed.
+- The runner gives the workbench's shell only when the list names `shell`.
+
+An empty list leaves a turn its own four and nothing of the node's: the shape of a scenario's
+project, which reads and acts only through its own tool. The list is kept as a setting
+(`project_tools:<id>`), so nothing in the store's tables changes. Not built yet: a field for it
+on the owner's screen.
+
 ## Consequences
 
 - Money has a second axis: what a piece of work may cost in a month, beside what a member may

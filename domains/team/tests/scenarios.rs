@@ -1289,7 +1289,7 @@ fn offered_alone(w: &mut Office, name: String, tools: String) {
 #[then(expr = "{word}'s turn may use the lab's {string} alone, with no shell")]
 fn lab_reads_alone(w: &mut Office, name: String, tools: String) {
     let run = w.turns.get(&name).expect("the turn started").run;
-    let wanted: Vec<&str> = tools.split(", ").collect();
+    let wanted: Vec<String> = tools.split(", ").map(str::to_owned).collect();
     assert_eq!(
         w.hq.lab_tools_of(run).expect("the store answers"),
         Some(wanted)
