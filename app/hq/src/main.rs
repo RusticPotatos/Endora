@@ -9,6 +9,7 @@ mod api;
 mod drain_cli;
 mod runner;
 mod team;
+mod time_zone;
 
 /// Endora's public library, embedded at build time for every member's `read_doc`.
 pub(crate) mod public_docs {
@@ -103,7 +104,7 @@ fn owners_offset(env: impl Fn(&str) -> Option<String>, now: i64) -> Result<i64, 
             format!("ENDORA_UTC_OFFSET_MINUTES must be whole minutes from UTC, not {minutes}")
         })?,
     };
-    let tz = endora_infrastructure::time_zone::TimeZone::named_or_fixed(&zone, fixed)?;
+    let tz = time_zone::TimeZone::named_or_fixed(&zone, fixed)?;
     Ok(tz.offset_minutes_at(now))
 }
 
@@ -532,6 +533,28 @@ mod tests {
         );
         assert!(owners_offset(env(&[("ENDORA_TIME_ZONE", "Mars/Olympus")]), evening).is_err());
         assert!(owners_offset(env(&[("ENDORA_UTC_OFFSET_MINUTES", "four")]), evening).is_err());
+    }
+
+    /// HQ is built from the team and nothing of the butler's (ADR 0136): the node's adapters,
+    /// and through them its chat, brain, mail and agenda, are not HQ's to compile, and retiring
+    /// them must not touch HQ.
+    #[test]
+    fn hq_builds_without_the_butlers_crates() {
+        let manifest = include_str!("../Cargo.toml");
+        for butler in [
+            "endora-infrastructure",
+            "endora-application",
+            "endora-conversation",
+            "endora-understanding",
+            "endora-scheduling",
+            "endora-mail",
+            "endora-agenda",
+        ] {
+            assert!(
+                !manifest.contains(butler),
+                "app/hq depends on {butler}, one of the butler's crates"
+            );
+        }
     }
 
     #[test]
