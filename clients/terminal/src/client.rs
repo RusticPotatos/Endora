@@ -1,8 +1,7 @@
-use crate::{Result, protocol::Sse, storage::Config};
+use crate::{Result, storage::Config};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct Client {
@@ -207,37 +206,5 @@ impl Client {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .ok_or("Sign-in did not return a session".into())
-    }
-
-    pub async fn chat(&self, message: String, events: mpsc::Sender<Value>) -> Result<()> {
-        let request = self
-            .request(reqwest::Method::POST, "/v1/chat/stream")
-            .header("Accept", "text/event-stream")
-            .json(&json!({"message": message, "request_id": uuid::Uuid::new_v4().to_string()}));
-        let mut response = Self::response(request, false).await?;
-        let mut sse = Sse::default();
-        while let Some(bytes) = response
-            .chunk()
-            .await
-            .map_err(|_| "Chat interrupted; outcome uncertain. Refresh history before resending")?
-        {
-            for event in sse.push(&bytes)? {
-                let done = event["type"] == "done";
-                let failed = event["type"] == "error";
-                events.send(event).await.map_err(|_| "Chat closed")?;
-                if done {
-                    return Ok(());
-                }
-                if failed {
-                    return Err(
-                        "Node reported a chat error; refresh history before resending".into(),
-                    );
-                }
-            }
-        }
-        Err(
-            "Chat ended without completion; outcome uncertain. Refresh history before resending"
-                .into(),
-        )
     }
 }

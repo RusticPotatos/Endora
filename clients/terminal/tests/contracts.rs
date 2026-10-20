@@ -1,19 +1,7 @@
 use endora_terminal::{
-    protocol::{Sse, clean},
+    protocol::clean,
     storage::{Config, Paths},
 };
-
-#[test]
-fn fragmented_sse_and_unknown_events() {
-    let mut sse = Sse::default();
-    assert!(sse.push(b"data: {\"type\":\"tok").unwrap().is_empty());
-    let events = sse
-        .push(b"en\",\"text\":\"hello\"}\r\n\r\ndata: {\"type\":\"future\"}\n\n")
-        .unwrap();
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0]["text"], "hello");
-    assert!(sse.push(b": heartbeat\n\n").unwrap().is_empty());
-}
 
 #[test]
 fn terminal_controls_are_removed() {
@@ -21,7 +9,7 @@ fn terminal_controls_are_removed() {
 }
 
 #[test]
-fn caps_lock_does_not_change_shortcuts_or_lowercase_chat_text() {
+fn caps_lock_does_not_change_shortcuts_or_lowercase_typed_text() {
     use crossterm::event::KeyCode;
     use endora_terminal::protocol::shortcut;
     assert_eq!(shortcut(KeyCode::Char('S'), true), KeyCode::Char('s'));
@@ -66,34 +54,6 @@ fn private_files_and_symlinks() {
 
 // The node's wire types (ADR 0099). Each sample is what the node sends; rendering it must show
 // what it carries, so a field renamed on one side fails here as well as in the node's own tests.
-
-#[test]
-fn every_chat_stream_event_the_node_sends_shows() {
-    use endora_terminal::presentation::on_stream;
-    let mut chat = String::new();
-    let mut seen = false;
-    let mut statuses = Vec::new();
-    for event in endora_protocol::samples::stream() {
-        if let Some(status) = on_stream(&event, &mut chat, &mut seen) {
-            statuses.push(status);
-        }
-    }
-    assert!(
-        statuses.iter().any(|s| s.contains("Checking the weather")),
-        "a step says what Endora is doing: {statuses:?}"
-    );
-    assert!(
-        statuses
-            .iter()
-            .any(|s| s.contains("The model did not answer")),
-        "an error is shown, not swallowed: {statuses:?}"
-    );
-    assert_eq!(
-        chat.matches("It is sunny.").count(),
-        1,
-        "the streamed text is shown once, not again when the reply completes: {chat:?}"
-    );
-}
 
 #[test]
 fn every_handheld_page_shows_what_the_node_sends() {

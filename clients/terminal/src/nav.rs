@@ -6,8 +6,8 @@ use crossterm::event::KeyCode;
 /// Where a menu item goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// A page by its index (0 Home, 1 Endora, 2 Controls, 3 TV & Movies, 4 NAS, 5 Jobs,
-    /// 6 Settings, 7 Music, 8 Bluetooth).
+    /// A page by its index (0 Home, 2 Controls, 3 TV & Movies, 4 NAS, 5 Jobs, 6 Settings,
+    /// 7 Music, 8 Bluetooth). Slot 1 was the chat, retired with it (ADR 0136).
     Page(usize),
     /// Settings, at its list or straight inside one section.
     Settings(Option<Section>),
@@ -27,11 +27,6 @@ pub const MENU: &[MenuItem] = &[
         key: 'h',
         label: "Home",
         target: Target::Page(0),
-    },
-    MenuItem {
-        key: 'e',
-        label: "Endora AI",
-        target: Target::Page(1),
     },
     MenuItem {
         key: 'c',
@@ -335,8 +330,23 @@ pub fn start_view(choice: StartScreen, last_page: Option<usize>) -> (usize, bool
     match choice {
         StartScreen::Home => (0, false),
         StartScreen::Menu => (0, true),
-        StartScreen::Last => (last_page.filter(|p| *p < 9).unwrap_or(0), false),
+        StartScreen::Last => (
+            last_page.filter(|p| *p < 9 && *p != CHAT).unwrap_or(0),
+            false,
+        ),
     }
+}
+
+/// The page that was the chat, retired with it (ADR 0136): never offered, never reached.
+const CHAT: usize = 1;
+
+/// The page Tab moves to from `page`: the next one, around the nine, skipping the chat's.
+pub fn next_page(page: usize) -> usize {
+    let next = (page + 1) % 9;
+    if next == CHAT {
+        return next + 1;
+    }
+    next
 }
 
 /// The rows inside a section. Bluetooth has none: it opens its own page.
