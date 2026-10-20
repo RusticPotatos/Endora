@@ -12,6 +12,7 @@ use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools_in};
 use crate::domain::closure::{Closure, DoneWhy, DropWhy};
 use crate::domain::scenario::{Action, Cause, Lighthouse, Part};
+use crate::domain::station::{Action as StationAction, Anomaly, Station};
 use crate::domain::{MemberId, ProjectId, Refusal, Role, TaskId, TaskStatus};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -317,5 +318,246 @@ fn a_scenario_starts_only_in_a_project_that_gives_it_the_tool_alone() {
         use_tool(&hq, &context, "scenario", &json!({ "action": "look" }))
             .unwrap_err()
             .contains("no scenario")
+    );
+}
+
+/// Three members on the house's models, and a Holodeck project for scenarios.
+fn crew(hq: &Hq<'_>) -> ([MemberId; 3], ProjectId) {
+    let (dev, project) = holodeck(hq);
+    let zed = hq.hire("Zed", Role::Developer, 40, 2, 4).unwrap();
+    let rae = hq.hire("Rae", Role::Developer, 40, 2, 4).unwrap();
+    ([dev, zed, rae], project)
+}
+
+/// The station whose anomaly is `anomaly`, by seed.
+fn station_seed(anomaly: Anomaly) -> u64 {
+    (0..).find(|s| Station::new(*s).anomaly == anomaly).unwrap()
+}
+
+/// Each member's running turn, once the tick has started them.
+fn turns(hq: &Hq<'_>, members: &[MemberId]) -> Vec<RunContext> {
+    hq.tell_mac(true, "ready");
+    hq.tick().unwrap();
+    let started = hq.runner().started();
+    members
+        .iter()
+        .map(|m| {
+            started
+                .iter()
+                .rev()
+                .find(|c| c.member == *m)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "a turn of {m:?}'s: started {:?}; wakes {:?}",
+                        started
+                            .iter()
+                            .map(|c| (c.member, c.task))
+                            .collect::<Vec<_>>(),
+                        hq.store()
+                            .wakes()
+                            .unwrap()
+                            .iter()
+                            .map(|w| (w.member, w.task, w.reason, w.receipt))
+                            .collect::<Vec<_>>()
+                    )
+                })
+                .clone()
+        })
+        .collect()
+}
+
+fn act(hq: &Hq<'_>, context: &RunContext, action: &str) -> Result<String, String> {
+    use_tool(hq, context, "scenario", &json!({ "action": action }))
+}
+
+// G4 of the roadmap: Silent Station plays end to end, with enforced consequences and not a
+// scripted chat. Three members wear the mission's roles: the captain holds the mission, science
+// and the engineer a part of it each, all in one world. Each acts only as its role; an accepted
+// action wakes the rest of the crew; the world closes the mission and every part of it, scored.
+#[test]
+fn silent_station_is_played_by_a_crew_in_one_world_and_closes_itself() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([captain, science, engineer], project) = crew(&hq);
+    let seed = station_seed(Anomaly::MagneticField);
+    let mission = hq
+        .start_station(project, [captain, science, engineer], seed)
+        .unwrap();
+    let parts: Vec<_> = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.parent == Some(mission))
+        .collect();
+    assert_eq!(
+        parts.iter().map(|t| t.assignee).collect::<Vec<_>>(),
+        [Some(science), Some(engineer)]
+    );
+    assert!(parts[1].description.contains("You are the engineer"));
+    let [c, s, e] = <[RunContext; 3]>::try_from(turns(&hq, &[captain, science, engineer]))
+        .ok()
+        .unwrap();
+    let (run, member) = hq.turn_of(&e.token).unwrap().unwrap();
+    let scenario_tool = tools_in(&hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "scenario")
+        .cloned()
+        .expect("the crew is offered the scenario tool");
+    assert!(
+        scenario_tool.to_string().contains("route_power"),
+        "the station's actions: {scenario_tool}"
+    );
+
+    // Each role acts alone, and nothing happens before the scan.
+    assert!(
+        act(&hq, &c, "attempt_contact")
+            .unwrap_err()
+            .contains("scan")
+    );
+    assert!(
+        act(&hq, &e, "scan_station")
+            .unwrap_err()
+            .contains("the science's to do, not the engineer's")
+    );
+    let woken_before = hq.store().wakes().unwrap().len();
+    assert!(
+        act(&hq, &s, "scan_station")
+            .unwrap()
+            .contains("looks intact")
+    );
+    let woken: Vec<MemberId> = hq
+        .store()
+        .wakes()
+        .unwrap()
+        .into_iter()
+        .skip(woken_before)
+        .map(|w| w.member)
+        .collect();
+    assert!(
+        woken.contains(&captain) && woken.contains(&engineer) && !woken.contains(&science),
+        "the rest of the crew hears of it: {woken:?}"
+    );
+    assert!(
+        use_tool(
+            &hq,
+            &e,
+            "set_status",
+            &json!({ "task": parts[1].id.0, "status": "done", "reason": "fixed it" }),
+        )
+        .unwrap_err()
+        .contains("the world")
+    );
+
+    // The probe as a relay: analyse, place it, call.
+    assert!(
+        act(&hq, &s, "analyze_anomaly")
+            .unwrap()
+            .contains("magnetic field")
+    );
+    assert!(act(&hq, &c, "send_probe").unwrap().contains("relay"));
+    let answered = act(&hq, &c, "attempt_contact").unwrap();
+    assert!(
+        answered.contains("answers") && answered.contains("success"),
+        "{answered}"
+    );
+
+    for task in std::iter::once(mission).chain(parts.iter().map(|t| t.id)) {
+        assert_eq!(
+            hq.store().task(task).unwrap().unwrap().status,
+            TaskStatus::Done,
+            "the world closes the mission and its parts"
+        );
+    }
+    let shown = hq.scenario_shown(mission).unwrap();
+    assert_eq!(
+        (
+            &shown["kind"],
+            &shown["end"],
+            &shown["score"],
+            &shown["anomaly"]
+        ),
+        (
+            &json!("silent_station"),
+            &json!("success"),
+            &json!(75),
+            &json!("magnetic field")
+        )
+    );
+    let log: Vec<(String, bool, String)> = shown["log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["action"].as_str().unwrap().to_owned(),
+                a["ok"].as_bool().unwrap(),
+                a["role"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        log,
+        [
+            ("attempt_contact".to_owned(), false, "captain".to_owned()),
+            ("scan_station".to_owned(), false, "engineer".to_owned()),
+            ("scan_station".to_owned(), true, "science".to_owned()),
+            ("analyze_anomaly".to_owned(), true, "science".to_owned()),
+            ("send_probe".to_owned(), true, "captain".to_owned()),
+            ("attempt_contact".to_owned(), true, "captain".to_owned()),
+        ]
+    );
+    // The same log replays to the same station.
+    assert_eq!(
+        hq.replay_station(mission).unwrap(),
+        Station::replay(
+            seed,
+            &[
+                StationAction::ScanStation,
+                StationAction::AnalyzeAnomaly,
+                StationAction::SendProbe,
+                StationAction::AttemptContact
+            ]
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn rushing_the_storm_fails_the_mission_and_drops_every_part_of_it() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([captain, science, engineer], project) = crew(&hq);
+    let mission = hq
+        .start_station(
+            project,
+            [captain, science, engineer],
+            station_seed(Anomaly::IonStorm),
+        )
+        .unwrap();
+    let [_, s, e] = <[RunContext; 3]>::try_from(turns(&hq, &[captain, science, engineer]))
+        .ok()
+        .unwrap();
+    act(&hq, &s, "scan_station").unwrap();
+    act(&hq, &e, "inspect_comms").unwrap();
+    let hurt = act(&hq, &e, "route_power").unwrap();
+    assert!(hurt.contains("hurt") && hurt.contains("failure"), "{hurt}");
+    let all: Vec<TaskStatus> = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.id == mission || t.parent == Some(mission))
+        .map(|t| t.status)
+        .collect();
+    assert_eq!(all, [TaskStatus::Dropped; 3]);
+    assert_eq!(hq.scenario_shown(mission).unwrap()["score"], 0);
+    assert_eq!(
+        hq.start_station(project, [captain, captain, engineer], 1),
+        Err(EngineError::Refused(Refusal::Scenario(
+            "a crew is three different members".to_owned()
+        )))
     );
 }

@@ -625,9 +625,9 @@ pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if engine.in_consult(run.id).unwrap_or(false) {
         list.push(super::protocol_history::answer_consult_tool());
     }
-    // A scenario's turn acts in it with its tool (the Holodeck plan's phase 5).
-    if engine.in_scenario(run.id).unwrap_or(false) {
-        list.push(super::scenario_tool::tool());
+    // A scenario's turn acts in its world with its tool (the Holodeck plan's phases 5 and 6).
+    if let Ok(Some(kind)) = engine.scenario_kind_of_run(run.id) {
+        list.push(super::scenario_tool::tool(kind));
     }
     // The check after a deploy is offered its four tools alone (ADR 0115, amended); a turn on
     // the work of a project that lists its tools, those four and the list (the Holodeck plan's

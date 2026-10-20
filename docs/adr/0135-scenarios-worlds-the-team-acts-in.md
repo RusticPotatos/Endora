@@ -49,6 +49,35 @@ The first scenario is **the lighthouse**: its lamp is dark, for a cause the seed
 or the fuse). Three actions (`inspect`, `test_circuit`, `replace_part`), each with a precondition
 and a cost in minutes, an hour to light it, and two ways to do so in time.
 
+## Amendment (2026-10-20): Silent Station, a crew in one world
+
+Phase 6 of the plan, and the roadmap's G4: a mission a crew plays end to end, with consequences
+the world enforces, not a scripted chat. A research station has stopped transmitting; the
+crew must find out why and restore contact before its life support runs out, without hurting
+anyone (`domain/station.rs`).
+
+- **The world.** The hidden cause is always a burnt-out comms relay, with an anomaly the seed
+  picks: an ion storm on the power junction (routing power through it before it is analysed
+  hurts the engineer) or a magnetic field (harmless, but it scatters a call). Seen from outside,
+  the array looks intact: misleading, not arbitrary. Six actions, `scan_station`,
+  `inspect_comms`, `analyze_anomaly`, `route_power`, `send_probe` and `attempt_contact`, each
+  with a precondition and a cost in ticks and the ship's energy. Two ways succeed (repair the
+  power path, or place a probe as a relay once the anomaly is understood); the ship's energy
+  pays for one of them, not both.
+- **Outcomes, scored.** Success (contact, nobody hurt: 100 less 5 a tick, at least 50),
+  partial (the cause found, contact not made before life support ran out: 30), failure (someone
+  hurt, or time out with the cause unknown: 0). A mission the owner stops is dropped as any task.
+- **A crew of three.** The owner starts it for three different members (`kind:
+  "silent_station"`, `crew: [captain, science, engineer]`). The captain's task is the mission;
+  science and the engineer each have a part of it. All three act in the mission's one world and
+  one log, each only as its role: the captain sends the probe and makes the call, science scans
+  and analyses, the engineer inspects the comms and routes power. An accepted action wakes the
+  rest of the crew on their own parts; that is bounded, as every accepted action spends the
+  station's time. The world closes the mission and its parts together.
+- **The owner's view** of a mission adds its state (power, life support, energy, hazard, the
+  probe, contact), its score, its crew by role, each step's role, and, once it is over, the
+  anomaly.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.

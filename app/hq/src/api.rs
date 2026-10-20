@@ -929,14 +929,23 @@ async fn project_cap(
 #[derive(Deserialize)]
 struct StartScenario {
     project: i64,
-    member: i64,
+    /// `lighthouse` (the default) or `silent_station`.
+    #[serde(default)]
+    kind: Option<String>,
+    /// The lighthouse's member.
+    #[serde(default)]
+    member: Option<i64>,
+    /// Silent Station's crew: the captain, science and the engineer.
+    #[serde(default)]
+    crew: Option<[i64; 3]>,
     /// The world's seed: the same seed is the same world. Today's clock when not given.
     #[serde(default)]
     seed: Option<u64>,
 }
 
-/// The owner starts a scenario for a member, in a project that gives its work the scenario
-/// tool alone; starting it again with the same seed is its reset.
+/// The owner starts a scenario, in a project that gives its work the scenario tool alone: the
+/// lighthouse for a member, or Silent Station for a crew of three. Starting it again with the
+/// same seed is its reset.
 async fn start_scenario(
     Extract(state): Extract<State>,
     Json(req): Json<StartScenario>,
@@ -947,9 +956,22 @@ async fn start_scenario(
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0))
     });
     let hq = state.hq.clone();
-    let task =
-        blocking(move || hq.start_scenario(ProjectId(req.project), MemberId(req.member), seed))
-            .await?;
+    let project = ProjectId(req.project);
+    let task = match (req.kind.as_deref(), req.member, req.crew) {
+        (Some("silent_station"), _, Some(crew)) => {
+            blocking(move || hq.start_station(project, crew.map(MemberId), seed)).await?
+        }
+        (None | Some("lighthouse"), Some(member), _) => {
+            blocking(move || hq.start_scenario(project, MemberId(member), seed)).await?
+        }
+        _ => {
+            return Err(Failed(EngineError::Refused(Refusal::Scenario(
+                "a lighthouse names its member; silent_station names its crew: [captain, \
+                 science, engineer]"
+                    .to_owned(),
+            ))));
+        }
+    };
     Ok(Json(json!({ "task": task.0, "seed": seed })))
 }
 
