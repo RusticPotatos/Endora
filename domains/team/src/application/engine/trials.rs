@@ -20,6 +20,9 @@ fn key(name: &str) -> String {
     format!("trial:{name}")
 }
 
+/// Where the trials' names are kept, in the order they started, for the screen to list.
+const INDEX: &str = "trials";
+
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The brain a member's turns in a scenario will really run on, as the engine places a
     /// turn it was handed (ADR 0131): its Claude for judgment; for work, the house's model, the
@@ -102,6 +105,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
             }));
         }
+        let mut names = self.trial_names()?;
+        names.push(name.to_owned());
+        self.store.set_setting(INDEX, &json!(names).to_string())?;
         let mut runs: Vec<Value> = Vec::new();
         let mut started = Vec::new();
         for seed in seeds {
@@ -143,6 +149,36 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(started)
+    }
+
+    /// The trials' names, in the order they started.
+    fn trial_names(&self) -> Done<Vec<String>> {
+        Ok(self
+            .store
+            .setting(INDEX)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default())
+    }
+
+    /// The Holodeck as the owner's screen lists it: the latest scenarios, newest first, and
+    /// the trials, newest first, each with its world and how many runs it started.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn holodeck_shown(&self) -> Done<Value> {
+        let mut trials = Vec::new();
+        for name in self.trial_names()?.iter().rev() {
+            let Some(kept) = self
+                .store
+                .setting(&key(name))?
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            else {
+                continue;
+            };
+            trials.push(json!({ "name": name, "kind": kept["kind"],
+                                "runs": kept["runs"].as_array().map_or(0, Vec::len) }));
+        }
+        Ok(json!({ "scenarios": self.scenarios_listed(20)?, "trials": trials }))
     }
 
     /// A trial compared: its world, version and seeds; each condition summed from the record;

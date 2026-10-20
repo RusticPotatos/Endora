@@ -866,3 +866,43 @@ fn a_chess_match_is_played_a_move_a_turn_with_its_illegal_moves_kept() {
     assert_eq!(report["kind"], "chess");
     assert!(report["runs"][0]["by_role"].is_array());
 }
+
+// The owner's screen lists the Holodeck: the scenarios, newest first, with their world, title
+// and end, and the trials, with their world and how many runs they started.
+#[test]
+fn the_screen_lists_the_scenarios_and_the_trials() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([linus, zed, rae], project) = crew(&hq);
+    let lamp = hq.start_scenario(project, linus, 2).unwrap();
+    let game = hq.start_chess(project, [zed, rae], 1).unwrap();
+    hq.start_trial(
+        "pair",
+        project,
+        "lighthouse",
+        &[arm("a", &[linus]), arm("b", &[zed])],
+        &[3],
+    )
+    .unwrap();
+    let shown = hq.holodeck_shown().unwrap();
+    let scenarios = shown["scenarios"].as_array().unwrap();
+    assert_eq!(
+        scenarios.len(),
+        4,
+        "the two started and the trial's two: {shown}"
+    );
+    assert_eq!(scenarios[2]["task"], game.0, "newest first");
+    assert_eq!(scenarios[2]["kind"], "chess");
+    assert_eq!(scenarios[3]["task"], lamp.0);
+    assert!(
+        scenarios[3]["title"]
+            .as_str()
+            .unwrap()
+            .contains("lighthouse")
+    );
+    assert_eq!(scenarios[3]["end"], json!(null));
+    assert_eq!(
+        shown["trials"],
+        json!([{ "name": "pair", "kind": "lighthouse", "runs": 2 }])
+    );
+}

@@ -1506,6 +1506,7 @@ function viewHQ() {
           <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
           <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
         ${hqProjects(s)}
+        ${hqHolodeck(s)}
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
@@ -1714,7 +1715,10 @@ function hqTablePanel(id) {
 function hqGames(s) {
   const g = s.games;
   if (!g) return "";
-  const recent = (g.recent || []).map((r) => `<li>${esc(r.text)}</li>`).join("");
+  // A match of pool or ping-pong plays again, step by step, a tap away (ADR 0121).
+  const recent = (g.recent || []).map((r) => `<li>${esc(r.text)}${r.game === "pool" || r.game === "ping_pong"
+    ? ` <button class="hq-btn" data-act="hq:holo:replay:${Number(r.id)}">Replay</button>` : ""}</li>`).join("");
+  const replay = HQ.holo && HQ.holo.what === "replay" ? hqHoloDetail() : "";
   const playing = (((g.chess || {}).games) || []).filter((c) => c.status === "in_progress")
     .map((c) => `<li>${esc(c.white)} against ${esc(c.black)}: ${esc(c.to_move)} to move, ${(c.moves || []).length} moves
       <button class="hq-btn" data-act="hq:pick:chess:0">Look at the board</button></li>`).join("");
@@ -1724,7 +1728,8 @@ function hqGames(s) {
     <details open><summary>Pool</summary>${hqLeaderboard(g.pool, false)}</details>
     <details open><summary>Chess</summary>${hqLeaderboard(g.chess, true)}</details>
     ${playing ? `<p class="hq-who">Playing now</p><ul class="hq-team">${playing}</ul>` : ""}
-    ${recent ? `<p class="hq-who">Latest results</p><ul class="hq-team">${recent}</ul>` : `<p class="hq-empty">No results yet.</p>`}`;
+    ${recent ? `<p class="hq-who">Latest results</p><ul class="hq-team">${recent}</ul>` : `<p class="hq-empty">No results yet.</p>`}
+    ${replay}`;
 }
 
 // Whether a push on the desk can be approved: the node has a deploy key, so the card says
@@ -2221,6 +2226,8 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
   if (noun === "mac") return hqMacAct(id, arg);
+  // The Holodeck and the office's replays (ADR 0135, 0121).
+  if (noun === "holo") return hqHoloAct(id, arg);
   if (noun === "roster") {
     HQ.roster[id] = !HQ.roster[id]; render();
     if (HQ.roster[id]) hqLoadNotebook(Number(id));

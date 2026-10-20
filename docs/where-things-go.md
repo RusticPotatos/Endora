@@ -46,7 +46,9 @@ The menu holds the everyday destinations; everything that configures lives in Se
 - A new top-level menu entry needs a reason the existing ones cannot hold it, in its ADR.
 - Inside HQ, use its tabs: Desk (what waits on you, and at its top the digest of what happened
   while you were away), Team (with how the team is doing: outcomes first), Work, Knowledge,
-  Office (games, last). Something that needs your word goes on the desk; something you may want
+  Office (games, last; a match's step-by-step replay is a tap on its result). The Holodeck's
+  scenarios and trials are work, so they are a card in Work, each opened step by step there.
+  Something that needs your word goes on the desk; something you may want
   to look at, but nothing waits on, goes in the digest. Fun and decoration go in Office, never
   above the desk. A switch for a guard that is tried in shadow sits on that guard's line of the
   Guards card, in Work, and not in Settings; a turn that waits for tomorrow shows in the top bar

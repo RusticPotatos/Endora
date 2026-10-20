@@ -4962,6 +4962,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "office": self.office_shown()?,
             // Ping-pong, pool and chess in the office (ADR 0121).
             "games": self.games_shown()?,
+            // The Holodeck's scenarios and trials (ADR 0135).
+            "holodeck": self.holodeck_shown()?,
             // The guards (ADR 0124): their thresholds, precision, ceremony and findings.
             "guards": self.guards_shown()?,
             // The owner's Mac as the team sees it (ADR 0130).
