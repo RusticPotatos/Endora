@@ -655,6 +655,9 @@ pub enum Refusal {
     Office(super::office::Refused),
     /// A game of chess refuses a move or a challenge (ADR 0121).
     Chess(super::chess::Refused),
+    /// A scenario refuses an action, or its world is not a model's to close (the Holodeck
+    /// plan's phase 5): the world's own words.
+    Scenario(String),
     /// There is no such proposal for the office.
     NoSuchProposal(i64),
     /// The proposal is decided already.
@@ -864,6 +867,7 @@ impl fmt::Display for Refusal {
             }
             Self::Office(refused) => refused.fmt(f),
             Self::Chess(refused) => refused.fmt(f),
+            Self::Scenario(why) => f.write_str(why),
             Self::NoSuchProposal(id) => write!(f, "there is no proposal {id} for the office"),
             Self::ProposalClosed(id) => write!(f, "proposal {id} is closed: it is decided"),
             Self::AlreadyVoted => f.write_str(

@@ -132,6 +132,29 @@ pub struct Cited {
     pub at: Millis,
 }
 
+/// One action in a scenario, as its log keeps it (the Holodeck plan's phase 5): the accepted
+/// ones, replayed in order from the seed, are the world's state; the refused ones are kept as
+/// what was tried. The log is append-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScenarioAction {
+    /// Its place in the log (ignored when added).
+    pub id: i64,
+    /// The scenario's task.
+    pub task: TaskId,
+    /// The turn that acted.
+    pub run: RunId,
+    /// The member whose turn it was.
+    pub member: MemberId,
+    /// The action, as the scenario keeps it (`inspect`, `replace_part bulb`).
+    pub action: String,
+    /// Whether the world accepted it.
+    pub ok: bool,
+    /// What the world said: what was seen, or why it was refused.
+    pub said: String,
+    /// When.
+    pub at: Millis,
+}
+
 /// One wake, as its receipt keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wake {
@@ -506,6 +529,16 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn call_receipts_of(&self, run: RunId) -> Stored<Vec<CallReceipt>>;
+    /// Adds an action to a scenario's log (its `id` is ignored) and returns its id.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_scenario_action(&self, action: &ScenarioAction) -> Stored<i64>;
+    /// A scenario's log, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn scenario_actions(&self, task: TaskId) -> Stored<Vec<ScenarioAction>>;
     /// Records evidence cited for a criterion.
     ///
     /// # Errors

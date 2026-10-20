@@ -128,6 +128,9 @@ pub enum EventKind {
     ChessMoved,
     /// A game of chess ended: won, drawn or adjourned.
     ChessEnded,
+    /// A member acted in a scenario, accepted or refused, and whether that ended it (the
+    /// Holodeck plan's phase 5).
+    ScenarioActed,
     /// A goal's strategy was written, by the CEO or the owner (ADR 0120).
     StrategySet,
     /// A lead reported on its area (ADR 0120).
@@ -225,6 +228,7 @@ impl EventKind {
             Self::ChessStarted => "chess.started",
             Self::ChessMoved => "chess.moved",
             Self::ChessEnded => "chess.ended",
+            Self::ScenarioActed => "scenario.acted",
             Self::StrategySet => "goal.strategy",
             Self::AreaReported => "area.reported",
             Self::StuckClimbed => "stuck.climbed",

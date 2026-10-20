@@ -625,6 +625,10 @@ pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if engine.in_consult(run.id).unwrap_or(false) {
         list.push(super::protocol_history::answer_consult_tool());
     }
+    // A scenario's turn acts in it with its tool (the Holodeck plan's phase 5).
+    if engine.in_scenario(run.id).unwrap_or(false) {
+        list.push(super::scenario_tool::tool());
+    }
     // The check after a deploy is offered its four tools alone (ADR 0115, amended); a turn on
     // the work of a project that lists its tools, those four and the list (the Holodeck plan's
     // phase 4).
@@ -900,6 +904,10 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     {
         return Err(refusal);
     }
+    // A scenario is closed by its world, never by a member's word (the Holodeck plan's phase 5).
+    if let Some(refusal) = engine.scenario_refuses(tool, args).map_err(|e| said(&e))? {
+        return Err(refusal);
+    }
     // A project that lists its tools gives its work those and the turn's own four (the
     // Holodeck plan's phase 4): refused here too, whatever the model was told.
     if let Some(refusal) = engine.project_refuses(run.id, tool).map_err(|e| said(&e))? {
@@ -915,6 +923,7 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     match tool {
         "office" => office_call(engine, run, args),
         "chess" => super::chess_tool::call(engine, run, args),
+        "scenario" => super::scenario_tool::call(engine, run, args),
         "my_turn" => {
             let mut out = run.told.clone();
             if let Some(task) = run.task {

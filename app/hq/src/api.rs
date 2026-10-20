@@ -123,6 +123,9 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}", post(change_project))
         .route("/v1/projects/{id}/cap", post(project_cap))
         .route("/v1/projects/{id}/tools", post(project_tools))
+        // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
+        .route("/v1/scenarios", post(start_scenario))
+        .route("/v1/scenarios/{task}", get(scenario_shown))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
         // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
@@ -921,6 +924,44 @@ async fn project_cap(
     let hq = state.hq.clone();
     blocking(move || hq.set_project_cap(ProjectId(id), cap)).await?;
     Ok(Json(json!({ "project": id, "cap": cap })))
+}
+
+#[derive(Deserialize)]
+struct StartScenario {
+    project: i64,
+    member: i64,
+    /// The world's seed: the same seed is the same world. Today's clock when not given.
+    #[serde(default)]
+    seed: Option<u64>,
+}
+
+/// The owner starts a scenario for a member, in a project that gives its work the scenario
+/// tool alone; starting it again with the same seed is its reset.
+async fn start_scenario(
+    Extract(state): Extract<State>,
+    Json(req): Json<StartScenario>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let seed = req.seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0))
+    });
+    let hq = state.hq.clone();
+    let task =
+        blocking(move || hq.start_scenario(ProjectId(req.project), MemberId(req.member), seed))
+            .await?;
+    Ok(Json(json!({ "task": task.0, "seed": seed })))
+}
+
+/// A scenario, its state and its log step by step.
+async fn scenario_shown(
+    Extract(state): Extract<State>,
+    Path(task): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(
+        blocking(move || hq.scenario_shown(TaskId(task))).await?,
+    ))
 }
 
 #[derive(Deserialize)]

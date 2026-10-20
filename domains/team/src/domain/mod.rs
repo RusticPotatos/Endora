@@ -34,6 +34,7 @@ pub mod review;
 pub mod routines;
 pub mod runs;
 pub mod runtime;
+pub mod scenario;
 pub mod situations;
 pub mod staffing;
 pub mod turns;

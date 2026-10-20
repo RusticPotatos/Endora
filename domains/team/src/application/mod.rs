@@ -10,6 +10,7 @@ pub mod protocol;
 pub mod protocol_history;
 pub mod protocol_world;
 pub mod replay;
+mod scenario_tool;
 pub mod scorecard;
 pub mod world_ports;
 
@@ -78,6 +79,9 @@ mod office_tests;
 
 #[cfg(test)]
 mod games_tests;
+
+#[cfg(test)]
+mod scenario_tests;
 
 #[cfg(test)]
 mod raci_tests;

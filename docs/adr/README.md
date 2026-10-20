@@ -155,6 +155,10 @@ rule the code actually follows, with the decision that established it.
   nothing new starts, the turns under way are told to wrap up (and may end with a handover note,
   keeping their task), and the restart waits for them up to a cap. What it still cuts is tried
   again as before, and told to the owner once in the digest, and only when it cut something.
+- **A simulated world closes its own task** ([0135](0135-scenarios-worlds-the-team-acts-in.md)).
+  A scenario is a task in a project that gives its work the scenario tool alone; the world is a
+  pure function of its seed and an append-only log of every action, refused ones too; only its
+  rules, in code, say it is solved or failed, and a member's word never closes it.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -309,6 +313,7 @@ of an existing record and take the next number.
 | [0132](0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md) | Outcomes, and a desk that interrupts only for decisions | — |
 | [0133](0133-caps-on-talk-and-runaway.md) | Caps on talk and runaway | — |
 | [0134](0134-a-drain-before-every-restart.md) | A drain before every restart | - |
+| [0135](0135-scenarios-worlds-the-team-acts-in.md) | Scenarios: worlds the team acts in, which only the world closes | - |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

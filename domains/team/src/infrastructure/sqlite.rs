@@ -143,6 +143,18 @@ CREATE TRIGGER IF NOT EXISTS call_receipts_are_kept_update
     BEFORE UPDATE ON call_receipts BEGIN SELECT RAISE(ABORT, 'a receipt is never changed'); END;
 CREATE TRIGGER IF NOT EXISTS call_receipts_are_kept_delete
     BEFORE DELETE ON call_receipts BEGIN SELECT RAISE(ABORT, 'a receipt is never deleted'); END;
+-- A scenario's log (the Holodeck plan's phase 5): every action a member took in it, accepted
+-- or refused. Replaying the accepted ones from the seed is the world's state. Append-only.
+CREATE TABLE IF NOT EXISTS scenario_actions (
+    id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
+    run INTEGER NOT NULL REFERENCES runs(id), member INTEGER NOT NULL REFERENCES members(id),
+    action TEXT NOT NULL, ok INTEGER NOT NULL, said TEXT NOT NULL, at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS scenario_actions_by_task ON scenario_actions(task);
+CREATE TRIGGER IF NOT EXISTS scenario_actions_are_kept_update
+    BEFORE UPDATE ON scenario_actions BEGIN SELECT RAISE(ABORT, 'a scenario''s log is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS scenario_actions_are_kept_delete
+    BEFORE DELETE ON scenario_actions BEGIN SELECT RAISE(ABORT, 'a scenario''s log is append-only'); END;
 -- Evidence cited for a task's criteria, at each stage of its checking (ADR 0114).
 CREATE TABLE IF NOT EXISTS cited (
     id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
@@ -1223,6 +1235,45 @@ impl TeamStore for SqliteTeamStore {
             .map_err(backend)?;
         let rows = stmt
             .query_map([run.0], call_receipt_from)
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn add_scenario_action(&self, a: &crate::application::ports::ScenarioAction) -> Stored<i64> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO scenario_actions (task, run, member, action, ok, said, at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![a.task.0, a.run.0, a.member.0, a.action, a.ok, a.said, a.at],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn scenario_actions(
+        &self,
+        task: TaskId,
+    ) -> Stored<Vec<crate::application::ports::ScenarioAction>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, task, run, member, action, ok, said, at_ms FROM scenario_actions
+                 WHERE task = ?1 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([task.0], |row| {
+                Ok(crate::application::ports::ScenarioAction {
+                    id: row.get(0)?,
+                    task: TaskId(row.get(1)?),
+                    run: RunId(row.get(2)?),
+                    member: MemberId(row.get(3)?),
+                    action: row.get(4)?,
+                    ok: row.get(5)?,
+                    said: row.get(6)?,
+                    at: row.get(7)?,
+                })
+            })
             .map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
@@ -4048,5 +4099,40 @@ CREATE TABLE IF NOT EXISTS projects (
             .query_row("SELECT COUNT(*) FROM call_receipts", [], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 1);
+    }
+
+    #[test]
+    fn a_scenarios_log_is_never_changed_or_deleted() {
+        // Replaying the log is the world's state (the Holodeck plan's phase 5): an edited log
+        // would be another world.
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let conn = store.conn().unwrap();
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
+                 (1, 'Ada', 'lead', 100, 1);
+             INSERT INTO goals (id, title, reason, status) VALUES (1, 'Holodeck', '', 'active');
+             INSERT INTO tasks (id, goal, title, description, status, priority, depth) VALUES
+                 (1, 1, 'Lighthouse', '', 'doing', 'normal', 0);
+             INSERT INTO wakes (id, member, reason, receipt, at_ms) VALUES
+                 (1, 1, 'assigned', 'started', 1);
+             INSERT INTO runs (id, member, wake, status, queued_at) VALUES
+                 (1, 1, 1, 'succeeded', 1);
+             INSERT INTO scenario_actions (task, run, member, action, ok, said, at_ms) VALUES
+                 (1, 1, 1, 'inspect', 1, 'The housing is open.', 2);",
+        )
+        .unwrap();
+        for change in [
+            "UPDATE scenario_actions SET action = 'replace_part bulb'",
+            "DELETE FROM scenario_actions",
+        ] {
+            let said = conn.execute(change, []).unwrap_err().to_string();
+            assert!(said.contains("append-only"), "{change}: {said}");
+        }
+        drop(conn);
+        let kept = store.scenario_actions(TaskId(1)).unwrap();
+        assert_eq!(
+            kept.iter().map(|a| a.action.as_str()).collect::<Vec<_>>(),
+            ["inspect"]
+        );
     }
 }

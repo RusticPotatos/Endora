@@ -145,7 +145,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .find(|g| g.live() && g.plays(member)))
     }
 
-    fn names(&self) -> Done<HashMap<MemberId, String>> {
+    pub(super) fn names(&self) -> Done<HashMap<MemberId, String>> {
         Ok(self
             .store
             .members()?
