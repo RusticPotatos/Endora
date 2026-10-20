@@ -79,13 +79,10 @@ pub(super) fn to_remove(existing: &[String]) -> Vec<String> {
     };
     let mut gone = ours("daily-", ".db");
     gone.extend(ours("weekly-", ".db"));
-    gone.extend(ours("brain-daily-", ".bundle"));
-    gone.extend(ours("brain-weekly-", ".bundle"));
     gone
 }
 
-/// Writes tonight's copies of `database`, and of the `brain` with its whole history
-/// (`brain-daily-…bundle`, ADR 0101), into `folder` if they are due and not yet written,
+/// Writes tonight's copies of `database` into `folder` if they are due and not yet written,
 /// then prunes. Returns the size of the copy written, `None` when there was nothing to do.
 ///
 /// # Errors
@@ -96,7 +93,6 @@ pub(super) fn copy_tonight(
     folder: &Path,
     now_ms: i64,
     offset_minutes: i64,
-    brain: Option<&endora_understanding::BrainFolder>,
 ) -> Result<Option<u64>, String> {
     let Some(names) = tonights_copies(now_ms, offset_minutes) else {
         return Ok(None);
@@ -111,14 +107,6 @@ pub(super) fn copy_tonight(
     // The weekly is the same consistent copy; the daily is closed and checked by now.
     for weekly in names.iter().skip(1) {
         std::fs::copy(&daily, folder.join(weekly)).map_err(|e| e.to_string())?;
-    }
-    if let Some(brain) = brain {
-        for name in &names {
-            let bundle = format!("brain-{}", name.replace(".db", ".bundle"));
-            brain
-                .bundle(&folder.join(bundle))
-                .map_err(|e| format!("the brain could not be copied: {e}"))?;
-        }
     }
     let existing: Vec<String> = std::fs::read_dir(folder)
         .map_err(|e| e.to_string())?
@@ -148,19 +136,12 @@ pub fn spawn_snapshots(state: AppState, database: std::path::PathBuf) {
             let now = state.clock.now().unix_millis();
             let offset = state.time_zone.offset_minutes_at(now);
             let (db, dir) = (database.clone(), folder.clone());
-            let brain = state.knowledge.clone();
-            let outcome = tokio::task::spawn_blocking(move || {
-                copy_tonight(&db, &dir, now, offset, Some(brain.as_ref()))
-            })
-            .await;
+            let outcome =
+                tokio::task::spawn_blocking(move || copy_tonight(&db, &dir, now, offset)).await;
             let error = match outcome {
                 Ok(Ok(None)) => continue,
                 Ok(Ok(Some(bytes))) => {
                     failed_on = None;
-                    *state
-                        .nightly_failure
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                     #[allow(clippy::cast_precision_loss)]
                     let megabytes = bytes as f64 / 1_000_000.0;
                     record_event(
@@ -177,10 +158,6 @@ pub fn spawn_snapshots(state: AppState, database: std::path::PathBuf) {
                 Ok(Err(error)) => error,
                 Err(error) => error.to_string(),
             };
-            *state
-                .nightly_failure
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
             let today = (now + offset * 60 * 1000).div_euclid(DAY_MS);
             if failed_on == Some(today) {
                 continue;

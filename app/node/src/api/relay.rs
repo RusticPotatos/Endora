@@ -742,16 +742,16 @@ pub(super) async fn count_on(
 }
 
 /// Where a local call goes, and with which model and key.
-struct Local {
-    url: String,
-    model: String,
+pub(super) struct Local {
+    pub(super) url: String,
+    pub(super) model: String,
     key: String,
 }
 
 /// The first enabled Everyday entry on the house's network, else the model the node was
 /// installed with. A list that cannot be read is an empty one: the installed model still
 /// answers.
-fn local_target(state: &AppState) -> Local {
+pub(super) fn local_target(state: &AppState) -> Local {
     use endora_capabilities::model_lists::{Job, ModelListRepository as _, targets};
     let providers = state.config.providers().unwrap_or_default();
     let everyday = state.config.entries(Job::Everyday).unwrap_or_default();
@@ -885,7 +885,7 @@ pub(super) async fn chat_completions(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use endora_infrastructure::{RandomIdSource, ScriptedButler, SqliteStore};
+    use endora_infrastructure::{RandomIdSource, SqliteStore};
     use http_body_util::BodyExt as _;
     use std::io::{Read as _, Write as _};
     use std::sync::Mutex;
@@ -1058,8 +1058,6 @@ pub(super) mod tests {
             Arc::new(SqliteStore::open_in_memory().unwrap()),
             Arc::new(RandomIdSource),
             Arc::new(SystemClock),
-            Arc::new(ScriptedButler),
-            Arc::new(endora_understanding::BrainFolder::temporary().unwrap()),
         )
         .with_hq(endora_infrastructure::HqClient::new(
             hq_url,
@@ -1789,8 +1787,6 @@ pub(super) mod tests {
             Arc::new(SqliteStore::open_in_memory().unwrap()),
             Arc::new(RandomIdSource),
             Arc::new(SystemClock),
-            Arc::new(ScriptedButler),
-            Arc::new(endora_understanding::BrainFolder::temporary().unwrap()),
         )
         .with_hq(endora_infrastructure::HqClient::new(
             hq_url,

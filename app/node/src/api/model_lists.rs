@@ -6,17 +6,20 @@ use endora_capabilities::model_lists::{Job, ModelListRepository as _};
 
 type Answer = Result<Json<serde_json::Value>, ApiError>;
 
+/// The list a request names. Only Everyday is asked any more: the Deep list served the chat,
+/// and its entries were dropped with it (ADR 0136).
 fn job(name: &str) -> Result<Job, AppError> {
-    Job::from_name(name).ok_or_else(|| AppError::BadRequest {
-        message: format!("no list called {name}"),
-    })
+    match Job::from_name(name) {
+        Some(Job::Everyday) => Ok(Job::Everyday),
+        _ => Err(AppError::BadRequest {
+            message: format!("no list called {name}"),
+        }),
+    }
 }
 
-/// Everything the AI screen shows about models: the providers, both lists in order, and
-/// whether deep may be used on its own.
+/// Everything the AI screen shows about models: the providers and the Everyday list in order.
 pub(super) async fn lists(State(state): State<AppState>) -> Answer {
     let config = state.config.clone();
-    let brain = state.brain.clone();
     let out = blocking(move || {
         let providers = config.providers().map_err(AppError::Repository)?;
         let entries = |j: Job| -> Result<Vec<serde_json::Value>, AppError> {
@@ -38,10 +41,6 @@ pub(super) async fn lists(State(state): State<AppState>) -> Answer {
                 })
                 .collect())
         };
-        let escalate = DeepModelRepository::get(config.as_ref())
-            .map_err(AppError::Repository)?
-            .is_some_and(|d| d.escalate);
-        let serving = brain.as_ref().map(|b| b.serving());
         Ok::<_, AppError>(json!({
             "providers": providers.iter().map(|p| json!({
                 "id": p.id,
@@ -51,9 +50,6 @@ pub(super) async fn lists(State(state): State<AppState>) -> Answer {
                 "local": endora_infrastructure::is_private_endpoint(&p.url),
             })).collect::<Vec<_>>(),
             "everyday": entries(Job::Everyday)?,
-            "deep": entries(Job::Deep)?,
-            "escalate": escalate,
-            "serving": serving.map(|(url, model)| json!({ "model": model, "local": endora_infrastructure::is_private_endpoint(&url) })),
         }))
     })
     .await?;
@@ -304,42 +300,4 @@ pub(super) async fn entry_action(
         let _ = state.changes.send(());
     }
     Ok(Json(out.1))
-}
-
-#[derive(Deserialize)]
-pub(super) struct EscalateRequest {
-    on: bool,
-}
-
-/// Whether Endora may use the deep list on its own (ADR 0055): one switch for the list.
-pub(super) async fn set_escalate(
-    State(state): State<AppState>,
-    Json(req): Json<EscalateRequest>,
-) -> Answer {
-    let config = state.config.clone();
-    blocking(move || {
-        let current = DeepModelRepository::get(config.as_ref())
-            .map_err(AppError::Repository)?
-            .unwrap_or_default();
-        DeepModelRepository::set(
-            config.as_ref(),
-            &endora_application::DeepModel {
-                escalate: req.on,
-                ..current
-            },
-        )
-        .map_err(AppError::Repository)
-    })
-    .await?;
-    record_event(
-        state.events.as_ref(),
-        state.clock.as_ref(),
-        if req.on {
-            "Let Endora use the deep list on its own"
-        } else {
-            "Stopped Endora using the deep list on its own"
-        },
-    );
-    let _ = state.changes.send(());
-    Ok(Json(json!({ "ok": true })))
 }

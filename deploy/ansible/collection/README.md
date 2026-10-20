@@ -8,7 +8,7 @@ deploys change in one commit and are checked together.
 |---|---|
 | [`endora`](roles/endora/README.md) | Starts the Endora node from an image built elsewhere (`make deploy` copies it); never builds on the server |
 | [`openbao`](roles/openbao/README.md) | OpenBao, the house's secrets manager, beside the node on their own internal network; Endora initialises it and unlocks it with the owner's passkey (ADR 0127) |
-| [`mail_mirror`](roles/mail_mirror/README.md) | A read-only copy of your mail as a Maildir, for Endora to read |
+| [`mail_mirror`](roles/mail_mirror/README.md) | A read-only copy of your mail as a Maildir. Endora reads none of it now; it is kept for a later HQ contract that reads mail locally (Endora ADR 0136) |
 | [`docker_egress`](roles/docker_egress/README.md) | Locked-down Docker networks: what a network may reach, enforced by the host's firewall |
 | [`endora_terminal_agent`](roles/endora_terminal_agent/) | The host job agent: allowlisted Ansible jobs for the handheld and Endora, nothing else |
 | [`endora_dev_node`](roles/endora_dev_node/README.md) | The Raspberry Pi that runs the team's runner and sandboxes: Docker CE, a host firewall, SD card care, and the locked `endora_sandbox` network (ADR 0110); run by `deploy/ansible/pi.yml` |

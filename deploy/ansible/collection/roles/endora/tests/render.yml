@@ -138,7 +138,6 @@
       ansible.builtin.assert:
         that:
           - "full | select('match', 'ENDORA_BUILD') | list | length == 0"
-          - "'ENDORA_MAIL_DIR=/srv/mail-mirror/maildir' in full"
           - "'ENDORA_TIME_ZONE=America/New_York' in full"
           - "'ENDORA_DATA_DIR=/data/endora' in full"
           # The brain sits beside Endora's other folders unless told otherwise.
@@ -154,10 +153,11 @@
           - "'ENDORA_VAULT_URL=http://openbao:8200' in full"
           - "bare | select('match', 'ENDORA_VAULT_URL') | list | length == 0"
           - "full | select('match', 'ENDORA_PASSKEY_RP_ID') | list | length == 0"
-          # Off by default: no mail, and the data volume rather than a folder.
+          # Off by default: the data volume rather than a folder, and never a mail copy (the
+          # chat's mail reader was retired, ADR 0136).
           - "bare | select('match', 'ENDORA_OWN_WORK') | list | length == 0"
           - "'ENDORA_TIME_ZONE=' in bare"
-          - "bare | select('match', 'ENDORA_MAIL_DIR') | list | length == 0"
+          - "full | select('match', 'ENDORA_MAIL_DIR') | list | length == 0"
           - "bare | select('match', 'ENDORA_DATA_DIR') | list | length == 0"
           - "san.services.node.environment.ENDORA_TLS_SAN == '192.168.1.10'"
           - "nosan.services == {}"

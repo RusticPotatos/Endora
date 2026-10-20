@@ -104,7 +104,7 @@ pub const LARGEST_LOCAL_REPLY: u64 = 16 * 1024 * 1024;
 /// house), the endpoint could not be reached, or its reply was longer than
 /// [`LARGEST_LOCAL_REPLY`].
 pub fn send_local(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
-    if !crate::butler::reaches_only_the_house(base) {
+    if !crate::model_server::reaches_only_the_house(base) {
         return Err(format!("{base} is not on the house's network"));
     }
     let agent: ureq::Agent = ureq::Agent::config_builder()

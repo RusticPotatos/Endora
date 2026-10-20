@@ -33,9 +33,6 @@ endora_data_dir: ""
 # Empty: the Docker volume `<project>_endora-brain`.
 endora_brain_dir: "{{ endora_root }}/brain"
 
-# The read-only mail copy kept by the mail_mirror role (Endora ADR 0097). Empty: no mail.
-endora_mail_dir: "{{ (mail_mirror_root | default('/srv/mail-mirror')) ~ '/maildir' if (mail_mirror_enabled | default(false) | bool) else '' }}"
-
 # An OpenAI-compatible model endpoint. The default is the ollama role on this host.
 endora_model_url: http://host.docker.internal:11434/v1
 endora_model: qwen2.5:7b

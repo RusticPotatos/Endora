@@ -109,7 +109,7 @@ async fn pass(state: AppState, path: String, request: Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use endora_infrastructure::{RandomIdSource, ScriptedButler, SqliteStore};
+    use endora_infrastructure::{RandomIdSource, SqliteStore};
     use http_body_util::BodyExt as _;
     use std::io::{Read as _, Write as _};
     use std::sync::Mutex;
@@ -179,8 +179,6 @@ mod tests {
             Arc::new(SqliteStore::open_in_memory().unwrap()),
             Arc::new(RandomIdSource),
             Arc::new(SystemClock),
-            Arc::new(ScriptedButler),
-            Arc::new(endora_understanding::BrainFolder::temporary().unwrap()),
         );
         match hq_url {
             Some(url) => state.with_hq(endora_infrastructure::HqClient::new(url, NODES_TOKEN)),

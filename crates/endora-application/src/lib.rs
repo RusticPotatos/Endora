@@ -1,72 +1,37 @@
 //! # Endora application layer
 //!
-//! This crate is the thin **orchestration layer** (ADR 0050): it holds the
-//! butler-turn contract and the use cases that compose several bounded contexts,
-//! and defines the abstractions (ports) that infrastructure implements. It
-//! depends inward on the context crates under `domains/` and the shared kernel,
-//! and must not depend on concrete infrastructure, transports, or UI frameworks.
+//! The thin **orchestration layer** (ADR 0050): the use cases the interfaces call that are not
+//! one context's own, and the ports infrastructure implements for them. Since the chat was
+//! retired (ADR 0136) that is the activity feed, the owner's export and delete, and the usage
+//! log the team's relay records into. It depends inward on the context crates and the shared
+//! kernel, never on infrastructure, transports or UI.
 //!
-//! It also re-exports each context's domain vocabulary so the adapter layers
-//! (infrastructure, the node) have a single import surface above the domain.
-//! See `docs/architecture.md`.
+//! It also re-exports the contexts' vocabulary the adapter layers translate, so the node has a
+//! single import surface above the domain. See `docs/architecture.md`.
 
 #![forbid(unsafe_code)]
 
-pub mod context_report;
-pub mod deep_turn;
-pub mod egress;
 pub mod error;
 pub mod ports;
-pub mod pseudonyms;
-pub mod quiet;
-pub mod research;
 pub mod usecases;
 
 pub use error::AppError;
 // The application layer re-exports the domain vocabulary of each context (models
 // + ids), so the adapter layers (infrastructure, the node) have one place to
-// import the types they translate to and from — the orchestration layer is the
-// surface above the domain (ADR 0050).
-pub use endora_kernel::{
-    AuditId, AutonomyLevel, BeliefId, Decision, DomainError, IntentionId, MessageId, NotionId,
-    OutcomeId, PreferenceId, Reversibility, Timestamp,
-};
-// The audit trail and event log live in the platform context now (ADR 0050);
-// re-exported so `endora_application::{AuditLog, EventLog, ActivityEvent}` hold.
+// import the types they translate to and from (ADR 0050).
+pub use endora_kernel::{AuditId, AutonomyLevel, Decision, DomainError, Reversibility, Timestamp};
+// The audit trail and event log live in the platform context (ADR 0050).
 pub use endora_platform::{ActivityEvent, AuditLog, AuditRecord, EventLog};
-// The capabilities ports live in the capabilities context (ADR 0050); re-exported
-// so their `endora_application::…` paths are unchanged.
+// The capabilities ports live in the capabilities context (ADR 0050).
 pub use endora_capabilities::{
-    AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilityRead, CapabilityRunner, CapabilitySettingsRepository,
-    CapabilitySpec, CapabilityUse, DeepModel, DeepModelRepository, ModelSlot, Sampling,
-};
-// The chat repository lives in the conversation context (ADR 0050); re-exported
-// so `endora_application::ChatRepository` is unchanged.
-pub use endora_conversation::{ChatMessage, ChatRepository, MessageRole};
-// The schedules live in the scheduling context (ADR 0050); re-exported so their
-// `endora_application::…` paths are unchanged.
-pub use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
-// Belief/preference repositories live in the understanding context (ADR 0050);
-// re-exported so their `endora_application::…` paths are unchanged.
-pub use endora_understanding::{
-    BeliefKind, Brain, BrainFolder, Confidence, Intention, IntentionOrigin, IntentionRepository,
-    IntentionState, Outcome, OutcomeRepository, PageChange, PageInfo, PagePath, Preference,
-    PreferenceKind, PreferenceRepository, Reaction, RepairProposal, ResearchAssignment,
-    ResearchReport, ResearchRepository, ResearchStatus,
+    CapabilitySpec, CapabilityUse,
 };
 pub use ports::{
-    AnsweredBy, Butler, ButlerContext, ButlerReply, Calendar, CapabilityTool, Clock,
-    ConversationSummary, ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository,
-    FormedBelief, IdSource, MemorySnapshot, MemoryStore, ModelUsage, NeedKind, ProposalError,
-    RepositoryError, ResearchDelivery, ToolCall, TurnMessage, UntrustedReader, UsageLog,
+    Clock, IdSource, MemorySnapshot, MemoryStore, ModelUsage, RepositoryError, UsageLog,
     UsageTotals,
 };
-pub use research::{ResearchRun, conduct_research};
-pub use usecases::{
-    ActivityItem, ActivityKind, LOOK_FOR_A_TOOL, note_verification, reads_as_an_instruction,
-    says_the_same_thing, statements_disagree,
-};
+pub use usecases::{ActivityItem, ActivityKind};
 
 /// Human-readable identity of this build, suitable for a node/CLI banner.
 ///

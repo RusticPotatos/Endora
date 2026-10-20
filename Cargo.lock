@@ -850,27 +850,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "endora-agenda"
-version = "0.12.0"
-dependencies = [
- "endora-persistence",
- "rusqlite",
-]
-
-[[package]]
 name = "endora-application"
 version = "0.12.0"
 dependencies = [
- "endora-agenda",
  "endora-capabilities",
- "endora-conversation",
  "endora-kernel",
- "endora-mail",
- "endora-persistence",
  "endora-platform",
- "endora-scheduling",
- "endora-understanding",
- "serde_json",
 ]
 
 [[package]]
@@ -901,16 +886,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "endora-conversation"
-version = "0.12.0"
-dependencies = [
- "endora-kernel",
- "endora-persistence",
- "rusqlite",
- "serde_json",
-]
-
-[[package]]
 name = "endora-hq"
 version = "0.12.0"
 dependencies = [
@@ -934,12 +909,9 @@ dependencies = [
  "chrono-tz",
  "endora-application",
  "endora-capabilities",
- "endora-conversation",
- "endora-mail",
  "endora-persistence",
  "endora-platform",
  "endora-team",
- "endora-understanding",
  "rusqlite",
  "serde_json",
  "sha2",
@@ -972,17 +944,12 @@ dependencies = [
  "axum-server",
  "base64 0.22.1",
  "chacha20poly1305",
- "endora-agenda",
  "endora-application",
  "endora-capabilities",
- "endora-conversation",
  "endora-infrastructure",
- "endora-mail",
  "endora-persistence",
  "endora-platform",
  "endora-protocol",
- "endora-scheduling",
- "endora-understanding",
  "futures-util",
  "http-body-util",
  "qrcode",
@@ -1032,15 +999,6 @@ name = "endora-runner"
 version = "0.12.0"
 dependencies = [
  "serde_json",
-]
-
-[[package]]
-name = "endora-scheduling"
-version = "0.12.0"
-dependencies = [
- "endora-kernel",
- "endora-persistence",
- "rusqlite",
 ]
 
 [[package]]
@@ -1097,15 +1055,6 @@ dependencies = [
  "unicode-width 0.2.0",
  "uuid",
  "zeroize",
-]
-
-[[package]]
-name = "endora-understanding"
-version = "0.12.0"
-dependencies = [
- "endora-kernel",
- "endora-persistence",
- "rusqlite",
 ]
 
 [[package]]

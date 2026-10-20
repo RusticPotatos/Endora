@@ -13,15 +13,8 @@ use endora_persistence::Db;
 use endora_persistence::secrets::{KeyFile, KeySource, SecretColumn};
 use sha2::{Digest as _, Sha256};
 
-use endora_application::{
-    AuditId, AuditRecord, BeliefId, ChatMessage, Intention, IntentionId, IntentionOrigin,
-    IntentionState, MessageId, MessageRole, Outcome, OutcomeId, Reaction, ResearchAssignment,
-    Timestamp,
-};
-use endora_application::{
-    ExecutionLeaseRepository, MemorySnapshot, MemoryStore, RepositoryError, ResearchDelivery,
-    ResearchRepository,
-};
+use endora_application::{ActivityEvent, AuditId, AuditRecord, Timestamp};
+use endora_application::{MemorySnapshot, MemoryStore, RepositoryError};
 use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA: &str = "
@@ -39,63 +32,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at_ms);
 
-CREATE TABLE IF NOT EXISTS messages (
-    id    TEXT PRIMARY KEY,
-    role  TEXT NOT NULL,
-    body  TEXT NOT NULL,
-    at_ms INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS message_actions (
-    message_id TEXT PRIMARY KEY,
-    actions    TEXT NOT NULL
-) STRICT;
 
 -- The running conversation summary (ADR 0053 context compaction): a single row.
 -- Persisted so a restart doesn't re-summarise the whole backlog (which, on a slow
 -- local model, degraded the first turns after every deploy) and the butler keeps
 -- the day's thread across restarts. `covered` = how many of the oldest messages the
 -- summary already folds in.
-CREATE TABLE IF NOT EXISTS conversation_summary (
-    id      INTEGER PRIMARY KEY CHECK (id = 0),
-    body    TEXT NOT NULL,
-    covered INTEGER NOT NULL
-) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_messages_at ON messages(at_ms);
 
-CREATE TABLE IF NOT EXISTS intentions (
-    id                 TEXT PRIMARY KEY,
-    statement          TEXT NOT NULL,
-    motivating_belief  TEXT,
-    origin             TEXT NOT NULL DEFAULT 'belief',
-    request_message_id TEXT,
-    note               TEXT NOT NULL,
-    state              TEXT NOT NULL,
-    created_ms         INTEGER NOT NULL,
-    last_progressed_ms INTEGER NOT NULL,
-    steps_taken        INTEGER NOT NULL,
-    CHECK ((origin = 'belief' AND motivating_belief IS NOT NULL AND request_message_id IS NULL)
-        OR (origin = 'user_request' AND motivating_belief IS NULL AND request_message_id IS NOT NULL))
-) STRICT;
 -- One durable lease table is shared by every resumable worker. The execution
 -- key is namespaced by its owner (`research:`), so domains retain their own
 -- checkpoints while worker ownership follows one contract.
-CREATE TABLE IF NOT EXISTS execution_leases (
-    execution_key TEXT PRIMARY KEY,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    lease_until_ms INTEGER NOT NULL DEFAULT 0
-) STRICT;
-CREATE TABLE IF NOT EXISTS outcomes (
-    id                TEXT PRIMARY KEY,
-    capability        TEXT NOT NULL,
-    input             TEXT NOT NULL,
-    claim             TEXT NOT NULL,
-    observation       TEXT,
-    at_ms             INTEGER NOT NULL,
-    motivating_belief TEXT,
-    reaction          TEXT,
-    changed           INTEGER
-) STRICT;
 CREATE TABLE IF NOT EXISTS capability_config (
     id                TEXT PRIMARY KEY,
     enabled           INTEGER NOT NULL,
@@ -108,24 +55,6 @@ CREATE TABLE IF NOT EXISTS capability_settings (
     key           TEXT NOT NULL,
     value         TEXT NOT NULL,
     PRIMARY KEY (capability_id, key)
-) STRICT;
-CREATE TABLE IF NOT EXISTS autonomy_envelope (
-    id               INTEGER PRIMARY KEY CHECK (id = 0),
-    auto_external    INTEGER NOT NULL,
-    auto_consequential INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS brief_schedule (
-    id        INTEGER PRIMARY KEY CHECK (id = 0),
-    enabled   INTEGER NOT NULL,
-    hour_utc  INTEGER NOT NULL,
-    last_ms   INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS deep_model (
-    id       INTEGER PRIMARY KEY CHECK (id = 0),
-    url      TEXT NOT NULL,
-    model    TEXT NOT NULL,
-    api_key  TEXT NOT NULL,
-    escalate INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS model_providers (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,29 +76,6 @@ CREATE TABLE IF NOT EXISTS model_lists_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 ) STRICT;
-CREATE TABLE IF NOT EXISTS butler_model_config (
-    id            INTEGER PRIMARY KEY CHECK (id = 0),
-    base_url      TEXT NOT NULL,
-    api_key       TEXT NOT NULL,
-    mixture       INTEGER NOT NULL,
-    single_model  TEXT NOT NULL,
-    single_temp   REAL,
-    single_top_p  REAL,
-    single_top_k  INTEGER,
-    single_repeat REAL,
-    router_model  TEXT NOT NULL,
-    router_temp   REAL,
-    router_top_p  REAL,
-    router_top_k  INTEGER,
-    router_repeat REAL,
-    synth_model   TEXT NOT NULL,
-    synth_temp    REAL,
-    synth_top_p   REAL,
-    synth_top_k   INTEGER,
-    synth_repeat  REAL,
-    preferred_url   TEXT NOT NULL DEFAULT '',
-    preferred_model TEXT NOT NULL DEFAULT ''
-) STRICT;
 CREATE TABLE IF NOT EXISTS model_usage (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     at_ms      INTEGER NOT NULL,
@@ -183,12 +89,6 @@ CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     at_ms   INTEGER NOT NULL,
     summary TEXT NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS target_aliases (
-    server TEXT NOT NULL,
-    said   TEXT NOT NULL,
-    means  TEXT NOT NULL,
-    PRIMARY KEY (server, said)
 ) STRICT;
 CREATE TABLE IF NOT EXISTS config_writes (
     id      TEXT PRIMARY KEY,
@@ -204,13 +104,6 @@ CREATE TABLE IF NOT EXISTS config_writes (
 -- (2026-10-16). A database made before keeps the table, untouched.
 -- The person's own capabilities (ADR 0071) — five fields, validated at authoring
 -- time, never code.
-CREATE TABLE IF NOT EXISTS recipes (
-    id          TEXT PRIMARY KEY,
-    description TEXT NOT NULL,
-    inputs      TEXT NOT NULL,
-    get_url     TEXT NOT NULL,
-    say         TEXT NOT NULL
-) STRICT;
 -- The token this node accepts on every /v1 request. One row. Generated on first run and
 -- printed to the log, unless a deployment pinned one through ENDORA_TOKEN.
 CREATE TABLE IF NOT EXISTS node_auth (
@@ -243,25 +136,6 @@ CREATE TABLE IF NOT EXISTS node_sessions (
 ) STRICT;
 -- Questions the person answered by asking not to be asked again. Answering is the
 -- dismissal (ADR 0052), and somebody who does not know a real name still needs an answer.
-CREATE TABLE IF NOT EXISTS repairs_left_alone (
-    server TEXT NOT NULL,
-    thing  TEXT NOT NULL,
-    PRIMARY KEY (server, thing)
-) STRICT;
-CREATE TABLE IF NOT EXISTS watched_things (
-    key                TEXT PRIMARY KEY,
-    settled            TEXT NOT NULL,
-    candidate          TEXT NOT NULL,
-    candidate_since_ms INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS transitions (
-    key      TEXT NOT NULL,
-    was      TEXT NOT NULL,
-    became   TEXT NOT NULL,
-    at_ms    INTEGER NOT NULL,
-    PRIMARY KEY (key, at_ms)
-) STRICT;
-CREATE INDEX IF NOT EXISTS idx_transitions_at ON transitions(at_ms);
 CREATE TABLE IF NOT EXISTS mcp_servers (
     name    TEXT PRIMARY KEY,
     kind    TEXT NOT NULL,
@@ -294,14 +168,6 @@ CREATE TABLE IF NOT EXISTS bench_spend (
 pub const SECRET_COLUMNS: &[SecretColumn] = &[
     SecretColumn {
         table: "model_providers",
-        column: "api_key",
-    },
-    SecretColumn {
-        table: "deep_model",
-        column: "api_key",
-    },
-    SecretColumn {
-        table: "butler_model_config",
         column: "api_key",
     },
     SecretColumn {
@@ -417,154 +283,6 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
-    /// Atomically records an explicit research commission and its user message.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the transaction receives the complete immutable commission"
-    )]
-    pub fn commission_research(
-        &self,
-        intention_id: IntentionId,
-        message_id: MessageId,
-        request_key: &str,
-        assignment: &str,
-        source_urls_json: &str,
-        search_capability_id: Option<&str>,
-        at: Timestamp,
-    ) -> Result<ResearchAssignment, RepositoryError> {
-        if assignment.trim().is_empty() || assignment.chars().count() > 4_000 {
-            return Err(RepositoryError::Corrupt(
-                "research assignment must be 1–4000 characters".to_owned(),
-            ));
-        }
-        if request_key.trim().is_empty() || request_key.chars().count() > 200 {
-            return Err(RepositoryError::Corrupt(
-                "invalid research request key".to_owned(),
-            ));
-        }
-        let work = ResearchAssignment::new(
-            intention_id,
-            assignment,
-            request_key,
-            source_urls_json,
-            search_capability_id.map(str::to_owned),
-            at,
-        )
-        .map_err(corrupt)?;
-        let mut conn = self.lock()?;
-        let existing: Option<(String, String, String, Option<String>)> = conn
-            .query_row(
-                "SELECT intention_id, assignment, source_urls_json, search_capability_id
-             FROM intention_research WHERE request_key=?1",
-                params![request_key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        if let Some((id, prior_assignment, prior_urls, prior_search)) = existing {
-            if prior_assignment != assignment.trim()
-                || prior_urls != source_urls_json
-                || prior_search.as_deref() != search_capability_id
-            {
-                return Err(RepositoryError::Backend(
-                    "research request key was reused with different input".to_owned(),
-                ));
-            }
-            drop(conn);
-            let existing_id = IntentionId::new(parse_id(&id)?);
-            return endora_understanding::UnderstandingStore::new(self.db())
-                .research(existing_id)?
-                .ok_or_else(|| {
-                    RepositoryError::Corrupt("research request lost its work row".to_owned())
-                });
-        }
-        let tx = conn.transaction().map_err(backend)?;
-        let active: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM intention_research WHERE status IN ('queued','running','retry_wait')",
-            [], |r| r.get(0),
-        ).map_err(backend)?;
-        if active > 0 {
-            return Err(RepositoryError::Backend(
-                "another research assignment is active".to_owned(),
-            ));
-        }
-        tx.execute(
-            "INSERT INTO messages (id, role, body, at_ms) VALUES (?1,'user',?2,?3)",
-            params![
-                message_id.value().to_string(),
-                assignment.trim(),
-                at.unix_millis()
-            ],
-        )
-        .map_err(backend)?;
-        tx.execute(
-            "INSERT INTO intentions (id,statement,motivating_belief,origin,request_message_id,note,state,created_ms,last_progressed_ms,steps_taken)
-             VALUES (?1,?2,NULL,'user_request',?3,'','active',?4,?4,0)",
-            params![intention_id.value().to_string(), assignment.trim(), message_id.value().to_string(), at.unix_millis()],
-        ).map_err(backend)?;
-        tx.execute(
-            "INSERT INTO intention_research
-             (intention_id,assignment,request_key,source_urls_json,search_capability_id,status,phase,
-              reason_code,reason,checkpoint,model_calls_used,read_attempts_used,created_ms,updated_ms,expires_ms)
-             VALUES (?1,?2,?3,?4,?5,'queued','gathering','','',?6,0,0,?7,?7,?8)",
-            params![intention_id.value().to_string(), assignment.trim(), request_key,
-                source_urls_json, search_capability_id, work.checkpoint(), at.unix_millis(),
-                work.expires_at().unix_millis()],
-        ).map_err(backend)?;
-        tx.commit().map_err(backend)?;
-        Ok(work)
-    }
-
-    /// Atomically cancels commissioned research and abandons its parent intention.
-    pub fn cancel_research(
-        &self,
-        intention_id: IntentionId,
-        at: Timestamp,
-    ) -> Result<ResearchAssignment, RepositoryError> {
-        let mut conn = self.lock()?;
-        let tx = conn.transaction().map_err(backend)?;
-        let status: Option<String> = tx
-            .query_row(
-                "SELECT status FROM intention_research WHERE intention_id=?1",
-                params![intention_id.value().to_string()],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some(status) = status else {
-            return Err(RepositoryError::Backend("research not found".to_owned()));
-        };
-        if status != "cancelled"
-            && matches!(
-                status.as_str(),
-                "delivered" | "blocked" | "budget_exhausted" | "failed"
-            )
-        {
-            return Err(RepositoryError::Backend(
-                "research is already terminal".to_owned(),
-            ));
-        }
-        if status != "cancelled" {
-            tx.execute(
-                "UPDATE intention_research SET status='cancelled', reason_code='cancelled',
-                 reason='You cancelled this research assignment.', updated_ms=?2
-                 WHERE intention_id=?1",
-                params![intention_id.value().to_string(), at.unix_millis()],
-            )
-            .map_err(backend)?;
-            tx.execute(
-                "UPDATE intentions SET state='abandoned', last_progressed_ms=?2 WHERE id=?1",
-                params![intention_id.value().to_string(), at.unix_millis()],
-            )
-            .map_err(backend)?;
-        }
-        tx.commit().map_err(backend)?;
-        drop(conn);
-        endora_understanding::UnderstandingStore::new(self.db())
-            .research(intention_id)?
-            .ok_or_else(|| RepositoryError::Corrupt("cancelled research disappeared".to_owned()))
-    }
-
     /// The token this node accepts, or `None` before one has been made.
     ///
     /// # Errors
@@ -864,6 +582,7 @@ impl SqliteStore {
             // Drop the goal-tracker schema before creating anything, so an existing
             // database sheds it rather than carrying dead tables forever.
             drop_goal_tracker(&conn)?;
+            drop_the_chat(&conn)?;
             drop_the_clean_slate(&conn)?;
             conn.execute_batch(SCHEMA).map_err(backend)?;
             // What sort of change a config write was (ADR 0054). Existing rows are all
@@ -915,27 +634,6 @@ impl SqliteStore {
                      ELSE '' END;",
             )
             .map_err(backend)?;
-            ensure_column(
-                &conn,
-                "deep_model",
-                "escalate",
-                "INTEGER NOT NULL DEFAULT 0",
-            )?;
-            // The preferred base rung (a bigger model on a sometimes-away machine). Added
-            // here, not only in the capabilities test migration: without it every database
-            // older than the feature failed to read its model config at all.
-            ensure_column(
-                &conn,
-                "butler_model_config",
-                "preferred_url",
-                "TEXT NOT NULL DEFAULT ''",
-            )?;
-            ensure_column(
-                &conn,
-                "butler_model_config",
-                "preferred_model",
-                "TEXT NOT NULL DEFAULT ''",
-            )?;
             ensure_column(&conn, "mcp_servers", "env", "TEXT NOT NULL DEFAULT ''")?;
             ensure_column(&conn, "mcp_servers", "auth", "TEXT NOT NULL DEFAULT ''")?;
             // Auto-allow a server's tools on connect (default on). Opened tools stay
@@ -959,9 +657,6 @@ impl SqliteStore {
                 "reader_tool",
                 "TEXT NOT NULL DEFAULT ''",
             )?;
-            // Whether an action actually moved the world (ADR 0054). Existing rows read
-            // back NULL — nothing to compare — which is the honest default.
-            ensure_column(&conn, "outcomes", "changed", "INTEGER")?;
             // Whether a model-list entry thinks before answering (ADR 0105). An entry made
             // before reads back as not thinking, the quick default for a local model.
             ensure_column(
@@ -1006,12 +701,6 @@ impl SqliteStore {
                 "pending_totp",
                 "TEXT NOT NULL DEFAULT ''",
             )?;
-            ensure_column(
-                &conn,
-                "execution_leases",
-                "owner_token",
-                "TEXT NOT NULL DEFAULT ''",
-            )?;
             // Sessions are kept as digests (ADR 0125); one stored raw by an older node is
             // hashed in place, and given a last use of now so the upgrade signs nobody out.
             ensure_column(
@@ -1025,7 +714,6 @@ impl SqliteStore {
                 println!("secrets: {hashed} session token(s) now kept only as a digest");
             }
         }
-        endora_understanding::migrate(&db)?;
         // Credentials an older node stored in plaintext are sealed now, once (ADR 0125). A
         // store with no key source is refused here rather than left holding them in the clear.
         // A store waiting for the vault (ADR 0127) has no keys to seal with yet: that is done
@@ -1161,77 +849,14 @@ impl SqliteStore {
     }
 }
 
-impl ExecutionLeaseRepository for SqliteStore {
-    fn reserve_execution_attempt(
-        &self,
-        execution_key: &str,
-        at: Timestamp,
-        max_attempts: u32,
-    ) -> Result<bool, RepositoryError> {
-        let key = execution_key.trim();
-        if key.is_empty() || key.chars().count() > 240 || max_attempts == 0 {
-            return Err(RepositoryError::Corrupt(
-                "execution lease requires a key and positive attempt budget".to_owned(),
-            ));
-        }
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR IGNORE INTO execution_leases (execution_key) VALUES (?1)",
-            params![key],
-        )
-        .map_err(backend)?;
-        let changed = conn
-            .execute(
-                "UPDATE execution_leases
-                 SET attempts = attempts + 1, lease_until_ms=?2 + ?3, owner_token=''
-                 WHERE execution_key=?1 AND attempts < ?4 AND lease_until_ms <= ?2",
-                params![
-                    key,
-                    at.unix_millis(),
-                    endora_application::EXECUTION_LEASE_MS,
-                    i64::from(max_attempts)
-                ],
-            )
-            .map_err(backend)?;
-        Ok(changed == 1)
-    }
-
-    fn release_execution_attempt(
-        &self,
-        execution_key: &str,
-        lease_until_ms: i64,
-    ) -> Result<(), RepositoryError> {
-        let key = execution_key.trim();
-        if key.is_empty() || key.chars().count() > 240 || lease_until_ms <= 0 {
-            return Err(RepositoryError::Corrupt(
-                "execution lease release requires a key and lease token".to_owned(),
-            ));
-        }
-        self.lock()?
-            .execute(
-                "UPDATE execution_leases SET lease_until_ms=0
-                 WHERE execution_key=?1 AND lease_until_ms=?2 AND owner_token=''",
-                params![key, lease_until_ms],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-}
-
-// The eight direction repositories are implemented by the direction context's
-// DirectionStore over the shared Db now (ADR 0050); the all_*/parse_* helpers
-// below remain for MemoryStore's export.
-
+/// Endora's record of what it did (ADR 0136): the audit trail and the event log. What the
+/// owner exports, and what deleting forgets.
 impl MemoryStore for SqliteStore {
     fn export(&self) -> Result<MemorySnapshot, RepositoryError> {
-        let research = endora_understanding::UnderstandingStore::new(self.db()).list_research()?;
         let conn = self.lock()?;
         Ok(MemorySnapshot {
             audit: all_audit(&conn)?,
-            messages: all_messages(&conn)?,
-            outcomes: all_outcomes(&conn)?,
-            intentions: all_intentions(&conn)?,
-            research,
+            events: all_events(&conn)?,
         })
     }
 
@@ -1247,26 +872,7 @@ impl MemoryStore for SqliteStore {
         // Nor are the settings the team runs on (ADR 0136): the skills' stances and settings,
         // which the bridge offers the team's turns, and the model providers and lists, which
         // hold the relay's key and house model. They are set up, not learned about the person.
-        //
-        // Delete children before parents so foreign keys stay satisfied.
-        for table in [
-            "audit_log",
-            "messages",
-            "message_actions",
-            "conversation_summary",
-            "outcomes",
-            "target_aliases",
-            "intention_research",
-            "execution_leases",
-            "intentions",
-            "events",
-            "autonomy_envelope",
-            "brief_schedule",
-            "deep_model",
-            // The old everyday settings, key and all, which the lists replaced: nothing reads
-            // them, and kept they could be moved into the lists again.
-            "butler_model_config",
-        ] {
+        for table in ["audit_log", "events"] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
         }
@@ -1275,220 +881,22 @@ impl MemoryStore for SqliteStore {
     }
 }
 
-impl ResearchDelivery for SqliteStore {
-    fn publish_research(
-        &self,
-        work: &ResearchAssignment,
-        notice: &ChatMessage,
-        audit: &[AuditRecord],
-    ) -> Result<bool, RepositoryError> {
-        let Some(report) = work.report() else {
-            return Err(RepositoryError::Corrupt(
-                "cannot publish research without a report".to_owned(),
-            ));
-        };
-        if work.status() != endora_application::ResearchStatus::Delivered {
-            return Err(RepositoryError::Corrupt(
-                "cannot publish non-delivered research".to_owned(),
-            ));
-        }
-        let mut conn = self.lock()?;
-        let tx = conn.transaction().map_err(backend)?;
-        let changed = tx.execute(
-            "UPDATE intention_research SET status='delivered', phase=?2, reason_code='', reason='',
-             checkpoint=?3, report_markdown=?4, report_partial=?5, report_created_ms=?6,
-             model_calls_used=?7, read_attempts_used=?8, updated_ms=?9
-             WHERE intention_id=?1 AND status NOT IN
-                ('delivered','blocked','budget_exhausted','cancelled','failed')",
-            params![
-                work.intention_id().value().to_string(), work.phase(), work.checkpoint(),
-                report.markdown(), report.partial(), report.created_at().unix_millis(),
-                work.model_calls_used(), work.read_attempts_used(), work.updated_at().unix_millis(),
-            ],
-        ).map_err(backend)?;
-        if changed == 0 {
-            return Ok(false);
-        }
-        tx.execute(
-            "UPDATE intentions SET state='done', last_progressed_ms=?2 WHERE id=?1",
-            params![
-                work.intention_id().value().to_string(),
-                work.updated_at().unix_millis()
-            ],
-        )
-        .map_err(backend)?;
-        tx.execute(
-            "INSERT INTO messages (id,role,body,at_ms) VALUES (?1,?2,?3,?4)",
-            params![
-                notice.id().value().to_string(),
-                notice.role().name(),
-                notice.text(),
-                notice.at().unix_millis()
-            ],
-        )
-        .map_err(backend)?;
-        for record in audit {
-            tx.execute(
-                "INSERT INTO audit_log (id,at_ms,summary) VALUES (?1,?2,?3)",
-                params![
-                    record.id().value().to_string(),
-                    record.at().unix_millis(),
-                    record.summary()
-                ],
-            )
-            .map_err(backend)?;
-        }
-        tx.commit().map_err(backend)?;
-        Ok(true)
-    }
-}
-
-// AuditLog and EventLog are implemented by the platform context's AuditStore and
-// EventStore over the shared Db now (ADR 0050); `all_audit` stays for MemoryStore.
-
-/// Reads every intention for the memory export (ADR 0052) — what Endora has pursued.
-fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> {
+/// Every event, newest first.
+fn all_events(conn: &Connection) -> Result<Vec<ActivityEvent>, RepositoryError> {
     let mut stmt = conn
-        .prepare(
-            "SELECT id, statement, motivating_belief, origin, request_message_id, note, state,
-             created_ms, last_progressed_ms, steps_taken
-             FROM intentions ORDER BY last_progressed_ms DESC, rowid DESC",
-        )
+        .prepare("SELECT at_ms, summary FROM events ORDER BY at_ms DESC, id DESC")
         .map_err(backend)?;
     let rows = stmt
         .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, i64>(7)?,
-                r.get::<_, i64>(8)?,
-                r.get::<_, u32>(9)?,
-            ))
-        })
-        .map_err(backend)?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, statement, belief, origin, request, note, state, created_ms, progressed_ms, steps) =
-            row.map_err(backend)?;
-        let origin = match (origin.as_str(), belief, request) {
-            ("belief", Some(id), None) => IntentionOrigin::Belief(BeliefId::new(parse_id(&id)?)),
-            ("user_request", None, Some(id)) => {
-                IntentionOrigin::UserRequest(MessageId::new(parse_id(&id)?))
-            }
-            _ => {
-                return Err(RepositoryError::Corrupt(
-                    "invalid intention provenance".to_owned(),
-                ));
-            }
-        };
-        out.push(Intention::from_parts(
-            IntentionId::new(parse_id(&id)?),
-            statement,
-            origin,
-            note,
-            IntentionState::from_name(&state),
-            Timestamp::from_unix_millis(created_ms),
-            Timestamp::from_unix_millis(progressed_ms),
-            steps,
-        ));
-    }
-    Ok(out)
-}
-
-/// Reads every outcome for the memory export (ADR 0053) — what Endora did, what the
-/// tool claimed, and what Endora observed afterwards.
-fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, capability, input, claim, observation, at_ms, motivating_belief, reaction, \
-             changed \
-             FROM outcomes ORDER BY at_ms DESC, rowid DESC",
-        )
-        .map_err(backend)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, Option<String>>(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, Option<i64>>(8)?,
-            ))
-        })
-        .map_err(backend)?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, capability, input, claim, observation, at_ms, belief, reaction, changed) =
-            row.map_err(backend)?;
-        let reaction = reaction
-            .map(|r| {
-                Reaction::from_name(&r)
-                    .ok_or_else(|| RepositoryError::Corrupt(format!("unknown reaction {r:?}")))
+            Ok(ActivityEvent {
+                at: Timestamp::from_unix_millis(r.get::<_, i64>(0)?),
+                summary: r.get::<_, String>(1)?,
             })
-            .transpose()?;
-        let motivating_belief = belief
-            .map(|b| parse_id(&b).map(BeliefId::new))
-            .transpose()?;
-        out.push(Outcome::from_parts(
-            OutcomeId::new(parse_id(&id)?),
-            capability,
-            input,
-            claim,
-            observation,
-            Timestamp::from_unix_millis(at_ms),
-            motivating_belief,
-            reaction,
-            changed.map(|c| c != 0),
-        ));
-    }
-    Ok(out)
-}
-
-/// Serializes a proposal to its stored `(kind, payload-json)` form.
-fn all_messages(conn: &Connection) -> Result<Vec<ChatMessage>, RepositoryError> {
-    // Insertion order (rowid) breaks ties so same-millisecond turns keep their
-    // real order — ids are random and cannot be a tiebreak.
-    let mut stmt = conn
-        .prepare("SELECT id, role, body, at_ms FROM messages ORDER BY at_ms, rowid")
-        .map_err(backend)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-            ))
         })
         .map_err(backend)?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, role, body, at_ms) = row.map_err(backend)?;
-        let role = MessageRole::from_name(&role)
-            .ok_or_else(|| RepositoryError::Corrupt(format!("unknown message role {role:?}")))?;
-        out.push(
-            ChatMessage::new(
-                MessageId::new(parse_id(&id)?),
-                role,
-                &body,
-                Timestamp::from_unix_millis(at_ms),
-            )
-            .map_err(corrupt)?,
-        );
-    }
-    Ok(out)
+    rows.collect::<Result<_, _>>().map_err(backend)
 }
 
-/// Parses a stored identifier back into a `u128`, or reports corruption.
 fn parse_id(text: &str) -> Result<u128, RepositoryError> {
     text.parse::<u128>()
         .map_err(|e| RepositoryError::Corrupt(format!("invalid stored id {text:?}: {e}")))
@@ -1621,6 +1029,53 @@ fn drop_goal_tracker(conn: &Connection) -> Result<(), RepositoryError> {
 /// which the brain's pages replaced (ADR 0101). For the same reason as
 /// [`drop_goal_tracker`]: a table nothing reads is data nothing can export or delete
 /// (constitution §6). A no-op on a fresh database.
+/// Endora is HQ (ADR 0136): what only the chat and the butler's own loops kept goes, once the
+/// owner has taken a copy. A table nothing reads is data nothing can export or delete (ADR
+/// 0100). The Deep list's entries go too: nothing asks that list any more.
+fn drop_the_chat(conn: &Connection) -> Result<(), RepositoryError> {
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_messages_at;
+         DROP INDEX IF EXISTS idx_transitions_at;
+         DROP TABLE IF EXISTS message_actions;
+         DROP TABLE IF EXISTS messages;
+         DROP TABLE IF EXISTS conversation_summary;
+         DROP TABLE IF EXISTS intention_research;
+         DROP TABLE IF EXISTS execution_leases;
+         DROP TABLE IF EXISTS intentions;
+         DROP TABLE IF EXISTS outcomes;
+         DROP TABLE IF EXISTS autonomy_envelope;
+         DROP TABLE IF EXISTS brief_schedule;
+         DROP TABLE IF EXISTS deep_model;
+         DROP TABLE IF EXISTS butler_model_config;
+         DROP TABLE IF EXISTS watched_things;
+         DROP TABLE IF EXISTS transitions;
+         DROP TABLE IF EXISTS recipes;
+         DROP TABLE IF EXISTS target_aliases;
+         DROP TABLE IF EXISTS repairs_left_alone;
+         DROP TABLE IF EXISTS agenda_items;
+         DROP TABLE IF EXISTS agenda_restarts;
+         DROP TABLE IF EXISTS agenda_rules;
+         DROP TABLE IF EXISTS agenda_responses;
+         DROP TABLE IF EXISTS agenda_pushes;
+         DROP TABLE IF EXISTS agenda_checked;
+         DROP TABLE IF EXISTS mail_messages;
+         DROP TABLE IF EXISTS mail_meta;",
+    )
+    .map_err(backend)?;
+    let entries_exist: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_entries')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(backend)?;
+    if entries_exist {
+        conn.execute("DELETE FROM model_entries WHERE job = 'deep'", [])
+            .map_err(backend)?;
+    }
+    Ok(())
+}
+
 fn drop_the_clean_slate(conn: &Connection) -> Result<(), RepositoryError> {
     conn.execute_batch(
         "DROP TABLE IF EXISTS checkin;
@@ -1679,11 +1134,6 @@ mod tests {
 
     fn store() -> SqliteStore {
         SqliteStore::open_in_memory().unwrap()
-    }
-
-    /// A key source for a test database on disk; reopening it takes the same one.
-    pub(super) fn memory_key() -> std::sync::Arc<dyn endora_persistence::secrets::KeySource> {
-        std::sync::Arc::new(endora_persistence::secrets::MemoryKey::random())
     }
 
     /// The direction repositories over the store's shared connection (ADR 0050).
@@ -1946,110 +1396,6 @@ mod tests {
     }
 
     #[test]
-    fn deep_model_config_round_trips() {
-        use endora_application::{DeepModel, DeepModelRepository};
-        let store = store();
-        let cfg = cfg_store(&store);
-        let repo: &dyn DeepModelRepository = &cfg;
-        assert!(repo.get().unwrap().is_none());
-        // Configuring a deep model must NOT enable the automatic fallback: it is reached
-        // only when the person presses a button until they say otherwise (ADR 0055).
-        let cfg = DeepModel {
-            url: "https://api.x.com/v1".to_owned(),
-            model: "big-1".to_owned(),
-            api_key: "secret".to_owned(),
-            escalate: false,
-        };
-        repo.set(&cfg).unwrap();
-        assert_eq!(repo.get().unwrap(), Some(cfg.clone()));
-        assert!(
-            !repo.get().unwrap().unwrap().escalate,
-            "phoning out must never be on by default"
-        );
-
-        let opted_in = DeepModel {
-            escalate: true,
-            ..cfg
-        };
-        repo.set(&opted_in).unwrap();
-        assert_eq!(repo.get().unwrap(), Some(opted_in));
-    }
-
-    #[test]
-    fn forgetting_everything_forgets_the_old_model_settings_and_their_key() {
-        // Otherwise the next start moves them over again, and a provider the owner removed
-        // comes back first in Everyday with its key.
-        use endora_application::{ButlerModelConfig, ButlerModelConfigRepository, MemoryStore};
-        let store = store();
-        let cfg_store = cfg_store(&store);
-        let repo: &dyn ButlerModelConfigRepository = &cfg_store;
-        repo.set(&ButlerModelConfig {
-            base_url: "https://api.example.com/v1".to_owned(),
-            api_key: "secret".to_owned(),
-            ..ButlerModelConfig::default()
-        })
-        .unwrap();
-        (&store as &dyn MemoryStore).purge().unwrap();
-        assert!(repo.get().unwrap().is_none());
-    }
-
-    #[test]
-    fn butler_model_config_round_trips() {
-        use endora_application::{
-            ButlerModelConfig, ButlerModelConfigRepository, ModelSlot, Sampling,
-        };
-        let store = store();
-        let cfg_store = cfg_store(&store);
-        let repo: &dyn ButlerModelConfigRepository = &cfg_store;
-        assert!(repo.get().unwrap().is_none());
-        let config = ButlerModelConfig {
-            base_url: "https://openrouter.ai/api/v1".to_owned(),
-            api_key: "secret".to_owned(),
-            mixture: true,
-            single: ModelSlot::default(),
-            router: ModelSlot {
-                model: "anthropic/claude-3.5-haiku".to_owned(),
-                sampling: Sampling {
-                    temperature: Some(0.1),
-                    top_p: None,
-                    top_k: Some(20),
-                    repeat_penalty: None,
-                },
-            },
-            synth: ModelSlot {
-                model: "anthropic/claude-sonnet-5".to_owned(),
-                sampling: Sampling {
-                    temperature: Some(0.6),
-                    ..Sampling::default()
-                },
-            },
-            preferred_url: "http://192.168.1.10:11434/v1".to_owned(),
-            preferred_model: "qwen2.5:14b".to_owned(),
-        };
-        repo.set(&config).unwrap();
-        // Every field, including the nullable sampling knobs, round-trips exactly.
-        assert_eq!(repo.get().unwrap(), Some(config));
-    }
-
-    #[test]
-    fn autonomy_envelope_defaults_then_round_trips() {
-        use endora_application::{AutonomyEnvelope, AutonomyEnvelopeRepository};
-        let store = store();
-        let cfg = cfg_store(&store);
-        let repo: &dyn AutonomyEnvelopeRepository = &cfg;
-
-        // Unset ⇒ the default posture (external ok, consequential no).
-        assert_eq!(repo.get().unwrap(), AutonomyEnvelope::default());
-
-        let widened = AutonomyEnvelope {
-            auto_external: false,
-            auto_consequential: true,
-        };
-        repo.set(&widened).unwrap();
-        assert_eq!(repo.get().unwrap(), widened);
-    }
-
-    #[test]
     fn a_stance_round_trips_and_an_unrecognised_word_is_dropped() {
         use endora_application::CapabilityConfigRepository;
         use endora_capabilities::Stance;
@@ -2091,31 +1437,6 @@ mod tests {
             .unwrap();
         assert!(repo.stances().unwrap().is_empty());
     }
-
-    #[test]
-    fn a_large_u128_id_survives_storage() {
-        use endora_application::{
-            BeliefId, Intention, IntentionId, IntentionRepository, Timestamp,
-        };
-        let store = store();
-        let understanding = endora_understanding::UnderstandingStore::new(store.db());
-        let repo: &dyn IntentionRepository = &understanding;
-        let big = u128::MAX;
-        repo.save(
-            &Intention::form(
-                IntentionId::new(big),
-                "run more often",
-                BeliefId::new(big),
-                Timestamp::from_unix_millis(1),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            repo.get(IntentionId::new(big)).unwrap().unwrap().id(),
-            IntentionId::new(big)
-        );
-    }
 }
 
 #[cfg(test)]
@@ -2124,56 +1445,13 @@ mod secrets_at_rest;
 #[cfg(test)]
 mod the_schema_production_actually_runs {
     use super::SqliteStore;
-    use endora_capabilities::{
-        ConfigStore, ConfigWrite, ConfigWriteLog, Recipe, RecipeRepository, TargetAlias,
-        TargetAliasRepository, WriteKind,
-    };
+    use endora_capabilities::{ConfigStore, ConfigWrite, ConfigWriteLog, WriteKind};
 
     /// Builds the stores exactly as `main.rs` does: one production [`SqliteStore`], with the
     /// context stores layered over **its** `Db` handle. No test migration anywhere.
     fn as_production_does() -> ConfigStore {
         let store = SqliteStore::open_in_memory().expect("open the production store");
         ConfigStore::new(store.db())
-    }
-
-    #[test]
-    fn a_database_from_before_the_preferred_endpoint_reads_its_model_config() {
-        // Live: GET /v1/model-config (and the AI screen) answered "internal error" on every
-        // node older than the preferred endpoint, because its two columns were added only in
-        // `endora_capabilities::migrate`, which production never runs.
-        use endora_application::ButlerModelConfigRepository;
-        let dir =
-            std::env::temp_dir().join(format!("endora-old-model-config-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("old.db");
-        {
-            let conn = rusqlite::Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE butler_model_config (
-                    id INTEGER PRIMARY KEY CHECK (id = 0), base_url TEXT NOT NULL,
-                    api_key TEXT NOT NULL, mixture INTEGER NOT NULL, single_model TEXT NOT NULL,
-                    single_temp REAL, single_top_p REAL, single_top_k INTEGER, single_repeat REAL,
-                    router_model TEXT NOT NULL, router_temp REAL, router_top_p REAL,
-                    router_top_k INTEGER, router_repeat REAL, synth_model TEXT NOT NULL,
-                    synth_temp REAL, synth_top_p REAL, synth_top_k INTEGER, synth_repeat REAL
-                ) STRICT;
-                INSERT INTO butler_model_config VALUES
-                    (0, 'http://localhost:11434/v1', '', 0, 'qwen2.5:7b',
-                     NULL, NULL, NULL, NULL, '', NULL, NULL, NULL, NULL, '', NULL, NULL, NULL, NULL);",
-            )
-            .unwrap();
-        }
-        let store = SqliteStore::open(path.to_str().unwrap(), super::tests::memory_key())
-            .expect("an older database opens");
-        let cfg = ConfigStore::new(store.db());
-        let read = ButlerModelConfigRepository::get(&cfg)
-            .expect("its model config reads")
-            .expect("and is there");
-        assert_eq!(read.single.model, "qwen2.5:7b");
-        assert!(read.preferred_url.is_empty());
-        drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2193,6 +1471,10 @@ mod the_schema_production_actually_runs {
             let [table, "ADD", "COLUMN", column] = words.as_slice() else {
                 continue;
             };
+            // A table production drops (ADR 0136) needs no column added.
+            if THE_CHATS.contains(table) {
+                continue;
+            }
             let added = format!("ensure_column( &conn, \"{table}\", \"{column}\",");
             let added_short = format!("ensure_column(&conn, \"{table}\", \"{column}\",");
             assert!(
@@ -2202,7 +1484,7 @@ mod the_schema_production_actually_runs {
             checked += 1;
         }
         assert!(
-            checked >= 9,
+            checked >= 5,
             "the scan found the test migration's columns ({checked})"
         );
     }
@@ -2238,307 +1520,118 @@ mod the_schema_production_actually_runs {
             1
         );
         ConfigWriteLog::mark_undone(&config, 1).expect("undo a write");
-
-        config
-            .set_alias(&TargetAlias::new("house", "the lamp", "Living Room Lamp").unwrap())
-            .expect("target_aliases");
-        assert_eq!(config.aliases().expect("read back").len(), 1);
-
-        // A third time would be its own kind of lesson: the recipes table (ADR
-        // 0071) went into `endora_capabilities::migrate` alone on the first pass
-        // and was invisible here — every unit test green, `/v1/recipes` a 500 on
-        // the very first real request, caught by this exact test before it ever
-        // reached a person's house.
-        let recipe = Recipe::new(
-            "air_quality",
-            "Today's air quality.",
-            vec![],
-            "https://x.test/",
-            "s",
-        )
-        .unwrap();
-        RecipeRepository::save_recipe(&config, &recipe).expect("recipes");
-        assert_eq!(
-            RecipeRepository::recipes(&config).expect("read back").len(),
-            1
-        );
-        RecipeRepository::delete_recipe(&config, "air_quality").expect("delete");
     }
 
-    #[test]
-    fn the_transition_log_works_on_the_schema_production_runs() {
-        // Two more tables that exist in `endora_capabilities::migrate` — the shortcut that has
-        // now twice shipped a green suite and an "internal error" in the person's house. The
-        // watch loop writes to these every two minutes, so a divergence here would be silent
-        // until somebody read the log and found it empty (ADR 0058).
-        use endora_capabilities::{Transition, TransitionLog, Watched};
+    /// The tables only the chat and the butler's own loops used (ADR 0136).
+    const THE_CHATS: [&str; 24] = [
+        "messages",
+        "message_actions",
+        "conversation_summary",
+        "intentions",
+        "intention_research",
+        "execution_leases",
+        "outcomes",
+        "autonomy_envelope",
+        "brief_schedule",
+        "deep_model",
+        "butler_model_config",
+        "watched_things",
+        "transitions",
+        "recipes",
+        "target_aliases",
+        "repairs_left_alone",
+        "agenda_items",
+        "agenda_restarts",
+        "agenda_rules",
+        "agenda_responses",
+        "agenda_pushes",
+        "agenda_checked",
+        "mail_messages",
+        "mail_meta",
+    ];
 
-        let store = SqliteStore::open_in_memory().expect("open the production store");
-        let config = ConfigStore::new(store.db());
-
-        TransitionLog::remember(
-            &config,
-            &Watched {
-                key: "house::person.john".to_owned(),
-                settled: "home".to_owned(),
-                candidate: "home".to_owned(),
-                candidate_since_ms: 1_000,
-            },
-        )
-        .expect("watched_things");
-        assert_eq!(
-            TransitionLog::watching(&config).expect("read back").len(),
-            1
-        );
-
-        TransitionLog::record(
-            &config,
-            &Transition {
-                key: "house::person.john".to_owned(),
-                from: "home".to_owned(),
-                to: "not_home".to_owned(),
-                at_ms: 2_000,
-            },
-        )
-        .expect("transitions");
-        assert_eq!(
-            TransitionLog::since(&config, 0).expect("read back").len(),
-            1
-        );
-
-        TransitionLog::forget_before(&config, 10_000).expect("prune");
-        assert!(
-            TransitionLog::since(&config, 0)
-                .expect("read back")
-                .is_empty(),
-            "the log forgets on its own"
-        );
-    }
-
-    #[test]
-    fn commissioned_research_survives_and_a_late_result_cannot_undo_cancellation() {
-        use endora_application::{
-            IntentionId, MemoryStore, MessageId, ResearchRepository, ResearchStatus, Timestamp,
-        };
-
-        let store = SqliteStore::open_in_memory().expect("open the production store");
-        let mut running = store
-            .commission_research(
-                IntentionId::new(10),
-                MessageId::new(11),
-                "request-1",
-                "Compare backup approaches",
-                r#"["https://example.com"]"#,
-                None,
-                Timestamp::from_unix_millis(1_000),
-            )
-            .expect("commission atomically");
-        assert!(running.reserve_model_call(Timestamp::from_unix_millis(1_001)));
-        let understanding = endora_understanding::UnderstandingStore::new(store.db());
-        understanding.save_research(&running).unwrap();
-
-        let mut cancelled = understanding
-            .research(IntentionId::new(10))
+    fn tables(store: &SqliteStore) -> Vec<String> {
+        store
+            .lock()
             .unwrap()
-            .unwrap();
-        cancelled.cancel(Timestamp::from_unix_millis(1_002));
-        understanding.save_research(&cancelled).unwrap();
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
 
-        running.fail(
-            "late",
-            "late worker result",
-            Timestamp::from_unix_millis(1_003),
-        );
-        understanding.save_research(&running).unwrap();
-        assert_eq!(
-            understanding
-                .research(IntentionId::new(10))
-                .unwrap()
-                .unwrap()
-                .status(),
-            ResearchStatus::Cancelled,
-        );
-        assert_eq!(store.export().unwrap().research.len(), 1);
-        store.purge().unwrap();
-        assert!(store.export().unwrap().research.is_empty());
+    /// Endora is HQ (ADR 0136): an existing database drops what only the chat used when the
+    /// node starts, keeps what the team and the house run on, and loses the Deep list's
+    /// entries, which nothing asks any more.
+    #[test]
+    fn an_existing_database_sheds_what_the_chat_used() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for table in THE_CHATS {
+            conn.execute_batch(&format!(
+                "CREATE TABLE {table} (id TEXT); INSERT INTO {table} VALUES ('John Doe said hello');"
+            ))
+            .unwrap();
+        }
+        let store =
+            SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
+        let left = tables(&store);
+        for gone in THE_CHATS {
+            assert!(!left.iter().any(|t| t == gone), "{gone} is still there");
+        }
+        for kept in [
+            "audit_log",
+            "events",
+            "capability_config",
+            "capability_settings",
+            "model_providers",
+            "model_entries",
+            "model_usage",
+            "mcp_servers",
+            "config_writes",
+            "node_auth",
+            "node_sessions",
+        ] {
+            assert!(left.iter().any(|t| t == kept), "{kept} went too");
+        }
     }
 
     #[test]
-    fn publishing_research_commits_report_intention_and_notice_once() {
-        use endora_application::{
-            ChatMessage, IntentionRepository, MemoryStore, MessageId, MessageRole,
-            ResearchDelivery, ResearchReport, ResearchRepository, Timestamp,
-        };
+    fn a_fresh_database_never_makes_what_the_chat_used() {
+        let left = tables(&SqliteStore::open_in_memory().unwrap());
+        for gone in THE_CHATS {
+            assert!(!left.iter().any(|t| t == gone), "{gone} is made afresh");
+        }
+    }
 
-        let store = SqliteStore::open_in_memory().unwrap();
-        let mut work = store
-            .commission_research(
-                endora_application::IntentionId::new(30),
-                MessageId::new(31),
-                "request-publish",
-                "Research backups",
-                r#"["https://example.com"]"#,
-                None,
-                Timestamp::from_unix_millis(1_000),
-            )
-            .unwrap();
-        work.deliver(
-            ResearchReport::new(
-                work.intention_id(),
-                "# Report\n\n## Sources\n\n- [S1](https://example.com)",
-                false,
-                Timestamp::from_unix_millis(2_000),
-            )
-            .unwrap(),
-            Timestamp::from_unix_millis(2_000),
-        );
-        let notice = ChatMessage::new(
-            MessageId::new(32),
-            MessageRole::Butler,
-            "Your research report is ready.",
-            Timestamp::from_unix_millis(2_000),
+    #[test]
+    fn the_deep_lists_entries_go_and_everydays_stay() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_providers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '');
+             CREATE TABLE model_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT NOT NULL, provider INTEGER NOT NULL, model TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL, sampling TEXT NOT NULL DEFAULT '{}', thinks INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO model_providers (id, name, url) VALUES (1, 'house', 'http://192.168.1.10:11434/v1');
+             INSERT INTO model_entries (job, position, provider, model) VALUES ('everyday', 0, 1, 'qwen2.5:7b');
+             INSERT INTO model_entries (job, position, provider, model) VALUES ('deep', 0, 1, 'big-model');",
         )
         .unwrap();
-
-        assert!(store.publish_research(&work, &notice, &[]).unwrap());
-        assert!(!store.publish_research(&work, &notice, &[]).unwrap());
-        let understanding = endora_understanding::UnderstandingStore::new(store.db());
-        assert!(
-            !understanding
-                .get(work.intention_id())
-                .unwrap()
-                .unwrap()
-                .is_active()
-        );
-        assert_eq!(
-            store.export().unwrap().messages.len(),
-            2,
-            "commission plus one notice"
-        );
-        assert_eq!(
-            understanding
-                .research(work.intention_id())
-                .unwrap()
-                .unwrap()
-                .status(),
-            endora_application::ResearchStatus::Delivered
-        );
-    }
-
-    #[test]
-    fn a_published_report_survives_reopening_the_production_database() {
-        use endora_application::{
-            ChatMessage, MemoryStore, MessageId, MessageRole, ResearchDelivery, ResearchReport,
-            Timestamp,
-        };
-        let path = std::env::temp_dir().join(format!(
-            "endora-research-restart-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let keys = super::tests::memory_key();
-        {
-            let store = SqliteStore::open(path.to_str().unwrap(), keys.clone()).unwrap();
-            let mut work = store
-                .commission_research(
-                    endora_application::IntentionId::new(40),
-                    MessageId::new(41),
-                    "restart-key",
-                    "Research backups",
-                    r#"["https://example.com"]"#,
-                    None,
-                    Timestamp::from_unix_millis(1_000),
-                )
-                .unwrap();
-            work.deliver(
-                ResearchReport::new(
-                    work.intention_id(),
-                    "# Report\n\nSaved.\n\n## Sources\n\n- [S1](https://example.com)",
-                    false,
-                    Timestamp::from_unix_millis(2_000),
-                )
-                .unwrap(),
-                Timestamp::from_unix_millis(2_000),
-            );
-            let notice = ChatMessage::new(
-                MessageId::new(42),
-                MessageRole::Butler,
-                "Your research report is ready.",
-                Timestamp::from_unix_millis(2_000),
-            )
+        let store =
+            SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
+        let jobs: Vec<String> = store
+            .lock()
+            .unwrap()
+            .prepare("SELECT job FROM model_entries")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
             .unwrap();
-            assert!(store.publish_research(&work, &notice, &[]).unwrap());
-        }
-        let reopened = SqliteStore::open(path.to_str().unwrap(), keys).unwrap();
-        let snapshot = reopened.export().unwrap();
-        assert_eq!(snapshot.research.len(), 1);
-        assert!(snapshot.research[0].report().is_some());
-        drop(reopened);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn research_workers_share_reclaimable_execution_leases() {
-        use endora_application::{ExecutionLeaseRepository, Timestamp};
-
-        let store = SqliteStore::open_in_memory().unwrap();
-        let first = Timestamp::from_unix_millis(1_000);
-        assert!(
-            store
-                .reserve_execution_attempt("research:request-1", first, 16)
-                .unwrap()
-        );
-        assert!(
-            !store
-                .reserve_execution_attempt(
-                    "research:request-1",
-                    Timestamp::from_unix_millis(2_000),
-                    16
-                )
-                .unwrap()
-        );
-
-        // A dead worker's lease is reclaimable after the fixed 30-second window.
-        let reclaimed_at = Timestamp::from_unix_millis(31_001);
-        assert!(
-            store
-                .reserve_execution_attempt("research:request-1", reclaimed_at, 16)
-                .unwrap()
-        );
-
-        // A late worker cannot release the newer worker's lease token.
-        store
-            .release_execution_attempt("research:request-1", first.unix_millis() + 30_000)
-            .unwrap();
-        assert!(
-            !store
-                .reserve_execution_attempt(
-                    "research:request-1",
-                    Timestamp::from_unix_millis(31_002),
-                    16
-                )
-                .unwrap()
-        );
-        store
-            .release_execution_attempt(
-                "research:request-1",
-                reclaimed_at.unix_millis() + endora_application::EXECUTION_LEASE_MS,
-            )
-            .unwrap();
-        assert!(
-            store
-                .reserve_execution_attempt(
-                    "research:request-2",
-                    Timestamp::from_unix_millis(2_000),
-                    8
-                )
-                .unwrap()
-        );
+        assert_eq!(jobs, ["everyday"]);
     }
 
     #[test]
     fn an_existing_database_sheds_what_the_clean_slate_removed() {
-        use endora_application::{ExecutionLeaseRepository, Timestamp};
-
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE checkin (id INTEGER PRIMARY KEY);
@@ -2580,23 +1673,10 @@ mod the_schema_production_actually_runs {
             "specimens",
             "beliefs",
             "execution_goals",
+            // Research went with the chat (ADR 0136), and its leases with it.
+            "execution_leases",
         ] {
             assert!(!tables.iter().any(|t| t == gone), "{gone} is still there");
         }
-        let leases: Vec<String> = conn
-            .prepare("SELECT execution_key FROM execution_leases")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(leases, ["research:r-1"], "research keeps its lease");
-        drop(conn);
-        // And research still reserves through the table that stayed.
-        assert!(
-            store
-                .reserve_execution_attempt("research:r-2", Timestamp::from_unix_millis(1_000), 4)
-                .unwrap()
-        );
     }
 }

@@ -265,15 +265,8 @@ services:
       # be backed up instead — and run `make migrate-data` once first, or the node starts
       # on an empty folder (`make deploy` refuses that). See docs/hosting.md.
       - ${ENDORA_DATA_DIR:-endora-data}:/data
-      # The read-only copy of your mail that the ansible-nas `mail_mirror` role keeps
-      # (ADR 0097). Set ENDORA_MAIL_DIR in local.mk to its maildir folder on the NAS (by
-      # default /srv/mail-mirror/maildir). Unset, an empty volume is mounted and the node
-      # has no mail. Read-only: nothing in the node can change the copy.
-      - ${ENDORA_MAIL_DIR:-endora-no-mail}:/mail:ro
-      # What Endora knows about you: markdown pages with their own git history (ADR 0101).
-      # Set ENDORA_BRAIN_DIR in local.mk to a host folder (beside your other containers'
-      # data, e.g. <docker home>/endora/brain) to read or edit the pages yourself; unset, a
-      # named volume. The nightly backup copies it either way.
+      # Where the brain's pages were (ADR 0101). Kept mounted for one release so the node can
+      # empty it, as the owner chose when the chat was retired (ADR 0136); removed after.
       - ${ENDORA_BRAIN_DIR:-endora-brain}:/brain
       # Permission-controlled host agent; read-only mount does not grant write APIs.
       # The agent authenticates requests and executes only its private fixed catalog.
@@ -480,8 +473,6 @@ volumes:
   endora-sound-secret:
   # The Spotify receiver's own login.
   endora-spotify-login:
-  # Empty on purpose: what /mail is when no mail copy is configured.
-  endora-no-mail:
   # Empty on purpose: what /git-push-key is when no deploy key is configured (ADR 0115).
   endora-no-git-key:
   # Empty on purpose: what /bench-token is when no bench is configured (ADR 0123).

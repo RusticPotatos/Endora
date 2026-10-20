@@ -21,8 +21,6 @@ enum Action {
     Get(String),
     /// A POST of a JSON body against the given path.
     Post(String, Value),
-    /// A DELETE against the given path.
-    Delete(String),
 }
 
 fn main() -> ExitCode {
@@ -56,19 +54,6 @@ fn main() -> ExitCode {
 fn route(args: &[&str]) -> Option<Action> {
     match args {
         ["health"] => Some(Action::Get("/health".to_owned())),
-        ["chat"] => Some(Action::Get("/v1/chat".to_owned())),
-        ["chat", message] => Some(Action::Post(
-            "/v1/chat".to_owned(),
-            json!({ "message": message }),
-        )),
-        ["preference", "list"] => Some(Action::Get("/v1/preferences".to_owned())),
-        ["preference", "add", text] => Some(Action::Post(
-            "/v1/preferences".to_owned(),
-            json!({ "text": text }),
-        )),
-        ["preference", "delete", id] => Some(Action::Delete(format!("/v1/preferences/{id}"))),
-        ["brain"] => Some(Action::Get("/v1/brain".to_owned())),
-        ["brain", "page", path] => Some(Action::Get(format!("/v1/brain/pages/{path}"))),
         ["audit"] => Some(Action::Get("/v1/audit".to_owned())),
         ["audit", limit] => Some(Action::Get(format!("/v1/audit?limit={limit}"))),
         ["activity"] => Some(Action::Get("/v1/activity".to_owned())),
@@ -89,7 +74,6 @@ fn execute(action: &Action) -> Result<ExitCode, client::ClientError> {
     let (status, body) = match action {
         Action::Get(path) => client.get(path)?,
         Action::Post(path, payload) => client.post(path, payload)?,
-        Action::Delete(path) => client.delete(path)?,
     };
     println!("{}", serde_json::to_string_pretty(&body)?);
     if (200..300).contains(&status) {
@@ -110,17 +94,10 @@ fn print_usage() {
         "\nUsage: endora <command>\n\n\
          Commands:\n  \
            health                                 check the node is up\n  \
-           chat \"<message>\"                       talk to the butler\n  \
-           chat                                   show the conversation so far\n  \
-           preference list                        what the butler has learned\n  \
-           preference add <text>                  remember a preference\n  \
-           preference delete <id>                 forget a preference\n  \
-           brain                                  what Endora remembers, and its pages\n  \
-           brain page <path>                      one page, e.g. hobbies/watches\n  \
            audit [limit]                          show recent audit records\n  \
            activity [limit]                       show the recent activity feed\n  \
-           export                                 export all your data as JSON\n  \
-           purge confirm                          permanently delete all your data\n\n\
+           export                                 export Endora's record as JSON\n  \
+           purge confirm                          permanently delete Endora's record\n\n\
          Environment:\n  \
            ENDORA_URL   node base URL (default http://127.0.0.1:8787)"
     );
@@ -137,51 +114,11 @@ mod tests {
     }
 
     #[test]
-    fn routes_chat() {
-        assert_eq!(
-            route(&["chat", "I want to run more"]),
-            Some(Action::Post(
-                "/v1/chat".to_owned(),
-                json!({ "message": "I want to run more" })
-            ))
-        );
-        assert_eq!(route(&["chat"]), Some(Action::Get("/v1/chat".to_owned())));
-    }
-
-    #[test]
-    fn routes_preferences() {
-        assert_eq!(
-            route(&["preference", "add", "I prefer mornings"]),
-            Some(Action::Post(
-                "/v1/preferences".to_owned(),
-                json!({ "text": "I prefer mornings" })
-            ))
-        );
-        assert_eq!(
-            route(&["preference", "list"]),
-            Some(Action::Get("/v1/preferences".to_owned()))
-        );
-        assert_eq!(
-            route(&["preference", "delete", "9"]),
-            Some(Action::Delete("/v1/preferences/9".to_owned()))
-        );
-    }
-
-    #[test]
     fn routes_audit() {
         assert_eq!(route(&["audit"]), Some(Action::Get("/v1/audit".to_owned())));
         assert_eq!(
             route(&["audit", "10"]),
             Some(Action::Get("/v1/audit?limit=10".to_owned()))
-        );
-    }
-
-    #[test]
-    fn routes_the_brain() {
-        assert_eq!(route(&["brain"]), Some(Action::Get("/v1/brain".to_owned())));
-        assert_eq!(
-            route(&["brain", "page", "hobbies/watches"]),
-            Some(Action::Get("/v1/brain/pages/hobbies/watches".to_owned()))
         );
     }
 
@@ -218,5 +155,9 @@ mod tests {
     fn unknown_command_is_none() {
         assert_eq!(route(&["nope"]), None);
         assert_eq!(route(&["target", "create"]), None);
+        // The chat and what served it are retired (ADR 0136).
+        for gone in [&["chat"][..], &["preference", "list"], &["brain"]] {
+            assert_eq!(route(gone), None);
+        }
     }
 }

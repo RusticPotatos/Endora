@@ -384,69 +384,6 @@ pub(super) async fn set_capability_confirm(
     Ok(Json(json!({ "id": id, "confirm": req.confirm })))
 }
 
-pub(super) fn envelope_json(e: &AutonomyEnvelope) -> serde_json::Value {
-    json!({ "auto_external": e.auto_external, "auto_consequential": e.auto_consequential })
-}
-
-/// Returns the person's autonomy envelope — the boundary the butler acts within
-/// (ADR 0051).
-pub(super) async fn get_autonomy(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    let envelope = blocking(move || {
-        AutonomyEnvelopeRepository::get(config.as_ref()).map_err(AppError::Repository)
-    })
-    .await?;
-    Ok(Json(envelope_json(&envelope)))
-}
-
-#[derive(Deserialize)]
-pub(super) struct AutonomyRequest {
-    auto_external: bool,
-    auto_consequential: bool,
-}
-
-/// Sets the autonomy envelope (ADR 0051). Widening it grants the butler more
-/// independence; the deterministic policy layer still enforces the edges.
-pub(super) async fn set_autonomy(
-    State(state): State<AppState>,
-    Json(req): Json<AutonomyRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let envelope = AutonomyEnvelope {
-        auto_external: req.auto_external,
-        auto_consequential: req.auto_consequential,
-    };
-    let config = state.config.clone();
-    let events = state.events.clone();
-    let clock = state.clock.clone();
-    blocking(move || {
-        AutonomyEnvelopeRepository::set(config.as_ref(), &envelope)
-            .map_err(AppError::Repository)?;
-        record_event(
-            events.as_ref(),
-            clock.as_ref(),
-            &format!(
-                "Adjusted autonomy: read-only skills {}, consequential actions {}",
-                if envelope.auto_external {
-                    "on their own"
-                } else {
-                    "ask first"
-                },
-                if envelope.auto_consequential {
-                    "on their own"
-                } else {
-                    "ask first"
-                },
-            ),
-        );
-        Ok(())
-    })
-    .await?;
-    let _ = state.changes.send(());
-    Ok(Json(envelope_json(&envelope)))
-}
-
 /// Invokes a capability by id with a JSON body. Read-only skills run directly;
 /// this is the `act` path of the autonomy model. (Consequential skills will be
 /// routed through propose→confirm as they are wired.)
