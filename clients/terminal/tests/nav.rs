@@ -282,3 +282,28 @@ fn the_network_section_shows_details_and_offers_vpn_controls() {
     assert!(view.contains("fictional-mac"), "{view}");
     assert!(view.lines().all(|l| l.chars().count() <= 56), "{view}");
 }
+
+/// Endora is HQ (ADR 0136): the chat is retired, so its page (slot 1) is never offered,
+/// never reached with Tab, and never reopened as the last page used.
+#[test]
+fn the_retired_chat_page_cannot_be_reached() {
+    use endora_terminal::nav::{StartScreen, next_page, start_view};
+    assert!(
+        MENU.iter().all(|m| m.target != Target::Page(1)),
+        "the menu still offers the chat"
+    );
+    assert!(MENU.iter().all(|m| m.label != "Endora AI"));
+    assert_eq!(
+        start_view(StartScreen::Last, Some(1)),
+        (0, false),
+        "a device that last used the chat opens Home"
+    );
+    assert_eq!(next_page(0), 2, "Tab from Home skips the chat");
+    assert_eq!(next_page(2), 3);
+    assert_eq!(next_page(8), 0, "and wraps around");
+    let mut page = 0;
+    for _ in 0..20 {
+        page = next_page(page);
+        assert_ne!(page, 1);
+    }
+}

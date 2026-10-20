@@ -85,39 +85,7 @@ async fn redirects_are_not_followed() {
 }
 
 #[tokio::test]
-async fn interrupted_chat_is_uncertain_and_not_retried() {
-    let (client, rx, thread) = server(
-        "200 OK",
-        "data: {\"type\":\"token\",\"text\":\"partial\"}\n\n",
-        "Content-Type: text/event-stream\r\n",
-    );
-    let (tx, mut events) = tokio::sync::mpsc::channel(4);
-    assert!(
-        client
-            .chat("Hello".into(), tx)
-            .await
-            .unwrap_err()
-            .contains("uncertain")
-    );
-    assert_eq!(events.recv().await.unwrap()["text"], "partial");
-    let request = rx.recv().unwrap();
-    assert!(request.starts_with("POST /v1/chat/stream"));
-    assert!(rx.try_recv().is_err());
-    thread.join().unwrap();
-}
-
-#[tokio::test]
-async fn done_and_unknown_events_work_and_signin_returns_session() {
-    let (client, _, thread) = server(
-        "200 OK",
-        "data: {\"type\":\"future\"}\n\ndata: {\"type\":\"done\",\"reply\":{\"text\":\"Hello\"}}\n\n",
-        "Content-Type: text/event-stream\r\n",
-    );
-    let (tx, mut events) = tokio::sync::mpsc::channel(4);
-    client.chat("Hello".into(), tx).await.unwrap();
-    assert_eq!(events.recv().await.unwrap()["type"], "future");
-    assert_eq!(events.recv().await.unwrap()["type"], "done");
-    thread.join().unwrap();
+async fn signin_returns_session() {
     let (client, rx, thread) = server(
         "200 OK",
         "{\"token\":\"fictional-new-session\"}",

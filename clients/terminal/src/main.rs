@@ -265,7 +265,7 @@ async fn music_setup(node: &Client) -> Result<()> {
     let now = status(node.get("/v1/connections/spotify").await?)?;
     if now.state == "connected" {
         println!(
-            "\x1b[2J\x1b[H{}. Every device plays with it: this one, the web console and chat.\n\n  S  Sign in this device's speaker only (one QR code){}\n  A  Connect again (replaces the sign-in on every device)\n\n  Enter cancels\n",
+            "\x1b[2J\x1b[H{}. Every device plays with it: this one and the web console.\n\n  S  Sign in this device's speaker only (one QR code){}\n  A  Connect again (replaces the sign-in on every device)\n\n  Enter cancels\n",
             now.detail,
             if speaker_ready {
                 "; it is already signed in"
@@ -335,7 +335,7 @@ async fn music_setup(node: &Client) -> Result<()> {
             .map_err(|e| format!("Spotify is connected, but the speaker sign-in failed: {e}"))?;
     }
     println!(
-        "Done. Every device plays with this sign-in: the Music page here (Esc, then M), the web console and chat."
+        "Done. Every device plays with this sign-in: the Music page here (Esc, then M) and the web console."
     );
     Ok(())
 }

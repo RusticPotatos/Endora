@@ -31,11 +31,11 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
-use zeroize::Zeroize;
 
 const NAMES: [&str; 9] = [
     "Home",
-    "Endora AI",
+    // 1 was the chat, retired with it (ADR 0136): never shown.
+    "",
     "Controls",
     "TV & Movies",
     "NAS",
@@ -375,21 +375,10 @@ enum Update {
     Bt(Bt),
     Music(Music),
     Read(u64, usize, Result<Value>),
-    Token(u64, Value),
-    Done(u64, Result<()>),
     Action(u64, Result<Value>),
     Network(&'static str),
     /// Tunnel state, whether the node answers, and the gateway fingerprint.
     Link(vpn::Vpn, bool, Option<String>, bool),
-}
-fn bounded(s: &mut String) {
-    if s.len() > 128 * 1024 {
-        let mut at = s.len() - 128 * 1024;
-        while !s.is_char_boundary(at) {
-            at += 1;
-        }
-        s.drain(..at);
-    }
 }
 /// Local wall-clock time, refreshed at most every 20 seconds.
 fn local_time() -> String {
@@ -411,19 +400,6 @@ fn local_time() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map_or("--:--".into(), |t| t.trim().to_owned());
     *cache = Some((Instant::now(), text.clone()));
-    text
-}
-fn history(v: &Value) -> String {
-    let mut text = String::new();
-    for message in v.as_array().into_iter().flatten() {
-        text.push_str(&format!(
-            "\n{}: {}\n",
-            line(&message["role"]),
-            clean(message["text"].as_str().unwrap_or(""))
-        ));
-        text.push_str(&endora_terminal::presentation::actions(&message["actions"]));
-        bounded(&mut text);
-    }
     text
 }
 fn encoded(s: &str) -> String {
@@ -450,13 +426,6 @@ fn read(
     let tx = tx.clone();
     let path = match page {
         0 => "/v1/terminal/dashboard".into(),
-        1 => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            format!("/v1/chat?from={}&to={now}", now.saturating_sub(86_400_000))
-        }
         2 => {
             if catalog {
                 "/v1/terminal/home/catalog".into()
@@ -530,18 +499,14 @@ pub async fn run() -> Result<()> {
     let mut menu = false;
     let mut selected = [0usize; 9];
     let mut data: Vec<Value> = (0..9).map(|_| json!({})).collect();
-    let mut chat = String::new();
-    let mut draft = String::new();
     let mut cursor = 0;
     let mut search = String::new();
     // Media: a result has been picked with Up/Down since the last edit or search.
     let mut picked = false;
     let mut scroll = [0u16; 9];
     let mut bottom = 0;
-    let mut follow = true;
     let mut busy = false;
     let mut reading = false;
-    let mut stream_seen = false;
     let mut confirm: Option<Confirm> = None;
     let mut home_catalog = false;
     let mut detail: Option<(usize, String)> = None;
@@ -873,11 +838,7 @@ pub async fn run() -> Result<()> {
                     reading = false;
                     match result {
                         Ok(value) => {
-                            if p == 1 {
-                                chat = history(&value);
-                            } else {
-                                data[p] = value;
-                            }
+                            data[p] = value;
                             if !items(&data[p]).is_empty() {
                                 selected[p] =
                                     selected[p].min(items(&data[p]).len().saturating_sub(1));
@@ -905,22 +866,6 @@ pub async fn run() -> Result<()> {
                     if p != page {
                         next_read = Instant::now();
                     }
-                }
-                Update::Token(g, v) if g == epoch => {
-                    let event =
-                        serde_json::from_value(v).unwrap_or(endora_protocol::StreamEvent::Unknown);
-                    if let Some(now) = endora_terminal::presentation::on_stream(
-                        &event,
-                        &mut chat,
-                        &mut stream_seen,
-                    ) {
-                        status = now;
-                    }
-                    bounded(&mut chat);
-                }
-                Update::Done(g, result) if g == epoch => {
-                    busy = false;
-                    status = result.err().unwrap_or("Reply complete".into());
                 }
                 Update::Action(g, result) if g == epoch => {
                     busy = false;
@@ -1142,20 +1087,20 @@ pub async fn run() -> Result<()> {
                     .and_then(|p| p.write("last-page", page.to_string().as_bytes()));
             }
             terminal.draw(|f|{
-                let compose=!menu && confirm.is_none() && unlocked && matches!(page,1|3);
+                let compose=!menu && confirm.is_none() && unlocked && page==3;
                 let areas=Layout::vertical([Constraint::Length(1),Constraint::Min(3),Constraint::Length(if compose{3}else{0}),Constraint::Length(1),Constraint::Length(1)]).split(f.area());
                 f.render_widget(Paragraph::new(format!("Endora / {} / {}",if menu{"Menu"}else{NAMES[page]},if unlocked{"Unlocked"}else{"Locked"})),areas[0]);
                 f.render_widget(Paragraph::new(status_right(&vpn::status_icons(net,vpn_state,bt_connected),&local_time(),&telemetry::battery_text(battery,minutes_left))).alignment(ratatui::layout::Alignment::Right),areas[0]);
-                let mut body=if let Some(confirm)=&confirm {format!("{}\n\nY confirm | Back cancel",confirm.label)}else if menu {endora_terminal::nav::menu_view(menu_sel)}else if page==6 {endora_terminal::nav::settings_view(settings_section,settings_sel,&settings_status)}else if page==8 && unlocked {endora_terminal::presentation::bluetooth_view(bt_powered,&bt_conn,&bt_paired,&bt_found,bt_window,selected[8],&bt_note)}else if page==7 && unlocked {endora_terminal::presentation::music_view(now_playing.as_ref(),&music_title,&music_items,selected[7],spotify::is_signed_in(),&music_note,radio.is_some()&&is_radio_title(&music_title))}else if !unlocked && page!=0 {"Unlock to use this page. Press U or open the menu.".into()}else if page==1 {chat.clone()}else{display(&data[page],selected[page])};
+                let mut body=if let Some(confirm)=&confirm {format!("{}\n\nY confirm | Back cancel",confirm.label)}else if menu {endora_terminal::nav::menu_view(menu_sel)}else if page==6 {endora_terminal::nav::settings_view(settings_section,settings_sel,&settings_status)}else if page==8 && unlocked {endora_terminal::presentation::bluetooth_view(bt_powered,&bt_conn,&bt_paired,&bt_found,bt_window,selected[8],&bt_note)}else if page==7 && unlocked {endora_terminal::presentation::music_view(now_playing.as_ref(),&music_title,&music_items,selected[7],spotify::is_signed_in(),&music_note,radio.is_some()&&is_radio_title(&music_title))}else if !unlocked && page!=0 {"Unlock to use this page. Press U or open the menu.".into()}else{display(&data[page],selected[page])};
                 if page==0 && unlocked && !menu && confirm.is_none() && detail.as_ref().is_none_or(|(p,_)|*p!=0) {dash_width=areas[1].width.saturating_sub(2) as usize;let (text,at)=home(&data[0],"",selected[0],dash_width);body=text;let rows=areas[1].height.saturating_sub(2) as usize;let top=scroll[0] as usize;if at<top{scroll[0]=at as u16;}else if rows>0&&at>=top+rows{scroll[0]=(at+1-rows) as u16;}} else if page==0 && unlocked && !menu && confirm.is_none() {body=display(&data[0],0);}
                 if !unlocked && prompt.is_some() {body=String::new();}
                 if page==0 && unlocked && !menu && confirm.is_none() && detail.as_ref().is_none() {body.push_str(&format!("\n{net}\nUpdated {}s ago",last_read.elapsed().as_secs()));}
                 if page==6 && !menu {if let Some(seconds)=usage.suggestion(){body.push_str(&format!("\nSuggested Travel screen-off: {seconds}s\nA accepts; current: {}s",usage.pocket_seconds));}}
                 let count=Paragraph::new(body.as_str()).wrap(Wrap{trim:false}).line_count(areas[1].width.saturating_sub(2).max(1));bottom=count.saturating_sub(areas[1].height.saturating_sub(2) as usize).min(u16::MAX as usize) as u16;
-                if page==1 && follow{scroll[page]=bottom;}scroll[page]=scroll[page].min(bottom);
+                scroll[page]=scroll[page].min(bottom);
                 f.render_widget(Paragraph::new(body).wrap(Wrap{trim:false}).scroll((if menu||confirm.is_some(){0}else{scroll[page]},0)).block(Block::default().borders(Borders::ALL)),areas[1]);
-                if compose{let input=if page==1{&draft}else{&search};composer::draw(f,areas[2],input,cursor.min(input.len()));}
-                let hint=match page{8=>"P pair | S speaker | X forget | Enter connect | Esc back",7=>"Up/Down + Enter | Space play or pause | Esc back",0=>"Arrows move | Enter or a key opens | Esc menu",1=>"Enter send | Esc menu",2=>"C catalog | Space favorite | O on | F off | A scene | Esc menu",3=>"Type + Enter search | Up/Down pick | Enter request | Esc menu",4=>"Up/Down select | I logs | S start | T stop | R restart | Esc menu",5=>"Enter run | I logs | V reconcile | Esc menu",6=>"Up/Down + Enter, or a letter | Esc back",_=>"Esc menu"};
+                if compose{composer::draw(f,areas[2],&search,cursor.min(search.len()));}
+                let hint=match page{8=>"P pair | S speaker | X forget | Enter connect | Esc back",7=>"Up/Down + Enter | Space play or pause | Esc back",0=>"Arrows move | Enter or a key opens | Esc menu",2=>"C catalog | Space favorite | O on | F off | A scene | Esc menu",3=>"Type + Enter search | Up/Down pick | Enter request | Esc menu",4=>"Up/Down select | I logs | S start | T stop | R restart | Esc menu",5=>"Enter run | I logs | V reconcile | Esc menu",6=>"Up/Down + Enter, or a letter | Esc back",_=>"Esc menu"};
                 f.render_widget(Paragraph::new(hint),areas[3]);f.render_widget(Paragraph::new(clean(&status)),areas[4]);
                 if let (false,Some(p))=(unlocked,&prompt){
                     let r=endora_terminal::presentation::lock_box(f.area());
@@ -1380,10 +1325,7 @@ pub async fn run() -> Result<()> {
         }
         let mut code = endora_terminal::protocol::shortcut(
             key.code,
-            !unlocked
-                || menu
-                || !matches!(page, 1 | 3)
-                || key.modifiers.contains(KeyModifiers::CONTROL),
+            !unlocked || menu || page != 3 || key.modifiers.contains(KeyModifiers::CONTROL),
         );
         if code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
             break;
@@ -1441,7 +1383,7 @@ pub async fn run() -> Result<()> {
             }
             continue;
         }
-        if (!unlocked || menu || !matches!(page, 1 | 3)) && code == KeyCode::Char('u')
+        if (!unlocked || menu || page != 3) && code == KeyCode::Char('u')
             || (code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL))
         {
             if !unlocked {
@@ -1480,7 +1422,7 @@ pub async fn run() -> Result<()> {
                     page = index;
                     next_read = Instant::now();
                     next_bt = Instant::now();
-                    cursor = if page == 3 { search.len() } else { draft.len() };
+                    cursor = search.len();
                     continue;
                 }
                 Target::Settings(section) => {
@@ -1682,11 +1624,11 @@ pub async fn run() -> Result<()> {
             }
         }
         match code {
-            // + and - change the text size anywhere except where text is typed (chat, search) and the
-            // Music page, where they are the volume keys.
+            // + and - change the text size anywhere except where text is typed (search) and the Music
+            // page, where they are the volume keys.
             KeyCode::Char(c @ ('+' | '=' | '-'))
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && (!unlocked || !matches!(page, 1 | 3 | 7)) =>
+                    && (!unlocked || !matches!(page, 3 | 7)) =>
             {
                 use endora_terminal::font;
                 let next = font::step(text_size, if c == '-' { -1 } else { 1 });
@@ -1765,10 +1707,8 @@ pub async fn run() -> Result<()> {
                     }));
                 }
             }
-            KeyCode::Enter if page == 0 || (page == 1 && draft.trim().is_empty()) || page == 6 => {
-                menu = true
-            }
-            KeyCode::Char('k') if !matches!(page, 1 | 3) && unlocked => {
+            KeyCode::Enter if page == 0 || page == 6 => menu = true,
+            KeyCode::Char('k') if page != 3 && unlocked => {
                 for task in tasks.drain(..) {
                     task.abort();
                     let _ = task.await;
@@ -1782,14 +1722,13 @@ pub async fn run() -> Result<()> {
                 busy = false;
                 confirm = None;
                 page = 0;
-                chat.zeroize();
                 for d in data.iter_mut() {
                     *d = json!({});
                 }
                 prompt = Some(zeroize::Zeroizing::new(String::new()));
                 status = "Locked".into();
             }
-            KeyCode::Char('p') if !matches!(page, 1 | 3 | 6 | 8) => {
+            KeyCode::Char('p') if !matches!(page, 3 | 6 | 8) => {
                 terminal
                     .clear()
                     .map_err(|_| "Cannot blank private screen")?;
@@ -1800,9 +1739,9 @@ pub async fn run() -> Result<()> {
                 last_input = Instant::now() - Duration::from_secs(300);
             }
             KeyCode::Tab => {
-                page = (page + 1) % 9;
+                page = endora_terminal::nav::next_page(page);
                 next_read = Instant::now();
-                cursor = if page == 3 { search.len() } else { draft.len() };
+                cursor = search.len();
             }
             KeyCode::Up | KeyCode::Down
                 if page == 0 && unlocked && detail.as_ref().is_none_or(|(p, _)| *p != 0) =>
@@ -2187,7 +2126,6 @@ pub async fn run() -> Result<()> {
                     };
                     scroll[page] = selected[page].saturating_sub(5).min(bottom as usize) as u16;
                 } else {
-                    follow = false;
                     scroll[page] = if code == KeyCode::Up {
                         scroll[page].saturating_sub(1)
                     } else {
@@ -2196,7 +2134,6 @@ pub async fn run() -> Result<()> {
                 }
             }
             KeyCode::PageUp | KeyCode::PageDown => {
-                follow = false;
                 scroll[page] = if code == KeyCode::PageUp {
                     scroll[page].saturating_sub(10)
                 } else {
@@ -2245,34 +2182,7 @@ pub async fn run() -> Result<()> {
                     });
                 }
             }
-            KeyCode::Enter if page == 1 && unlocked && !busy && !reading => {
-                if let Some(c) = client.clone() {
-                    let message = std::mem::take(&mut draft);
-                    cursor = 0;
-                    chat.push_str(&format!("\nYou: {message}\nEndora: "));
-                    bounded(&mut chat);
-                    busy = true;
-                    follow = true;
-                    stream_seen = false;
-                    let tx = tx.clone();
-                    let g = epoch;
-                    tasks.push(tokio::spawn(async move {
-                        let (stream_tx, mut stream_rx) = mpsc::channel(32);
-                        let relay = tx.clone();
-                        let handle = tokio::spawn(async move {
-                            while let Some(v) = stream_rx.recv().await {
-                                if relay.send(Update::Token(g, v)).await.is_err() {
-                                    break;
-                                }
-                            }
-                        });
-                        let result = c.chat(message, stream_tx).await;
-                        let _ = handle.await;
-                        let _ = tx.send(Update::Done(g, result)).await;
-                    }));
-                }
-            }
-            KeyCode::Char('v') if !matches!(page, 1 | 3 | 6) && unlocked && !busy => {
+            KeyCode::Char('v') if !matches!(page, 3 | 6) && unlocked && !busy => {
                 let pending = endora_terminal::storage::Paths::state()?
                     .read("pending-operation")
                     .ok()
@@ -2499,7 +2409,6 @@ pub async fn run() -> Result<()> {
                     unlocked = false;
                     client = portable::locked(&settings).ok();
                     *player.lock().await = None;
-                    chat.zeroize();
                     for d in data.iter_mut() {
                         *d = json!({});
                     }
@@ -2523,11 +2432,11 @@ pub async fn run() -> Result<()> {
             KeyCode::Char('p') if page == 6 => {}
             KeyCode::Char(c)
                 if unlocked
-                    && matches!(page, 1 | 3)
+                    && page == 3
                     && !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !c.is_control() =>
             {
-                let text = if page == 1 { &mut draft } else { &mut search };
+                let text = &mut search;
                 picked = false;
                 cursor = cursor.min(text.len());
                 if text.len() < 4096 {
@@ -2535,15 +2444,15 @@ pub async fn run() -> Result<()> {
                     cursor += c.len_utf8();
                 }
             }
-            KeyCode::Backspace if unlocked && matches!(page, 1 | 3) && cursor > 0 => {
+            KeyCode::Backspace if unlocked && page == 3 && cursor > 0 => {
                 picked = false;
-                let text = if page == 1 { &mut draft } else { &mut search };
+                let text = &mut search;
                 let at = text[..cursor].char_indices().last().map_or(0, |(i, _)| i);
                 text.drain(at..cursor);
                 cursor = at;
             }
-            KeyCode::Left | KeyCode::Right if unlocked && matches!(page, 1 | 3) => {
-                let text = if page == 1 { &draft } else { &search };
+            KeyCode::Left | KeyCode::Right if unlocked && page == 3 => {
+                let text = &search;
                 cursor = if code == KeyCode::Left {
                     text[..cursor].char_indices().last().map_or(0, |(i, _)| i)
                 } else {
@@ -2553,17 +2462,15 @@ pub async fn run() -> Result<()> {
                         .map_or(cursor, |c| cursor + c.len_utf8())
                 };
             }
-            KeyCode::Delete if unlocked && matches!(page, 1 | 3) => {
-                let text = if page == 1 { &mut draft } else { &mut search };
+            KeyCode::Delete if unlocked && page == 3 => {
+                let text = &mut search;
                 if let Some(c) = text[cursor..].chars().next() {
                     text.drain(cursor..cursor + c.len_utf8());
                 }
             }
-            KeyCode::Home | KeyCode::End if unlocked && matches!(page, 1 | 3) => {
+            KeyCode::Home | KeyCode::End if unlocked && page == 3 => {
                 cursor = if code == KeyCode::Home {
                     0
-                } else if page == 1 {
-                    draft.len()
                 } else {
                     search.len()
                 };
