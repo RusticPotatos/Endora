@@ -117,6 +117,19 @@ says. The match code draws the same numbers in the same order as before, so noth
 played changes. Chess, which models play, is kept move by move as a scenario (ADR 0135,
 amended).
 
+## Amendment (2026-10-20): chess is picked up over time
+
+Chess was played only in downtime, and a member holding any open task never has downtime: in
+four days there were nine downtime turns and not one game. The owner's word: chess should not
+be just in downtime; games are picked up over time. Now:
+
+- A chess move, a challenge and a look are allowed in any turn on the house's own brains (its
+  model or the Mac); a turn on Claude, which costs money, may only look.
+- The member whose move it is, at work and with no turn running, queued or held, is given a
+  short downtime turn on the house's model for it, open tasks or not, at most every thirty
+  minutes. A game goes on over days; a week without a move still adjourns it as a draw.
+- The downtime briefing no longer says the member has no task: it says the turn is about none.
+
 ## Deferred
 
 - Chess clocks, a draw offered or resigned: a game ends by the rules or by the week.

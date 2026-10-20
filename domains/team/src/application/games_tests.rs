@@ -572,29 +572,103 @@ fn a_move_is_played_only_on_your_turn_and_only_if_legal() {
 }
 
 #[test]
-fn chess_is_played_only_in_downtime_though_the_board_may_be_looked_at_any_time() {
+fn chess_is_played_in_any_turn_on_the_houses_brains_and_never_on_claude() {
+    // Chess was played only in downtime, which a member holding any open task never has: in
+    // four days, nine downtime turns, and no game. Now any turn on the house's own brains (its
+    // model or the Mac) may look, challenge and move; a turn on Claude, which costs money, may
+    // only look.
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock, false, false);
     let t = team(&hq);
     let ordinary = mention_turn(&hq, t.ada);
-    // Nothing to look at yet.
+    assert!(
+        !run_of(&hq, &ordinary)
+            .brain
+            .is_some_and(crate::domain::Brain::cloud),
+        "a work turn is on the house's brains"
+    );
     let none = chess_tool(&hq, &ordinary, &json!({ "action": "board" })).unwrap_err();
     assert!(none.contains("no game of chess"), "{none}");
-    let refused = chess_tool(
+    chess_tool(
         &hq,
         &ordinary,
         &json!({ "action": "challenge", "member": "Bo" }),
     )
-    .unwrap_err();
-    assert!(refused.contains("downtime"), "{refused}");
-    assert!(hq.store().chess_games().unwrap().is_empty());
-    hq.store().add_chess_game(t.ada, t.bo, START).unwrap();
-    let board = chess_tool(&hq, &ordinary, &json!({ "action": "board" })).unwrap();
-    assert!(board.contains("Legal moves:"), "{board}");
+    .unwrap();
+    let said = chess_tool(&hq, &ordinary, &json!({ "action": "move", "san": "e4" })).unwrap();
+    assert!(said.contains("You played e4"), "{said}");
+    assert_eq!(hq.store().chess_games().unwrap()[0].moves, ["e4"]);
+
+    // A turn on Claude may look, not play.
+    let cy = mention_turn(&hq, t.cy);
+    let mut on_claude = run_of(&hq, &cy);
+    on_claude.brain = Some(crate::domain::Brain::Haiku);
+    hq.store().save_run(&on_claude).unwrap();
     let refused =
-        chess_tool(&hq, &ordinary, &json!({ "action": "move", "san": "e4" })).unwrap_err();
-    assert!(refused.contains("downtime"), "{refused}");
-    assert!(hq.store().chess_games().unwrap()[0].moves.is_empty());
+        chess_tool(&hq, &cy, &json!({ "action": "challenge", "member": "Dee" })).unwrap_err();
+    assert!(refused.contains("never in one on Claude"), "{refused}");
+    assert_eq!(hq.store().chess_games().unwrap().len(), 1);
+}
+
+#[test]
+fn a_game_is_picked_up_over_time_by_the_member_whose_move_it_is() {
+    // The member to move gets a short turn on the house's model when nothing else is coming for
+    // it, open tasks or not, and at most every half hour: games go on over days.
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock, false, true);
+    let t = team(&hq);
+    only(&hq, &t, [t.ada, t.bo]);
+    hq.store().add_chess_game(t.ada, t.bo, START).unwrap();
+    let mut game = hq.store().chess_games().unwrap().remove(0);
+    game.play(t.ada, "e4", START + 1).unwrap();
+    hq.store().save_chess_game(&game).unwrap();
+    let goal = hq.set_goal("Keep the house", "", Author::Owner).unwrap();
+    hq.add_task(
+        Author::Owner,
+        crate::application::ports::NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: "An old task Bo holds".to_owned(),
+            description: String::new(),
+            assignee: Some(t.bo),
+            priority: crate::domain::Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap();
+    end_all(&hq);
+    let chess_wakes = |hq: &Hq<'_>, who: MemberId| {
+        hq.store()
+            .wakes()
+            .unwrap()
+            .iter()
+            .filter(|w| w.member == who && w.reason == WakeReason::Downtime)
+            .count()
+    };
+    let before = chess_wakes(&hq, t.bo);
+    clock.0.fetch_add(31 * MINUTE, Ordering::SeqCst);
+    end_all(&hq);
+    assert_eq!(
+        chess_wakes(&hq, t.bo),
+        before + 1,
+        "Bo's move: a turn for it"
+    );
+    assert_eq!(chess_wakes(&hq, t.ada), 0, "not Ada's move");
+    clock.0.fetch_add(10 * MINUTE, Ordering::SeqCst);
+    end_all(&hq);
+    assert_eq!(
+        chess_wakes(&hq, t.bo),
+        before + 1,
+        "not again within the half hour"
+    );
+    clock.0.fetch_add(25 * MINUTE, Ordering::SeqCst);
+    end_all(&hq);
+    assert_eq!(
+        chess_wakes(&hq, t.bo),
+        before + 2,
+        "still his move: picked up again"
+    );
 }
 
 #[test]

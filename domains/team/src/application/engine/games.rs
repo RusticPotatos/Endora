@@ -12,10 +12,13 @@ use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::chess::{self, Game, Refused};
 use crate::domain::games::{self, Kind, Record, Rng};
-use crate::domain::{EventKind, Member, MemberId, Millis, Refusal, Role, RunId};
+use crate::domain::{EventKind, Member, MemberId, Millis, Refusal, Role, RunId, WakeReason};
 
 /// The most results the office shows as the latest.
 const RECENT: usize = 5;
+
+/// The least time between two turns given a member to make its move in a game of chess.
+const CHESS_PACE_MS: Millis = 30 * 60 * 1000;
 /// The most finished games of chess the snapshot keeps showing, beside those being played.
 const FINISHED_SHOWN: usize = 3;
 
@@ -32,8 +35,54 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn games_tick(&self, now: Millis) -> Done<()> {
         if self.settings.games {
             self.play_matches(now)?;
+            self.chess_picked_up(now)?;
         }
         self.adjourn_chess(now)
+    }
+
+    /// Whether a turn is on the house's own brains (its model or the Mac), where chess is
+    /// played: a turn on Claude costs money, and only looks at the board.
+    fn on_the_houses_brains(&self, turn: &crate::application::ports::Run) -> bool {
+        !turn.brain.is_some_and(crate::domain::Brain::cloud)
+    }
+
+    /// Games are picked up over time: the member whose move it is, at work, with no turn
+    /// running, queued or held, is given a short turn on the house's model for it (a downtime
+    /// turn, free), open tasks or not, at most every [`CHESS_PACE_MS`]. Before, a move waited for
+    /// downtime, which a member holding any open task never has.
+    fn chess_picked_up(&self, now: Millis) -> Done<()> {
+        let games = self.store.chess_games()?;
+        if !games.iter().any(Game::live) {
+            return Ok(());
+        }
+        let runs = self.store.runs()?;
+        let wakes = self.store.wakes()?;
+        for game in games.iter().filter(|g| g.live()) {
+            let mover = game.to_move();
+            let member = self.member(mover)?;
+            if !member.at_work() {
+                continue;
+            }
+            let busy = runs.iter().any(|r| r.member == mover && r.status.live())
+                || wakes
+                    .iter()
+                    .any(|w| w.member == mover && w.receipt == crate::domain::Receipt::Held);
+            if busy {
+                continue;
+            }
+            let key = format!("chess_picked_up:{}", mover.0);
+            let last: Millis = self
+                .store
+                .setting(&key)?
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(Millis::MIN);
+            if now.saturating_sub(last) < CHESS_PACE_MS {
+                continue;
+            }
+            self.store.set_setting(&key, &now.to_string())?;
+            self.wake_held_lock(mover, None, WakeReason::Downtime)?;
+        }
+        Ok(())
     }
 
     /// The members who are free to play: at work, not the CEO, with no turn running or
@@ -224,7 +273,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn chess_move_in(&self, run: RunId, san: &str) -> Done<String> {
         let _held = self.held();
         let turn = self.running(run)?;
-        if !self.in_downtime(run)? {
+        if !self.on_the_houses_brains(&turn) {
             return Err(refused(Refused::NotInDowntime));
         }
         let Some(mut game) = self.chess_game_of(turn.member)? else {
@@ -273,7 +322,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn chess_challenge_in(&self, run: RunId, whom: &str) -> Done<String> {
         let _held = self.held();
         let turn = self.running(run)?;
-        if !self.in_downtime(run)? {
+        if !self.on_the_houses_brains(&turn) {
             return Err(refused(Refused::NotInDowntime));
         }
         let me = self.member(turn.member)?;
@@ -309,8 +358,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.chess_moved_forward(run)?;
         Ok(format!(
             "You challenged {} to chess (game {id}): you have white and the first move. Look at \
-             the board with `board` and play with `move`; a move is one downtime turn, and \
-             {} is told of the game in theirs.",
+             the board with `board` and play with `move`, a move a turn; {} is given a turn \
+             for each of theirs.",
             other.name, other.name
         ))
     }
@@ -321,7 +370,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(game) = self.chess_game_of(member.id)? else {
             return Ok(
                 "Chess: you have no game. You may challenge a member who is at hand with \
-                       chess (action challenge); one game each, and a move is one downtime turn.\n"
+                       chess (action challenge); one game each, a move a turn, picked up over time.\n"
                     .to_owned(),
             );
         };

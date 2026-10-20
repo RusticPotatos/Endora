@@ -11,7 +11,7 @@ use super::ports::{Clock, Run, TeamStore, WorkerAdapter};
 pub(super) fn tool() -> Value {
     json!({
         "name": "chess",
-        "description": "Chess with a teammate, by the rules, played a move at a time in your downtime turns. board: your game's position (FEN and drawn), whose move it is, the last moves and, on your move, the legal moves; you may look any time. move: play one move in standard notation (san, such as e4, Nf3, exd5, O-O) when it is your move; refused with the legal moves if it is not legal. challenge: start a game with a member who is at hand (member); you have white. One game each. Moves and challenges are made only in downtime turns.",
+        "description": "Chess with a teammate, by the rules, played a move at a time in your downtime turns. board: your game's position (FEN and drawn), whose move it is, the last moves and, on your move, the legal moves; you may look any time. move: play one move in standard notation (san, such as e4, Nf3, exd5, O-O) when it is your move; refused with the legal moves if it is not legal. challenge: start a game with a member who is at hand (member); you have white. One game each. Moves and challenges are made in turns on the house's own brains, never on Claude; a game goes on over days, and when it is your move you are given a short turn for it.",
         "inputSchema": { "type": "object", "properties": {
             "action": { "type": "string", "enum": ["board", "move", "challenge"] },
             "san": { "type": "string", "description": "for move: the move in standard algebraic notation" },

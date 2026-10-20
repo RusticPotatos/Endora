@@ -521,8 +521,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// rules, and what it may do. Kept short.
     pub(super) fn downtime_said(&self, member: &Member) -> Done<String> {
         let mut told = String::from(
-            "It is downtime: you have no task, and nothing is due. This turn is about no task and \
-             makes no work (create_task and hand_to are refused).\n",
+            "It is downtime: this turn is about no task, nothing is due in it, and it makes no \
+             work (create_task and hand_to are refused).\n",
         );
         told.push_str(&self.office_said(member)?);
         let kinds: Vec<String> = office::CATALOG
