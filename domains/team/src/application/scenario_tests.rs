@@ -569,6 +569,7 @@ fn arm(label: &str, members: &[MemberId]) -> Arm {
     Arm {
         label: label.to_owned(),
         members: members.to_vec(),
+        brief: None,
     }
 }
 
@@ -693,6 +694,9 @@ fn a_trial_compares_two_conditions_or_more_once_and_within_bounds() {
     assert!(
         refused("what", "holodeck", &two, &[1]).contains("lighthouse, silent_station or chess")
     );
+    let mut odd = arm("odd", &[a]);
+    odd.brief = Some("plan_first".to_owned());
+    assert!(refused("brief", "lighthouse", &[odd, arm("b", &[b])], &[1]).contains("no briefing"));
     assert_eq!(
         hq.start_trial("ok", project, "lighthouse", &two, &[1])
             .unwrap()
@@ -1166,4 +1170,80 @@ fn acting_again_resets_the_count_of_wakes() {
     }
     play(&hq, &b, "e5").unwrap();
     assert!(!hq.store().task(game).unwrap().unwrap().status.finished());
+}
+
+// A trial whose conditions differ in how the crew is briefed, not in who plays: the same crew,
+// the same seeds; in one the captain posts the crew's plan before anyone acts, and the world
+// holds every action until it has.
+#[test]
+fn a_trial_compares_briefings_with_the_crew_and_seeds_fixed() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([captain, science, engineer], project) = crew(&hq);
+    let crew_of = [captain, science, engineer];
+    let mut planned = arm("plan-first", &crew_of);
+    planned.brief = Some("plan_first".to_owned());
+    let seed = station_seed(Anomaly::IonStorm);
+    let started = hq
+        .start_trial(
+            "briefings",
+            project,
+            "silent_station",
+            &[arm("current", &crew_of), planned],
+            &[seed],
+        )
+        .unwrap();
+    assert_eq!(started.len(), 2);
+    let report = hq.trial_report("briefings").unwrap();
+    assert_eq!(report["runs"][0]["config"]["brief"], json!(null));
+    assert_eq!(report["runs"][1]["config"]["brief"], "plan_first");
+
+    // Played alone, so each member's turn is on its part of this mission.
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([captain, science, engineer], project) = crew(&hq);
+    let mission = hq
+        .start_station_with(project, [captain, science, engineer], seed, true)
+        .unwrap();
+    let parts: Vec<_> = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.parent == Some(mission))
+        .collect();
+    assert!(parts[0].description.contains("Wait for the captain's plan"));
+    let [c, s, _e] = <[RunContext; 3]>::try_from(turns(&hq, &[captain, science, engineer]))
+        .ok()
+        .unwrap();
+    assert!(
+        act(&hq, &s, "scan_station")
+            .unwrap_err()
+            .contains("has not posted the crew's plan")
+    );
+    let woken_before = hq.store().wakes().unwrap().len();
+    let posted = use_tool(
+        &hq,
+        &c,
+        "scenario",
+        &json!({ "action": "plan", "text": "Science scans and analyses; the engineer inspects and routes power; I call." }),
+    )
+    .unwrap();
+    assert!(posted.starts_with("The captain's plan:"), "{posted}");
+    assert!(
+        hq.store().wakes().unwrap().len() > woken_before,
+        "the crew is woken to the plan"
+    );
+    assert!(
+        act(&hq, &s, "scan_station")
+            .unwrap()
+            .contains("Four life signs")
+    );
+    let shown = hq.scenario_shown(mission).unwrap();
+    assert_eq!(shown["brief"], "plan_first");
+    assert!(shown["plan"].as_str().unwrap().contains("I call."));
+    assert_eq!(
+        shown["log"][0]["action"], "scan_station",
+        "the refused scan is kept first"
+    );
 }

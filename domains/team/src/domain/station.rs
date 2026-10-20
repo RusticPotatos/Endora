@@ -221,6 +221,10 @@ pub struct Station {
     pub probe_out: bool,
     /// Whether the station answered.
     pub contact: bool,
+    /// Whether nothing is done before the captain posts the crew's plan (a trial's briefing).
+    pub plan_first: bool,
+    /// The captain's plan, once posted.
+    pub plan: Option<String>,
 }
 
 impl Station {
@@ -247,7 +251,42 @@ impl Station {
             power_routed: false,
             probe_out: false,
             contact: false,
+            plan_first: false,
+            plan: None,
         }
+    }
+
+    /// The same station, where nothing is done before the captain posts the crew's plan.
+    #[must_use]
+    pub fn plan_first(seed: u64) -> Self {
+        Self {
+            plan_first: true,
+            ..Self::new(seed)
+        }
+    }
+
+    /// The captain posts the crew's plan (or a new one): who does what, in which order. It
+    /// costs nothing, and every member's look shows it.
+    ///
+    /// # Errors
+    /// The mission is over; a member other than the captain; a plan that says nothing.
+    pub fn post_plan(&self, role: Role, text: &str) -> Result<(Self, String), String> {
+        if let Some(outcome) = self.outcome() {
+            return Err(format!("the mission is over: {}", outcome.name()));
+        }
+        if role != Role::Captain {
+            return Err(format!(
+                "the crew's plan is the captain's to post, not the {}'s",
+                role.name()
+            ));
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("a plan says who does what, in which order".to_owned());
+        }
+        let mut next = self.clone();
+        next.plan = Some(text.to_owned());
+        Ok((next, format!("The captain's plan: {text}")))
     }
 
     fn knows(&self, clue: Clue) -> bool {
@@ -298,6 +337,13 @@ impl Station {
     pub fn step(&self, role: Role, action: Action) -> Result<(Self, String), String> {
         if let Some(outcome) = self.outcome() {
             return Err(format!("the mission is over: {}", outcome.name()));
+        }
+        if self.plan_first && self.plan.is_none() {
+            return Err(
+                "the captain has not posted the crew's plan yet: nothing is done before it \
+                 (look shows it when it is)"
+                    .to_owned(),
+            );
         }
         if action.role() != role {
             return Err(format!(
@@ -416,6 +462,26 @@ impl Station {
         })
     }
 
+    /// The station, plan-first or not, with a log's entries applied in order: an action by its
+    /// name, or the captain's plan as `plan <text>`. What a kept log replays to.
+    ///
+    /// # Errors
+    /// The first entry that is refused, which a kept log never holds.
+    pub fn replay_logged(seed: u64, plan_first: bool, logged: &[String]) -> Result<Self, String> {
+        let start = if plan_first {
+            Self::plan_first(seed)
+        } else {
+            Self::new(seed)
+        };
+        logged.iter().try_fold(start, |at, entry| {
+            if let Some(text) = entry.strip_prefix("plan ") {
+                return Ok(at.post_plan(Role::Captain, text)?.0);
+            }
+            let action = Action::read(entry).ok_or_else(|| format!("no such action: {entry}"))?;
+            Ok(at.step(action.role(), action)?.0)
+        })
+    }
+
     /// Where things stand, said: never the anomaly until it is analysed.
     #[must_use]
     pub fn look(&self) -> String {
@@ -450,8 +516,31 @@ impl Station {
             },
             if self.power_routed { "yes" } else { "no" },
             if self.probe_out { "yes" } else { "no" },
-        )
+        ) + &match (&self.plan, self.plan_first) {
+            (Some(plan), _) => format!(" The captain's plan: {plan}"),
+            (None, true) => " No plan yet: the captain posts it before anyone acts.".to_owned(),
+            (None, false) => String::new(),
+        }
     }
+}
+
+/// What the crew is told before it acts, where nothing is done before the captain's plan (a
+/// trial's briefing): the mission's description, and the plan's place in it.
+#[must_use]
+pub fn brief_plan_first(role: Role) -> String {
+    let first = match role {
+        Role::Captain => {
+            "Before anyone acts, post the crew's plan with the scenario tool (action plan, text): \
+             who does what, in which order, and which one way you will restore contact; the ship \
+             has energy for one way, not both. Nobody can act until you have, and you may post a \
+             new plan if the crew learns something."
+        }
+        _ => {
+            "Wait for the captain's plan (look shows it), then do your part of it, and only \
+             that: the ship has energy for one way to restore contact, not both."
+        }
+    };
+    format!("{} {first}", brief(role))
 }
 
 /// What the crew is told before it acts: the mission's description, with the member's role.
@@ -636,6 +725,52 @@ mod tests {
                 .unwrap_err()
                 .contains("over: partial")
         );
+    }
+
+    // A trial's briefing: the captain posts the crew's plan before anyone acts. The world holds
+    // it: nothing is done before it, only the captain posts it, it costs nothing, every look
+    // shows it, and a log with it replays.
+    #[test]
+    fn plan_first_holds_every_action_until_the_captain_posts_the_plan() {
+        let start = Station::plan_first(seed_for(Anomaly::IonStorm));
+        assert!(
+            start
+                .step(Role::Science, ScanStation)
+                .unwrap_err()
+                .contains("has not posted the crew's plan")
+        );
+        assert!(start.look().contains("No plan yet"));
+        assert!(
+            start
+                .post_plan(Role::Science, "I scan")
+                .unwrap_err()
+                .contains("the captain's to post")
+        );
+        assert!(start.post_plan(Role::Captain, "  ").is_err());
+        let (planned, said) = start
+            .post_plan(
+                Role::Captain,
+                "Science scans and analyses; I send the probe and call.",
+            )
+            .unwrap();
+        assert!(said.starts_with("The captain's plan:"), "{said}");
+        assert_eq!((planned.elapsed, planned.ship_energy), (0, ENERGY), "free");
+        assert!(planned.look().contains("I send the probe and call."));
+        planned.step(Role::Science, ScanStation).unwrap();
+        let logged: Vec<String> = [
+            "plan Science scans and analyses; I send the probe and call.",
+            "scan_station",
+            "analyze_anomaly",
+            "send_probe",
+            "attempt_contact",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let done = Station::replay_logged(seed_for(Anomaly::IonStorm), true, &logged).unwrap();
+        assert_eq!(done.outcome(), Some(Outcome::Success));
+        assert!(Station::replay_logged(seed_for(Anomaly::IonStorm), true, &logged[1..]).is_err());
+        assert!(brief_plan_first(Role::Captain).contains("action plan"));
+        assert!(brief_plan_first(Role::Engineer).contains("Wait for the captain's plan"));
     }
 
     #[test]

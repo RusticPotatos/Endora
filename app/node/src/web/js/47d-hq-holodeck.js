@@ -49,7 +49,9 @@ function hqScenarioView(d) {
     const s = d.state || {};
     body = `<p>Life support ${Number(s.life_support)} ticks · ship energy ${Number(s.ship_energy)} · station power ${Number(s.station_power)}% ·
       hazard ${Number(s.hazard)} of 3${s.crew_safe === false ? " · someone was hurt" : ""}${s.power_routed ? " · power routed" : ""}${s.probe_out ? " · probe out" : ""}${s.contact ? " · contact" : ""}</p>
-      <p>Score ${Number(d.score)}${d.anomaly ? ` · the anomaly was a ${esc(d.anomaly)}` : ""}</p>`;
+      <p>Score ${Number(d.score)}${d.anomaly ? ` · the anomaly was a ${esc(d.anomaly)}` : ""}</p>
+      ${d.brief === "plan_first" ? `<p class="hq-note">Briefed plan first: nothing is done before the captain's plan.</p>` : ""}
+      ${d.plan ? `<p>The captain's plan: ${esc(d.plan)}</p>` : ""}`;
   } else {
     body = `<p>${Number(d.minutes)} of ${Number(d.limit)} minutes${d.cause ? ` · the cause was the ${esc(d.cause)}` : ""}</p>`;
   }

@@ -22,9 +22,10 @@ pub(super) fn tool(kind: &str) -> Value {
     if kind == crate::domain::station::SILENT_STATION {
         return json!({
             "name": "scenario",
-            "description": "Act in Silent Station, as your role in the crew. look: what the crew has found and where things stand (free). scan_station (science): life signs, power and hazard; 1 tick, 10 energy. inspect_comms (engineer): open the comms junction; 2 ticks, 10 energy. analyze_anomaly (science): what the anomaly is; 2 ticks, 15 energy. route_power (engineer): bypass a dead relay; 2 ticks, 25 energy. send_probe (captain): a probe beside the array as a relay; 1 tick, 35 energy. attempt_contact (captain): call the station; 1 tick, 10 energy. Only your role's actions are yours; a refused action costs nothing. The world says how the mission ends, and closes it itself.",
+            "description": "Act in Silent Station, as your role in the crew. look: what the crew has found and where things stand (free). scan_station (science): life signs, power and hazard; 1 tick, 10 energy. inspect_comms (engineer): open the comms junction; 2 ticks, 10 energy. analyze_anomaly (science): what the anomaly is; 2 ticks, 15 energy. route_power (engineer): bypass a dead relay; 2 ticks, 25 energy. send_probe (captain): a probe beside the array as a relay; 1 tick, 35 energy. attempt_contact (captain): call the station; 1 tick, 10 energy. plan (captain): post the crew's plan, who does what in which order (text); free. Only your role's actions are yours; a refused action costs nothing. The world says how the mission ends, and closes it itself.",
             "inputSchema": { "type": "object", "properties": {
-                "action": { "type": "string", "enum": ["look", "scan_station", "inspect_comms", "analyze_anomaly", "route_power", "send_probe", "attempt_contact"] },
+                "action": { "type": "string", "enum": ["look", "plan", "scan_station", "inspect_comms", "analyze_anomaly", "route_power", "send_probe", "attempt_contact"] },
+                "text": { "type": "string", "description": "for plan: the crew's plan, who does what, in which order" },
             }, "required": ["action"] },
         });
     }
@@ -48,7 +49,10 @@ pub(super) fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         .as_str()
         .ok_or("`action` is look, inspect, test_circuit or replace_part")?;
     // What the action is about: a lighthouse's part, or a match's move.
-    let about = args["part"].as_str().or_else(|| args["san"].as_str());
+    let about = args["part"]
+        .as_str()
+        .or_else(|| args["san"].as_str())
+        .or_else(|| args["text"].as_str());
     engine
         .scenario_in(run.id, action, about)
         .map_err(|e| e.to_string())

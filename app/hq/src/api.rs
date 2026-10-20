@@ -999,6 +999,9 @@ async fn game_replay(
 struct TrialArm {
     label: String,
     members: Vec<i64>,
+    /// How the players are briefed, when not as usual: `plan_first`.
+    #[serde(default)]
+    brief: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1023,6 +1026,7 @@ async fn start_trial(
         .map(|c| endora_team::domain::trials::Arm {
             label: c.label,
             members: c.members.into_iter().map(MemberId).collect(),
+            brief: c.brief,
         })
         .collect();
     let tasks = blocking(move || {
