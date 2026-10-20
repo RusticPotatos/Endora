@@ -38,7 +38,7 @@ pub(super) async fn console_css() -> impl axum::response::IntoResponse {
 /// as the single file did (they are concatenated, not loaded as modules), so each is a slice of
 /// the old `app.js`, cut at a top-level boundary. `scripts/check-console.mjs` joins the same
 /// files in the same order.
-const CONSOLE_SCRIPT_PARTS: [&str; 17] = [
+const CONSOLE_SCRIPT_PARTS: [&str; 18] = [
     include_str!("../web/js/00-state.js"),
     include_str!("../web/js/10-core.js"),
     include_str!("../web/js/20-chat.js"),
@@ -49,6 +49,7 @@ const CONSOLE_SCRIPT_PARTS: [&str; 17] = [
     include_str!("../web/js/47-hq.js"),
     include_str!("../web/js/47b-hq-replay.js"),
     include_str!("../web/js/47c-hq-world.js"),
+    include_str!("../web/js/47d-hq-holodeck.js"),
     include_str!("../web/js/48-agenda.js"),
     include_str!("../web/js/49-sound.js"),
     include_str!("../web/js/49b-sound-live.js"),
@@ -227,4 +228,29 @@ pub(super) fn record_event(
 ) {
     use endora_application::{Clock, EventLog};
     let _ = events.record(clock.now(), summary);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CONSOLE_SCRIPT_PARTS;
+
+    // A console part left out of the node's list is served to nobody, and the console check,
+    // which joins the folder, never notices: the Holodeck card shipped that way and was not on
+    // the screen. Every script in the folder is in the list, and nothing else is.
+    #[test]
+    fn every_console_script_in_the_folder_is_served() {
+        let folder = concat!(env!("CARGO_MANIFEST_DIR"), "/src/web/js");
+        let mut names: Vec<String> = std::fs::read_dir(folder)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".js"))
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), CONSOLE_SCRIPT_PARTS.len(), "{names:?}");
+        for (name, part) in names.iter().zip(CONSOLE_SCRIPT_PARTS) {
+            let file = std::fs::read_to_string(format!("{folder}/{name}")).unwrap();
+            assert_eq!(&file, part, "{name} is not served in its place");
+        }
+    }
 }
