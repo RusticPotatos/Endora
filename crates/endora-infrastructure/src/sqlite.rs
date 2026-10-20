@@ -1263,6 +1263,9 @@ impl MemoryStore for SqliteStore {
             "autonomy_envelope",
             "brief_schedule",
             "deep_model",
+            // The old everyday settings, key and all, which the lists replaced: nothing reads
+            // them, and kept they could be moved into the lists again.
+            "butler_model_config",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
