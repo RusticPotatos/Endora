@@ -1,35 +1,27 @@
 function render() {
-  updateMenuState();
   // The node itself is waiting for the vault (ADR 0127): nothing else can load until it
   // opens, sign-in included, so the unlock is the whole screen.
   if (VAULT && VAULT.node_waiting) { app.innerHTML = viewVaultLocked(); return; }
   // Nothing else can load without a token, so nothing else is worth drawing.
   if (NEEDS_TOKEN) { app.innerHTML = viewNeedsToken(); return; }
   const v = NAV.v;
-  // The chat fills the window with its own scrolling thread and a docked composer; every
-  // other screen is an ordinary scrolling page.
-  document.body.classList.toggle("on-chat", v === "chat");
   // A redraw of the same screen (a live update, a decision) keeps where the person was: the
   // page's scroll, and each box marked data-keep-scroll. Restored before the browser paints,
   // so nothing visibly jumps.
-  const kept = v === LAST_VIEW && v !== "chat"
+  const kept = v === LAST_VIEW
     ? { y: window.scrollY, boxes: [...document.querySelectorAll("[data-keep-scroll]")].map((el) => [el.dataset.keepScroll, el.scrollTop]) }
     : null;
   app.innerHTML =
       v === "audit" ? viewAudit()
-    : v === "chat" ? viewChat()
     : v === "skills" ? viewSkills()
     : v === "skill" ? viewSkill()
     : v === "connections" ? viewConnections()
-    : v === "permissions" ? viewPermissions()
     : v === "toolserver" ? viewToolServer()
     : v === "data" ? viewData()
     : v === "spotify" ? viewSpotify()
     : v === "lab" ? viewLab()
     : v === "hq" ? viewHQ()
     : v === "replay" ? viewReplay()
-    : v === "watching" ? viewWatching()
-    : v === "needs" ? viewNeeds()
     : v === "containers" ? viewContainers()
     : v === "logs" ? viewLogs()
     : v === "jobs" ? viewJobs()
@@ -38,18 +30,10 @@ function render() {
     : v === "house" ? viewHouse()
     : v === "music" ? viewMusic()
     : v === "speakers" ? viewSound()
-    // Older links: what it remembers is now part of About you.
-    : v === "prefs" ? viewUnderstanding()
     : v === "settings" ? viewSettings()
-    : v === "mail" ? viewMail()
-    : v === "display" ? viewDisplay()
     : v === "models" ? viewModels()
-    : v === "proactive" ? viewProactive()
-    : v === "understanding" ? viewUnderstanding()
-    : v === "brainpage" ? viewBrainPage()
     : v === "signin" ? viewSignin()
     : v === "vault" ? viewVault()
-    : v === "recipes" ? viewRecipes()
     // A screen nobody knows any more opens HQ.
     : viewHQ();
   if (kept) {
@@ -59,16 +43,9 @@ function render() {
     }
     window.scrollTo(0, kept.y);
   }
-  // On the chat, jump to the newest message (kept clear of the sticky composer).
-  if (v === "chat") {
-    const thread = document.getElementById("chat-thread");
-    const last = thread && thread.lastElementChild;
-    if (last) requestAnimationFrame(() => scrollBubbleIntoView(last));
-  } else if (v !== LAST_VIEW) {
-    // Every other screen is a list with the newest thing FIRST, so it opens at the
-    // top. Without this the window simply keeps whatever scroll position the last
-    // screen had — arrive from the bottom of a long conversation and the inbox opens
-    // at its oldest message.
+  if (v !== LAST_VIEW) {
+    // Every screen is a list with the newest thing FIRST, so it opens at the top. Without
+    // this the window simply keeps whatever scroll position the last screen had.
     //
     // Only when the screen actually changes. Doing it on every render would yank
     // someone back to the top mid-read whenever a live update arrived.
@@ -77,28 +54,15 @@ function render() {
   LAST_VIEW = v;
 }
 
-// Reflect the activity toggle's state in the menu.
-function updateMenuState() {
-  const act = document.getElementById("menu-activity-state");
-  if (act) act.textContent = SHOW_ACTIVITY ? "on" : "off";
-}
-
 // ---- actions (event delegation) -------------------------------------------
 async function dispatch(act) {
   const [verb, noun, id, arg] = act.split(":");
-  // Choosing anything from the "+" menu closes it; opening it is the one exception.
-  if (!(verb === "toggle" && noun === "tools")) {
-    const tools = document.getElementById("tools-menu");
-    if (tools) tools.hidden = true;
-  }
   try {
     if (verb === "reload") { location.reload(); return; }
     // The home lab, media, smart home and music.
     if (await labDispatch(verb, noun, id, arg)) return;
     if (await hqDispatch(verb, noun, id, arg)) return;
     if (await replayDispatch(verb, noun, id)) return;
-    // The agenda's pinned cards and what Endora watches (ADR 0103).
-    if (await agendaDispatch(verb, noun, id, arg)) return;
     if (await soundDispatch(verb, noun, id, arg)) return;
     // The vault and its passkeys (ADR 0127).
     if (await vaultDispatch(verb, noun, id)) return;
@@ -123,117 +87,9 @@ async function dispatch(act) {
       } catch (e) { flash("Spotify: " + e.message, "err"); }
       return render();
     }
-    // The AI screen's own choice: the mail reader's model.
-    if (verb === "ai" && noun === "mailreader") {
-      const input = document.getElementById("ai-mail-reader");
-      try {
-        AI = await api("POST", "/v1/ai", { mail_reader_model: input ? input.value : "" });
-        flash("Mail will be read with that model, on your network.", "ok");
-      } catch (e) { flash("Couldn't save: " + e.message, "err"); }
-      return render();
-    }
     if (verb === "go") {
-      if (noun === "home") return go("home");
       if (noun === "audit") return go("audit");
       return go(noun, id);
-    }
-    if (verb === "chat" && noun === "send") { await sendChat(); return; }
-    if (verb === "chat" && noun === "mic") { listen(); return; }
-    if (verb === "chat" && noun === "stop") { stopChat(); return; }
-    if (verb === "research" && noun === "start") { await startResearch(); return; }
-    if (verb === "research" && noun === "cancel") {
-      await api("POST", `/v1/research/${encodeURIComponent(id)}/cancel`);
-      flash("Research cancelled.", "ok");
-      return reload();
-    }
-    if (verb === "research" && noun === "download") { await downloadResearch(id); return; }
-    // Ask the same thing again after a turn that never answered. It re-sends the person's
-    // own last words rather than making them retype them, which is the whole difference
-    // between a dead end and a hiccup.
-    if (verb === "chat" && noun === "retry") {
-      const list = (DB.messages || []).slice().reverse();
-      const mine = list.find((m) => m.role === "user");
-      if (!mine || !mine.text) return;
-      // Asked as it was asked: a private message again as a private one, without its mark.
-      const said = shownText(mine.text);
-      CHAT_QUEUE.push(LAST_CHAT_REQUEST && LAST_CHAT_REQUEST.message === said.text
-        ? LAST_CHAT_REQUEST : said.private ? { message: said.text, private: true } : said.text);
-      updateComposerButton();
-      return drainChat();
-    }
-    if (verb === "brief") {
-      try {
-        const r = await api("POST", "/v1/brief");
-        if (r && r.briefed === false) flash(r.note || "Nothing to brief yet.", "err");
-      } catch (e) { flash("Couldn't prepare a brief: " + e.message, "err"); }
-      return reload();
-    }
-    if (verb === "toggle" && noun === "speak") {
-      SPEAK = !SPEAK;
-      localStorage.setItem("endora.speak", SPEAK ? "1" : "0");
-      if (SPEAK) unlockSpeech(); else if (TTS) TTS.cancel();
-      // Update the button in place — a full render() rebuilds the chat thread from
-      // persisted state and would wipe a reply that's still streaming in.
-      updateSpeakButton();
-      return;
-    }
-    // Deep mode: while on, Send routes to the bigger model (an option, not a
-    // one-off button). Update in place so it never disturbs a streaming reply.
-    if (verb === "toggle" && noun === "deep") {
-      DEEP_MODE = !DEEP_MODE;
-      localStorage.setItem("endora.deepmode", DEEP_MODE ? "1" : "0");
-      updateDeepButton();
-      flash(DEEP_MODE ? "Deep mode on — your messages go to the bigger model." : "Deep mode off.", "ok");
-      return;
-    }
-    // Private (ADR 0105): what you send stays on your network, so it cannot also go to the
-    // deep model.
-    if (verb === "toggle" && noun === "private") {
-      PRIVATE_MODE = !PRIVATE_MODE;
-      localStorage.setItem("endora.privatemode", PRIVATE_MODE ? "1" : "0");
-      // With Research on, Private changes what send does, so the whole composer is redrawn.
-      if (RESEARCH_MODE) render();
-      else refreshComposerModes();
-      flash(PRIVATE_MODE
-        ? "Private on: answered on your network only, never sent out, and not remembered."
-        : "Private off.", "ok");
-      return;
-    }
-    if (verb === "toggle" && noun === "research") {
-      RESEARCH_MODE = !RESEARCH_MODE;
-      localStorage.setItem("endora.researchmode", RESEARCH_MODE ? "1" : "0");
-      return render();
-    }
-    if (verb === "ctx" && noun === "toggle") {
-      CTX_OPEN = !CTX_OPEN;
-      const panel = document.getElementById("ctx-panel");
-      if (panel) panel.hidden = !CTX_OPEN;
-      if (CTX_OPEN) {
-        try { CTX = await api("GET", "/v1/chat/context"); } catch (_) {}
-        if (DEEP_MODEL.configured) await loadDeepSpend();
-        refreshContextRing();
-      }
-      return;
-    }
-    if (verb === "deepspend" && noun === "refresh") {
-      await loadDeepSpend();
-      const box = document.getElementById("deep-spend");
-      if (box) box.innerHTML = deepSpendHtml() || '<span class="sub">Nothing used yet.</span>';
-      return;
-    }
-    if (verb === "deepprices" && noun === "save") {
-      const num = (id) => {
-        const v = ((document.getElementById(id) || {}).value || "").trim();
-        return v === "" ? null : Number(v);
-      };
-      const body = { input: num("d-price-in"), output: num("d-price-out"), cached: num("d-price-cached") };
-      if (Object.values(body).some((v) => v !== null && !Number.isFinite(v))) {
-        flash("A price is a number, like 0.30.", "err");
-        return;
-      }
-      await api("POST", "/v1/deep-model/prices", body);
-      flash("Prices saved.", "ok");
-      return reload();
     }
     // The Activity screen opens with the newest thirty; this asks for the next page, by the
     // number already on screen, and says so when there is nothing older.
@@ -250,33 +106,10 @@ async function dispatch(act) {
       }
       return render();
     }
-    if (verb === "ctx" && noun === "reset") {
-      await api("POST", "/v1/chat/context/reset");
-      CTX_OPEN = false;
-      flash("New topic. Earlier messages stay here but are no longer sent to the model.", "ok");
-      return reload();
-    }
-    if (verb === "toggle" && noun === "tools") {
-      const t = document.getElementById("tools-menu");
-      if (t) t.hidden = !t.hidden;
-      return;
-    }
     if (verb === "toggle" && noun === "menu") {
       const m = document.getElementById("menu");
       if (m) m.hidden = !m.hidden;
       return;
-    }
-    if (verb === "toggle" && noun === "haptic") {
-      HAPTIC = !HAPTIC;
-      localStorage.setItem("endora.haptic", HAPTIC ? "1" : "0");
-      buzz(25); // confirm the change in the medium it controls
-      return render();
-    }
-    if (verb === "toggle" && noun === "activity") {
-      SHOW_ACTIVITY = !SHOW_ACTIVITY;
-      localStorage.setItem("endora.showActivity", SHOW_ACTIVITY ? "1" : "0");
-      closeMenu();
-      return render();
     }
     // Sign in, and keep whatever the node hands back. Nothing is stored until it works.
     if (verb === "signin" && !noun) {
@@ -368,23 +201,6 @@ async function dispatch(act) {
       NEEDS_TOKEN = false;
       return reload();
     }
-    // Save the person's home location as a preference the butler reads for context.
-    if (verb === "setlocation") {
-      const where = val("setup-location");
-      if (!where) return;
-      await api("POST", "/v1/preferences", { text: `Based in: ${where}`, kind: "context" });
-      flash("Got it — Endora knows where you're based.", "ok");
-      return reload();
-    }
-    // Save how the person likes to be addressed, so the butler uses it and matches
-    // the formality it implies.
-    if (verb === "setaddress") {
-      const how = val("setup-address");
-      if (!how) return;
-      await api("POST", "/v1/preferences", { text: `Address me as: ${how}`, kind: "context" });
-      flash("Got it.", "ok");
-      return reload();
-    }
     // Turn a skill on or off (ADR 0054). `id` is the capability id; `arg` is 1/0.
     // Put back one change Endora made to a service's own settings (ADR 0054).
     if (verb === "unwrite") {
@@ -423,114 +239,6 @@ async function dispatch(act) {
       try { await api("POST", `/v1/capabilities/${id}/confirm`, { confirm: wantConfirm }); flash(wantConfirm ? "Endora will ask before using this." : "Endora may use this on its own.", "ok"); }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
-    }
-    // A recipe's own enable route (ADR 0071) — NOT /v1/capabilities/{id}/enable.
-    // That generic route turns "on" into clearing the stored stance, which for a
-    // recipe means falling back to its OWN default (off), not the observe band's —
-    // so it would look like it worked and quietly not enable anything. This one
-    // stores "on" explicitly.
-    if (verb === "recipe" && noun === "enable") {
-      const enabled = arg === "1";
-      try {
-        await api("POST", `/v1/recipes/${id}/enable`, { enabled });
-        flash(enabled ? `${id} is on.` : `${id} is off. You can turn it back on any time.`, "ok");
-      }
-      catch (e) { flash("Couldn't change that recipe: " + e.message, "err"); }
-      return reload();
-    }
-    if (verb === "recipe" && noun === "delete") {
-      if (!confirm(`Delete the "${id}" recipe? This can't be undone.`)) return;
-      try { await api("DELETE", `/v1/recipes/${id}`); flash("Recipe deleted.", "ok"); }
-      catch (e) { flash("Couldn't delete that recipe: " + e.message, "err"); }
-      return reload();
-    }
-    // Fill the form from a ready-made one. Like `recipe:try`, it writes into the
-    // fields rather than re-rendering — the form is open and the person is
-    // standing in it.
-    if (verb === "recipe" && noun === "start") {
-      const starter = RECIPE_STARTERS[Number(id)];
-      if (!starter) return;
-      const put = (field, value) => {
-        const box = document.getElementById(`recipe-${field}`);
-        if (box) box.value = value;
-      };
-      put("id", starter.id);
-      put("description", starter.description);
-      put("inputs", "");
-      put("get", starter.get);
-      put("say", starter.say);
-      // The address changed, so any earlier trial is about a different recipe.
-      recipeSamplesChanged("");
-      const trial = document.getElementById("recipe-trial");
-      if (trial) trial.innerHTML = "";
-      flash(`Filled in "${starter.description}" — ${starter.note}, then try it.`, "ok");
-      return;
-    }
-    // Fetch the draft once and show what came back. Deliberately does NOT
-    // reload(): a re-render would wipe the half-written form this exists to
-    // help you finish, so it writes into its own result node and nothing else.
-    if (verb === "recipe" && noun === "try") {
-      const get = val("recipe-get");
-      if (!get) { flash("Put in a web address first.", "err"); return; }
-      const inputs = recipeInputsFrom(val("recipe-inputs"));
-      // Values are typed per their declaration, because the address filler is
-      // strict about it — a number arriving as text is refused there, and being
-      // refused by your own Try button is a confusing way to learn that.
-      const values = {};
-      for (const box of document.querySelectorAll("[data-sample]")) {
-        const name = box.getAttribute("data-sample");
-        const raw = (box.value || "").trim();
-        if (!raw) continue;
-        values[name] = box.getAttribute("data-sample-type") === "number" ? Number(raw) : raw;
-      }
-      const where = document.getElementById("recipe-trial");
-      if (where) where.innerHTML = `<div class="sub" style="margin-top:8px;">Fetching…</div>`;
-      let result;
-      try { result = await api("POST", "/v1/recipes/try", { inputs, get, say: val("recipe-say"), values }); }
-      catch (e) { result = { ok: false, error: e.message }; }
-      if (where) where.innerHTML = recipeTrialHtml(result);
-      return;
-    }
-    // Put a field from the trial into the sentence. Appends rather than
-    // replaces: a sentence is usually several fields and some words.
-    if (verb === "recipe" && noun === "pick") {
-      const path = act.slice("recipe:pick:".length);
-      const say = document.getElementById("recipe-say");
-      if (say && path) {
-        say.value = `${say.value}{${path}}`;
-        say.focus();
-      }
-      return;
-    }
-    if (verb === "recipe" && noun === "add") {
-      const id2 = val("recipe-id");
-      const description = val("recipe-description");
-      const get = val("recipe-get");
-      const say = val("recipe-say");
-      if (!id2 || !description || !get || !say) { flash("Fill in a name, what it does, the address, and what to say.", "err"); return; }
-      // One "name:type" per line — the same shape the domain layer stores, typed
-      // out by hand rather than built from repeatable form rows, because five
-      // fields do not need a dynamic form to stay honest about their limits.
-      const inputs = val("recipe-inputs").split("\n").map((line) => line.trim()).filter(Boolean)
-        .map((line) => {
-          const [name, type] = line.split(":").map((s) => (s || "").trim());
-          return { name, type };
-        });
-      const badInput = inputs.find((i) => !i.name || (i.type !== "string" && i.type !== "number"));
-      if (badInput) { flash(`"${badInput.name || "?"}" needs a type of "string" or "number".`, "err"); return; }
-      try {
-        await api("POST", "/v1/recipes", { id: id2, description, inputs, get, say });
-        flash(`Taught it "${id2}" — turn it on above when you're ready.`, "ok");
-      }
-      catch (e) { flash("Couldn't save that recipe: " + e.message, "err"); return; }
-      return reload();
-    }
-    // Step to another day's conversation. Nothing is loaded or archived — the messages
-    // are all here and a day is just which of them to show.
-    if (verb === "chat" && noun === "day") {
-      CHAT_DAY = id === dayOf(Date.now()) ? null : id;
-      await loadChatDay(CHAT_DAY);
-      return render();
     }
     // Ask the hub what exists that would fit. Never fetches — see worthKnowingSection.
     if (verb === "models" && noun === "look") {
@@ -698,10 +406,6 @@ async function dispatch(act) {
           flash(models.length ? `Found ${models.length} models: tap one below the list to use it.` : "No models returned.", models.length ? "ok" : "err");
           return;
         }
-        if (noun === "escalate") {
-          await api("POST", "/v1/model-lists/escalate", { on: id === "1" });
-          return refresh();
-        }
         // The form draws the provider's name and endpoint itself, so a re-render keeps them.
         if (noun === "provideredit") { PROVIDER_EDITING = Number(id); return render(); }
         if (noun === "providercancel") { PROVIDER_EDITING = null; return render(); }
@@ -724,60 +428,6 @@ async function dispatch(act) {
         }
       } catch (e) { flash("Couldn't do that: " + e.message, "err"); }
       return;
-    }
-    // Widen/narrow the autonomy envelope (ADR 0051). `noun` is the lever; `id` is 1/0.
-    if (verb === "autonomy") {
-      const env = Object.assign({ auto_external: true, auto_consequential: false }, AUTONOMY || {});
-      if (noun === "external") env.auto_external = id === "1";
-      if (noun === "consequential") env.auto_consequential = id === "1";
-      try { await api("POST", "/v1/autonomy", env); }
-      catch (e) { flash("Couldn't change that: " + e.message, "err"); }
-      return reload();
-    }
-    // A page of the brain, as text: open it for editing, save it as yours, or delete it
-    // (its history keeps it). The page name is everything after the verb.
-    if (verb === "brainedit") { BRAIN_EDITING = noun === "on"; return render(); }
-    if (verb === "brainsave") {
-      const path = act.slice("brainsave:".length);
-      try {
-        await api("PUT", `/v1/brain/pages/${path}`, { text: document.getElementById("brain-text").value });
-        flash("Saved.", "ok");
-      } catch (e) { flash("Couldn't save: " + e.message, "err"); return; }
-      return go("brainpage", path);
-    }
-    if (verb === "braindelete") {
-      const path = act.slice("braindelete:".length);
-      if (!confirm(`Delete the page ${path}? Its history keeps a copy until you forget everything.`)) return;
-      try { await api("DELETE", `/v1/brain/pages/${path}`); flash("Deleted.", "ok"); }
-      catch (e) { flash("Couldn't delete: " + e.message, "err"); return; }
-      return go("understanding");
-    }
-    if (verb === "play" && noun === "msg") {
-      const m = messages().find((x) => String(x.id) === String(id));
-      if (m) readAloud(m.text);
-      return;
-    }
-    // Answer what Endora asked about a target it can't hit (ADR 0054). This is the
-    // confirmed source — Endora never fills it in from a server's own text.
-    // Stop asking about one thing. Nothing is turned off — it silences this question only.
-    if (verb === "repair" && noun === "leave") {
-      const server = String(id || "").split(".")[0];
-      try {
-        await api("POST", `/v1/repairs/${encodeURIComponent(server)}/${encodeURIComponent(arg)}/leave`, {});
-        flash("Alright — I'll stop asking about that one.", "ok");
-      } catch (e) { flash("Couldn't do that: " + e.message, "err"); }
-      return reload();
-    }
-    if (verb === "alias") {
-      const server = String(noun || "").split(".")[0];
-      const el = document.getElementById(`alias-${noun}-${id}`);
-      const means = el ? el.value.trim() : "";
-      if (!means) { flash("Tell it what the thing is actually called.", "err"); return; }
-      try {
-        await api("POST", "/v1/aliases", { server, said: id, means });
-        flash(`Noted — “${id}” means “${means}”.`, "ok");
-      } catch (e) { flash("Couldn't note that: " + e.message, "err"); }
-      return reload();
     }
     // Allow or block every tool a server exposes, in one act.
     //
@@ -834,47 +484,6 @@ async function dispatch(act) {
       }
       return;
     }
-    // Answer a problem statement about something in your world (ADR 0056). Both answers
-    // end it: one changes the service, the other says it is meant to be like that. There
-    // is deliberately no "remind me later" — that is how a queue starts.
-    // Stop working on something. The person's ONLY verb over an intention — there is
-    // deliberately no way to create or edit one (ADR 0052).
-    // Start fresh: forget everything Endora learned, keeping what they told it.
-    if (verb === "forgetlearned") {
-      if (!confirm("Forget every page Endora keeps about you, and their history? What you told it yourself stays. This can't be undone.")) return;
-      try {
-        const done = await api("POST", "/v1/brain/forget", { confirm: true });
-        const meant = done.intentions ? `, and ${done.intentions} thing${done.intentions === 1 ? "" : "s"} it meant to do` : "";
-        flash(`Forgot ${done.forgot} page${done.forgot === 1 ? "" : "s"}${meant}.`, "ok");
-      } catch (e) { flash("Couldn't forget: " + e.message, "err"); }
-      return go("understanding");
-    }
-    // How an action landed. Offered where the action appears; never asked for, and
-    // the latest word wins (ADR 0053).
-    if (verb === "react") {
-      try {
-        await api("POST", `/v1/outcomes/${id}/reaction`, { reaction: noun });
-        flash(noun === "helped" ? "Good — I'll do more of that." : noun === "did_not_help" ? "Noted — I'll rethink that one." : "Noted.", "ok");
-      } catch (e) { flash("Couldn't note that: " + e.message, "err"); }
-      return reload();
-    }
-    // Daily-brief schedule: `noun` is "off" or a LOCAL hour; convert to UTC.
-    if (verb === "briefsched") {
-      const enabled = noun !== "off";
-      const tzOff = new Date().getTimezoneOffset() / 60;
-      const hour_utc = enabled ? ((Number(noun) + tzOff) % 24 + 24) % 24 : (BRIEF_SCHED.hour_utc || 12);
-      await api("POST", "/v1/brief/schedule", { enabled, hour_utc });
-      flash(enabled ? "The butler will bring you a daily brief." : "Daily brief off.", "ok");
-      return reload();
-    }
-    if (verb === "create" && noun === "pref") {
-      const text = val("new-pref");
-      if (!text) return;
-      await api("POST", "/v1/preferences", { text }); return reload();
-    }
-    if (verb === "delete" && noun === "pref") {
-      await api("DELETE", `/v1/preferences/${id}`); return reload();
-    }
     if (verb === "export") {
       closeMenu();
       const data = await api("GET", "/v1/export");
@@ -911,41 +520,8 @@ document.body.addEventListener("submit", (ev) => {
   dispatch(form.getAttribute("data-submit"));
 });
 
-// Enter sends the chat message (Shift+Enter is free for a newline if the input
-// ever becomes multi-line).
-document.body.addEventListener("keydown", (ev) => {
-  if (ev.target.id === "chat-input" && ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
-    ev.preventDefault(); sendChat();
-  }
-});
-
-// iOS/software keyboards often don't fire a keydown for Return on a textarea, so
-// the desktop handler above never sees it. Catch the line-break input on touch
-// devices and send instead (a hardware Shift+Enter on desktop is a `pointer:fine`
-// device, so it still inserts a newline).
-document.body.addEventListener("beforeinput", (ev) => {
-  if (
-    ev.target.id === "chat-input" &&
-    ev.inputType === "insertLineBreak" &&
-    window.matchMedia("(pointer: coarse)").matches
-  ) {
-    ev.preventDefault(); sendChat();
-  }
-});
-
-// Auto-grow the chat textarea as it wraps, so long messages expand instead of
-// scrolling within one line.
-function growInput(el) {
-  if (!el) return;
-  el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, window.innerHeight * 0.4) + "px";
-}
-document.body.addEventListener("input", (ev) => {
-  if (ev.target.id === "chat-input") growInput(ev.target);
-});
-
 // A `<select data-change="verb:noun:id">` applies the chosen value on change,
-// dispatching `verb:noun:id:<value>` (used for the lifecycle Status dropdown). A range
+// dispatching `verb:noun:id:<value>`. A range
 // slider does the same once it is let go, not on every step of the drag.
 document.body.addEventListener("change", (ev) => {
   const sel = ev.target.closest("select[data-change], input[type=range][data-change]");
@@ -992,7 +568,5 @@ function setupHeader(health) {
 function closeMenu() {
   const m = document.getElementById("menu");
   if (m) m.hidden = true;
-  const t = document.getElementById("tools-menu");
-  if (t) t.hidden = true;
 }
 

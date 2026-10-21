@@ -1,44 +1,19 @@
 "use strict";
 
-let DB = null;                 // latest /v1/export snapshot — NULL until one lands
-let MAIL = null;               // the mail digest (/v1/mail), fetched only on the Mail screen
 let AI = null;                 // every model Endora uses (/v1/ai), fetched only on the AI screen
 let SPOTIFY = null;            // the Spotify sign-in, held by the node (/v1/connections/spotify)
 let LAB = {};                  // the home lab, media and smart-home pages, by name (/v1/terminal/*)
 let MUSIC = { now: null, devices: [], found: [], lists: [], query: "", error: "" }; // what Spotify says
 
-// The conversation, safely. `DB` is null before the first export and stays null when
-// the node is unreachable, so anything that runs on every render — the menu badge, in
-// particular — must not assume a snapshot exists. Reading `DB.messages` there threw
-// "null is not an object", and that error then replaced the real one on screen: the
-// person saw a JavaScript failure instead of "couldn't reach the node".
-function messages() {
-  return (DB && DB.messages) || [];
-}
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
 const ACTIVITY_PAGE = 30;      // rows the Activity screen opens with, and each "Load more" adds
 let ACTIVITY_MORE = false;     // the last page was full, so there may be older rows
 let ACTIVITY_BUSY = false;     // a page is being fetched
-let CAPS = [];                 // the butler's capabilities/skills (modules)
+let CAPS = [];                 // the house's tools (skills), which the team's bridge offers
 let MCP_SERVERS = { servers: [] }; // connected MCP servers + their tools (ADR 0054)
-let RECIPES = [];              // the person's own capabilities — five fields, no code (ADR 0071)
-let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0051)
-let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
-let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
-let MODEL_LISTS = null;        // providers and the ordered everyday and deep lists (ADR 0105)
+let MODEL_LISTS = null;        // providers and the ordered Everyday list (ADR 0105)
 let PROVIDER_EDITING = null;   // the provider whose form is open for changing, if any
 let FOUND_MODELS = {};         // what Discover found, by list: { provider, models }, kept across re-renders
-let BRAIN = null;              // What Endora knows about you: memory and its pages (ADR 0101)
-let BRAIN_PAGE = null;         // The page open on its own screen, with its history
-let BRAIN_EDITING = false;     // Whether that page is open as text to edit
-let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
-let RESEARCH = { items: [] };   // explicit durable research assignments (ADR 0077)
-let RESEARCH_READY = { ready: false, modes: [], search_tools: [] };
-let RESEARCH_MODE = localStorage.getItem("endora.researchmode") === "1";
-let RESEARCH_PENDING = (() => {
-  try { return JSON.parse(localStorage.getItem("endora.researchPending") || "null"); }
-  catch (_) { return null; }
-})();
 let CONNECTED = [];            // integrations already set up behind the channel (ADR 0058)
 let NEEDS_TOKEN = false;       // this device cannot prove who it is to the node
 let SIGNIN = null;             // whether a password and authenticator are set up
@@ -53,34 +28,9 @@ let DEV_TOKEN = "";            // a token just minted or revealed, shown until t
 let DEV_TOKEN_NOTE = "";
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
-let CHAT_DAY = null;           // which day's conversation is showing; null = today
-let CHAT_MSGS = [];            // just that day's messages, fetched rather than filtered
-let CTX = null;                // what the next message would send, and how full the window is (ADR 0088)
-let DEEP_USAGE = null;         // what the deep model's calls have used, and what that costs if priced (ADR 0091)
-let DEEP_BALANCE = null;       // what the deep model's provider says is left, when it can say
-let CTX_OPEN = false;          // whether the inspector is showing
-let CHAT_DAYS = [];            // [{day, messages}] — which days have anything, for the bar
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
-let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
-let LANDING = null;            // how Endora's recent actions actually landed (ADR 0053)
 let CONNECT = null;            // a setup form a service is asking us to fill in (ADR 0054)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
-let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
-let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
-let STEP_LIST = [];            // the live action trail for the turn currently streaming
-let SHOW_ACTIVITY = localStorage.getItem("endora.showActivity") !== "0"; // default on
-let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
-// Whether the NODE says it is taking a turn — not whether this tab is. A turn that failed
-// left the last stored message being the person's, and the screen showed a thinking bubble
-// for ever, through a reload, because the only thing it could ask was itself.
-let NODE_BUSY = false;
-let HAPTIC = localStorage.getItem("endora.haptic") !== "0"; // buzz on reply + mic (default on)
-let CHAT_STOPPED = false;      // the person stopped the last turn, so no reply is coming
-let CHAT_QUEUE = [];           // messages awaiting their turn — turns are SERIALIZED
-let LAST_CHAT_REQUEST = null;  // reuse the key when retrying an interrupted turn
-let CHAT_INFLIGHT = null;      // the user message whose reply is streaming now (not yet persisted)
-let LIVE_REPLY = "";           // the reply text accumulated so far, so a re-render can rebuild it
-let CHAT_ABORT = null;         // AbortController for the in-flight turn (the Stop button)
 // The current view. Every device opens on HQ: Endora is HQ (ADR 0136).
 let NAV = { v: "hq" };
 

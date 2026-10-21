@@ -5,7 +5,6 @@
     setupHeader(health);
     await reload();
     subscribeToActivity();
-    pollActiveWork();
   } catch (e) {
     // Say which half failed. This catch covers reaching the node AND drawing the page, and
     // it reported both as "couldn't reach the node" — so a missing function read as a

@@ -184,7 +184,7 @@ function modelListRows(job) {
       <span class="mlist-n">${i + 1}</span>
       <div class="grow">
         <div class="title" style="font-weight:500;">${esc(e.model)}</div>
-        <div class="sub">${esc(e.provider_name)} · ${e.local ? "on your network" : "cloud, sees your messages disguised"}${e.enabled ? "" : " · switched off"}</div>
+        <div class="sub">${esc(e.provider_name)} · ${e.local ? "on your network" : "cloud: the team's house model skips it"}${e.enabled ? "" : " · switched off"}</div>
       </div>
       <div class="mlist-acts">
         <button class="ghost small" data-act="mlist:up:${e.id}" aria-label="Move up" ${i === 0 ? "disabled" : ""}>↑</button>
@@ -226,7 +226,7 @@ function modelListAdd(job) {
   return `
     <div class="mlist-add">
       <select id="ml-${job}-provider" aria-label="Provider">${providers.map((p) => `<option value="${p.id}"${p.id === chosen ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
-      <input id="ml-${job}-model" list="ml-${job}-models" placeholder="model, e.g. ${job === "deep" ? "claude-sonnet-5-5" : "qwen2.5:7b"}" aria-label="Model" />
+      <input id="ml-${job}-model" list="ml-${job}-models" placeholder="model, e.g. qwen2.5:7b" aria-label="Model" />
       <datalist id="ml-${job}-models">${models.map((m) => `<option value="${esc(m)}"></option>`).join("")}</datalist>
       <button class="ghost small" data-act="mlist:discover:${job}">${icon("sparkle", 14)} Discover models</button>
       <button class="primary small" data-act="mlist:add:${job}">Add</button>
@@ -253,7 +253,7 @@ function providersCard() {
   return `
     <div class="card model-card">
       <div class="model-role">Providers</div>
-      <div class="sub" style="margin:-4px 0 6px;">Where models run, each with its key, entered once and used by both lists.</div>
+      <div class="sub" style="margin:-4px 0 6px;">Where models run, each with its key, entered once.</div>
       ${rows ? `<ol class="mlist plain">${rows}</ol>` : `<div class="sub">None yet.</div>`}
       <details class="adv" id="provider-form" ${editing ? "open" : ""}>
         <summary>${editing ? `Change ${esc(editing.name)}` : "Add a provider"}</summary>
@@ -282,64 +282,18 @@ function applyProviderPreset(name) {
 
 function modelsSection() {
   if (!MODEL_LISTS) return `<h3>Models</h3><div class="empty">Loading…</div>`;
-  const serving = MODEL_LISTS.serving;
   return `
     <h3>Models</h3>
-    <div class="note">Endora asks the first model in a list that works and is cleared for what it is asked. A cloud model sees your messages only with names, places and appointments disguised, and never anything that came from outside (a web page, an email); those stay on your network.</div>
+    <div class="note">The team's house model is the first model in Everyday that runs on your network and answers; if none does, the model Endora was installed with does. A member on Claude uses the Anthropic provider's key below; each member's brain is chosen on HQ.</div>
 
     <div class="card model-card">
-      <div class="model-role">Everyday${serving && serving.model ? ` · <span class="sub" style="font-weight:400;">answering now: <b>${esc(serving.model)}</b></span>` : ""}</div>
-      <div class="sub" style="margin:-4px 0 6px;">The conversation. If none answers, the model Endora was installed with does.</div>
+      <div class="model-role">Everyday</div>
+      <div class="sub" style="margin:-4px 0 6px;">The house's models, first to last.</div>
       ${modelListRows("everyday")}
       ${modelListAdd("everyday")}
     </div>
 
-    <div class="card model-card">
-      <div class="model-role">Deep</div>
-      <div class="sub" style="margin:-4px 0 6px;">A stronger model for hard questions: when you ask for it, and on its own if you let it.</div>
-      ${modelListRows("deep")}
-      ${modelListAdd("deep")}
-      ${onOffRow(!!MODEL_LISTS.escalate, "mlist:escalate", "Let Endora use these on its own", "To step in when the everyday model can't answer, and to word your daily brief. Your name, place names and appointment titles are swapped for placeholders before anything leaves, but the shape of your day still goes out.")}
-      <div class="field" style="margin-top:10px;"><label>Balance and use</label>
-        <div id="deep-spend" class="ctx-spend">${deepSpendHtml() || '<span class="sub">Nothing used yet.</span>'}</div>
-        <div class="row" style="justify-content:flex-end;"><button class="ghost" data-act="deepspend:refresh" style="font-size:13px;">Refresh</button></div></div>
-      <details class="adv"><summary>Prices, to show dollars</summary>
-        <div class="sub" style="margin:4px 0 8px;">What a million tokens costs, in US dollars, from your provider's price page. Endora does not know any provider's prices, so a dollar figure only appears once you set these. Leave one blank to clear it.</div>
-        <div class="sampling-row">
-          <label>Input<input id="d-price-in" inputmode="decimal" placeholder="e.g. 0.30" value="${esc(DEEP_USAGE && DEEP_USAGE.prices && DEEP_USAGE.prices.input != null ? DEEP_USAGE.prices.input : "")}" /></label>
-          <label>Output<input id="d-price-out" inputmode="decimal" placeholder="e.g. 1.20" value="${esc(DEEP_USAGE && DEEP_USAGE.prices && DEEP_USAGE.prices.output != null ? DEEP_USAGE.prices.output : "")}" /></label>
-          <label>Cached input<input id="d-price-cached" inputmode="decimal" placeholder="optional" value="${esc(DEEP_USAGE && DEEP_USAGE.prices && DEEP_USAGE.prices.cached != null ? DEEP_USAGE.prices.cached : "")}" /></label>
-        </div>
-        <div class="row" style="justify-content:flex-end;margin-top:6px;"><button class="ghost" data-act="deepprices:save" style="font-size:13px;">Save prices</button></div>
-      </details>
-    </div>
-
     ${providersCard()}`;
-}
-
-// When Endora reaches out on its own: the daily brief. Local hours shown, saved as UTC. (The
-// overnight review and the check-ins were removed on 2026-10-16.)
-function proactivitySection() {
-  const tzOff = new Date().getTimezoneOffset() / 60;
-  const hourSelect = (id, change, hourUtc, on) => {
-    const localHour = on ? ((hourUtc - tzOff) % 24 + 24) % 24 : -1;
-    const opts = Array.from({ length: 24 }, (_, h) => {
-      const ampm = h < 12 ? "AM" : "PM"; const h12 = (h % 12) || 12;
-      return `<option value="${h}" ${h === localHour ? "selected" : ""}>${h12}:00 ${ampm}</option>`;
-    }).join("");
-    return `<select id="${id}" data-change="${change}" style="width:auto;"><option value="off" ${!on ? "selected" : ""}>Off</option>${opts}</select>`;
-  };
-  const row = (label, note, control) => `
-    <div class="row" style="align-items:center; gap:10px; margin-bottom:12px;">
-      <div class="grow"><div class="title" style="font-weight:500;">${label}</div><div class="sub">${note}</div></div>
-      ${control}
-    </div>`;
-  return `
-    <h3>When Endora reaches out</h3>
-    <div class="card">
-      ${row("Daily brief", "weather · safety · news, once a day", hourSelect("brief-time", "briefsched", BRIEF_SCHED.hour_utc, BRIEF_SCHED.enabled))}
-      <div class="row" style="justify-content:flex-end;"><button class="ghost" data-act="brief">${icon("sparkle", 15)} Brief me now</button></div>
-    </div>`;
 }
 
 // One home for app settings — so they aren't scattered across pages.
@@ -372,74 +326,14 @@ function viewData() {
     <h2>Your data</h2>
     <div class="card nav-list">
       <button class="ghost" data-act="export">${icon("export")}
-        <span class="grow" style="text-align:left;">Export my data<span class="sub" style="display:block;font-weight:400;">Endora's memory of you as a file: messages, beliefs, preferences, research and its record of what it did. It is not a backup: settings and keys are not in it, and nothing can import it.</span></span>
+        <span class="grow" style="text-align:left;">Export my data<span class="sub" style="display:block;font-weight:400;">Endora's record of what it did, as a file. It is not a backup: settings, keys and the team's work are not in it, and nothing can import it.</span></span>
       </button>
     </div>
     <div class="card nav-list" style="margin-top:14px;">
       <button class="ghost danger" data-act="purge">${icon("purge")}
-        <span class="grow" style="text-align:left;">Delete everything<span class="sub" style="display:block;font-weight:400;">every message, belief and record — this cannot be undone. Your settings, keys and models stay, and so does the team</span></span>
+        <span class="grow" style="text-align:left;">Delete everything<span class="sub" style="display:block;font-weight:400;">Endora's record of what it did — this cannot be undone. Your settings, keys and models stay, and so does the team</span></span>
       </button>
     </div>`;
-}
-
-// What Endora made of the mail (ADR 0097): what is worth a look, then every bucket folded.
-// Only what it kept — who, a checked sentence, why it matters. Never a message body, and no
-// link to follow: nothing on this screen opens anything in the mail.
-function viewMail() {
-  const head = `
-    ${crumbs([{ label: "HQ", act: "go:hq" }, { label: "Mail" }])}
-    <h2>Mail</h2>`;
-  if (!MAIL) return `${head}<div class="note">Loading…</div>`;
-  if (!MAIL.mounted) {
-    return `${head}<div class="note">No mail copy is connected. Set up the ansible-nas
-      <code>mail_mirror</code> role, then set <code>ENDORA_MAIL_DIR</code> in local.mk and deploy.</div>`;
-  }
-  const when = (ms) => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  const row = (m, showWhy) => `
-    <div class="card">
-      <div class="sub">${esc(when(m.at_ms))} · ${esc(m.from)}${m.amount ? ` · <strong>${esc(m.amount)}</strong>` : ""}</div>
-      <div class="title" style="font-weight:400;">${esc(m.sentence || "(no summary)")}</div>
-      ${showWhy && (m.why || []).length ? `<div class="sub">${esc(m.why.join(" · "))}${m.more_like_it ? ` · and ${m.more_like_it} more like it` : ""}</div>` : ""}
-      ${(m.dates || []).length ? `<div class="sub">${m.dates.map((d) => `${esc(d.date)}: ${esc(d.what)}`).join(" · ")}</div>` : ""}
-      ${m.appointment ? `<div class="sub">Follows "${esc(m.appointment.title)}" on ${esc(m.appointment.day)}</div>` : ""}
-      ${(m.cautions || []).length ? `<div class="sub" style="color:var(--warn, #b45309);">${esc(m.cautions.join(" · "))}</div>` : ""}
-    </div>`;
-  const status = MAIL.reading
-    ? `Reading in quiet time. ${MAIL.unread_recent ? `${MAIL.unread_recent} of the last 90 days still to read.` : "Caught up."}`
-    : "Not reading right now: turn on ENDORA_OWN_WORK to let Endora read the mail.";
-  const important = (MAIL.important || []).map((m) => row(m, true));
-  const buckets = (MAIL.buckets || []).filter((b) => b.count).map((b) => `
-    <details class="card">
-      <summary><span class="title">${esc(b.title)}</span> <span class="pill">${b.count}</span></summary>
-      ${(b.recent || []).map((m) => row(m, true)).join("")}
-    </details>`);
-  return `${head}
-    <div class="note" style="margin-bottom:10px;">${esc(status)} ${MAIL.indexed} messages indexed. The last two weeks are shown.</div>
-    <h3>Worth a look</h3>
-    ${listOr(important, "Nothing that needs you in the last two weeks.")}
-    <h3>Coming up</h3>
-    ${listOr((MAIL.coming_up || []).map((u) => `<div class="card"><div class="title" style="font-weight:400;">${esc(u.date)} · ${esc(u.what)}</div><div class="sub">${esc(u.from)} · ${esc(u.because)}</div></div>`), "No confirmed dates from your mail.")}
-    ${MAIL.held_back ? `<div class="note">${MAIL.held_back} date${MAIL.held_back === 1 ? "" : "s"} held back: mentioned once, by someone you don't write to.</div>` : ""}
-    <h3>By bucket</h3>
-    ${listOr(buckets, "Nothing read yet.")}`;
-}
-
-// The plain on/off preferences. Their own screen, so Settings can stay a list.
-function viewDisplay() {
-  const row = (on, act, label, note) => `
-    <div class="row" style="align-items:flex-start;gap:10px;">
-      <div class="grow"><div class="title" style="font-weight:500;">${label}</div>${note ? `<div class="sub">${note}</div>` : ""}</div>
-      <button class="${on ? "primary" : "ghost"}" data-act="${act}">${on ? "On" : "Off"}</button>
-    </div>`;
-  return `
-    ${settingsCrumbs("display")}
-    <h2>Preferences</h2>
-    <div class="card" style="display:flex;flex-direction:column;gap:14px;">
-      ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
-      ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
-      ${navigator.vibrate ? row(HAPTIC, "toggle:haptic", "Vibrate", "a short buzz when a reply lands and when the mic starts listening") : ""}
-    </div>
-    ${proactivitySection()}`;
 }
 
 function viewModels() {
@@ -454,8 +348,8 @@ function viewModels() {
 }
 
 // Every model Endora uses, one card each: what it does, which model, where it runs, what the
-// model server says about it now, and what it sees. The mail reader's model and the speech
-// server are chosen here; the conversation and deep models below; vision on its skill.
+// model server says about it now, and what it sees. The house's models are listed below; vision
+// is chosen on its skill.
 function aiOverviewSection() {
   if (!AI) return `<h3>What Endora runs</h3><div class="note">Asking the model server…</div>`;
   const ctx = AI.context_tokens || 0;
@@ -470,22 +364,10 @@ function aiOverviewSection() {
     const short = rt && rt.context && ctx && rt.context < ctx
       ? `<div class="sub" style="color:var(--warn, #b45309);">The model server gives ${Number(rt.context).toLocaleString()} tokens, but Endora assumes ${Number(ctx).toLocaleString()}: long turns lose their beginning. Raise the server's context length, or set ENDORA_CONTEXT_TOKENS to match.</div>`
       : "";
-    const cost = r.id === "deep" && r.on
-      ? `<div class="sub">${r.calls_this_month || 0} call${r.calls_this_month === 1 ? "" : "s"} this month${r.cost_usd_this_month != null ? ` · $${Number(r.cost_usd_this_month).toFixed(2)}` : ""}</div>`
-      : "";
-    // Folded: most visits are to see what runs, not to change it.
-    const field = (id, value, placeholder, act) => `
-      <details class="adv" style="margin-top:6px;"><summary>Change</summary>
-      <div class="form" style="margin-top:8px;">
-        <input id="${id}" value="${esc(value || "")}" placeholder="${esc(placeholder)}" autocomplete="off" />
-        <button class="ghost" data-act="${act}">Save</button>
-      </div></details>`;
-    // A role with nothing to change (dictation is the browser's) offers nothing.
+    // A role with nothing to change offers nothing.
     const change = !r.change
       ? ""
-      : r.change === "mail_reader"
-        ? field("ai-mail-reader", AI.mail_reader_model, `blank: the deployment's (${r.model})`, "ai:mailreader")
-        : r.change === "vision"
+      : r.change === "vision"
           ? `<div class="sub" style="margin-top:6px;"><a data-act="go:skill:image_review">Choose it on the Image review skill</a></div>`
           : `<div class="sub" style="margin-top:6px;">Change it below.</div>`;
     return `
@@ -493,7 +375,7 @@ function aiOverviewSection() {
         <div class="title">${esc(r.name)} ${where}</div>
         <div class="sub">${esc(r.does)}</div>
         <div class="sub" style="margin-top:4px;"><b>${esc(r.model || (r.id === "speech" ? "your browser" : "not set"))}</b>${r.endpoint ? ` at ${esc(r.endpoint)}` : ""}</div>
-        ${runtime}${short}${cost}
+        ${runtime}${short}
         <div class="sub" style="margin-top:4px;">Sees: ${esc(r.sees)}</div>
         ${change}
       </div>`;
@@ -529,31 +411,5 @@ function worthKnowingSection() {
       </div>
     </div>
     ${WORTH_KNOWING.asked ? listOr(rows, "Nothing recent that fits — which is a fine answer.") : ""}`;
-}
-
-// Kept only so an older link or a back button lands on the screen that now holds it.
-// Removing a route is how a bookmark becomes a blank page.
-function viewProactive() {
-  return viewDisplay();
-}
-
-// What the person has told Endora to remember — visible, correctable, deletable. A section of
-// About you, beside what Endora has learned on its own.
-function rememberedSection() {
-  // Friendly labels — the internal kind names ("taste") mean nothing to a person.
-  const KIND_LABEL = { taste: "preference", authority: "permission", context: "context" };
-  const rows = (DB.preferences || []).map((p) => `
-    <div class="card"><div class="row">
-      <div class="grow"><div class="title">${esc(p.text)}</div>
-      <div class="sub">${esc(KIND_LABEL[p.kind] || p.kind)}</div></div>
-      <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
-    </div></div>`);
-  return `
-    <h3 style="margin-top:16px;">What you've told it</h3>
-    ${listOr(rows, "Nothing yet. Endora will offer to remember things as you talk — or add one below.")}
-    <div class="form">
-      <input id="new-pref" placeholder="e.g. I prefer mornings…" />
-      <button class="primary" data-act="create:pref">Remember</button>
-    </div>`;
 }
 
