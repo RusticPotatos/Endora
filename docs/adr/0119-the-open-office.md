@@ -111,11 +111,17 @@ worked with whom, and nothing in it could change without a code change and a dep
    keep a member from being offered for furlough, and are not on the scorecard: they are not
    work.
 8. **What a downtime turn is told, and may do.** It has no task. Its briefing says it is
-   downtime; lists the things on the floor with their numbers and rough places, the open
-   proposals and how it voted, what it may place and the rules, and suggests: react to a
-   proposal, propose one small change, or note a team idea in its notebook (the tools of
-   [0118](0118-elastic-staffing-and-notebooks.md); a note rests on evidence, and the briefing
-   names the latest event to cite). It may not make work: `create_task`, `hand_to`,
+   downtime; lists the things on the floor with their numbers and rough places (and the size of
+   those bigger than a tile), how many there are of each kind and which kinds there are none of,
+   what the member placed itself, the open proposals and how it voted, what it may place and the
+   rules, and suggests, if something would make the office more the member's own (its notebook
+   may say what it likes): react to a proposal, propose one small change, or note an idea in its
+   notebook (the tools of [0118](0118-elastic-staffing-and-notebooks.md); a note rests on
+   evidence, and the briefing names the latest event to cite); leaving the office as it is is a
+   good turn too. *Amended 2026-10-20:* the sizes, the counts, the member's own things and
+   "leaving it is a good turn" were added after live downtime turns, offered only things to do,
+   each proposed the same thing (a plant), aimed at the rug's own tiles and slid one off when
+   refused. It may not make work: `create_task`, `hand_to`,
    `propose_project`, `propose_goal`, `request_hire` and `request_staff` are refused in a
    downtime turn, with the reason. Its label is the ordinary label of the turn: an `office`
    proposal or vote is a change through HQ.

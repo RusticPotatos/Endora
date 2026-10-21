@@ -778,6 +778,66 @@ fn a_downtime_briefing_says_what_the_office_has_and_what_may_be_done_and_makes_n
     assert_eq!(marks.status, RunStatus::Running);
 }
 
+/// Live, small models given only a list of coordinates and three things to do aimed plant
+/// after plant at the rug's own tiles, slid one tile off when refused, and copied each other
+/// round it. So the briefing says what is the member's own, how much there is of each kind,
+/// how big the bigger things are, and that leaving the office alone is a good turn.
+#[test]
+fn a_downtime_briefing_says_what_is_yours_what_is_plentiful_how_big_things_are_and_that_nothing_will_do()
+ {
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.seed_office().unwrap();
+    hq.store()
+        .add_office_item(Kind::Plant, 10, 4, "Bo", START)
+        .unwrap();
+    let bos = items(&hq)
+        .into_iter()
+        .find(|i| i.placed_by == "Bo")
+        .unwrap();
+    let rug = items(&hq)
+        .into_iter()
+        .find(|i| i.kind == Kind::Rug)
+        .unwrap();
+    let plants = items(&hq).iter().filter(|i| i.kind == Kind::Plant).count();
+    for other in [t.ada, t.cy, t.dee] {
+        hq.pause(other, true).unwrap();
+    }
+    hq.tick().unwrap();
+    let turns = downtime_turns(&hq);
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].member, t.bo);
+    let told = &turns[0].told;
+    for said in [
+        format!("You have placed: plant #{} (the commons, 10,4)", bos.id),
+        format!("rug #{} (the commons, 11,4, 2 by 2)", rug.id),
+        format!("plant ({plants})"),
+        "None yet: fish tank".to_owned(),
+        "your notes may say what you like".to_owned(),
+        "Leaving the office as it is is a good turn too".to_owned(),
+    ] {
+        assert!(told.contains(&said), "{said}\n---\n{told}");
+    }
+    // A thing one tile square is not given a size: the list stays short.
+    assert!(!told.contains("1 by 1"), "{told}");
+    assert!(told.len() < 3_500, "keep it short: {}", told.len());
+    // Cy has put nothing down, and is told so.
+    end_all(&hq);
+    hq.pause(t.bo, true).unwrap();
+    hq.pause(t.cy, false).unwrap();
+    hq.tick().unwrap();
+    let cy = downtime_turns(&hq)
+        .into_iter()
+        .find(|c| c.member == t.cy)
+        .expect("Cy's downtime turn");
+    assert!(
+        cy.told.contains("You have placed nothing yet"),
+        "{}",
+        cy.told
+    );
+}
+
 #[test]
 fn downtime_does_not_count_as_a_turn_on_the_scorecard_nor_stop_the_idle_look() {
     let clock = Hands(AtomicI64::new(START));

@@ -307,8 +307,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .iter()
             .take(BRIEFED_ITEMS)
             .map(|i| {
+                // A thing bigger than a tile says its size: models aimed at the rug's other
+                // tiles, not knowing it had any.
+                let spec = i.kind.spec();
+                let size = if spec.w * spec.h > 1 {
+                    format!(", {} by {}", spec.w, spec.h)
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{} #{} ({}, {},{})",
+                    "{} #{} ({}, {},{}{size})",
                     i.kind.label(),
                     i.id,
                     office::area(i.x, i.y),
@@ -347,6 +355,48 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     None => "you have not voted".to_owned(),
                 }
             ));
+        }
+        Ok(told)
+    }
+
+    /// For a downtime turn: how many of each kind the floor has, the most first, the kinds it
+    /// has none of, and what the member placed itself. Live, small models copied the last
+    /// plant they were shown; this is the office as a whole, and their own part of it.
+    fn office_mine_said(&self, member: &Member) -> Done<String> {
+        let items = self.store.office_items()?;
+        let mut had: Vec<(String, usize)> = Vec::new();
+        let mut none: Vec<String> = Vec::new();
+        for spec in &office::CATALOG {
+            match items.iter().filter(|i| i.kind == spec.kind).count() {
+                0 => none.push(spec.kind.label()),
+                n => had.push((spec.kind.label(), n)),
+            }
+        }
+        had.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let had: Vec<String> = had.iter().map(|(k, n)| format!("{k} ({n})")).collect();
+        let mut told = format!("By kind: {}.", had.join(", "));
+        if !none.is_empty() {
+            told.push_str(&format!(" None yet: {}.", none.join(", ")));
+        }
+        told.push('\n');
+        let mine: Vec<String> = items
+            .iter()
+            .filter(|i| i.placed_by == member.name)
+            .map(|i| {
+                format!(
+                    "{} #{} ({}, {},{})",
+                    i.kind.label(),
+                    i.id,
+                    office::area(i.x, i.y),
+                    i.x,
+                    i.y
+                )
+            })
+            .collect();
+        if mine.is_empty() {
+            told.push_str("You have placed nothing yet.\n");
+        } else {
+            told.push_str(&format!("You have placed: {}.\n", mine.join("; ")));
         }
         Ok(told)
     }
@@ -517,14 +567,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// What a downtime turn is told, after who it is and its notebook: that it is downtime
-    /// and makes no work, what the office has, the open proposals, what may be placed and the
-    /// rules, and what it may do. Kept short.
+    /// and makes no work, what the office has and how much of each kind, what the member
+    /// placed itself, the open proposals, what may be placed and the rules, and what it may
+    /// do, leaving the office alone among it. Kept short.
     pub(super) fn downtime_said(&self, member: &Member) -> Done<String> {
         let mut told = String::from(
             "It is downtime: this turn is about no task, nothing is due in it, and it makes no \
              work (create_task and hand_to are refused).\n",
         );
         told.push_str(&self.office_said(member)?);
+        told.push_str(&self.office_mine_said(member)?);
         let kinds: Vec<String> = office::CATALOG
             .iter()
             .map(|s| match s.most {
@@ -541,11 +593,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             office::MOST_ITEMS,
             office::MOST_CHANGES
         ));
+        // Offered only things to do, every downtime turn did one, and the same one: a plant.
         told.push_str(&format!(
-            "Use the turn well, briefly: react to a proposal (office, action react, yes or no), \
-             propose one small change (office, action propose, with why), or note a team idea in \
-             your notebook (note, citing event {}). Two yes carry a proposal; with no \"no\" it \
-             carries after six hours. Then stop.\n",
+            "If something would make the office more yours (your notes may say what you like), \
+             propose one small change (office, action propose, with why), react to a proposal \
+             (office, action react, yes or no), or note an idea in your notebook (note, citing \
+             event {}). Two yes carry a proposal; with no \"no\" it carries after six hours. \
+             Leaving the office as it is is a good turn too. Then stop.\n",
             self.store.last_event()?
         ));
         told.push_str(&self.chess_briefed(member)?);
