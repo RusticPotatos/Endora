@@ -992,6 +992,19 @@ if (failures.length) {
     runInContext(`hqTell({ id: 71, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "a cut preview…", cut: true } }, false);`, context);
     if (!runInContext("viewHQ()", context).includes("Bo: a cut preview…")) fail("hq: a post with no place in the thread loses its preview");
     runInContext("HQ.snap.tasks[0].thread.pop();", context);
+    // A finished task's thread is only its tail, each post with its place in the whole thread:
+    // the log finds a post by that place, and one cut from the tail falls back to its preview.
+    {
+      const saved = runInContext("JSON.stringify(HQ.snap.tasks[0].thread)", context);
+      runInContext(`HQ.log = []; HQ.logOpen = {};
+        HQ.snap.tasks[0].thread = [{ n: 40, author: "Bo", text: "the tail post TAIL-40", at: 9 }];
+        hqTell({ id: 72, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "the tail…", cut: true, post: 40 } }, false);
+        hqTell({ id: 73, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "an early one…", cut: true, post: 0 } }, false);`, context);
+      const tail = logOf();
+      if (!tail.includes("TAIL-40")) fail("hq: the log does not find a tail post by its place in the thread");
+      if (!tail.includes("Bo: an early one…")) fail("hq: a post cut from a finished thread loses its preview");
+      runInContext(`HQ.snap.tasks[0].thread = ${saved};`, context);
+    }
 
     runInContext(`HQ.log = []; HQ.oldest = 0; HQ.logOpen = {};
       for (let i = 100; i > 60; i--) hqTell({ id: i, at: 0, kind: "resumed", data: {} }, false);`, context);

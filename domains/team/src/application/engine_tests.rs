@@ -2113,6 +2113,47 @@ fn trying_stuck_work_again_while_nobody_can_be_woken_says_so_and_changes_nothing
 }
 
 #[test]
+fn the_snapshot_carries_only_the_tail_of_a_finished_tasks_thread() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let open = task_for(&hq, t.goal, None, "Still going");
+    let closed = task_for(&hq, t.goal, None, "Long done");
+    for n in 0..5 {
+        hq.post(Author::Owner, open, &format!("open {n}")).unwrap();
+        hq.post(Author::Owner, closed, &format!("closed {n}"))
+            .unwrap();
+    }
+    hq.store()
+        .set_task_status(closed, TaskStatus::Done)
+        .unwrap();
+
+    let snap = hq.snapshot().unwrap();
+    let row = |id: TaskId| {
+        snap["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id.0)
+            .unwrap()
+            .clone()
+    };
+    // Open work keeps its whole thread; finished work only what its card shows, each post
+    // with its place in the whole thread, which the activity log reads it by.
+    let open = row(open);
+    assert_eq!(open["thread"].as_array().unwrap().len(), 5);
+    assert_eq!(open["posts"], 5);
+    let closed = row(closed);
+    let tail = closed["thread"].as_array().unwrap();
+    assert_eq!(closed["posts"], 5);
+    assert_eq!(tail.len(), 3);
+    assert_eq!(tail[0]["n"], 2);
+    assert_eq!(tail[0]["text"], "closed 2");
+    assert_eq!(tail[2]["n"], 4);
+    assert_eq!(tail[2]["text"], "closed 4");
+}
+
+#[test]
 fn a_thread_event_names_its_post_and_says_when_its_preview_was_cut() {
     let clock = hands();
     let hq = hq(&clock, 4);

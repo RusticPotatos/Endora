@@ -256,10 +256,11 @@ function hqTurns(match, key) {
 }
 
 // A line of the activity log in full: a post is read whole from its task's thread when the
-// snapshot has it, and is otherwise its preview, which says "…" where it was cut.
+// snapshot has it, and is otherwise its preview, which says "…" where it was cut. A finished
+// task's thread is only its last posts, each with its place in the whole thread (`n`).
 const HQ_LONG_LINE = 240;
 function hqLogText(l) {
-  const w = l.whole, t = w && hqTask(w.task), p = t && (t.thread || [])[w.post];
+  const w = l.whole, t = w && hqTask(w.task), p = t && (t.thread || []).find((q, i) => (q.n ?? i) === w.post);
   return p && p.author === w.author ? `${w.author}: ${p.text}` : l.text;
 }
 // One line as a list item. A long one is shown to its first 240 characters, with "more" to
