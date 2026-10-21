@@ -63,6 +63,11 @@ services:
       # the same zone the node is given (above the node's own block).
       ENDORA_TIME_ZONE: "${ENDORA_TIME_ZONE-}"
       ENDORA_UTC_OFFSET_MINUTES: "${ENDORA_UTC_OFFSET_MINUTES:-0}"
+      # Two malloc arenas, not glibc's eight per core. Each request runs on a blocking thread,
+      # and each thread's arena kept what a snapshot build had used (about 48 MB) for good: on
+      # the NAS's eight cores, eight such arenas reached the cap and HQ was killed, 31 times in
+      # a week, mostly with a console open and nothing else happening.
+      MALLOC_ARENA_MAX: "2"
     volumes:
       - ${ENDORA_HQ_DIR:-endora-hq-data}:/data
       - endora-hq-token:/token
@@ -78,6 +83,7 @@ services:
     security_opt: [no-new-privileges:true]
     # A small service on a NAS whose memory is tight: a hard cap, not a hope. It idles near
     # 100 MB since the record's search index (ADR 0129); 128m was killed applying a large paste.
+    # What filled 384m was idle malloc arenas, not data (MALLOC_ARENA_MAX above).
     mem_limit: 384m
   # The runner (ADR 0102, phase 4): starts each turn HQ hands it as a fresh worker container,
   # from this same image, on the fenced `team` network. It holds Docker's socket, which is as
