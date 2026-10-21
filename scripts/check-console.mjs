@@ -476,6 +476,19 @@ if (failures.length) {
   }
 }
 
+// A chess board's rows are as tall as its columns are wide, pieces or none. With only columns
+// set, each row took its height from what stood on it, and a rank with no piece collapsed to a
+// sliver on the owner's phone.
+{
+  const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
+  const board = (css.match(/\n\s*\.hq-chess \{[^}]*\}/) || [""])[0];
+  if (!/grid-template-rows:\s*repeat\(8,\s*minmax\(0,\s*1fr\)\)/.test(board)
+    || !/grid-template-columns:\s*repeat\(8,\s*minmax\(0,\s*1fr\)\)/.test(board)) {
+    console.error("styles: the chess board's rows or columns are not eight equal tracks, so an empty rank collapses");
+    process.exit(1);
+  }
+}
+
 // The clean slate (owner, 2026-10-16): no Inbox, no check-in or nightly review to switch on,
 // no durable goals to watch or stop, no beliefs listed kind by kind.
 {
