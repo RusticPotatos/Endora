@@ -7,6 +7,8 @@ built: providers, the ordered lists and their walking, every everyday cloud entr
 door; then the tiers, the 🔒 and the door's refusal of Restricted words. Sign in with ChatGPT as
 a provider is not yet.
 
+**Partly superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's parts are retired (the composer's lock, the Deep list and Ask deep); the providers, the Everyday list and the data tiers stay, read by the team's relay.
+
 How phase 2 is built, for the record: Restricted words carry a mark (`[private] `) the door
 refuses, as a stranger's words carry theirs (0064), derived from what the turn holds rather
 than stored beside it. A 🔒 message is kept with the mark, and so is Endora's reply to it; a

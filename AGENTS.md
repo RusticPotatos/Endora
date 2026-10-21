@@ -30,8 +30,8 @@ the base principles every project shares. What follows is Endora's own.
 - Endora follows **Responsibility-Oriented Clean Architecture (ROCA)** — a
   domain-first modular monolith organized **by responsibility**, not by layer
   (ADR 0050). The workspace is `app/` (composition roots), `domains/` (one crate
-  per bounded context: `platform`, `capabilities`, `understanding`,
-  `conversation`, `scheduling`, `mail`, `team`, `agenda`), `shared/` (`kernel`, `persistence`), and
+  per bounded context: `platform`, `capabilities`, `team`, `sound`, and `mail`, kept as a
+  library for a later HQ contract), `shared/` (`kernel`, `persistence`, `protocol`), and
   `clients/` (the handheld terminal, ADR 0099, which talks to the node only over HTTP and
   has its own `AGENTS.md`).
 - **Each context owns its own `domain` / `application` / `infrastructure`**
@@ -40,8 +40,9 @@ the base principles every project shares. What follows is Endora's own.
   AI vendor, UI, OS, or model-specific code). Cross-context calls go
   application→application/ports only — the dependency graph stays acyclic.
 - `shared/` is for genuinely cross-cutting code only; the thin **orchestration
-  layer** (currently `endora-application`) holds the butler-turn contract and the
-  use cases that compose several contexts.
+  layer** (`endora-application`) holds the use cases that compose several contexts (the
+  activity feed, the owner's export and delete). Endora is HQ: the butler's chat was retired
+  (ADR 0136).
 - **No premature microservices**, and no speculative abstractions. Build what the
   current vertical slice needs; prefer a complete slice over broad shallow
   scaffolding.

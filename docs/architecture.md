@@ -1,20 +1,22 @@
 # Endora Architecture
 
 > Describes the shape of the system and the boundaries it enforces. Implementation
-> grows one vertical slice at a time. Last reconciled with the code 2026-07-25
-> (ADR 0052).
+> grows one vertical slice at a time. Last reconciled with the code 2026-10-20
+> (ADR 0136: Endora is HQ, and the butler's chat is retired).
 
 ## Overview
 
 Endora is a **domain-first modular monolith**. A single authoritative backend —
-the **node** — is the brain. It holds all authority and state. Clients (a CLI
-today; native and other clients later) are **thin and replaceable**, and reach
-the node only through a stable, versioned protocol.
+the **node** — is the trust boundary. It holds all authority and the secrets. **Endora HQ**
+(`app/hq`), the team of agents that does the home lab's work, is a separate service the node
+fronts; every act a team turn takes crosses the node (ADR 0102). Clients (the web console, the
+handheld, a CLI) are **thin and replaceable**, and reach the node only through a stable,
+versioned protocol.
 
 ```text
         ┌─────────────────────────────────────────────┐
         │                 endora-node                  │
-        │            (authoritative brain)             │
+        │       (authoritative trust boundary)         │
         │                                              │
         │   Interface → Application → Domain           │
         │   Infrastructure → Application/Domain ports  │
@@ -23,8 +25,8 @@ the node only through a stable, versioned protocol.
                         │  (HTTP + JSON, OpenAPI-described)
      ┌──────────────────┼───────────────────┐
      │                  │                    │
-  endora-cli      native client        later clients
- (thin client)   (Swift/SwiftUI)      (Android, web, …)
+  web console      the handheld         endora-cli
+ (HQ first)     (clients/terminal)    (thin client)
 ```
 
 ## The node is authoritative; clients are replaceable
@@ -52,37 +54,23 @@ Clean-Architecture stack; cross-cutting primitives live in `shared/`; the
 composition roots live in `app/`.
 
 ```text
-app/         node (the authoritative brain) + cli — compose the contexts
+app/         node (the trust boundary), hq, worker, runner, sound, cli — compose the contexts
 domains/     one crate per bounded context, each layered internally:
              <context>/src/{domain, application, infrastructure[, interface]}
-  platform         audit trail + the butler's event log
-  capabilities     skills, the policy-gated runner, egress guard, autonomy envelope
-  understanding    the brain (markdown pages + memory), intentions, research
-  conversation     the chat model + repository
-  scheduling       the daily brief's cadence
+  platform         audit trail + event log
+  capabilities     skills and their stances, the bridge, contracts' policy, egress guard, MCP
   team             Endora HQ's team core: goals, tasks, wakes, runs, the tick, the ledger
-  agenda           the agenda loop: signals become items at four levels, restarts, taught rules
-shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility),
-             persistence (Db handle)
+  sound            speakers, sources and wires (the sound hub's)
+  mail             rules over a read-only mail copy, kept as a library (ADR 0136)
+shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility, tiers),
+             persistence (Db handle, secrets at rest), protocol (the handheld's wire types)
 ```
 
-The thin **orchestration layer** (currently `endora-application`) holds the
-butler-turn contract and the use cases that compose several contexts (running a
-turn, preparing a brief, advancing commissioned research).
-The node's research worker polls durable SQLite work, shares the foreground
-turn lock, and uses a runner narrowed to guarded web reads plus the exact approved
-search capability. Research is the only work that outlives a turn: the durable goals,
-their worker and the chat's intake tool were removed in the clean slate
-([ADR 0100](adr/0100-the-clean-slate.md)).
-
-Within `endora-application`, a few modules are the seams between a turn and the models it may
-use. `egress` is the only door to a bigger model (taint check, secret scan, disguise); `deep_turn`
-makes that model plan which skills to call while the local model reads the results
-([ADR 0086](adr/0086-ask-deep-plans-and-the-house-reads.md)); `context_report` measures what a turn
-sends and how full the model's window is ([ADR 0088](adr/0088-say-what-is-sent-to-the-model-and-let-a-topic-end.md)).
-`Butler::classify_need` lets the local model sort a message before the turn decides whether to
-look something up ([ADR 0089](adr/0089-a-model-sorts-the-message-not-a-word-list.md)).
-Contexts do not reach into each
+The thin **orchestration layer** (`endora-application`) holds the use cases that compose
+several contexts: the activity feed, and the owner's export and delete of Endora's record. The
+butler's turn, its brief, research, the brain and the agenda loop that once lived here were
+retired with the chat ([ADR 0136](adr/0136-endora-is-hq.md)); the work that outlives a request
+is HQ's now. Contexts do not reach into each
 other's internals; they collaborate through application-layer ports, and the
 dependency graph is acyclic.
 
@@ -176,26 +164,29 @@ already exist. Until then, microservices would be ceremony. See
 
 ```text
 app/
-  node/                # Authoritative backend runtime (the brain) + web console
+  node/                # The trust boundary: the console, the team's relay, bridge and contracts
+  hq/                  # Endora HQ: the team service, its own store, no dependency on the node
+  worker/ runner/      # One member's turn, and what starts it in a fresh container
+  sound/               # The sound hub
   cli/                 # Thin, replaceable client
 domains/
-  understanding/       # The brain (pages, memory, git), intentions, research, outcomes
-  capabilities/        # Skills, policy-gated runner, egress guard, MCP host
-  conversation/        # The chat and its running summary
-  scheduling/          # Proactive cadences
+  team/                # Endora HQ's team core
+  capabilities/        # Skills and stances, the bridge, contracts' policy, egress guard, MCP
   platform/            # Audit trail + event log
-  team/                # Endora HQ: its own store and engine, no dependency on the node
-  agenda/              # The agenda loop (ADR 0103): signals, items, restarts, taught rules
+  sound/               # Speakers, sources and wires
+  mail/                # Rules over a read-only mail copy, kept as a library
 shared/
-  kernel/              # Ids, time, errors, AutonomyLevel, Reversibility — pure
-  persistence/         # The shared SQLite handle
+  kernel/              # The audit id, time, errors, AutonomyLevel, Reversibility, tiers — pure
+  persistence/         # The shared SQLite handle, secrets at rest
+  protocol/            # The handheld's wire types
 crates/
-  endora-application/  # Orchestration: the butler-turn contract + cross-context use cases
-  endora-infrastructure/ # Adapters: SQLite store, model-backed butlers, the model layer
+  endora-application/  # Orchestration: the activity feed, the owner's export and delete
+  endora-infrastructure/ # Adapters: SQLite store, HQ and sound clients, the relay, vault
+clients/
+  terminal/            # The handheld (talks to the node over HTTP only)
 ```
 
-The **Identity & Values**, **Direction & Targets**, **Experiments & Learning** and
-**Reflection** contexts were deleted in
-[ADR 0052](adr/0052-what-it-knows-about-you.md); understanding is now the only model
-Endora keeps of a person; since [ADR 0101](adr/0101-the-brain.md) it is the brain, markdown
-pages with their own history, not beliefs in the database. See [domain-map.md](domain-map.md).
+The understanding, conversation, scheduling and agenda contexts were retired with the chat
+([ADR 0136](adr/0136-endora-is-hq.md)), as Identity & Values, Direction & Targets,
+Experiments & Learning and Reflection were in [ADR 0052](adr/0052-what-it-knows-about-you.md).
+See [domain-map.md](domain-map.md).

@@ -4,6 +4,8 @@
 
 Accepted, 2026-10-12. Prepared with AI assistance (Claude). Not deployed when written.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** Skills sent to the chat's model are retired with it; the bridge offers tools to team turns (0108). The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 The context inspector (ADR 0088) showed the skill list twice: once as a plain list in the

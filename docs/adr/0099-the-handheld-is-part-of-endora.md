@@ -6,6 +6,8 @@ Accepted, 2026-10-16, by the owner through a design interview (questions 1–3, 
 recorded in [the unification plan](../plans/unification.md)). Prepared with AI assistance
 (Claude); the terminal itself was written with AI assistance (OpenAI Codex).
 
+**Partly superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The handheld's chat page is gone (0.15.0); its home, media, lab and music pages stay.
+
 ## Context
 
 The handheld terminal (`endora-terminal`, a Rust TUI for a small Linux handheld) was built in a

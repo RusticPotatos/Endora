@@ -1,5 +1,10 @@
 # Endora Roadmap
 
+> **Superseded in direction, 2026-10-20.** Endora is HQ ([ADR 0136](adr/0136-endora-is-hq.md)):
+> the butler's chat, and the releases below planned around it, are retired. HQ's own plan is
+> [Endora HQ: the design](plans/endora-hq.md). What follows is kept as the record of what was
+> intended.
+
 > Status: living document. This roadmap states **intent and sequencing**; it is
 > not authoritative for decisions. Architectural decisions are recorded in
 > [ADRs](adr/README.md), and execution is tracked in GitHub issues/milestones.

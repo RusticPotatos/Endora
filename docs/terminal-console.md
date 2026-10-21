@@ -29,20 +29,19 @@ For a fixed list of Homepage widget types (Overseerr, Radarr, Sonarr, NZBGet, Pr
 Gatus, Prometheus, Backrest) the node also asks Homepage's own widget proxy for a few
 numbers and returns them as a short `detail` string per service; Homepage keeps the
 service credentials and the endpoints are fixed in code. These entries only hold
-settings: they are never ready for chat themselves (`configured: false`), and their `invoke`
+settings: they are never ready to use themselves (`configured: false`), and their `invoke`
 backs the settings Test button with one read-only request that reports a category, never
 upstream text or the key. Both routes write the same keys.
 
-Once Docker, Portainer, Sonarr, Radarr or NAS metrics are set up here, chat can read them too,
-through separate read-only skills that borrow these settings: "What the containers are doing",
+Once Docker, Portainer, Sonarr, Radarr or NAS metrics are set up here, the team can read them
+too, through the bridge (ADR 0108) and separate read-only skills that borrow these settings: "What the containers are doing",
 "What the containers are doing (Portainer)", "What Sonarr is downloading", "What Radarr is
 downloading" and "How the NAS is doing". Nothing is configured twice, and a skill is offered only
 once its entry is set up. They take no input, so the model chooses no address, and they return
 names, states, titles, progress and figures only. They never start, stop or restart anything,
 never read container logs and never search media; those stay on the handheld, and Overseerr and
 the home screen stay handheld-only. Their results mark the turn like any other outside source
-(ADR 0064): it can answer but cannot act, and it is never escalated to the deep model, so
-container names and NAS figures stay on the device.
+(ADR 0064).
 
 Overseerr submissions require an explicitly selected numeric requesting user.
 The adapter sends `X-Api-User` alongside the server-side key so that user's
@@ -95,7 +94,7 @@ Old output is compacted while IDs and final state remain for deduplication.
 
 `POST /v1/session/dashboard`, with a full session, creates a separate narrow
 credential for `GET /v1/homelab/overview`. This returns only timestamps, service
-states and aggregate counts. Dashboard sessions cannot read chat, activity,
+states and aggregate counts. Dashboard sessions cannot read activity,
 private entity/container names, logs, jobs or any mutation. Unknown persisted
 scope values deny access.
 
@@ -114,5 +113,5 @@ means uncertain outcome. The client queries status after reconnect rather than
 repeating a mutation. Home controls report observed state and verification;
 job submission reports queued/running state rather than claiming completion.
 
-Existing chat and dashboard interfaces remain compatible. The new locked
+Existing dashboard interfaces remain compatible. The new locked
 appliance must be paired with a node supporting these narrow credentials.

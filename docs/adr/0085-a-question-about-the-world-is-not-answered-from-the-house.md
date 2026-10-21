@@ -4,6 +4,8 @@
 
 Accepted, 2026-10-12. Prepared with AI assistance (Claude).
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's routing of questions about the world is retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 A conversation on the deployed node gave three poor answers in a row:

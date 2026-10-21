@@ -20,19 +20,19 @@ Two environment variables (see `docker-compose.yml`):
 | `ENDORA_MODEL_URL` | An OpenAI-compatible base URL (`/v1`) | `http://localhost:11434/v1` |
 | `ENDORA_MODEL` | The model name to request | `qwen2.5:7b` |
 
-If the endpoint is unreachable or returns something unusable, the butler falls back
-to a deterministic **scripted** brain, so the app never hard-fails on a missing
-model. Endora's safety guardrails (skill routing, honest "can't-serve" replies, the
-autonomy envelope, the egress guard) are deterministic and hold **regardless of the
-model** — a weaker model degrades *quality*, not safety.
+This is the **house's model**: what the team's members whose brain is local think with, unless
+the AI screen's Everyday list names a model on your network first (ADR 0105). A member may think
+with Claude instead, through the node's relay and your own key. Endora's safety guardrails (the
+relay's metering, the contracts' limits, each tool's stance, the egress guard) are deterministic
+and hold **regardless of the model** — a weaker model degrades *quality*, not safety.
 
 Any OpenAI-compatible server works: **Ollama**, **LM Studio**, **llama.cpp server**,
 **vLLM**, **LocalAI**, etc. The examples below use Ollama.
 
 ## Model recommendations
 
-What matters for the butler: **instruction-following**, **clean JSON**, and
-**tool/skill selection**. Bigger is better, but a good 7–8B is the practical sweet
+What matters for a team turn: **instruction-following**, **clean JSON**, and
+**tool selection**. Bigger is better, but a good 7–8B is the practical sweet
 spot on consumer GPUs.
 
 | Tier | Model (Ollama tag) | Why |
@@ -41,7 +41,7 @@ spot on consumer GPUs.
 | Sharper, if you have VRAM | `qwen2.5:14b` | Noticeably better reasoning; needs more VRAM/slower. |
 | Alternatives | `llama3.1:8b`, `gemma2:9b`, `mistral-nemo:12b` | Solid instruction-followers. |
 | Small / CPU / fallback | `qwen2.5:3b`, `llama3.2:3b` | Runs on little/no GPU, but weaker — more fabrication (the guardrails still hold; quality drops). |
-| Vision (for the **Image review** skill) | `moondream`, `llava`, `llama3.2-vision` | Set as that skill's `model` setting in the Skills view. |
+| Vision (for the **Image review** skill) | `moondream`, `llava`, `llama3.2-vision` | Set as that skill's `model` setting under Settings › Tools. |
 
 ## Hardware guidance
 
@@ -50,7 +50,7 @@ quants (q5/q8) and longer context need more.
 
 | VRAM | Comfortable | Notes |
 | --- | --- | --- |
-| CPU-only | `*:3b` | Works but slow; expect the scripted fallback under load. |
+| CPU-only | `*:3b` | Works but slow. |
 | 6 GB | `*:3b` (7B is tight) | Entry GPUs. |
 | **8–12 GB** | **`*:7b–9b`** | The sweet spot; 14B is tight. |
 | 16 GB | `*:14b` | Comfortable; some 24–32B at low quant. |

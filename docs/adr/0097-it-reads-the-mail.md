@@ -7,6 +7,8 @@ Accepted, 2026-10-15, by the owner through a design interview (recorded in
 itself is copied to the NAS by the `mail_mirror` role of the owner's ansible-nas, read-only
 at the provider. Prepared with AI assistance (Claude).
 
+**Partly superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The mail reader and its screen are retired; the rules over the mail copy stay in `domains/mail` as a library for a later HQ contract.
+
 ## Context
 
 The owner's words: look through the mail for anything truly important, sort it into buckets,

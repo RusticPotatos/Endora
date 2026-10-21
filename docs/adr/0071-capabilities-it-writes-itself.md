@@ -11,6 +11,8 @@ ordinary PR against this record. The last rung of the master plan, and the first
 step onto the capability ladder's "infra skills" rung
 ([0055](0055-the-model-layer.md)).
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** Recipes, the capabilities the chat wrote for itself, are retired. The reasoning below is kept; none of its mechanism runs.
+
 **Amended 2026-10-16:** specimens are removed ([0100](0100-the-clean-slate.md)), so the
 gap-detection trigger below has nothing to read. Recipes are still written with the person,
 through the authoring loop.

@@ -6,6 +6,8 @@ Accepted, 2026-10-16, by the owner through a design interview (questions Q1–Q4
 with AI assistance (Claude). The design is [Endora sound: the design](../plans/endora-sound.md).
 Nothing is built yet.
 
+**Partly superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's sound actions are gone; the hub and the Speakers screen stay.
+
 ## Context
 
 The owner wants Spotify Connect for any sound. In one direction, many of their own devices

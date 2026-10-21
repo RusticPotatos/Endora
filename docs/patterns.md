@@ -29,8 +29,8 @@ mislabel the architecture, not simplify it.
 
 ### 1. Ports & Adapters *(Cockburn; GoF cousins: Strategy, Adapter)*
 
-Every boundary. The application layer declares a trait (`Butler`,
-`CapabilityRunner`, `ChatRepository`, `AuditLog`, `Clock`, `IdSource`);
+Every boundary. The application layer declares a trait (`MemoryStore`,
+`CapabilityRunner`, `UsageLog`, `AuditLog`, `Clock`, `IdSource`);
 infrastructure implements it; dependencies point inward. This is ROCA's
 load-bearing pattern ([ADR 0050](adr/0050-the-shape-of-the-system.md))
 and the reason the model vendor, the storage engine and the clock are all
@@ -52,9 +52,9 @@ something its inner runner would refuse is the bug, not a variant.
 
 ### 3. Facade *(GoF)* — the orchestration layer
 
-`endora-application`'s use cases are the only way a composition root reaches a
-turn. The butler-turn contract lives here; contexts talk
-application-to-application, never reaching into each other's internals.
+`endora-application`'s use cases are the only way a composition root reaches what composes
+several contexts (since ADR 0136, the activity feed and the owner's export and delete); contexts
+talk application-to-application, never reaching into each other's internals.
 
 **Rule:** one facade. A second path to the same effect — however convenient — is
 [ADR 0067](adr/0067-one-way-to-the-deep-model.md) again. When a new mechanism

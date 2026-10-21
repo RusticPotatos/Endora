@@ -8,6 +8,8 @@ The [implementation handoff](../plans/research-assistant-handoff.md) and
 accepted first release. The owner accepted this decision on 2026-09-06. This
 decision does not amend the constitution.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** Research the person asked for in the chat is retired, code and storage. The reasoning below is kept; none of its mechanism runs.
+
 **Amended 2026-10-16:** the 2026-10-12 amendment is withdrawn with durable goals
 ([0100](0100-the-clean-slate.md)). Chat starts nothing on its own; research starts only when
 the person commissions it.

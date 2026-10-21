@@ -5,6 +5,8 @@
 Accepted (2026-07-26). **Consolidates 0005, 0010, 0022, 0023, 0024 and 0044**, which are
 archived. The single most load-bearing document in this repository.
 
+**Partly superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The autonomy envelope, which only the chat read, is retired; the boundary itself stands.
+
 **Amended 2026-10-16:** the nightly loop is gone ([0100](0100-the-clean-slate.md)). The
 heartbeat's clamp to the reversible bands stands.
 

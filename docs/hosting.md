@@ -158,15 +158,12 @@ The image binds `0.0.0.0` **inside** the container so the mapped port works; the
 `127.0.0.1:` in `-p` is what keeps it off your machine's other interfaces. Only
 change that once a private overlay or an authenticating proxy sits in front.
 
-### Where it keeps what it knows about you
+### The brain, retired
 
-The brain (ADR 0101) is a folder of markdown pages with its own git history, at `/brain` in
-the container. Set **`ENDORA_BRAIN_DIR`** in `local.mk` to a host folder beside your other
-containers' data (for example `<docker home>/endora/brain`; the `endora` Ansible role does this
-by default) to open the pages from another machine; unset, it is a Docker named volume. Either
-way the node's nightly backup writes it as a `brain-daily-….bundle` beside the database
-copies, which `git clone` restores. Anything edited from outside is committed as yours before
-Endora's next change.
+The brain (ADR 0101), the folder of markdown pages at `/brain`, went with the chat (ADR 0136).
+The first node to start without the chat empties that folder (only a folder that carries the
+brain's own marks) and removes its nightly `brain-*.bundle` copies; the mount stays for that one
+release and is removed after. `ENDORA_BRAIN_DIR` can then go from `local.mk`.
 
 ### Optional: Endora HQ, the team
 
@@ -185,23 +182,18 @@ for the node in a volume only the two mount, so there is no secret to keep. The 
 The engineering wing's deploy key, for pushing the team's branches to your ansible-nas fork
 on your approval, is described in [the home-lab notes](homelab.md#the-wings-deploy-key-adr-0115).
 
-### Optional: the mail
+### Mail, retired
 
-Set **`ENDORA_MAIL_DIR`** in `local.mk` to the read-only mail copy the ansible-nas
-`mail_mirror` role keeps (by default `/srv/mail-mirror/maildir` on the NAS), and Endora
-reads your mail in quiet time, one message at a time, with the local model only, and shows
-what matters in your brief and the console's **Mail** screen (ADR 0097).
-
-(Looking into things on its own, the `ENDORA_OWN_WORK` switch, was removed on 2026-10-16: see
-[the always-on butler plan](plans/always-on-butler.md) for what replaces it.)
+The chat's mail reader was retired (ADR 0136), and the node no longer mounts a mail copy:
+`ENDORA_MAIL_DIR` can go from `local.mk`. The ansible-nas `mail_mirror` role may keep making the
+copy for a later HQ contract that reads it locally; that is yours to decide.
 
 ### Time zone
 
 Set **`ENDORA_TIME_ZONE`** to your zone by name (for example
-`America/New_York` or `Europe/Berlin`) so the times are yours, either side of a clock change.
-The model is told your local time, and the daily brief keeps its local hour when the clocks
-change; it is stored as a UTC hour, which would otherwise arrive an hour early or late for half
-the year. A name the node does not know stops it at start rather than becoming UTC.
+`America/New_York` or `Europe/Berlin`) so the times are yours, either side of a clock change:
+the nightly copies are made at 01:30 your time, and HQ's days start at your midnight. A name the
+node does not know stops it at start rather than becoming UTC.
 `ENDORA_UTC_OFFSET_MINUTES` (for example `-300`) is a fixed fallback; with neither, times are
 UTC.
 
@@ -254,38 +246,21 @@ is the same: **the node is only reachable through something that authenticates.*
   host, or `ENDORA_ADDR=0.0.0.0:8787` reachable from outside) with no proxy. That
   hands full read/write of your data to anyone who finds it.
 
-## 4. Voice: it can speak, but speaking *to* it needs HTTPS
+## 4. HTTPS: passkeys need it
 
-The web console can read the butler's replies aloud (text-to-speech) and let you
-speak your message (speech-to-text), using the browser's built-in Web Speech API —
-open **💬 Chat**, toggle **🔊 Speak**, and use the **🎤** button.
+The vault's passkey unlock (ADR 0127) only works on a secure page, HTTPS or `localhost`, and a
+console on a plain-HTTP LAN address cannot use it. Give the console an HTTPS origin:
 
-One browser rule to know: **the microphone only works on a secure page** — HTTPS or
-`localhost`. So:
-
-- **Text-to-speech (it speaks to you)** works everywhere, including plain
-  `http://<host>:8787`.
-- **Speech-to-text (you speak to it)** is **blocked** on a plain-HTTP LAN address.
-  Give the console an HTTPS origin to enable the mic:
-  - **Built-in self-signed HTTPS (easiest — no domain, proxy, or extra tools):**
-    set **`ENDORA_TLS=1`** on the node (the compose does this by default). It
-    serves HTTPS with a self-signed cert persisted in `/data`, so you accept the
-    browser's "not private" warning **once** per browser, then the mic works. Set
-    `ENDORA_TLS_SAN` to this host's LAN IP/hostname for a cleaner cert (in
-    `docker-compose.override.yml`). Access `https://<host>:8787`.
-  - **Tailscale:** `tailscale serve https / http://127.0.0.1:8787` gives a *trusted*
-    HTTPS URL on your tailnet — no warning at all, and it's private. Best if you
-    already run Tailscale (§3).
-  - **A TLS reverse proxy** (Caddy/nginx, §3) in front of the node.
-  - **Quick local test:** in Chrome, `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
-    → add `http://<host>:8787` → relaunch. (Dev only; not a real fix.)
-
-  Endora runs no speech server of its own: dictation is the browser's recognition, and
-  the AI screen says so. (A server-side Whisper path once existed for push-to-talk; it
-  was removed with push-to-talk, as slower and less predictable than the browser.)
-
-Speech recognition also needs a supporting browser (Chrome/Edge) and, in some
-browsers, streams audio to a cloud service — so voice is opt-in, off by default.
+- **Built-in self-signed HTTPS (easiest — no domain, proxy, or extra tools):**
+  set **`ENDORA_TLS=1`** on the node (the compose does this by default). It
+  serves HTTPS with a self-signed cert persisted in `/data`, so you accept the
+  browser's "not private" warning **once** per browser. Set
+  `ENDORA_TLS_SAN` to this host's LAN IP/hostname for a cleaner cert (in
+  `docker-compose.override.yml`). Access `https://<host>:8787`.
+- **Tailscale:** `tailscale serve https / http://127.0.0.1:8787` gives a *trusted*
+  HTTPS URL on your tailnet — no warning at all, and it's private. Best if you
+  already run Tailscale (§3).
+- **A TLS reverse proxy** (Caddy/nginx, §3) in front of the node.
 
 ## 5. Checklist
 
@@ -293,7 +268,7 @@ browsers, streams audio to a cloud service — so voice is opt-in, off by defaul
 - [ ] Reached only over a private overlay, or through an authenticating TLS proxy.
 - [ ] Runs under a supervisor (systemd / `--restart`) so it survives reboots.
 - [ ] `ENDORA_DB` on persistent storage a backup tool can reach, and snapshots taken with
-      `make backup` / `endora-node backup`. `endora export` holds memory only, none of your
-      settings — it is not a backup (see [Backing up your data](#backing-up-your-data)).
+      `make backup` / `endora-node backup`. `endora export` holds Endora's record only, none of
+      your settings — it is not a backup (see [Backing up your data](#backing-up-your-data)).
 - [ ] Reviewed [SECURITY.md](../SECURITY.md) — you understand the API is
       bearer-authenticated, with public console assets and health checks.

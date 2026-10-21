@@ -6,6 +6,8 @@ Accepted (2026-07-26). **Consolidates 0006, 0011, 0013, 0014, 0015, 0016, 0020, 
 0033 and 0036**, which are archived. Includes one large reversal, kept because it is the
 most instructive thing in this repository.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** What Endora knew about the person, and the understanding context that held it, are retired with the chat. The reasoning below is kept; none of its mechanism runs.
+
 **Amended 2026-10-16** ([0100](0100-the-clean-slate.md)): intentions are no longer formed from
 beliefs, and beliefs of kind intent or "other" are no longer formed. About you no longer lists
 beliefs by kind for confirming; learned beliefs can be forgotten all at once, and what the

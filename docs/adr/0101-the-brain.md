@@ -6,6 +6,8 @@ Accepted, 2026-10-16, by the owner through a design interview (step 2 of
 [the always-on butler plan](../plans/always-on-butler.md), questions Q1 to Q11 of that
 round). Prepared with AI assistance (Claude).
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The brain is retired; its pages were deleted once the owner had taken a copy. The reasoning below is kept; none of its mechanism runs.
+
 This replaces the beliefs of [0052](0052-what-it-knows-about-you.md) as the place Endora keeps
 what it knows about the person. Their confidence, decay, affirming and correcting go with
 them; the rules for what is worth keeping stay. Nothing in

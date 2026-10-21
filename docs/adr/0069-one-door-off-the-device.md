@@ -6,6 +6,8 @@ Accepted (2026-08-04). The first of the two slices [0068](0068-facts-are-argumen
 named; makes [0067](0067-one-way-to-the-deep-model.md)'s "one way to the deep model"
 structural rather than observed. Pattern six of [the pattern budget](../patterns.md).
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's one door off the device went with the chat; the team's relay is its own (0102). The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 [0067](0067-one-way-to-the-deep-model.md) deleted a second escalation path that had carried

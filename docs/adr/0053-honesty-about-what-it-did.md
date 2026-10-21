@@ -4,6 +4,8 @@
 
 Accepted (2026-07-26). **Consolidates 0028, 0034, 0035 and 0037**, which are archived.
 
+**Partly superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's record of its outcomes, repairs and how its actions landed is retired; the record of changes made to the owner's services stays.
+
 [ADR 0077](0077-seeing-something-through.md) applies the same distinction to
 commissioned research: `delivered` means a sourced report was persisted; it does
 not claim that every model-written conclusion is semantically verified.

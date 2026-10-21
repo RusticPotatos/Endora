@@ -4,6 +4,8 @@
 
 Accepted (2026-07-26). **Consolidates 0008, 0027 and 0030**, which are archived.
 
+**Partly superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The model layer and its tune are retired; Worth knowing stays on the AI screen.
+
 **Amended 2026-10-16:** the 4 am tune's schedule is removed ([0100](0100-the-clean-slate.md)).
 The comparison runs only when started by hand.
 

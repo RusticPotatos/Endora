@@ -6,6 +6,8 @@ Accepted (2026-08-06). Narrows how [0054](0054-other-peoples-services.md)'s MCP
 connections are kept alive, after a live failure that made every action against the
 house fail silently until the node was restarted.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's session, and its healing, are retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 The person connected a light in Home Assistant and told Endora so. Every action that
