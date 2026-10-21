@@ -416,7 +416,7 @@ of 90 seconds would cut a five-minute wait. Setting the variable back to false d
 and takes its file away without stopping it (stopping it would drain HQ). Check it on the NAS
 with `systemctl status endora-drain` and, after a reboot, `journalctl -b -1 -u endora-drain`.
 
-## The house watch (ADR 0136)
+## The house watch (ADR 0138)
 
 A small machine outside the NAS (a Raspberry Pi 2 is enough) checks the NAS and its services once
 a minute and tells your phone when one has been down for 10 minutes, and when it is back. It is

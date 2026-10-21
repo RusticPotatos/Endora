@@ -1,5 +1,5 @@
 ---
-# The house watch (Endora ADR 0136): a small always-on machine outside the NAS (a Raspberry Pi 2
+# The house watch (Endora ADR 0138): a small always-on machine outside the NAS (a Raspberry Pi 2
 # is enough) that checks the NAS and its services once a minute and says on your phone when one
 # is down, and a second Pi-hole, so names keep resolving while the NAS is away. Raspberry Pi OS
 # Lite; no Docker. See README.md.

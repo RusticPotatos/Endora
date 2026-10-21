@@ -159,7 +159,7 @@ rule the code actually follows, with the decision that established it.
   A scenario is a task in a project that gives its work the scenario tool alone; the world is a
   pure function of its seed and an append-only log of every action, refused ones too; only its
   rules, in code, say it is solved or failed, and a member's word never closes it.
-- **What watches the NAS does not run on it** ([0136](0136-the-house-watch.md)). A small
+- **What watches the NAS does not run on it** ([0138](0138-the-house-watch.md)). A small
   machine outside it checks the NAS and its services once a minute and tells the owner's phone,
   after a grace longer than the nightly reboot, once when one goes down and once when it is
   back; it is also the house's second Pi-hole.
@@ -318,7 +318,7 @@ of an existing record and take the next number.
 | [0133](0133-caps-on-talk-and-runaway.md) | Caps on talk and runaway | — |
 | [0134](0134-a-drain-before-every-restart.md) | A drain before every restart | - |
 | [0135](0135-scenarios-worlds-the-team-acts-in.md) | Scenarios: worlds the team acts in, which only the world closes | - |
-| [0136](0136-the-house-watch.md) | The house watch: a machine outside the NAS that watches it, and a second Pi-hole | - |
+| [0138](0138-the-house-watch.md) | The house watch: a machine outside the NAS that watches it, and a second Pi-hole | - |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

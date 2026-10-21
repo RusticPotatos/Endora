@@ -1,7 +1,7 @@
 # The house watch (endora_watch)
 
 A small always-on machine outside the NAS (a Raspberry Pi 2 with Raspberry Pi OS Lite is enough)
-that does two things the NAS cannot do for itself (Endora ADR 0136, in `docs/adr/`):
+that does two things the NAS cannot do for itself (Endora ADR 0138, in `docs/adr/`):
 
 - **It watches the NAS from outside.** Once a minute it checks what you list (a port open, a
   name answered, an https page with the right certificate) and, when one has been failing past
