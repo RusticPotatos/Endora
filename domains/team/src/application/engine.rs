@@ -93,6 +93,9 @@ pub const STRANDED_AFTER_MS: Millis = 10 * 60 * 1000;
 pub const GOAL_NOTE_MOST: usize = 2_000;
 /// The most events one read of the past returns.
 pub const MOST_EVENTS_BEFORE: usize = 200;
+/// The posts of a finished task's thread the snapshot carries: the last few, what its card
+/// shows.
+pub const THREAD_TAIL: usize = 3;
 
 /// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
 pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
@@ -4846,6 +4849,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let routine_list = self.store.routines()?;
         let mut task_rows = Vec::new();
         for t in &tasks {
+            // Finished work carries only the posts its card shows: whole threads of hundreds
+            // of done tasks made the snapshot over a megabyte, on every poll. Each post keeps
+            // its place in the whole thread, which the activity log finds it by.
+            let thread = self.store.thread(t.id)?;
+            let posts = thread.len();
+            let from = if t.status.finished() {
+                posts.saturating_sub(THREAD_TAIL)
+            } else {
+                0
+            };
+            let (documents, branches) = self.documents_shown(t.id)?;
             task_rows.push(json!({
                 "id": t.id.0, "goal": t.goal.0, "project": t.project.map(|p| p.0),
                 "parent": t.parent.map(|p| p.0), "title": t.title,
@@ -4855,15 +4869,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "waits_on": t.waits_on.iter().map(|w| w.0).collect::<Vec<_>>(),
                 "gate": self.store.gate(t.id)?, "why": why(t),
                 "routine": routine_list.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
-                "thread": self.store.thread(t.id)?.iter()
-                    .map(|p| json!({ "author": p.author, "text": p.text, "at": p.at,
-                                     "unsupported": p.unsupported }))
+                "posts": posts,
+                "thread": thread.iter().enumerate().skip(from)
+                    .map(|(n, p)| json!({ "n": n, "author": p.author, "text": p.text,
+                                          "at": p.at, "unsupported": p.unsupported }))
                     .collect::<Vec<_>>(),
                 // What done means, and what was cited for it at each stage (ADR 0114).
                 "evidence": self.evidence_shown(t)?,
                 // The wing's documents and branches on it (ADR 0115).
-                "documents": self.documents_shown(t.id)?.0,
-                "branches": self.documents_shown(t.id)?.1,
+                "documents": documents,
+                "branches": branches,
                 // Why it closed, and what carries it on (ADR 0124).
                 "closure": self.store.closure(t.id)?.map(|c| json!({
                     "why": c.closure.name(), "said": c.closure.plainly(),
