@@ -8,13 +8,10 @@
 
 #![forbid(unsafe_code)]
 
-pub mod butler;
 pub mod clock;
-pub mod eval;
 pub mod hq;
 pub mod ids;
-pub mod model_layer;
-pub mod model_list;
+pub mod model_server;
 pub mod model_watch;
 pub mod openbao;
 pub mod relay;
@@ -23,20 +20,14 @@ pub mod sqlite;
 pub mod time_zone;
 pub mod vault_store;
 
-pub use butler::{
-    ConfigurableButler, LlmButler, MixtureButler, ScriptedButler, ask_deep_model,
-    butler_from_config, butler_instructions, is_private_endpoint, list_models, ollama_loaded,
-    provider_balance, test_connection,
-};
-pub use model_layer::{
-    AdoptionDecision, AdoptionOutcome, CaseResult, ModelCandidate, Scorecard, ScoredCandidate,
-    decide_adoption, evaluate, is_local, run_model_layer,
-};
-// The capabilities context owns the skills, runner, and egress guard (ADR 0050);
-// re-exported so `endora_infrastructure::{RegistryRunner, …}` paths are unchanged.
 pub use clock::SystemClock;
+pub use model_server::{
+    is_private_endpoint, list_models, ollama_loaded, reaches_only_the_house, test_connection,
+};
+// The capabilities context owns the skills and the egress guard (ADR 0050); re-exported so
+// `endora_infrastructure::{Capability, …}` paths are unchanged.
 pub use endora_capabilities::{
-    Capability, CapabilityError, CapabilityInfo, CapabilitySettings, RegistryRunner, SettingSpec,
+    Capability, CapabilityError, CapabilityInfo, CapabilitySettings, SettingSpec,
     default_capabilities, redact_pii_in_value, scan_outbound_secret,
 };
 pub use hq::{HqClient, HqError, Passed, Passing};

@@ -9,20 +9,26 @@ after the export; retire the Mail screen and its reader as they are, with mail t
 owner also asked to keep sound and Spotify. Prepared with AI assistance (Claude). Built in the
 proposal's order; nothing is removed until the owner has taken a copy (step 4).
 
-When accepted it supersedes the chat parts of earlier records, each of which will carry a dated
-note: the turn and its context ([0056](0056-how-it-behaves-toward-you.md),
-[0060](0060-what-the-turn-is-offered.md), [0061](0061-answers-worth-keeping.md),
-[0067](0067-one-way-to-the-deep-model.md), [0068](0068-facts-are-arguments-not-recall.md),
-[0072](0072-the-base-has-rungs-too.md), [0073](0073-a-dead-session-heals-itself.md), and
+It supersedes, each with a dated note: the turn and its context
+([0056](0056-how-it-behaves-toward-you.md), [0060](0060-what-the-turn-is-offered.md),
+[0061](0061-answers-worth-keeping.md), [0067](0067-one-way-to-the-deep-model.md),
+[0068](0068-facts-are-arguments-not-recall.md), [0069](0069-one-door-off-the-device.md),
+[0070](0070-taint-is-derived-not-remembered.md), [0072](0072-the-base-has-rungs-too.md),
+[0073](0073-a-dead-session-heals-itself.md), and
 [0085](0085-a-question-about-the-world-is-not-answered-from-the-house.md) to
-[0091](0091-what-the-deep-model-costs.md)); the brief and standing questions
-([0074](0074-the-brief-is-a-standing-order.md), [0076](0076-standing-questions.md)); research
-([0077](0077-seeing-something-through.md)); recipes
-([0071](0071-capabilities-it-writes-itself.md)); the agenda loop
-([0103](0103-the-agenda-loop.md)); the chat's parts of the model lists
-([0105](0105-models-in-ordered-lists-by-data-tier.md): the composer's lock, the Deep list and
-Ask deep); the brain ([0101](0101-the-brain.md)); and the mail reader and its screen
-([0097](0097-it-reads-the-mail.md)), whose rules are kept (decision 7).
+[0091](0091-what-the-deep-model-costs.md)); what it knew of the person
+([0052](0052-what-it-knows-about-you.md), [0101](0101-the-brain.md)); the brief and standing
+questions ([0074](0074-the-brief-is-a-standing-order.md), [0076](0076-standing-questions.md));
+research ([0077](0077-seeing-something-through.md)); recipes
+([0071](0071-capabilities-it-writes-itself.md)); and the agenda loop
+([0103](0103-the-agenda-loop.md)). It partly supersedes, again with a note:
+[0051](0051-where-the-boundary-is.md) (the autonomy envelope),
+[0053](0053-honesty-about-what-it-did.md) (the chat's outcomes),
+[0055](0055-the-model-layer.md) (the model layer), [0097](0097-it-reads-the-mail.md) (the
+reader and its screen; the rules are kept, decision 7), [0099](0099-the-handheld-is-part-of-endora.md)
+(the handheld's chat page), [0104](0104-endora-sound.md) (the chat's sound actions) and
+[0105](0105-models-in-ordered-lists-by-data-tier.md) (the composer's lock, the Deep list and Ask
+deep).
 
 ## Context
 
@@ -85,8 +91,14 @@ own ledger.
 - Endora does nothing unasked outside HQ and the home lab's own pages: no brief, no pushes to
   the phone, no mail alerts. Two known future needs: mail alerts read locally (decision 7) and a
   ping when the desk needs a decision (decision 8).
-- Roughly 25,000 lines and their tests go; `endora-application` shrinks to what the node still
-  composes, and HQ no longer builds against the butler's contexts.
+- About 45,000 lines and over 500 tests went (the console, the node, four crates, the
+  orchestration layer's turn and the infrastructure's butlers and evals); `endora-application`
+  is the activity feed and the export and delete, and HQ no longer builds against the butler's
+  contexts. What served only the chat inside `domains/capabilities` (recipes, aliases, the
+  envelope, the chat's model configuration and the deep model, the runner chain) is unread and
+  goes in a following piece (step 5b2).
+- The `/brain` mount stays for one release, so the node can empty the folder; it, and the code
+  that empties it, go after.
 - What the chat knew is gone after the copy. The export loses its chat fields: a breaking change,
   marked so in the commits and the changelog.
 - The constitution's preamble and section 9 still describe a butler forming beliefs about the

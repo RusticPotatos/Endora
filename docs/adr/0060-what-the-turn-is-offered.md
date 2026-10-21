@@ -6,6 +6,8 @@ Accepted (2026-08-02), **amended the same day by the measurement it demanded**. 
 [0059](0059-one-fact-source-many-consumers.md), which made it cheap to add a source and
 free to be heard by the turn — and thereby made this the next thing to break.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's turn, and what it was offered, are retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 Asked *"any events in New York this week"*, the butler answered:

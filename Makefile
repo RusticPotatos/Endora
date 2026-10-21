@@ -193,10 +193,6 @@ export ENDORA_BENCH_CAP_CENTS
 # harness's npm package, packed from one pinned commit) and `COMMIT` (that commit's id).
 ENDORA_BENCH_HARNESS ?=
 
-# The read-only mail copy on the NAS (ansible-nas `mail_mirror` role, ADR 0097), e.g.
-# ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read whenever the copy is there.
-export ENDORA_MAIL_DIR
-
 COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose
 TARGET_DOCKER = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),)
 
@@ -521,26 +517,6 @@ watch: ## Re-run tests on file change (needs cargo-watch)
 ## ----------------------------------------------------------------------------
 ## Development: format, lint, test
 ## ----------------------------------------------------------------------------
-
-.PHONY: foundation-gate
-foundation-gate: ## Run foundation acceptance; missing coverage or failed behavior blocks release
-	python3 -m unittest discover -s scripts/foundation -p 'test_*.py'
-	python3 scripts/foundation/gate.py
-
-.PHONY: evals
-evals: ## Run the live model evaluations and keep a dated record (target/evals/); see scripts/run-live-evals.sh
-	@ENDORA_MODEL_URL="$(ENDORA_MODEL_URL)" ENDORA_MODEL="$(ENDORA_MODEL)" ./scripts/run-live-evals.sh
-
-.PHONY: goal-eval
-goal-eval: ## Can it actually accomplish a goal? Drives the real pass loop with the real model
-	# Live acceptance of the pass loop using production schema, reversible skills,
-	# and a real model. Partial is not successful completion. This does not test
-	# worker leases, scheduling, browser progress, or chat publication.
-	#
-	# Set ENDORA_MODEL_URL (OpenAI-compatible, e.g. your Ollama) and ENDORA_MODEL
-	# in local.mk. Nothing here touches the deployed node or any personal data.
-	@ENDORA_MODEL_URL="$(ENDORA_MODEL_URL)" ENDORA_MODEL="$(ENDORA_MODEL)" \
-		cargo test -p endora-infrastructure --test goal_eval -- --ignored --nocapture --test-threads=1
 
 .PHONY: console-check
 console-check: ## Render every console screen in Node (catches a broken UI before a phone does)

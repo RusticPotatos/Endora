@@ -352,18 +352,12 @@ function viewModels() {
 // is chosen on its skill.
 function aiOverviewSection() {
   if (!AI) return `<h3>What Endora runs</h3><div class="note">Asking the model server…</div>`;
-  const ctx = AI.context_tokens || 0;
   const card = (r) => {
     const where = r.on === false
       ? `<span class="pill">off</span>`
       : r.local ? `<span class="pill concluded">on your network</span>` : `<span class="pill">cloud</span>`;
     const rt = r.runtime;
     const runtime = rt ? `<div class="sub">Running now on the ${esc(rt.processor)} · ${esc(String(rt.memory_gb))} GB${rt.context ? ` · ${Number(rt.context).toLocaleString()}-token context` : ""}${rt.size ? ` · ${esc(rt.size)}` : ""}</div>` : "";
-    // Endora trims what it sends to the window it believes the model has; a server giving less
-    // cuts the start of long turns off without saying so.
-    const short = rt && rt.context && ctx && rt.context < ctx
-      ? `<div class="sub" style="color:var(--warn, #b45309);">The model server gives ${Number(rt.context).toLocaleString()} tokens, but Endora assumes ${Number(ctx).toLocaleString()}: long turns lose their beginning. Raise the server's context length, or set ENDORA_CONTEXT_TOKENS to match.</div>`
-      : "";
     // A role with nothing to change offers nothing.
     const change = !r.change
       ? ""
@@ -375,7 +369,7 @@ function aiOverviewSection() {
         <div class="title">${esc(r.name)} ${where}</div>
         <div class="sub">${esc(r.does)}</div>
         <div class="sub" style="margin-top:4px;"><b>${esc(r.model || (r.id === "speech" ? "your browser" : "not set"))}</b>${r.endpoint ? ` at ${esc(r.endpoint)}` : ""}</div>
-        ${runtime}${short}
+        ${runtime}
         <div class="sub" style="margin-top:4px;">Sees: ${esc(r.sees)}</div>
         ${change}
       </div>`;

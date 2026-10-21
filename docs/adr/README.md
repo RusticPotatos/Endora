@@ -163,6 +163,9 @@ rule the code actually follows, with the decision that established it.
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
   dropped, because data nothing can export or delete is outside the memory rights.
+- **Endora is HQ** ([0136](0136-endora-is-hq.md)). The butler's chat, and everything that served
+  only it, went the same way, after the owner took a copy: the team of agents is the product,
+  and the node is the trust boundary its turns cross.
 
 ### What we learned about the person's side
 

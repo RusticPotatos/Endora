@@ -6,6 +6,8 @@ Accepted (2026-08-08). Generalizes the routing half of
 [0074](0074-the-brief-is-a-standing-order.md) and **retires** its bespoke brief
 pre-route into the one mechanism defined here.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** Standing questions, asked through the chat, are retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 Two asks, measured live, taught the same lesson twice. "Give me my brief" — with

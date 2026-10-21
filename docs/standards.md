@@ -201,9 +201,10 @@ loosen them, and says nothing on subjects it does not own.
 
 ## Projects at a glance
 
-**Endora** (this repository). A local-first personal butler: a Rust modular monolith organised
-by responsibility, one crate per bounded context under `domains/`, composition roots under
-`app/`, and the team's HQ among them. Base branch `develop`. Its root
+**Endora** (this repository). Endora HQ, a local-first team of agents for the house, and the
+node that is its trust boundary: a Rust modular monolith organised by responsibility, one crate
+per bounded context under `domains/`, composition roots under `app/` (ADR 0136 retired the
+butler's chat). Base branch `develop`. Its root
 [AGENTS.md](../AGENTS.md) holds the architecture rules and the checks to run before handoff.
 
 **The handheld terminal** (`clients/terminal` in Endora). A small client that talks to the

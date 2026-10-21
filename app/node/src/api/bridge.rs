@@ -368,7 +368,7 @@ fn held(text: &str) -> String {
 /// A stranger's words keep their mark (ADR 0064).
 fn marked_if(tool: &Bridged, text: String) -> String {
     if tool.third_party {
-        return format!("{}{text}", endora_application::egress::STRANGER_MARK);
+        return format!("{}{text}", bridge::STRANGER_MARK);
     }
     text
 }

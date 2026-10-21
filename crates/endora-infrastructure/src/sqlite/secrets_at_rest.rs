@@ -4,8 +4,7 @@
 
 use endora_capabilities::model_lists::ModelListRepository as _;
 use endora_capabilities::{
-    ButlerModelConfig, ButlerModelConfigRepository, CapabilitySettingsRepository, ConfigStore,
-    DeepModel, DeepModelRepository, McpServer, McpServerRegistry, McpTransport,
+    CapabilitySettingsRepository, ConfigStore, McpServer, McpServerRegistry, McpTransport,
 };
 use endora_persistence::Db;
 use rusqlite::{Connection, params};
@@ -32,11 +31,6 @@ fn a_database_from_before(conn: &Connection) {
     conn.execute_batch(
         "INSERT INTO model_providers (name, url, api_key)
              VALUES ('cloud', 'https://models.example.com/v1', 'placeholder-provider-key-01');
-         INSERT INTO deep_model (id, url, model, api_key)
-             VALUES (0, 'https://models.example.com/v1', 'big', 'placeholder-deep-key-02');
-         INSERT INTO butler_model_config (id, base_url, api_key, mixture, single_model,
-             router_model, synth_model)
-             VALUES (0, 'http://localhost:11434/v1', 'placeholder-butler-key-03', 0, 'm', '', '');
          INSERT INTO mcp_servers (name, kind, url, auth)
              VALUES ('home', 'http', 'http://192.168.1.10:8123/mcp', 'placeholder-bearer-04');
          INSERT INTO mcp_servers (name, kind, command, args, env)
@@ -56,8 +50,6 @@ fn a_database_from_before(conn: &Connection) {
 
 const PLAINTEXT: &[&str] = &[
     "placeholder-provider-key-01",
-    "placeholder-deep-key-02",
-    "placeholder-butler-key-03",
     "placeholder-bearer-04",
     "placeholder-env-05",
     "placeholder-ha-token-06",
@@ -156,17 +148,6 @@ fn the_first_start_seals_every_credential_and_hashes_every_session_once() {
         config.providers().unwrap()[0].api_key,
         "placeholder-provider-key-01"
     );
-    assert_eq!(
-        DeepModelRepository::get(&config).unwrap().unwrap().api_key,
-        "placeholder-deep-key-02"
-    );
-    assert_eq!(
-        ButlerModelConfigRepository::get(&config)
-            .unwrap()
-            .unwrap()
-            .api_key,
-        "placeholder-butler-key-03"
-    );
     let servers = McpServerRegistry::list(&config).unwrap();
     let files = servers.iter().find(|s| s.name == "files").unwrap();
     let McpTransport::Stdio { env, .. } = &files.transport else {
@@ -252,24 +233,6 @@ fn every_credential_the_stores_write_is_sealed_and_reads_back() {
             Some("placeholder-key-22"),
         )
         .unwrap();
-    DeepModelRepository::set(
-        &config,
-        &DeepModel {
-            url: "https://models.example.com/v1".to_owned(),
-            model: "big".to_owned(),
-            api_key: "placeholder-key-23".to_owned(),
-            escalate: false,
-        },
-    )
-    .unwrap();
-    ButlerModelConfigRepository::set(
-        &config,
-        &ButlerModelConfig {
-            api_key: "placeholder-key-24".to_owned(),
-            ..ButlerModelConfig::default()
-        },
-    )
-    .unwrap();
     McpServerRegistry::register(
         &config,
         &McpServer::http_with_auth("home", "http://192.168.1.10:8123/mcp", "placeholder-key-25")

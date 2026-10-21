@@ -11,7 +11,6 @@ authors.workspace = true
 [dependencies]
 endora-application = { path = "../endora-application" }
 endora-capabilities = { path = "../../domains/capabilities" }
-endora-understanding = { path = "../../domains/understanding" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 endora-persistence = { path = "../../shared/persistence" }
 uuid = { version = "1.24.1", features = ["v4"] }
@@ -29,14 +28,11 @@ base64 = "0.22"
 zeroize = "1"
 
 [dev-dependencies]
-endora-mail = { path = "../../domains/mail" }
 # Repositories that moved to their bounded contexts (ADR 0050); the SqliteStore
 # migration/export/config tests exercise them through the context stores over
 # the same shared connection.
 endora-capabilities = { path = "../../domains/capabilities" }
-endora-understanding = { path = "../../domains/understanding" }
 endora-platform = { path = "../../domains/platform" }
-endora-conversation = { path = "../../domains/conversation" }
 # HQ's members claim the pool by their brain's price class (ADR 0113, amended); the relay's
 # tests hold that table to the prices here, so changing one fails a test. Tests only.
 endora-team = { path = "../../domains/team" }

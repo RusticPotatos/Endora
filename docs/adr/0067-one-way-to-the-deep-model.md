@@ -6,6 +6,8 @@ Accepted (2026-08-04). Removes a second escalation path that bypassed
 [0064](0064-what-a-stranger-said.md)'s taint rule, [0055](0055-the-model-layer.md)'s
 consent gate and [0051](0051-where-the-boundary-is.md)'s pseudonym layer.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's way to the deep model, and the deep model, are retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 Asked for an afternoon briefing, the butler replied with a fill-in-the-blanks template:

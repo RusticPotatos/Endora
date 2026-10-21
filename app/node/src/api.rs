@@ -18,13 +18,8 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use endora_application::Clock;
 use endora_application::{
-    ActivityItem, AppError, AutonomyEnvelope, AutonomyEnvelopeRepository, BriefSchedule, Butler,
-    ButlerModelConfig, CapabilityConfigRepository, CapabilitySettingsRepository,
-    DeepModelRepository, MemorySnapshot, ModelSlot, RepositoryError, Sampling, usecases,
-};
-use endora_application::{
-    AuditRecord, ChatMessage, IdSource, Preference, PreferenceId, PreferenceKind,
-    ResearchAssignment, ResearchRepository,
+    ActivityItem, AppError, AuditRecord, CapabilityConfigRepository, CapabilitySettingsRepository,
+    IdSource, MemorySnapshot, RepositoryError, usecases,
 };
 use endora_infrastructure::{
     Capability, CapabilityError, RandomIdSource, SqliteStore, SystemClock,
@@ -44,16 +39,7 @@ pub struct AppState {
     /// The persistence adapter (implements the repository ports not yet moved to
     /// their bounded context — ADR 0050).
     pub store: Arc<SqliteStore>,
-    /// The conversation context's chat repository, over the shared connection.
-    pub chat: Arc<endora_conversation::ChatStore>,
-    /// The scheduling context's schedule repositories, over the shared connection.
-    pub schedules: Arc<endora_scheduling::ScheduleStore>,
-    /// The understanding context's belief + preference repositories.
-    pub understanding: Arc<endora_understanding::UnderstandingStore>,
-    /// What Endora knows about the person, as markdown pages with their history: the
-    /// brain, memory and what they told it (ADR 0101).
-    pub knowledge: Arc<endora_understanding::BrainFolder>,
-    /// The capabilities context's config store (settings/config/envelope/deep-model).
+    /// The capabilities context's config store (settings, stances, model lists, tool servers).
     pub config: Arc<endora_capabilities::ConfigStore>,
     /// The platform context's audit trail store.
     pub audit: Arc<endora_platform::AuditStore>,
@@ -63,11 +49,6 @@ pub struct AppState {
     pub ids: Arc<RandomIdSource>,
     /// The system clock.
     pub clock: Arc<SystemClock>,
-    /// The butler brain (proposes; never acts).
-    pub butler: Arc<dyn Butler + Send + Sync>,
-    /// The same brain, concretely — for facts only the composition can answer, like
-    /// which rung is serving (ADR 0072). `None` in tests that hand in a bare fake.
-    pub brain: Option<Arc<endora_infrastructure::ConfigurableButler>>,
     /// Broadcasts a signal whenever a write succeeds, so activity-stream
     /// subscribers know to refresh. Carries no payload — it is a "something
     /// changed" nudge, and clients re-read the authoritative state.
@@ -81,29 +62,16 @@ pub struct AppState {
     /// `/v1/export` and every write available to anyone who could reach the port. Empty here
     /// refuses every API route rather than opening them — see [`crate::auth::may_pass`].
     pub token: Arc<String>,
-    /// The butler's skills (weather, web, …) — declared modules the butler can
-    /// reach for, each gated by its autonomy level (ADR 0056).
+    /// The house's skills (weather, web, the lab, …), which the team's bridge offers its turns
+    /// with each one's stance (ADR 0108).
     pub capabilities: Arc<Vec<Arc<dyn Capability>>>,
     /// Connected MCP servers, as a runner (ADR 0054). Long-lived (subprocesses),
-    /// so it is connected once at startup and shared across turns; a registry
-    /// change rebuilds it and swaps it in behind the lock. Merged with the built-in
-    /// registry per turn (see [`build_runner`]).
+    /// so it is connected once at startup and shared; a registry change rebuilds it and swaps
+    /// it in behind the lock. The bridge offers their tools too (ADR 0108).
     pub mcp: Arc<std::sync::RwLock<Arc<endora_capabilities::McpRunner>>>,
-    /// Serializes butler *turns* (a chat reply, a proactive brief/check-in). The
-    /// agentic loop reads history, calls the model several times, then appends —
-    /// running two at once on one local model both thrashes it and lets turns
-    /// cross-talk (one turn answering with another's context). A single lock makes
-    /// every turn atomic, so a heartbeat brief can't interleave with a chat.
-    pub turn_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The running conversation summary (ADR 0053 context compaction), which keeps the
-    /// chat prompt bounded on a long conversation without dropping the day's thread.
-    /// Persisted (SQLite), so a restart doesn't re-summarise the whole backlog — on a
-    /// slow local model that catch-up degraded the first turns after every deploy — and
-    /// the butler keeps the day's thread across restarts.
-    pub summary: PersistentSummary,
     /// The person's time zone (`ENDORA_TIME_ZONE`, or the fixed `ENDORA_UTC_OFFSET_MINUTES`),
-    /// for patterns that depend on the time of day and for keeping daily hours on their clock.
-    /// The node stores instants and does not otherwise know where the person is. UTC unless set.
+    /// for the nightly copies' hour. The node stores instants and does not otherwise know where
+    /// the person is. UTC unless set.
     pub time_zone: endora_infrastructure::TimeZone,
     /// Endora HQ, when this node has one (ADR 0102): the team service, which answers the node
     /// only. `None` until `ENDORA_HQ_URL` and `ENDORA_HQ_TOKEN` are set.
@@ -111,9 +79,6 @@ pub struct AppState {
     /// endora-sound, when this node has one (ADR 0104): the sound hub, and the listen
     /// tickets handed out for it. `None` until `ENDORA_SOUND_URL` and a token are set.
     pub sound: Option<Arc<SoundRemote>>,
-    /// What Endora has made of the mail (ADR 0097): an index of every message and a digest of
-    /// those it has read. Always present; empty until there is mail.
-    pub mail_store: Arc<endora_mail::MailStore>,
     /// Where HQ's model relay sends a call: Anthropic, always, outside tests (ADR 0102). A
     /// field rather than a setting, so nothing can point the owner's key anywhere else.
     pub relay_upstream: Arc<String>,
@@ -134,17 +99,6 @@ pub struct AppState {
     /// (`ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`, `ENDORA_LAB_RETIRED`), read by
     /// [`with_lab_from_env`](Self::with_lab_from_env); none until then.
     pub(crate) lab: Arc<contracts::LabKnowledge>,
-    /// The agenda loop's items, restarts and taught rules (ADR 0103).
-    pub agenda: Arc<endora_agenda::infrastructure::SqliteAgendaStore>,
-    /// Why the last nightly copy failed, until one succeeds: what the agenda tells.
-    pub nightly_failure: Arc<std::sync::Mutex<Option<String>>>,
-    /// The read-only copy of the mail, when one is mounted.
-    pub mail_copy: Option<Arc<endora_mail::MaildirCopy>>,
-    /// The quarantined reader: the local model, with no tools and none of the person's context.
-    pub mail_reader: Option<Arc<dyn endora_application::UntrustedReader + Send + Sync>>,
-    /// The house's calendar, read at most once an hour and shared by the mail reader, the
-    /// brief and the mail screen (ADR 0097).
-    pub(crate) calendar: Arc<KeptHouseCalendar>,
     /// The house's vault and the passkeys that unlock it (ADR 0127). Not configured until
     /// `ENDORA_VAULT_URL` is set ([`with_vault`](Self::with_vault)).
     pub vault: Arc<crate::vault::Vault>,
@@ -153,41 +107,10 @@ pub struct AppState {
     pub(crate) mac: Arc<mac::MacBrain>,
 }
 
-/// The house's calendar as the mail sees it: Home Assistant's, kept for an hour.
-pub(crate) type KeptHouseCalendar =
-    endora_application::usecases::KeptCalendar<workers::HouseCalendar, SystemClock>;
-
-/// Persistent [`ConversationSummaryStore`](endora_application::ConversationSummaryStore):
-/// the single running summary, stored in SQLite via the conversation
-/// [`ChatStore`](endora_conversation::ChatStore) (Endora is single-conversation).
-#[derive(Clone)]
-pub struct PersistentSummary(Arc<endora_conversation::ChatStore>);
-
-impl endora_application::ConversationSummaryStore for PersistentSummary {
-    fn get(&self) -> Option<endora_application::ConversationSummary> {
-        self.0
-            .load_summary()
-            .ok()
-            .flatten()
-            .map(|(text, covered)| endora_application::ConversationSummary { text, covered })
-    }
-    fn set(&self, summary: endora_application::ConversationSummary) {
-        // Best-effort: a failed summary write just means the next turn re-summarises;
-        // it must never break the turn.
-        let _ = self.0.save_summary(&summary.text, summary.covered);
-    }
-}
-
 impl AppState {
     /// Creates the shared state, wiring up the change-broadcast channel.
     #[must_use]
-    pub fn new(
-        store: Arc<SqliteStore>,
-        ids: Arc<RandomIdSource>,
-        clock: Arc<SystemClock>,
-        butler: Arc<dyn Butler + Send + Sync>,
-        knowledge: Arc<endora_understanding::BrainFolder>,
-    ) -> Self {
+    pub fn new(store: Arc<SqliteStore>, ids: Arc<RandomIdSource>, clock: Arc<SystemClock>) -> Self {
         // Both resolved before the struct takes ownership of the store and the clock.
         let started_ms = {
             use endora_application::Clock as _;
@@ -204,27 +127,9 @@ impl AppState {
         // and a lagged receiver still gets one "changed" signal.
         let (changes, _) = broadcast::channel(16);
         // Context stores share the one connection the store opened (ADR 0050).
-        let chat = Arc::new(endora_conversation::ChatStore::new(store.db()));
-        // The running summary is persisted through the same chat store (SQLite).
-        let summary = PersistentSummary(chat.clone());
-        let schedules = Arc::new(endora_scheduling::ScheduleStore::new(store.db()));
-        let understanding = Arc::new(endora_understanding::UnderstandingStore::new(store.db()));
         let config = Arc::new(endora_capabilities::ConfigStore::new(store.db()));
-        let calendar = Arc::new(endora_application::usecases::KeptCalendar::new(
-            workers::HouseCalendar(config.clone()),
-            *clock,
-        ));
         let audit = Arc::new(endora_platform::AuditStore::new(store.db()));
         let events = Arc::new(endora_platform::EventStore::new(store.db()));
-        // Best-effort like the enrolment secret: a node whose mail tables cannot be made still
-        // runs, and simply has nothing to say about mail.
-        let _ = endora_mail::migrate(&store.db());
-        let mail_store = Arc::new(endora_mail::MailStore::new(store.db()));
-        // The same for the agenda: without its tables there is simply nothing on it.
-        let _ = endora_agenda::infrastructure::migrate(&store.db());
-        let agenda = Arc::new(endora_agenda::infrastructure::SqliteAgendaStore::new(
-            store.db(),
-        ));
         // Deployment policy: if a skills config file is set, apply its per-skill modes
         // at startup as the baseline (ADR 0051) — before MCP connects, so MCP-tool
         // modes are in place too.
@@ -233,47 +138,12 @@ impl AppState {
                 apply_skills_config(config.as_ref(), path.trim());
             }
         }
-        // Connect any registered MCP servers up front (subprocesses persist across
-        // turns). A server that fails to start is skipped, so startup never blocks
-        // on a bad one (ADR 0054).
+        // Connect any registered MCP servers up front (subprocesses persist). A server that
+        // fails to start is skipped, so startup never blocks on a bad one (ADR 0054).
         let mcp = Arc::new(std::sync::RwLock::new(Arc::new(connect_mcp(
             config.as_ref(),
         ))));
-        // Built before the struct literal takes ownership of the stores.
-        // Endora's own record, as a skill it can reach for. Defined HERE because it
-        // reads across four contexts — chat, outcomes, config writes, standing
-        // trouble — and the composition root is the only place allowed to know all of
-        // them (ADR 0050). The digest itself is a use case in the orchestration layer;
-        // this is only the wiring.
-        let base_caps = Arc::new({
-            let mut all = endora_infrastructure::default_capabilities();
-            all.push(Arc::new(WhatIHaveBeenDoing {
-                chat: chat.clone(),
-                understanding: understanding.clone(),
-                config: config.clone(),
-                clock: clock.clone(),
-            }) as Arc<dyn endora_capabilities::Capability>);
-            // The brain's pages, one at a time, when a turn needs the detail (ADR 0101).
-            all.push(Arc::new(ReadAPage {
-                knowledge: knowledge.clone(),
-            }) as Arc<dyn endora_capabilities::Capability>);
-            all
-        });
-        // The brief skill gathers FROM `base_caps` — a list that does not contain it,
-        // so it can never recurse into itself by construction (ADR 0074).
-        let capabilities = Arc::new({
-            let mut all = (*base_caps).clone();
-            all.push(Arc::new(TheWholeBrief {
-                chat: chat.clone(),
-                understanding: understanding.clone(),
-                knowledge: knowledge.clone(),
-                config: config.clone(),
-                clock: clock.clone(),
-                base: base_caps,
-                mcp: mcp.clone(),
-            }) as Arc<dyn endora_capabilities::Capability>);
-            all
-        });
+        let capabilities = Arc::new(endora_infrastructure::default_capabilities());
         let vault = Arc::new(crate::vault::Vault::new(
             None,
             store.clone(),
@@ -294,57 +164,31 @@ impl AppState {
                     {"name":"radarr","state":"unconfigured","items":[]}
                 ]}),
             )),
-            brain: None,
             store,
-            chat,
-            schedules,
-            understanding,
-            knowledge,
             config,
             audit,
             events,
             ids,
             clock,
-            butler,
             changes,
             capabilities,
             mcp,
-            turn_lock: Arc::new(tokio::sync::Mutex::new(())),
-            summary,
             token,
             started_ms,
             time_zone: endora_infrastructure::TimeZone::fixed(0),
             hq: None,
             sound: None,
-            mail_store,
             relay_upstream: Arc::new(endora_infrastructure::relay::ANTHROPIC.to_owned()),
-            // Read as `main` reads them, with its defaults.
             relay_calls: Arc::default(),
             bench: None,
             lab: Arc::new(contracts::LabKnowledge::unconfigured()),
+            // Read as `main` reads them, with its defaults.
             installed_model: Arc::new((
                 std::env::var("ENDORA_MODEL_URL")
                     .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned()),
                 std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_owned()),
             )),
-            agenda,
-            nightly_failure: Arc::new(std::sync::Mutex::new(None)),
-            mail_copy: None,
-            mail_reader: None,
-            calendar,
         }
-    }
-
-    /// Gives the node the mail: the read-only copy, and the reader that may look at it.
-    #[must_use]
-    pub fn with_mail(
-        mut self,
-        copy: endora_mail::MaildirCopy,
-        reader: Arc<dyn endora_application::UntrustedReader + Send + Sync>,
-    ) -> Self {
-        self.mail_copy = Some(Arc::new(copy));
-        self.mail_reader = Some(reader);
-        self
     }
 
     /// Sets the person's time zone.
@@ -400,14 +244,6 @@ impl AppState {
     #[must_use]
     pub fn with_sound(mut self, sound: endora_infrastructure::SoundClient) -> Self {
         self.sound = Some(Arc::new(SoundRemote::new(sound)));
-        self
-    }
-
-    /// Attaches the concrete brain, for facts only the composition can answer —
-    /// which rung is serving (ADR 0072). The `dyn` handle stays the one turns use.
-    #[must_use]
-    pub fn with_brain(mut self, brain: Arc<endora_infrastructure::ConfigurableButler>) -> Self {
-        self.brain = Some(brain);
         self
     }
 }
@@ -498,11 +334,6 @@ pub fn app(state: AppState) -> Router {
         .route("/app.js", get(console_js))
         .route("/health", get(health))
         .route("/v1/homelab", get(homelab::dashboard))
-        .route("/v1/chat", post(send_chat).get(chat_history))
-        .route("/v1/chat/days", get(chat_days))
-        .route("/v1/chat/context", get(chat_context))
-        .route("/v1/chat/context/reset", post(reset_chat_context))
-        .route("/v1/chat/stream", post(stream_chat))
         // Endora HQ, through the node (ADR 0102), and the office's art.
         .route("/hq-art/{*file}", get(hq_art))
         .route("/v1/hq", get(hq_snapshot))
@@ -624,28 +455,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/mac/heartbeat", post(mac::heartbeat))
         .route("/v1/mac/settings", post(mac::change))
         .route("/v1/mac/token", post(mac::make_token))
-        // What Endora knows about the person, page by page (ADR 0101).
-        .route("/v1/brain", get(brain_overview))
-        .route("/v1/brain/forget", post(forget_what_it_learned))
-        .route(
-            "/v1/brain/pages/{*path}",
-            get(read_brain_page)
-                .put(write_brain_page)
-                .delete(delete_brain_page),
-        )
-        .route("/v1/outcomes", get(list_outcomes))
-        .route("/v1/repairs", get(list_repairs))
-        .route(
-            "/v1/aliases",
-            get(list_aliases)
-                .post(set_alias)
-                .delete(forget_alias_everywhere),
-        )
-        .route("/v1/aliases/upstream", post(push_aliases_upstream))
         .route("/v1/collections", post(make_a_collection))
         .route("/v1/models/worth-knowing", get(models_worth_knowing))
-        .route("/v1/context", get(what_the_butler_is_told))
-        .route("/v1/reliability", get(how_it_has_been_landing))
         // What is already set up, so the screen can say so instead of offering to do it
         // again — a Connect button beside a working calendar reads as a failed attempt.
         // Signing in. The POST answers unsigned by design (see `sign_in`); the setup pair
@@ -689,10 +500,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/terminal/jobs/{id}", get(terminal::job))
         .route("/v1/terminal/action", post(terminal::action))
         .route("/v1/terminal/operations/{id}", get(terminal::operation))
-        .route(
-            "/v1/repairs/{server}/{thing}/leave",
-            post(leave_this_one_alone),
-        )
         // Managing your own credentials. Every one of these needs a full session, and the two
         // that change something need the current password as well.
         .route("/v1/session/password", post(change_password))
@@ -707,14 +514,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/connect/finish", post(finish_connecting))
         .route("/v1/config-writes", get(list_config_writes))
         .route("/v1/config-writes/{id}/undo", post(undo_config_write))
-        .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
-        .route("/v1/mail", get(mail::mail_digest))
-        .route("/v1/agenda", get(agenda::agenda))
-        .route("/v1/agenda/rules", get(agenda::rules))
-        .route("/v1/agenda/rules/{id}/forget", post(agenda::forget))
-        .route("/v1/agenda/kinds/{kind}", post(agenda::relevel))
-        .route("/v1/agenda/{id}/{how}", post(agenda::answer))
-        .route("/v1/ai", get(ai::ai_overview).post(ai::set_ai))
+        .route("/v1/ai", get(ai::ai_overview))
         // Spotify, held here and lent to every device; its callback is outside /v1 because a
         // browser redirect carries no token (the waiting sign-in's state authorizes it).
         .route("/v1/connections/spotify", get(spotify::status))
@@ -730,11 +530,6 @@ pub fn app(state: AppState) -> Router {
             post(spotify::disconnect),
         )
         .route("/connect/spotify/callback", get(spotify::callback))
-        .route("/v1/research/readiness", get(research_readiness))
-        .route("/v1/research", get(list_research).post(commission_research))
-        .route("/v1/research/{id}", get(get_research))
-        .route("/v1/research/{id}/cancel", post(cancel_research))
-        .route("/v1/research/{id}/report", get(research_report))
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route("/v1/capabilities/{id}/test", post(test_capability))
@@ -768,20 +563,6 @@ pub fn app(state: AppState) -> Router {
             "/v1/capabilities/{id}/config",
             post(set_capability_settings),
         )
-        .route("/v1/recipes", get(list_recipes).post(create_recipe))
-        .route("/v1/recipes/try", post(try_recipe))
-        .route("/v1/recipes/{id}", axum::routing::delete(remove_recipe))
-        .route("/v1/recipes/{id}/enable", post(set_recipe_enabled))
-        .route("/v1/autonomy", get(get_autonomy).post(set_autonomy))
-        .route("/v1/brief", post(brief))
-        .route(
-            "/v1/brief/schedule",
-            get(get_brief_schedule).post(set_brief_schedule),
-        )
-        .route("/v1/deep-model", get(get_deep_model))
-        .route("/v1/deep-model/usage", get(deep_usage))
-        .route("/v1/deep-model/balance", get(deep_balance))
-        .route("/v1/deep-model/prices", post(set_deep_prices))
         .route("/v1/model-lists", get(model_lists::lists))
         .route("/v1/model-lists/providers", post(model_lists::add_provider))
         .route(
@@ -800,17 +581,6 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/model-lists/entries/{id}/{action}",
             post(model_lists::entry_action),
-        )
-        .route("/v1/model-lists/escalate", post(model_lists::set_escalate))
-        .route("/v1/model-layer/run", post(run_model_layer_now))
-        .route("/v1/deep-ask", post(deep_ask))
-        .route(
-            "/v1/preferences",
-            post(create_preference).get(list_preferences),
-        )
-        .route(
-            "/v1/preferences/{id}",
-            axum::routing::delete(delete_preference),
         )
         .route("/v1/audit", get(audit))
         .route("/v1/activity", get(activity))
@@ -901,119 +671,6 @@ pub(crate) use mac::spawn as spawn_mac;
 mod platform;
 use platform::*;
 
-fn build_runner(
-    config: &endora_capabilities::ConfigStore,
-    capabilities: Arc<Vec<Arc<dyn Capability>>>,
-    mcp: Arc<endora_capabilities::McpRunner>,
-    proven: std::collections::HashSet<String>,
-) -> endora_capabilities::WithdrawnRunner {
-    let stances =
-        endora_capabilities::CapabilityConfigRepository::stances(config).unwrap_or_default();
-    // `off` is off for every kind of capability, whichever source offers it (ADR 0062).
-    let withdrawn: std::collections::HashSet<String> = stances
-        .iter()
-        .filter(|(_, st)| *st == endora_capabilities::Stance::Off)
-        .map(|(id, _)| id.clone())
-        .collect();
-    let envelope = AutonomyEnvelopeRepository::get(config).unwrap_or_default();
-    let auto_consequential = envelope.auto_consequential;
-    // Fresh per turn so a stance, envelope or settings change takes effect at once.
-    let registry = endora_infrastructure::RegistryRunner::with_config(
-        capabilities,
-        stances.clone(),
-        proven.clone(),
-        envelope,
-        settings_map(config),
-    );
-    // The person's own recipes (ADR 0071) — read fresh, same as the built-in
-    // registry above, so authoring or enabling one takes effect on the very next
-    // turn. `RecipeRunner` holds the ONE difference from every other Observe-band
-    // skill (absence defaults to `off`, not `Auto`) entirely inside itself; the
-    // stances handed to it are the same stored rows every other source reads.
-    let recipe_source = endora_capabilities::RecipeRunner::new(
-        endora_capabilities::RecipeRepository::recipes(config).unwrap_or_default(),
-        stances.clone(),
-    );
-    // The same stances overlaid on the shared MCP runner, without rebuilding the
-    // connection: `ask` confirms each use and graduates when proven (ADR 0062).
-    // The servers Endora has a relationship with — their readings are the house, not a
-    // stranger's words (ADR 0064, drawing 0058's line).
-    let the_house: std::collections::HashSet<String> = native_channels(config)
-        .into_iter()
-        .map(|(server, _)| server)
-        .collect();
-    let mcp_source = endora_capabilities::OpenerRunner::new(
-        mcp as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-        the_house,
-        stances.into_iter().collect(),
-        proven,
-        auto_consequential,
-    );
-    // Confirmed target aliases (ADR 0054), so a call that fails on a name the person has
-    // already explained gets one retry with their answer — see `AliasRunner`.
-    let aliases: Vec<(String, String, String)> =
-        endora_capabilities::TargetAliasRepository::aliases(config)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|a| (a.server, a.said, a.means))
-            .collect();
-    // Built-in skills + connected MCP servers, behind one runner. The application
-    // never learns a tool's origin (ADR 0054).
-    // Confirmed answers first, then observed ones — ADR 0054's trust ranking, expressed
-    // as the order of recovery: the alias the person gave is tried before Endora goes
-    // looking through the server's own reading for a name that resembles the request.
-    let recovers = endora_capabilities::TargetSearchRunner::with_channels(
-        Arc::new(endora_capabilities::AliasRunner::new(
-            Arc::new(mcp_source) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-            aliases,
-        )) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-        native_channels(config),
-    );
-    let composite = endora_capabilities::CompositeRunner::new(vec![
-        Arc::new(registry) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-        Arc::new(recipe_source) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-        Arc::new(recovers) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-    ]);
-    // Outermost, so a withdrawn capability is off the menu regardless of which source
-    // offered it or what any inner layer would have decided.
-    endora_capabilities::WithdrawnRunner::new(
-        Arc::new(composite) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-        withdrawn,
-    )
-}
-
-/// The runner for turns that are only ever allowed to *gather* — the heartbeat's
-/// check-in, brief, and nightly loop, plus an on-demand brief.
-///
-/// Same catalog as [`build_runner`], with autonomy clamped to the reversible bands. The
-/// person's openers and a widened envelope clear an actuator to run while they are
-/// *present*, watching the activity trail and able to say stop; none of that is true at
-/// 03:00. Keeps the nightly loop's guarantee — "nothing it could do that it couldn't
-/// undo" — enforced rather than merely documented.
-fn build_reversible_only_runner(
-    config: &endora_capabilities::ConfigStore,
-    capabilities: Arc<Vec<Arc<dyn Capability>>>,
-    mcp: Arc<endora_capabilities::McpRunner>,
-    proven: std::collections::HashSet<String>,
-) -> endora_capabilities::ReversibleOnlyRunner {
-    endora_capabilities::ReversibleOnlyRunner::new(Arc::new(build_runner(
-        config,
-        capabilities,
-        mcp,
-        proven,
-    )))
-}
-
-/// What the record has proven, read from outcomes (ADR 0062). Derived at composition,
-/// never stored; an unreadable store proves nothing, which is the safe direction.
-fn proven_now(
-    understanding: &endora_understanding::UnderstandingStore,
-) -> std::collections::HashSet<String> {
-    endora_understanding::OutcomeRepository::list(understanding)
-        .map(|all| usecases::proven_by_the_record(&all))
-        .unwrap_or_default()
-}
-
 /// The servers Endora has **direct reach** into (ADR 0054) — its own connection to a
 /// service, alongside whatever tool surface that service exposes to the model.
 ///
@@ -1053,31 +710,6 @@ fn settings_map(
     map
 }
 
-/// Where the person's current topic begins (ms), or 0 for the whole chat (ADR 0088). Kept as
-/// one stored setting rather than a column, because it is a choice about what the model
-/// reads, not part of any message.
-fn topic_start(config: &endora_capabilities::ConfigStore) -> i64 {
-    settings_map(config)
-        .get("chat")
-        .and_then(|m| m.get("context_from_ms"))
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
-}
-
-/// The model's window in tokens. The node cannot ask the model server, so it is told:
-/// `ENDORA_CONTEXT_TOKENS`, defaulting to what the Ollama role configures.
-fn context_window_tokens() -> usize {
-    std::env::var("ENDORA_CONTEXT_TOKENS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|n| *n >= 1024)
-        .unwrap_or(16_384)
-}
-mod chat;
-use chat::*;
-
-mod brain;
-use brain::*;
 mod hq;
 // HQ's model relay: a team member's only way to a model (ADR 0102, phase 4).
 mod relay;
@@ -1094,16 +726,11 @@ mod gateway;
 // The providers and ordered model lists on the AI screen (ADR 0105).
 mod model_lists;
 // The agenda loop (ADR 0103): signals become items, and the owner's answers to them.
-mod agenda;
 use hq::*;
 mod hq_art;
 use hq_art::*;
 mod sound;
 use sound::*;
-mod life;
-
-mod mail;
-use life::*;
 
 mod trouble;
 use trouble::*;
@@ -1111,15 +738,11 @@ use trouble::*;
 mod skills;
 use skills::*;
 
-mod models;
-use models::*;
-
 mod workers;
 // The AI screen: every model Endora uses, where it runs and what it sees.
 mod ai;
 // Spotify, held by the node and lent to every device.
 mod spotify;
-pub use ai::MailReader;
 // Endora's nightly copies of its own database.
 mod snapshots;
 pub use snapshots::spawn_snapshots;

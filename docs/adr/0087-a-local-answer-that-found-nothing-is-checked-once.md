@@ -4,6 +4,8 @@
 
 Accepted, 2026-10-12. Prepared with AI assistance (Claude). Not yet deployed when written.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's local answers and their checks are retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 "when is the next panthers game?" got "I couldn't find any upcoming games in your area"

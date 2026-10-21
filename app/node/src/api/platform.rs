@@ -77,30 +77,10 @@ pub(super) async fn console_js() -> impl axum::response::IntoResponse {
     )
 }
 
-pub(super) async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
-    // Whether a turn is being taken right now.
-    //
-    // The console decides whether to show a thinking bubble, and it could only ever ask
-    // itself. So a turn that failed left the last stored message being the person's, with
-    // nothing after it, and the screen sat on an animated ellipsis **forever** — through a
-    // reload, through a restart, because the state it was rendering lived in a tab that had
-    // gone. A butler that cannot be spoken to again is worse than one that answers badly.
-    //
-    // The lock the turn already takes is the honest answer, and it is the same answer on
-    // every device rather than per-tab hope.
-    let busy = state.turn_lock.try_lock().is_err();
-    // Which brain is serving turns right now (ADR 0072) — so "which model answered
-    // that?" is a fact on a screen. Read from config + the cached health verdict; a
-    // fallback butler with no stored config reports nothing.
-    let (serving_url, serving_model) = state
-        .brain
-        .as_ref()
-        .map(|b| b.serving())
-        .unwrap_or_default();
+/// That the node is up, and which build it runs. Since the chat was retired (ADR 0136) there
+/// is no turn to be busy with and no butler model to name.
+pub(super) async fn health() -> Json<serde_json::Value> {
     Json(json!({
-        "busy": busy,
-        "serving_url": serving_url,
-        "serving_model": serving_model,
         "status": "ok",
         "service": endora_application::platform_identity(),
         "version": endora_application::version(),
@@ -194,30 +174,7 @@ pub(super) async fn activity_stream(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-#[derive(Serialize)]
-pub(super) struct MessageResponse {
-    pub(super) id: String,
-    pub(super) role: String,
-    pub(super) text: String,
-    pub(super) at_ms: i64,
-}
-
-impl From<&ChatMessage> for MessageResponse {
-    fn from(m: &ChatMessage) -> Self {
-        Self {
-            id: m.id().value().to_string(),
-            role: m.role().name().to_owned(),
-            text: m.text().to_owned(),
-            at_ms: m.at().unix_millis(),
-        }
-    }
-}
-
-/// Builds a capability runner that honours the person's enable/disable choices
-/// (ADR 0054) and their autonomy envelope (ADR 0051). Reading config is
-/// best-effort: on failure it falls back to defaults, so a glitch never breaks the
-/// butler.
-/// Records one line to the butler's action log (best-effort — transparency, not
+/// Records one line to Endora's action log (best-effort — transparency, not
 /// the critical path, so a failure never breaks the turn).
 pub(super) fn record_event(
     events: &endora_platform::EventStore,

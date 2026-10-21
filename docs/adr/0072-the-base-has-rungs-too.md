@@ -7,6 +7,8 @@ everyday model, and answers the question that prompted it: *is there a reason we
 have multiple endpoints for the base — highest available, falling back when a device is
 offline?*
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's base rungs are retired; the team's relay calls the house's model (0105). The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 The everyday model is one endpoint: the NAS, always on, running the 7B that fits it. The

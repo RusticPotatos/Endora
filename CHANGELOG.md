@@ -9,6 +9,21 @@ tagged release.
 
 ### Removed
 
+- **Endora is HQ; the butler's chat is retired, code and storage**
+  ([ADR 0136](docs/adr/0136-endora-is-hq.md)). **Breaking.** Every device opens on HQ; the menu is
+  HQ, Home lab, Music, Speakers, Smart home, Media, Activity and Settings, and Settings holds AI,
+  Connections, Tools, Your sign-in, Vault and Your data. Gone: the chat and its turn, the daily
+  brief, research, the brain and preferences (About you), the agenda loop (What Endora watches),
+  the Mail screen and its reader, Notifications & voice, Permissions (the autonomy envelope),
+  recipes, aliases, the deep model and Ask deep, the model layer, and the chat's outcomes,
+  repairs and reliability. Their routes answer 404; the export holds Endora's record (the audit
+  trail and events) and nothing else; `/health` no longer reports a turn or a butler model. On
+  start an existing database drops the chat's tables and the Deep list's entries, and the node
+  empties the brain's folder and removes its nightly copies (the owner took a copy first). The
+  `understanding`, `conversation`, `scheduling` and `agenda` crates are gone; `mail` stays as a
+  library for a later HQ contract. Delete everything no longer wipes the settings the team runs
+  on. The handheld (0.15.0) has no chat page. About 45,000 lines and over 500 tests go.
+
 - **Two tools that were never built are gone: `run_gate` and `request_action`**
   ([ADR 0106](docs/adr/0106-team-contracts.md), amended). Every member was offered both on every
   turn since the first build, and every call answered "not available yet". They are no longer

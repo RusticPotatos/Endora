@@ -6,6 +6,8 @@ Accepted (2026-08-03). Shipped the same day it was proposed and has been serving
 questions since; accepted on that record. Originally proposed 2026-08-02. Sits beside [0059](0059-one-fact-source-many-consumers.md): that
 record is about facts arriving unasked, this one is about answers being remembered.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's answers and what it kept of them are retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 Every skill that reaches outside asks the same question from scratch every time. Ask what is

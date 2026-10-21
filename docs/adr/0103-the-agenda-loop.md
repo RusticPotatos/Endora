@@ -7,6 +7,8 @@ with AI assistance (Claude). Step 3 of [the always-on butler plan](../plans/alwa
 Built: the containers, media downloads, mail and calendar, then the house's monitoring
 (Prometheus's alerts and Gatus's uptime checks) and Endora's own nightly copy.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The agenda loop is retired, code and storage; HQ's routines and alarms watch the lab (0107). The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 Endora answers when spoken to, and a few things run beside the chat (the brief, the mail

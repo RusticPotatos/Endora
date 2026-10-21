@@ -4,6 +4,8 @@
 
 Accepted (2026-07-26). **Consolidates 0017, 0019, 0025 and 0031**, which are archived.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's turn and how it behaved toward the person are retired, code and storage. The reasoning below is kept; none of its mechanism runs.
+
 **Amended 2026-10-16: devices that stopped answering are no longer raised, or watched.** The
 owner did not want the "Still yours?" card and asked for it gone. It is removed with
 everything under it: the chat card and its routes, the morning brief's lines, the own-work

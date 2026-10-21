@@ -4,6 +4,8 @@
 
 Accepted, 2026-10-12. Prepared with AI assistance (Claude). Not deployed when written.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The local model's sorting of chat messages is retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 ADR 0087 retries a turn with the deep model choosing the skills when the local answer says it

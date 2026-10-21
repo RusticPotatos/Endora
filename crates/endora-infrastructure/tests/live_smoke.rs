@@ -13,8 +13,7 @@
 //!   whoever writes the test, and are therefore exactly as imaginative as they were. A live
 //!   house has scenes, diagnostic entities, aliases and forty devices.
 //! - **It uses the production rules**, imported from the crates that implement them, so an
-//!   invariant cannot drift away from the behaviour it is checking. A smoke test that
-//!   re-implements `reads_as_an_instruction` is testing its own copy.
+//!   invariant cannot drift away from the behaviour it is checking.
 //!
 //! What it deliberately does **not** do is judge whether a screen reads well. That still
 //! needs eyes. The aim is to make a screenshot the last line of defence rather than the
@@ -28,14 +27,8 @@
 //! The node refuses `/v1` without a credential, so this suite needs one too — and it should be
 //! the **narrowest**, because it lives in a plaintext file on a laptop. `POST
 //! /v1/session/checks` mints a read-only token that is also refused `/v1/export`, so a leak
-//! cannot redirect the deep model, widen a capability, purge memory, or pull the whole
-//! conversation at once.
-//!
-//! It can still read the brain and context. That is deliberate: an invariant below asserts
-//! on what the brain's pages really hold, and asserting about real data is why this tier
-//! exists.
+//! cannot change a model, widen a capability, delete the record, or pull it all at once.
 
-use endora_application::reads_as_an_instruction;
 use serde_json::Value;
 
 /// Where the node is, unless told otherwise.
@@ -45,18 +38,14 @@ const DEFAULT_URL: &str = "https://127.0.0.1:8787";
 /// and it is how the `config_writes` schema divergence showed up in production — twice,
 /// with a green test suite both times.
 const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
-    "/v1/brain",
     "/v1/capabilities",
     "/v1/activity",
-    "/v1/outcomes",
-    "/v1/repairs",
-    "/v1/reliability",
-    "/v1/context",
     "/v1/config-writes",
-    "/v1/autonomy",
     "/v1/audit",
-    "/v1/chat",
-    "/v1/deep-model",
+    "/v1/mcp/servers",
+    "/v1/connect/connected",
+    "/v1/model-lists",
+    "/v1/hq",
 ];
 
 fn agent() -> ureq::Agent {
@@ -200,46 +189,6 @@ fn get(path: &str) -> Value {
     serde_json::from_str(&body).unwrap_or_else(|e| panic!("{path}: not JSON ({e}): {body}"))
 }
 
-/// Posts a JSON body to one path, returning the status and the body — the caller judges,
-/// because on this suite's credential a refusal can be the correct answer (see
-/// [`the_verdict_channel_is_wired_and_scoped`]).
-fn post(path: &str, body: &Value) -> (u16, String) {
-    ready();
-    let url = format!("{}{path}", base());
-    let mut response = agent()
-        .post(&url)
-        .header("Authorization", &format!("Bearer {}", token()))
-        .send_json(body)
-        .unwrap_or_else(|e| panic!("{path}: could not reach the node at {url}: {e}"));
-    let status = response.status().as_u16();
-    let text = response.body_mut().read_to_string().unwrap_or_default();
-    (status, text)
-}
-
-/// Every fact the brain keeps: each page's timeline, without its dates (ADR 0101).
-fn facts() -> Vec<String> {
-    let overview = get("/v1/brain");
-    let mut facts = Vec::new();
-    for page in overview["pages"].as_array().unwrap_or(&Vec::new()) {
-        let path = page["path"].as_str().unwrap_or_default();
-        let text = get(&format!("/v1/brain/pages/{path}"));
-        let text = text["text"].as_str().unwrap_or_default();
-        let timeline = text
-            .lines()
-            .skip_while(|line| line.trim() != "## Timeline")
-            .skip(1)
-            .take_while(|line| !line.starts_with("## "));
-        for line in timeline {
-            let Some(entry) = line.trim().strip_prefix("- ") else {
-                continue;
-            };
-            let fact = entry.split_once(": ").map_or(entry, |(_, said)| said);
-            facts.push(fact.to_owned());
-        }
-    }
-    facts
-}
-
 #[test]
 #[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
 fn every_screen_the_interface_opens_still_answers() {
@@ -250,146 +199,28 @@ fn every_screen_the_interface_opens_still_answers() {
 
 #[test]
 #[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn nothing_it_keeps_is_a_spent_instruction() {
-    // Live: "you want me to turn off the kitchen light — because turn off the kitchen light
-    // entity" was kept as understanding long after the rule rejecting that shape shipped.
-    // The rule still decides what a page may take; this asserts it on what the pages hold.
-    let offenders: Vec<String> = facts()
-        .into_iter()
-        .filter(|s| reads_as_an_instruction(s))
-        .collect();
-    assert!(
-        offenders.is_empty(),
-        "these are commands you gave, not facts about you: {offenders:#?}"
-    );
-}
-
-#[test]
-#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn most_of_what_it_tries_is_not_failing_outright() {
-    // The tripwire for the system rather than the model. An outright error is the most
-    // visible kind of failure and the easiest to fix, so a majority of them means something
-    // is broken right now — a server down, a renamed entity, a withdrawn tool still being
-    // called — and not that the butler is having an off day.
-    //
-    // Deliberately NOT a check on `unchanged`: a tool Endora cannot know is read-only lands
-    // there permanently, so a threshold on it would fail forever for a reason that is not a
-    // fault (ADR 0053).
-    let landing = get("/v1/reliability");
-    let considered = landing["considered"].as_u64().unwrap_or_default();
-    if considered < 10 {
-        return; // too little to be a trend
+fn the_chat_is_gone_from_the_deployed_node() {
+    // Endora is HQ (ADR 0136): the chat's routes answer nothing, so no client left behind (an
+    // old handheld, a bookmark) can reach what was removed, and health says no turn is running.
+    ready();
+    for path in ["/v1/chat", "/v1/brain", "/v1/agenda", "/v1/mail"] {
+        let url = format!("{}{path}", base());
+        let status = agent()
+            .get(&url)
+            .header("Authorization", &format!("Bearer {}", token()))
+            .call()
+            .unwrap_or_else(|e| panic!("{path}: could not reach the node at {url}: {e}"))
+            .status()
+            .as_u16();
+        assert_eq!(status, 404, "{path} still answers on the deployed node");
     }
-    let failed = landing["failed"].as_u64().unwrap_or_default();
+    let health: Value = agent()
+        .get(&format!("{}/health", base()))
+        .call()
+        .and_then(|mut r| r.body_mut().read_json())
+        .unwrap_or_else(|e| panic!("/health: {e}"));
     assert!(
-        failed * 2 <= considered,
-        "{failed} of the last {considered} actions failed outright, which is something \
-         broken rather than a bad day: {landing:#}"
-    );
-}
-
-#[test]
-#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn the_butler_is_told_where_the_person_is() {
-    // Five separate times a fact was believed to be reaching a turn and was not — presence,
-    // the facts behind an answer, the activity account, the calendar. Each was diagnosed by
-    // inference, because there was no way to look.
-    //
-    // A service Endora has direct reach into knows whether anyone is in the house. If that
-    // is missing here, the model never had it, and the reply that follows is uninformed
-    // rather than unhelpful (ADR 0056).
-    let told = get("/v1/context");
-    let right_now = told["right_now"].as_array().cloned().unwrap_or_default();
-    assert!(
-        !right_now.is_empty(),
-        "the turn carries nothing about the person's world: {told:#}"
-    );
-
-    // And where they live, which is the fact this test used not to check. Four briefs
-    // opened with the wrong city while this test was green, because it asserted that the
-    // context *contained* something and never that the answer *used* it. The turn now
-    // fills a missing place in from here rather than asking the model to remember it, so
-    // an empty value is no longer a prompt that reads oddly — it is a skill call going
-    // out with no place at all.
-    let place = told["where_they_are"].as_str().unwrap_or_default();
-    assert!(
-        !place.trim().is_empty(),
-        "the node does not know where the person lives, so every skill that needs a \
-         place will be asked without one: {told:#}"
-    );
-}
-
-#[test]
-#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn the_verdict_channel_is_wired_and_scoped() {
-    // ADR 0066 withdraws a tool's autonomy on the person's verdict — and when that record
-    // shipped, zero reactions had ever been stored on this install. The endpoint is
-    // unit-tested in-process; what had never been proven is the deployed wire. Writing
-    // this test proved something else first: the suite's own credential is **checks
-    // scope** — reads pass, writes are refused — which is why every smoke before this one
-    // is a GET. That is the monitoring credential working as designed, and this test pins
-    // it rather than working around it.
-    //
-    // So it asserts whichever truth its credential can reach:
-    // - a full-scope token proves the round trip: accepted, echoed, persisted;
-    // - the checks-scope token proves the refusal: the same token that just read the
-    //   record may not write a verdict into it. Either outcome is the node behaving;
-    //   anything else — a 500, a 404, a write that vanishes — fails.
-    //
-    // The true end-to-end (a thumb on the console button) is the person's to press, and
-    // doing so also seeds ADR 0066 with its first real signal.
-    let outcomes = get("/v1/outcomes");
-    let all = outcomes.as_array().cloned().unwrap_or_default();
-    if all.is_empty() {
-        return; // a fresh install has nothing to react to; that is not a broken channel
-    }
-    // The oldest unjudged outcome: far outside the repeat-ask marker's window, and
-    // `no_reaction` counts for neither side in every consumer, so a full-scope run
-    // leaves the graduation arithmetic exactly as it found it.
-    let Some(unjudged) = all
-        .iter()
-        .filter(|o| o["reaction"].is_null())
-        .min_by_key(|o| o["at_ms"].as_i64().unwrap_or(i64::MAX))
-    else {
-        return; // every outcome already carries a verdict — the channel demonstrably works
-    };
-    let id = unjudged["id"].as_str().expect("an outcome has an id");
-
-    let (status, body) = post(
-        &format!("/v1/outcomes/{id}/reaction"),
-        &serde_json::json!({ "reaction": "no_reaction" }),
-    );
-    if status == 401 {
-        // The read above succeeded with this same token, so this is not a bad
-        // credential — it is the write scope holding. Pin that and stop.
-        assert!(
-            body.contains("token"),
-            "refused, but not by the token check: {body}"
-        );
-        return;
-    }
-    assert!(
-        (200..300).contains(&status),
-        "/v1/outcomes/{id}/reaction: answered {status}: {}",
-        body.chars().take(300).collect::<String>()
-    );
-    let answered: Value = serde_json::from_str(&body)
-        .unwrap_or_else(|e| panic!("reaction reply is not JSON ({e}): {body}"));
-    assert_eq!(
-        answered["reaction"].as_str(),
-        Some("no_reaction"),
-        "the endpoint accepted the reaction but did not echo it: {answered:#}"
-    );
-    // Read back through the same door the console uses — a stored verdict is the thing
-    // ADR 0066 consumes.
-    let read_back = get("/v1/outcomes");
-    let stored = read_back
-        .as_array()
-        .and_then(|xs| xs.iter().find(|o| o["id"].as_str() == Some(id)))
-        .unwrap_or_else(|| panic!("the outcome vanished on read-back: {id}"));
-    assert_eq!(
-        stored["reaction"].as_str(),
-        Some("no_reaction"),
-        "the reaction was accepted but not persisted: {stored:#}"
+        health.get("busy").is_none(),
+        "health still reports a chat turn: {health}"
     );
 }

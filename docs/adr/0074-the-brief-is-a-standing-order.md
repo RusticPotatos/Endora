@@ -6,6 +6,8 @@ Accepted (2026-08-07). Completes the direction [0056](0056-how-it-behaves-toward
 set with "a brief is assembled, not requested", and retires the agentic gather that
 [0053](0053-honesty-about-what-it-did.md)/0056 left underneath it.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The daily brief is retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 The brief was one agentic turn: a prompt ("reach for anything else relevant"), the

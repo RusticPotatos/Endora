@@ -4,6 +4,8 @@
 
 Accepted, 2026-10-12. Prepared with AI assistance (Claude). Not yet deployed.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** Ask deep is retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 The console's manual "Ask deep" sent the larger model one bare question: no skills, no

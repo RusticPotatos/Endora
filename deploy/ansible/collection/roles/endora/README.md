@@ -2,8 +2,8 @@
 
 Homepage: [https://github.com/RusticPotatoes/Endora](https://github.com/RusticPotatoes/Endora)
 
-Endora is a self-hosted butler for the house: a chat console that reads your Home Assistant,
-your mail copy (see [Mail Mirror](../mail_mirror/README.md)) and your containers, using a model that
+Endora is a self-hosted team of agents for the house, Endora HQ, that does your home lab's work
+through a console that also shows your containers, smart home, media and music, using a model that
 runs on your own hardware (see the `ollama` role).
 
 This role starts Endora on the NAS with Endora's own `docker-compose.yml` (checked out at a
@@ -26,8 +26,6 @@ endora_version: develop          # where the compose file comes from: a branch, 
 endora_docker_observer: true     # a read-only view of this host's containers
 ```
 
-- **Mail** is mounted read-only from `mail_mirror_root` when the `mail_mirror` role is
-  enabled; set `endora_mail_dir: ""` to keep it from Endora.
 - **The model** defaults to the `ollama` role on this host (`endora_model_url`,
   `endora_model`).
 - **The time zone** is the NAS's own (`ansible_nas_timezone`) unless `endora_time_zone`

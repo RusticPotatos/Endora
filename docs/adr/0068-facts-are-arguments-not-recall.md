@@ -6,6 +6,8 @@ Accepted (2026-08-04). Names the principle that [0065](0065-a-place-is-not-the-m
 [0066](0066-their-verdict-decides-too.md) and [0067](0067-one-way-to-the-deep-model.md) each
 applied to one fact, and ships its next two applications.
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's turn and the facts it argued from are retired. The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 Four records in four days, one shape:

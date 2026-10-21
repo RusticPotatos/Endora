@@ -136,9 +136,9 @@ runInContext(
   // One offered service already set up, and one the person added themselves — both branches
   // of the Connect screen, which previously rendered only the "nothing is connected" case.
   CONNECTED = ["caldav", "hue", "tplink"];
-  // Every model role, one on a cloud endpoint, and a server that gives less context than
-  // Endora assumes, so every branch of the AI screen renders.
-  AI = { context_tokens: 16384, roles: [
+  // Every model role, one on a cloud endpoint and one the model server has loaded, so every
+  // branch of the AI screen renders.
+  AI = { roles: [
     { id: "house", name: "The house's model", does: "The team's local turns.", model: "qwen2.5:7b", endpoint: "ollama:11434",
       local: true, on: true, change: "models", sees: "A turn's own briefing.",
       runtime: { processor: "graphics card", memory_gb: 5.6, context: 4096, size: "7.6B, Q4_K_M" } },
@@ -430,12 +430,12 @@ if (failures.length) {
     console.error("connections: a tool server's own screen lost its tools, its edit form, or the way back");
     process.exit(1);
   }
-  // The AI screen names every role, where it runs and what it sees, sends a role with a choice
-  // to where it is made, and warns when the model server gives less context than Endora
-  // assumes. The chat's roles (the deep model, the mail reader, dictation) are gone (ADR 0136).
+  // The AI screen names every role, where it runs and what it sees, and sends a role with a
+  // choice to where it is made. The chat's roles (the deep model, the mail reader, dictation)
+  // are gone (ADR 0136).
   const ai = runInContext("viewModels()", context);
   for (const needed of ["The house&#39;s model", "on your network", ">cloud<",
-    "go:skill:image_review", "long turns lose their beginning", "Change it below"]) {
+    "go:skill:image_review", "Running now on the graphics card", "Change it below"]) {
     if (!ai.includes(needed)) {
       console.error(`ai: the AI screen is missing ${needed}`);
       process.exit(1);

@@ -1,7 +1,7 @@
-use super::{AppState, app, build_runner};
+use super::{AppState, app};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use endora_infrastructure::{Capability, RandomIdSource, SqliteStore, SystemClock};
+use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use http_body_util::BodyExt;
 use std::sync::Arc;
 use tower::ServiceExt; // for `oneshot`
@@ -25,7 +25,7 @@ async fn dashboard_token_is_narrow_and_overview_does_not_disclose_items() {
     let token = minted["token"].as_str().unwrap();
     for path in [
         "/v1/homelab/overview",
-        "/v1/chat",
+        "/v1/audit",
         "/v1/homelab",
         "/v1/activity",
     ] {
@@ -166,95 +166,11 @@ async fn homelab_worker_reads_the_production_settings_and_projects_upstream_data
     thread.join().unwrap();
 }
 
-#[tokio::test]
-async fn the_brain_is_read_edited_and_forgotten_but_what_they_said_stays() {
-    use endora_application::{Preference, PreferenceId, PreferenceKind, PreferenceRepository};
-    let state = test_state();
-    PreferenceRepository::save(
-        state.knowledge.as_ref(),
-        &Preference::new(
-            PreferenceId::new(2),
-            "Based in: New York",
-            PreferenceKind::Context,
-            endora_application::Timestamp::from_unix_millis(1),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let router = app(state.clone());
-    let put = |path: &str, body: &str| {
-        Request::builder()
-            .method("PUT")
-            .uri(path)
-            .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {}", state.token))
-            .body(Body::from(body.to_owned()))
-            .unwrap()
-    };
-    let saved = router
-        .clone()
-        .oneshot(put(
-            "/v1/brain/pages/hobbies/watches",
-            r##"{"text":"# Watches\n\nCollects dive watches.\n"}"##,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(saved.status(), StatusCode::OK);
-    let overview = json_body(router.clone().oneshot(get("/v1/brain")).await.unwrap()).await;
-    assert!(
-        overview["memory"]
-            .as_str()
-            .unwrap()
-            .contains("Based in: New York")
-    );
-    assert_eq!(overview["pages"][0]["path"], "hobbies/watches");
-    assert_eq!(overview["pages"][0]["line"], "Collects dive watches.");
-    let page = json_body(
-        router
-            .clone()
-            .oneshot(get("/v1/brain/pages/hobbies/watches"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(page["history"][0]["why"], "edited by you");
-    let outside = router
-        .clone()
-        .oneshot(get("/v1/brain/pages/..%2F..%2Fetc%2Fpasswd"))
-        .await
-        .unwrap();
-    assert_eq!(outside.status(), StatusCode::BAD_REQUEST);
-
-    let unconfirmed = router
-        .clone()
-        .oneshot(post("/v1/brain/forget", "{}"))
-        .await
-        .unwrap();
-    assert_eq!(unconfirmed.status(), StatusCode::BAD_REQUEST);
-    let done = router
-        .clone()
-        .oneshot(post("/v1/brain/forget", r#"{"confirm":true}"#))
-        .await
-        .unwrap();
-    assert_eq!(json_body(done).await["forgot"], 1);
-    let overview = json_body(router.oneshot(get("/v1/brain")).await.unwrap()).await;
-    assert!(overview["pages"].as_array().unwrap().is_empty());
-    assert_eq!(
-        PreferenceRepository::list_all(state.knowledge.as_ref())
-            .unwrap()
-            .len(),
-        1,
-        "what they told it stays"
-    );
-}
-
 pub(super) fn test_state() -> AppState {
     let mut state = AppState::new(
         Arc::new(SqliteStore::open_in_memory().unwrap()),
         Arc::new(RandomIdSource),
         Arc::new(SystemClock),
-        Arc::new(endora_infrastructure::ScriptedButler),
-        Arc::new(endora_understanding::BrainFolder::temporary().unwrap()),
     );
     // Pinned rather than read back, so a test signs with something it chose. The
     // generated-on-first-run path is exercised by `the_node_makes_and_keeps_a_token`.
@@ -285,162 +201,22 @@ pub(super) fn get(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
-fn del(uri: &str) -> Request<Body> {
-    Request::builder()
-        .method("DELETE")
-        .uri(uri)
-        .header("authorization", format!("Bearer {TEST_TOKEN}"))
-        .body(Body::empty())
-        .unwrap()
-}
-
 /// Exactly the same request, unsigned — for proving a route is actually shut.
 pub(super) fn unsigned(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 
 #[tokio::test]
-async fn the_chat_says_what_it_would_send_and_a_new_topic_stops_sending_the_past() {
-    let state = test_state();
-    let reply = app(state.clone())
-        .oneshot(get("/v1/chat/context"))
-        .await
-        .unwrap();
-    assert_eq!(reply.status(), StatusCode::OK);
-    let before = json_body(reply).await;
-    assert_eq!(before["estimate"], true);
-    assert_eq!(before["context_from_ms"], 0);
-    assert!(before["window_tokens"].as_u64().unwrap() >= 1024);
-    let keys: Vec<&str> = before["sections"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|s| s["key"].as_str())
-        .collect();
-    assert!(keys.contains(&"instructions"), "{keys:?}");
-
-    let reset = app(state.clone())
-        .oneshot(post("/v1/chat/context/reset", "{}"))
-        .await
-        .unwrap();
-    assert_eq!(reset.status(), StatusCode::OK);
-    let at = json_body(reset).await["context_from_ms"].as_i64().unwrap();
-    assert!(at > 0);
-
-    let after = json_body(
-        app(state.clone())
-            .oneshot(get("/v1/chat/context"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(after["context_from_ms"].as_i64().unwrap(), at);
-}
-
-#[test]
-fn the_first_of_the_month_is_found_for_any_moment_in_it() {
-    // 2026-10-12 19:00 UTC and 2026-10-01 00:00:00 UTC exactly, plus a leap-year February.
-    assert_eq!(
-        super::models::month_start_ms(1_791_831_600_000),
-        1_790_812_800_000
-    );
-    assert_eq!(
-        super::models::month_start_ms(1_790_812_800_000),
-        1_790_812_800_000
-    );
-    // 2028-02-29 12:00 UTC -> 2028-02-01
-    assert_eq!(
-        super::models::month_start_ms(1_835_438_400_000),
-        1_832_976_000_000
-    );
-}
-
-#[tokio::test]
-async fn the_deep_models_use_is_counted_and_priced_once_prices_are_known() {
-    use endora_application::UsageLog as _;
-    let state = test_state();
-    state.store.record(
-        "deep",
-        "some-model",
-        endora_application::ModelUsage {
-            prompt_tokens: 1_000_000,
-            completion_tokens: 500_000,
-            cached_tokens: 400_000,
-        },
-    );
-    state.store.record(
-        "local",
-        "other",
-        endora_application::ModelUsage {
-            prompt_tokens: 9,
-            completion_tokens: 9,
-            cached_tokens: 0,
-        },
-    );
-
-    let before = json_body(
-        app(state.clone())
-            .oneshot(get("/v1/deep-model/usage"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(before["month"]["calls"], 1, "only the deep model's calls");
-    assert_eq!(before["month"]["prompt_tokens"], 1_000_000);
-    assert!(
-        before["month"]["cost_usd"].is_null(),
-        "no prices, no dollar figure"
-    );
-
-    let saved = app(state.clone())
-        .oneshot(post(
-            "/v1/deep-model/prices",
-            r#"{"input":0.30,"output":1.20,"cached":0.03}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(saved.status(), StatusCode::OK);
-
-    let after = json_body(
-        app(state.clone())
-            .oneshot(get("/v1/deep-model/usage"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    // 600k fresh * 0.30 + 400k cached * 0.03 + 500k out * 1.20, per million.
-    let cost = after["month"]["cost_usd"].as_f64().unwrap();
-    assert!((cost - (0.18 + 0.012 + 0.60)).abs() < 1e-9, "{cost}");
-
-    let bad = app(state.clone())
-        .oneshot(post("/v1/deep-model/prices", r#"{"input":-1}"#))
-        .await
-        .unwrap();
-    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
-
-    // No deep model configured: the balance says so rather than guessing.
-    let balance = json_body(
-        app(state)
-            .oneshot(get("/v1/deep-model/balance"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(balance["supported"], false);
-}
-
-#[tokio::test]
 async fn an_unsigned_request_gets_nothing() {
     // The hole this exists for: every one of these answered anyone who could reach the
-    // port, on an interface bound to 0.0.0.0. `/v1/export` handed over the whole
-    // conversation, and `/v1/deep-model` would have taken an endpoint of somebody's
-    // choosing and sent every later turn there.
+    // port, on an interface bound to 0.0.0.0. `/v1/export` handed over the whole record, and
+    // a model list would have taken an endpoint of somebody's choosing.
     let app = app(test_state());
     for path in [
         "/v1/export",
-        "/v1/chat",
+        "/v1/hq",
         "/v1/capabilities",
-        "/v1/deep-model",
+        "/v1/model-lists",
         "/v1/activity/stream",
     ] {
         let res = app.clone().oneshot(unsigned(path)).await.unwrap();
@@ -826,7 +602,7 @@ async fn a_checking_token_reads_but_cannot_touch_anything() {
     };
 
     // Reads the suite depends on.
-    for path in ["/v1/brain", "/v1/reliability"] {
+    for path in ["/v1/audit", "/v1/capabilities"] {
         let res = app.clone().oneshot(with(path, "GET")).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK, "{path} should be readable");
     }
@@ -870,8 +646,8 @@ async fn the_claim_window_does_not_open_anything_else() {
     let app = app(test_state());
     for path in [
         "/v1/export",
-        "/v1/chat",
-        "/v1/deep-model",
+        "/v1/hq",
+        "/v1/model-lists",
         "/v1/capabilities",
     ] {
         let res = app.clone().oneshot(unsigned(path)).await.unwrap();
@@ -983,216 +759,6 @@ async fn there_is_no_way_for_the_person_to_create_an_intention() {
     }
 }
 
-#[tokio::test]
-async fn explicit_research_is_durable_idempotent_and_cancellable() {
-    let state = test_state();
-    let app = app(state);
-    let body = r#"{
-        "request_key":"request-1",
-        "assignment":"Compare two backup approaches and recommend one.",
-        "source_urls":["https://example.com/backup"]
-    }"#;
-
-    let first = app
-        .clone()
-        .oneshot(post("/v1/research", body))
-        .await
-        .unwrap();
-    assert_eq!(first.status(), StatusCode::ACCEPTED);
-    let first = json_body(first).await;
-    assert_eq!(first["status"], "queued");
-    assert_eq!(first["request_key"], "request-1");
-    assert_eq!(first["checkpoint"]["version"], 1);
-
-    let repeated = app
-        .clone()
-        .oneshot(post("/v1/research", body))
-        .await
-        .unwrap();
-    assert_eq!(repeated.status(), StatusCode::ACCEPTED);
-    assert_eq!(json_body(repeated).await["id"], first["id"]);
-
-    let changed = app
-        .clone()
-        .oneshot(post(
-            "/v1/research",
-            r#"{
-        "request_key":"request-1", "assignment":"Different assignment",
-        "source_urls":["https://example.com/backup"]
-    }"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(changed.status(), StatusCode::CONFLICT);
-    assert_eq!(json_body(changed).await["code"], "request_key_reused");
-
-    let occupied = app
-        .clone()
-        .oneshot(post(
-            "/v1/research",
-            r#"{
-        "request_key":"request-2", "assignment":"Another assignment",
-        "source_urls":["https://example.com/other"]
-    }"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(occupied.status(), StatusCode::CONFLICT);
-    assert_eq!(json_body(occupied).await["code"], "occupied_slot");
-
-    let listed = json_body(app.clone().oneshot(get("/v1/research")).await.unwrap()).await;
-    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
-
-    let cancelled = json_body(
-        app.clone()
-            .oneshot(post(
-                &format!("/v1/research/{}/cancel", first["id"].as_str().unwrap()),
-                "{}",
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(cancelled["status"], "cancelled");
-
-    let export = json_body(app.oneshot(get("/v1/export")).await.unwrap()).await;
-    assert_eq!(export["research"].as_array().unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn a_saved_research_report_downloads_without_regeneration() {
-    use endora_application::{
-        ChatMessage, MessageRole, ResearchDelivery, ResearchReport, Timestamp,
-    };
-
-    let state = test_state();
-    let mut work = state
-        .store
-        .commission_research(
-            endora_application::IntentionId::new(20),
-            endora_application::MessageId::new(21),
-            "request-report",
-            "Research backups",
-            r#"["https://example.com/source"]"#,
-            None,
-            Timestamp::from_unix_millis(1_000),
-        )
-        .unwrap();
-    let markdown =
-        "# Backup report\n\nUse snapshots.\n\n## Sources\n\n- [S1](https://example.com/source)\n";
-    work.deliver(
-        ResearchReport::new(
-            work.intention_id(),
-            markdown,
-            false,
-            Timestamp::from_unix_millis(2_000),
-        )
-        .unwrap(),
-        Timestamp::from_unix_millis(2_000),
-    );
-    let notice = ChatMessage::new(
-        endora_application::MessageId::new(22),
-        MessageRole::Butler,
-        "Your research report is ready.",
-        Timestamp::from_unix_millis(2_000),
-    )
-    .unwrap();
-    assert!(state.store.publish_research(&work, &notice, &[]).unwrap());
-
-    let response = app(state)
-        .oneshot(get("/v1/research/20/report"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers()["content-type"],
-        "text/markdown; charset=utf-8"
-    );
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(String::from_utf8_lossy(&body), markdown.trim());
-}
-
-#[test]
-fn the_persisted_step_trail_counts_calls_not_events() {
-    use super::fold_step;
-    let step = |skill: &str, status: &str| serde_json::json!({ "skill": skill, "status": status, "label": "x", "output": null });
-
-    // The live trail from a real turn: one failed action, then two reads. Each
-    // reports twice — running, then its outcome.
-    let mut trail = Vec::new();
-    for s in [
-        step("home-assistant.HassTurnOff", "running"),
-        step("home-assistant.HassTurnOff", "failed"),
-        step("home-assistant.GetLiveContext", "running"),
-        step("home-assistant.GetLiveContext", "done"),
-        step("home-assistant.GetLiveContext", "running"),
-        step("home-assistant.GetLiveContext", "done"),
-    ] {
-        fold_step(&mut trail, s);
-    }
-
-    // Three calls, not six events — the console said "6 actions" for this turn.
-    assert_eq!(trail.len(), 3, "trail was {trail:?}");
-    let statuses: Vec<&str> = trail
-        .iter()
-        .map(|s| s["status"].as_str().unwrap())
-        .collect();
-    assert_eq!(statuses, vec!["failed", "done", "done"]);
-}
-
-#[test]
-fn a_blocked_step_keeps_its_own_row() {
-    use super::fold_step;
-    // Policy refusing a call never reports "running" first. Folding it into an
-    // unrelated in-flight row would hide the most interesting step there is.
-    let mut trail = Vec::new();
-    fold_step(
-        &mut trail,
-        serde_json::json!({ "skill": "a", "status": "running", "label": "x", "output": null }),
-    );
-    fold_step(
-        &mut trail,
-        serde_json::json!({ "skill": "b", "status": "blocked", "label": "x", "output": null }),
-    );
-    assert_eq!(trail.len(), 2, "the blocked call was swallowed: {trail:?}");
-    assert_eq!(trail[1]["skill"], "b");
-}
-
-#[tokio::test]
-async fn an_alias_is_confirmed_by_the_person_and_grounds_later_turns() {
-    // ADR 0054's answer path: Endora asks what a target is really called, and the
-    // person's answer is the CONFIRMED source — the only one policy trusts.
-    let app = app(test_state());
-    let stored = json_body(
-        app.clone()
-            .oneshot(post(
-                "/v1/aliases",
-                r#"{"server":"home-assistant","said":"kitchen main","means":"Kitchen Main"}"#,
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(stored["means"], "Kitchen Main");
-
-    let listed = json_body(app.oneshot(get("/v1/aliases")).await.unwrap()).await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(listed[0]["said"], "kitchen main");
-}
-
-#[tokio::test]
-async fn an_alias_that_names_nothing_is_refused() {
-    // A blank side grounds nothing and would quietly do nothing at all.
-    let res = app(test_state())
-        .oneshot(post(
-            "/v1/aliases",
-            r#"{"server":"home-assistant","said":"kitchen main","means":"  "}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-}
-
 #[test]
 fn an_enabled_server_with_no_tools_is_the_state_worth_retrying() {
     // The condition the heartbeat looks for, stated as a test because the bug it
@@ -1226,185 +792,6 @@ fn an_enabled_server_with_no_tools_is_the_state_worth_retrying() {
 }
 
 #[tokio::test]
-async fn repairs_are_derived_from_what_was_observed_not_stored() {
-    use endora_application::{Outcome, OutcomeId, OutcomeRepository, Timestamp};
-    let state = test_state();
-    // Two actions that reported success and moved nothing — the live kitchen case.
-    for id in [1_u128, 2] {
-        OutcomeRepository::save(
-            state.understanding.as_ref(),
-            &Outcome::record(
-                OutcomeId::new(id),
-                "home-assistant.HassTurnOff",
-                r#"{"area":"kitchen"}"#,
-                "The action completed successfully on: Kitchen (area).",
-                Some("Kitchen Main | switch | on"),
-                Timestamp::from_unix_millis(id as i64),
-                None,
-                Some(false),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    }
-    let app = app(state);
-
-    let found = json_body(app.clone().oneshot(get("/v1/repairs")).await.unwrap()).await;
-    assert_eq!(found.as_array().unwrap().len(), 1, "{found}");
-    assert_eq!(found[0]["capability"], "home-assistant.HassTurnOff");
-    assert_eq!(found[0]["attempts"], 2);
-
-    // Nothing was stored to make that happen, and nothing can be dismissed: there
-    // is deliberately no way to write a repair (ADR 0054/0029).
-    let res = app
-        .oneshot(post("/v1/repairs", r#"{"capability":"x"}"#))
-        .await
-        .unwrap();
-    assert!(
-        res.status() == StatusCode::METHOD_NOT_ALLOWED || res.status() == StatusCode::NOT_FOUND,
-        "repairs became writable — that is a queue: {}",
-        res.status()
-    );
-}
-
-#[tokio::test]
-async fn outcomes_are_visible_and_start_empty() {
-    // Nothing has acted yet, so there is nothing to show — and the endpoint must
-    // still answer, since the console asks for it on every load.
-    let listed = json_body(
-        app(test_state())
-            .oneshot(get("/v1/outcomes"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(listed, serde_json::json!([]));
-}
-
-#[tokio::test]
-async fn an_outcome_surfaces_its_claim_and_observation_separately_and_takes_a_reaction() {
-    use endora_application::{Outcome, OutcomeId, OutcomeRepository, Timestamp};
-    let state = test_state();
-    // The kitchen light: the tool claimed success, the world disagreed. The console
-    // must show BOTH, unmerged (ADR 0053).
-    OutcomeRepository::save(
-        state.understanding.as_ref(),
-        &Outcome::record(
-            OutcomeId::new(42),
-            "home.HassTurnOff",
-            r#"{"name":"kitchen"}"#,
-            "action_done",
-            Some("kitchen switch: on"),
-            Timestamp::from_unix_millis(1_000),
-            None,
-            None,
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let app = app(state);
-
-    let listed = json_body(app.clone().oneshot(get("/v1/outcomes")).await.unwrap()).await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(listed[0]["capability"], "home.HassTurnOff");
-    assert_eq!(listed[0]["claim"], "action_done");
-    assert_eq!(listed[0]["observation"], "kitchen switch: on");
-    assert_eq!(listed[0]["observed"], true);
-    assert!(listed[0]["reaction"].is_null(), "nobody was asked");
-
-    let reacted = json_body(
-        app.clone()
-            .oneshot(post(
-                "/v1/outcomes/42/reaction",
-                r#"{"reaction":"did_not_help"}"#,
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(reacted["reaction"], "did_not_help");
-
-    // And it stuck.
-    let listed = json_body(app.oneshot(get("/v1/outcomes")).await.unwrap()).await;
-    assert_eq!(listed[0]["reaction"], "did_not_help");
-}
-
-#[tokio::test]
-async fn reacting_to_an_unknown_outcome_is_a_clean_not_found() {
-    let res = app(test_state())
-        .oneshot(post(
-            "/v1/outcomes/12345/reaction",
-            r#"{"reaction":"helped"}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn an_unrecognized_reaction_is_rejected_rather_than_stored() {
-    // The stored vocabulary is closed (ADR 0053); a typo must not become a value
-    // that later reads back as corrupt.
-    let res = app(test_state())
-        .oneshot(post(
-            "/v1/outcomes/1/reaction",
-            r#"{"reaction":"loved it"}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn preferences_round_trip_and_are_deletable() {
-    let app = app(test_state());
-    let res = app
-        .clone()
-        .oneshot(post("/v1/preferences", r#"{"text":"I prefer mornings"}"#))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let created = json_body(res).await;
-    assert_eq!(created["text"], "I prefer mornings");
-    assert_eq!(created["kind"], "taste");
-    let pid = created["id"].as_str().unwrap().to_owned();
-
-    let listed = json_body(app.clone().oneshot(get("/v1/preferences")).await.unwrap()).await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-
-    let res = app
-        .clone()
-        .oneshot(del(&format!("/v1/preferences/{pid}")))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let after = json_body(app.clone().oneshot(get("/v1/preferences")).await.unwrap()).await;
-    assert!(after.as_array().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn chat_records_the_exchange() {
-    let app = app(test_state());
-    let res = app
-        .clone()
-        .oneshot(post(
-            "/v1/chat",
-            r#"{"message":"I want to get back into running"}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = json_body(res).await;
-    assert_eq!(body["reply"]["role"], "butler");
-
-    // The history holds both turns.
-    let hist = json_body(app.clone().oneshot(get("/v1/chat")).await.unwrap()).await;
-    assert_eq!(hist.as_array().unwrap().len(), 2);
-    assert_eq!(hist[0]["role"], "user");
-    assert_eq!(hist[1]["role"], "butler");
-}
-
-#[tokio::test]
 async fn a_write_notifies_change_subscribers_but_a_read_does_not() {
     let state = test_state();
     let mut rx = state.changes.subscribe();
@@ -1418,8 +805,8 @@ async fn a_write_notifies_change_subscribers_but_a_read_does_not() {
     let res = app
         .clone()
         .oneshot(post(
-            "/v1/preferences",
-            r#"{"text":"Likes tea","kind":"taste"}"#,
+            "/v1/model-lists/providers",
+            r#"{"name":"house","url":"http://192.168.1.10:11434/v1"}"#,
         ))
         .await
         .unwrap();
@@ -1433,10 +820,13 @@ async fn a_rejected_write_does_not_notify() {
     let mut rx = state.changes.subscribe();
     let app = app(state);
 
-    // A domain-invalid request (blank text) is a 400 and must not signal.
+    // An invalid request (no endpoint) is a 400 and must not signal.
     let res = app
         .clone()
-        .oneshot(post("/v1/preferences", r#"{"text":"  ","kind":"taste"}"#))
+        .oneshot(post(
+            "/v1/model-lists/providers",
+            r#"{"name":"house","url":"  "}"#,
+        ))
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
@@ -1456,63 +846,6 @@ async fn activity_stream_opens_as_an_event_stream() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
     assert!(ct.starts_with("text/event-stream"), "got content-type {ct}");
-}
-
-#[tokio::test]
-async fn export_then_purge_clears_all_data() {
-    let app = app(test_state());
-
-    // Seed something exportable: a preference and a chat turn.
-    let res = app
-        .clone()
-        .oneshot(post(
-            "/v1/preferences",
-            r#"{"text":"Likes tea","kind":"taste"}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let res = app
-        .clone()
-        .oneshot(post("/v1/chat", r#"{"message":"hello"}"#))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-
-    let res = app.clone().oneshot(get("/v1/export")).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let export = json_body(res).await;
-    assert_eq!(export["preferences"].as_array().unwrap().len(), 1);
-    assert_eq!(export["messages"].as_array().unwrap().len(), 2);
-
-    // Purge without confirmation is refused.
-    let res = app
-        .clone()
-        .oneshot(post("/v1/memory/purge", r#"{"confirm":false}"#))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-
-    // Purge with confirmation wipes everything.
-    let res = app
-        .clone()
-        .oneshot(post("/v1/memory/purge", r#"{"confirm":true}"#))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-
-    let res = app.clone().oneshot(get("/v1/export")).await.unwrap();
-    let empty = json_body(res).await;
-    assert!(empty["preferences"].as_array().unwrap().is_empty());
-    assert!(empty["messages"].as_array().unwrap().is_empty());
-    // The brain went too: only an empty memory is left, without what they told it.
-    let pages = empty["pages"].as_array().unwrap();
-    assert_eq!(pages.len(), 1, "{pages:?}");
-    assert_eq!(pages[0]["path"], "memory");
-    assert!(
-        !pages[0]["text"].as_str().unwrap().contains("- "),
-        "{pages:?}"
-    );
 }
 
 #[tokio::test]
@@ -1551,142 +884,6 @@ async fn editing_a_server_with_a_blank_token_keeps_the_saved_one() {
     // URL updated, but the token was preserved rather than wiped.
     assert_eq!(ha["url"], "http://new/sse");
     assert_eq!(ha["auth_set"], true);
-}
-
-#[tokio::test]
-async fn a_new_recipe_is_authored_off_and_enabling_turns_it_on() {
-    let router = app(test_state());
-    let created = router
-        .clone()
-        .oneshot(post(
-            "/v1/recipes",
-            r#"{"id":"air_quality","description":"Today's air quality.",
-                "inputs":[{"name":"lat","type":"number"},{"name":"lon","type":"number"}],
-                "get":"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi",
-                "say":"The air quality index is {current.us_aqi} right now."}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(created.status(), StatusCode::OK);
-
-    // Authored, not yet enabled — the one place a recipe differs from every
-    // other Observe-band skill's own band default (ADR 0071).
-    let list = json_body(router.clone().oneshot(get("/v1/recipes")).await.unwrap()).await;
-    let recipes = list.as_array().unwrap();
-    assert_eq!(recipes.len(), 1);
-    assert_eq!(recipes[0]["id"], "air_quality");
-    assert_eq!(recipes[0]["capability_id"], "recipe.air_quality");
-    assert_eq!(recipes[0]["enabled"], false, "{recipes:?}");
-
-    let enabled = router
-        .clone()
-        .oneshot(post(
-            "/v1/recipes/air_quality/enable",
-            r#"{"enabled":true}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(enabled.status(), StatusCode::OK);
-    let list = json_body(router.clone().oneshot(get("/v1/recipes")).await.unwrap()).await;
-    assert_eq!(list.as_array().unwrap()[0]["enabled"], true);
-
-    let removed = router
-        .clone()
-        .oneshot(del("/v1/recipes/air_quality"))
-        .await
-        .unwrap();
-    assert_eq!(removed.status(), StatusCode::OK);
-    let list = json_body(router.oneshot(get("/v1/recipes")).await.unwrap()).await;
-    assert!(list.as_array().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn a_malformed_recipe_is_refused_before_it_is_stored() {
-    let router = app(test_state());
-    // A get whose scheme is not http(s) — refused by Recipe::new.
-    let bad_scheme = router
-        .clone()
-        .oneshot(post(
-            "/v1/recipes",
-            r#"{"id":"x","description":"d","inputs":[],"get":"ftp://x.test/","say":"s"}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(bad_scheme.status(), StatusCode::BAD_REQUEST);
-
-    // A get slot naming no declared input — refused before anyone could enable it.
-    let undeclared_slot = router
-        .clone()
-        .oneshot(post(
-            "/v1/recipes",
-            r#"{"id":"y","description":"d","inputs":[],"get":"https://x.test/?q={q}","say":"s"}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(undeclared_slot.status(), StatusCode::BAD_REQUEST);
-
-    // An input type outside string/number.
-    let bad_type = router
-        .oneshot(post(
-            "/v1/recipes",
-            r#"{"id":"z","description":"d","inputs":[{"name":"q","type":"bool"}],
-                "get":"https://x.test/?q={q}","say":"s"}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(bad_type.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn an_enabled_recipe_is_offered_by_the_composed_runner_and_a_disabled_one_is_not() {
-    // Not through the HTTP surface — this exercises `build_runner`'s actual
-    // composition, the thing a chat turn's tool catalogue is really built
-    // from, so it proves RecipeRunner is wired in rather than merely
-    // reachable through /v1/recipes.
-    use endora_capabilities::{
-        CapabilityConfigRepository, CapabilityRunner as _, Recipe, RecipeRepository, Stance,
-    };
-    let state = test_state();
-    let recipe = Recipe::new("air_quality", "d", vec![], "https://x.test/", "s").unwrap();
-    RecipeRepository::save_recipe(state.config.as_ref(), &recipe).unwrap();
-    CapabilityConfigRepository::set_stance(
-        state.config.as_ref(),
-        "recipe.air_quality",
-        Stance::Off,
-    )
-    .unwrap();
-
-    let empty_caps: Arc<Vec<Arc<dyn Capability>>> = Arc::new(Vec::new());
-    let mcp = Arc::new(endora_capabilities::McpRunner::connect(Vec::new()));
-    let runner = build_runner(
-        state.config.as_ref(),
-        empty_caps.clone(),
-        mcp.clone(),
-        std::collections::HashSet::new(),
-    );
-    let offered = runner.available();
-    assert!(
-        offered.iter().all(|c| c.id != "recipe.air_quality"),
-        "off must not be offered: {offered:?}"
-    );
-
-    CapabilityConfigRepository::set_stance(
-        state.config.as_ref(),
-        "recipe.air_quality",
-        Stance::Auto,
-    )
-    .unwrap();
-    let runner = build_runner(
-        state.config.as_ref(),
-        empty_caps,
-        mcp,
-        std::collections::HashSet::new(),
-    );
-    let offered = runner.available();
-    assert!(
-        offered.iter().any(|c| c.id == "recipe.air_quality"),
-        "enabled must be offered: {offered:?}"
-    );
 }
 
 #[tokio::test]
@@ -1917,18 +1114,14 @@ async fn a_skill_that_rides_a_connection_is_not_on_until_the_connection_is_set_u
 async fn a_skill_whose_description_is_written_for_the_model_has_a_line_for_people() {
     // The settings screen showed the model's instructions: "Use this for any question about
     // what YOU did", "Civic business ONLY", "fetch useful URLs with web_fetch".
-    let mut state = test_state();
-    let mut caps: Vec<Arc<dyn Capability>> = state.capabilities.as_ref().clone();
-    caps.push(Arc::new(super::workers::WhatIHaveBeenDoing {
-        chat: state.chat.clone(),
-        understanding: state.understanding.clone(),
-        config: state.config.clone(),
-        clock: state.clock.clone(),
-    }));
-    state.capabilities = Arc::new(caps);
-    let all = json_body(app(state).oneshot(get("/v1/capabilities")).await.unwrap()).await;
+    let all = json_body(
+        app(test_state())
+            .oneshot(get("/v1/capabilities"))
+            .await
+            .unwrap(),
+    )
+    .await;
     for id in [
-        "own_activity",
         "web_search",
         "web_fetch",
         "city_meetings",
@@ -1965,9 +1158,16 @@ async fn a_skill_whose_description_is_written_for_the_model_has_a_line_for_peopl
     assert_eq!(weather["summary"], weather["description"]);
 }
 
+/// The AI screen says what the team's local turns think with (ADR 0136): the house's model is
+/// what the relay calls, the installed model until an Everyday entry on the house's network
+/// comes first, and never a cloud entry, whatever its place in the list.
 #[tokio::test]
-async fn the_ai_screen_lists_every_model_and_mail_never_leaves_the_house() {
-    let state = test_state();
+async fn the_ai_screen_names_the_house_model_the_relay_uses() {
+    let mut state = test_state();
+    state.installed_model = Arc::new((
+        "http://192.168.1.10:11434/v1".to_owned(),
+        "installed:7b".to_owned(),
+    ));
     let role = |all: &serde_json::Value, id: &str| {
         all["roles"]
             .as_array()
@@ -1978,88 +1178,60 @@ async fn the_ai_screen_lists_every_model_and_mail_never_leaves_the_house() {
             .unwrap_or_else(|| panic!("{id} is listed"))
     };
     let before = json_body(app(state.clone()).oneshot(get("/v1/ai")).await.unwrap()).await;
-    for id in ["chat", "deep", "mail_reader", "vision", "speech"] {
-        let r = role(&before, id);
-        assert!(
-            r["sees"].as_str().is_some_and(|s| !s.is_empty()),
-            "{id} says what it sees"
-        );
-    }
-    assert!(before["context_tokens"].as_u64().is_some());
-    let deployment = role(&before, "mail_reader")["model"].clone();
-
-    // A model chosen for the mail reader is the one it reads with; blank goes back.
-    let chosen = json_body(
-        app(state.clone())
-            .oneshot(post(
-                "/v1/ai",
-                r#"{"mail_reader_model":"example-reader:3b"}"#,
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(role(&chosen, "mail_reader")["model"], "example-reader:3b");
-
-    // The conversation moves to a cloud provider; the mail reader does not follow it.
-    let provider = json_body(
-        app(state.clone())
-            .oneshot(post(
-                "/v1/model-lists/providers",
-                r#"{"url":"https://api.example.com/v1","api_key":"fictional"}"#,
-            ))
-            .await
-            .unwrap(),
-    )
-    .await["id"]
-        .as_i64()
-        .unwrap();
-    let res = app(state.clone())
+    let ids: Vec<&str> = before["roles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["house", "vision"], "the chat's roles are gone");
+    assert_eq!(role(&before, "house")["model"], "installed:7b");
+    let add = |url: &'static str, model: &'static str| {
+        let state = state.clone();
+        async move {
+            let provider = json_body(
+                app(state.clone())
+                    .oneshot(post(
+                        "/v1/model-lists/providers",
+                        &format!(r#"{{"name":"p","url":"{url}","api_key":"fictional"}}"#),
+                    ))
+                    .await
+                    .unwrap(),
+            )
+            .await["id"]
+                .as_i64()
+                .unwrap();
+            let res = app(state)
+                .oneshot(post(
+                    "/v1/model-lists/entries",
+                    &format!(r#"{{"job":"everyday","provider":{provider},"model":"{model}"}}"#),
+                ))
+                .await
+                .unwrap();
+            assert!(res.status().is_success(), "{}", res.status());
+        }
+    };
+    add("https://api.example.com/v1", "cloud-model").await;
+    let cloud_first = json_body(app(state.clone()).oneshot(get("/v1/ai")).await.unwrap()).await;
+    assert_eq!(
+        role(&cloud_first, "house")["model"],
+        "installed:7b",
+        "a cloud entry is never the house's"
+    );
+    add("http://192.168.1.10:11434/v1", "house:14b").await;
+    let after = json_body(app(state.clone()).oneshot(get("/v1/ai")).await.unwrap()).await;
+    let house = role(&after, "house");
+    assert_eq!(house["model"], "house:14b");
+    assert_eq!(house["local"], true);
+    // The Deep list served the chat; it takes nothing now.
+    let refused = app(state)
         .oneshot(post(
             "/v1/model-lists/entries",
-            &format!(r#"{{"job":"everyday","provider":{provider},"model":"cloud-model"}}"#),
+            r#"{"job":"deep","provider":1,"model":"big"}"#,
         ))
         .await
         .unwrap();
-    assert!(res.status().is_success(), "{}", res.status());
-    let after = json_body(app(state.clone()).oneshot(get("/v1/ai")).await.unwrap()).await;
-    assert_eq!(role(&after, "chat")["local"], false);
-    assert_eq!(role(&after, "chat")["endpoint"], "api.example.com");
-    let reader = role(&after, "mail_reader");
-    assert_eq!(reader["local"], true, "mail stays on the local endpoint");
-    assert_ne!(reader["endpoint"], "api.example.com");
-
-    let reset = json_body(
-        app(state.clone())
-            .oneshot(post("/v1/ai", r#"{"mail_reader_model":""}"#))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(role(&reset, "mail_reader")["model"], deployment);
-
-    // Hearing you is the browser's own recognition. There is no speech server to choose, so an
-    // old client offering one changes nothing, and the screen still says where the audio goes.
-    let offered = json_body(
-        app(state.clone())
-            .oneshot(post(
-                "/v1/ai",
-                r#"{"speech_url":"http://192.168.1.10:8001/v1"}"#,
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
-    let speech = role(&offered, "speech");
-    assert_eq!(speech["endpoint"], "");
-    assert!(speech["change"].is_null(), "nothing to change: {speech}");
-    assert!(
-        speech["sees"].as_str().unwrap().contains("browser"),
-        "{speech}"
-    );
-    assert!(offered.get("speech_url").is_none());
-    let health = json_body(app(state).oneshot(unsigned("/health")).await.unwrap()).await;
-    assert!(health.get("stt").is_none(), "{health}");
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -2317,10 +1489,6 @@ async fn providers_go_in_once_lists_sort_and_no_key_ever_comes_back_out() {
         .await
         .unwrap();
     assert_eq!(moved.status(), StatusCode::OK);
-    app(state.clone())
-        .oneshot(post("/v1/model-lists/escalate", r#"{"on":true}"#))
-        .await
-        .unwrap();
 
     let shown = json_body(
         app(state.clone())
@@ -2377,7 +1545,7 @@ async fn providers_go_in_once_lists_sort_and_no_key_ever_comes_back_out() {
     );
     assert_eq!(shown["providers"][0]["key_set"], true);
     assert_eq!(shown["providers"][1]["key_set"], false);
-    assert_eq!(shown["escalate"], true);
+    assert!(shown.get("deep").is_none() && shown.get("escalate").is_none());
     assert!(
         !shown.to_string().contains("sk-ant"),
         "no key is ever shown: {shown}"
@@ -2423,65 +1591,6 @@ async fn providers_go_in_once_lists_sort_and_no_key_ever_comes_back_out() {
         .await
         .unwrap();
     assert_eq!(gone.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn the_old_model_settings_are_never_read_once_the_lists_decide() {
-    // ADR 0105: the lists are the only source. The old rows are imported once and purged with
-    // everything else, but never read as a fallback: a provider the owner removed must not
-    // come back as the deep model, its key used for a balance call, or a line on the AI screen.
-    use endora_capabilities::{ButlerModelConfigRepository, DeepModelRepository};
-    let state = test_state();
-    DeepModelRepository::set(
-        state.config.as_ref(),
-        &endora_application::DeepModel {
-            url: "https://api.deepseek.com/v1".to_owned(),
-            model: "deepseek-chat".to_owned(),
-            api_key: "sk-fictional-old".to_owned(),
-            escalate: true,
-        },
-    )
-    .unwrap();
-    ButlerModelConfigRepository::set(
-        state.config.as_ref(),
-        &endora_capabilities::ButlerModelConfig {
-            base_url: "https://old.example.com/v1".to_owned(),
-            api_key: "sk-fictional-older".to_owned(),
-            single: endora_capabilities::ModelSlot {
-                model: "old-model".to_owned(),
-                sampling: endora_capabilities::Sampling::default(),
-            },
-            ..endora_capabilities::ButlerModelConfig::default()
-        },
-    )
-    .unwrap();
-    let deep = json_body(
-        app(state.clone())
-            .oneshot(get("/v1/deep-model"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(deep["configured"], false, "{deep}");
-    assert_eq!(
-        deep["escalate"], true,
-        "the switch is the list's, and stays"
-    );
-    let balance = json_body(
-        app(state.clone())
-            .oneshot(get("/v1/deep-model/balance"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(balance["supported"], false, "{balance}");
-    let ai = json_body(app(state).oneshot(get("/v1/ai")).await.unwrap()).await;
-    let shown = ai.to_string();
-    assert!(!shown.contains("deepseek-chat"), "{shown}");
-    assert!(
-        !shown.contains("old-model") && !shown.contains("old.example.com"),
-        "{shown}"
-    );
 }
 
 /// The body of a response as text, whatever its status.
@@ -2684,4 +1793,110 @@ async fn the_vault_status_and_unlock_answer_unsigned_and_nothing_else_of_the_vau
         StatusCode::OK,
         "signed, the owner may list"
     );
+}
+
+/// Endora is HQ (ADR 0136): the chat and everything that served only it are gone from the
+/// node, so each of their routes is a plain 404, signed or not.
+#[tokio::test]
+async fn the_chats_routes_are_gone() {
+    let router = app(test_state());
+    for (method, path) in [
+        ("POST", "/v1/chat"),
+        ("GET", "/v1/chat"),
+        ("GET", "/v1/chat/days"),
+        ("GET", "/v1/chat/context"),
+        ("POST", "/v1/chat/context/reset"),
+        ("POST", "/v1/chat/stream"),
+        ("POST", "/v1/brief"),
+        ("GET", "/v1/brief/schedule"),
+        ("GET", "/v1/research"),
+        ("GET", "/v1/research/readiness"),
+        ("GET", "/v1/brain"),
+        ("POST", "/v1/brain/forget"),
+        ("GET", "/v1/brain/pages/memory"),
+        ("GET", "/v1/preferences"),
+        ("GET", "/v1/context"),
+        ("GET", "/v1/agenda"),
+        ("GET", "/v1/agenda/rules"),
+        ("GET", "/v1/mail"),
+        ("GET", "/v1/recipes"),
+        ("GET", "/v1/autonomy"),
+        ("GET", "/v1/deep-model"),
+        ("GET", "/v1/deep-model/usage"),
+        ("POST", "/v1/deep-ask"),
+        ("POST", "/v1/model-layer/run"),
+        ("POST", "/v1/model-lists/escalate"),
+        ("GET", "/v1/outcomes"),
+        ("GET", "/v1/repairs"),
+        ("GET", "/v1/reliability"),
+        ("GET", "/v1/aliases"),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {TEST_TOKEN}"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{method} {path} still answers"
+        );
+    }
+}
+
+/// What Endora keeps about the owner now is its record of what it did (Activity: the audit trail
+/// and the events): the export is that record, and deleting forgets it while the settings the
+/// team runs on stay (ADR 0136).
+#[tokio::test]
+async fn the_export_is_the_record_and_deleting_forgets_it() {
+    use endora_application::{AuditId, AuditLog as _, AuditRecord, Timestamp};
+    let state = test_state();
+    state
+        .audit
+        .append(
+            &AuditRecord::new(AuditId::new(1), Timestamp::from_unix_millis(5), "noted").unwrap(),
+        )
+        .unwrap();
+    let router = app(state);
+    let export = json_body(router.clone().oneshot(get("/v1/export")).await.unwrap()).await;
+    let fields: Vec<&str> = export
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(fields, ["audit", "events"], "{export}");
+    assert_eq!(export["audit"].as_array().unwrap().len(), 1);
+    let refused = router
+        .clone()
+        .oneshot(post("/v1/memory/purge", r#"{"confirm":false}"#))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let done = router
+        .clone()
+        .oneshot(post("/v1/memory/purge", r#"{"confirm":true}"#))
+        .await
+        .unwrap();
+    assert_eq!(done.status(), StatusCode::OK);
+    let after = json_body(router.oneshot(get("/v1/export")).await.unwrap()).await;
+    assert!(after["audit"].as_array().unwrap().is_empty());
+}
+
+/// Health says the node is up and which build it runs; with no chat there is no turn to be
+/// busy with and no butler model to name (ADR 0136).
+#[tokio::test]
+async fn health_says_the_build_and_nothing_of_the_chat() {
+    let health = json_body(app(test_state()).oneshot(get("/health")).await.unwrap()).await;
+    assert_eq!(health["status"], "ok");
+    assert!(health.get("version").is_some() && health.get("build").is_some());
+    for gone in ["busy", "serving_url", "serving_model"] {
+        assert!(
+            health.get(gone).is_none(),
+            "{gone} is still reported: {health}"
+        );
+    }
 }

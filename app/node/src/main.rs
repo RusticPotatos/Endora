@@ -13,6 +13,7 @@ mod auth;
 mod backup;
 mod homelab_setup;
 mod mcp_catalog;
+mod retired;
 mod secrets;
 mod signin;
 mod terminal_setup;
@@ -25,11 +26,7 @@ use std::sync::Arc;
 
 use api::AppState;
 use axum::serve::ListenerExt as _;
-use endora_application::Butler;
-use endora_capabilities::ConfigStore;
-use endora_infrastructure::{
-    ConfigurableButler, LlmButler, MixtureButler, RandomIdSource, SystemClock,
-};
+use endora_infrastructure::{RandomIdSource, SystemClock};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,96 +50,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return done;
     }
     let addr = std::env::var("ENDORA_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
-    // A local, OpenAI-compatible model endpoint (e.g. Ollama). Optional: the
-    // node runs without it and only the drafting endpoint returns 503.
-    let model_url = std::env::var("ENDORA_MODEL_URL")
-        .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
-    let model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_owned());
-
-    // The butler brain. If a router + synthesizer are configured (ADR 0055), run
-    // the mixture — a tool-tuned specialist routes to skills, a generalist writes
-    // the reply — which the eval shows out-routes a single model at less VRAM.
-    // Otherwise a single model does both. Either way it falls back to the scripted
-    // brain, so the conversation works even with no model available.
-    // Set-but-empty means unset: compose materialises a blanked variable as "", and a
-    // mixture built from two empty model names is not a butler, it is two 404s.
-    let router_model = std::env::var("ENDORA_ROUTER_MODEL")
-        .ok()
-        .filter(|m| !m.trim().is_empty());
-    let synth_model = std::env::var("ENDORA_SYNTH_MODEL")
-        .ok()
-        .filter(|m| !m.trim().is_empty());
-    let fallback: Arc<dyn Butler + Send + Sync> = match (router_model, synth_model) {
-        (Some(router), Some(synth)) => {
-            println!("butler fallback: mixture — router={router}, synth={synth} via {model_url}");
-            Arc::new(MixtureButler::new(
-                LlmButler::new(model_url.clone(), router),
-                LlmButler::new(model_url.clone(), synth),
-            ))
-        }
-        _ => {
-            println!("butler fallback: single model {model} via {model_url}");
-            Arc::new(LlmButler::new(model_url.clone(), model.clone()))
-        }
-    };
-
-    // A model configuration saved from the console overrides the environment at
-    // runtime (ADR 0055): the butler reads it each turn and rebuilds when it
-    // changes, falling back to the environment brain above when nothing is stored.
     // Credentials are sealed at rest under the key in ENDORA_SECRETS_KEY_FILE (ADR 0125),
     // made beside the database on the first start; a database whose key is missing stops
     // the node here rather than starting with a new key that opens none of it.
     let store = Arc::new(secrets::open_store(&db_path)?);
-    let model_config = Arc::new(ConfigStore::new(store.db()));
-    // Say which brain is actually IN EFFECT, not merely which one the environment
-    // would supply. The stored configuration wins, so announcing the environment's
-    // mixture while a stored single model does the work is a lie the logs tell — and
-    // it cost an afternoon of diagnosing the wrong model.
-    match endora_capabilities::ButlerModelConfigRepository::get(model_config.as_ref()) {
-        Ok(Some(cfg)) if cfg.mixture => println!(
-            "butler in effect: stored mixture — router={}, synth={}",
-            cfg.router.model, cfg.synth.model
-        ),
-        Ok(Some(cfg)) => println!("butler in effect: stored single model {}", cfg.single.model),
-        _ => println!("butler in effect: the fallback above (nothing stored)"),
-    }
-    // The deep model is attached as a FALLBACK, not as the brain: it is used only when the
-    // local one fails a deterministic check, and only if the person turned that on (ADR
-    // 0055). `ConfigStore` is both repositories, so this is the same handle.
-    // The providers and ordered lists (ADR 0105) decide which model answers. The settings
-    // above move into them once, on the first start that has them; with nothing saved from
-    // the console, the environment's model is everyday's first entry, so the list never looks
-    // empty while something answers.
-    {
-        use endora_capabilities::model_lists::ModelListRepository as _;
-        let everyday = endora_capabilities::ButlerModelConfigRepository::get(model_config.as_ref())
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| endora_capabilities::ButlerModelConfig {
-                base_url: model_url.clone(),
-                single: endora_capabilities::ModelSlot {
-                    model: model.clone(),
-                    sampling: endora_capabilities::Sampling::default(),
-                },
-                ..endora_capabilities::ButlerModelConfig::default()
-            });
-        let deep = endora_capabilities::DeepModelRepository::get(model_config.as_ref())
-            .ok()
-            .flatten();
-        match model_config.move_over_once(Some(&everyday), deep.as_ref()) {
-            Ok(true) => println!("models: the everyday and deep settings moved into ordered lists"),
-            Ok(false) => {}
-            Err(e) => eprintln!("models: could not move the settings into lists ({e})"),
-        }
-    }
-    let brain = Arc::new(
-        ConfigurableButler::new(model_config.clone(), fallback)
-            .also_knowing(model_config.clone())
-            .with_lists(model_config)
-            .with_usage_log(store.clone()),
-    );
-    let butler: Arc<dyn Butler + Send + Sync> = brain.clone();
-
     // A zone name that is not one stops the node rather than quietly becoming UTC.
     let time_zone = match endora_infrastructure::TimeZone::named_or_fixed(
         &std::env::var("ENDORA_TIME_ZONE").unwrap_or_default(),
@@ -158,10 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
     };
-    // The clock lines the model reads are the person's local time, not UTC.
+    // Local time, not UTC, wherever the node says what time it is.
     SystemClock::use_time_zone(time_zone);
-    // What Endora knows about the person: markdown pages with their own history (ADR
-    // 0101). Beside the database unless placed elsewhere; the container puts it at /brain.
+    // The brain's pages, and the nightly copies of them, are forgotten once (ADR 0136): the owner
+    // chose to delete them after taking a copy. Only a folder that is the brain's is touched.
     let brain_dir = std::env::var("ENDORA_BRAIN").unwrap_or_else(|_| {
         std::path::Path::new(&db_path)
             .parent()
@@ -170,15 +81,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .to_string_lossy()
             .into_owned()
     });
-    let knowledge = Arc::new(endora_understanding::BrainFolder::open(
-        std::path::Path::new(&brain_dir),
-    )?);
-    // What they told Endora moves out of the database once, into memory.
-    let moved = endora_understanding::move_told_into_the_brain(&store.db(), &knowledge)?;
-    if moved > 0 {
-        println!("brain: moved {moved} thing(s) you told Endora into memory");
+    match retired::forget_the_brain(std::path::Path::new(&brain_dir)) {
+        Ok(0) => {}
+        Ok(gone) => println!("brain: forgot its pages and their history ({gone} entries)"),
+        Err(e) => eprintln!("brain: could not forget all of {brain_dir}: {e}"),
     }
-    println!("brain: {brain_dir}");
+    let backups = std::path::Path::new(&db_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .join("backups");
+    match retired::forget_the_brains_copies(&backups) {
+        Ok(0) => {}
+        Ok(gone) => println!("brain: removed {gone} nightly cop(ies) of it from backups"),
+        Err(e) => eprintln!("brain: could not remove its nightly copies: {e}"),
+    }
     // The house's vault (ADR 0127), when ENDORA_VAULT_URL names one: its passkeys and unlock,
     // and the key file the node's login to it is sealed under. Passkeys bind to a name, not
     // an address: ENDORA_PASSKEY_RP_ID, `endora.home.arpa` unless set.
@@ -199,17 +115,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("vault: locked — stored credentials wait for the unlock in the console");
     }
     let the_vault = vault::Vault::new(vault_api, store.clone(), vault_key_file, &rp_id);
-    let state = AppState::new(
-        store,
-        Arc::new(RandomIdSource),
-        Arc::new(SystemClock),
-        butler,
-        knowledge,
-    )
-    .with_brain(brain)
-    .with_time_zone(time_zone)
-    .with_vault(the_vault)
-    .with_lab_from_env();
+    let state = AppState::new(store, Arc::new(RandomIdSource), Arc::new(SystemClock))
+        .with_time_zone(time_zone)
+        .with_vault(the_vault)
+        .with_lab_from_env();
     // Endora HQ (ADR 0102), when this node has one: signing with a token given here (32+
     // characters, or HQ is left off rather than reachable with a guessable one), or with the one
     // HQ made for itself in the volume the two share.
@@ -282,7 +191,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("{}", endora_application::platform_identity());
-    println!("drafting model: {model} via {model_url}  (optional; 503 if unavailable)");
 
     // The tool servers the team's bridge reaches, kept connected (ADR 0108).
     api::spawn_tool_server_upkeep(state.clone());
@@ -291,19 +199,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     api::spawn_homelab(state.clone());
     // Keeps HQ told whether the owner's Mac is free for the team's turns (ADR 0130).
     api::spawn_mac(state.clone());
-    // The mail (ADR 0097): a read-only copy mounted at /mail, read by the local model only.
-    // Nothing happens without the copy.
-    let state = match mail_copy("/mail") {
-        Some(copy) => {
-            println!("mail: reading the copy at /mail with the local model, in quiet time");
-            // The model chosen on the AI screen, always on the local endpoint.
-            let reader: Arc<dyn endora_application::UntrustedReader + Send + Sync> =
-                Arc::new(api::MailReader::new(state.config.clone()));
-            state.with_mail(copy, reader)
-        }
-        _ => state,
-    };
-
     // The team listener, in plain HTTP: HQ's model relays (ADR 0102, phase 4), the team's
     // contracts (ADR 0106) and the team gateway (ADR 0110), served nowhere else. Published to
     // the house's network for the Pi's runner and sandboxes; everything on it needs a token.
@@ -364,15 +259,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     }
     Ok(())
-}
-
-/// The mail copy at `root`, if one is mounted there with at least one account in it.
-fn mail_copy(root: &str) -> Option<endora_mail::MaildirCopy> {
-    let accounts = std::fs::read_dir(root).ok()?;
-    let any = accounts
-        .flatten()
-        .any(|entry| entry.path().join("new").is_dir() || entry.path().join("cur").is_dir());
-    any.then(|| endora_mail::MaildirCopy::new(root))
 }
 
 #[cfg(test)]

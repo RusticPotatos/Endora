@@ -7,6 +7,8 @@ named; completes the security spine [0064](0064-what-a-stranger-said.md) →
 [0067](0067-one-way-to-the-deep-model.md) → [0069](0069-one-door-off-the-device.md).
 Pattern six of [the pattern budget](../patterns.md).
 
+**Superseded 2026-10-20 by [0136](0136-endora-is-hq.md).** The chat's taint and the turn it was derived for are retired; the bridge keeps a stranger's mark (0108). The reasoning below is kept; none of its mechanism runs.
+
 ## Context
 
 [0064](0064-what-a-stranger-said.md) marks a stranger's words where they enter

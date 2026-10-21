@@ -1,1 +1,0 @@
-{"id":"endora-foundation-fixtures","name":"Foundation fixtures","contracts":{"tools":["sports_schedule","web_search","web_fetch"]},"activation":{"onStartup":true},"configSchema":{"type":"object","additionalProperties":false}}

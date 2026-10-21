@@ -16,13 +16,8 @@ path = "src/main.rs"
 axum = "0.8.9"
 endora-application = { path = "../../crates/endora-application" }
 endora-infrastructure = { path = "../../crates/endora-infrastructure" }
-endora-conversation = { path = "../../domains/conversation" }
-endora-scheduling = { path = "../../domains/scheduling" }
-endora-understanding = { path = "../../domains/understanding" }
 endora-capabilities = { path = "../../domains/capabilities" }
 endora-platform = { path = "../../domains/platform" }
-endora-mail = { path = "../../domains/mail" }
-endora-agenda = { path = "../../domains/agenda" }
 # The shared SQLite handle, for `endora-node backup` (a consistent snapshot of the live
 # database). An in-repo crate the contexts already share, not a new external dependency.
 endora-persistence = { path = "../../shared/persistence" }

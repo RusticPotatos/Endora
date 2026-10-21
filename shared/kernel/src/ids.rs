@@ -7,8 +7,8 @@
 
 /// Declares an opaque, strongly-typed identifier newtype over `u128`.
 ///
-/// Distinct id types (e.g. [`BeliefId`] vs [`MessageId`]) cannot be mixed up,
-/// which is the point: the compiler rejects passing one where another is meant.
+/// Distinct id types cannot be mixed up, which is the point: the compiler rejects passing one
+/// where another is meant.
 macro_rules! id_type {
     ($name:ident, $what:literal) => {
         #[doc = concat!("Opaque identifier for a ", $what, ".")]
@@ -31,13 +31,7 @@ macro_rules! id_type {
     };
 }
 
-id_type!(MessageId, "message");
-id_type!(PreferenceId, "preference");
-id_type!(BeliefId, "belief");
 id_type!(AuditId, "audit record");
-id_type!(OutcomeId, "outcome");
-id_type!(IntentionId, "intention");
-id_type!(NotionId, "notion");
 
 /// A point in time, as milliseconds since the Unix epoch, **supplied by the
 /// caller**. The domain never reads the system clock, so its behavior stays
@@ -61,11 +55,11 @@ impl Timestamp {
 
 #[cfg(test)]
 mod tests {
-    use super::{BeliefId, Timestamp};
+    use super::{AuditId, Timestamp};
 
     #[test]
     fn id_round_trips_its_value() {
-        assert_eq!(BeliefId::new(42).value(), 42);
+        assert_eq!(AuditId::new(42).value(), 42);
     }
 
     #[test]

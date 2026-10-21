@@ -97,6 +97,11 @@ pub fn may(role: &str, kind: Kind) -> bool {
         .any(|(r, kinds)| *r == role && kinds.contains(&kind))
 }
 
+/// How a stranger's words are marked when they reach a team turn (ADR 0064), so the model reads
+/// them as what they are. It was the chat's mark first; the bridge keeps it now the chat is gone
+/// (ADR 0136).
+pub const STRANGER_MARK: &str = "[from outside] ";
+
 /// The built-in skills that are never the team's, whatever their stance: the owner's mail,
 /// what Endora did and said in the owner's chat, the brain's pages, the brief (calendar,
 /// mail's senders, the brain), the image the owner sent, and where they are.

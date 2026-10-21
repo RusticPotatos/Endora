@@ -41,15 +41,14 @@ fn the_newest_seven_of_each_are_kept_and_nothing_else_is_touched() {
     existing.push("daily-2026-10-15-before-upgrade.db".to_owned());
     existing.push("daily-2026-1x-01.db".to_owned());
     existing.push("daily-2026-10.db".to_owned());
-    // The brain's copies are kept the same way, apart from the database's.
-    existing.extend((1..=8).map(|d| format!("brain-daily-2026-10-{d:02}.bundle")));
-    existing.push("brain-daily-2026-10-09.bundle.partial".to_owned());
+    // The brain's copies are no longer the nightly's to prune: they go once, at start, with the
+    // brain (ADR 0136, `crate::retired`).
+    existing.push("brain-daily-2026-10-01.bundle".to_owned());
     let mut gone = to_remove(&existing);
     gone.sort();
     assert_eq!(
         gone,
         names(&[
-            "brain-daily-2026-10-01.bundle",
             "daily-2026-10-01.db",
             "daily-2026-10-02.db",
             "weekly-2026-01-01.db"
@@ -91,24 +90,9 @@ fn tonights_copy_is_written_once_checked_and_old_ones_pruned() {
         std::fs::write(dir.join(format!("daily-2026-10-{d:02}.db")), b"old").unwrap();
     }
     let at = SUNDAY_0500_UTC + 30 * MINUTE;
-    let brain = endora_understanding::BrainFolder::temporary().unwrap();
-    let wrote = copy_tonight(&db, &dir, at, -240, Some(&brain))
+    let wrote = copy_tonight(&db, &dir, at, -240)
         .unwrap()
         .expect("due, so written");
-    // The brain goes too, whole history and all, as one file git can clone from.
-    for name in [
-        "brain-daily-2026-10-18.bundle",
-        "brain-weekly-2026-10-18.bundle",
-    ] {
-        let bundle = dir.join(name);
-        let verified = std::process::Command::new("git")
-            .args(["bundle", "verify", "-q"])
-            .arg(&bundle)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .output()
-            .unwrap();
-        assert!(verified.status.success(), "{name} is a whole bundle");
-    }
     assert!(wrote > 0);
     for name in ["daily-2026-10-18.db", "weekly-2026-10-18.db"] {
         let copy = rusqlite::Connection::open(dir.join(name)).unwrap();
@@ -121,15 +105,12 @@ fn tonights_copy_is_written_once_checked_and_old_ones_pruned() {
     );
     assert!(dir.join("daily-2026-10-02.db").exists());
     // Already written tonight: nothing more to do.
-    assert_eq!(
-        copy_tonight(&db, &dir, at + HOUR, -240, Some(&brain)).unwrap(),
-        None
-    );
+    assert_eq!(copy_tonight(&db, &dir, at + HOUR, -240).unwrap(), None);
     // Not due yet: nothing written.
     let early = Scratch::new("early");
     let early_dir = early.0.join("backups");
     assert_eq!(
-        copy_tonight(&db, &early_dir, SUNDAY_0500_UTC, -240, None).unwrap(),
+        copy_tonight(&db, &early_dir, SUNDAY_0500_UTC, -240).unwrap(),
         None
     );
     assert!(!early_dir.join("daily-2026-10-18.db").exists());
@@ -140,5 +121,5 @@ fn a_database_that_cannot_be_copied_is_an_error_not_silence() {
     let scratch = Scratch::new("missing");
     let dir = scratch.0.join("backups");
     let missing = scratch.0.join("no-such.db");
-    assert!(copy_tonight(&missing, &dir, SUNDAY_0500_UTC + 30 * MINUTE, -240, None).is_err());
+    assert!(copy_tonight(&missing, &dir, SUNDAY_0500_UTC + 30 * MINUTE, -240).is_err());
 }

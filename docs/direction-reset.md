@@ -1,5 +1,9 @@
 # Endora Direction Reset
 
+> **Superseded, 2026-10-20, by [ADR 0136](adr/0136-endora-is-hq.md).** Endora is HQ, a team of
+> agents for the house; the butler this document describes, and its chat, are retired. Kept as
+> the record of the direction it set.
+
 > This document supersedes previous assumptions about the product direction.
 > If implementation details conflict with this document, prefer this document.
 > Adopted 2026-07-20 (see [ADR 0052](adr/0052-what-it-knows-about-you.md)).
