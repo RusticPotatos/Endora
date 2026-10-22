@@ -194,6 +194,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.assistance_for_run(run)?.is_some())
     }
 
+    /// A terminal logical result cannot be reopened by worker recovery or a stale queue.
+    pub(super) fn assistance_terminal_for(
+        &self,
+        run: RunId,
+    ) -> Done<Option<crate::domain::RunStatus>> {
+        use crate::domain::RunStatus;
+        if let Some(request) = self.store.assistance_for_run(run)? {
+            return Ok(match request.status.as_str() {
+                "processing" => None,
+                "answered" => Some(RunStatus::Succeeded),
+                _ => Some(RunStatus::Stopped),
+            });
+        }
+        if self
+            .store
+            .assistance_notice_for_run(run)?
+            .is_some_and(|request| request.notice_cancelled || request.status != "answered")
+        {
+            return Ok(Some(RunStatus::Stopped));
+        }
+        Ok(None)
+    }
+
     /// Handler-level read-only boundary, independent of advertised tools.
     /// # Errors
     /// A store failure.
@@ -345,6 +368,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "answer_evidence":r.answer_evidence.iter().map(|reference| reference.said()).collect::<Vec<_>>(),
                 "notified":r.notified,"notice_run":r.notice_run.map(|v|v.0),"notice_cancelled":r.notice_cancelled})).collect::<Vec<_>>()});
         for (index, row) in rows.iter().enumerate() {
+            page["requests"][index]["reason"] = json!(self.assistance_reason(row)?);
             if let Some(run) = row
                 .expert_run
                 .and_then(|id| self.store.run(id).transpose())
@@ -352,6 +376,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             {
                 page["requests"][index]["attempts"] = json!(run.attempts);
                 page["requests"][index]["spent"] = json!(run.spent);
+                page["requests"][index]["run_status"] = json!(run.status.name());
+                page["requests"][index]["retry_at"] = json!(run.retry_at);
+                if matches!(row.status.as_str(), "processing" | "failed")
+                    && !run.end_reason.is_empty()
+                {
+                    page["requests"][index]["reason"] = json!(run.end_reason);
+                }
             }
             let notice = row
                 .notice_run
@@ -364,6 +395,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(page)
+    }
+
+    fn assistance_reason(&self, request: &Request) -> Done<&'static str> {
+        match request.status.as_str() {
+            "expired" => return Ok("The request deadline was reached"),
+            "cancelled" => return Ok("Cancelled; this request will not restart"),
+            "declined" => return Ok("The expert ended without returning an answer"),
+            "failed" => return Ok("The expert could not return an answer"),
+            "answered" => return Ok("The accepted answer is retained"),
+            "processing" => return Ok("The expert's assigned turn is queued or answering"),
+            _ => {}
+        }
+        let expert = self.member(request.expert)?;
+        if expert.furloughed() {
+            return Ok("The expert is furloughed");
+        }
+        if expert.paused {
+            return Ok("The expert is paused");
+        }
+        if self.draining() {
+            return Ok("Waiting for the drain to finish");
+        }
+        if self.project(request.project)?.status != ProjectStatus::Active {
+            return Ok("The project is not active");
+        }
+        Ok("Waiting for expert delivery")
     }
 
     /// Read only a bounded set of due intents. The store atomically creates their wakes,

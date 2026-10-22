@@ -2362,14 +2362,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         };
         let why = why.as_str();
+        if let Some(status) = self.assistance_terminal_for(run.id)? {
+            self.end(
+                run,
+                status,
+                &format!("assistance ended before worker recovery: {why}"),
+            )?;
+            return Ok(false);
+        }
+        let assistance_delivery = self.store.assistance_for_run(run.id)?.is_some()
+            || self.store.assistance_notice_for_run(run.id)?.is_some();
         // A turn on the owner's Mac that failed because the Mac went away (the owner came back,
         // the laptop left its charger) did nothing wrong: it is tried again when the Mac is
         // free, and the failure is not counted against it (ADR 0130).
         let on_the_mac = run.brain == Some(Brain::Mac);
-        if on_the_mac && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some() {
+        if !assistance_delivery
+            && on_the_mac
+            && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some()
+        {
             run.attempts = run.attempts.saturating_sub(1);
         }
-        let own = runs::own_attempts(run.attempts, run.interrupted);
+        let own = if assistance_delivery {
+            run.attempts
+        } else {
+            runs::own_attempts(run.attempts, run.interrupted)
+        };
         let Some(due) = runs::retry_after_failure(own, now) else {
             self.end(run, RunStatus::Failed, why)?;
             return Ok(false);
@@ -3309,6 +3326,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut starts = self.starts_read(now)?;
         let mut started = 0;
         for mut run in queued {
+            if let Some(status) = self.assistance_terminal_for(run.id)? {
+                self.end(run, status, "assistance request already ended")?;
+                continue;
+            }
             if (self.store.assistance_for_run(run.id)?.is_some()
                 || self.store.assistance_notice_for_run(run.id)?.is_some())
                 && !self.conversations_enabled()?

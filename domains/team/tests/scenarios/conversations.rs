@@ -3,6 +3,7 @@
 use cucumber::{given, then, when};
 use endora_team::application::{Author, TeamStore};
 use endora_team::domain::{Role, WakeReason};
+use endora_team::infrastructure::Script;
 use serde_json::json;
 
 use super::Office;
@@ -129,7 +130,11 @@ fn one_expert(w: &mut Office) {
             .count(),
         1
     );
-    let run = w.turn_of("Member2").run;
+    let run = w
+        .turns
+        .get("Member2")
+        .expect("the delivery step recorded the expert turn")
+        .run;
     assert!(w.hq.in_assistance(run).unwrap());
     assert_eq!(
         w.hq.store().tasks().unwrap().len(),
@@ -165,6 +170,47 @@ fn answer_twice(w: &mut Office) {
             w.refused
         );
     }
+}
+
+#[when("Member2's worker disappears after answering")]
+fn worker_disappears(w: &mut Office) {
+    let run = w.turn_of("Member2").run;
+    w.hq.runner().vanish(run);
+    w.tick();
+}
+
+#[when("Member2's worker is unavailable")]
+fn worker_unavailable(w: &mut Office) {
+    let member = w.member("Member2");
+    w.hq.runner().script(member, Script::WillNotStart);
+}
+
+#[when("three bounded delivery attempts have passed")]
+fn three_attempts(w: &mut Office) {
+    for attempt in 0..3 {
+        if attempt > 0 {
+            w.clock
+                .0
+                .fetch_add(61_000, std::sync::atomic::Ordering::SeqCst);
+        }
+        w.tick();
+    }
+}
+
+#[then("the owner sees a failed assistance request with its cause")]
+fn failed_with_cause(w: &mut Office) {
+    let page =
+        w.hq.assistance_requests_page(w.conversation.unwrap(), 0)
+            .unwrap();
+    let request = &page["requests"][0];
+    assert_eq!(request["status"], "failed");
+    assert_eq!(request["attempts"], 3);
+    assert!(
+        request["reason"]
+            .as_str()
+            .unwrap()
+            .contains("runner said no")
+    );
 }
 
 #[then("the owner sees one answered request with the original author and project")]

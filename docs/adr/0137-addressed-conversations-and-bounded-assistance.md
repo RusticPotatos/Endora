@@ -326,6 +326,13 @@ citation type has no document variant. This assistance slice retains Internal-on
 sharing: Confidential or unclassified sources are refused rather than exposed
 through a grant or model-tier change. Full history retention is unchanged.
 
+Phase 4 recovery clarification, 2026-10-22: an already accepted answer closes its
+expert execution before any worker recovery or stale queued retry. Retrying a
+worker cannot reopen the logical result. New assistance and result deliveries
+count at most three total attempts, including platform interruptions and Mac
+unavailability; the legacy consultation/task interruption allowance remains
+unchanged. The offline failure matrix exposed and regression-tested both seams.
+
 ## Delivery gates and verification
 
 Implementation checkpoint, 2026-10-22: the separate branch contains the information-only

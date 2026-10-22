@@ -20,9 +20,11 @@ the separate branch; the [information checkpoint](agent-collaboration-informatio
 records that slice's scope. Phase 3's bounded read-only assistance, original-source
 grants, project charging and recoverable delivery have now passed the full
 repository gate; see the [assistance checkpoint](agent-collaboration-assistance-checkpoint-2026-10-22.md)
-for actual coverage, SQL archive-growth measurements and limits. Phase 4's offline
-hardening and separately authorized live pilot remain next. The full plan is not
-complete, and no live enablement or deployment has taken place.
+for actual coverage, SQL archive-growth measurements and limits. Phase 4's
+[offline hardening checkpoint](agent-collaboration-hardening-checkpoint-2026-10-22.md)
+records the validated failure matrix and fixes. The offline portion passed the
+full repository gate; the separately authorized live pilot is still outstanding.
+The full plan is not complete, and no live enablement or deployment has taken place.
 
 ## Recommendation
 

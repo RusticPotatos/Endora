@@ -122,4 +122,7 @@ mod asking_tests;
 mod conversation_tests;
 
 #[cfg(test)]
+mod assistance_resilience_tests;
+
+#[cfg(test)]
 mod turn_kinds_tests;

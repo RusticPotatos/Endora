@@ -30,9 +30,21 @@ function hqConversations(s) {
       ${page.has_more ? button("next", HQ_CHAT.id, "Next page") : ""}${button("delete", HQ_CHAT.id, "Delete conversation")}</div></section>`;
     if (HQ_CHAT.assistance) {
       const a = HQ_CHAT.assistance;
-      body += `<section class="hq-card"><h3>Assistance in conversation ${Number(HQ_CHAT.id)}</h3>
+      const requestRows = (a.requests || []).map((r) => {
+        const requester = ((s.members || []).find((m) => m.id === r.requester) || {}).name || `Member ${r.requester}`;
+        const expert = ((s.members || []).find((m) => m.id === r.expert) || {}).name || `Member ${r.expert}`;
+        const spend = ((Number(r.spent || 0) + Number(r.notice_spent || 0)) / 1000000).toFixed(4);
+        const delivery = r.notice_cancelled ? "Delivery cancelled" : r.notified ? `Result turn ${esc(r.notice_status || "queued")}` : "Waiting to notify requester";
+        return `<li>Request ${Number(r.id)} · ${esc(r.status)} · ${esc(requester)} to ${esc(expert)}
+          <p>${esc(r.objective)}</p>${r.reason ? `<p>${esc(r.reason)}</p>` : ""}
+          <small>Project ${Number(r.project)} · ${Number(r.attempts || 0)} attempts · exchange spend $${spend} · deadline ${esc(new Date(r.deadline_at).toLocaleString())}${r.status === "processing" && r.run_status === "retry_waiting" && r.retry_at ? ` · next attempt ${esc(new Date(r.retry_at).toLocaleString())}` : ""}</small>
+          ${(r.evidence || []).length ? `<p>Original source locators: ${r.evidence.map(esc).join(", ")}</p>` : ""}
+          ${r.answer ? `<p>Answer: ${esc(r.answer)}</p><small>Answer sources: ${(r.answer_evidence || []).map(esc).join(", ") || "none cited"} · ${delivery}</small>` : ""}
+          ${["queued", "processing"].includes(r.status) ? button("cancel-request", r.id, "Cancel request") : ""}</li>`;
+      }).join("");
+      body += `<section class="hq-card" style="overflow-wrap:anywhere"><h3>Assistance in conversation ${Number(HQ_CHAT.id)}</h3>
         <p class="hq-note">Each request has a fifteen-minute deadline. Answers are attributed peer testimony. A source grant lasts 24 hours, applies only to this conversation, and gives no task authority.</p>
-        <ul class="hq-thread">${(a.requests || []).map((r) => `<li>Request ${Number(r.id)} · ${esc(r.status)} · ${esc(((s.members || []).find((m) => m.id === r.requester) || {}).name || `Member ${r.requester}`)} to ${esc(((s.members || []).find((m) => m.id === r.expert) || {}).name || `Member ${r.expert}`)}<p>${esc(r.objective)}</p><small>Project ${Number(r.project)} · ${Number(r.attempts || 0)} attempts · exchange spend $${((Number(r.spent || 0) + Number(r.notice_spent || 0)) / 1000000).toFixed(4)} · deadline ${esc(new Date(r.deadline_at).toLocaleString())}</small>${r.evidence.length ? `<p>Original source locators: ${r.evidence.map(esc).join(", ")}</p>` : ""}${r.answer ? `<p>Answer: ${esc(r.answer)}</p><small>Answer sources: ${(r.answer_evidence || []).map(esc).join(", ") || "none cited"} · ${r.notice_cancelled ? "Delivery cancelled" : r.notified ? `Result turn ${esc(r.notice_status || "queued")}` : "Waiting to notify requester"}</small>` : ""}${["queued", "processing"].includes(r.status) ? button("cancel-request", r.id, "Cancel request") : ""}</li>`).join("") || '<li class="hq-empty">No assistance requests on this page.</li>'}</ul>
+        <ul class="hq-thread">${requestRows || '<li class="hq-empty">No assistance requests on this page.</li>'}</ul>
         <div class="hq-row">${button("assistance", HQ_CHAT.id, "First requests")}${button("save-assistance", HQ_CHAT.id, "Save this request page")}${a.has_more ? button("assistance-next", HQ_CHAT.id, "Next requests") : ""}</div>
         <ul class="hq-thread">${(a.grants || []).map((g) => `<li>${esc(g.source)} · expires ${esc(new Date(g.expires_at).toLocaleString())} ${button("revoke-source", esc(g.source), "Revoke access")}</li>`).join("") || '<li class="hq-empty">No active source grants.</li>'}</ul>
         <div class="hq-row"><label>Original source <input id="hq-assistance-source" placeholder="d12 or r8" maxlength="24"></label>${button("grant-source", HQ_CHAT.id, "Grant access")}</div></section>`;

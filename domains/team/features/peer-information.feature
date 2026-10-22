@@ -37,3 +37,20 @@ Feature: Peer information is retained without scheduling work
     Then the request is visibly cancelled
     When the owner re-enables assistance
     Then cancelled assistance starts no further turns
+
+  Scenario: Losing a worker after its accepted answer does not repeat the work
+    When Member1 explicitly asks Member2 for read-only assistance
+    And the assistance delivery tick runs
+    And Member2 answers the assistance request twice with the same answer
+    And Member2's worker disappears after answering
+    And 2 minutes pass
+    Then only Member2 receives one assistance turn
+    And the owner sees one answered request with the original author and project
+
+  Scenario: An unavailable worker ends with a cause after bounded attempts
+    When Member1 explicitly asks Member2 for read-only assistance
+    And Member2's worker is unavailable
+    And three bounded delivery attempts have passed
+    Then the owner sees a failed assistance request with its cause
+    When 2 minutes pass
+    Then the owner sees a failed assistance request with its cause
