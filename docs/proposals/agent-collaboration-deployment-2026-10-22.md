@@ -1,0 +1,83 @@
+# Agent collaboration: dormant NAS deployment
+
+2026-10-22. AI-assisted release record on `codex/agent-collaboration`.
+The owner approved the reviewed packet and instructed deployment. Application
+candidate `753984ee` was deployed from a clean detached checkout under `~/repos`.
+The unrelated baseline-collector edit was preserved outside the release checkout.
+
+## Deployment and safeguards
+
+The established workflow was used: build on the configured separate Docker
+machine for the NAS's `linux/amd64` architecture, then Endora's
+`make deploy-check` to transfer images, drain HQ, replace services, lift the
+drain and run live smoke checks. The build machine's Docker service was started
+first because it was stopped. No compilation ran on the NAS.
+
+The ansible-nas `make run-remote TAGS=endora` preview showed that its configured
+Endora application block is skipped: this installation is operated by Endora's
+Make deployment. Ansible manages the shutdown drain. The first preview also
+selected an OpenBao task; it was excluded with `EXTRA=--skip-tags openbao`.
+The narrowed preview was reviewed before apply. The apply passed and changed
+only the shutdown-drain script, unit and enablement. Independent systemd checks
+confirmed the unit is active and enabled. No ansible-nas source or private input
+files were edited. The pinned collection was unchanged because this slice changes
+no deployment role, Compose or Make configuration.
+
+Consistent node and HQ database snapshots were made through the running image's
+SQLite snapshot command. HQ's database path was explicitly supplied when invoking
+that command inside its container. Snapshots were integrity-checked, retained on
+the NAS and copied privately for restoration/upgrade rehearsal. The old application
+image was retained under a release-specific tag. These are recovery assets, not
+proof that an old binary may open the upgraded database.
+
+Both restored database copies were opened twice using the candidate's actual
+store adapters. The node adapter applied its schema with the vault locked;
+the rehearsal neither decrypted secrets nor started an application, model or
+worker. Both copies passed SQLite integrity checks and retained every preexisting
+table's row count. Production secret recovery was not rehearsed. Node and HQ
+mount sources were compared with the resolved deployment configuration and matched.
+
+An explicit preliminary drain observed no running turns before the Ansible apply.
+It was lifted during the subsequent build of enabled companion images. The Make
+deployment's final drain again explicitly reported no running turns before any
+application restart. No drain-failure fallback was used. The standard target also
+built/transferred the enabled sound/AirPlay images; the AirPlay sender and AirPlay
+2 services were recreated. The existing runner/worker source did not change, so
+no Pi runtime deployment was needed.
+
+## Observed results
+
+- `make deploy-check` exited successfully. Both live smoke tests passed;
+  one test was filtered out by the existing invocation.
+- `/health` reports status `ok`, version `0.12.0`, build `753984ee`.
+- Node and HQ run the exact application image built for this candidate; its
+  full identity is recorded in the private release manifest.
+- HQ's drain is lifted and reports no cut turns. The team's preexisting global
+  stop state is preserved: normal team operation remains active.
+- Eight members and nine open tasks remain visible. A post-deployment SQLite
+  integrity check passed, and every pre-deployment HQ table's row count was
+  retained or increased. These checks establish preservation at the aggregate
+  level; they do not independently re-evaluate every historical task.
+- Conversations remain disabled and the conversation directory is empty.
+  No pilot participants, conversation or assistance request were created in
+  production, and no pilot model call was made.
+- The actual served sign-in screen visibly shows build `753984ee`. This browser
+  has no owner session, so signed-in Work controls and physical devices remain
+  unverified. The smoke checks do not substitute for that pilot/UI evidence.
+
+Private evidence is retained in the ignored `.local/release-753984ee/` directory:
+release manifest, prior and deployed container identities/configuration, snapshots,
+schema-rehearsal results, scoped Ansible previews/apply, drain logs, deployment log
+and live health/HQ summaries. Credentials, network addresses, database contents
+and full raw logs are not included in this public record.
+
+## Remaining boundary
+
+This installs the dormant feature. It does not complete the
+[live diagnostic pilot](agent-collaboration-live-pilot-2026-10-22.md), its matched
+comparison, Phase 5 device evidence or Phase 6 adoption decision. Pilot activation
+still requires its scoped authorization and preflight. Forward disable remains
+the supported response to a collaboration failure; restoring older data requires
+an explicit decision because it could discard later work. See the
+[reviewed implementation plan](agent-collaboration-plan-reviewed-2026-10-21.md)
+for the remaining gates.

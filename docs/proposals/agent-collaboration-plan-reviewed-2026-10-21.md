@@ -24,7 +24,8 @@ for actual coverage, SQL archive-growth measurements and limits. Phase 4's
 [offline hardening checkpoint](agent-collaboration-hardening-checkpoint-2026-10-22.md)
 records the validated failure matrix and fixes. The offline portion passed the
 full repository gate; the separately authorized live pilot is still outstanding.
-The full plan is not complete, and no live enablement or deployment has taken place.
+At that checkpoint, the full plan was not complete and no live enablement or
+deployment had taken place; subsequent preparation and deployment are recorded below.
 
 Pilot preparation, 2026-10-22: the
 [isolated live pilot packet](agent-collaboration-live-pilot-2026-10-22.md)
@@ -32,6 +33,13 @@ pins the actual binaries and local model, freezes the diagnostic and stop rules,
 and records a stopped, feature-off bootstrap with no runner or model call.
 Live activation still awaits the owner's scoped approval and fail-closed
 preflight. Startup-seeded work is explicitly excluded from pilot dispatch.
+
+Deployment update, 2026-10-22: the owner approved deployment. Candidate `753984ee`
+is installed on the NAS with conversations disabled; the
+[release record](agent-collaboration-deployment-2026-10-22.md) captures backups,
+schema rehearsal, scoped Ansible changes, clean drain, actual image/build checks
+and passing live smoke checks. Live pilot activation and the remaining evaluation
+and device gates are still outstanding.
 
 ## Recommendation
 
