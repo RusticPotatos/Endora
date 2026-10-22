@@ -446,12 +446,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let at = Self::address(address)?;
         let now = self.clock.now();
         match &at {
-            Address::Page(page) => self.page_said(page),
+            Address::Page(page) => {
+                if !matches!(page.as_str(), "lab" | "team") {
+                    self.unclassified_message_input(run)?;
+                }
+                self.page_said(page)
+            }
             Address::Section { page, anchor } => {
                 self.page_there(page)?;
                 let s = self
                     .section_at(page, anchor)?
                     .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                self.inherit_input_from(run, s.written_in_run)?;
                 self.store.touch_section(s.id, now)?;
                 self.section_said(&s)
             }
@@ -463,6 +469,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         _ => true,
                     })
                     .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
+                self.inherit_input_from(run, s.written_in_run)?;
                 self.store.touch_story(s.id, now)?;
                 let trust = self.story_trust(&s)?;
                 let mut said = format!(

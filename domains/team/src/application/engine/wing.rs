@@ -1247,6 +1247,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !member.role.leads() && !reach.contains(&document.task) {
             return Err(EngineError::Refused(Refusal::NotADocument));
         }
+        self.inherit_input_from(run, document.run)?;
         let chars: Vec<char> = document.text.chars().collect();
         let parts = chars.len().div_ceil(DOCUMENT_PART).max(1);
         let part = part.clamp(1, parts);

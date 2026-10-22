@@ -10,6 +10,16 @@ use crate::domain::record::{Passage, Query};
 
 /// The history's part of HQ's store.
 pub trait HistoryStore {
+    /// Persist that HQ supplied Confidential history to this turn, before returning it.
+    /// # Errors
+    /// A store failure.
+    fn mark_confidential_input(&self, run: RunId) -> Stored<()>;
+
+    /// Whether this turn read Confidential tool results or inherited Confidential history.
+    /// # Errors
+    /// A store failure.
+    fn run_read_confidential(&self, run: RunId) -> Stored<bool>;
+
     /// Keeps a turn's conversation. A turn has one.
     ///
     /// # Errors

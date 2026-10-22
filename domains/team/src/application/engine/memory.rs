@@ -85,10 +85,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn memory(&self, member: &Member, run: &Run) -> Done<(Situation, Composed)> {
         let situation = self.situation_of(member, run)?;
         let pieces = self.pieces(member, run, situation)?;
+        let unclassified: Vec<String> = pieces
+            .iter()
+            .filter(|piece| {
+                !piece.text.trim().is_empty()
+                    && !matches!(
+                        piece.name.as_str(),
+                        "map" | "your notebook" | "tidy" | "furlough" | "world:lab"
+                    )
+            })
+            .map(|piece| piece.name.clone())
+            .collect();
         let composed = situations::compose(
             situations::budget(member.role, member.brain, situation),
             pieces,
         );
+        if unclassified
+            .iter()
+            .any(|name| composed.briefed.contains(name))
+        {
+            self.unclassified_message_input(run.id)?;
+        }
         self.store.save_briefed(&Briefed {
             run: run.id,
             situation,
@@ -210,7 +227,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Weight::Recommended,
             ));
         }
-        let (notes, tidy) = self.notebook_said(member)?;
+        let (notes, tidy) = self.notebook_said(member, run.id)?;
         let notes_weight = if situation == Situation::Recalled || member.role == Role::Ceo {
             Weight::Core
         } else {

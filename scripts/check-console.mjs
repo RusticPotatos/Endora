@@ -3071,4 +3071,33 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   console.log("sign-in: a password manager sees a username, a password and a one-time code");
 }
 
+{
+  const fixture = {members:[{id:1,name:"Member 1",role:"lead"},{id:2,name:"Member 2",role:"developer"}],
+    projects:[{id:1,title:"Fixture",status:"active"}]};
+  const loaded = {enabled:true,conversations:[{id:1,project:1,participants:[1,2],messages:2}],has_more:false};
+  const fail = (message) => { throw new Error(message); };
+  runInContext(`HQ_CHAT.directory = ${JSON.stringify(loaded)}; HQ_CHAT.page = {conversation:{id:1},messages:[{id:1,member:1,text:'<img src=x onerror=bad()>',evidence:['r12'],run:7}],has_more:true,after:1}; HQ_CHAT.id = 1;`,context);
+  const html=runInContext(`hqConversations(${JSON.stringify(fixture)})`,context);
+  for (const wanted of ["Conversations","kept until you delete", "&lt;img", "Save this page", "Next page", "hq:conversations:delete:1", "Operation history"]) {
+    if (!html.includes(wanted)) fail("conversations: missing escaped history/control: "+wanted);
+  }
+  if (html.includes('<img src=x')) fail("conversations: message text became markup");
+  runInContext(`var conversationKeepApi = api, conversationKeepRender = render, conversationKeepConfirm = confirm, conversationCalls = [];
+    render = () => {}; confirm = () => true;
+    api = async (method,path,body) => { conversationCalls.push([method,path,body]);
+      if (path.includes("/operations")) return {operations:[{id:2,member:1,run:7,operation:"read",reason:"accepted",at:42}],has_more:false,after:2};
+      if (path.includes("/1?")) return {messages:[{id:2,member:2,text:"Next fixture",run:8,evidence:[]}],has_more:false,after:2};
+      return {enabled:false,conversations:[],has_more:false}; };`,context);
+  await runInContext('hqConversationAct("next","1")',context);
+  if (runInContext('HQ_CHAT.page.messages.length !== 1 || HQ_CHAT.page.messages[0].id !== 2 || HQ_CHAT.after !== 1',context)) fail("conversations: paging accumulated old messages or lost its cursor");
+  await runInContext('hqConversationAct("operations","first")',context);
+  if (!runInContext(`hqConversations(${JSON.stringify(fixture)})`,context).includes("it does not mean an agent acted")) fail("conversations: a read outcome was presented as completed work");
+  await runInContext('hqConversationAct("delete","1")',context);
+  if (runInContext('HQ_CHAT.page !== null || HQ_CHAT.operations !== null',context)) fail("conversations: deleted data stayed in the view");
+  const calls = runInContext('conversationCalls.map(c => c[0]+" "+c[1])',context);
+  if (JSON.stringify(calls) !== JSON.stringify(["GET /v1/hq/conversations/1?after=1","GET /v1/hq/conversations/operations?after=0","POST /v1/hq/conversations/1/delete","GET /v1/hq/conversations?after=0"])) fail("conversations: controls asked unexpected routes: "+JSON.stringify(calls));
+  runInContext("api = conversationKeepApi; render = conversationKeepRender; confirm = conversationKeepConfirm; HQ_CHAT.directory = null; HQ_CHAT.page = null; HQ_CHAT.operations = null; HQ_CHAT.id = null;",context);
+  console.log("conversations: bounded history is escaped, retained and inspectable in Work");
+}
+
 console.log(`console check: ${named.length} screens render`);

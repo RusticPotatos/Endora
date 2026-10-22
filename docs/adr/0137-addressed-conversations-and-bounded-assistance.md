@@ -308,6 +308,30 @@ Prefer forward disable over deploying an old binary against an unproven schema.
 
 ## Delivery gates and verification
 
+Implementation checkpoint, 2026-10-22: the separate branch contains the information-only
+slice, including owner scope controls, paged JSON inspection/export, deletion and content-free
+operation history. A read outcome records that a page was returned, not that a recipient
+processed its claims. The Work view saves one bounded page; a one-click whole-archive streaming
+download is not implemented. An owner may traverse/export the retained pages without a live
+archive-wide read transaction. No live installation or pilot has occurred.
+Content-free run and member/day admission counters are independent of conversation
+deletion and updated atomically with acceptance. They retain counts, without message
+text, evidence or conversation links, so explicit deletion does not reset a rate limit.
+
+History reads now persist runtime-observed Confidential input before returning passages.
+That taint survives restart, blocks information sends and is inherited by later transcript/
+record searches; it is not a member-supplied label. Protocol refusals omit caller-supplied
+conversation IDs and message text. Worker directory discovery checks current member eligibility
+and shows only active projects within its bounded cursor page. Owner inspection remains available
+while disabled.
+Worker access is also tied to the enabled switch revision at turn briefing time;
+an owner switch during a turn cannot admit a turn started under an older policy.
+The feature-off path leaves legacy briefing classification unchanged.
+Legacy text with no reliable source-run lineage fails closed for the Internal pilot.
+In particular, task-thread posts do not yet carry an immutable author run, so task
+turns cannot send pilot messages until that lineage is added. This is a deliberate
+limit of the first slice rather than a claim that free-text parsing proves a tier.
+
 Phase 2 delivers information-only messaging, persistence, owner inspection and
 export/delete together. No executing assistance is offered yet. Phase 3 adds the
 request lifecycle, evidence grants, charging and recovery together. Phase 4

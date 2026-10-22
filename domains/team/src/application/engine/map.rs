@@ -363,7 +363,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .iter()
             .map(map::Fact::entry)
             .collect();
-        Ok(map::compose(entries, cap))
+        let composed = map::compose(entries, cap);
+        for address in &composed.kept {
+            let Some((page, anchor)) = address
+                .strip_prefix("world:")
+                .and_then(|s| s.split_once('#'))
+            else {
+                continue;
+            };
+            match self.section_at(page, anchor)? {
+                Some(section) => self.inherit_input_from(run.id, section.written_in_run)?,
+                None => self.unclassified_message_input(run.id)?,
+            }
+        }
+        Ok(composed)
     }
 
     /// The map as the World card shows it: every page with its steward and what is on it, the

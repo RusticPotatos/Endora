@@ -59,11 +59,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             )));
         }
         let member = self.member(run.member)?;
-        let confidential = self
-            .store
-            .call_receipts_of(run.id)?
-            .iter()
-            .any(|r| r.confidential);
+        let confidential = self.store.run_read_confidential(run.id)?;
         let (body, cut) = history::cap(text, history::TRANSCRIPT_MOST);
         let now = self.clock.now();
         let kept = Transcript {

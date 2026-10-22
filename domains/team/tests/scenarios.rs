@@ -42,6 +42,10 @@ mod map;
 #[path = "scenarios/history.rs"]
 mod history;
 
+/// Information-only peer conversations (ADR 0137).
+#[path = "scenarios/conversations.rs"]
+mod conversations;
+
 /// The Mac's brain (ADR 0130), in its own file.
 #[path = "scenarios/mac.rs"]
 mod mac;
@@ -126,6 +130,10 @@ struct Office {
     /// it was asked.
     answer: Option<String>,
     wakes_at_ask: usize,
+    /// The owner-authorized conversation in a messaging scenario.
+    conversation: Option<i64>,
+    /// Task, wake and run counts immediately before information was sent.
+    before_information: Option<(usize, usize, usize)>,
     /// The file HQ keeps its team in, when a scenario is about HQ restarting (ADR 0130).
     file: Option<String>,
     /// The pool for a month, when a scenario is about money (ADR 0131).
@@ -181,6 +189,8 @@ impl Default for Office {
             retraction: None,
             answer: None,
             wakes_at_ask: 0,
+            conversation: None,
+            before_information: None,
             file: None,
             pool_per_month: endora_team::domain::money::POOL_PER_MONTH,
             mac_said: false,

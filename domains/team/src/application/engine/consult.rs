@@ -74,7 +74,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // model may be given a passage from a turn that read Confidential data, a turn on Claude
         // may not.
         let on_the_cloud = turn.brain.unwrap_or(asker.brain).cloud();
-        let chosen = record::choose(self.store.search_record(&query)?, &terms, on_the_cloud);
+        let found = self.store.search_record(&query)?;
+        let chosen = record::choose(found.clone(), &terms, on_the_cloud);
+        if chosen.iter().any(|e| {
+            found.iter().any(|p| {
+                p.locator == e.locator && !crate::domain::history::may_reach_a_cloud_member(p.tier)
+            })
+        }) {
+            // Fail closed before returning any inherited confidential text. This also protects
+            // later transcripts and record searches of this turn's posts and handovers.
+            self.store.mark_confidential_input(run)?;
+        }
         // How much the memory is used is counted from these (ADR 0132).
         self.emit(
             EventKind::RecordAsked,

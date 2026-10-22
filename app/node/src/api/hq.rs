@@ -12,6 +12,8 @@ pub(super) use world::*;
 /// The guards (ADR 0124).
 mod guards;
 pub(super) use guards::*;
+mod conversations;
+pub(super) use conversations::*;
 
 fn client(
     state: &AppState,

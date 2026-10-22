@@ -19,6 +19,7 @@ use crate::domain::{
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{chess, games};
 
+mod conversations;
 mod guards;
 mod history;
 mod map;
@@ -385,6 +386,7 @@ impl SqliteTeamStore {
         // is made if this SQLite has FTS5; searching works without it.
         conn.execute_batch(history::SCHEMA).map_err(backend)?;
         let _ = conn.execute_batch(history::FULL_TEXT);
+        conn.execute_batch(conversations::SCHEMA).map_err(backend)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })

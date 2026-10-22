@@ -13,6 +13,10 @@ use crate::domain::record::{Passage, Query};
 use crate::domain::{MemberId, RunId, TaskId};
 
 pub(super) const SCHEMA: &str = "
+-- Runtime-observed history input taint survives restart and transcript expiry.
+CREATE TABLE IF NOT EXISTS run_confidential_inputs (
+ run INTEGER PRIMARY KEY REFERENCES runs(id)
+) STRICT;
 -- One turn's conversation as plain text, scrubbed by the node and capped (ADR 0129). Kept for
 -- thirty days and the last five of a member on a task; the retention rule lets the rest go.
 CREATE TABLE IF NOT EXISTS transcripts (
@@ -52,6 +56,26 @@ const TRANSCRIPT_SELECT: &str = "SELECT run, member, task, runtime, brain, tier,
     cut, at_ms, kept_until FROM transcripts";
 
 impl HistoryStore for SqliteTeamStore {
+    fn mark_confidential_input(&self, run: RunId) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "INSERT OR IGNORE INTO run_confidential_inputs(run) VALUES(?1)",
+                [run.0],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn run_read_confidential(&self, run: RunId) -> Stored<bool> {
+        self.conn()?
+            .query_row(
+                &format!("SELECT {}", super::record::read_secrets("?1")),
+                [run.0],
+                |r| r.get(0),
+            )
+            .map_err(backend)
+    }
+
     fn add_transcript(&self, t: &Transcript) -> Stored<()> {
         self.conn()?
             .execute(

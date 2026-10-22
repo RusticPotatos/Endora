@@ -1,12 +1,14 @@
 //! The team's application layer: the engine and the ports it needs.
 
 mod chess_tool;
+pub mod conversation_ports;
 pub mod engine;
 pub mod guard_ports;
 pub mod history_ports;
 pub mod map_ports;
 pub mod ports;
 pub mod protocol;
+mod protocol_conversations;
 pub mod protocol_history;
 pub mod protocol_world;
 pub mod replay;
@@ -115,6 +117,9 @@ mod history_tests;
 
 #[cfg(test)]
 mod asking_tests;
+
+#[cfg(test)]
+mod conversation_tests;
 
 #[cfg(test)]
 mod turn_kinds_tests;

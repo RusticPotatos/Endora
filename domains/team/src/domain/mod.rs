@@ -8,6 +8,7 @@ pub mod chess;
 pub mod chess_match;
 pub mod closure;
 pub mod consult;
+pub mod conversation;
 pub mod cut;
 pub mod deploy;
 pub mod desk;

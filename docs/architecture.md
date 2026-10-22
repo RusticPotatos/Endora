@@ -76,6 +76,14 @@ dependency graph is acyclic.
 
 See [domain-map.md](domain-map.md) for what each context owns.
 
+HQ's information conversations are also owned by `team` ([ADR 0137](adr/0137-addressed-conversations-and-bounded-assistance.md)).
+The owner authorizes fixed project/participant scopes through the node. Existing live turns can
+exchange bounded Internal information without creating tasks, wakes or model calls. Conversation
+history is retained until explicit owner deletion; routine access uses indexed cursor pages and
+deletion uses bounded batches. The owner inspects message and content-free operation pages in
+HQ Work. The feature defaults off. Executing assistance, new evidence grants and charging changes
+remain later slices; existing consultation keeps its current path.
+
 ## Layers within each context
 
 Each bounded context is layered:

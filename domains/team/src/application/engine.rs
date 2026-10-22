@@ -38,6 +38,7 @@ mod allowance;
 mod areas;
 mod budget;
 mod consult;
+mod conversations;
 mod deploy;
 mod digest;
 mod discipline;
@@ -2413,6 +2414,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// its situation needs within its budget (ADR 0122), then its work; and at the very end,
     /// what of the world was left out and how to read it. The run records its situation.
     fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
+        self.prepare_conversation_turn(run.id)?;
         // A consulted turn is told the question and what it wrote on the matter, and no more
         // (ADR 0129).
         if let Some(found) = self.consult_of_run(run.id)? {
@@ -2443,7 +2445,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Downtime has no task to brief: the office, the open proposals and what may be done
         // (ADR 0119).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
-            told.push_str(&self.downtime_said(member)?);
+            told.push_str(&self.downtime_said(member, run.id)?);
             // The quiz's answer is offered in the quiz's turn alone, so only that one is told of it.
             told.push_str(
                 "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc, \
@@ -2492,6 +2494,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(told);
         };
         let task = self.task(task)?;
+        // Legacy task threads contain posts without immutable source-run lineage. A task turn
+        // receives them in its briefing, so new Internal messaging fails closed for this turn.
+        self.unclassified_message_input(run.id)?;
         // The CEO's review and planning say what they ask as HQ asks it now, whatever their
         // routine was made with (ADR 0120).
         let description = match self.routine_of(task.id)? {
@@ -2986,6 +2991,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // up again, before its turns are looked at, so the ones the restart cut are counted; and
         // one nobody ended outlasts its age.
         self.drain_tick_held_lock(now)?;
+        // Owner-requested deletion stays bounded and also runs while the team is stopped.
+        self.store.purge_conversation_batch()?;
         if self.store.stopped()? {
             return Ok(report);
         }

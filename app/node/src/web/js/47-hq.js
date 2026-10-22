@@ -1507,6 +1507,7 @@ function viewHQ() {
           <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
           <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
         ${hqProjects(s)}
+        ${hqConversations(s)}
         ${hqHolodeck(s)}
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
@@ -2227,6 +2228,7 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
   if (noun === "mac") return hqMacAct(id, arg);
+  if (noun === "conversations") return hqConversationAct(id,arg);
   // The Holodeck and the office's replays (ADR 0135, 0121).
   if (noun === "holo") return hqHoloAct(id, arg);
   if (noun === "roster") {

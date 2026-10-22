@@ -25,6 +25,7 @@ use endora_team::infrastructure::demo;
 
 use crate::Hq;
 
+mod conversations;
 mod drain;
 mod guards;
 mod world;
@@ -180,6 +181,7 @@ pub fn app(state: State) -> Router {
         .merge(world::routes())
         // The guards (ADR 0124): the owner's verdict on a finding.
         .merge(guards::routes())
+        .merge(conversations::routes())
         // The drain before a restart (ADR 0134): HQ's own token, for a deploy and the NAS's
         // shutdown; the node does not proxy it.
         .merge(drain::routes())
@@ -1227,6 +1229,99 @@ mod tests {
 
     const TOKEN: &str = "a-token-of-at-least-thirty-two-characters";
     const RUNNER: &str = "a-runner-token-of-at-least-thirty-two-chars";
+
+    #[tokio::test]
+    async fn conversation_owner_routes_are_signed_and_disabled_until_selected() {
+        let st = state(false);
+        let app = app(st.clone());
+        let unsigned = app
+            .clone()
+            .oneshot(call("GET", "/v1/conversations", None, ""))
+            .await
+            .unwrap();
+        assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
+        let response = app
+            .clone()
+            .oneshot(call("GET", "/v1/conversations", Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_of(response).await["enabled"], false);
+        let operations = app
+            .clone()
+            .oneshot(call("GET", "/v1/conversations/operations", Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(operations.status(), StatusCode::OK);
+        assert!(
+            json_of(operations).await["operations"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(call("GET", "/v1/conversations/operations", None, ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let lead = st.hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let other = st.hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        let goal = st.hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = st
+            .hq
+            .add_project(goal, "Fixture project", "", lead, None)
+            .unwrap();
+        let body = json!({"project":project.0,"participants":[lead.0,other.0]}).to_string();
+        let disabled = app
+            .clone()
+            .oneshot(call("POST", "/v1/conversations", Some(TOKEN), &body))
+            .await
+            .unwrap();
+        assert!(!disabled.status().is_success());
+        let switched = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                "/v1/conversations/enabled",
+                Some(TOKEN),
+                "{\"enabled\":true}",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(switched.status(), StatusCode::OK);
+        let created = app
+            .clone()
+            .oneshot(call("POST", "/v1/conversations", Some(TOKEN), &body))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let id = json_of(created).await["conversation"].as_i64().unwrap();
+        let path = format!("/v1/conversations/{id}");
+        let page = json_of(
+            app.clone()
+                .oneshot(call("GET", &path, Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(page["messages"].as_array().unwrap().len(), 0);
+        let deleted = app
+            .clone()
+            .oneshot(call("POST", &format!("{path}/delete"), Some(TOKEN), "{}"))
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::OK);
+        assert!(
+            !app.oneshot(call("GET", &path, Some(TOKEN), ""))
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+    }
 
     /// HQ as it runs: the demo team on the simulated runner, or no demo and the remote one.
     fn state(demo: bool) -> State {

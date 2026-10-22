@@ -628,6 +628,7 @@ pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if engine.in_consult(run.id).unwrap_or(false) {
         list.push(super::protocol_history::answer_consult_tool());
     }
+    list.extend(super::protocol_conversations::tools(engine, run));
     // A scenario's turn acts in its world with its tool (the Holodeck plan's phases 5 and 6).
     if let Ok(Some(kind)) = engine.scenario_kind_of_run(run.id) {
         list.push(super::scenario_tool::tool(kind));
@@ -859,6 +860,26 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     args: &Value,
 ) -> Result<String, String> {
     let answer = call_tool(engine, run, member, tool, args);
+    // Legacy tool replies do not all carry source-run lineage. Until they do, an admitted
+    // model-visible reply makes this turn ineligible to label a new message Internal.
+    if answer.is_ok()
+        && engine.conversations_enabled().unwrap_or(false)
+        && !matches!(
+            tool,
+            "my_turn"
+                | "read_notebook"
+                | "read_doc"
+                | "read_document"
+                | "read_world"
+                | "ask_record"
+                | "read_messages"
+                | "send_message"
+        )
+    {
+        engine
+            .unclassified_message_input(run.id)
+            .map_err(|e| e.to_string())?;
+    }
     // A turn the call ended has nothing more to read: it was told when it ended it.
     let over = engine
         .store()
@@ -888,16 +909,24 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if still.is_none_or(|r| r.status != RunStatus::Running) {
         return Err(Refusal::TurnOver.to_string());
     }
+    let refused = |reason: String| {
+        if matches!(tool, "send_message" | "read_messages") {
+            engine
+                .conversation_protocol_refused(run.id, tool)
+                .map_err(|e| said(&e))?;
+        }
+        Err(reason)
+    };
     // Downtime makes no work (ADR 0119): the tools that would are refused in its turns.
     if MAKES_WORK.contains(&tool) && engine.in_downtime(run.id).map_err(|e| said(&e))? {
-        return Err(Refusal::InDowntime.to_string());
+        return refused(Refusal::InDowntime.to_string());
     }
     // A consulted turn reads and answers, and has a few rounds to do it in (ADR 0129).
     if let Some(refusal) = engine
         .consulted_turn_refuses(run.id, tool)
         .map_err(|e| said(&e))?
     {
-        return Err(refusal);
+        return refused(refusal);
     }
     // The check after a deploy reads the lab and closes its check, and nothing more (ADR 0115,
     // amended): refused here, whatever the model was told.
@@ -905,22 +934,25 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
         .deploy_check_refuses(run.id, tool, args)
         .map_err(|e| said(&e))?
     {
-        return Err(refusal);
+        return refused(refusal);
     }
     // A scenario is closed by its world, never by a member's word (the Holodeck plan's phase 5).
     if let Some(refusal) = engine.scenario_refuses(tool, args).map_err(|e| said(&e))? {
-        return Err(refusal);
+        return refused(refusal);
     }
     // A project that lists its tools gives its work those and the turn's own four (the
     // Holodeck plan's phase 4): refused here too, whatever the model was told.
     if let Some(refusal) = engine.project_refuses(run.id, tool).map_err(|e| said(&e))? {
-        return Err(refusal);
+        return refused(refusal);
     }
     // The team's world (ADR 0122), and asking the past (ADR 0129).
     if let Some(answer) = super::protocol_world::call(engine, run, member, tool, args) {
         return answer;
     }
     if let Some(answer) = super::protocol_history::call(engine, run, member, tool, args) {
+        return answer;
+    }
+    if let Some(answer) = super::protocol_conversations::call(engine, run, tool, args) {
         return answer;
     }
     match tool {

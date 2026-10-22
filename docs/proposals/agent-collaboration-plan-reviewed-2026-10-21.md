@@ -15,6 +15,14 @@ are required; no full-history load may enter the inbox, scheduler or model conte
 This update supersedes proposed short-retention defaults. Live pilot activation
 and deployment remain gated separately.
 
+Implementation checkpoint, 2026-10-22: Phase 0's baseline and Phase 1's accepted
+contract are committed on the separate branch. Phase 2's information-only slice
+is undergoing the final repository checks; see the
+[checkpoint](agent-collaboration-information-checkpoint-2026-10-22.md) for actual
+coverage and limits. No executing assistance, automatic peer wake, evidence grant,
+project charging change or live enablement belongs to this slice. The full plan
+is not complete. Phase 3 follows only after this slice's validation gate passes.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less
@@ -367,7 +375,8 @@ privacy policy are not left to the implementing model to invent mid-slice.
 
 ### Phase 2: durable taskless conversation, end to end
 
-Depends on Phase 1. This is the first implementation slice in a future session.
+Depends on Phase 1. This is the first implementation slice; its current checkpoint
+is linked above.
 
 Steps:
 

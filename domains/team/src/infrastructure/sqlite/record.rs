@@ -27,9 +27,11 @@ fn like_any(column: &str, terms: &[String], args: &mut Vec<Value>) -> String {
     format!("({})", each.join(" OR "))
 }
 
-/// A turn read Confidential data: the node marked one of its receipts so, for good.
-fn read_secrets(run: &str) -> String {
-    format!("EXISTS (SELECT 1 FROM call_receipts c WHERE c.run = {run} AND c.confidential = 1)")
+/// A node receipt or HQ history read marked this turn Confidential, for good.
+pub(super) fn read_secrets(run: &str) -> String {
+    format!(
+        "(EXISTS (SELECT 1 FROM call_receipts c WHERE c.run = {run} AND c.confidential = 1) OR EXISTS (SELECT 1 FROM run_confidential_inputs i WHERE i.run = {run}))"
+    )
 }
 
 /// What a question about one task, or one project's tasks, adds to a search of `task` column.
@@ -112,10 +114,10 @@ fn posts(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
     let mut sql = format!(
         "SELECT p.id, p.task, p.author, p.text, p.at_ms,
             EXISTS (SELECT 1 FROM runs r JOIN members m ON m.id = r.member
-                    JOIN call_receipts c ON c.run = r.id
-                    WHERE m.name = p.author AND r.task = p.task AND c.confidential = 1
+                    WHERE m.name = p.author AND r.task = p.task AND {}
                       AND r.started_at <= p.at_ms AND p.at_ms <= COALESCE(r.ended_at, p.at_ms))
          FROM posts p WHERE p.at_ms >= ? AND {}",
+        read_secrets("r.id"),
         like_any("p.text", &q.terms, &mut args)
     );
     if let Some(member) = &q.member {
