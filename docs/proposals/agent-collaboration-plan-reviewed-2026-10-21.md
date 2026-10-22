@@ -410,6 +410,8 @@ old Phase 4 or claim that a stored message has been processed by a colleague.
 ### Phase 3: bounded assistance with authorized original evidence
 
 Depends on Phase 2. Extend consultation, not formal delegation authority.
+The [source-grounded integration map](agent-collaboration-assistance-integration-2026-10-22.md)
+identifies the existing consult, queue, ledger and evidence seams for this phase.
 
 Steps:
 
