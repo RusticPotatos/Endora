@@ -175,14 +175,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(topic) = topic {
             self.task(topic)?;
         }
-        let kept = self.store.consults()?;
         let off = self.settings.offset_minutes;
         let today = self.today();
-        let this_turn = kept.iter().filter(|c| c.asker_run == run).count();
-        let that_day = kept
-            .iter()
-            .filter(|c| c.asker == asker.id && money::day_of(c.at, off) == today)
-            .count();
+        let (this_turn, that_day) = self.store.consult_counts(
+            run,
+            asker.id,
+            money::day_start(today, off),
+            money::day_start(today + 1, off),
+        )?;
         consult::check(&asker, &expert, this_turn, that_day).map_err(refused)?;
         let mut asked = Consult {
             id: 0,
@@ -296,11 +296,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The consult a turn is the answer to, if it is one.
     pub(super) fn consult_of_run(&self, run: RunId) -> Done<Option<Consult>> {
-        Ok(self
-            .store
-            .consults()?
-            .into_iter()
-            .find(|c| c.answer_run == Some(run)))
+        Ok(self.store.consult_for_run(run)?)
     }
 
     /// Whether a turn is a consulted one.
@@ -314,17 +310,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The consult a queued turn of a consulted member answers: the one it already has, or the
     /// oldest asked of the member that no turn has taken.
     pub(super) fn claim_consult(&self, run: &Run) -> Done<Option<Consult>> {
-        if let Some(own) = self.consult_of_run(run.id)? {
-            return Ok(Some(own));
-        }
-        let Some(mut next) = self.store.consults()?.into_iter().find(|c| {
-            c.expert == run.member && c.status == Status::Queued && c.answer_run.is_none()
-        }) else {
-            return Ok(None);
-        };
-        next.answer_run = Some(run.id);
-        self.store.save_consult(&next)?;
-        Ok(Some(next))
+        Ok(self.store.claim_consult(run.id, run.member)?)
     }
 
     /// What a consulted member is told: the question under a fixed prefix, its own handover
@@ -422,9 +408,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             record::clean(&member.name),
             cut(&said, consult::ANSWER_MOST)
         );
-        self.post_held_lock_marked(Author::Member(member.id), found.thread, &text, &[], false)?;
         found.status = Status::Answered;
-        self.store.save_consult(&found)?;
+        self.finish_consult_answer(&found, Author::Member(member.id), &text)?;
         self.wake_the_asker(&mut found)
     }
 
@@ -459,11 +444,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "Consult of {} ({why}): answered from the record. {from}",
             record::clean(&expert.name)
         );
-        self.post_held_lock_marked(Author::Endora, found.thread, text.trim_end(), &[], false)?;
         found.status = Status::FromRecord;
         found.why = why.to_owned();
-        self.store.save_consult(found)?;
+        self.finish_consult_answer(found, Author::Endora, text.trim_end())?;
         self.wake_the_asker(found)
+    }
+
+    fn finish_consult_answer(&self, found: &Consult, author: Author, text: &str) -> Done<()> {
+        self.task(found.thread)?;
+        let post = crate::application::ports::Post {
+            author: self.author_name(author)?,
+            text: text.to_owned(),
+            at: self.clock.now(),
+            unsupported: false,
+        };
+        if !self.store.finish_consult(found, &post)? {
+            return Err(refused(HistoryRefusal::NoConsultForYou));
+        }
+        self.after_thread_post(author, found.thread, text, false)
     }
 
     /// Wakes the asker to read the answer. If its turn is still running the wake would only
@@ -492,12 +490,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.answer_from_record(&mut own, "did not answer")?;
             }
         }
-        let unread: Vec<Consult> = self
-            .store
-            .consults()?
-            .into_iter()
-            .filter(|c| c.asker == run.member && c.status != Status::Queued && !c.asker_woken)
-            .collect();
+        let unread = self.store.unread_consults(run.member)?;
         for mut c in unread {
             self.wake_the_asker(&mut c)?;
         }

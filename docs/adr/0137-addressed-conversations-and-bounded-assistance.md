@@ -88,10 +88,21 @@ Normal eligible member briefings describe this path and paged discovery.
 
 This is partial consolidation: task-owned calls, or taskless calls with an
 explicit task argument, still use legacy thread answers and record fallback.
-Their lifecycle, accounting and history scans still need the compatibility
-work described above. The adapter does not complete that work or combine the
+Their lifecycle and accounting still need the compatibility work described
+above. The adapter does not complete that work or combine the
 two origins' existing admission counters. Feature disable continues to leave
 legacy task-thread consultation available.
+
+Task-thread hardening, 2026-10-22: routine admission, assigned-run lookup,
+expert claim and unread-answer lookup now use indexed intent-specific queries.
+Claims are transactional and reuse their stored run association. Both expert
+answers and labelled record fallback conditionally commit the task-thread post
+and terminal consultation status together. Neither write survives a failed
+transaction, and a terminal result cannot be overwritten by a stale completion.
+Existing thread effects and requester wakes still follow that commit through
+their existing application behavior. Moving those effects and both origins'
+notification/dispatch intents into the common recoverable lifecycle remains
+required; this hardening does not claim that consolidation is complete.
 
 ### Pilot scope, identity and authority
 

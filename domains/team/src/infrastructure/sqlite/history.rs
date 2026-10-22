@@ -2,11 +2,11 @@
 //! store gains them empty and no row of any other table changes; running the schema again
 //! changes nothing.
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteTeamStore, backend};
 use crate::application::history_ports::HistoryStore;
-use crate::application::ports::Stored;
+use crate::application::ports::{Post, Stored};
 use crate::domain::consult::{Consult, Status as ConsultStatus};
 use crate::domain::history::{self, Kept, Transcript};
 use crate::domain::record::{Passage, Query};
@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS consults (
     why TEXT NOT NULL DEFAULT '', asker_woken INTEGER NOT NULL DEFAULT 0, at_ms INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX IF NOT EXISTS consults_by_asker ON consults(asker, at_ms);
+CREATE INDEX IF NOT EXISTS consults_asker_run ON consults(asker_run,id);
+CREATE INDEX IF NOT EXISTS consults_answer_run ON consults(answer_run,id) WHERE answer_run IS NOT NULL;
+CREATE INDEX IF NOT EXISTS consults_pending ON consults(expert,id) WHERE status='queued' AND answer_run IS NULL;
+CREATE INDEX IF NOT EXISTS consults_unread ON consults(asker,id) WHERE status!='queued' AND asker_woken=0;
 ";
 
 /// The full-text index over the conversations, kept apart because it is a virtual table: SQLite
@@ -54,6 +58,44 @@ END;
 
 const TRANSCRIPT_SELECT: &str = "SELECT run, member, task, runtime, brain, tier, body, est_tokens, \
     cut, at_ms, kept_until FROM transcripts";
+
+const CONSULT_SELECT: &str = "SELECT id,asker,asker_run,expert,topic,thread,question,status,answer_run,why,asker_woken,at_ms FROM consults";
+const CONSULT_FOR_RUN: &str = "WHERE answer_run=?1 ORDER BY id LIMIT 1";
+const CONSULT_NEXT: &str =
+    "WHERE expert=?1 AND status='queued' AND answer_run IS NULL ORDER BY id LIMIT 1";
+const CONSULT_UNREAD: &str =
+    "WHERE asker=?1 AND status!='queued' AND asker_woken=0 ORDER BY id LIMIT 50";
+const CONSULT_TURN_COUNT: &str =
+    "SELECT count(*) FROM (SELECT id FROM consults WHERE asker_run=?1 LIMIT 2)";
+const CONSULT_DAY_COUNT: &str = "SELECT count(*) FROM (SELECT id FROM consults WHERE asker=?1 AND at_ms>=?2 AND at_ms<?3 LIMIT 6)";
+
+fn consult_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Consult> {
+    let status: String = r.get(7)?;
+    let status = ConsultStatus::from_name(&status).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            7,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid consult status",
+            )),
+        )
+    })?;
+    Ok(Consult {
+        id: r.get(0)?,
+        asker: MemberId(r.get(1)?),
+        asker_run: RunId(r.get(2)?),
+        expert: MemberId(r.get(3)?),
+        topic: r.get::<_, Option<i64>>(4)?.map(TaskId),
+        thread: TaskId(r.get(5)?),
+        question: r.get(6)?,
+        status,
+        answer_run: r.get::<_, Option<i64>>(8)?.map(RunId),
+        why: r.get(9)?,
+        asker_woken: r.get(10)?,
+        at: r.get(11)?,
+    })
+}
 
 impl HistoryStore for SqliteTeamStore {
     fn mark_confidential_input(&self, run: RunId) -> Stored<()> {
@@ -227,6 +269,80 @@ impl HistoryStore for SqliteTeamStore {
             .collect()
     }
 
+    fn consult_counts(
+        &self,
+        run: RunId,
+        asker: MemberId,
+        start: i64,
+        end: i64,
+    ) -> Stored<(usize, usize)> {
+        let conn = self.conn()?;
+        let turn: u8 = conn
+            .query_row(CONSULT_TURN_COUNT, [run.0], |row| row.get(0))
+            .map_err(backend)?;
+        let day: u8 = conn
+            .query_row(CONSULT_DAY_COUNT, params![asker.0, start, end], |row| {
+                row.get(0)
+            })
+            .map_err(backend)?;
+        Ok((usize::from(turn), usize::from(day)))
+    }
+
+    fn consult_for_run(&self, run: RunId) -> Stored<Option<Consult>> {
+        self.conn()?
+            .query_row(
+                &format!("{CONSULT_SELECT} {CONSULT_FOR_RUN}"),
+                [run.0],
+                consult_row,
+            )
+            .optional()
+            .map_err(backend)
+    }
+
+    fn claim_consult(&self, run: RunId, expert: MemberId) -> Stored<Option<Consult>> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        if let Some(own) = tx
+            .query_row(
+                &format!("{CONSULT_SELECT} {CONSULT_FOR_RUN}"),
+                [run.0],
+                consult_row,
+            )
+            .optional()
+            .map_err(backend)?
+        {
+            return Ok(Some(own));
+        }
+        let Some(mut next) = tx
+            .query_row(
+                &format!("{CONSULT_SELECT} {CONSULT_NEXT}"),
+                [expert.0],
+                consult_row,
+            )
+            .optional()
+            .map_err(backend)?
+        else {
+            return Ok(None);
+        };
+        tx.execute("UPDATE consults SET answer_run=?2 WHERE id=?1 AND status='queued' AND answer_run IS NULL",params![next.id,run.0]).map_err(backend)?;
+        next.answer_run = Some(run);
+        tx.commit().map_err(backend)?;
+        Ok(Some(next))
+    }
+
+    fn unread_consults(&self, asker: MemberId) -> Stored<Vec<Consult>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("{CONSULT_SELECT} {CONSULT_UNREAD}"))
+            .map_err(backend)?;
+        stmt.query_map([asker.0], consult_row)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
     fn save_consult(&self, c: &Consult) -> Stored<()> {
         self.conn()?
             .execute(
@@ -243,6 +359,25 @@ impl HistoryStore for SqliteTeamStore {
             .map_err(backend)?;
         Ok(())
     }
+
+    fn finish_consult(&self, c: &Consult, post: &Post) -> Stored<bool> {
+        if c.status == ConsultStatus::Queued {
+            return Err(super::corrupt("a consult completion must be terminal"));
+        }
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let changed = tx.execute("UPDATE consults SET status=?2,why=?3 WHERE id=?1 AND status='queued' AND answer_run IS ?4 AND thread=?5",
+            params![c.id,c.status.name(),c.why,c.answer_run.map(|run|run.0),c.thread.0]).map_err(backend)?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        tx.execute("INSERT INTO posts(task,author,text,at_ms,evidence,unsupported) VALUES(?1,?2,?3,?4,'',?5)",
+            params![c.thread.0,post.author,post.text,post.at,post.unsupported]).map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -250,6 +385,235 @@ mod tests {
     use rusqlite::Connection;
 
     use super::*;
+
+    fn consult_fixture(store: &SqliteTeamStore) {
+        store.conn().unwrap().execute_batch("INSERT INTO members(id,name,role,share_percent,slots) VALUES(1,'Member 1','lead',50,2),(2,'Member 2','developer',50,2);
+            INSERT INTO goals(id,title,reason,status) VALUES(1,'Fixture','','active');
+            INSERT INTO tasks(id,goal,title,description,status,priority,depth) VALUES(1,1,'Fixture','','ready','normal',0);
+            INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,1,'assigned','queued',0);
+            INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,1,1,'running',0),(2,2,1,'running',0),(3,2,1,'running',0);
+            INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,answer_run,at_ms) VALUES(1,1,1,2,1,'Fixture?','queued',2,0);").unwrap();
+    }
+
+    #[test]
+    fn routine_consult_queries_stay_bounded_as_retained_history_grows() {
+        use rusqlite::StatementStatus;
+        let mut observed = Vec::new();
+        for size in [1_000, 100_000] {
+            let store = SqliteTeamStore::in_memory().unwrap();
+            consult_fixture(&store);
+            store.conn().unwrap().execute_batch(&format!("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<{size})
+                INSERT INTO consults(asker,asker_run,expert,thread,question,status,asker_woken,at_ms)
+                SELECT 1,2,2,1,'Retained fixture','answered',1,-1 FROM n")).unwrap();
+            let queries = [
+                format!("{CONSULT_SELECT} {CONSULT_FOR_RUN}"),
+                format!("{CONSULT_SELECT} {CONSULT_NEXT}"),
+                format!("{CONSULT_SELECT} {CONSULT_UNREAD}"),
+                CONSULT_TURN_COUNT.to_owned(),
+                CONSULT_DAY_COUNT.to_owned(),
+            ];
+            let measure = || {
+                let conn = store.conn().unwrap();
+                let mut costs = Vec::new();
+                for (index, sql) in queries.iter().enumerate() {
+                    let mut stmt = conn.prepare(sql).unwrap();
+                    let parameters: Vec<i64> = match index {
+                        0 => vec![3],
+                        1 => vec![2],
+                        4 => vec![1, 0, 86_400_000],
+                        _ => vec![1],
+                    };
+                    let mut rows = stmt.query(rusqlite::params_from_iter(parameters)).unwrap();
+                    while rows.next().unwrap().is_some() {}
+                    drop(rows);
+                    costs.push(stmt.get_status(StatementStatus::VmStep));
+                }
+                costs
+            };
+            let costs = measure();
+            assert!(
+                costs.iter().all(|cost| *cost < 1_000),
+                "unbounded query costs at {size}: {costs:?}"
+            );
+            observed.push(costs);
+            assert_eq!(
+                store
+                    .consult_counts(RunId(1), MemberId(1), 0, 86_400_000)
+                    .unwrap(),
+                (1, 1)
+            );
+            assert_eq!(store.consult_for_run(RunId(2)).unwrap().unwrap().id, 1);
+            assert!(store.unread_consults(MemberId(1)).unwrap().is_empty());
+            assert!(
+                store
+                    .claim_consult(RunId(3), MemberId(2))
+                    .unwrap()
+                    .is_none()
+            );
+            if size == 100_000 {
+                store.conn().unwrap().execute_batch("DROP INDEX consults_answer_run; DROP INDEX consults_pending; DROP INDEX consults_unread; DROP INDEX consults_asker_run;").unwrap();
+                assert!(
+                    measure().iter().any(|cost| *cost > 100_000),
+                    "missing-index negative control must fail the bound"
+                );
+            }
+        }
+        assert_eq!(observed[0], observed[1]);
+    }
+
+    #[test]
+    fn completion_rolls_back_on_post_failure_and_a_terminal_result_cannot_be_overwritten() {
+        for status in [ConsultStatus::Answered, ConsultStatus::FromRecord] {
+            let store = SqliteTeamStore::in_memory().unwrap();
+            consult_fixture(&store);
+            let mut found = store.consult_for_run(RunId(2)).unwrap().unwrap();
+            found.status = status;
+            found.why = if status == ConsultStatus::FromRecord {
+                "did not answer".into()
+            } else {
+                String::new()
+            };
+            let post = Post {
+                author: "Member 2".into(),
+                text: "Synthetic answer".into(),
+                at: 0,
+                unsupported: false,
+            };
+            store.conn().unwrap().execute_batch("CREATE TRIGGER fail_consult_post BEFORE INSERT ON posts BEGIN SELECT RAISE(ABORT,'synthetic post failure'); END;").unwrap();
+            assert!(
+                store
+                    .finish_consult(&found, &post)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("synthetic post failure")
+            );
+            assert_eq!(
+                store.consult_for_run(RunId(2)).unwrap().unwrap().status,
+                ConsultStatus::Queued
+            );
+            store
+                .conn()
+                .unwrap()
+                .execute_batch("DROP TRIGGER fail_consult_post")
+                .unwrap();
+            assert!(store.finish_consult(&found, &post).unwrap());
+            assert!(!store.finish_consult(&found, &post).unwrap());
+            found.status = if status == ConsultStatus::Answered {
+                ConsultStatus::FromRecord
+            } else {
+                ConsultStatus::Answered
+            };
+            assert!(!store.finish_consult(&found, &post).unwrap());
+            assert_eq!(
+                store.consult_for_run(RunId(2)).unwrap().unwrap().status,
+                status
+            );
+            let count: i64 = store
+                .conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM posts", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+    }
+
+    #[test]
+    fn claiming_a_consult_reuses_its_association_and_skips_a_taken_question() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE consults SET answer_run=NULL", [])
+            .unwrap();
+        let first = store.claim_consult(RunId(2), MemberId(2)).unwrap().unwrap();
+        assert_eq!(first.answer_run, Some(RunId(2)));
+        assert_eq!(
+            store.claim_consult(RunId(2), MemberId(2)).unwrap(),
+            Some(first)
+        );
+        assert!(
+            store
+                .claim_consult(RunId(3), MemberId(2))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn two_connections_cannot_claim_or_complete_the_same_consult_twice() {
+        let folder = std::path::Path::new("target/consult-recovery");
+        std::fs::create_dir_all(folder).unwrap();
+        let path = folder.join(format!("{}-claim.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let first = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        consult_fixture(&first);
+        first
+            .conn()
+            .unwrap()
+            .execute("UPDATE consults SET answer_run=NULL", [])
+            .unwrap();
+        let second = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        for store in [&first, &second] {
+            store
+                .conn()
+                .unwrap()
+                .busy_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+        let barrier = std::sync::Barrier::new(2);
+        let claimed = std::thread::scope(|scope| {
+            let a = scope.spawn(|| {
+                barrier.wait();
+                first.claim_consult(RunId(2), MemberId(2)).unwrap()
+            });
+            let b = scope.spawn(|| {
+                barrier.wait();
+                second.claim_consult(RunId(3), MemberId(2)).unwrap()
+            });
+            [a.join().unwrap(), b.join().unwrap()]
+        });
+        assert_eq!(claimed.iter().filter(|claim| claim.is_some()).count(), 1);
+        let mut result = claimed.into_iter().flatten().next().unwrap();
+        result.status = ConsultStatus::Answered;
+        let post = Post {
+            author: "Member 2".into(),
+            text: "Synthetic answer".into(),
+            at: 0,
+            unsupported: false,
+        };
+        let accepted = std::thread::scope(|scope| {
+            let a = scope.spawn(|| {
+                barrier.wait();
+                first.finish_consult(&result, &post).unwrap()
+            });
+            let b = scope.spawn(|| {
+                barrier.wait();
+                second.finish_consult(&result, &post).unwrap()
+            });
+            [a.join().unwrap(), b.join().unwrap()]
+        });
+        assert_eq!(accepted.into_iter().filter(|accepted| *accepted).count(), 1);
+        drop(first);
+        drop(second);
+        let reopened = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            reopened
+                .consult_for_run(result.answer_run.unwrap())
+                .unwrap()
+                .unwrap()
+                .status,
+            ConsultStatus::Answered
+        );
+        let count: i64 = reopened
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM posts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
 
     /// The bundled SQLite is built with FTS5 (rusqlite's `bundled` feature compiles it in), so
     /// the conversations are searched through an index with no new dependency.

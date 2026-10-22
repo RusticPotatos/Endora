@@ -169,6 +169,41 @@ fn answers_the_consult(w: &mut Office, name: String, answer: String) {
     assert!(done.is_some(), "refused: {:?}", w.refused);
 }
 
+#[when("the consultation status store fails")]
+fn consult_status_failure(w: &mut Office) {
+    let file = w.file.as_ref().expect("a persisted team");
+    rusqlite::Connection::open(file).unwrap().execute_batch("CREATE TRIGGER fail_consult_completion BEFORE UPDATE OF status ON consults WHEN NEW.status != 'queued' BEGIN SELECT RAISE(ABORT,'synthetic completion failure'); END;").unwrap();
+}
+
+#[when("consultation storage recovers")]
+fn consult_storage_recovers(w: &mut Office) {
+    let file = w.file.as_ref().expect("a persisted team");
+    rusqlite::Connection::open(file)
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_consult_completion")
+        .unwrap();
+}
+
+#[when(expr = "{word} tries to answer the consult: {string}")]
+fn tries_consult_answer(w: &mut Office, name: String, answer: String) {
+    assert!(
+        w.use_tool(&name, "answer_consult", &json!({"answer":answer}))
+            .is_none()
+    );
+}
+
+#[then(expr = "the task {string} has {int} consultation answers")]
+fn consult_answer_count(w: &mut Office, title: String, expected: usize) {
+    let posts = w.hq.store().thread(w.task(&title)).unwrap();
+    assert_eq!(
+        posts
+            .iter()
+            .filter(|post| post.text.contains(" answers (consulted): "))
+            .count(),
+        expected
+    );
+}
+
 #[then(expr = "{word} is woken to read the answer")]
 fn woken_to_read(w: &mut Office, name: String) {
     use endora_team::domain::WakeReason;

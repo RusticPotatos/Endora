@@ -95,6 +95,77 @@ fn ada_asks_in_a_turn(hq: &Hq<'_>, t: &Team) -> (TaskId, RunContext) {
 }
 
 #[test]
+fn a_failed_consult_status_write_cannot_leave_an_answer_in_the_thread() {
+    use super::engine::{Engine, Settings};
+    use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
+    let folder = std::path::Path::new("target/consult-recovery");
+    std::fs::create_dir_all(folder).unwrap();
+    let path = folder.join(format!("{}-atomic.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = Engine::new(
+        SqliteTeamStore::open(path.to_str().unwrap()).unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings::default(),
+    );
+    let asker = hq
+        .hire("Member 1", crate::domain::Role::Lead, 50, 2, 0)
+        .unwrap();
+    let expert = hq
+        .hire("Member 2", crate::domain::Role::Developer, 50, 2, 0)
+        .unwrap();
+    let goal = hq.set_goal("Synthetic check", "", Author::Owner).unwrap();
+    let task = task_for(&hq, goal, asker, "Synthetic investigation");
+    hq.tick().unwrap();
+    let caller = turn_of(&hq, asker);
+    hq.consult_in(caller.run, "Member 2", "Which fixture failed?", None)
+        .unwrap();
+    hq.tick().unwrap();
+    let answerer = turn_of(&hq, expert);
+    let before = hq.store().thread(task).unwrap().len();
+    let fault = rusqlite::Connection::open(&path).unwrap();
+    fault.execute_batch("CREATE TRIGGER fail_consult_completion BEFORE UPDATE OF status ON consults WHEN NEW.status != 'queued' BEGIN SELECT RAISE(ABORT, 'synthetic completion failure'); END;").unwrap();
+    let error = hq
+        .answer_consult_in(answerer.run, "The fixture cache failed.")
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("synthetic completion failure"),
+        "{error}"
+    );
+    assert_eq!(hq.store().consults().unwrap()[0].status, Status::Queued);
+    assert_eq!(
+        hq.store().thread(task).unwrap().len(),
+        before,
+        "a failed completion must roll back its answer post"
+    );
+    fault
+        .execute_batch("DROP TRIGGER fail_consult_completion")
+        .unwrap();
+    hq.answer_consult_in(answerer.run, "The fixture cache failed.")
+        .unwrap();
+    assert!(
+        hq.answer_consult_in(answerer.run, "The fixture cache failed.")
+            .is_err()
+    );
+    drop(fault);
+    drop(hq);
+    let reopened = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+    assert_eq!(reopened.consults().unwrap()[0].status, Status::Answered);
+    assert_eq!(
+        reopened
+            .thread(task)
+            .unwrap()
+            .iter()
+            .filter(|post| post.text.contains("fixture cache failed"))
+            .count(),
+        1
+    );
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn asking_the_record_finds_the_post_and_the_turn_with_what_to_cite_and_wakes_no_one() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = engine(&clock);

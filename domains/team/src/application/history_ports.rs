@@ -2,11 +2,11 @@
 //! turns, kept for a while. Only [`HistoryStore::forget_transcripts`] ever removes anything, and
 //! only what the retention rule names.
 
-use super::ports::Stored;
-use crate::domain::RunId;
+use super::ports::{Post, Stored};
 use crate::domain::consult::Consult;
 use crate::domain::history::{Kept, Transcript};
 use crate::domain::record::{Passage, Query};
+use crate::domain::{MemberId, Millis, RunId};
 
 /// The history's part of HQ's store.
 pub trait HistoryStore {
@@ -64,10 +64,44 @@ pub trait HistoryStore {
     /// [`super::ports::StoreError`] if the store fails.
     fn consults(&self) -> Stored<Vec<Consult>>;
 
+    /// Counts saturated at the admission limits, without loading retained questions.
+    /// The day interval is supplied by the application in the owner's timezone.
+    /// # Errors
+    /// A store failure.
+    fn consult_counts(
+        &self,
+        run: RunId,
+        asker: MemberId,
+        start: Millis,
+        end: Millis,
+    ) -> Stored<(usize, usize)>;
+
+    /// The first consult assigned to this run, using its durable association.
+    /// # Errors
+    /// A store failure.
+    fn consult_for_run(&self, run: RunId) -> Stored<Option<Consult>>;
+
+    /// Return this run's existing association, or atomically assign the oldest queued
+    /// consult for its expert. A concurrent claimant cannot take the same question.
+    /// # Errors
+    /// A store failure.
+    fn claim_consult(&self, run: RunId, expert: MemberId) -> Stored<Option<Consult>>;
+
+    /// At most fifty terminal answers still awaiting their asker's wake.
+    /// # Errors
+    /// A store failure.
+    fn unread_consults(&self, asker: MemberId) -> Stored<Vec<Consult>>;
+
     /// Keeps a consult's new standing: its status, the turn that answered, why, whether its
     /// asker has been woken.
     ///
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn save_consult(&self, consult: &Consult) -> Stored<()>;
+
+    /// Conditionally complete a queued consult and append its answer to the task thread
+    /// in one transaction. A stale completion writes nothing.
+    /// # Errors
+    /// A store failure rolls back both writes.
+    fn finish_consult(&self, consult: &Consult, post: &Post) -> Stored<bool>;
 }

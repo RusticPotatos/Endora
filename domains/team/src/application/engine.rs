@@ -1665,6 +1665,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let at = self.clock.now();
         self.store
             .post_marked(task, &author, text, at, cited, unsupported)?;
+        self.after_thread_post(by, task, text, unsupported)
+    }
+
+    /// Effects after a persisted thread post. Consultation completion persists its post
+    /// with its terminal state, then uses the same existing thread behavior here.
+    fn after_thread_post(
+        &self,
+        by: Author,
+        task: TaskId,
+        text: &str,
+        unsupported: bool,
+    ) -> Done<()> {
+        let author = self.author_name(by)?;
         // A short line for a bubble. The feed shows the whole post: `post` is its place in the
         // task's thread (posts are only ever added), and `cut` says the preview is not all of it.
         let place = self.store.thread(task)?.len().saturating_sub(1);

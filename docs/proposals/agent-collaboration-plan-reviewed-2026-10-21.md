@@ -57,6 +57,12 @@ completion of Phase 3: consolidating task-thread consultations while preserving
 their contracts remains open. The full foundation and general plan are not yet
 complete. This integration change has not been deployed.
 
+Task-thread follow-up, 2026-10-22: the foundation checkpoint also records
+transactional expert claims, indexed routine consultation reads and atomic
+thread-answer/status completion for expert answers and record fallback.
+Request/dispatch and result/notification consolidation across both origins
+remains open. These changes remain branch work and do not enable the live team.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less
