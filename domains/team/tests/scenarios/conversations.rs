@@ -101,6 +101,22 @@ fn ask_assistance(w: &mut Office) {
     assert!(w.use_tool("Member1","request_assistance",&json!({"conversation":scope,"key":"scenario_request_1","objective":"Which synthetic check should be read?"})).is_some(),"{:?}",w.refused);
 }
 
+#[when("Member1 asks Member2 with the ordinary consult tool")]
+fn ordinary_consult(w: &mut Office) {
+    assert!(
+        w.use_tool(
+            "Member1",
+            "consult",
+            &json!({
+                "member":"Member2", "question":"Which synthetic check should be read?"
+            })
+        )
+        .is_some(),
+        "{:?}",
+        w.refused
+    );
+}
+
 #[then("accepting the request has not started any work")]
 fn accepted_only(w: &mut Office) {
     no_work(w);

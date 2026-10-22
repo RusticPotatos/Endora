@@ -76,6 +76,23 @@ flag. Feature disable closes new conversation-origin operations without disablin
 legacy consultation. Consolidation ships only when tests show both origins keep
 their contracts; until then legacy consultation remains on its existing path.
 
+Integration clarification, 2026-10-22: ordinary `consult` with no task argument
+from a taskless turn now enters the conversation-origin assistance use case.
+The live caller and named colleague must match an existing owner-created pair.
+A unique matching conversation supplies the project; ambiguity requires an
+explicit conversation ID. This adapter creates neither permissions nor tasks.
+Optional evidence uses the same typed, owner-granted original-source checks.
+Retries without an explicit key derive a stable label from the run and question;
+the persisted full payload must still match, so the label grants no authority.
+Normal eligible member briefings describe this path and paged discovery.
+
+This is partial consolidation: task-owned calls, or taskless calls with an
+explicit task argument, still use legacy thread answers and record fallback.
+Their lifecycle, accounting and history scans still need the compatibility
+work described above. The adapter does not complete that work or combine the
+two origins' existing admission counters. Feature disable continues to leave
+legacy task-thread consultation available.
+
 ### Pilot scope, identity and authority
 
 The owner enables the pilot, selects one existing project and creates a

@@ -152,6 +152,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         question: &str,
         task: Option<TaskId>,
     ) -> Done<String> {
+        if task.is_none() && self.running(run)?.task.is_none() {
+            return self.consult_peer_in(run, expert, question, None, None, &[]);
+        }
         let _held = self.held();
         let turn = self.running(run)?;
         let asker = self.member(turn.member)?;
@@ -220,6 +223,75 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             expert.name,
             Ref::Task(thread).said()
         ))
+    }
+
+    /// Compatibility entry point for a taskless ordinary consult. The owner-created scope
+    /// supplies participants and payer; this never creates a conversation or task.
+    /// # Errors
+    /// The same live-turn, scope, source and execution limits as explicit assistance.
+    pub fn consult_peer_in(
+        &self,
+        run: RunId,
+        expert: &str,
+        question: &str,
+        conversation: Option<i64>,
+        key: Option<&str>,
+        evidence: &[crate::domain::assistance::SourceRef],
+    ) -> Done<String> {
+        let turn = self.running(run)?;
+        if turn.task.is_some() {
+            return Err(EngineError::Refused(Refusal::Conversation(
+                "task-owned consultation uses its task thread",
+            )));
+        }
+        let expert = self.named(expert.trim())?;
+        if !self.conversations_enabled()? {
+            return Err(refused(HistoryRefusal::NeedsTask));
+        }
+        let scope = match conversation {
+            Some(id) => {
+                self.store
+                    .conversation(id)?
+                    .ok_or(EngineError::Refused(Refusal::Conversation(
+                        "conversation unavailable",
+                    )))?
+            }
+            None => {
+                let scopes = self.store.conversation_pair(turn.member, expert.id)?;
+                if scopes.len() != 1 {
+                    return Err(EngineError::Refused(Refusal::Conversation(
+                        "select an owner-authorized conversation with read_messages; no unique conversation exists for this pair",
+                    )));
+                }
+                scopes.into_iter().next().expect("one scope")
+            }
+        };
+        if !scope.participants.contains(&turn.member)
+            || !scope.participants.contains(&expert.id)
+            || turn.member == expert.id
+        {
+            return Err(EngineError::Refused(Refusal::Conversation(
+                "the conversation does not authorize this colleague pair",
+            )));
+        }
+        // Fixed FNV-1a-128 supplies a stable retry label, not an authorization boundary.
+        // The adapter also compares the full payload and refuses a colliding/different one.
+        let hash = question.as_bytes().iter().fold(
+            0x6c62_272e_07bb_0142_62b8_2175_6295_c58d_u128,
+            |hash, byte| {
+                (hash ^ u128::from(*byte)).wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013b)
+            },
+        );
+        let retry = format!("consult_{}_{hash:032x}", run.0);
+        let id =
+            self.request_assistance_in(run, scope.id, key.unwrap_or(&retry), question, evidence)?;
+        let request = self
+            .store
+            .assistance_request(id)?
+            .ok_or(EngineError::Unknown("assistance request"))?;
+        Ok(serde_json::json!({"request":id,"conversation":scope.id,"state":request.status,
+            "scheduled":matches!(request.status.as_str(),"queued"|"processing"),
+            "reply":"The assigned expert answers with answer_assistance; the result returns in this conversation. End your turn when finished."}).to_string())
     }
 
     /// The consult a turn is the answer to, if it is one.

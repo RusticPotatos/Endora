@@ -893,7 +893,12 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     let answer = call_tool(engine, run, member, tool, args);
     // Legacy tool replies do not all carry source-run lineage. Until they do, an admitted
     // model-visible reply makes this turn ineligible to label a new message Internal.
+    // A successful taskless consult now returns only the typed assistance acceptance.
+    // Task-thread consult/fallback text still follows the legacy lineage rule below.
+    let peer_consult =
+        tool == "consult" && run.task.is_none() && args.get("task").is_none_or(Value::is_null);
     if answer.is_ok()
+        && !peer_consult
         && engine.conversations_enabled().unwrap_or(false)
         && !matches!(
             tool,

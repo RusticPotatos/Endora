@@ -82,6 +82,11 @@ pub trait ConversationStore {
     /// # Errors
     /// A store failure.
     fn conversation(&self, id: i64) -> Stored<Option<Conversation>>;
+    /// At most two scopes for a fixed pair, to distinguish unique from ambiguous routing.
+    /// No history bodies or archive-wide directory scan.
+    /// # Errors
+    /// A store failure.
+    fn conversation_pair(&self, a: MemberId, b: MemberId) -> Stored<Vec<Conversation>>;
     /// Read at most PAGE+1 summaries after an ID, optionally for one participant.
     /// # Errors
     /// A store failure.

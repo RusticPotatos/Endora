@@ -5,6 +5,15 @@ Feature: Peer information is retained without scheduling work
   Background:
     Given the owner authorizes two members to exchange information
 
+  Scenario: The ordinary consult tool reaches a colleague without a task
+    When Member1 asks Member2 with the ordinary consult tool
+    Then accepting the request has not started any work
+    When the assistance delivery tick runs
+    Then only Member2 receives one assistance turn
+    And the assistance turn cannot delegate work
+    When Member2 answers the assistance request twice with the same answer
+    Then the owner sees one answered request with the original author and project
+
   Scenario: A retry preserves one attributed message and schedules nothing
     When Member1 sends the information "The fixture check returned 503." with a stable retry key
     And Member1 sends the information "The fixture check returned 503." with a stable retry key

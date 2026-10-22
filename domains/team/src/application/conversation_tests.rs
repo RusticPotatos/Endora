@@ -8,6 +8,246 @@ use super::ports::TeamStore;
 use crate::domain::{Role, WakeReason};
 
 #[test]
+fn normal_taskless_consult_uses_the_authorized_assistance_path_and_retries_once() {
+    use super::history_ports::HistoryStore;
+    use serde_json::json;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let a = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let b = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq
+        .set_goal("Synthetic diagnostic", "", Author::Owner)
+        .unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq.create_conversation(project, [a, b]).unwrap();
+    hq.wake(a, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, a);
+    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    let args = json!({"member":"Member 3","question":"Which synthetic dependency failed?"});
+    let before = hq.store().tasks().unwrap().len();
+    let first = super::protocol::call(&hq, &run, &member, "consult", &args).unwrap();
+    assert!(turn.told.contains("consult"));
+    assert!(turn.told.contains("read_messages"));
+    let retry = super::protocol::call(&hq, &run, &member, "consult", &args).unwrap();
+    let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+    let retry: serde_json::Value = serde_json::from_str(&retry).unwrap();
+    assert_eq!(first["request"], retry["request"]);
+    assert_eq!(first["conversation"], conversation);
+    assert!(!hq.store().run_read_confidential(run.id).unwrap());
+    assert_eq!(hq.store().tasks().unwrap().len(), before);
+    assert!(hq.store().consults().unwrap().is_empty());
+    hq.tick().unwrap();
+    let expert = turn_of(&hq, b);
+    assert!(hq.in_assistance(expert.run).unwrap());
+    hq.answer_assistance_in(expert.run, "The fixture cache was unavailable.", &[])
+        .unwrap();
+    hq.runner().finish(turn.run, true);
+    hq.runner().finish(expert.run, true);
+    hq.tick().unwrap();
+    let result = turn_of(&hq, a);
+    assert!(result.told.contains("fixture cache"));
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(hq.store().tasks().unwrap().len(), before);
+}
+
+#[test]
+fn normal_consult_requires_explicit_scope_when_a_pair_has_two_conversations() {
+    use serde_json::json;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let a = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let b = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq
+        .add_project(goal, "First project", "", lead, None)
+        .unwrap();
+    let other = hq
+        .add_project(goal, "Second project", "", lead, None)
+        .unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let c1 = hq.create_conversation(project, [a, b]).unwrap();
+    let c2 = hq.create_conversation(other, [b, a]).unwrap();
+    hq.wake(a, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, a);
+    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    let args = json!({"member":"Member 3","question":"Which fixture failed?"});
+    let error = super::protocol::call(&hq, &run, &member, "consult", &args).unwrap_err();
+    assert!(error.contains("conversation"), "{error}");
+    let selected = json!({"member":"Member 3","question":"Which fixture failed?","conversation":c2,"key":"normal_consult_1"});
+    let accepted: serde_json::Value = serde_json::from_str(
+        &super::protocol::call(&hq, &run, &member, "consult", &selected).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(accepted["conversation"], c2);
+    assert!(
+        hq.assistance_requests_page(c1, 0).unwrap()["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        hq.assistance_requests_page(c2, 0).unwrap()["requests"][0]["project"],
+        other.0
+    );
+}
+
+#[test]
+fn normal_consult_preserves_scope_source_and_confidentiality_boundaries() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use crate::domain::Priority;
+    use crate::domain::assistance::SourceRef;
+    use serde_json::json;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let a = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let b = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: Some(project),
+            parent: None,
+            title: "Synthetic check".into(),
+            description: String::new(),
+            assignee: Some(lead),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let source = turn_of(&hq, lead);
+    let receipt = hq
+        .record_receipt(
+            &source.token,
+            &Called {
+                tool: "fixture_check".into(),
+                args: String::new(),
+                excerpt: "Synthetic dependency failed".into(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    hq.wake(a, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, a);
+    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    let args = json!({"member":"Member 3","question":"Which fixture failed?"});
+    assert!(super::protocol::call(&hq, &run, &member, "consult", &args).is_err());
+    hq.set_conversations_enabled(true).unwrap();
+    assert!(super::protocol::call(&hq, &run, &member, "consult", &args).is_err());
+    let foreign = hq.create_conversation(project, [lead, b]).unwrap();
+    let forged =
+        json!({"member":"Member 3","question":"Which fixture failed?","conversation":foreign});
+    assert!(super::protocol::call(&hq, &run, &member, "consult", &forged).is_err());
+    let conversation = hq.create_conversation(project, [a, b]).unwrap();
+    // A turn started before enabling messaging must stay refused. Start a fresh turn
+    // to test source admission under the current policy rather than that stale-turn guard.
+    hq.runner().finish(turn.run, true);
+    hq.tick().unwrap();
+    hq.wake(a, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, a);
+    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    assert!(super::protocol::call(&hq, &run, &member, "consult", &forged).is_err());
+    let evidence = json!({"member":"Member 3","question":"Which fixture failed?","conversation":conversation,"key":"normal_sources_1","evidence":[format!("r{receipt}")]});
+    assert!(super::protocol::call(&hq, &run, &member, "consult", &evidence).is_err());
+    assert!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    hq.grant_assistance_receipt(conversation, receipt).unwrap();
+    super::protocol::call(&hq, &run, &member, "consult", &evidence).unwrap();
+    hq.tick().unwrap();
+    let expert = turn_of(&hq, b);
+    assert!(
+        hq.read_assistance_source(expert.run, SourceRef::Receipt(receipt), 1)
+            .unwrap()
+            .contains("Synthetic dependency failed")
+    );
+    hq.revoke_assistance_source(conversation, SourceRef::Receipt(receipt))
+        .unwrap();
+    assert!(
+        hq.read_assistance_source(expert.run, SourceRef::Receipt(receipt), 1)
+            .is_err()
+    );
+    hq.store().mark_confidential_input(run.id).unwrap();
+    assert!(super::protocol::call(&hq, &run, &member, "consult", &args).is_err());
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(hq.store().consults().unwrap().is_empty());
+}
+
+#[test]
+fn normal_task_owned_consult_keeps_its_thread_when_peer_assistance_is_enabled() {
+    use super::history_ports::HistoryStore;
+    use super::history_tests::task_for;
+    use serde_json::json;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let a = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let b = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq.create_conversation(project, [a, b]).unwrap();
+    let task = task_for(&hq, goal, a, "Synthetic check");
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, a);
+    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    let extended =
+        json!({"member":"Member 3","question":"Which fixture failed?","conversation":conversation});
+    assert!(super::protocol::call(&hq, &run, &member, "consult", &extended).is_err());
+    let args = json!({"member":"Member 3","question":"Which fixture failed?"});
+    let reply = super::protocol::call(&hq, &run, &member, "consult", &args).unwrap();
+    assert!(reply.contains("thread"));
+    assert_eq!(hq.store().consults().unwrap()[0].thread, task);
+    assert!(hq.store().run_read_confidential(run.id).unwrap());
+    assert!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    hq.tick().unwrap();
+    let expert = turn_of(&hq, b);
+    hq.answer_consult_in(expert.run, "The synthetic cache failed.")
+        .unwrap();
+    assert!(
+        hq.store()
+            .thread(task)
+            .unwrap()
+            .iter()
+            .any(|post| post.text.contains("synthetic cache failed"))
+    );
+}
+
+#[test]
 fn taskless_messages_keep_identity_and_create_no_work() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = engine(&clock);

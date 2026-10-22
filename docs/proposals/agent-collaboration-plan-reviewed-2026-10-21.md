@@ -48,6 +48,15 @@ read-receipt grant. The node proxy and per-process network restrictions were
 verified; dispatch admission/limit checks passed without inference. The isolated
 team remains stopped and execution unarmed. The diagnostic has not run.
 
+Foundation integration update, 2026-10-22: ordinary taskless `consult` now uses
+the existing assistance lifecycle for an owner-authorized pair, and eligible
+normal briefings explain how agents discover and use it. See the
+[foundation checkpoint](agent-collaboration-foundation-checkpoint-2026-10-22.md).
+The earlier Phase 3 checkpoint proves the conversation-origin slice, not full
+completion of Phase 3: consolidating task-thread consultations while preserving
+their contracts remains open. The full foundation and general plan are not yet
+complete. This integration change has not been deployed.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less

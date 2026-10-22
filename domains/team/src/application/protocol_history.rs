@@ -38,11 +38,14 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "consult",
-            "Ask another member a question directly: they take one short turn, from what they know and the record, and their answer is posted in your task's thread as \"<name> answers (consulted): …\", which wakes you. At most two consults in a turn and six in a day, and the answer is paid from your share; the CEO consults leads only. A member who is paused or on furlough is never woken: the record answers for them. Try ask_record first. The owner is asked with ask_owner, not this.",
+            "Ask a colleague directly. With a task, the answer returns in your task thread; an unavailable expert uses labelled record fallback, and the CEO consults leads only. With no task argument and a taskless turn, use an existing owner-authorized conversation: one matching pair routes automatically to bounded read-only assistance; select conversation explicitly if ambiguous. That result returns in the conversation, and a paused expert waits within its deadline. Taskless evidence must already be granted. At most two requests per turn and six per day on the selected path. Consulted work runs on the local model. Try ask_record first. Ask the owner with ask_owner.",
             json!({
                 "member": { "type": "string", "description": "the member's name" },
                 "question": { "type": "string", "maxLength": record::QUESTION_MOST },
                 "task": { "type": "integer", "description": "the task the question is about (what they wrote on it is read to them); the answer goes in your own task's thread, or this one when your turn is about none" },
+                "conversation": { "type": "integer", "minimum":1, "description": "For a taskless question, an existing owner-authorized conversation with this colleague. Required when more than one matches. With no task and one matching conversation, consult uses bounded assistance automatically." },
+                "key": { "type": "string", "minLength":8, "maxLength":64, "description":"Optional stable retry key for taskless assistance; otherwise derived from this turn and question." },
+                "evidence": { "type":"array", "maxItems":5, "items":{"type":"string"}, "description":"Original document/receipt locators already granted to the selected taskless conversation." },
             }),
             &["member", "question"],
         ),
@@ -85,6 +88,63 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 args["project"].as_i64(),
             )
             .map_err(said),
+        "consult"
+            if ["conversation", "key", "evidence"]
+                .iter()
+                .any(|key| args.get(*key).is_some()) =>
+        {
+            (|| {
+                if run.task.is_some() || args.get("task").is_some_and(|value| !value.is_null()) {
+                    return Err("task-owned consultation uses its task thread; conversation options are taskless only".to_owned());
+                }
+                if args.to_string().len() > crate::domain::conversation::ARGUMENT_BYTES {
+                    return Err("consult arguments exceed 8 KiB".to_owned());
+                }
+                let object = args
+                    .as_object()
+                    .ok_or("consult arguments must be an object")?;
+                if object.keys().any(|key| {
+                    ![
+                        "member",
+                        "question",
+                        "task",
+                        "conversation",
+                        "key",
+                        "evidence",
+                    ]
+                    .contains(&key.as_str())
+                }) {
+                    return Err(
+                        "identity and authority come from the live turn, not extra fields"
+                            .to_owned(),
+                    );
+                }
+                let conversation = args
+                    .get("conversation")
+                    .map(|value| {
+                        value
+                            .as_i64()
+                            .filter(|id| *id > 0)
+                            .ok_or("positive conversation ID required".to_owned())
+                    })
+                    .transpose()?;
+                let key = args
+                    .get("key")
+                    .map(|value| value.as_str().ok_or("retry key must be text".to_owned()))
+                    .transpose()?;
+                let evidence = super::protocol_conversations::assistance_sources(args)?;
+                engine
+                    .consult_peer_in(
+                        run.id,
+                        text(args, "member"),
+                        text(args, "question"),
+                        conversation,
+                        key,
+                        &evidence,
+                    )
+                    .map_err(said)
+            })()
+        }
         "consult" => engine
             .consult_in(
                 run.id,

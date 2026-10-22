@@ -60,7 +60,7 @@ pub(super) fn read_assistance_source_tool() -> Value {
         "inputSchema":{"type":"object","properties":{"source":{"type":"string"},"part":{"type":"integer","minimum":1}},"required":["source"],"additionalProperties":false}})
 }
 
-fn assistance_sources(args: &Value) -> Result<Vec<SourceRef>, String> {
+pub(super) fn assistance_sources(args: &Value) -> Result<Vec<SourceRef>, String> {
     let Some(values) = args.get("evidence") else {
         return Ok(Vec::new());
     };

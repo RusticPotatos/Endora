@@ -23,6 +23,7 @@ CREATE INDEX IF NOT EXISTS conversations_active ON conversations(id) WHERE delet
 CREATE INDEX IF NOT EXISTS conversations_deleted ON conversations(id) WHERE deleted_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS conversations_member1 ON conversations(member1,id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS conversations_member2 ON conversations(member2,id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS conversations_pair ON conversations(member1,member2,id) WHERE deleted_at IS NULL;
 CREATE TABLE IF NOT EXISTS conversation_messages (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  conversation INTEGER NOT NULL REFERENCES conversations(id),
@@ -51,6 +52,11 @@ CREATE INDEX IF NOT EXISTS conversation_operations_scope ON conversation_operati
 ";
 
 const COLUMNS: &str = "id,project,member1,member2,at_ms,latest,message_count";
+const PAIR_SCOPES: &str = "SELECT * FROM (
+ SELECT * FROM (SELECT id,project,member1,member2,at_ms,latest,message_count FROM conversations WHERE member1=?1 AND member2=?2 AND deleted_at IS NULL ORDER BY id LIMIT 2)
+ UNION ALL
+ SELECT * FROM (SELECT id,project,member1,member2,at_ms,latest,message_count FROM conversations WHERE member1=?2 AND member2=?1 AND deleted_at IS NULL ORDER BY id LIMIT 2)
+ ) ORDER BY id LIMIT 2";
 #[cfg(test)]
 impl SqliteTeamStore {
     pub(crate) fn conversation_audit_for_test(
@@ -616,6 +622,15 @@ impl ConversationStore for SqliteTeamStore {
             .map_err(backend)
     }
 
+    fn conversation_pair(&self, a: MemberId, b: MemberId) -> Stored<Vec<Conversation>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(PAIR_SCOPES).map_err(backend)?;
+        stmt.query_map(params![a.0, b.0], scope)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
     fn conversation_page(&self, member: Option<MemberId>, after: i64) -> Stored<Vec<Conversation>> {
         let conn = self.conn()?;
         if let Some(member) = member {
@@ -798,6 +813,58 @@ mod tests {
             INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,2,'downtime','queued',0);
             INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,2,1,'running',0);
         ").unwrap();
+    }
+
+    #[test]
+    fn consult_pair_lookup_is_bounded_as_unrelated_conversations_grow() {
+        let mut observed = Vec::new();
+        for size in [1_000, 100_000] {
+            let store = SqliteTeamStore::in_memory().unwrap();
+            fixture(&store);
+            store.conn().unwrap().execute("INSERT INTO members(id,name,role,share_percent,slots) VALUES(3,'Member 3','developer',30,2)", []).unwrap();
+            let selected = store
+                .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+                .unwrap();
+            store
+                .conn()
+                .unwrap()
+                .execute_batch(&format!(
+                    "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<{size})
+                INSERT INTO conversations(project,member1,member2,at_ms)
+                SELECT 1, CASE x%4 WHEN 0 THEN 1 WHEN 1 THEN 2 ELSE 3 END,
+                          CASE x%4 WHEN 0 THEN 3 WHEN 1 THEN 3 WHEN 2 THEN 1 ELSE 2 END, 0 FROM n"
+                ))
+                .unwrap();
+            let measure = || {
+                let conn = store.conn().unwrap();
+                let mut stmt = conn.prepare(PAIR_SCOPES).unwrap();
+                let ids = stmt
+                    .query_map([1, 2], |row| row.get::<_, i64>(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap();
+                assert_eq!(ids, [selected]);
+                stmt.get_status(StatementStatus::VmStep)
+            };
+            observed.push(measure());
+            assert_eq!(
+                store.conversation_pair(MemberId(2), MemberId(1)).unwrap()[0].id,
+                selected
+            );
+            if size == 100_000 {
+                store
+                    .conn()
+                    .unwrap()
+                    .execute_batch("DROP INDEX conversations_pair")
+                    .unwrap();
+                assert!(
+                    measure() > 10_000,
+                    "negative control must detect the missing composite index"
+                );
+            }
+        }
+        assert_eq!(observed[0], observed[1]);
+        assert!(observed[1] < 1_000, "{observed:?}");
     }
 
     fn information(conversation: i64) -> Information {
