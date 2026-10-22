@@ -421,3 +421,661 @@ fn enabling_messaging_does_not_authorize_a_turn_started_under_the_old_policy() {
         .contains("this turn began before the current messaging policy")
     );
 }
+
+#[test]
+fn an_assistance_request_is_durable_before_any_expert_turn_starts() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    let before = (hq.wakes().unwrap().len(), hq.store().runs().unwrap().len());
+    let id = hq
+        .request_assistance_in(
+            turn.run,
+            conversation,
+            "request_key_1",
+            "Which synthetic check is decisive?",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        before,
+        (hq.wakes().unwrap().len(), hq.store().runs().unwrap().len()),
+        "acceptance commits the delivery intent without starting a model"
+    );
+    assert_eq!(
+        hq.request_assistance_in(
+            turn.run,
+            conversation,
+            "request_key_1",
+            "Which synthetic check is decisive?",
+            &[],
+        )
+        .unwrap(),
+        id,
+        "a lost response retries the same durable request"
+    );
+    assert!(
+        hq.request_assistance_in(
+            turn.run,
+            conversation,
+            "request_key_1",
+            "A different objective",
+            &[],
+        )
+        .is_err()
+    );
+    hq.cancel_assistance_in(turn.run, id).unwrap();
+    let (live, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    let replay=super::protocol::call(&hq,&live,&member,"request_assistance",&serde_json::json!({"conversation":conversation,"key":"request_key_1","objective":"Which synthetic check is decisive?"})).unwrap();
+    let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+    assert_eq!(
+        replay["state"], "cancelled",
+        "retry replies describe the actual retained disposition"
+    );
+    assert_eq!(replay["scheduled"], false);
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["status"],
+        "cancelled"
+    );
+    hq.tick().unwrap();
+    assert_eq!(
+        before,
+        (hq.wakes().unwrap().len(), hq.store().runs().unwrap().len()),
+        "cancelling accepted intent schedules nothing"
+    );
+    hq.request_assistance_in(
+        turn.run,
+        conversation,
+        "request_key_2",
+        "Another synthetic question?",
+        &[],
+    )
+    .unwrap();
+    hq.stop_all("Synthetic owner stop").unwrap();
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"][1]["status"],
+        "cancelled"
+    );
+    hq.resume().unwrap();
+    hq.tick().unwrap();
+    assert_eq!(
+        before,
+        (hq.wakes().unwrap().len(), hq.store().runs().unwrap().len()),
+        "resume cannot revive cancelled delivery intent"
+    );
+}
+
+#[test]
+fn a_durable_request_wakes_only_its_authorized_expert_on_the_next_tick() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    hq.request_assistance_in(
+        turn.run,
+        conversation,
+        "request_key_1",
+        "Which synthetic check is decisive?",
+        &[],
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let expert_turn = turn_of(&hq, expert);
+    assert!(expert_turn.task.is_none());
+    assert!(
+        expert_turn
+            .told
+            .contains("Which synthetic check is decisive?"),
+        "the designated expert receives the stored question in a bounded briefing"
+    );
+    let (expert_run, expert_member) = hq.turn_of(&expert_turn.token).unwrap().unwrap();
+    let offered = super::protocol::tools_in(&hq, &expert_run, &expert_member);
+    assert!(
+        offered
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "answer_assistance")
+    );
+    assert!(
+        !offered
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "office")
+    );
+    assert!(
+        super::protocol::call(
+            &hq,
+            &expert_run,
+            &expert_member,
+            "office",
+            &serde_json::json!({})
+        )
+        .unwrap_err()
+        .contains("assistance"),
+        "tool hiding cannot be the authority boundary"
+    );
+    let expert_runs = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .filter(|run| run.member == expert)
+        .count();
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store()
+            .runs()
+            .unwrap()
+            .into_iter()
+            .filter(|run| run.member == expert)
+            .count(),
+        expert_runs,
+        "an unchanged waiting request cannot create a second expert turn"
+    );
+}
+
+#[test]
+fn the_expert_answer_is_accepted_once_and_kept_for_the_owner() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let requester_turn = turn_of(&hq, requester);
+    let id = hq
+        .request_assistance_in(
+            requester_turn.run,
+            conversation,
+            "request_key_1",
+            "Which synthetic check is decisive?",
+            &[],
+        )
+        .unwrap();
+    hq.tick().unwrap();
+    let expert_turn = turn_of(&hq, expert);
+    assert_eq!(
+        hq.answer_assistance_in(expert_turn.run, "The synthetic check passed.", &[])
+            .unwrap(),
+        id
+    );
+    assert_eq!(
+        hq.answer_assistance_in(expert_turn.run, "The synthetic check passed.", &[])
+            .unwrap(),
+        id,
+        "an identical retry returns the accepted result"
+    );
+    assert!(
+        hq.answer_assistance_in(expert_turn.run, "A second answer", &[])
+            .is_err(),
+        "the first terminal answer wins"
+    );
+    let page = hq.assistance_requests_page(conversation, 0).unwrap();
+    assert_eq!(page["requests"][0]["id"], id);
+    assert_eq!(page["requests"][0]["status"], "answered");
+    assert_eq!(page["requests"][0]["answer"], "The synthetic check passed.");
+    assert_eq!(page["requests"][0]["notified"], false);
+    hq.set_conversations_enabled(false).unwrap();
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["status"],
+        "answered",
+        "a committed answer remains historical evidence when delivery is cancelled"
+    );
+    assert!(
+        !hq.store()
+            .run(expert_turn.run)
+            .unwrap()
+            .unwrap()
+            .status
+            .live(),
+        "disable also stops an expert that answered but has not exited"
+    );
+}
+
+#[test]
+fn an_undelivered_request_expires_without_starting_an_expert() {
+    use std::sync::atomic::Ordering;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    hq.request_assistance_in(
+        turn.run,
+        conversation,
+        "request_key_1",
+        "A synthetic question?",
+        &[],
+    )
+    .unwrap();
+    clock.0.fetch_add(16 * 60 * 1_000, Ordering::SeqCst);
+    hq.tick().unwrap();
+    let page = hq.assistance_requests_page(conversation, 0).unwrap();
+    assert_eq!(page["requests"][0]["status"], "expired");
+    assert!(
+        hq.store()
+            .runs()
+            .unwrap()
+            .iter()
+            .all(|run| run.member != expert)
+    );
+}
+
+#[test]
+fn an_answer_waits_for_the_requesters_running_turn_then_notifies_once() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let requester_turn = turn_of(&hq, requester);
+    hq.request_assistance_in(
+        requester_turn.run,
+        conversation,
+        "request_key_1",
+        "Synthetic question?",
+        &[],
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let expert_turn = turn_of(&hq, expert);
+    hq.answer_assistance_in(expert_turn.run, "Synthetic answer.", &[])
+        .unwrap();
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store()
+            .runs()
+            .unwrap()
+            .iter()
+            .filter(|run| run.member == requester)
+            .count(),
+        1,
+        "an answer does not add a turn while the requester is running"
+    );
+    hq.runner().finish(requester_turn.run, true);
+    hq.tick().unwrap();
+    let notified = turn_of(&hq, requester);
+    assert_ne!(notified.run, requester_turn.run);
+    assert!(notified.told.contains("Synthetic answer."));
+    let count = hq
+        .store()
+        .runs()
+        .unwrap()
+        .iter()
+        .filter(|run| run.member == requester)
+        .count();
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store()
+            .runs()
+            .unwrap()
+            .iter()
+            .filter(|run| run.member == requester)
+            .count(),
+        count
+    );
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["notified"],
+        true
+    );
+}
+
+#[test]
+fn deleting_a_conversation_cancels_its_queued_request_without_a_wake() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    hq.request_assistance_in(
+        turn.run,
+        conversation,
+        "request_key_1",
+        "Synthetic question?",
+        &[],
+    )
+    .unwrap();
+    hq.delete_conversation(conversation).unwrap();
+    hq.tick().unwrap();
+    assert!(
+        hq.store()
+            .runs()
+            .unwrap()
+            .iter()
+            .all(|run| run.member != expert)
+    );
+    assert!(hq.conversation_messages(conversation, 0).is_err());
+}
+
+#[test]
+fn deleting_a_conversation_stops_its_live_assistance_before_purging_the_link() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    hq.request_assistance_in(
+        turn.run,
+        conversation,
+        "request_key_1",
+        "Synthetic question?",
+        &[],
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let expert_turn = turn_of(&hq, expert);
+    hq.delete_conversation(conversation).unwrap();
+    assert!(
+        !hq.store()
+            .run(expert_turn.run)
+            .unwrap()
+            .unwrap()
+            .status
+            .live()
+    );
+    hq.tick().unwrap();
+    assert!(!hq.in_assistance(expert_turn.run).unwrap());
+}
+
+#[test]
+fn only_an_owner_granted_original_document_can_be_read_for_an_assistance_run() {
+    use super::ports::NewTask;
+    use crate::domain::assistance::SourceRef;
+    use crate::domain::{Document, Priority};
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    let task = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Synthetic check".into(),
+                description: String::new(),
+                assignee: Some(lead),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    hq.tick().unwrap();
+    let source = turn_of(&hq, lead);
+    let document = hq
+        .store()
+        .add_document(&Document {
+            id: 0,
+            task,
+            run: Some(source.run),
+            title: "Synthetic report".into(),
+            text: "The independent check passed.".into(),
+            at: NOON,
+        })
+        .unwrap();
+    let receipt = hq
+        .record_receipt(
+            &source.token,
+            &Called {
+                tool: "fixture_check".into(),
+                args: String::new(),
+                excerpt: "Synthetic receipt passed".into(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    assert!(
+        hq.request_assistance_in(
+            turn.run,
+            conversation,
+            "request_key_1",
+            "What did the check show?",
+            &[SourceRef::Document(document)]
+        )
+        .is_err()
+    );
+    hq.grant_assistance_document(conversation, document)
+        .unwrap();
+    hq.grant_assistance_receipt(conversation, receipt).unwrap();
+    hq.request_assistance_in(
+        turn.run,
+        conversation,
+        "request_key_1",
+        "What did the check show?",
+        &[SourceRef::Document(document), SourceRef::Receipt(receipt)],
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let expert_turn = turn_of(&hq, expert);
+    assert!(
+        hq.read_document(expert_turn.run, document, 1)
+            .unwrap()
+            .contains("independent check passed")
+    );
+    assert!(
+        hq.read_assistance_source(expert_turn.run, SourceRef::Receipt(receipt), 1)
+            .unwrap()
+            .contains("Synthetic receipt passed")
+    );
+    assert!(
+        hq.read_document(turn.run, document, 1).is_err(),
+        "the grant does not give an ordinary requester cross-task access"
+    );
+    let other_project = hq
+        .add_project(goal, "Other fixture", "", lead, None)
+        .unwrap();
+    let other_scope = hq
+        .create_conversation(other_project, [requester, expert])
+        .unwrap();
+    assert!(
+        hq.grant_assistance_document(other_scope, document).is_err(),
+        "source project must match the immutable conversation project"
+    );
+    hq.revoke_assistance_source(conversation, SourceRef::Document(document))
+        .unwrap();
+    assert!(
+        hq.read_document(expert_turn.run, document, 1).is_err(),
+        "revocation is checked on every read"
+    );
+    assert!(
+        hq.answer_assistance_in(
+            expert_turn.run,
+            "An unverified result",
+            &[SourceRef::Document(document)]
+        )
+        .is_err()
+    );
+    hq.grant_assistance_document(conversation, document)
+        .unwrap();
+    hq.answer_assistance_in(
+        expert_turn.run,
+        "The check passed.",
+        &[SourceRef::Document(document)],
+    )
+    .unwrap();
+    super::history_tests::end(&hq, &turn);
+    let result_turn = turn_of(&hq, requester);
+    assert_ne!(result_turn.run, turn.run);
+    assert!(
+        hq.read_document(result_turn.run, document, 1)
+            .unwrap()
+            .contains("independent check passed"),
+        "the assigned result turn checks the original, without broadening ordinary access"
+    );
+    clock.0.store(
+        NOON + 24 * 60 * 60 * 1000,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    assert!(
+        hq.read_document(result_turn.run, document, 1).is_err(),
+        "an expired grant or request cannot keep an expert's reach alive"
+    );
+}
+
+#[test]
+fn disabling_assistance_cancels_pending_and_live_requests() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    hq.request_assistance_in(
+        turn.run,
+        conversation,
+        "request_key_1",
+        "Synthetic question?",
+        &[],
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let expert_turn = turn_of(&hq, expert);
+    hq.set_conversations_enabled(false).unwrap();
+    assert!(
+        !hq.store()
+            .run(expert_turn.run)
+            .unwrap()
+            .unwrap()
+            .status
+            .live()
+    );
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["status"],
+        "cancelled"
+    );
+    hq.set_conversations_enabled(true).unwrap();
+    hq.tick().unwrap();
+    assert!(
+        hq.answer_assistance_in(expert_turn.run, "Late answer", &[])
+            .is_err()
+    );
+    assert_eq!(
+        hq.store()
+            .runs()
+            .unwrap()
+            .iter()
+            .filter(|run| run.member == expert)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn an_expert_turn_ending_without_an_answer_has_a_visible_outcome() {
+    use super::history_tests::end;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    hq.request_assistance_in(
+        turn.run,
+        conversation,
+        "request_key_1",
+        "Synthetic question?",
+        &[],
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let expert_turn = turn_of(&hq, expert);
+    end(&hq, &expert_turn);
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["status"],
+        "declined"
+    );
+}

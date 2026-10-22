@@ -93,6 +93,78 @@ pub(in crate::api) async fn hq_conversation_page(
     .await
 }
 
+pub(in crate::api) async fn hq_conversation_assistance(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<ConversationCursor>,
+) -> Answer {
+    ask(
+        &state,
+        format!("/v1/conversations/{id}/assistance?after={}", q.after.max(0)),
+        None,
+    )
+    .await
+}
+
+pub(in crate::api) async fn hq_assistance_cancel(
+    State(state): State<AppState>,
+    Path((id, request)): Path<(i64, i64)>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/conversations/{id}/assistance/{request}/cancel"),
+        Some(json!({})),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you cancelled assistance request {request} in conversation {id}"),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::api) struct SourceGrant {
+    source: String,
+}
+
+pub(in crate::api) async fn hq_conversation_source_grant(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<SourceGrant>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/conversations/{id}/sources"),
+        Some(json!({"source":req.source})),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you granted original evidence to conversation {id} for 24 hours"),
+    );
+    Ok(answer)
+}
+
+pub(in crate::api) async fn hq_conversation_source_revoke(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<SourceGrant>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/conversations/{id}/sources/revoke"),
+        Some(json!({"source":req.source})),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you revoked original evidence access in conversation {id}"),
+    );
+    Ok(answer)
+}
+
 pub(in crate::api) async fn hq_conversation_delete(
     State(state): State<AppState>,
     Path(id): Path<i64>,

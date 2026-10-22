@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::engine::Engine;
 use super::ports::{Clock, Run, TeamStore, WorkerAdapter};
+use crate::domain::assistance::{OBJECTIVE_MOST, SourceRef};
 use crate::domain::conversation::{ARGUMENT_BYTES, MESSAGE_MOST};
 use crate::domain::{Ref, Role};
 
@@ -14,6 +15,7 @@ pub(super) fn tools<S: TeamStore, W: WorkerAdapter, C: Clock>(
 ) -> Vec<Value> {
     if !engine.conversations_enabled().unwrap_or(false)
         || !engine.conversation_turn_ready(run.id).unwrap_or(false)
+        || engine.in_assistance(run.id).unwrap_or(true)
         || engine.in_consult(run.id).unwrap_or(true)
         || engine.in_quiz(run.id).unwrap_or(true)
     {
@@ -41,7 +43,134 @@ pub(super) fn tools<S: TeamStore, W: WorkerAdapter, C: Clock>(
         "inputSchema":{"type":"object","properties":{"conversation":{"type":"integer"},"after":{"type":"integer","minimum":0}},"additionalProperties":false}}),
         json!({"name":"send_message","description":"Store information in an existing owner-authorized conversation. No task, wake, delegation or approval is created. Use a stable retry key; a reply needs an existing turn. Confidential turns cannot send in this pilot.",
             "inputSchema":{"type":"object","properties":{"conversation":{"type":"integer"},"key":{"type":"string","minLength":8,"maxLength":64},"text":{"type":"string","maxLength":MESSAGE_MOST},"evidence":{"type":"array","maxItems":5,"items":{"type":"string"}}},"required":["conversation","key","text"],"additionalProperties":false}}),
+        json!({"name":"request_assistance","description":"Ask the other authorized participant for one read-only answer. This creates a bounded, project-charged expert turn; it does not create or complete a task, grant a capability or approve work.",
+            "inputSchema":{"type":"object","properties":{"conversation":{"type":"integer"},"key":{"type":"string","minLength":8,"maxLength":64},"objective":{"type":"string","maxLength":OBJECTIVE_MOST},"evidence":{"type":"array","maxItems":5,"items":{"type":"string"}}},"required":["conversation","key","objective"],"additionalProperties":false}}),
+        json!({"name":"cancel_assistance","description":"Cancel an open request you originally made. An already accepted answer remains the result.","inputSchema":{"type":"object","properties":{"request":{"type":"integer","minimum":1}},"required":["request"],"additionalProperties":false}}),
     ]
+}
+
+/// Only an associated expert run is offered this terminal action.
+pub(super) fn answer_assistance_tool() -> Value {
+    json!({"name":"answer_assistance","description":"Answer the one read-only request assigned to this turn. State uncertainty when the evidence does not decide it. This answer is testimony, not task acceptance.",
+        "inputSchema":{"type":"object","properties":{"answer":{"type":"string","maxLength":MESSAGE_MOST},"evidence":{"type":"array","maxItems":5,"items":{"type":"string"}}},"required":["answer"],"additionalProperties":false}})
+}
+
+pub(super) fn read_assistance_source_tool() -> Value {
+    json!({"name":"read_assistance_source","description":"Read an original document or receipt explicitly granted to this request. A locator is not authority; unavailable or expired grants are refused.",
+        "inputSchema":{"type":"object","properties":{"source":{"type":"string"},"part":{"type":"integer","minimum":1}},"required":["source"],"additionalProperties":false}})
+}
+
+fn assistance_sources(args: &Value) -> Result<Vec<SourceRef>, String> {
+    let Some(values) = args.get("evidence") else {
+        return Ok(Vec::new());
+    };
+    let values = values
+        .as_array()
+        .ok_or("evidence must be a list of source locators")?;
+    if values.len() > 5 {
+        return Err("at most five source locators".into());
+    }
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .and_then(SourceRef::parse)
+                .ok_or_else(|| "invalid original source locator".into())
+        })
+        .collect()
+}
+
+fn assistance_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    tool: &str,
+    args: &Value,
+) -> Option<Result<String, String>> {
+    if !matches!(
+        tool,
+        "request_assistance" | "answer_assistance" | "read_assistance_source" | "cancel_assistance"
+    ) {
+        return None;
+    }
+    let result = (|| {
+        if args.to_string().len() > ARGUMENT_BYTES {
+            return Err("assistance arguments exceed 8 KiB".into());
+        }
+        let object = args
+            .as_object()
+            .ok_or("assistance arguments must be an object")?;
+        let keys: &[&str] = if tool == "request_assistance" {
+            &["conversation", "key", "objective", "evidence"]
+        } else if tool == "answer_assistance" {
+            &["answer", "evidence"]
+        } else if tool == "read_assistance_source" {
+            &["source", "part"]
+        } else {
+            &["request"]
+        };
+        if object.keys().any(|key| !keys.contains(&key.as_str())) {
+            return Err("identity and authority come from the live turn, not extra fields".into());
+        }
+        if tool == "cancel_assistance" {
+            let request = args["request"]
+                .as_i64()
+                .filter(|id| *id > 0)
+                .ok_or("request ID required")?;
+            let id = engine
+                .cancel_assistance_in(run.id, request)
+                .map_err(|e| e.to_string())?;
+            return Ok(json!({"request":id,"state":"cancelled","scheduled":false}).to_string());
+        }
+        if tool == "read_assistance_source" {
+            let source = args["source"]
+                .as_str()
+                .and_then(SourceRef::parse)
+                .ok_or("source locator required")?;
+            let part = match args.get("part") {
+                Some(value) => value
+                    .as_u64()
+                    .filter(|value| *value > 0)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or("part must be a positive integer")?,
+                None => 1,
+            };
+            return engine
+                .read_assistance_source(run.id, source, part)
+                .map_err(|e| e.to_string());
+        }
+        if tool == "answer_assistance" {
+            let answer = args["answer"].as_str().ok_or("answer required")?;
+            let evidence = assistance_sources(args)?;
+            let id = engine
+                .answer_assistance_in(run.id, answer, &evidence)
+                .map_err(|e| e.to_string())?;
+            return Ok(json!({"request":id,"state":"answered","scheduled":false}).to_string());
+        }
+        let conversation = args["conversation"]
+            .as_i64()
+            .filter(|id| *id > 0)
+            .ok_or("conversation required")?;
+        let key = args["key"].as_str().ok_or("retry key required")?;
+        let objective = args["objective"].as_str().ok_or("objective required")?;
+        let evidence = assistance_sources(args)?;
+        let id = engine
+            .request_assistance_in(run.id, conversation, key, objective, &evidence)
+            .map_err(|e| e.to_string())?;
+        let request = engine
+            .store()
+            .assistance_request(id)
+            .map_err(|e| e.to_string())?
+            .ok_or("request unavailable")?;
+        let scheduled = matches!(request.status.as_str(), "queued" | "processing");
+        Ok(json!({"request":id,"state":request.status,"scheduled":scheduled}).to_string())
+    })();
+    if result.is_err() {
+        if let Err(error) = engine.conversation_protocol_refused(run.id, tool) {
+            return Some(Err(error.to_string()));
+        }
+    }
+    Some(result)
 }
 
 /// Execute only after the protocol's special-turn, project and live-token restrictions.
@@ -51,6 +180,9 @@ pub(super) fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     tool: &str,
     args: &Value,
 ) -> Option<Result<String, String>> {
+    if let Some(answer) = assistance_call(engine, run, tool, args) {
+        return Some(answer);
+    }
     if !matches!(tool, "send_message" | "read_messages") {
         return None;
     }

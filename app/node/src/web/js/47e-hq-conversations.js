@@ -1,5 +1,5 @@
 // Information-only peer conversations (ADR 0137). Keep one bounded page in memory.
-const HQ_CHAT = { directory: null, page: null, operations: null, id: null, after: 0, busy: false, error: "" };
+const HQ_CHAT = { directory: null, page: null, assistance: null, operations: null, id: null, after: 0, busy: false, error: "" };
 
 function hqConversations(s) {
   const d = HQ_CHAT.directory;
@@ -26,8 +26,17 @@ function hqConversations(s) {
     body += `<section class="hq-card"><h3>Conversation ${Number(HQ_CHAT.id)}</h3>
       <p class="hq-note">This is one page of retained information, in recorded order. Statements are claims; references do not grant permissions.</p>
       <ul class="hq-thread">${(page.messages || []).slice(0, 50).map((m) => `<li><b>${esc(((s.members || []).find((p) => p.id === m.member) || {}).name || `Member ${m.member}`)}</b> <small>message ${Number(m.id)}, run ${Number(m.run)}${m.at ? ` · ${esc(new Date(m.at).toLocaleString())}` : ""}</small><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(m.text)}</p>${m.evidence.length ? `<small>Original references: ${m.evidence.map(esc).join(", ")}</small>` : ""}</li>`).join("") || '<li class="hq-empty">No messages on this page.</li>'}</ul>
-      <div class="hq-row">${button("open", HQ_CHAT.id, "First page")}${button("refresh", HQ_CHAT.id, "Refresh page")}${button("save", HQ_CHAT.id, "Save this page")}
+      <div class="hq-row">${button("open", HQ_CHAT.id, "First page")}${button("refresh", HQ_CHAT.id, "Refresh page")}${button("save", HQ_CHAT.id, "Save this page")}${button("assistance", HQ_CHAT.id, "Assistance requests")}
       ${page.has_more ? button("next", HQ_CHAT.id, "Next page") : ""}${button("delete", HQ_CHAT.id, "Delete conversation")}</div></section>`;
+    if (HQ_CHAT.assistance) {
+      const a = HQ_CHAT.assistance;
+      body += `<section class="hq-card"><h3>Assistance in conversation ${Number(HQ_CHAT.id)}</h3>
+        <p class="hq-note">Each request has a fifteen-minute deadline. Answers are attributed peer testimony. A source grant lasts 24 hours, applies only to this conversation, and gives no task authority.</p>
+        <ul class="hq-thread">${(a.requests || []).map((r) => `<li>Request ${Number(r.id)} · ${esc(r.status)} · ${esc(((s.members || []).find((m) => m.id === r.requester) || {}).name || `Member ${r.requester}`)} to ${esc(((s.members || []).find((m) => m.id === r.expert) || {}).name || `Member ${r.expert}`)}<p>${esc(r.objective)}</p><small>Project ${Number(r.project)} · ${Number(r.attempts || 0)} attempts · exchange spend $${((Number(r.spent || 0) + Number(r.notice_spent || 0)) / 1000000).toFixed(4)} · deadline ${esc(new Date(r.deadline_at).toLocaleString())}</small>${r.evidence.length ? `<p>Original source locators: ${r.evidence.map(esc).join(", ")}</p>` : ""}${r.answer ? `<p>Answer: ${esc(r.answer)}</p><small>Answer sources: ${(r.answer_evidence || []).map(esc).join(", ") || "none cited"} · ${r.notice_cancelled ? "Delivery cancelled" : r.notified ? `Result turn ${esc(r.notice_status || "queued")}` : "Waiting to notify requester"}</small>` : ""}${["queued", "processing"].includes(r.status) ? button("cancel-request", r.id, "Cancel request") : ""}</li>`).join("") || '<li class="hq-empty">No assistance requests on this page.</li>'}</ul>
+        <div class="hq-row">${button("assistance", HQ_CHAT.id, "First requests")}${button("save-assistance", HQ_CHAT.id, "Save this request page")}${a.has_more ? button("assistance-next", HQ_CHAT.id, "Next requests") : ""}</div>
+        <ul class="hq-thread">${(a.grants || []).map((g) => `<li>${esc(g.source)} · expires ${esc(new Date(g.expires_at).toLocaleString())} ${button("revoke-source", esc(g.source), "Revoke access")}</li>`).join("") || '<li class="hq-empty">No active source grants.</li>'}</ul>
+        <div class="hq-row"><label>Original source <input id="hq-assistance-source" placeholder="d12 or r8" maxlength="24"></label>${button("grant-source", HQ_CHAT.id, "Grant access")}</div></section>`;
+    }
   }
   if (HQ_CHAT.operations) {
     const history = HQ_CHAT.operations;
@@ -41,10 +50,11 @@ function hqConversations(s) {
 async function hqConversationAct(what, id) {
   if (HQ_CHAT.busy) return true;
   if (what === "delete" && !confirm("Delete this conversation and all its messages?")) return true;
-  if (what === "save") {
-    if (!HQ_CHAT.page) return true;
-    const url = URL.createObjectURL(new Blob([JSON.stringify(HQ_CHAT.page, null, 2)], { type: "application/json" }));
-    const a = document.createElement("a"); a.href = url; a.download = `conversation-${Number(HQ_CHAT.id)}-after-${Number(HQ_CHAT.after)}.json`; a.click(); URL.revokeObjectURL(url);
+  if (what === "save" || what === "save-assistance") {
+    const page = what === "save-assistance" ? HQ_CHAT.assistance : HQ_CHAT.page;
+    if (!page) return true;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(page, null, 2)], { type: "application/json" }));
+    const a = document.createElement("a"); a.href = url; a.download = `conversation-${Number(HQ_CHAT.id)}-${what}-after-${Number(page.after)}.json`; a.click(); URL.revokeObjectURL(url);
     return true;
   }
   HQ_CHAT.busy = true; HQ_CHAT.error = "";
@@ -67,9 +77,22 @@ async function hqConversationAct(what, id) {
       HQ_CHAT.page = null;
       HQ_CHAT.id = Number(id); HQ_CHAT.after = after;
       HQ_CHAT.page = await api("GET", `/v1/hq/conversations/${Number(id)}?after=${after}`);
+      if (what === "open") HQ_CHAT.assistance = null;
+    } else if (what === "assistance" || what === "assistance-next") {
+      const after = what === "assistance-next" ? Number((HQ_CHAT.assistance || {}).after) || 0 : 0;
+      HQ_CHAT.assistance = await api("GET", `/v1/hq/conversations/${Number(id)}/assistance?after=${after}`);
+    } else if (what === "cancel-request") {
+      await api("POST", `/v1/hq/conversations/${Number(HQ_CHAT.id)}/assistance/${Number(id)}/cancel`, {});
+      HQ_CHAT.assistance = await api("GET", `/v1/hq/conversations/${Number(HQ_CHAT.id)}/assistance?after=0`);
+    } else if (what === "grant-source" || what === "revoke-source") {
+      const source = what === "grant-source" ? val("hq-assistance-source").trim() : String(id);
+      if (!/^[dr][1-9][0-9]*$/.test(source)) throw new Error("Enter an original document or receipt locator, such as d12 or r8.");
+      if (what === "revoke-source") await api("POST", `/v1/hq/conversations/${Number(HQ_CHAT.id)}/sources/revoke`, { source });
+      else await api("POST", `/v1/hq/conversations/${Number(HQ_CHAT.id)}/sources`, { source });
+      HQ_CHAT.assistance = await api("GET", `/v1/hq/conversations/${Number(HQ_CHAT.id)}/assistance?after=0`);
     } else if (what === "delete") {
       await api("POST", `/v1/hq/conversations/${Number(id)}/delete`, {});
-      HQ_CHAT.page = null; HQ_CHAT.id = null;
+      HQ_CHAT.page = null; HQ_CHAT.assistance = null; HQ_CHAT.id = null;
       HQ_CHAT.operations = null;
       HQ_CHAT.directory = await api("GET", "/v1/hq/conversations?after=0");
     }

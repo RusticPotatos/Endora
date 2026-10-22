@@ -622,6 +622,37 @@ pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
     let Some(list) = all.as_array_mut() else {
         return all;
     };
+    match engine.in_assistance(run.id) {
+        Ok(true) => {
+            const MAY: &[&str] = &[
+                "my_turn",
+                "read_world",
+                "read_notebook",
+                "read_doc",
+                "read_document",
+                "ask_record",
+            ];
+            list.retain(|tool| {
+                tool["name"]
+                    .as_str()
+                    .is_some_and(|name| MAY.contains(&name))
+            });
+            list.push(super::protocol_conversations::answer_assistance_tool());
+            list.push(super::protocol_conversations::read_assistance_source_tool());
+            return all;
+        }
+        Err(_) => return json!([]),
+        Ok(false) => {}
+    }
+    if engine
+        .store()
+        .assistance_notice_for_run(run.id)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        list.push(super::protocol_conversations::read_assistance_source_tool());
+    }
     if engine.in_quiz(run.id).unwrap_or(false) {
         list.push(super::protocol_world::quiz_tool());
     }
@@ -874,6 +905,10 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 | "ask_record"
                 | "read_messages"
                 | "send_message"
+                | "request_assistance"
+                | "answer_assistance"
+                | "read_assistance_source"
+                | "cancel_assistance"
         )
     {
         engine
@@ -910,7 +945,15 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
         return Err(Refusal::TurnOver.to_string());
     }
     let refused = |reason: String| {
-        if matches!(tool, "send_message" | "read_messages") {
+        if matches!(
+            tool,
+            "send_message"
+                | "read_messages"
+                | "request_assistance"
+                | "answer_assistance"
+                | "read_assistance_source"
+                | "cancel_assistance"
+        ) {
             engine
                 .conversation_protocol_refused(run.id, tool)
                 .map_err(|e| said(&e))?;
@@ -920,6 +963,12 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // Downtime makes no work (ADR 0119): the tools that would are refused in its turns.
     if MAKES_WORK.contains(&tool) && engine.in_downtime(run.id).map_err(|e| said(&e))? {
         return refused(Refusal::InDowntime.to_string());
+    }
+    if let Some(refusal) = engine
+        .assistance_turn_refuses(run.id, tool)
+        .map_err(|e| said(&e))?
+    {
+        return refused(refusal);
     }
     // A consulted turn reads and answers, and has a few rounds to do it in (ADR 0129).
     if let Some(refusal) = engine

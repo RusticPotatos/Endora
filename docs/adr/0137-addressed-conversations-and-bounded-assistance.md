@@ -136,10 +136,15 @@ filesystem paths or shared writable checkout. Recheck existence, revision and
 tier at use time; unavailable/expired is not a successful verification. Granting
 read access requires the owner's explicit conversation setup in the pilot.
 
-For an associated assistance run, an active grant is a narrow alternative to
+For the associated expert run and the one assigned requester result run, an active grant is a narrow alternative to
 the current task-tree read predicate in `read_document`; requiring that predicate
 as well would still deny every taskless expert. It authorizes reading only the
-named document at its recorded revision. It does not broaden `reach`, branch
+named document or receipt at its recorded revision. Grants last 24 hours and
+the owner can revoke them immediately. The result run needs this same narrow
+read so B2's requester can inspect the original rather than trust the expert's
+summary. An expert's request deadline still applies to its execution; a result
+run checks the current grant and accepted answer, without reopening that request.
+This does not broaden `reach`, branch
 checkout, submission, acceptance or any mutating operation. Ordinary conversation
 reads do not acquire this assistance-specific resource grant.
 
@@ -167,7 +172,7 @@ to evaluate under the frozen cases; they are not claimed empirical optima.
 | Open assistance | At most 1 per requester/expert/conversation; no nested assistance. |
 | Expert read rounds | Existing 6; then answer or report uncertainty. Mutators remain denied at handler and tool-list boundaries. |
 | Request deadline | 15 minutes from durable acceptance. A valid wait still expires; do not extend its deadline on retry. |
-| Delivery claim lease | 60 seconds to associate delivery with a queued run, not a 60-second model execution timeout. An executing expert remains owned by its stored run ID. |
+| Delivery association | Request transition, wake, queued run and immutable association commit in one SQLite transaction. There is no separately persisted claim that can expire or orphan a run. An executing expert remains owned by its stored run ID. |
 | Delivery attempts | At most 3 total attempts before visible failure, with existing bounded retry/backoff and request deadline also applying. |
 | Read pages | At most 50 messages after a stable increasing message ID; authoritative pagination, no feed replay required. |
 | New conversation retention | No automatic expiry or deletion. Keep the complete conversation history for research until the owner deletes it. Request deadlines still bound execution. |
@@ -227,8 +232,9 @@ an answer committed before cancellation remains answered; a cancellation that
 commits first rejects a later answer as late and produces no new result wake.
 Store late-disposition metadata without treating its content as a second result.
 
-Reconcile expired claims and request/run associations on tick/startup. A claim
-lease expiring does not duplicate an already associated live run. Drain keeps
+Reconcile request/run associations on tick/startup. Closing a run before its
+request disposition is written is recovered as declined or failed; an existing
+live run is never claimed a second time. Drain keeps
 delivery intent queued, starts nothing and preserves the existing handover
 path. Kill switch/feature disable prevents new starts. Valid waiting requests
 do not enter the task stuck ladder; on deadline they expire visibly. Retry
@@ -305,6 +311,20 @@ become visibly cancelled; existing running workers lose the new operation's
 authority and their later answer cannot revive the exchange. Re-enabling never
 resumes cancelled work. Do not automatically fall back into paid escalation.
 Prefer forward disable over deploying an old binary against an unproven schema.
+
+Implementation refinement, 2026-10-22: the initial 60-second claim lease is
+superseded by atomic local association. The source-grounded integration map
+identified an existing SQLite queue rather than an external delivery worker;
+there is no crash boundary between claiming and associating the queued run.
+Independent-connection/reopen tests in the conversation adapter exercise this
+boundary and the answer/cancel race. The existing run retries provide at most
+three attempts, bounded by the request deadline, without a second retry engine.
+`Consulted` and `QuestionAnswered` keep their established placement meanings;
+unique persisted request/run associations distinguish these new turns.
+Source locators are a separate `Document`/`Receipt` type, since the existing task
+citation type has no document variant. This assistance slice retains Internal-only
+sharing: Confidential or unclassified sources are refused rather than exposed
+through a grant or model-tier change. Full history retention is unchanged.
 
 ## Delivery gates and verification
 

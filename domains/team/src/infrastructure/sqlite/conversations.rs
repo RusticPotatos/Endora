@@ -5,6 +5,7 @@ use rusqlite::{OptionalExtension, params};
 use super::{SqliteTeamStore, backend};
 use crate::application::conversation_ports::{Accepted, ConversationStore};
 use crate::application::ports::Stored;
+use crate::domain::assistance::{self, NewRequest, Request, SourceRef};
 use crate::domain::conversation::{self, Conversation, Information, Message, Operation};
 use crate::domain::{MemberId, Millis, ProjectId, Ref, RunId};
 
@@ -76,7 +77,484 @@ fn scope(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
     })
 }
 
+const REQUEST_COLUMNS: &str = "id,conversation,project,requester,requester_run,expert,objective,evidence,status,deadline_at,expert_run,answer,answer_evidence,notified,notice_run,notice_cancelled";
+const DUE_REQUESTS: &str = " FROM assistance_requests WHERE status='queued' AND expert_run IS NULL AND deadline_at>?1 ORDER BY deadline_at,id LIMIT 50";
+const PENDING_NOTICES: &str = " FROM assistance_requests WHERE status='answered' AND notified=0 AND notice_cancelled=0 ORDER BY id LIMIT 50";
+const REQUEST_PAGE: &str =
+    " FROM assistance_requests WHERE conversation=?1 AND id>?2 ORDER BY id LIMIT 51";
+
+fn request(row: &rusqlite::Row<'_>) -> rusqlite::Result<Request> {
+    Ok(Request {
+        id: row.get(0)?,
+        conversation: row.get(1)?,
+        project: ProjectId(row.get(2)?),
+        requester: MemberId(row.get(3)?),
+        requester_run: RunId(row.get(4)?),
+        expert: MemberId(row.get(5)?),
+        objective: row.get(6)?,
+        evidence: SourceRef::read(&row.get::<_, String>(7)?),
+        status: row.get(8)?,
+        deadline_at: row.get(9)?,
+        expert_run: row.get::<_, Option<i64>>(10)?.map(RunId),
+        answer: row.get(11)?,
+        answer_evidence: SourceRef::read(&row.get::<_, String>(12)?),
+        notified: row.get(13)?,
+        notice_run: row.get::<_, Option<i64>>(14)?.map(RunId),
+        notice_cancelled: row.get(15)?,
+    })
+}
+
+fn source_key(source: SourceRef) -> (&'static str, i64) {
+    match source {
+        SourceRef::Document(id) => ("d", id),
+        SourceRef::Receipt(id) => ("r", id),
+    }
+}
+
+fn source_revision(
+    conn: &rusqlite::Connection,
+    conversation: i64,
+    source: SourceRef,
+) -> Stored<Option<i64>> {
+    let (_, id) = source_key(source);
+    let sql=match source {
+        SourceRef::Document(_)=>"SELECT d.at_ms FROM documents d JOIN tasks t ON t.id=d.task
+            JOIN conversations c ON c.project=t.project WHERE c.id=?1 AND c.deleted_at IS NULL AND d.id=?2",
+        SourceRef::Receipt(_)=>"SELECT d.at_ms FROM call_receipts d JOIN runs s ON s.id=d.run
+            LEFT JOIN tasks t ON t.id=s.task LEFT JOIN assistance_requests a ON a.expert_run=s.id
+            LEFT JOIN assistance_requests b ON b.notice_run=s.id
+            JOIN conversations c ON c.project=COALESCE(t.project,a.project,b.project)
+            WHERE c.id=?1 AND c.deleted_at IS NULL AND d.id=?2",
+    };
+    conn.query_row(sql, params![conversation, id], |r| r.get(0))
+        .optional()
+        .map_err(backend)
+}
+
 impl ConversationStore for SqliteTeamStore {
+    fn assistance_charging_project(&self, run: RunId) -> Stored<Option<ProjectId>> {
+        self.conn()?
+            .query_row(
+                "SELECT COALESCE(
+            (SELECT project FROM assistance_requests WHERE expert_run=?1),
+            (SELECT project FROM assistance_requests WHERE notice_run=?1),
+            (SELECT project FROM ledger WHERE run=?1 AND kind='reserve' ORDER BY id DESC LIMIT 1))",
+                [run.0],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .map(|value| value.map(ProjectId))
+            .map_err(backend)
+    }
+    fn assistance_request(&self, id: i64) -> Stored<Option<Request>> {
+        self.conn()?
+            .query_row(
+                &format!("SELECT {REQUEST_COLUMNS} FROM assistance_requests WHERE id=?1"),
+                [id],
+                request,
+            )
+            .optional()
+            .map_err(backend)
+    }
+
+    fn cancel_assistance_request(
+        &self,
+        id: i64,
+        actor: Option<RunId>,
+        now: Millis,
+    ) -> Stored<Accepted> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let existing: Option<(i64, String)> = tx
+            .query_row(
+                "SELECT conversation,status FROM assistance_requests WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((conversation, status)) = existing else {
+            return Ok(Err("request unavailable"));
+        };
+        if status == "cancelled" {
+            return Ok(Ok(id));
+        }
+        if !matches!(status.as_str(), "queued" | "processing") {
+            return Ok(Err("a terminal request cannot be cancelled"));
+        }
+        tx.execute("UPDATE assistance_requests SET status='cancelled',notice_cancelled=1 WHERE id=?1 AND status IN ('queued','processing')",[id]).map_err(backend)?;
+        if let Some(actor) = actor {
+            tx.execute("INSERT INTO conversation_operations(conversation,run,operation,reason,at_ms) VALUES(?1,?2,'cancel','accepted',?3)",params![conversation,actor.0,now]).map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        Ok(Ok(id))
+    }
+    fn cancel_assistance(&self) -> Stored<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().map_err(backend)?;
+        tx.execute("UPDATE assistance_requests SET status='cancelled' WHERE status IN ('queued','processing')",[]).map_err(backend)?;
+        tx.execute("UPDATE assistance_requests SET notice_cancelled=1 WHERE id IN (
+            SELECT id FROM assistance_requests WHERE status='answered' AND notified=0 AND notice_cancelled=0
+            UNION SELECT a.id FROM runs r JOIN assistance_requests a ON a.notice_run=r.id WHERE r.status IN ('queued','running','retry_waiting')
+            UNION SELECT a.id FROM runs r JOIN assistance_requests a ON a.expert_run=r.id WHERE a.status='answered' AND r.status IN ('queued','running','retry_waiting'))",[]).map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn close_unanswered_assistance(&self, run: RunId, completed: bool) -> Stored<()> {
+        self.conn()?.execute("UPDATE assistance_requests SET status=?2 WHERE expert_run=?1 AND status='processing'",
+            params![run.0,if completed {"declined"} else {"failed"}]).map_err(backend)?;
+        Ok(())
+    }
+    fn grant_assistance_source(
+        &self,
+        conversation: i64,
+        source: SourceRef,
+        at: Millis,
+    ) -> Stored<bool> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let (kind, resource) = source_key(source);
+        let candidate = source_revision(&tx, conversation, source)?;
+        let Some(revision) = candidate else {
+            return Ok(false);
+        };
+        let already: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM assistance_source_grants WHERE conversation=?1 AND kind=?2 AND resource=?3 AND expires_at>?4)",params![conversation,kind,resource,at],|r|r.get(0)).map_err(backend)?;
+        let count: i64 = tx.query_row(
+            "SELECT count(*) FROM assistance_source_grants WHERE conversation=?1 AND expires_at>?2",
+            params![conversation,at], |r|r.get(0),
+        ).map_err(backend)?;
+        if count >= i64::try_from(assistance::SOURCES_MOST).map_err(backend)? && !already {
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM assistance_source_grants WHERE conversation=?1 AND expires_at<=?2",
+            params![conversation, at],
+        )
+        .map_err(backend)?;
+        tx.execute("INSERT INTO assistance_source_grants(conversation,kind,resource,revision,granted_at,expires_at)
+            VALUES(?1,?2,?3,?4,?5,?6)
+            ON CONFLICT(conversation,kind,resource) DO UPDATE SET revision=excluded.revision,
+            granted_at=excluded.granted_at, expires_at=excluded.expires_at",
+            params![conversation,kind,resource,revision,at,at+assistance::GRANT_MS]).map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(true)
+    }
+
+    fn assistance_source_granted(
+        &self,
+        conversation: i64,
+        source: SourceRef,
+        at: Millis,
+    ) -> Stored<bool> {
+        let conn = self.conn()?;
+        let Some(revision) = source_revision(&conn, conversation, source)? else {
+            return Ok(false);
+        };
+        let (kind, resource) = source_key(source);
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM assistance_source_grants WHERE conversation=?1 AND kind=?2 AND resource=?3 AND revision=?4 AND expires_at>?5)",
+            params![conversation,kind,resource,revision,at],|r|r.get(0)).map_err(backend)
+    }
+
+    fn assistance_grants(&self, conversation: i64, at: Millis) -> Stored<Vec<(SourceRef, Millis)>> {
+        let conn = self.conn()?;
+        let mut stmt=conn.prepare("SELECT kind,resource,expires_at FROM assistance_source_grants WHERE conversation=?1 AND expires_at>?2 ORDER BY kind,resource LIMIT 5").map_err(backend)?;
+        stmt.query_map(params![conversation, at], |r| {
+            let kind: String = r.get(0)?;
+            let id = r.get(1)?;
+            Ok((
+                if kind == "d" {
+                    SourceRef::Document(id)
+                } else {
+                    SourceRef::Receipt(id)
+                },
+                r.get(2)?,
+            ))
+        })
+        .map_err(backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(backend)
+    }
+
+    fn revoke_assistance_source(&self, conversation: i64, source: SourceRef) -> Stored<()> {
+        let (kind, resource) = source_key(source);
+        self.conn()?.execute("DELETE FROM assistance_source_grants WHERE conversation=?1 AND kind=?2 AND resource=?3",params![conversation,kind,resource]).map_err(backend)?;
+        Ok(())
+    }
+    fn inactive_assistance_runs(&self) -> Stored<Vec<RunId>> {
+        let conn = self.conn()?;
+        let mut stmt=conn.prepare("SELECT r.id FROM runs r WHERE r.status IN ('queued','running','retry_waiting') AND (
+            EXISTS(SELECT 1 FROM assistance_requests a WHERE a.expert_run=r.id AND (a.status IN ('cancelled','expired') OR a.notice_cancelled=1))
+            OR EXISTS(SELECT 1 FROM assistance_requests a WHERE a.notice_run=r.id AND a.notice_cancelled=1)
+        ) ORDER BY r.id LIMIT 50").map_err(backend)?;
+        stmt.query_map([], |r| r.get::<_, i64>(0).map(RunId))
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn pending_assistance_notices(&self) -> Stored<Vec<Request>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {REQUEST_COLUMNS}{PENDING_NOTICES}"))
+            .map_err(backend)?;
+        stmt.query_map([], request)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn queue_assistance_notice(&self, id: i64, now: Millis) -> Stored<Option<RunId>> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let requester: Option<i64>=tx.query_row("SELECT requester FROM assistance_requests WHERE id=?1 AND status='answered' AND notified=0 AND notice_cancelled=0 AND notice_run IS NULL",
+            [id],|r|r.get(0)).optional().map_err(backend)?;
+        let Some(requester) = requester else {
+            return Ok(None);
+        };
+        let busy: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE member=?1 AND status IN ('queued','running','retry_waiting'))",
+            [requester],|r|r.get(0)).map_err(backend)?;
+        if busy {
+            return Ok(None);
+        };
+        tx.execute(
+            "INSERT INTO wakes(member,task,reason,receipt,at_ms) VALUES(?1,NULL,?2,?3,?4)",
+            params![
+                requester,
+                crate::domain::WakeReason::QuestionAnswered.name(),
+                crate::domain::Receipt::Queued.name(),
+                now
+            ],
+        )
+        .map_err(backend)?;
+        let wake = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO runs(member,task,wake,status,queued_at) VALUES(?1,NULL,?2,?3,?4)",
+            params![
+                requester,
+                wake,
+                crate::domain::RunStatus::Queued.name(),
+                now
+            ],
+        )
+        .map_err(backend)?;
+        let run = RunId(tx.last_insert_rowid());
+        tx.execute("UPDATE wakes SET run=?2 WHERE id=?1", params![wake, run.0])
+            .map_err(backend)?;
+        tx.execute(
+            "UPDATE assistance_requests SET notified=1,notice_run=?2 WHERE id=?1",
+            params![id, run.0],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(Some(run))
+    }
+
+    fn assistance_notice_for_run(&self, run: RunId) -> Stored<Option<Request>> {
+        self.conn()?
+            .query_row(
+                &format!("SELECT {REQUEST_COLUMNS} FROM assistance_requests WHERE notice_run=?1"),
+                [run.0],
+                request,
+            )
+            .optional()
+            .map_err(backend)
+    }
+
+    fn expire_assistance(&self, now: Millis) -> Stored<Vec<RunId>> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        tx.execute("UPDATE assistance_requests SET status=CASE
+            WHEN (SELECT status FROM runs WHERE id=expert_run)='succeeded' THEN 'declined' ELSE 'failed' END
+            WHERE id IN (SELECT a.id FROM assistance_requests a JOIN runs r ON r.id=a.expert_run
+                WHERE a.status='processing' AND r.status NOT IN ('queued','running','retry_waiting') ORDER BY a.id LIMIT 50)",[]).map_err(backend)?;
+        let due: Vec<(i64, Option<i64>)> = {
+            let mut stmt=tx.prepare("SELECT id,expert_run FROM assistance_requests WHERE status IN ('queued','processing') AND deadline_at<=?1 ORDER BY deadline_at,id LIMIT 50").map_err(backend)?;
+            stmt.query_map([now], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(backend)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(backend)?
+        };
+        for (id, _) in &due {
+            tx.execute("UPDATE assistance_requests SET status='expired' WHERE id=?1 AND status IN ('queued','processing')",[id]).map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        Ok(due
+            .into_iter()
+            .filter_map(|(_, run)| run.map(RunId))
+            .collect())
+    }
+
+    fn assistance_page(&self, conversation: i64, after: i64) -> Stored<Vec<Request>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {REQUEST_COLUMNS}{REQUEST_PAGE}"))
+            .map_err(backend)?;
+        stmt.query_map(params![conversation, after], request)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn accept_assistance_answer(
+        &self,
+        run: RunId,
+        answer: &str,
+        evidence: &[SourceRef],
+        now: Millis,
+    ) -> Stored<Accepted> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let existing: Option<(i64,i64,String,Option<String>,String,String)> = tx.query_row(
+            "SELECT id,conversation,status,answer,answer_evidence,objective FROM assistance_requests WHERE expert_run=?1",
+            [run.0],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))
+        ).optional().map_err(backend)?;
+        let Some((id, conversation, status, prior, prior_refs, _)) = existing else {
+            return Ok(Err("no assistance request belongs to this turn"));
+        };
+        let refs = SourceRef::kept(evidence);
+        if status == "answered" {
+            if prior.as_deref() == Some(answer) && prior_refs == refs {
+                return Ok(Ok(id));
+            }
+            return Ok(Err("the request already has a different answer"));
+        }
+        let changed=tx.execute("UPDATE assistance_requests SET status='answered',answer=?2,answer_evidence=?3,answer_run=?4,notified=0 WHERE id=?1 AND status='processing' AND deadline_at>?5",
+            params![id,answer,refs,run.0,now]).map_err(backend)?;
+        if changed == 0 {
+            return Ok(Err("the request is no longer open"));
+        }
+        tx.execute("INSERT INTO conversation_operations(conversation,run,operation,reason,at_ms) VALUES(?1,?2,'answer','accepted',?3)",
+            params![conversation,run.0,now]).map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(Ok(id))
+    }
+
+    fn due_assistance(&self, now: Millis) -> Stored<Vec<Request>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {REQUEST_COLUMNS}{DUE_REQUESTS}"))
+            .map_err(backend)?;
+        stmt.query_map([now], request)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn queue_assistance(&self, id: i64, now: Millis) -> Stored<Option<RunId>> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let expert: Option<i64>=tx.query_row(
+            "SELECT expert FROM assistance_requests WHERE id=?1 AND status='queued' AND expert_run IS NULL AND deadline_at>?2",
+            params![id,now],|r|r.get(0)).optional().map_err(backend)?;
+        let Some(expert) = expert else {
+            return Ok(None);
+        };
+        tx.execute(
+            "INSERT INTO wakes(member,task,reason,receipt,at_ms) VALUES(?1,NULL,?2,?3,?4)",
+            params![
+                expert,
+                crate::domain::WakeReason::Consulted.name(),
+                crate::domain::Receipt::Queued.name(),
+                now
+            ],
+        )
+        .map_err(backend)?;
+        let wake = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO runs(member,task,wake,status,queued_at) VALUES(?1,NULL,?2,?3,?4)",
+            params![expert, wake, crate::domain::RunStatus::Queued.name(), now],
+        )
+        .map_err(backend)?;
+        let run = RunId(tx.last_insert_rowid());
+        tx.execute("UPDATE wakes SET run=?2 WHERE id=?1", params![wake, run.0])
+            .map_err(backend)?;
+        tx.execute(
+            "UPDATE assistance_requests SET status='processing',expert_run=?2 WHERE id=?1",
+            params![id, run.0],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(Some(run))
+    }
+
+    fn assistance_for_run(&self, run: RunId) -> Stored<Option<Request>> {
+        self.conn()?
+            .query_row(
+                &format!("SELECT {REQUEST_COLUMNS} FROM assistance_requests WHERE expert_run=?1"),
+                [run.0],
+                request,
+            )
+            .optional()
+            .map_err(backend)
+    }
+
+    fn accept_assistance(&self, request: &NewRequest) -> Stored<Accepted> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id=?1 AND project=?2 AND deleted_at IS NULL AND (member1=?3 OR member2=?3) AND (member1=?4 OR member2=?4))",
+            params![request.conversation,request.project.0,request.requester.0,request.expert.0], |r|r.get(0)
+        ).map_err(backend)?;
+        if !active {
+            return Ok(Err("conversation unavailable"));
+        }
+        let evidence = SourceRef::kept(&request.evidence);
+        let prior: Option<(i64,i64,String,String)> = tx.query_row(
+            "SELECT id,expert,objective,evidence FROM assistance_requests WHERE conversation=?1 AND requester=?2 AND client_key=?3",
+            params![request.conversation,request.requester.0,request.key],
+            |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))
+        ).optional().map_err(backend)?;
+        if let Some((id, expert, objective, refs)) = prior {
+            if expert == request.expert.0 && objective == request.objective && refs == evidence {
+                tx.execute("INSERT INTO conversation_operations(conversation,run,operation,reason,at_ms) VALUES(?1,?2,'request','replayed',?3)",
+                    params![request.conversation,request.requester_run.0,request.at]).map_err(backend)?;
+                tx.commit().map_err(backend)?;
+                return Ok(Ok(id));
+            }
+            return Ok(Err("request key already belongs to different content"));
+        }
+        let open: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM assistance_requests WHERE conversation=?1 AND requester=?2 AND expert=?3 AND status IN ('queued','processing'))",
+            params![request.conversation,request.requester.0,request.expert.0],|r|r.get(0)).map_err(backend)?;
+        if open {
+            return Ok(Err("one open request is allowed for this pair"));
+        }
+        let turn: i64 = tx.query_row("SELECT COALESCE((SELECT accepted FROM assistance_turn_usage WHERE requester_run=?1),0)",
+            [request.requester_run.0],|r|r.get(0)).map_err(backend)?;
+        let day: i64 = tx.query_row("SELECT COALESCE((SELECT accepted FROM assistance_day_usage WHERE requester=?1 AND accepted_day=?2),0)",
+            params![request.requester.0,request.day],|r|r.get(0)).map_err(backend)?;
+        if usize::try_from(turn).map_err(backend)? >= assistance::PER_TURN
+            || usize::try_from(day).map_err(backend)? >= assistance::PER_DAY
+        {
+            return Ok(Err(
+                "assistance limit reached: two per turn and six per day",
+            ));
+        }
+        tx.execute("INSERT INTO assistance_requests(conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![request.conversation,request.project.0,request.requester.0,request.requester_run.0,request.expert.0,request.key,request.objective,evidence,request.day,request.at,request.at.saturating_add(assistance::DEADLINE_MS)]).map_err(backend)?;
+        let id = tx.last_insert_rowid();
+        tx.execute("INSERT INTO assistance_turn_usage(requester_run,accepted) VALUES(?1,1) ON CONFLICT(requester_run) DO UPDATE SET accepted=accepted+1",[request.requester_run.0]).map_err(backend)?;
+        tx.execute("INSERT INTO assistance_day_usage(requester,accepted_day,accepted) VALUES(?1,?2,1) ON CONFLICT(requester,accepted_day) DO UPDATE SET accepted=accepted+1",
+            params![request.requester.0,request.day]).map_err(backend)?;
+        tx.execute("INSERT INTO conversation_operations(conversation,run,operation,reason,at_ms) VALUES(?1,?2,'request','accepted',?3)",
+            params![request.conversation,request.requester_run.0,request.at]).map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(Ok(id))
+    }
+
     fn mark_conversation_ready(&self, run: RunId, revision: i64) -> Stored<()> {
         self.conn()?.execute("INSERT INTO conversation_ready_runs(run,revision) VALUES(?1,?2) ON CONFLICT(run) DO UPDATE SET revision=excluded.revision",params![run.0,revision]).map_err(backend)?;
         Ok(())
@@ -248,14 +726,26 @@ impl ConversationStore for SqliteTeamStore {
     }
 
     fn delete_conversation(&self, id: i64, at: Millis) -> Stored<bool> {
-        Ok(self
-            .conn()?
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let changed = tx
             .execute(
                 "UPDATE conversations SET deleted_at=?2 WHERE id=?1 AND deleted_at IS NULL",
                 params![id, at],
             )
-            .map_err(backend)?
-            > 0)
+            .map_err(backend)?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE assistance_requests SET status=CASE WHEN status IN ('queued','processing') THEN 'cancelled' ELSE status END,notice_cancelled=1 WHERE conversation=?1",
+            [id],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(true)
     }
 
     fn purge_conversation_batch(&self) -> Stored<usize> {
@@ -276,14 +766,20 @@ impl ConversationStore for SqliteTeamStore {
             params![id,i64::try_from(conversation::PURGE_BATCH).map_err(backend)?]).map_err(backend)?;
         let operations = tx.execute("DELETE FROM conversation_operations WHERE id IN (SELECT id FROM conversation_operations WHERE conversation=?1 ORDER BY id LIMIT ?2)",
             params![id,i64::try_from(conversation::PURGE_BATCH-messages).map_err(backend)?]).map_err(backend)?;
-        let remaining: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation=?1) OR EXISTS(SELECT 1 FROM conversation_operations WHERE conversation=?1)",
+        let grants=tx.execute("DELETE FROM assistance_source_grants WHERE rowid IN (SELECT rowid FROM assistance_source_grants WHERE conversation=?1 LIMIT ?2)",
+            params![id,i64::try_from(conversation::PURGE_BATCH-messages-operations).map_err(backend)?]).map_err(backend)?;
+        let requests=tx.execute("DELETE FROM assistance_requests WHERE id IN (SELECT a.id FROM assistance_requests a WHERE a.conversation=?1
+            AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.id IN (a.expert_run,a.notice_run) AND r.status IN ('queued','running','retry_waiting'))
+            ORDER BY a.id LIMIT ?2)",
+            params![id,i64::try_from(conversation::PURGE_BATCH-messages-operations-grants).map_err(backend)?]).map_err(backend)?;
+        let remaining: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation=?1) OR EXISTS(SELECT 1 FROM conversation_operations WHERE conversation=?1) OR EXISTS(SELECT 1 FROM assistance_requests WHERE conversation=?1) OR EXISTS(SELECT 1 FROM assistance_source_grants WHERE conversation=?1)",
             [id],|r|r.get(0)).map_err(backend)?;
         if !remaining {
             tx.execute("DELETE FROM conversations WHERE id=?1", [id])
                 .map_err(backend)?;
         }
         tx.commit().map_err(backend)?;
-        Ok(messages + operations)
+        Ok(messages + operations + grants + requests)
     }
 }
 
@@ -291,6 +787,7 @@ impl ConversationStore for SqliteTeamStore {
 mod tests {
     use super::*;
     use crate::application::history_ports::HistoryStore;
+    use crate::application::ports::TeamStore;
     use rusqlite::StatementStatus;
 
     fn fixture(store: &SqliteTeamStore) {
@@ -314,6 +811,353 @@ mod tests {
             day: 42,
             at: 42,
         }
+    }
+
+    #[test]
+    fn assistance_limits_count_new_requests_even_after_cancellation_and_allow_idempotent_replay() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        let conversation = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        for run in 1..=4 {
+            if run > 1 {
+                store.conn().unwrap().execute("INSERT INTO runs(id,member,wake,status,queued_at) VALUES(?1,2,1,'running',0)",[run]).unwrap();
+            }
+            for n in 0..3 {
+                let intent = NewRequest {
+                    conversation,
+                    project: ProjectId(1),
+                    requester: MemberId(2),
+                    requester_run: RunId(run),
+                    expert: MemberId(1),
+                    key: format!("request_{run}_{n}"),
+                    objective: "Synthetic question?".into(),
+                    evidence: Vec::new(),
+                    day: 42,
+                    at: 42,
+                };
+                let accepted = store.accept_assistance(&intent).unwrap();
+                if run <= 3 && n < 2 {
+                    let id = accepted.unwrap();
+                    store
+                        .cancel_assistance_request(id, Some(RunId(run)), 43)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(store.accept_assistance(&intent).unwrap().unwrap(), id);
+                    continue;
+                }
+                assert!(
+                    accepted.is_err(),
+                    "new requests beyond two/turn or six/day must be refused"
+                );
+            }
+        }
+        assert_eq!(store.assistance_page(conversation, 0).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn original_grants_are_immutable_bounded_revocable_and_scoped_during_purge() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO tasks(id,goal,title,description,status,priority,depth,project) VALUES(1,1,'Fixture','','ready','normal',0,1);
+            UPDATE runs SET task=1 WHERE id=1;
+            INSERT INTO documents(id,task,run,title,text,at_ms) VALUES(1,1,1,'Fixture','Original',42),(2,1,1,'Fixture','Original',42),(3,1,1,'Fixture','Original',42),(4,1,1,'Fixture','Original',42);
+            INSERT INTO call_receipts(id,run,member,tool,args,excerpt,ok,act,confidential,at_ms) VALUES(1,1,2,'fixture_check','','Original',1,0,0,42),(2,1,2,'fixture_check','','Original',1,0,0,42);").unwrap();
+        let scope = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        for id in 1..=4 {
+            assert!(
+                store
+                    .grant_assistance_source(scope, SourceRef::Document(id), 42)
+                    .unwrap()
+            );
+        }
+        assert!(
+            store
+                .grant_assistance_source(scope, SourceRef::Receipt(1), 42)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .grant_assistance_source(scope, SourceRef::Receipt(2), 42)
+                .unwrap()
+        );
+        assert!(
+            store
+                .grant_assistance_source(scope, SourceRef::Document(1), 42)
+                .unwrap(),
+            "renewal does not consume a sixth slot"
+        );
+        assert_eq!(store.assistance_grants(scope, 42).unwrap().len(), 5);
+        assert!(
+            store
+                .conn()
+                .unwrap()
+                .execute("UPDATE documents SET text='Rewritten' WHERE id=1", [])
+                .is_err()
+        );
+        let other = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        assert!(
+            store
+                .grant_assistance_source(other, SourceRef::Document(1), 42)
+                .unwrap()
+        );
+        store.delete_conversation(scope, 43).unwrap();
+        store.purge_conversation_batch().unwrap();
+        assert!(
+            store
+                .assistance_source_granted(other, SourceRef::Document(1), 44)
+                .unwrap(),
+            "purge must not revoke another conversation's grant to the same original"
+        );
+        store
+            .revoke_assistance_source(other, SourceRef::Document(1))
+            .unwrap();
+        assert!(
+            !store
+                .assistance_source_granted(other, SourceRef::Document(1), 44)
+                .unwrap()
+        );
+        store
+            .grant_assistance_source(other, SourceRef::Receipt(2), 42)
+            .unwrap();
+        assert!(
+            !store
+                .assistance_source_granted(other, SourceRef::Receipt(2), 42 + assistance::GRANT_MS)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn recovery_closes_an_expert_that_ended_before_its_request_was_updated() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        let conversation = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        let request = NewRequest {
+            conversation,
+            project: ProjectId(1),
+            requester: MemberId(2),
+            requester_run: RunId(1),
+            expert: MemberId(1),
+            key: "request_key_1".into(),
+            objective: "Synthetic question?".into(),
+            evidence: Vec::new(),
+            day: 42,
+            at: 42,
+        };
+        let id = store.accept_assistance(&request).unwrap().unwrap();
+        let expert = store.queue_assistance(id, 43).unwrap().unwrap();
+        store
+            .conn()
+            .unwrap()
+            .execute(
+                "UPDATE runs SET status='succeeded',ended_at=44 WHERE id=?1",
+                [expert.0],
+            )
+            .unwrap();
+        store.expire_assistance(45).unwrap();
+        assert_eq!(
+            store.assistance_for_run(expert).unwrap().unwrap().status,
+            "declined"
+        );
+        assert!(
+            store.queue_assistance(id, 46).unwrap().is_none(),
+            "reconciliation never reopens a terminal run"
+        );
+    }
+
+    #[test]
+    fn assistance_reopens_claims_once_and_charges_expert_and_result_to_the_fixed_project() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let folder = std::path::Path::new("target/conversation-tests");
+        std::fs::create_dir_all(folder).unwrap();
+        let path = folder.join(format!(
+            "assistance-{}-{}.db",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let path = path.to_str().unwrap();
+        let id;
+        let conversation;
+        {
+            let store = SqliteTeamStore::open(path).unwrap();
+            fixture(&store);
+            conversation = store
+                .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+                .unwrap();
+            let intent = NewRequest {
+                conversation,
+                project: ProjectId(1),
+                requester: MemberId(2),
+                requester_run: RunId(1),
+                expert: MemberId(1),
+                key: "request_key_1".into(),
+                objective: "Synthetic question?".into(),
+                evidence: Vec::new(),
+                day: 42,
+                at: 42,
+            };
+            id = store.accept_assistance(&intent).unwrap().unwrap();
+            assert_eq!(store.accept_assistance(&intent).unwrap().unwrap(), id);
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = [
+            SqliteTeamStore::open(path).unwrap(),
+            SqliteTeamStore::open(path).unwrap(),
+        ]
+        .into_iter()
+        .map(|store| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.queue_assistance(id, 43).unwrap()
+            })
+        })
+        .collect();
+        let runs: Vec<_> = handles
+            .into_iter()
+            .filter_map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(
+            runs.len(),
+            1,
+            "independent concurrent delivery claims must associate one run"
+        );
+        let expert = runs[0];
+        let store = SqliteTeamStore::open(path).unwrap();
+        assert_eq!(store.assistance_for_run(expert).unwrap().unwrap().id, id);
+        assert_eq!(
+            store
+                .accept_assistance_answer(expert, "Synthetic answer", &[], 44)
+                .unwrap()
+                .unwrap(),
+            id
+        );
+        drop(store);
+        let store = SqliteTeamStore::open(path).unwrap();
+        assert_eq!(
+            store
+                .accept_assistance_answer(expert, "Synthetic answer", &[], 45)
+                .unwrap()
+                .unwrap(),
+            id
+        );
+        assert!(
+            store
+                .accept_assistance_answer(expert, "Different answer", &[], 45)
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            store.queue_assistance_notice(id, 46).unwrap().is_none(),
+            "a running requester is not interrupted"
+        );
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE runs SET status='succeeded' WHERE id=1", [])
+            .unwrap();
+        let notice = store.queue_assistance_notice(id, 47).unwrap().unwrap();
+        assert!(store.queue_assistance_notice(id, 47).unwrap().is_none());
+        for (run, member, amount) in [(expert, MemberId(1), 20), (notice, MemberId(2), 10)] {
+            store.reserve(run, member, 42, 100, 48).unwrap();
+            store.record_use(run, member, 42, amount, 49).unwrap();
+            store.settle(run, member, 42, 50).unwrap();
+        }
+        store.record_use(expert, MemberId(1), 42, 5, 51).unwrap();
+        store.settle(expert, MemberId(1), 42, 52).unwrap();
+        assert_eq!(store.project_spent(ProjectId(1), 0, 100).unwrap(), 35);
+        let unscoped: i64 = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM ledger WHERE project IS NULL OR project!=1 OR owner!=0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            unscoped, 0,
+            "every reserve, use, charge, release and late charge keeps the trusted project"
+        );
+        let intent = NewRequest {
+            conversation,
+            project: ProjectId(1),
+            requester: MemberId(2),
+            requester_run: RunId(1),
+            expert: MemberId(1),
+            key: "request_key_2".into(),
+            objective: "Another synthetic question?".into(),
+            evidence: Vec::new(),
+            day: 42,
+            at: 60,
+        };
+        let racing = store.accept_assistance(&intent).unwrap().unwrap();
+        let racing_run = store.queue_assistance(racing, 61).unwrap().unwrap();
+        drop(store);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = [true, false]
+            .into_iter()
+            .map(|cancel| {
+                let store = SqliteTeamStore::open(path).unwrap();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    if cancel {
+                        return store
+                            .cancel_assistance_request(racing, None, 62)
+                            .unwrap()
+                            .is_ok();
+                    }
+                    store
+                        .accept_assistance_answer(racing_run, "Racing answer", &[], 62)
+                        .unwrap()
+                        .is_ok()
+                })
+            })
+            .collect();
+        let winners = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|accepted| *accepted)
+            .count();
+        assert_eq!(
+            winners, 1,
+            "answer and cancellation have one transactional winner"
+        );
+        let store = SqliteTeamStore::open(path).unwrap();
+        let outcome = store.assistance_request(racing).unwrap().unwrap();
+        assert!(matches!(outcome.status.as_str(), "answered" | "cancelled"));
+        assert_eq!(
+            store.pending_assistance_notices().unwrap().len(),
+            usize::from(outcome.status == "answered"),
+            "only an answer that won may create a result-delivery intent"
+        );
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE runs SET status='succeeded'", [])
+            .unwrap();
+        store.delete_conversation(conversation, 63).unwrap();
+        store.purge_conversation_batch().unwrap();
+        assert!(store.assistance_for_run(expert).unwrap().is_none());
+        assert_eq!(
+            store.assistance_charging_project(expert).unwrap(),
+            Some(ProjectId(1)),
+            "owner deletion cannot erase the payer of an already charged run"
+        );
+        assert_eq!(
+            store.assistance_charging_project(notice).unwrap(),
+            Some(ProjectId(1))
+        );
+        drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -434,6 +1278,84 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 51);
         stmt.get_status(StatementStatus::VmStep)
+    }
+
+    fn request_query_work(store: &SqliteTeamStore, suffix: &str, parameters: &[i64]) -> i32 {
+        let conn = store.conn().unwrap();
+        let mut stmt = conn
+            .prepare(&format!("SELECT {REQUEST_COLUMNS}{suffix}"))
+            .unwrap();
+        let _ = stmt
+            .query_map(rusqlite::params_from_iter(parameters), |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        stmt.get_status(StatementStatus::VmStep)
+    }
+
+    #[test]
+    fn retained_assistance_does_not_expand_delivery_notification_or_page_work() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        let scope = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        let archive = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        let insert="INSERT INTO assistance_requests(conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status,notified)
+            WITH RECURSIVE n(x) AS (VALUES(?2) UNION ALL SELECT x+1 FROM n WHERE x<?3)
+            SELECT CASE WHEN x%2=0 THEN ?1 ELSE ?4 END,1,2,1,1,printf('archive_%d',x),'Old fixture','',0,0,1000000,'answered',1 FROM n";
+        store
+            .conn()
+            .unwrap()
+            .execute(insert, params![archive, 1, 1000, scope])
+            .unwrap();
+        store.conn().unwrap().execute("INSERT INTO assistance_requests(conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status,notified)
+            VALUES(?1,1,2,1,1,'current_request_1','Current fixture','',42,42,1000000,'queued',0),
+                  (?1,1,2,1,1,'current_request_2','Current fixture','',42,42,1000000,'answered',0)",[scope]).unwrap();
+        let queries = [
+            (DUE_REQUESTS, vec![42]),
+            (PENDING_NOTICES, vec![]),
+            (REQUEST_PAGE, vec![scope, 0]),
+        ];
+        let before: Vec<_> = queries
+            .iter()
+            .map(|(suffix, parameters)| request_query_work(&store, suffix, parameters))
+            .collect();
+        store
+            .conn()
+            .unwrap()
+            .execute(insert, params![archive, 1001, 100000, scope])
+            .unwrap();
+        for ((suffix, parameters), small) in queries.iter().zip(before) {
+            let large = request_query_work(&store, suffix, parameters);
+            eprintln!("assistance SQL work: {small} -> {large}: {suffix}");
+            assert!(
+                large < 5000 && large <= small + 100,
+                "retained assistance expanded routine work: {small} -> {large}: {suffix}"
+            );
+        }
+        store
+            .conn()
+            .unwrap()
+            .execute("DROP INDEX assistance_pending", [])
+            .unwrap();
+        store
+            .conn()
+            .unwrap()
+            .execute("DROP INDEX assistance_unnotified", [])
+            .unwrap();
+        assert!(
+            request_query_work(&store, DUE_REQUESTS, &[42]) > 5000,
+            "the archive-work check must catch a missing delivery index"
+        );
+        assert!(
+            request_query_work(&store, PENDING_NOTICES, &[]) > 5000,
+            "the archive-work check must catch a missing result-notification index"
+        );
     }
 
     #[test]

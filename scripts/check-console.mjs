@@ -3100,4 +3100,26 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   console.log("conversations: bounded history is escaped, retained and inspectable in Work");
 }
 
+{
+  const fixture={members:[{id:1,name:"Member 1",role:"developer"},{id:2,name:"Member 2",role:"researcher"}],projects:[]};
+  const assistance={conversation:1,requests:[{id:8,project:1,requester:1,expert:2,status:"answered",objective:"<img src=x onerror=bad()>",answer:"<b>Untrusted answer</b>",evidence:["d12"],answer_evidence:["d12"],notified:false,deadline_at:42},{id:9,project:1,requester:1,expert:2,status:"processing",objective:"Synthetic question",evidence:[],deadline_at:42}],grants:[{source:"d12",expires_at:42}],has_more:true,after:9};
+  runInContext(`HQ_CHAT.id=1; HQ_CHAT.page={messages:[]}; HQ_CHAT.assistance=${JSON.stringify(assistance)};`,context);
+  const html=runInContext(`hqConversations(${JSON.stringify(fixture)})`,context);
+  for(const required of ["&lt;img","&lt;b&gt;Untrusted answer","Answer sources: d12","Waiting to notify requester","hq:conversations:cancel-request:9","hq:conversations:revoke-source:d12","Save this request page"]) {
+    if(!html.includes(required)) throw new Error("assistance: missing escaped request/evidence/control: "+required);
+  }
+  if(html.includes("<img src=x") || html.includes("<b>Untrusted answer")) throw new Error("assistance: peer testimony became markup");
+  runInContext(`var assistanceKeepApi=api, assistanceKeepRender=render, assistanceCalls=[];
+    render=()=>{}; api=async(method,path,body)=>{assistanceCalls.push([method,path,body]);return {requests:[{id:10}],grants:[],has_more:false,after:10};};`,context);
+  await runInContext('hqConversationAct("assistance-next","1")',context);
+  if(runInContext('HQ_CHAT.assistance.requests.length!==1 || HQ_CHAT.assistance.requests[0].id!==10',context)) throw new Error("assistance: paging accumulated prior requests");
+  await runInContext('hqConversationAct("revoke-source","d12")',context);
+  await runInContext('hqConversationAct("cancel-request","9")',context);
+  const calls=runInContext('assistanceCalls.map(c=>c[0]+" "+c[1])',context);
+  const expected=["GET /v1/hq/conversations/1/assistance?after=9","POST /v1/hq/conversations/1/sources/revoke","GET /v1/hq/conversations/1/assistance?after=0","POST /v1/hq/conversations/1/assistance/9/cancel","GET /v1/hq/conversations/1/assistance?after=0"];
+  if(JSON.stringify(calls)!==JSON.stringify(expected)) throw new Error("assistance: controls asked unexpected routes: "+JSON.stringify(calls));
+  runInContext('api=assistanceKeepApi;render=assistanceKeepRender;HQ_CHAT.page=null;HQ_CHAT.assistance=null;HQ_CHAT.id=null;',context);
+  console.log("assistance: original evidence and peer testimony stay escaped, pages bounded, and owner cancel/revoke controls use fixed routes");
+}
+
 console.log(`console check: ${named.length} screens render`);

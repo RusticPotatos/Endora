@@ -19,6 +19,7 @@ use crate::domain::{
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{chess, games};
 
+mod assistance;
 mod conversations;
 mod guards;
 mod history;
@@ -387,6 +388,7 @@ impl SqliteTeamStore {
         conn.execute_batch(history::SCHEMA).map_err(backend)?;
         let _ = conn.execute_batch(history::FULL_TEXT);
         conn.execute_batch(conversations::SCHEMA).map_err(backend)?;
+        conn.execute_batch(assistance::SCHEMA).map_err(backend)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -1562,7 +1564,9 @@ impl TeamStore for SqliteTeamStore {
                 &format!(
                     "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project, owner)
                      VALUES (?1, ?2, ?3, 'reserve', ?4, ?5,
-                        (SELECT t.project FROM runs r JOIN tasks t ON t.id = r.task WHERE r.id = ?1),
+                        COALESCE((SELECT project FROM assistance_requests WHERE expert_run = ?1),
+                                 (SELECT project FROM assistance_requests WHERE notice_run = ?1),
+                                 (SELECT t.project FROM runs r JOIN tasks t ON t.id = r.task WHERE r.id = ?1)),
                         {RUNS_OWNER})"
                 ),
                 params![run.0, member.0, day, amount, at],

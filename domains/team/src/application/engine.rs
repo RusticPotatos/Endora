@@ -36,6 +36,7 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
+mod assistance;
 mod budget;
 mod consult;
 mod conversations;
@@ -2151,7 +2152,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::BudgetChanged,
             json!({ "member": current.member.0, "run": run.0, "spent": current.spent }),
         )?;
-        self.watch_budget(self.project_of(current.task)?)?;
+        self.watch_budget(self.project_of_run(&current)?)?;
         if !money::crossed(current.spent, current.reserved) {
             return Ok(true);
         }
@@ -2182,7 +2183,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::BudgetChanged,
             json!({ "member": run.member.0, "run": run.id.0, "spent": run.spent, "late": true }),
         )?;
-        self.watch_budget(self.project_of(run.task)?)
+        self.watch_budget(self.project_of_run(&run)?)
     }
 
     // ---- the kill switch -----------------------------------------------------------------
@@ -2201,6 +2202,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// lock is held.
     fn stop_all_held_lock(&self, by: &str, why: &str, evidence: serde_json::Value) -> Done<()> {
         self.store.set_stopped(true)?;
+        self.store.cancel_assistance()?;
         self.store.set_setting(runaway::STOPPED_BY, by)?;
         let reason = if by == "owner" {
             "the kill switch"
@@ -2276,13 +2278,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if run.started_at.is_some() {
             self.store.settle(run.id, run.member, self.today(), now)?;
         }
-        let consulted = self.reason_for(&run)? == WakeReason::Consulted.name();
+        let consulted = self.reason_for(&run)? == WakeReason::Consulted.name()
+            && self.store.assistance_for_run(run.id)?.is_none();
         let label = self.settle_label(&mut run)?;
         run.status = status;
         run.ended_at = Some(now);
         run.end_reason = why.to_owned();
         run.reserved = 0;
         self.store.save_run(&run)?;
+        if self.store.assistance_for_run(run.id)?.is_some() {
+            self.store
+                .close_unanswered_assistance(run.id, status == RunStatus::Succeeded)?;
+        }
         self.store
             .set_wake(run.wake, Receipt::Finished, Some(run.id))?;
         // The tokens as the relay reported them, which only it adds to: all the input sent
@@ -2415,6 +2422,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// what of the world was left out and how to read it. The run records its situation.
     fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
         self.prepare_conversation_turn(run.id)?;
+        if let Some(request) = self.store.assistance_for_run(run.id)? {
+            return self.assistance_briefing(member, &request);
+        }
+        if let Some(request) = self.store.assistance_notice_for_run(run.id)? {
+            return self.assistance_notice_briefing(member, &request);
+        }
         // A consulted turn is told the question and what it wrote on the matter, and no more
         // (ADR 0129).
         if let Some(found) = self.consult_of_run(run.id)? {
@@ -2991,6 +3004,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // up again, before its turns are looked at, so the ones the restart cut are counted; and
         // one nobody ended outlasts its age.
         self.drain_tick_held_lock(now)?;
+        self.expire_assistance_tick(now)?;
         // Owner-requested deletion stays bounded and also runs while the team is stopped.
         self.store.purge_conversation_batch()?;
         if self.store.stopped()? {
@@ -3135,6 +3149,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
 
+        // Explicit assistance is a durable intent; a bounded set may enter the normal queue.
+        self.assistance_tick(now)?;
+        self.assistance_notice_tick(now)?;
         // 3b. The office (ADR 0119): proposals whose time came carry or are dropped, and one
         //     member with nothing to do is given a downtime turn.
         self.office_tick()?;
@@ -3292,6 +3309,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut starts = self.starts_read(now)?;
         let mut started = 0;
         for mut run in queued {
+            if (self.store.assistance_for_run(run.id)?.is_some()
+                || self.store.assistance_notice_for_run(run.id)?.is_some())
+                && !self.conversations_enabled()?
+            {
+                continue;
+            }
             // A turn queued for work that has since finished (dropped, or done) is ended, not
             // started: nothing is left for it to do.
             let over = run
@@ -3334,13 +3357,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if busy >= usize::from(member.slots) || member.paused {
                 continue;
             }
-            let project = self.project_of(run.task)?;
+            let project = self.project_of_run(&run)?;
             if self.held_by_owner(project)? {
                 continue;
             }
             // A consulted turn answers a consult: with none waiting there is nothing to do
             // (ADR 0129).
-            if consulted && self.claim_consult(&run)?.is_none() {
+            if consulted
+                && self.store.assistance_for_run(run.id)?.is_none()
+                && self.claim_consult(&run)?.is_none()
+            {
                 self.end(run, RunStatus::Stopped, "no consult waits for it")?;
                 continue;
             }

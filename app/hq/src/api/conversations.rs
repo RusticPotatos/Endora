@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Failed, State, blocking};
+use endora_team::domain::assistance::SourceRef;
 use endora_team::domain::{MemberId, ProjectId};
 
 pub(super) fn routes() -> Router<State> {
@@ -15,6 +16,13 @@ pub(super) fn routes() -> Router<State> {
         .route("/v1/conversations/enabled", post(enable))
         .route("/v1/conversations/operations", get(operations))
         .route("/v1/conversations/{id}", get(page))
+        .route("/v1/conversations/{id}/assistance", get(assistance))
+        .route(
+            "/v1/conversations/{id}/assistance/{request}/cancel",
+            post(cancel_assistance),
+        )
+        .route("/v1/conversations/{id}/sources", post(grant_source))
+        .route("/v1/conversations/{id}/sources/revoke", post(revoke_source))
         .route("/v1/conversations/{id}/delete", post(delete))
         .layer(DefaultBodyLimit::max(16 * 1024))
 }
@@ -87,6 +95,68 @@ async fn page(
     let hq = state.hq;
     Ok(Json(
         blocking(move || hq.conversation_messages(id, cursor.after)).await?,
+    ))
+}
+
+async fn assistance(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Query(cursor): Query<Cursor>,
+) -> Result<Json<Value>, Failed> {
+    let hq = state.hq;
+    Ok(Json(
+        blocking(move || hq.assistance_requests_page(id, cursor.after)).await?,
+    ))
+}
+
+async fn cancel_assistance(
+    Extract(state): Extract<State>,
+    Path((id, request)): Path<(i64, i64)>,
+) -> Result<Json<Value>, Failed> {
+    let hq = state.hq;
+    blocking(move || hq.cancel_assistance_request(id, request)).await?;
+    Ok(Json(
+        json!({"conversation":id,"request":request,"state":"cancelled"}),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceGrant {
+    source: String,
+}
+
+async fn grant_source(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<SourceGrant>,
+) -> Result<Json<Value>, Failed> {
+    let hq = state.hq;
+    let source = parse_source(&req.source)?;
+    blocking(move || hq.grant_assistance_source(id, source)).await?;
+    Ok(Json(
+        json!({"conversation":id,"source":source.said(),"granted":true}),
+    ))
+}
+
+async fn revoke_source(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<SourceGrant>,
+) -> Result<Json<Value>, Failed> {
+    let hq = state.hq;
+    let source = parse_source(&req.source)?;
+    blocking(move || hq.revoke_assistance_source(id, source)).await?;
+    Ok(Json(
+        json!({"conversation":id,"source":source.said(),"granted":false}),
+    ))
+}
+
+fn parse_source(text: &str) -> Result<SourceRef, Failed> {
+    SourceRef::parse(text).ok_or(Failed(
+        endora_team::application::engine::EngineError::Refused(
+            endora_team::domain::Refusal::Conversation("invalid source locator"),
+        ),
     ))
 }
 

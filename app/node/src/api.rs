@@ -350,6 +350,22 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/hq/conversations/{id}", get(hq_conversation_page))
         .route(
+            "/v1/hq/conversations/{id}/assistance/{request}/cancel",
+            post(hq_assistance_cancel),
+        )
+        .route(
+            "/v1/hq/conversations/{id}/sources",
+            post(hq_conversation_source_grant),
+        )
+        .route(
+            "/v1/hq/conversations/{id}/sources/revoke",
+            post(hq_conversation_source_revoke),
+        )
+        .route(
+            "/v1/hq/conversations/{id}/assistance",
+            get(hq_conversation_assistance),
+        )
+        .route(
             "/v1/hq/conversations/operations",
             get(hq_conversation_operations),
         )

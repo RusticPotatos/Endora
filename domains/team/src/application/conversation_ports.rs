@@ -1,14 +1,66 @@
 //! Persistent conversation intent; implementations use bounded, indexed reads.
 
 use super::ports::Stored;
+use crate::domain::assistance::{NewRequest, Request, SourceRef};
 use crate::domain::conversation::{Conversation, Information, Message, Operation};
 use crate::domain::{MemberId, Millis, ProjectId, RunId};
 
-/// Atomic message acceptance result, including a deterministic policy refusal.
+/// Atomic message/request acceptance result, including a deterministic policy refusal.
 pub type Accepted = Result<i64, &'static str>;
 
-/// The store boundary for information-only conversations.
+/// The store boundary for owner-authorized conversations and bounded assistance.
 pub trait ConversationStore {
+    /// Trusted payer of an assistance/result run, retained in its reservation after deletion.
+    /// # Errors
+    /// A store failure.
+    fn assistance_charging_project(&self, run: RunId) -> Stored<Option<ProjectId>>;
+    /// One retained request, by primary key.
+    /// # Errors
+    /// A store failure.
+    fn assistance_request(&self, id: i64) -> Stored<Option<Request>>;
+    /// Cancel an open request conditionally; an already accepted answer wins.
+    /// # Errors
+    /// A store failure.
+    fn cancel_assistance_request(
+        &self,
+        id: i64,
+        actor: Option<RunId>,
+        now: Millis,
+    ) -> Stored<Accepted>;
+    /// Owner kill switch cancels active requests and undelivered results.
+    /// # Errors
+    /// A store failure.
+    fn cancel_assistance(&self) -> Stored<()>;
+    /// Mark a terminal expert turn that supplied no answer.
+    /// # Errors
+    /// A store failure.
+    fn close_unanswered_assistance(&self, run: RunId, completed: bool) -> Stored<()>;
+    /// Grant one immutable original-source revision to an active owner scope, at most five.
+    /// # Errors
+    /// A store failure.
+    fn grant_assistance_source(
+        &self,
+        conversation: i64,
+        source: SourceRef,
+        at: Millis,
+    ) -> Stored<bool>;
+    /// Check a live grant against the current original-source revision.
+    /// # Errors
+    /// A store failure.
+    fn assistance_source_granted(
+        &self,
+        conversation: i64,
+        source: SourceRef,
+        at: Millis,
+    ) -> Stored<bool>;
+    /// Owner's at most five active source grants.
+    /// # Errors
+    /// A store failure.
+    fn assistance_grants(&self, conversation: i64, at: Millis) -> Stored<Vec<(SourceRef, Millis)>>;
+    /// Owner revokes a source immediately.
+    /// # Errors
+    /// A store failure.
+    fn revoke_assistance_source(&self, conversation: i64, source: SourceRef) -> Stored<()>;
     /// Mark that the turn's briefing was classified under this owner switch revision.
     /// # Errors
     /// A store failure.
@@ -65,4 +117,54 @@ pub trait ConversationStore {
     /// # Errors
     /// A store failure.
     fn purge_conversation_batch(&self) -> Stored<usize>;
+    /// Atomically accept one bounded request and its delivery intent, or replay its key.
+    /// # Errors
+    /// A storage failure; conflicts and quotas are returned as policy refusals.
+    fn accept_assistance(&self, request: &NewRequest) -> Stored<Accepted>;
+    /// Due delivery intents, bounded and ordered by stable ID.
+    /// # Errors
+    /// A store failure.
+    fn due_assistance(&self, now: Millis) -> Stored<Vec<Request>>;
+    /// Atomically associate exactly one queued expert turn with a still-due request.
+    /// # Errors
+    /// A store failure.
+    fn queue_assistance(&self, id: i64, now: Millis) -> Stored<Option<RunId>>;
+    /// Read the authoritative request linked to an expert turn.
+    /// # Errors
+    /// A store failure.
+    fn assistance_for_run(&self, run: RunId) -> Stored<Option<Request>>;
+    /// Accept one terminal answer and its notification intent, idempotently.
+    /// # Errors
+    /// A store failure; stale, late and conflicting answers are policy refusals.
+    fn accept_assistance_answer(
+        &self,
+        run: RunId,
+        answer: &str,
+        evidence: &[SourceRef],
+        now: Millis,
+    ) -> Stored<Accepted>;
+    /// Owner's bounded request/result page within one scope.
+    /// # Errors
+    /// A store failure.
+    fn assistance_page(&self, conversation: i64, after: i64) -> Stored<Vec<Request>>;
+    /// Expire at most fifty due open requests, returning associated expert turns to stop.
+    /// # Errors
+    /// A store failure.
+    fn expire_assistance(&self, now: Millis) -> Stored<Vec<RunId>>;
+    /// At most fifty linked live turns whose request was cancelled or expired.
+    /// # Errors
+    /// A store failure.
+    fn inactive_assistance_runs(&self) -> Stored<Vec<RunId>>;
+    /// Answered results still needing a requester wake, bounded by stable ID.
+    /// # Errors
+    /// A store failure.
+    fn pending_assistance_notices(&self) -> Stored<Vec<Request>>;
+    /// Atomically queue one result wake and mark its intent delivered.
+    /// # Errors
+    /// A store failure.
+    fn queue_assistance_notice(&self, id: i64, now: Millis) -> Stored<Option<RunId>>;
+    /// The result assigned to one requester notification turn.
+    /// # Errors
+    /// A store failure.
+    fn assistance_notice_for_run(&self, run: RunId) -> Stored<Option<Request>>;
 }

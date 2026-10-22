@@ -3,7 +3,9 @@
 2026-10-22. Source-grounded implementation notes for Phase 3 of the
 [reviewed plan](agent-collaboration-plan-reviewed-2026-10-21.md), on
 `codex/agent-collaboration` after the validated information-only slice.
-This is not an assistance implementation or pilot authorization.
+This map preceded the assistance implementation. The
+[implementation checkpoint](agent-collaboration-assistance-checkpoint-2026-10-22.md)
+records actual coverage and remaining gates. Neither document authorizes a pilot.
 
 ## Where the current code differs from the new contract
 

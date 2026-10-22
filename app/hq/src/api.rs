@@ -1300,6 +1300,48 @@ mod tests {
         assert_eq!(created.status(), StatusCode::OK);
         let id = json_of(created).await["conversation"].as_i64().unwrap();
         let path = format!("/v1/conversations/{id}");
+        for (method, suffix, body) in [
+            ("GET", "assistance", ""),
+            ("POST", "sources", r#"{"source":"d1"}"#),
+            ("POST", "sources/revoke", r#"{"source":"d1"}"#),
+        ] {
+            assert_eq!(
+                app.clone()
+                    .oneshot(call(method, &format!("{path}/{suffix}"), None, body))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        let assistance = app
+            .clone()
+            .oneshot(call("GET", &format!("{path}/assistance"), Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(assistance.status(), StatusCode::OK);
+        assert!(
+            json_of(assistance).await["requests"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        for source in ["d0", "d1 trailing prose", "https://example.com/source"] {
+            let invalid = json!({"source":source}).to_string();
+            assert_eq!(
+                app.clone()
+                    .oneshot(call(
+                        "POST",
+                        &format!("{path}/sources"),
+                        Some(TOKEN),
+                        &invalid
+                    ))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
         let page = json_of(
             app.clone()
                 .oneshot(call("GET", &path, Some(TOKEN), ""))

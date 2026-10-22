@@ -20,3 +20,20 @@ Feature: Peer information is retained without scheduling work
     When Member1 sends the information "The fixture check returned 503." with a stable retry key
     And the owner deletes the information conversation
     Then the deleted information conversation cannot be read
+
+  Scenario: An explicit request starts one expert and keeps one attributed answer
+    When Member1 explicitly asks Member2 for read-only assistance
+    Then accepting the request has not started any work
+    When the assistance delivery tick runs
+    Then only Member2 receives one assistance turn
+    And the assistance turn cannot delegate work
+    When Member2 answers the assistance request twice with the same answer
+    Then the owner sees one answered request with the original author and project
+
+  Scenario: Disabling assistance cancels work and re-enabling does not resume it
+    When Member1 explicitly asks Member2 for read-only assistance
+    And the assistance delivery tick runs
+    And the owner disables assistance
+    Then the request is visibly cancelled
+    When the owner re-enables assistance
+    Then cancelled assistance starts no further turns

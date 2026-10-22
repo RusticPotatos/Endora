@@ -47,6 +47,8 @@ Settings.
   scenarios and trials are work, so they are a card in Work, each opened step by step there.
   Information conversations also live in Work: their owner switch, fixed participant/project
   authorization, paged history and operation outcomes share one Conversations card (ADR 0137).
+  Explicit assistance requests, their results and project charges, source grants/revocation,
+  and cancellation stay inside that conversation's Work view; they add no top-level screen.
   Something that needs your word goes on the desk; something you may want
   to look at, but nothing waits on, goes in the digest. Fun and decoration go in Office, never
   above the desk. A switch for a guard that is tried in shadow sits on that guard's line of the

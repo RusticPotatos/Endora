@@ -103,6 +103,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "conversations_enabled",
             &format!("{}:{revision}", if enabled { 1 } else { 0 }),
         )?;
+        if !enabled {
+            self.store.cancel_assistance()?;
+            self.stop_inactive_assistance_turns()?;
+        }
         Ok(())
     }
 
@@ -136,7 +140,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .add_conversation(project, participants, self.clock.now())?)
     }
 
-    fn conversation_for(
+    pub(super) fn conversation_for(
         &self,
         run: RunId,
         conversation: i64,
@@ -312,7 +316,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn read_messages_in(&self, run: RunId, conversation: i64, after: i64) -> Done<Value> {
         let _held = self.held();
         self.conversation_for(run, conversation, "read")?;
-        let page = self.conversation_messages(conversation, after)?;
+        let mut page = self.conversation_messages(conversation, after)?;
+        let mut sources = Vec::new();
+        for (source, _) in self
+            .store
+            .assistance_grants(conversation, self.clock.now())?
+        {
+            if self.assistance_source_allowed(conversation, source)? {
+                sources.push(source.said());
+            }
+        }
+        page["assistance_sources"] = json!(sources);
         self.store.conversation_operation(
             run,
             Some(conversation),
@@ -350,6 +364,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !self.store.delete_conversation(id, self.clock.now())? {
             return Err(refused("conversation unavailable"));
         }
+        self.stop_inactive_assistance_turns()?;
         Ok(())
     }
 }

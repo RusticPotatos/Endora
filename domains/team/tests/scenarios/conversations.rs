@@ -93,3 +93,115 @@ fn retained(w: &mut Office, text: String) {
             .unwrap();
     assert_eq!(page["messages"][0]["text"], text);
 }
+
+#[when("Member1 explicitly asks Member2 for read-only assistance")]
+fn ask_assistance(w: &mut Office) {
+    let scope = w.conversation.unwrap();
+    assert!(w.use_tool("Member1","request_assistance",&json!({"conversation":scope,"key":"scenario_request_1","objective":"Which synthetic check should be read?"})).is_some(),"{:?}",w.refused);
+}
+
+#[then("accepting the request has not started any work")]
+fn accepted_only(w: &mut Office) {
+    no_work(w);
+}
+
+#[when("the assistance delivery tick runs")]
+fn assistance_tick(w: &mut Office) {
+    w.tick();
+    let member = w.member("Member2");
+    let turn =
+        w.hq.runner()
+            .started()
+            .into_iter()
+            .rfind(|turn| turn.member == member)
+            .unwrap();
+    w.turns.insert("Member2".into(), turn);
+}
+
+#[then("only Member2 receives one assistance turn")]
+fn one_expert(w: &mut Office) {
+    let member = w.member("Member2");
+    assert_eq!(
+        w.hq.runner()
+            .started()
+            .iter()
+            .filter(|turn| turn.member == member)
+            .count(),
+        1
+    );
+    let run = w.turn_of("Member2").run;
+    assert!(w.hq.in_assistance(run).unwrap());
+    assert_eq!(
+        w.hq.store().tasks().unwrap().len(),
+        w.before_information.unwrap().0
+    );
+}
+
+#[then("the assistance turn cannot delegate work")]
+fn no_delegate(w: &mut Office) {
+    assert!(
+        w.use_tool("Member2", "consult", &json!({"question":"Nested request"}))
+            .is_none()
+    );
+    assert!(
+        w.refused
+            .as_deref()
+            .unwrap()
+            .contains("read-only assistance")
+    );
+}
+
+#[when("Member2 answers the assistance request twice with the same answer")]
+fn answer_twice(w: &mut Office) {
+    for _ in 0..2 {
+        assert!(
+            w.use_tool(
+                "Member2",
+                "answer_assistance",
+                &json!({"answer":"Read the original synthetic check; no source was granted."})
+            )
+            .is_some(),
+            "{:?}",
+            w.refused
+        );
+    }
+}
+
+#[then("the owner sees one answered request with the original author and project")]
+fn answered(w: &mut Office) {
+    let page =
+        w.hq.assistance_requests_page(w.conversation.unwrap(), 0)
+            .unwrap();
+    let rows = page["requests"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["status"], "answered");
+    assert_eq!(rows[0]["requester"], w.member("Member1").0);
+    assert_eq!(rows[0]["expert"], w.member("Member2").0);
+    assert!(rows[0]["project"].as_i64().is_some_and(|id| id > 0));
+}
+
+#[when("the owner disables assistance")]
+fn disable(w: &mut Office) {
+    w.hq.set_conversations_enabled(false).unwrap();
+}
+
+#[then("the request is visibly cancelled")]
+fn cancelled(w: &mut Office) {
+    assert_eq!(
+        w.hq.assistance_requests_page(w.conversation.unwrap(), 0)
+            .unwrap()["requests"][0]["status"],
+        "cancelled"
+    );
+}
+
+#[when("the owner re-enables assistance")]
+fn reenable(w: &mut Office) {
+    w.hq.set_conversations_enabled(true).unwrap();
+}
+
+#[then("cancelled assistance starts no further turns")]
+fn no_restart(w: &mut Office) {
+    let before = w.hq.runner().started().len();
+    w.tick();
+    assert_eq!(w.hq.runner().started().len(), before);
+}
