@@ -21,7 +21,15 @@ project's supported source types and avoids fabricating a branch/check document.
 
 ## Candidate and preparation evidence
 
-Application candidate: `21dfca63` and its ancestors, including Phase 3
+Current isolated application candidate: `6ff6341a`. The foundation refresh is
+recorded in the [setup record](agent-collaboration-pilot-setup-2026-10-22.md#foundation-candidate-refresh).
+Its three binaries, model and runtime fingerprints were checked. Preparation
+remains stopped and unarmed; no model loading, worker start or inference occurred.
+The changed supervisor and worker fence described there supersede the original
+worker-to-HQ direct connection below. Live activation still needs explicit
+authorization of this refreshed packet.
+
+Initial application candidate, superseded for the isolated pilot: `21dfca63` and its ancestors, including Phase 3
 `fe4571bc`. Subsequent packet documentation does not change application behavior.
 The unrelated working edit to `scripts/agent-collaboration-baseline.py` was not
 included in the build or changed by this preparation. Do not run that edited
@@ -191,7 +199,8 @@ call; approval does not waive a failed check.
    storage, credentials and explicit loopback ports, with inherited environment
    cleared. Never use the normal deployment command or its default compose stack.
 2. Prove the network fence for these pilot processes before loading the model:
-   only the selected pilot HQ, node and model listeners may be reached. Test a
+   only designated pilot listeners may be reached by their assigned processes.
+   The worker reaches HQ through the experiment fence, never directly. Test a
    denied external destination and a denied nonpilot local listener; absence of
    cloud credentials alone is not a network fence. Record the actual isolation
    mechanism and negative results. No production socket, Docker socket, repository
