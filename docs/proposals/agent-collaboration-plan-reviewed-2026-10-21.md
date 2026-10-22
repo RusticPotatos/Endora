@@ -26,6 +26,13 @@ records the validated failure matrix and fixes. The offline portion passed the
 full repository gate; the separately authorized live pilot is still outstanding.
 The full plan is not complete, and no live enablement or deployment has taken place.
 
+Pilot preparation, 2026-10-22: the
+[isolated live pilot packet](agent-collaboration-live-pilot-2026-10-22.md)
+pins the actual binaries and local model, freezes the diagnostic and stop rules,
+and records a stopped, feature-off bootstrap with no runner or model call.
+Live activation still awaits the owner's scoped approval and fail-closed
+preflight. Startup-seeded work is explicitly excluded from pilot dispatch.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less
@@ -268,6 +275,17 @@ Deployment checkpoints:
    its result and pause a planned rollout if it could not drain or the running
    turns are not accounted for; a successful deploy command is not proof of a
    clean drain.
+   NAS configuration remains managed through ansible-nas's tagged
+   `make run-remote TAGS=endora` workflow and pinned `endora.homelab.endora`
+   collection. Align its collection revision, `endora_version`, settings and
+   Compose project with the selected image candidate. The role never builds or
+   pulls images; Endora builds and transfers them on the configured separate
+   build machine. Review Ansible's check/diff before apply. Explicitly drain
+   before an Ansible apply that may recreate services: the role's optional
+   drain unit handles host shutdown, not that Compose apply. Repeat final
+   service/version/smoke checks after the last apply. The
+   [pilot packet](agent-collaboration-live-pilot-2026-10-22.md#deployment-ownership-and-the-existing-nas-workflow)
+   records this release sequence and its remaining evidence requirements.
 6. Use `make deploy-pi` only when this slice changes the runner/workbench images
    used there. It updates that runtime, not HQ. Coordinate version compatibility
    and verify it separately; do not assume a node deployment updates every
