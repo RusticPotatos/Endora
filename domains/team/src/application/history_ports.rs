@@ -4,6 +4,7 @@
 
 use super::ports::{Post, Stored};
 use crate::domain::consult::Consult;
+use crate::domain::history::HistoryRefusal;
 use crate::domain::history::{Kept, Transcript};
 use crate::domain::record::{Passage, Query};
 use crate::domain::{MemberId, Millis, Receipt, RunId, WakeDecision};
@@ -15,6 +16,18 @@ pub enum ConsultDelivery {
     Expert,
     /// Bring the accepted answer to the requester.
     Answer,
+}
+
+/// Application-selected effects of a member's accepted answer. Fallback posts have
+/// no member or knowledge touches. IDs are resolved from the existing world model.
+#[derive(Debug, Default)]
+pub struct ConsultPostEffects {
+    /// The authenticated answering member, if this is an expert answer.
+    pub member: Option<MemberId>,
+    /// Story IDs cited by the cleaned answer.
+    pub stories: Vec<i64>,
+    /// Section IDs cited by the cleaned answer.
+    pub sections: Vec<i64>,
 }
 
 impl ConsultDelivery {
@@ -78,13 +91,26 @@ pub trait HistoryStore {
     /// [`super::ports::StoreError`] if the store fails.
     fn add_consult(&self, consult: &Consult) -> Stored<i64>;
 
+    /// Admit a task-thread consultation and snapshot its thread's optional project.
+    /// Exact retries in the same originating turn reuse the stored request before quotas.
+    /// The boolean distinguishes a new admission from a replay.
+    /// # Errors
+    /// A store failure, or a shared turn/day allowance refusal.
+    fn accept_consult(
+        &self,
+        consult: &Consult,
+        day: i64,
+        day_start: Millis,
+    ) -> Stored<Result<(Consult, bool), HistoryRefusal>>;
+
     /// Every consult, oldest first.
     ///
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn consults(&self) -> Stored<Vec<Consult>>;
 
-    /// Counts saturated at the admission limits, without loading retained questions.
+    /// Legacy-only counts saturated at the admission limits, without loading questions.
+    /// Admission itself uses the combined origin count in `accept_consult`.
     /// The day interval is supplied by the application in the owner's timezone.
     /// # Errors
     /// A store failure.
@@ -123,7 +149,19 @@ pub trait HistoryStore {
     /// in one transaction. A stale completion writes nothing.
     /// # Errors
     /// A store failure rolls back both writes.
-    fn finish_consult(&self, consult: &Consult, post: &Post) -> Stored<bool>;
+    fn finish_consult(&self, consult: &Consult, post: &Post) -> Stored<bool> {
+        self.finish_consult_with_effects(consult, post, &ConsultPostEffects::default())
+    }
+
+    /// Complete the answer, its feed event and selected knowledge-use markers atomically.
+    /// # Errors
+    /// A store failure rolls back all completion effects.
+    fn finish_consult_with_effects(
+        &self,
+        consult: &Consult,
+        post: &Post,
+        effects: &ConsultPostEffects,
+    ) -> Stored<bool>;
 
     /// At most fifty requests whose expert dispatch is still pending.
     /// # Errors

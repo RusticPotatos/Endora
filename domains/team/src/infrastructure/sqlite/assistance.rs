@@ -3,7 +3,40 @@
 use super::backend;
 use crate::application::ports::Stored;
 use crate::domain::{MemberId, Millis, RunId, TaskId, WakeId, WakeReason};
-use rusqlite::{Transaction, params};
+use rusqlite::{Connection, Transaction, params};
+
+/// Both authenticated request origins consume the same allowance. Legacy rows are
+/// retained, while conversation usage survives cancellation and history deletion.
+pub(super) fn consultation_usage(
+    conn: &Connection,
+    run: RunId,
+    member: MemberId,
+    day: i64,
+    start: Millis,
+) -> Stored<(usize, usize)> {
+    let legacy_turn: u8 = conn
+        .query_row(super::history::CONSULT_TURN_COUNT, [run.0], |row| {
+            row.get(0)
+        })
+        .map_err(backend)?;
+    let legacy_day: u8 = conn
+        .query_row(
+            super::history::CONSULT_DAY_COUNT,
+            params![
+                member.0,
+                start,
+                start.saturating_add(crate::domain::money::DAY_MS)
+            ],
+            |row| row.get(0),
+        )
+        .map_err(backend)?;
+    let turn:i64=conn.query_row("SELECT COALESCE((SELECT accepted FROM assistance_turn_usage WHERE requester_run=?1),0)",[run.0],|row|row.get(0)).map_err(backend)?;
+    let daily:i64=conn.query_row("SELECT COALESCE((SELECT accepted FROM assistance_day_usage WHERE requester=?1 AND accepted_day=?2),0)",params![member.0,day],|row|row.get(0)).map_err(backend)?;
+    Ok((
+        usize::from(legacy_turn).saturating_add(usize::try_from(turn).map_err(backend)?),
+        usize::from(legacy_day).saturating_add(usize::try_from(daily).map_err(backend)?),
+    ))
+}
 
 /// Shared transactional queue write for both assistance origins and answer delivery.
 /// Application policy authorizes the call; the caller commits the association in this tx.

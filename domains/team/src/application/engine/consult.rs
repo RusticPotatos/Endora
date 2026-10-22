@@ -5,7 +5,7 @@
 
 use super::world::day_with_year;
 use super::{Author, Done, Engine, EngineError};
-use crate::application::history_ports::ConsultDelivery;
+use crate::application::history_ports::{ConsultDelivery, ConsultPostEffects};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::consult::{self, Consult, Status};
 use crate::domain::history::HistoryRefusal;
@@ -177,15 +177,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.task(topic)?;
         }
         let off = self.settings.offset_minutes;
-        let today = self.today();
-        let (this_turn, that_day) = self.store.consult_counts(
-            run,
-            asker.id,
-            money::day_start(today, off),
-            money::day_start(today + 1, off),
-        )?;
-        consult::check(&asker, &expert, this_turn, that_day).map_err(refused)?;
-        let mut asked = Consult {
+        let at = self.clock.now();
+        let today = money::day_of(at, off);
+        // Identity/rank checks apply even to a retry. Admission and shared quota checks
+        // then commit together, with replay checked before consuming another allowance.
+        consult::check(&asker, &expert, 0, 0).map_err(refused)?;
+        let intent = Consult {
             id: 0,
             asker: asker.id,
             asker_run: run,
@@ -197,9 +194,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             answer_run: None,
             why: String::new(),
             asker_woken: false,
-            at: self.clock.now(),
+            at,
         };
-        asked.id = self.store.add_consult(&asked)?;
+        let (mut asked, fresh) = self
+            .store
+            .accept_consult(&intent, today, money::day_start(today, off))?
+            .map_err(refused)?;
+        if !fresh && asked.status != Status::Queued {
+            let outcome = if asked.status == Status::FromRecord {
+                "answered from the record"
+            } else {
+                "answered"
+            };
+            return Ok(format!(
+                "This consultation has already been {outcome} in {}'s thread; read the saved answer.",
+                Ref::Task(thread).said()
+            ));
+        }
+        if !fresh && asked.answer_run.is_some() {
+            return Ok(format!(
+                "Already asked {}. Their answer returns in {}'s thread; the existing expert turn is retained.",
+                expert.name,
+                Ref::Task(thread).said()
+            ));
+        }
         if let Some(why) = consult::cannot_be_woken(&expert) {
             self.answer_from_record(&mut asked, &format!("{why}, so it is not woken"))?;
             return Ok(format!(
@@ -459,10 +477,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             at: self.clock.now(),
             unsupported: false,
         };
-        if !self.store.finish_consult(found, &post)? {
+        // record::clean neutralizes the same word boundaries that mentions() recognizes;
+        // peer testimony cannot create mention wakes. Resolve knowledge touches before
+        // committing so a failed effect leaves the entire answer retryable.
+        let mut effects = ConsultPostEffects::default();
+        if let Author::Member(member) = author {
+            effects.member = Some(member);
+            effects.stories = self
+                .store
+                .stories()?
+                .into_iter()
+                .filter(|story| story.cited_in(text))
+                .map(|story| story.id)
+                .collect();
+            let lower = text.to_ascii_lowercase();
+            effects.sections = self
+                .store
+                .sections()?
+                .into_iter()
+                .filter(|section| lower.contains(&section.address()))
+                .map(|section| section.id)
+                .collect();
+        }
+        if !self
+            .store
+            .finish_consult_with_effects(found, &post, &effects)?
+        {
             return Err(refused(HistoryRefusal::NoConsultForYou));
         }
-        self.after_thread_post(author, found.thread, text, false)
+        Ok(())
     }
 
     /// Wakes the asker to read the answer. If its turn is still running the wake would only

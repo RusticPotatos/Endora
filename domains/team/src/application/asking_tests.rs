@@ -95,6 +95,54 @@ fn ada_asks_in_a_turn(hq: &Hq<'_>, t: &Team) -> (TaskId, RunContext) {
 }
 
 #[test]
+fn retrying_the_same_task_consult_reuses_its_admission_even_at_the_limit() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let asker = hq.hire("Member 1", Role::Lead, 50, 2, 0).unwrap();
+    let expert = hq.hire("Member 2", Role::Developer, 25, 2, 0).unwrap();
+    hq.hire("Member 3", Role::Researcher, 25, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    task_for(&hq, goal, asker, "Synthetic check");
+    hq.tick().unwrap();
+    let caller = turn_of(&hq, asker);
+    for _ in 0..2 {
+        hq.consult_in(caller.run, "Member 2", "Which fixture failed?", None)
+            .unwrap();
+    }
+    assert_eq!(
+        hq.store().consults().unwrap().len(),
+        1,
+        "a retry is one admission"
+    );
+    hq.consult_in(
+        caller.run,
+        "Member 3",
+        "Which source verifies the result?",
+        None,
+    )
+    .unwrap();
+    hq.consult_in(caller.run, "Member 2", "Which fixture failed?", None)
+        .unwrap();
+    assert!(
+        hq.consult_in(caller.run, "Member 2", "A distinct third question?", None)
+            .unwrap_err()
+            .to_string()
+            .contains("twice")
+    );
+    hq.tick().unwrap();
+    let answerer = turn_of(&hq, expert);
+    hq.answer_consult_in(answerer.run, "The fixture cache failed.")
+        .unwrap();
+    let wakes = hq.wakes().unwrap().len();
+    let replay = hq
+        .consult_in(caller.run, "Member 2", "Which fixture failed?", None)
+        .unwrap();
+    assert!(replay.contains("answered"), "{replay}");
+    assert_eq!(hq.wakes().unwrap().len(), wakes);
+    assert_eq!(hq.store().consults().unwrap().len(), 2);
+}
+
+#[test]
 fn interrupted_consult_dispatch_keeps_no_orphan_wake_and_resumes_after_restart() {
     use super::engine::{Engine, Settings};
     use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
@@ -255,71 +303,78 @@ fn interrupted_consult_notification_resumes_once_after_restart() {
 fn a_failed_consult_status_write_cannot_leave_an_answer_in_the_thread() {
     use super::engine::{Engine, Settings};
     use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
-    let folder = std::path::Path::new("target/consult-recovery");
-    std::fs::create_dir_all(folder).unwrap();
-    let path = folder.join(format!("{}-atomic.db", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let clock = Hands(AtomicI64::new(NOON));
-    let hq = Engine::new(
-        SqliteTeamStore::open(path.to_str().unwrap()).unwrap(),
-        SimulatedRunner::new(8),
-        &clock,
-        Settings::default(),
-    );
-    let asker = hq
-        .hire("Member 1", crate::domain::Role::Lead, 50, 2, 0)
-        .unwrap();
-    let expert = hq
-        .hire("Member 2", crate::domain::Role::Developer, 50, 2, 0)
-        .unwrap();
-    let goal = hq.set_goal("Synthetic check", "", Author::Owner).unwrap();
-    let task = task_for(&hq, goal, asker, "Synthetic investigation");
-    hq.tick().unwrap();
-    let caller = turn_of(&hq, asker);
-    hq.consult_in(caller.run, "Member 2", "Which fixture failed?", None)
-        .unwrap();
-    hq.tick().unwrap();
-    let answerer = turn_of(&hq, expert);
-    let before = hq.store().thread(task).unwrap().len();
-    let fault = rusqlite::Connection::open(&path).unwrap();
-    fault.execute_batch("CREATE TRIGGER fail_consult_completion BEFORE UPDATE OF status ON consults WHEN NEW.status != 'queued' BEGIN SELECT RAISE(ABORT, 'synthetic completion failure'); END;").unwrap();
-    let error = hq
-        .answer_consult_in(answerer.run, "The fixture cache failed.")
-        .unwrap_err();
-    assert!(
-        error.to_string().contains("synthetic completion failure"),
-        "{error}"
-    );
-    assert_eq!(hq.store().consults().unwrap()[0].status, Status::Queued);
-    assert_eq!(
-        hq.store().thread(task).unwrap().len(),
-        before,
-        "a failed completion must roll back its answer post"
-    );
-    fault
-        .execute_batch("DROP TRIGGER fail_consult_completion")
-        .unwrap();
-    hq.answer_consult_in(answerer.run, "The fixture cache failed.")
-        .unwrap();
-    assert!(
+    for feed_failure in [false, true] {
+        let folder = std::path::Path::new("target/consult-recovery");
+        std::fs::create_dir_all(folder).unwrap();
+        let path = folder.join(format!("{}-atomic-{feed_failure}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = Engine::new(
+            SqliteTeamStore::open(path.to_str().unwrap()).unwrap(),
+            SimulatedRunner::new(8),
+            &clock,
+            Settings::default(),
+        );
+        let asker = hq
+            .hire("Member 1", crate::domain::Role::Lead, 50, 2, 0)
+            .unwrap();
+        let expert = hq
+            .hire("Member 2", crate::domain::Role::Developer, 50, 2, 0)
+            .unwrap();
+        let goal = hq.set_goal("Synthetic check", "", Author::Owner).unwrap();
+        let task = task_for(&hq, goal, asker, "Synthetic investigation");
+        hq.tick().unwrap();
+        let caller = turn_of(&hq, asker);
+        hq.consult_in(caller.run, "Member 2", "Which fixture failed?", None)
+            .unwrap();
+        hq.tick().unwrap();
+        let answerer = turn_of(&hq, expert);
+        let before = hq.store().thread(task).unwrap().len();
+        let fault = rusqlite::Connection::open(&path).unwrap();
+        let trigger = if feed_failure {
+            "CREATE TRIGGER fail_consult_completion BEFORE INSERT ON events WHEN NEW.kind='thread.posted' BEGIN SELECT RAISE(ABORT,'synthetic completion failure'); END;"
+        } else {
+            "CREATE TRIGGER fail_consult_completion BEFORE UPDATE OF status ON consults WHEN NEW.status != 'queued' BEGIN SELECT RAISE(ABORT,'synthetic completion failure'); END;"
+        };
+        fault.execute_batch(trigger).unwrap();
+        let error = hq
+            .answer_consult_in(answerer.run, "The fixture cache failed.")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("synthetic completion failure"),
+            "{error}"
+        );
+        assert_eq!(hq.store().consults().unwrap()[0].status, Status::Queued);
+        assert_eq!(
+            hq.store().thread(task).unwrap().len(),
+            before,
+            "a failed completion must roll back its answer post"
+        );
+        fault
+            .execute_batch("DROP TRIGGER fail_consult_completion")
+            .unwrap();
         hq.answer_consult_in(answerer.run, "The fixture cache failed.")
-            .is_err()
-    );
-    drop(fault);
-    drop(hq);
-    let reopened = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
-    assert_eq!(reopened.consults().unwrap()[0].status, Status::Answered);
-    assert_eq!(
-        reopened
-            .thread(task)
-            .unwrap()
-            .iter()
-            .filter(|post| post.text.contains("fixture cache failed"))
-            .count(),
-        1
-    );
-    drop(reopened);
-    std::fs::remove_file(path).unwrap();
+            .unwrap();
+        assert!(
+            hq.answer_consult_in(answerer.run, "The fixture cache failed.")
+                .is_err()
+        );
+        drop(fault);
+        drop(hq);
+        let reopened = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.consults().unwrap()[0].status, Status::Answered);
+        assert_eq!(
+            reopened
+                .thread(task)
+                .unwrap()
+                .iter()
+                .filter(|post| post.text.contains("fixture cache failed"))
+                .count(),
+            1
+        );
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 #[test]
@@ -557,7 +612,14 @@ fn a_third_consult_in_one_turn_is_refused_and_so_is_a_seventh_in_a_day() {
     };
     ask("Linus").unwrap();
     ask("Rae").unwrap();
-    let third = ask("Linus").unwrap_err();
+    // A retry is the original admission; the quota refuses a distinct third question.
+    let third = use_tool(
+        &hq,
+        &ada,
+        "consult",
+        &json!({"member":"Linus","question":"And the DNS?"}),
+    )
+    .unwrap_err();
     assert!(
         third.contains("already consulted twice in this turn"),
         "{third}"

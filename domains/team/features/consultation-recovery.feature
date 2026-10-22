@@ -23,6 +23,17 @@ Feature: A consultation answer and its status survive together
     When HQ restarts
     Then the task "Check fixture" has 1 consultation answers
 
+  Scenario: Retrying a task question reuses the request before and after its answer
+    When Member1's turn starts
+    And Member1 consults Member2 about "Check fixture": "Which fixture failed?"
+    And Member1 consults Member2 about "Check fixture": "Which fixture failed?"
+    Then the team has 1 consultation requests
+    When Member2's turn starts
+    And Member2 answers the consult: "The fixture cache failed."
+    And Member1 consults Member2 about "Check fixture": "Which fixture failed?"
+    Then the team has 1 consultation requests
+    And the task "Check fixture" has 1 consultation answers
+
   Scenario: Interrupted expert dispatch recovers without an orphan wake
     When Member1's turn starts
     And the consultation run store fails

@@ -5,7 +5,7 @@
 use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteTeamStore, backend};
-use crate::application::history_ports::{ConsultDelivery, HistoryStore};
+use crate::application::history_ports::{ConsultDelivery, ConsultPostEffects, HistoryStore};
 use crate::application::ports::{Post, Stored};
 use crate::domain::consult::{Consult, Status as ConsultStatus};
 use crate::domain::history::{self, Kept, Transcript};
@@ -52,6 +52,10 @@ CREATE INDEX IF NOT EXISTS consult_deliveries_run ON consult_deliveries(run,stag
 CREATE TABLE IF NOT EXISTS consult_answer_posts (
  consult INTEGER PRIMARY KEY REFERENCES consults(id), post INTEGER NOT NULL REFERENCES posts(id)
 ) STRICT;
+CREATE INDEX IF NOT EXISTS consults_retry ON consults(asker_run,expert,thread,topic,question,id);
+CREATE TABLE IF NOT EXISTS consult_projects (
+ consult INTEGER PRIMARY KEY REFERENCES consults(id), project INTEGER REFERENCES projects(id)
+) STRICT;
 ";
 
 /// The full-text index over the conversations, kept apart because it is a virtual table: SQLite
@@ -72,14 +76,15 @@ const TRANSCRIPT_SELECT: &str = "SELECT run, member, task, runtime, brain, tier,
     cut, at_ms, kept_until FROM transcripts";
 
 const CONSULT_SELECT: &str = "SELECT id,asker,asker_run,expert,topic,thread,question,status,answer_run,why,asker_woken,at_ms FROM consults";
+pub(super) const CONSULT_PROJECT_FOR_RUN: &str = "(SELECT p.project FROM consults c JOIN consult_projects p ON p.consult=c.id WHERE c.answer_run=?1 ORDER BY c.id LIMIT 1)";
 const CONSULT_FOR_RUN: &str = "WHERE answer_run=?1 ORDER BY id LIMIT 1";
 const CONSULT_NEXT: &str =
     "WHERE expert=?1 AND status='queued' AND answer_run IS NULL ORDER BY id LIMIT 1";
 const CONSULT_UNREAD: &str =
     "WHERE asker=?1 AND status!='queued' AND asker_woken=0 ORDER BY id LIMIT 50";
-const CONSULT_TURN_COUNT: &str =
+pub(super) const CONSULT_TURN_COUNT: &str =
     "SELECT count(*) FROM (SELECT id FROM consults WHERE asker_run=?1 LIMIT 2)";
-const CONSULT_DAY_COUNT: &str = "SELECT count(*) FROM (SELECT id FROM consults WHERE asker=?1 AND at_ms>=?2 AND at_ms<?3 LIMIT 6)";
+pub(super) const CONSULT_DAY_COUNT: &str = "SELECT count(*) FROM (SELECT id FROM consults WHERE asker=?1 AND at_ms>=?2 AND at_ms<?3 LIMIT 6)";
 const CONSULT_DISPATCHES: &str =
     "WHERE status='queued' AND answer_run IS NULL ORDER BY id LIMIT 50";
 const CONSULT_NOTICES: &str = "WHERE status!='queued' AND asker_woken=0 AND NOT EXISTS(
@@ -287,6 +292,45 @@ impl HistoryStore for SqliteTeamStore {
             .collect()
     }
 
+    fn accept_consult(
+        &self,
+        c: &Consult,
+        day: i64,
+        day_start: i64,
+    ) -> Stored<Result<(Consult, bool), crate::domain::history::HistoryRefusal>> {
+        use crate::domain::history::HistoryRefusal;
+        if c.status != ConsultStatus::Queued || c.answer_run.is_some() || c.asker_woken {
+            return Err(super::corrupt(
+                "consult admission requires a new queued intent",
+            ));
+        }
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let prior=tx.query_row(&format!("{CONSULT_SELECT} WHERE asker_run=?1 AND expert=?2 AND thread=?3 AND topic IS ?4 AND question=?5 AND asker=?6 ORDER BY id LIMIT 1"),
+            params![c.asker_run.0,c.expert.0,c.thread.0,c.topic.map(|id|id.0),c.question,c.asker.0],consult_row).optional().map_err(backend)?;
+        if let Some(prior) = prior {
+            return Ok(Ok((prior, false)));
+        }
+        let (turn, today) =
+            super::assistance::consultation_usage(&tx, c.asker_run, c.asker, day, day_start)?;
+        if turn >= crate::domain::consult::PER_TURN {
+            return Ok(Err(HistoryRefusal::TooManyThisTurn));
+        }
+        if today >= crate::domain::consult::PER_DAY {
+            return Ok(Err(HistoryRefusal::TooManyToday));
+        }
+        tx.execute("INSERT INTO consults(asker,asker_run,expert,topic,thread,question,status,at_ms) VALUES(?1,?2,?3,?4,?5,?6,'queued',?7)",
+            params![c.asker.0,c.asker_run.0,c.expert.0,c.topic.map(|id|id.0),c.thread.0,c.question,c.at]).map_err(backend)?;
+        let id = tx.last_insert_rowid();
+        tx.execute("INSERT INTO consult_projects(consult,project) SELECT ?1,project FROM tasks WHERE id=?2",params![id,c.thread.0]).map_err(backend)?;
+        let mut accepted = c.clone();
+        accepted.id = id;
+        tx.commit().map_err(backend)?;
+        Ok(Ok((accepted, true)))
+    }
+
     fn consult_counts(
         &self,
         run: RunId,
@@ -378,7 +422,12 @@ impl HistoryStore for SqliteTeamStore {
         Ok(())
     }
 
-    fn finish_consult(&self, c: &Consult, post: &Post) -> Stored<bool> {
+    fn finish_consult_with_effects(
+        &self,
+        c: &Consult,
+        post: &Post,
+        effects: &ConsultPostEffects,
+    ) -> Stored<bool> {
         if c.status == ConsultStatus::Queued {
             return Err(super::corrupt("a consult completion must be terminal"));
         }
@@ -397,6 +446,49 @@ impl HistoryStore for SqliteTeamStore {
         tx.execute(
             "INSERT INTO consult_answer_posts(consult,post) VALUES(?1,?2)",
             params![c.id, post_id],
+        )
+        .map_err(backend)?;
+        let place: i64 = tx
+            .query_row(
+                "SELECT count(*)-1 FROM posts WHERE task=?1",
+                [c.thread.0],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        let mut preview: String = post.text.chars().take(80).collect();
+        let cut = post.text.chars().count() > 80;
+        if cut {
+            preview.push('…');
+        }
+        let data = serde_json::json!({"task":c.thread.0,"author":post.author,"preview":preview,"cut":cut,"post":place,"unsupported":post.unsupported});
+        if let Some(member) = effects.member {
+            tx.execute(
+                "UPDATE runs SET posted=1 WHERE member=?1 AND task=?2 AND status='running'",
+                params![member.0, c.thread.0],
+            )
+            .map_err(backend)?;
+            for story in &effects.stories {
+                tx.execute(
+                    "UPDATE stories SET last_used_at=MAX(last_used_at,?2) WHERE id=?1",
+                    params![story, post.at],
+                )
+                .map_err(backend)?;
+            }
+            for section in &effects.sections {
+                tx.execute(
+                    "UPDATE world_sections SET last_used_at=MAX(last_used_at,?2) WHERE id=?1",
+                    params![section, post.at],
+                )
+                .map_err(backend)?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO events(at_ms,kind,data) VALUES(?1,?2,?3)",
+            params![
+                post.at,
+                crate::domain::EventKind::ThreadPosted.name(),
+                data.to_string()
+            ],
         )
         .map_err(backend)?;
         tx.commit().map_err(backend)?;
@@ -605,6 +697,117 @@ mod tests {
             INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,1,'assigned','queued',0);
             INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,1,1,'running',0),(2,2,1,'running',0),(3,2,1,'running',0);
             INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,answer_run,at_ms) VALUES(1,1,1,2,1,'Fixture?','queued',2,0);").unwrap();
+    }
+
+    #[test]
+    fn knowledge_effect_failure_rolls_back_the_answer_feed_and_usage_markers() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO stories(id,scope,handle,instead,stage,author,written_at,last_used_at) VALUES(1,'house','fixture-story','Read the check','observation','owner',0,0);
+            INSERT INTO world_sections(id,page,anchor,heading,headline,stage,written_by,revision,updated_at,last_used_at) VALUES(1,'house','fixture','Fixture','Synthetic check','observation','owner',1,0,0);
+            CREATE TRIGGER fail_consult_knowledge BEFORE UPDATE ON world_sections BEGIN SELECT RAISE(ABORT,'synthetic knowledge failure'); END;").unwrap();
+        let mut found = store.consult_for_run(RunId(2)).unwrap().unwrap();
+        found.status = ConsultStatus::Answered;
+        let post = Post {
+            author: "Member 2".into(),
+            text: "See fixture-story and world:house#fixture.".into(),
+            at: 10,
+            unsupported: false,
+        };
+        let effects = ConsultPostEffects {
+            member: Some(MemberId(2)),
+            stories: vec![1],
+            sections: vec![1],
+        };
+        assert!(
+            store
+                .finish_consult_with_effects(&found, &post, &effects)
+                .unwrap_err()
+                .to_string()
+                .contains("synthetic knowledge failure")
+        );
+        assert_eq!(
+            store.consult_for_run(RunId(2)).unwrap().unwrap().status,
+            ConsultStatus::Queued
+        );
+        let unchanged:bool=store.conn().unwrap().query_row("SELECT NOT EXISTS(SELECT 1 FROM posts) AND NOT EXISTS(SELECT 1 FROM events WHERE kind='thread.posted') AND (SELECT last_used_at FROM stories WHERE id=1)=0",[],|row|row.get(0)).unwrap();
+        assert!(unchanged);
+        store
+            .conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_consult_knowledge")
+            .unwrap();
+        assert!(
+            store
+                .finish_consult_with_effects(&found, &post, &effects)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .finish_consult_with_effects(&found, &post, &effects)
+                .unwrap()
+        );
+        let markers:bool=store.conn().unwrap().query_row("SELECT (SELECT last_used_at FROM stories WHERE id=1)=10 AND (SELECT last_used_at FROM world_sections WHERE id=1)=10 AND (SELECT count(*) FROM events WHERE kind='thread.posted')=1",[],|row|row.get(0)).unwrap();
+        assert!(markers);
+    }
+
+    #[test]
+    fn a_consult_keeps_its_admitted_project_through_all_ledger_rows() {
+        use crate::application::conversation_ports::ConversationStore;
+        use crate::application::ports::TeamStore;
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        let mut intent = store.consult_for_run(RunId(2)).unwrap().unwrap();
+        intent.id = 0;
+        intent.answer_run = None;
+        store.conn().unwrap().execute_batch("DELETE FROM consults;
+            INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(1,1,'Fixture','',1,'active','owner',0,0),(2,1,'Other fixture','',1,'active','owner',0,0);
+            UPDATE tasks SET project=1 WHERE id=1;").unwrap();
+        let (accepted, fresh) = store.accept_consult(&intent, 0, 0).unwrap().unwrap();
+        assert!(fresh);
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE tasks SET project=2 WHERE id=1", [])
+            .unwrap();
+        store
+            .deliver_consult(
+                accepted.id,
+                ConsultDelivery::Expert,
+                WakeDecision::Queue,
+                false,
+                0,
+            )
+            .unwrap();
+        let run = RunId(4);
+        assert_eq!(
+            store.assistance_charging_project(run).unwrap(),
+            Some(crate::domain::ProjectId(1))
+        );
+        store.reserve(run, MemberId(2), 0, 100, 0).unwrap();
+        store.record_use(run, MemberId(2), 0, 20, 1).unwrap();
+        store.settle(run, MemberId(2), 0, 2).unwrap();
+        store
+            .record_use(run, MemberId(2), 1, 5, 86_400_001)
+            .unwrap();
+        let conn = store.conn().unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM ledger WHERE run=?1", [run.0], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let wrong: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM ledger WHERE run=?1 AND project IS NOT 1",
+                [run.0],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(rows >= 5);
+        assert_eq!(
+            wrong, 0,
+            "reserve, use, settle and late charges retain the admitted project"
+        );
     }
 
     #[test]

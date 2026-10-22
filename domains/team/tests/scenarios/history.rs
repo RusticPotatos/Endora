@@ -257,6 +257,12 @@ fn consult_answer_count(w: &mut Office, title: String, expected: usize) {
     );
 }
 
+#[then(expr = "the team has {int} consultation requests")]
+fn consultation_request_count(w: &mut Office, expected: usize) {
+    use endora_team::application::history_ports::HistoryStore;
+    assert_eq!(w.hq.store().consults().unwrap().len(), expected);
+}
+
 #[then(expr = "{word} is woken to read the answer")]
 fn woken_to_read(w: &mut Office, name: String) {
     use endora_team::domain::WakeReason;

@@ -125,6 +125,36 @@ from starting again after platform interruption. Admission retry deduplication,
 shared origin-aware accounting and recovery of other post-commit thread effects
 remain separate compatibility work.
 
+Admission and completion follow-up, 2026-10-22: task-thread admission is now a
+transactional replay-or-accept operation. The stable identity is the authenticated
+originating turn, expert, answer thread, topic and canonical question. Repeating
+that payload in one turn returns the original request, including after an answer
+or at the allowance limit. A changed payload is a new request. Rank, live-turn
+and task-reach checks still run before replay. Historical duplicates are kept;
+they are not rewritten to manufacture a unique history.
+
+Both origins now enforce one allowance of two new requests per turn and six per
+requester per owner-calendar day, in the same transaction as admission. Legacy
+retained rows and durable conversation usage counters supply indexed accounting.
+Cancellation, disable and conversation deletion do not reset that usage. This
+supersedes the earlier rollout's separate-origin counters.
+
+New task-thread admissions snapshot the requesting answer thread's optional
+project from the database. Its taskless expert uses that trusted context for
+placement and ledger reservation; later use, settlement and late charges inherit
+the reservation. Moving the task later cannot change that expert's payer.
+Unscoped tasks remain supported. Older requests without an admission snapshot
+retain their previous unscoped expert context; no historical payer is guessed.
+Requester result turns keep their existing task-thread budgeting semantics.
+
+Task-thread completion now atomically saves the answer, status, exact post link,
+thread feed event, posted-turn marker and application-selected story/section use
+timestamps. A failure rolls them all back. Member identity and referenced IDs
+come from the application, not post text. Cleaned peer testimony does not create
+mention wakes. No approval, task acceptance or external act is granted by an
+answer. The previously listed offline lifecycle implementation gaps are closed
+and the full repository gate passed; live evaluation and release gates remain.
+
 ### Pilot scope, identity and authority
 
 The owner enables the pilot, selects one existing project and creates a

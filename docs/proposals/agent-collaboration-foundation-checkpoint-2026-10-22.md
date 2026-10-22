@@ -4,6 +4,14 @@
 [ADR 0137](../adr/0137-addressed-conversations-and-bounded-assistance.md) and the
 [reviewed plan](agent-collaboration-plan-reviewed-2026-10-21.md).
 
+Current branch scope: ordinary consultation is integrated with authorized
+taskless assistance; task-thread consultation now has durable delivery,
+idempotent admission, shared allowances, trusted expert project attribution and
+atomic answer effects. These close the implementation gaps listed in the
+earlier checkpoints below. Operational completion still requires the refreshed
+isolated pilot, matched evaluation and release/device gates. The latest changes
+are not deployed, and the prepared diagnostic has performed no inference.
+
 ## This slice's acceptance criteria
 
 1. A normal taskless member can use the familiar `consult` tool to obtain one
@@ -152,16 +160,10 @@ device validation was performed for this branch slice.
 
 ## Remaining foundation work, in order
 
-1. Consolidate task-thread `consult` and `answer_consult` onto the common durable
-   lifecycle. Routine indexed queries and answer-post/status atomicity are now
-   covered. Durable dispatch and notification associations now recover through
-   the existing tick and shared queue writer. Task-owned admission retry
-   deduplication, recovery of other post-commit thread effects (including the
-   thread feed event and world-use accounting), and common origin-aware
-   admission/project accounting remain.
-   Keep thread posting, labelled fallback, CEO restrictions, optional task
-   project, quotas and feature-off behavior under compatibility tests. Do not
-   silently relabel legacy records or broaden authority.
+1. Review the completed offline foundation against the frozen compatibility
+   cases and refresh the isolated candidate. The ordinary taskless entry point,
+   task-thread lifecycle, shared admission/queue mechanisms and answer effects
+   are implemented. Do not interpret passing local tests as live evaluation.
 2. Verify the revised path with the real worker and local model in the stopped,
    isolated pilot. Re-pin the candidate, renew the source grant and repeat
    preflight before activation. The prepared pilot has performed no inference.
@@ -171,3 +173,51 @@ device validation was performed for this branch slice.
 
 The foundation and full plan remain incomplete. The NAS remains on the prior
 deployed candidate with conversations disabled; this checkpoint is branch work.
+
+## Admission, accounting and completion effects follow-up
+
+Task-thread admission now checks exact replay before consuming an allowance,
+then atomically counts both origins, accepts the question and snapshots its
+thread's optional project. The canonical payload binds originating run, expert,
+thread, topic and question. Same-turn retries retain one request and do not add
+wakes or repeat an accepted answer. Different questions remain new admissions;
+the third-distinct-question compatibility test still checks the existing limit.
+Existing rank, task reach and live-token checks precede replay.
+
+The shared allowance is two new requests per turn and six per requester/day,
+using the configured owner-clock day. Conversation usage counters survive
+cancellation/deletion, and legacy retained rows remain counted. A real-use-case
+test combines two cancelled assistance requests with four task consultations in
+subsequent turns and refuses the seventh. Its negative control omits legacy
+daily usage and correctly detects the seventh being admitted. A two-connection
+race between origins proves they cannot both spend the final turn allowance.
+The Internal/Confidential guard remains unchanged; tests do not clear lineage to
+force a turn across the two entry points.
+
+The expert project comes from the requesting thread at acceptance, never the
+question topic or a model-supplied payer. Tests move the thread to another
+project after admission and verify reservation, use, charge, release and late
+charge rows retain the admitted project. New receipt grants can recognize that
+trusted legacy-expert project, with the existing original-source and tier checks.
+Unscoped tasks and older requests with no snapshot retain their previous
+behavior. Requester result turns retain ordinary task-thread budgeting.
+
+Answer completion now commits the task post, terminal status, exact post link,
+thread feed event and selected knowledge-use markers together. The application
+resolves the answering member and cited knowledge IDs. Updates are idempotent
+and use monotonic timestamps. Feed/status failures and a knowledge-update fault
+roll back the answer; recovery and retry retain one answer and one feed event.
+The feed-failure negative control restores the former event-after-commit order
+and correctly detects a terminal answer left behind. The first trigger used an
+incorrect event name; it was corrected to the actual `thread.posted` event before
+the meaningful negative control and final verification.
+
+The executable owner scenario retries the same question before and after its
+answer and observes one request and one answer. The complete repository gate
+passed: formatting, workspace Clippy with denied warnings, workspace all-feature
+tests, console checks, personal-value checks, collection parity and whitespace
+checks. The team suite passed 923 tests; its behavior harness passed 162
+scenarios and 2,055 steps. Existing explicitly ignored tests remained ignored.
+The first full gate caught a post index in the history-only schema fixture;
+moving it to the schema that owns posts corrected the failure before this pass.
+No model inference, deployment or new device validation is included.

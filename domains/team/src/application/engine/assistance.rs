@@ -570,6 +570,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .into_iter()
             .find(|id| *id != turn.member)
             .ok_or_else(|| refused("conversation unavailable"))?;
+        let at = self.clock.now();
+        let day = crate::domain::money::day_of(at, self.settings.offset_minutes);
         self.store
             .accept_assistance(&NewRequest {
                 conversation,
@@ -580,8 +582,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 key: key.to_owned(),
                 objective,
                 evidence: evidence.to_vec(),
-                day: self.today(),
-                at: self.clock.now(),
+                day,
+                day_start: crate::domain::money::day_start(day, self.settings.offset_minutes),
+                at,
             })?
             .map_err(refused)
     }

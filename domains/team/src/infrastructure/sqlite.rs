@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS posts (
     text TEXT NOT NULL, at_ms INTEGER NOT NULL, evidence TEXT NOT NULL DEFAULT '',
     unsupported INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+CREATE INDEX IF NOT EXISTS posts_by_task ON posts(task,id);
 CREATE TABLE IF NOT EXISTS wakes (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
     task INTEGER REFERENCES tasks(id), reason TEXT NOT NULL, receipt TEXT NOT NULL,
@@ -1566,8 +1567,9 @@ impl TeamStore for SqliteTeamStore {
                      VALUES (?1, ?2, ?3, 'reserve', ?4, ?5,
                         COALESCE((SELECT project FROM assistance_requests WHERE expert_run = ?1),
                                  (SELECT project FROM assistance_requests WHERE notice_run = ?1),
+                                 {consult_project},
                                  (SELECT t.project FROM runs r JOIN tasks t ON t.id = r.task WHERE r.id = ?1)),
-                        {RUNS_OWNER})"
+                        {RUNS_OWNER})",consult_project=history::CONSULT_PROJECT_FOR_RUN
                 ),
                 params![run.0, member.0, day, amount, at],
             )

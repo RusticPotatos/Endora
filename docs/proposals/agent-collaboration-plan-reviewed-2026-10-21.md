@@ -72,6 +72,15 @@ The foundation checkpoint records actual coverage and the remaining admission,
 accounting and post-commit effect work. No new deployment or live activation
 is recorded by this follow-up.
 
+Admission/completion follow-up, 2026-10-22: the previously listed offline
+foundation gaps are implemented. Task-thread retries reuse their accepted
+request, both origins share the two/turn and six/day allowance, new taskless
+expert turns inherit a trusted project snapshot, and answer/feed/knowledge-use
+effects commit atomically. The foundation checkpoint records the failure
+controls, concurrency and ledger evidence. This closes the offline code gaps;
+the real-worker pilot, matched evaluation, relevant-device checks and release
+approval remain. The newly integrated code is not deployed.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less

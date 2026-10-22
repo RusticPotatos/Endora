@@ -38,7 +38,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "consult",
-            "Ask a colleague directly. With a task, the answer returns in your task thread; an unavailable expert uses labelled record fallback, and the CEO consults leads only. With no task argument and a taskless turn, use an existing owner-authorized conversation: one matching pair routes automatically to bounded read-only assistance; select conversation explicitly if ambiguous. That result returns in the conversation, and a paused expert waits within its deadline. Taskless evidence must already be granted. At most two requests per turn and six per day on the selected path. Consulted work runs on the local model. Try ask_record first. Ask the owner with ask_owner.",
+            "Ask a colleague directly. With a task, the answer returns in your task thread; an unavailable expert uses labelled record fallback, and the CEO consults leads only. Repeating the same colleague, question, thread and topic in one turn reuses that request. With no task argument and a taskless turn, use an existing owner-authorized conversation: one matching pair routes automatically to bounded read-only assistance; select conversation explicitly if ambiguous. That result returns in the conversation, and a paused expert waits within its deadline. Taskless evidence must already be granted. Consult and assistance share at most two new requests per turn and six per day. Consulted work runs on the local model. Try ask_record first. Ask the owner with ask_owner.",
             json!({
                 "member": { "type": "string", "description": "the member's name" },
                 "question": { "type": "string", "maxLength": record::QUESTION_MOST },

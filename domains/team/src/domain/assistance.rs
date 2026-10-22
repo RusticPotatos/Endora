@@ -78,9 +78,9 @@ pub const SOURCES_MOST: usize = 5;
 /// Maximum objective length before canonicalization.
 pub const OBJECTIVE_MOST: usize = 400;
 /// Existing consultation's per-turn bound, also used by explicit assistance.
-pub const PER_TURN: usize = 2;
+pub const PER_TURN: usize = super::consult::PER_TURN;
 /// Existing consultation's daily requester bound.
-pub const PER_DAY: usize = 6;
+pub const PER_DAY: usize = super::consult::PER_DAY;
 
 /// The validated intent presented to the persistence boundary.
 pub struct NewRequest {
@@ -102,6 +102,8 @@ pub struct NewRequest {
     pub evidence: Vec<SourceRef>,
     /// Requester's owner-calendar day.
     pub day: i64,
+    /// UTC start of that owner-calendar day, supplied by the authenticated application.
+    pub day_start: Millis,
     /// Acceptance time.
     pub at: Millis,
 }

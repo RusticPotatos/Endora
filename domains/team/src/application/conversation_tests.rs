@@ -8,6 +8,112 @@ use super::ports::TeamStore;
 use crate::domain::{Role, WakeReason};
 
 #[test]
+fn task_and_conversation_requests_share_the_same_daily_allowance() {
+    use super::history_tests::task_for;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let asker = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq.create_conversation(project, [asker, expert]).unwrap();
+    hq.tick().unwrap();
+    hq.wake(asker, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let caller = turn_of(&hq, asker);
+    assert!(caller.task.is_none());
+    for n in 0..2 {
+        let request = hq
+            .request_assistance_in(
+                caller.run,
+                conversation,
+                &format!("shared_limit_{n}"),
+                "Which fixture failed?",
+                &[],
+            )
+            .unwrap();
+        hq.cancel_assistance_in(caller.run, request).unwrap();
+    }
+    hq.runner().finish(caller.run, true);
+    hq.tick().unwrap();
+    hq.furlough(expert).unwrap();
+    let task = task_for(&hq, goal, asker, "Synthetic check");
+    hq.tick().unwrap();
+    for round in 0..2 {
+        let current = turn_of(&hq, asker);
+        assert_eq!(current.task, Some(task));
+        for n in 0..2 {
+            hq.consult_in(
+                current.run,
+                "Member 3",
+                &format!("Which fixture failed in case {round}-{n}?"),
+                None,
+            )
+            .unwrap();
+        }
+        hq.runner().finish(current.run, true);
+        hq.tick().unwrap();
+    }
+    let current = turn_of(&hq, asker);
+    let error = hq
+        .consult_in(
+            current.run,
+            "Member 3",
+            "A distinct seventh question?",
+            None,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("six times today"), "{error}");
+}
+
+#[test]
+fn a_task_consults_expert_inherits_the_requesting_threads_project() {
+    use super::conversation_ports::ConversationStore;
+    use super::ports::NewTask;
+    use crate::domain::Priority;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let asker = hq.hire("Member 1", Role::Lead, 50, 2, 0).unwrap();
+    let expert = hq.hire("Member 2", Role::Developer, 50, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", asker, None).unwrap();
+    hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: Some(project),
+            parent: None,
+            title: "Synthetic check".into(),
+            description: String::new(),
+            assignee: Some(asker),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let caller = turn_of(&hq, asker);
+    hq.consult_in(caller.run, "Member 2", "Which fixture failed?", None)
+        .unwrap();
+    hq.tick().unwrap();
+    let answerer = turn_of(&hq, expert);
+    let ledger = hq.store().ledger_of(answerer.run).unwrap();
+    let rows: Vec<_> = ledger
+        .iter()
+        .filter(|row| row.run == answerer.run)
+        .collect();
+    assert!(!rows.is_empty());
+    assert_eq!(
+        hq.store()
+            .assistance_charging_project(answerer.run)
+            .unwrap(),
+        Some(project)
+    );
+}
+
+#[test]
 fn normal_taskless_consult_uses_the_authorized_assistance_path_and_retries_once() {
     use super::history_ports::HistoryStore;
     use serde_json::json;

@@ -129,7 +129,8 @@ fn source_revision(
         SourceRef::Receipt(_)=>"SELECT d.at_ms FROM call_receipts d JOIN runs s ON s.id=d.run
             LEFT JOIN tasks t ON t.id=s.task LEFT JOIN assistance_requests a ON a.expert_run=s.id
             LEFT JOIN assistance_requests b ON b.notice_run=s.id
-            JOIN conversations c ON c.project=COALESCE(t.project,a.project,b.project)
+            LEFT JOIN consults lc ON lc.answer_run=s.id LEFT JOIN consult_projects lp ON lp.consult=lc.id
+            JOIN conversations c ON c.project=COALESCE(t.project,a.project,b.project,lp.project)
             WHERE c.id=?1 AND c.deleted_at IS NULL AND d.id=?2",
     };
     conn.query_row(sql, params![conversation, id], |r| r.get(0))
@@ -141,10 +142,14 @@ impl ConversationStore for SqliteTeamStore {
     fn assistance_charging_project(&self, run: RunId) -> Stored<Option<ProjectId>> {
         self.conn()?
             .query_row(
-                "SELECT COALESCE(
+                &format!(
+                    "SELECT COALESCE(
             (SELECT project FROM assistance_requests WHERE expert_run=?1),
             (SELECT project FROM assistance_requests WHERE notice_run=?1),
+            {},
             (SELECT project FROM ledger WHERE run=?1 AND kind='reserve' ORDER BY id DESC LIMIT 1))",
+                    super::history::CONSULT_PROJECT_FOR_RUN
+                ),
                 [run.0],
                 |r| r.get::<_, Option<i64>>(0),
             )
@@ -511,13 +516,14 @@ impl ConversationStore for SqliteTeamStore {
         if open {
             return Ok(Err("one open request is allowed for this pair"));
         }
-        let turn: i64 = tx.query_row("SELECT COALESCE((SELECT accepted FROM assistance_turn_usage WHERE requester_run=?1),0)",
-            [request.requester_run.0],|r|r.get(0)).map_err(backend)?;
-        let day: i64 = tx.query_row("SELECT COALESCE((SELECT accepted FROM assistance_day_usage WHERE requester=?1 AND accepted_day=?2),0)",
-            params![request.requester.0,request.day],|r|r.get(0)).map_err(backend)?;
-        if usize::try_from(turn).map_err(backend)? >= assistance::PER_TURN
-            || usize::try_from(day).map_err(backend)? >= assistance::PER_DAY
-        {
+        let (turn, day) = super::assistance::consultation_usage(
+            &tx,
+            request.requester_run,
+            request.requester,
+            request.day,
+            request.day_start,
+        )?;
+        if turn >= assistance::PER_TURN || day >= assistance::PER_DAY {
             return Ok(Err(
                 "assistance limit reached: two per turn and six per day",
             ));
@@ -789,6 +795,93 @@ mod tests {
     }
 
     #[test]
+    fn competing_request_origins_cannot_spend_the_last_turn_allowance_twice() {
+        use crate::domain::consult::{Consult, Status};
+        let folder = std::path::Path::new("target/consult-recovery");
+        std::fs::create_dir_all(folder).unwrap();
+        let path = folder.join(format!("{}-admission.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let first = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        fixture(&first);
+        first.conn().unwrap().execute_batch("INSERT INTO tasks(id,goal,title,description,status,priority,depth,project) VALUES(1,1,'Fixture','','ready','normal',0,1);").unwrap();
+        let conversation = first
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        let mut intent = Consult {
+            id: 0,
+            asker: MemberId(2),
+            asker_run: RunId(1),
+            expert: MemberId(1),
+            topic: Some(crate::domain::TaskId(1)),
+            thread: crate::domain::TaskId(1),
+            question: "Earlier fixture?".into(),
+            status: Status::Answered,
+            answer_run: None,
+            why: String::new(),
+            asker_woken: true,
+            at: 0,
+        };
+        first.add_consult(&intent).unwrap();
+        intent.question = "New fixture?".into();
+        intent.status = Status::Queued;
+        intent.asker_woken = false;
+        let request = NewRequest {
+            conversation,
+            project: ProjectId(1),
+            requester: MemberId(2),
+            requester_run: RunId(1),
+            expert: MemberId(1),
+            key: "shared_race_1".into(),
+            objective: "Other fixture?".into(),
+            evidence: vec![],
+            day: 0,
+            day_start: 0,
+            at: 0,
+        };
+        let second = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        for store in [&first, &second] {
+            store
+                .conn()
+                .unwrap()
+                .busy_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+        let barrier = std::sync::Barrier::new(2);
+        let accepted = std::thread::scope(|scope| {
+            let legacy = scope.spawn(|| {
+                barrier.wait();
+                first.accept_consult(&intent, 0, 0).unwrap().is_ok()
+            });
+            let conversation = scope.spawn(|| {
+                barrier.wait();
+                second.accept_assistance(&request).unwrap().is_ok()
+            });
+            [legacy.join().unwrap(), conversation.join().unwrap()]
+        });
+        assert_eq!(accepted.into_iter().filter(|accepted| *accepted).count(), 1);
+        if accepted[0] {
+            assert!(!first.accept_consult(&intent, 0, 0).unwrap().unwrap().1);
+        }
+        if accepted[1] {
+            second.accept_assistance(&request).unwrap().unwrap();
+        }
+        assert_eq!(
+            super::super::assistance::consultation_usage(
+                &first.conn().unwrap(),
+                RunId(1),
+                MemberId(2),
+                0,
+                0
+            )
+            .unwrap(),
+            (2, 2)
+        );
+        drop(first);
+        drop(second);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn consult_pair_lookup_is_bounded_as_unrelated_conversations_grow() {
         let mut observed = Vec::new();
         for size in [1_000, 100_000] {
@@ -875,6 +968,7 @@ mod tests {
                     objective: "Synthetic question?".into(),
                     evidence: Vec::new(),
                     day: 42,
+                    day_start: 0,
                     at: 42,
                 };
                 let accepted = store.accept_assistance(&intent).unwrap();
@@ -989,6 +1083,7 @@ mod tests {
             objective: "Synthetic question?".into(),
             evidence: Vec::new(),
             day: 42,
+            day_start: 0,
             at: 42,
         };
         let id = store.accept_assistance(&request).unwrap().unwrap();
@@ -1041,6 +1136,7 @@ mod tests {
                 objective: "Synthetic question?".into(),
                 evidence: Vec::new(),
                 day: 42,
+                day_start: 0,
                 at: 42,
             };
             id = store.accept_assistance(&intent).unwrap().unwrap();
@@ -1136,6 +1232,7 @@ mod tests {
             objective: "Another synthetic question?".into(),
             evidence: Vec::new(),
             day: 42,
+            day_start: 0,
             at: 60,
         };
         let racing = store.accept_assistance(&intent).unwrap().unwrap();
