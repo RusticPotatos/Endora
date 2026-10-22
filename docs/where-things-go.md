@@ -66,5 +66,6 @@ Settings.
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
 | `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`) |
 | `docs/adr/` | One decision each; a new architectural choice needs one |
+| `docs/proposals/` | Research and proposed changes, with sources and tradeoffs; accepted architectural decisions go in `docs/adr/` |
 | `docs/homelab.md` | How to set up and run each part in the house |
 | `local.mk` | Your own values (addresses, paths, names). Git-ignored; never in a tracked file |

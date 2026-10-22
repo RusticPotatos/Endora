@@ -318,6 +318,7 @@ of an existing record and take the next number.
 | [0134](0134-a-drain-before-every-restart.md) | A drain before every restart | - |
 | [0135](0135-scenarios-worlds-the-team-acts-in.md) | Scenarios: worlds the team acts in, which only the world closes | - |
 | [0136](0136-endora-is-hq.md) | Endora is HQ | - |
+| [0137](0137-addressed-conversations-and-bounded-assistance.md) | Addressed conversations and bounded assistance | - |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
