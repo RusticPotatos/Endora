@@ -41,6 +41,13 @@ schema rehearsal, scoped Ansible changes, clean drain, actual image/build checks
 and passing live smoke checks. Live pilot activation and the remaining evaluation
 and device gates are still outstanding.
 
+Pilot setup update, 2026-10-22: the
+[isolated setup record](agent-collaboration-pilot-setup-2026-10-22.md) now records
+the actual temporary participants, project, authorized conversation and original
+read-receipt grant. The node proxy and per-process network restrictions were
+verified; dispatch admission/limit checks passed without inference. The isolated
+team remains stopped and execution unarmed. The diagnostic has not run.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less

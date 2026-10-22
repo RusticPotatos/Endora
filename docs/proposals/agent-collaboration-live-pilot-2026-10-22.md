@@ -6,6 +6,19 @@ approval under [ADR 0137](../adr/0137-addressed-conversations-and-bounded-assist
 This packet narrows the next experiment; it does not authorize production access,
 paid calls, deployment or broader adoption.
 
+Setup update, 2026-10-22: the owner asked that the pilot be configured rather
+than handed back as manual setup instructions. The isolated store now contains
+the participants, project, conversation and one original-source grant. The actual
+HQ and node services reopened those records successfully under per-process network
+profiles, including the authenticated node proxy. All preparation services were
+then stopped. See the [setup record](agent-collaboration-pilot-setup-2026-10-22.md).
+The diagnostic has not run.
+
+Operational fixture revision: `diagnostic-pilot-v2-receipt` replaces this packet's
+original document fixture with the immutable receipt of an actual synthetic-file
+read. The frozen B1-B9 baseline cases are unchanged. This correction follows the
+project's supported source types and avoids fabricating a branch/check document.
+
 ## Candidate and preparation evidence
 
 Application candidate: `21dfca63` and its ancestors, including Phase 3
@@ -137,21 +150,22 @@ One diagnostic request, in one conversation between `Member 2` (requester) and
 only, outside the two conversation participants. Use returned IDs, never assumed
 SQLite row numbers. Persist the handle-to-ID map before the diagnostic starts.
 
-The immutable original document `D1` contains exactly:
+The original source receipt `R1` records a successful operator read of a synthetic
+file containing exactly:
 
 ```text
 health-check-v1: expected 200, observed 503; dependency fixture-cache is unavailable
 ```
 
 The objective is: "Explain why health-check-v1 fails. Cite the granted original
-document. Do not claim a repair or perform any action."
+receipt. Do not claim a repair or perform any action."
 
 1. The real expert reads the granted original and answers once, identifying the
-   unavailable dependency and citing the exact document. The requester reads
+   unavailable dependency and citing the exact receipt. The requester reads
    the same original in its assigned result turn and independently checks the
    expected 200, observed 503 and unavailable dependency. A model's assertion
    that it read something is insufficient: inspect successful tool records and
-   the actual immutable document/revision.
+   the actual immutable receipt/revision.
 2. Exactly one logical request and accepted answer survive, with at most one
    result-run association. Expert and result runs retain `P1` in the authoritative
    ledger and spend zero paid microdollars. Count all attempts and model calls,
@@ -188,8 +202,12 @@ call; approval does not waive a failed check.
    [HQ startup](../../app/hq/src/main.rs)). A fresh database therefore does not
    imply a two-member-only team. Keep all seeded IDs out of dispatch. Disable
    seeded routines using the existing owner API. Create the two synthetic
-   participants and project through owner APIs; set work brains explicitly to
-   `local`, runtime to `worker`, and project cap to zero. Judgment defaults can
+   participants and project through owner application use cases; set work brains
+   explicitly to `local` and runtime to `worker`. The domain rejects a zero
+   project cap, so the isolated project has no bookkeeping cap; the zero paid-call
+   allowance is enforced by local-only dispatch, absent paid-provider credentials
+   and blocked external network access. A missing cap never authorizes a paid
+   call in this pilot. Judgment defaults can
    still be cloud: the dispatcher must refuse every cloud run, including support
    and seeded runs. Never change global guards to make admission pass.
 4. Configure the isolated node's local relay to the pinned loopback model. Its
@@ -203,14 +221,17 @@ call; approval does not waive a failed check.
    permitted stage. Unexpected work stops the pilot without launching a worker.
    Workers receive only their short-lived turn token and isolated URLs, no shell
    or workbench. The runner credential is newly generated for this pilot.
-6. In a synthetic fixture setup turn, use the existing authenticated document
-   tool to create `D1` and its actual Internal source-run lineage. End the setup
-   turn and record its calls separately. Do not insert document rows, fake receipts
-   or source classifications directly with SQL. Setup is bounded to one local
-   turn and cannot grant broader access. If valid setup cannot be admitted
-   through the existing APIs, stop and investigate rather than weaken policy.
+6. In one synthetic fixture setup turn, perform the actual operator file read
+   and record its receipt `R1` through the application's live-token receipt use
+   case. Record the setup actor explicitly as the operator, not an agent/model
+   diagnosis. End the setup turn and drop its temporary task without accepting
+   it as diagnosed work. There is no generic document-writing tool in this
+   project: documents come from branch/check workflows. Do not insert document
+   rows, fake receipts or source classifications directly with SQL. The completed
+   setup used the actual application and RemoteRunner adapter without a model
+   invocation; this is setup evidence, not a live diagnostic pass.
 7. Enable conversations, create `C1` with the two explicit IDs and `P1`, then
-   grant only `D1` through the existing owner source API. Record the immutable
+   grant only `R1` through the existing owner source use case. Record the immutable
    revision and grant expiry. Admit one synthetic requester turn with the frozen
    objective; verify its `request_assistance` acceptance and finish that turn.
    Permit only the resulting linked expert and requester result runs afterward.
@@ -246,9 +267,14 @@ the team. If the API is unavailable, terminate only the recorded pilot processes
 and retain the database for reconciliation. No automatic restart or old-binary
 rollback; forward disable remains the supported rollback for this candidate.
 
-Current verdict: **prepared; live result cannot-tell**. Model loading, network
-fence, tool-capable inference, complete source setup, result verification and
-cost/latency reconciliation have not run. They must not be reported as passing.
+Current verdict: **configured and stopped; live result cannot-tell**. Participant,
+project, conversation and source setup are verified through the actual service
+and authenticated proxy. Network destination checks passed, including a negative
+control. The private dispatcher's admission/limit checks also passed without
+inference. Model loading, tool-capable inference, live dispatch, result
+verification and cost/latency reconciliation have not run. They must not
+be reported as passing. Source grants expire after 24 hours and must be checked
+again at activation; any renewal is limited to this same source and scope.
 This packet's approval covers the isolated activation sequence and one diagnostic
 only. Phase 4's matched legacy-consult and manager-relay comparison still needs
 its own frozen run scope. Phase 5 served-device visibility, Phase 6 evaluation,
