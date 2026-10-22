@@ -22,3 +22,30 @@ Feature: A consultation answer and its status survive together
     Then the task "Check fixture" has 1 consultation answers
     When HQ restarts
     Then the task "Check fixture" has 1 consultation answers
+
+  Scenario: Interrupted expert dispatch recovers without an orphan wake
+    When Member1's turn starts
+    And the consultation run store fails
+    And Member1 tries to consult Member2 about "Check fixture": "Which fixture failed?"
+    Then it is refused for "synthetic dispatch failure"
+    When the consultation run store recovers
+    And HQ restarts
+    And Member2's turn starts
+    Then Member2's briefing says "Which fixture failed?"
+
+  Scenario: Interrupted answer notification delivers the saved answer after restart
+    When Member1's turn starts
+    And Member1 consults Member2 about "Check fixture": "Which fixture failed?"
+    And Member2's turn starts
+    And Member1's turn ends
+    And the consultation notification store fails
+    And Member2 tries to answer the consult: "The fixture cache failed."
+    Then it is refused for "synthetic notice failure"
+    When the consultation notification store recovers
+    And HQ restarts
+    And Member1's turn starts
+    Then Member1's briefing says "fixture cache failed"
+    And the task "Check fixture" has 1 consultation answers
+    And Member1 has one consultation answer wake
+    When HQ restarts
+    Then the task "Check fixture" has 1 consultation answers

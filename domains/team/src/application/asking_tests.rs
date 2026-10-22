@@ -95,6 +95,163 @@ fn ada_asks_in_a_turn(hq: &Hq<'_>, t: &Team) -> (TaskId, RunContext) {
 }
 
 #[test]
+fn interrupted_consult_dispatch_keeps_no_orphan_wake_and_resumes_after_restart() {
+    use super::engine::{Engine, Settings};
+    use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
+    let folder = std::path::Path::new("target/consult-recovery");
+    std::fs::create_dir_all(folder).unwrap();
+    let path = folder.join(format!("{}-dispatch.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = Engine::new(
+        SqliteTeamStore::open(path.to_str().unwrap()).unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings::default(),
+    );
+    let asker = hq.hire("Member 1", Role::Lead, 50, 2, 0).unwrap();
+    let expert = hq.hire("Member 2", Role::Developer, 50, 2, 0).unwrap();
+    let goal = hq.set_goal("Synthetic check", "", Author::Owner).unwrap();
+    task_for(&hq, goal, asker, "Synthetic investigation");
+    hq.tick().unwrap();
+    let caller = turn_of(&hq, asker);
+    let before = hq.wakes().unwrap().len();
+    let fault = rusqlite::Connection::open(&path).unwrap();
+    fault.execute_batch(&format!("CREATE TRIGGER fail_consult_dispatch BEFORE INSERT ON runs WHEN NEW.member={} AND NEW.task IS NULL BEGIN SELECT RAISE(ABORT,'synthetic dispatch failure'); END;",expert.0)).unwrap();
+    let error = hq
+        .consult_in(caller.run, "Member 2", "Which fixture failed?", None)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("synthetic dispatch failure"),
+        "{error}"
+    );
+    assert_eq!(
+        hq.wakes().unwrap().len(),
+        before,
+        "dispatch must not leave an orphan wake"
+    );
+    fault
+        .execute_batch("DROP TRIGGER fail_consult_dispatch")
+        .unwrap();
+    drop(fault);
+    drop(hq);
+    let hq = Engine::new(
+        SqliteTeamStore::open(path.to_str().unwrap()).unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings::default(),
+    );
+    hq.tick().unwrap();
+    let answerer = turn_of(&hq, expert);
+    assert!(hq.in_consult(answerer.run).unwrap());
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.store()
+            .runs()
+            .unwrap()
+            .iter()
+            .filter(|run| run.member == expert)
+            .count(),
+        1
+    );
+    assert_eq!(hq.store().consults().unwrap().len(), 1);
+    drop(hq);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn interrupted_consult_notification_resumes_once_after_restart() {
+    use super::engine::{Engine, Settings};
+    use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
+    let folder = std::path::Path::new("target/consult-recovery");
+    std::fs::create_dir_all(folder).unwrap();
+    let path = folder.join(format!("{}-notice.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = Engine::new(
+        SqliteTeamStore::open(path.to_str().unwrap()).unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings::default(),
+    );
+    let asker = hq.hire("Member 1", Role::Lead, 50, 2, 0).unwrap();
+    let expert = hq.hire("Member 2", Role::Developer, 50, 2, 0).unwrap();
+    let goal = hq.set_goal("Synthetic check", "", Author::Owner).unwrap();
+    let task = task_for(&hq, goal, asker, "Synthetic investigation");
+    hq.tick().unwrap();
+    let caller = turn_of(&hq, asker);
+    hq.consult_in(caller.run, "Member 2", "Which fixture failed?", None)
+        .unwrap();
+    hq.tick().unwrap();
+    let answerer = turn_of(&hq, expert);
+    end(&hq, &caller);
+    let before = hq.wakes().unwrap().len();
+    let fault = rusqlite::Connection::open(&path).unwrap();
+    fault.execute_batch("CREATE TRIGGER fail_consult_notice BEFORE UPDATE OF asker_woken ON consults WHEN NEW.asker_woken=1 BEGIN SELECT RAISE(ABORT,'synthetic notice failure'); END;").unwrap();
+    let error = hq
+        .answer_consult_in(answerer.run, "The fixture cache failed.")
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("synthetic notice failure"),
+        "{error}"
+    );
+    assert_eq!(
+        hq.wakes().unwrap().len(),
+        before,
+        "notification wake must roll back with its association"
+    );
+    assert_eq!(hq.store().consults().unwrap()[0].status, Status::Answered);
+    fault
+        .execute_batch("DROP TRIGGER fail_consult_notice")
+        .unwrap();
+    drop(fault);
+    drop(hq);
+    let hq = Engine::new(
+        SqliteTeamStore::open(path.to_str().unwrap()).unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings::default(),
+    );
+    hq.tick().unwrap();
+    let result = turn_of(&hq, asker);
+    assert!(
+        result.told.contains("fixture cache failed"),
+        "{}",
+        result.told
+    );
+    clock.0.fetch_add(120_000, Ordering::SeqCst);
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.runner()
+            .started()
+            .iter()
+            .filter(|run| run.member == expert)
+            .count(),
+        0,
+        "an accepted answer must not restart its expert after interruption recovery"
+    );
+    assert_eq!(
+        hq.wakes()
+            .unwrap()
+            .iter()
+            .filter(|wake| wake.member == asker && wake.reason == WakeReason::QuestionAnswered)
+            .count(),
+        1
+    );
+    assert_eq!(
+        hq.store()
+            .thread(task)
+            .unwrap()
+            .iter()
+            .filter(|post| post.text.contains("fixture cache failed"))
+            .count(),
+        1
+    );
+    drop(hq);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn a_failed_consult_status_write_cannot_leave_an_answer_in_the_thread() {
     use super::engine::{Engine, Settings};
     use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};

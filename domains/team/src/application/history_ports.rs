@@ -6,7 +6,27 @@ use super::ports::{Post, Stored};
 use crate::domain::consult::Consult;
 use crate::domain::history::{Kept, Transcript};
 use crate::domain::record::{Passage, Query};
-use crate::domain::{MemberId, Millis, RunId};
+use crate::domain::{MemberId, Millis, Receipt, RunId, WakeDecision};
+
+/// The two trusted delivery stages of a task-thread consultation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsultDelivery {
+    /// Ask the expert to answer.
+    Expert,
+    /// Bring the accepted answer to the requester.
+    Answer,
+}
+
+impl ConsultDelivery {
+    /// Stable persistence discriminator, selected by the application, never model input.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Expert => "expert",
+            Self::Answer => "answer",
+        }
+    }
+}
 
 /// The history's part of HQ's store.
 pub trait HistoryStore {
@@ -104,4 +124,38 @@ pub trait HistoryStore {
     /// # Errors
     /// A store failure rolls back both writes.
     fn finish_consult(&self, consult: &Consult, post: &Post) -> Stored<bool>;
+
+    /// At most fifty requests whose expert dispatch is still pending.
+    /// # Errors
+    /// A store failure.
+    fn pending_consult_dispatches(&self) -> Stored<Vec<Consult>>;
+
+    /// At most fifty answers needing delivery, excluding a fold whose turn is still live.
+    /// # Errors
+    /// A store failure.
+    fn pending_consult_notices(&self) -> Stored<Vec<Consult>>;
+
+    /// At most fifty assigned questions whose expert turn ended before fallback completed.
+    /// # Errors
+    /// A store failure.
+    fn ended_consults(&self) -> Stored<Vec<Consult>>;
+
+    /// Atomically persist the policy-approved wake, any queued run and its consultation
+    /// association. Replays reuse the prior outcome; folded answer notices wait for that
+    /// turn to end before a new delivery decision is admitted.
+    /// # Errors
+    /// A store failure rolls back the entire delivery.
+    fn deliver_consult(
+        &self,
+        id: i64,
+        stage: ConsultDelivery,
+        decision: WakeDecision,
+        by_owner: bool,
+        now: Millis,
+    ) -> Stored<Receipt>;
+
+    /// Exact accepted answer posts assigned to this result turn, independent of timestamps.
+    /// # Errors
+    /// A store failure.
+    fn consult_answers_for_run(&self, run: RunId) -> Stored<Vec<Post>>;
 }

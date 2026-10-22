@@ -104,6 +104,27 @@ their existing application behavior. Moving those effects and both origins'
 notification/dispatch intents into the common recoverable lifecycle remains
 required; this hardening does not claim that consolidation is complete.
 
+Delivery recovery follow-up, 2026-10-22: task-thread consultations now persist
+expert and answer delivery associations with their wake, queued run and wake
+audit event in one transaction. Both assistance origins use the same queue
+write primitive; their authenticated application entry points still authorize
+their different scopes and fallback policies. The existing tick reconciles
+bounded pending dispatches, interrupted fallback and unanswered delivery intents.
+A folded answer notice waits for that run to end before another decision;
+replaying a committed delivery never creates another run. Legacy consultation
+continues independently of the conversation switch and respects the existing
+kill switch, drain, pause, project and wake rules.
+
+New answer completions also bind the exact immutable task-thread post. A result
+turn includes that answer even when its timestamp equals the previous turn's;
+it does not infer identity from matching prose. Older queued expert runs may be
+adopted only by the old oldest-question rule, when unstarted, correctly addressed
+and unassociated with either assistance origin. Historical answer posts are not
+retroactively guessed or relabelled. A terminal consultation prevents its expert
+from starting again after platform interruption. Admission retry deduplication,
+shared origin-aware accounting and recovery of other post-commit thread effects
+remain separate compatibility work.
+
 ### Pilot scope, identity and authority
 
 The owner enables the pilot, selects one existing project and creates a

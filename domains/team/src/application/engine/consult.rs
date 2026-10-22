@@ -5,6 +5,7 @@
 
 use super::world::day_with_year;
 use super::{Author, Done, Engine, EngineError};
+use crate::application::history_ports::ConsultDelivery;
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::consult::{self, Consult, Status};
 use crate::domain::history::HistoryRefusal;
@@ -208,7 +209,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Ref::Task(thread).said()
             ));
         }
-        if self.wake_held_lock(expert.id, None, WakeReason::Consulted)? != Receipt::Queued {
+        if self.deliver_consult(&asked, ConsultDelivery::Expert)? != Receipt::Queued {
             self.answer_from_record(&mut asked, "could not be woken just now")?;
             return Ok(format!(
                 "{} could not be woken just now. The record answered in {}'s thread: you are \
@@ -467,13 +468,59 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Wakes the asker to read the answer. If its turn is still running the wake would only
     /// join it; the asker is woken when that turn ends.
     fn wake_the_asker(&self, found: &mut Consult) -> Done<()> {
-        let receipt = self.wake_held_lock(
-            found.asker,
-            Some(found.thread),
-            WakeReason::QuestionAnswered,
-        )?;
+        let receipt = self.deliver_consult(found, ConsultDelivery::Answer)?;
         found.asker_woken = receipt != Receipt::Folded;
-        self.store.save_consult(found)?;
+        Ok(())
+    }
+
+    fn deliver_consult(&self, found: &Consult, stage: ConsultDelivery) -> Done<Receipt> {
+        let (member, task, reason) = match stage {
+            ConsultDelivery::Expert => (found.expert, None, WakeReason::Consulted),
+            ConsultDelivery::Answer => (
+                found.asker,
+                Some(found.thread),
+                WakeReason::QuestionAnswered,
+            ),
+        };
+        let (decision, coordination_held) = self.decide_wake(member, task, reason)?;
+        let receipt = self.store.deliver_consult(
+            found.id,
+            stage,
+            decision,
+            self.asked_by_owner(),
+            self.clock.now(),
+        )?;
+        if let (true, Some(task)) = (receipt == Receipt::Held && coordination_held, task) {
+            self.coordination_held_notice(task)?;
+        }
+        if let (Receipt::Refused(crate::domain::Refused::Redundant), Some(task)) = (receipt, task) {
+            self.found_redundant(member, task)?;
+        }
+        Ok(receipt)
+    }
+
+    /// Recover bounded pending intents through the existing policy and queue. Legacy
+    /// task-thread consultation remains available independently of the conversation switch.
+    pub(super) fn consult_delivery_tick(&self) -> Done<()> {
+        if self.draining() {
+            return Ok(());
+        }
+        for mut found in self.store.pending_consult_dispatches()? {
+            let expert = self.member(found.expert)?;
+            if let Some(why) = consult::cannot_be_woken(&expert) {
+                self.answer_from_record(&mut found, &format!("{why}, so it is not woken"))?;
+                continue;
+            }
+            if self.deliver_consult(&found, ConsultDelivery::Expert)? != Receipt::Queued {
+                self.answer_from_record(&mut found, "could not be woken just now")?;
+            }
+        }
+        for mut found in self.store.ended_consults()? {
+            self.answer_from_record(&mut found, "did not answer")?;
+        }
+        for mut found in self.store.pending_consult_notices()? {
+            self.wake_the_asker(&mut found)?;
+        }
         Ok(())
     }
 

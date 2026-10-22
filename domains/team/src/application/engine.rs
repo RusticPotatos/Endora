@@ -1148,12 +1148,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         })
     }
 
-    fn wake_held_lock(
+    fn decide_wake(
         &self,
         member: MemberId,
         task: Option<TaskId>,
         reason: WakeReason,
-    ) -> Done<Receipt> {
+    ) -> Done<(WakeDecision, bool)> {
         let who = self.member(member)?;
         // News is never kept waiting: a turn on its task held back by the back-off, or waiting
         // to try again, is brought forward to take it.
@@ -1169,6 +1169,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             _ => wakes::decide(member, &situation),
         };
+        Ok((decision, situation.coordination_held))
+    }
+
+    fn wake_held_lock(
+        &self,
+        member: MemberId,
+        task: Option<TaskId>,
+        reason: WakeReason,
+    ) -> Done<Receipt> {
+        let (decision, coordination_held) = self.decide_wake(member, task, reason)?;
         let now = self.clock.now();
         let mut about = json!({
             "member": member.0, "task": task.map(|t| t.0), "reason": reason.name(),
@@ -1201,12 +1211,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .store
                     .add_wake(member, task, reason, Receipt::Held, None, now)?;
                 self.mark_owners(wake, None)?;
-                if situation.coordination_held {
+                if coordination_held {
                     about["why"] = json!("coordination_budget");
                 }
                 self.emit(EventKind::WakeHeld, about)?;
                 // Held for the budget of talk: the task's lead is asked what to do, once.
-                if let (true, Some(task)) = (situation.coordination_held, task) {
+                if let (true, Some(task)) = (coordination_held, task) {
                     self.coordination_held_notice(task)?;
                 }
                 Ok(Receipt::Held)
@@ -2628,13 +2638,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         let members = self.store.members()?;
-        let new: Vec<String> = self
+        let mut new: Vec<String> = self
             .store
             .thread(task.id)?
             .into_iter()
             .filter(|p| p.at > since)
             .map(|p| Self::post_line(&members, &p.author, &p.text, p.unsupported))
             .collect();
+        // A causal answer delivery cannot disappear when its post shares the previous
+        // turn's timestamp. Newer posts are already in the ordinary thread projection.
+        for post in self.store.consult_answers_for_run(run.id)? {
+            if post.at <= since {
+                new.push(Self::post_line(
+                    &members,
+                    &post.author,
+                    &post.text,
+                    post.unsupported,
+                ));
+            }
+        }
         if new.is_empty() {
             told.push_str("Nothing new in the thread since your last turn.\n");
         } else {
@@ -3189,6 +3211,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Explicit assistance is a durable intent; a bounded set may enter the normal queue.
         self.assistance_tick(now)?;
         self.assistance_notice_tick(now)?;
+        self.consult_delivery_tick()?;
         // 3b. The office (ADR 0119): proposals whose time came carry or are dropped, and one
         //     member with nothing to do is given a downtime turn.
         self.office_tick()?;
@@ -3348,6 +3371,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         for mut run in queued {
             if let Some(status) = self.assistance_terminal_for(run.id)? {
                 self.end(run, status, "assistance request already ended")?;
+                continue;
+            }
+            if self
+                .store
+                .consult_for_run(run.id)?
+                .is_some_and(|consult| consult.status != crate::domain::consult::Status::Queued)
+            {
+                self.end(run, RunStatus::Succeeded, "consultation already answered")?;
                 continue;
             }
             if (self.store.assistance_for_run(run.id)?.is_some()

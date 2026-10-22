@@ -192,6 +192,59 @@ fn tries_consult_answer(w: &mut Office, name: String, answer: String) {
     );
 }
 
+#[when("the consultation run store fails")]
+fn consult_run_failure(w: &mut Office) {
+    rusqlite::Connection::open(w.file.as_ref().unwrap()).unwrap().execute_batch("CREATE TRIGGER fail_consult_dispatch BEFORE INSERT ON runs WHEN NEW.task IS NULL BEGIN SELECT RAISE(ABORT,'synthetic dispatch failure'); END;").unwrap();
+}
+
+#[when("the consultation run store recovers")]
+fn consult_run_recovers(w: &mut Office) {
+    rusqlite::Connection::open(w.file.as_ref().unwrap())
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_consult_dispatch")
+        .unwrap();
+}
+
+#[when("the consultation notification store fails")]
+fn consult_notice_failure(w: &mut Office) {
+    rusqlite::Connection::open(w.file.as_ref().unwrap()).unwrap().execute_batch("CREATE TRIGGER fail_consult_notice BEFORE UPDATE OF asker_woken ON consults WHEN NEW.asker_woken=1 BEGIN SELECT RAISE(ABORT,'synthetic notice failure'); END;").unwrap();
+}
+
+#[when("the consultation notification store recovers")]
+fn consult_notice_recovers(w: &mut Office) {
+    rusqlite::Connection::open(w.file.as_ref().unwrap())
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_consult_notice")
+        .unwrap();
+}
+
+#[when(expr = "{word} tries to consult {word} about {string}: {string}")]
+fn tries_consult(w: &mut Office, asker: String, expert: String, task: String, question: String) {
+    let task = w.task(&task);
+    assert!(
+        w.use_tool(
+            &asker,
+            "consult",
+            &json!({"member":expert,"task":task.0,"question":question})
+        )
+        .is_none()
+    );
+}
+
+#[then(expr = "{word} has one consultation answer wake")]
+fn one_consult_notice(w: &mut Office, member: String) {
+    let member = w.member(&member);
+    assert_eq!(
+        w.hq.wakes()
+            .unwrap()
+            .iter()
+            .filter(|wake| wake.member == member
+                && wake.reason == endora_team::domain::WakeReason::QuestionAnswered)
+            .count(),
+        1
+    );
+}
+
 #[then(expr = "the task {string} has {int} consultation answers")]
 fn consult_answer_count(w: &mut Office, title: String, expected: usize) {
     let posts = w.hq.store().thread(w.task(&title)).unwrap();

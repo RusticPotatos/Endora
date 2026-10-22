@@ -63,6 +63,15 @@ thread-answer/status completion for expert answers and record fallback.
 Request/dispatch and result/notification consolidation across both origins
 remains open. These changes remain branch work and do not enable the live team.
 
+Delivery recovery follow-up, 2026-10-22: task-thread dispatch and answer notices
+now persist wake/run associations transactionally and recover in bounded batches
+through the existing scheduler. Both origins share the queue writer. Saved
+answer-post associations prevent timestamp ties from hiding a result, and a
+terminal answer prevents another expert start after platform interruption.
+The foundation checkpoint records actual coverage and the remaining admission,
+accounting and post-commit effect work. No new deployment or live activation
+is recorded by this follow-up.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less

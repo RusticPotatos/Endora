@@ -5,12 +5,12 @@
 use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteTeamStore, backend};
-use crate::application::history_ports::HistoryStore;
+use crate::application::history_ports::{ConsultDelivery, HistoryStore};
 use crate::application::ports::{Post, Stored};
 use crate::domain::consult::{Consult, Status as ConsultStatus};
 use crate::domain::history::{self, Kept, Transcript};
 use crate::domain::record::{Passage, Query};
-use crate::domain::{MemberId, RunId, TaskId};
+use crate::domain::{MemberId, Receipt, RunId, TaskId, WakeDecision, WakeReason};
 
 pub(super) const SCHEMA: &str = "
 -- Runtime-observed history input taint survives restart and transcript expiry.
@@ -40,6 +40,18 @@ CREATE INDEX IF NOT EXISTS consults_asker_run ON consults(asker_run,id);
 CREATE INDEX IF NOT EXISTS consults_answer_run ON consults(answer_run,id) WHERE answer_run IS NOT NULL;
 CREATE INDEX IF NOT EXISTS consults_pending ON consults(expert,id) WHERE status='queued' AND answer_run IS NULL;
 CREATE INDEX IF NOT EXISTS consults_unread ON consults(asker,id) WHERE status!='queued' AND asker_woken=0;
+CREATE INDEX IF NOT EXISTS consults_undispatched ON consults(id) WHERE status='queued' AND answer_run IS NULL;
+CREATE INDEX IF NOT EXISTS consults_unnotified ON consults(id) WHERE status!='queued' AND asker_woken=0;
+CREATE INDEX IF NOT EXISTS consults_open ON consults(id) WHERE status='queued';
+CREATE TABLE IF NOT EXISTS consult_deliveries (
+ consult INTEGER NOT NULL REFERENCES consults(id), stage TEXT NOT NULL CHECK(stage IN ('expert','answer')),
+ wake INTEGER NOT NULL REFERENCES wakes(id), run INTEGER REFERENCES runs(id),
+ receipt TEXT NOT NULL, refused TEXT, PRIMARY KEY(consult,stage)
+) STRICT;
+CREATE INDEX IF NOT EXISTS consult_deliveries_run ON consult_deliveries(run,stage,consult);
+CREATE TABLE IF NOT EXISTS consult_answer_posts (
+ consult INTEGER PRIMARY KEY REFERENCES consults(id), post INTEGER NOT NULL REFERENCES posts(id)
+) STRICT;
 ";
 
 /// The full-text index over the conversations, kept apart because it is a virtual table: SQLite
@@ -68,6 +80,12 @@ const CONSULT_UNREAD: &str =
 const CONSULT_TURN_COUNT: &str =
     "SELECT count(*) FROM (SELECT id FROM consults WHERE asker_run=?1 LIMIT 2)";
 const CONSULT_DAY_COUNT: &str = "SELECT count(*) FROM (SELECT id FROM consults WHERE asker=?1 AND at_ms>=?2 AND at_ms<?3 LIMIT 6)";
+const CONSULT_DISPATCHES: &str =
+    "WHERE status='queued' AND answer_run IS NULL ORDER BY id LIMIT 50";
+const CONSULT_NOTICES: &str = "WHERE status!='queued' AND asker_woken=0 AND NOT EXISTS(
+    SELECT 1 FROM consult_deliveries d JOIN runs r ON r.id=d.run WHERE d.consult=consults.id AND d.stage='answer' AND d.receipt='folded' AND r.status IN ('queued','running','retry_waiting')) ORDER BY id LIMIT 50";
+const CONSULT_ENDED: &str = "WHERE status='queued' AND answer_run IS NOT NULL AND EXISTS(
+    SELECT 1 FROM runs r WHERE r.id=answer_run AND r.status NOT IN ('queued','running','retry_waiting')) ORDER BY id LIMIT 50";
 
 fn consult_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Consult> {
     let status: String = r.get(7)?;
@@ -375,8 +393,202 @@ impl HistoryStore for SqliteTeamStore {
         }
         tx.execute("INSERT INTO posts(task,author,text,at_ms,evidence,unsupported) VALUES(?1,?2,?3,?4,'',?5)",
             params![c.thread.0,post.author,post.text,post.at,post.unsupported]).map_err(backend)?;
+        let post_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO consult_answer_posts(consult,post) VALUES(?1,?2)",
+            params![c.id, post_id],
+        )
+        .map_err(backend)?;
         tx.commit().map_err(backend)?;
         Ok(true)
+    }
+
+    fn pending_consult_dispatches(&self) -> Stored<Vec<Consult>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("{CONSULT_SELECT} {CONSULT_DISPATCHES}"))
+            .map_err(backend)?;
+        stmt.query_map([], consult_row)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn consult_answers_for_run(&self, run: RunId) -> Stored<Vec<Post>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.author,p.text,p.at_ms,p.unsupported FROM consult_deliveries d
+            JOIN consult_answer_posts a ON a.consult=d.consult JOIN posts p ON p.id=a.post
+            WHERE d.run=?1 AND d.stage='answer' AND d.receipt='queued' ORDER BY d.consult LIMIT 50",
+            )
+            .map_err(backend)?;
+        stmt.query_map([run.0], |row| {
+            Ok(Post {
+                author: row.get(0)?,
+                text: row.get(1)?,
+                at: row.get(2)?,
+                unsupported: row.get(3)?,
+            })
+        })
+        .map_err(backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(backend)
+    }
+
+    fn pending_consult_notices(&self) -> Stored<Vec<Consult>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("{CONSULT_SELECT} {CONSULT_NOTICES}"))
+            .map_err(backend)?;
+        stmt.query_map([], consult_row)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn ended_consults(&self) -> Stored<Vec<Consult>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("{CONSULT_SELECT} {CONSULT_ENDED}"))
+            .map_err(backend)?;
+        stmt.query_map([], consult_row)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn deliver_consult(
+        &self,
+        id: i64,
+        stage: ConsultDelivery,
+        decision: WakeDecision,
+        by_owner: bool,
+        now: i64,
+    ) -> Stored<Receipt> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let found = tx
+            .query_row(&format!("{CONSULT_SELECT} WHERE id=?1"), [id], consult_row)
+            .map_err(backend)?;
+        let prior: Option<(String, Option<String>, Option<i64>)> = tx
+            .query_row(
+                "SELECT receipt,refused,run FROM consult_deliveries WHERE consult=?1 AND stage=?2",
+                params![id, stage.name()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((receipt, why, run)) = prior {
+            let receipt = super::receipt_from(&receipt, why.as_deref())?;
+            if stage == ConsultDelivery::Expert || receipt != Receipt::Folded {
+                return Ok(receipt);
+            }
+            let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE id=?1 AND status IN ('queued','running','retry_waiting'))",[run],|row|row.get(0)).map_err(backend)?;
+            if live {
+                return Ok(receipt);
+            }
+        }
+        if (stage == ConsultDelivery::Expert && found.status != ConsultStatus::Queued)
+            || (stage == ConsultDelivery::Answer && found.asker_woken)
+        {
+            return Ok(Receipt::Finished);
+        }
+        if stage == ConsultDelivery::Expert && found.answer_run.is_some() {
+            return Ok(Receipt::Queued);
+        }
+        if stage == ConsultDelivery::Answer && found.status == ConsultStatus::Queued {
+            return Err(super::corrupt("an unanswered consult cannot notify"));
+        }
+        // Adopt an unclaimed pre-upgrade queued expert turn using the old oldest-question
+        // rule. Never take a run already associated with either assistance origin.
+        if let (ConsultDelivery::Expert, WakeDecision::Fold(run)) = (stage, decision) {
+            let wake:Option<i64>=tx.query_row("SELECT r.wake FROM runs r JOIN wakes w ON w.id=r.wake
+                WHERE r.id=?1 AND r.member=?2 AND r.task IS NULL AND r.started_at IS NULL
+                AND r.status IN ('queued','retry_waiting') AND w.reason='consulted'
+                AND NOT EXISTS(SELECT 1 FROM consults c WHERE c.answer_run=r.id)
+                AND NOT EXISTS(SELECT 1 FROM assistance_requests a WHERE a.expert_run=r.id)
+                AND NOT EXISTS(SELECT 1 FROM consults c WHERE c.expert=?2 AND c.status='queued' AND c.answer_run IS NULL AND c.id<?3)",
+                params![run.0,found.expert.0,id],|row|row.get(0)).optional().map_err(backend)?;
+            if let Some(wake) = wake {
+                tx.execute(
+                    "UPDATE consults SET answer_run=?2 WHERE id=?1",
+                    params![id, run.0],
+                )
+                .map_err(backend)?;
+                tx.execute("INSERT INTO consult_deliveries(consult,stage,wake,run,receipt) VALUES(?1,'expert',?2,?3,'queued')",params![id,wake,run.0]).map_err(backend)?;
+                tx.commit().map_err(backend)?;
+                return Ok(Receipt::Queued);
+            }
+        }
+        let (member, task, reason) = match stage {
+            ConsultDelivery::Expert => (found.expert, None, WakeReason::Consulted),
+            ConsultDelivery::Answer => (
+                found.asker,
+                Some(found.thread),
+                WakeReason::QuestionAnswered,
+            ),
+        };
+        let (receipt, run, why) = match decision {
+            WakeDecision::Queue => (Receipt::Queued, None, None),
+            WakeDecision::Fold(run) => (Receipt::Folded, Some(run), None),
+            WakeDecision::Hold => (Receipt::Held, None, None),
+            WakeDecision::Refuse(why) => (Receipt::Refused(why), None, Some(why.name())),
+        };
+        let (wake, run) = if receipt == Receipt::Queued {
+            let (wake, run) =
+                super::assistance::queue_turn(&tx, member, task, reason, by_owner, now)?;
+            (wake.0, Some(run))
+        } else {
+            tx.execute("INSERT INTO wakes(member,task,reason,receipt,refused,run,at_ms,by_owner) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![member.0,task.map(|id|id.0),reason.name(),receipt.name(),why,run.map(|id|id.0),now,by_owner]).map_err(backend)?;
+            let wake = tx.last_insert_rowid();
+            if let (true, Some(run)) = (by_owner, run) {
+                tx.execute(
+                    "UPDATE runs SET asked_by_owner=1 WHERE id=?1 AND started_at IS NULL",
+                    [run.0],
+                )
+                .map_err(backend)?;
+            }
+            (wake, run)
+        };
+        if stage == ConsultDelivery::Expert && receipt == Receipt::Queued {
+            tx.execute(
+                "UPDATE consults SET answer_run=?2 WHERE id=?1",
+                params![id, run.map(|id| id.0)],
+            )
+            .map_err(backend)?;
+        }
+        if stage == ConsultDelivery::Answer {
+            tx.execute(
+                "UPDATE consults SET asker_woken=?2 WHERE id=?1",
+                params![id, receipt != Receipt::Folded],
+            )
+            .map_err(backend)?;
+        }
+        tx.execute("INSERT INTO consult_deliveries(consult,stage,wake,run,receipt,refused) VALUES(?1,?2,?3,?4,?5,?6)
+            ON CONFLICT(consult,stage) DO UPDATE SET wake=excluded.wake,run=excluded.run,receipt=excluded.receipt,refused=excluded.refused",
+            params![id,stage.name(),wake,run.map(|id|id.0),receipt.name(),why]).map_err(backend)?;
+        let kind = match receipt {
+            Receipt::Queued => crate::domain::EventKind::WakeQueued,
+            Receipt::Folded => crate::domain::EventKind::WakeFolded,
+            Receipt::Held => crate::domain::EventKind::WakeHeld,
+            _ => crate::domain::EventKind::WakeRefused,
+        };
+        let mut data =
+            serde_json::json!({"member":member.0,"task":task.map(|id|id.0),"reason":reason.name()});
+        if let Some(why) = why {
+            data["why"] = serde_json::json!(why);
+        }
+        tx.execute(
+            "INSERT INTO events(at_ms,kind,data) VALUES(?1,?2,?3)",
+            params![now, kind.name(), data.to_string()],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(receipt)
     }
 }
 
@@ -411,6 +623,9 @@ mod tests {
                 format!("{CONSULT_SELECT} {CONSULT_UNREAD}"),
                 CONSULT_TURN_COUNT.to_owned(),
                 CONSULT_DAY_COUNT.to_owned(),
+                format!("{CONSULT_SELECT} {CONSULT_DISPATCHES}"),
+                format!("{CONSULT_SELECT} {CONSULT_NOTICES}"),
+                format!("{CONSULT_SELECT} {CONSULT_ENDED}"),
             ];
             let measure = || {
                 let conn = store.conn().unwrap();
@@ -421,6 +636,7 @@ mod tests {
                         0 => vec![3],
                         1 => vec![2],
                         4 => vec![1, 0, 86_400_000],
+                        5.. => vec![],
                         _ => vec![1],
                     };
                     let mut rows = stmt.query(rusqlite::params_from_iter(parameters)).unwrap();
@@ -541,6 +757,131 @@ mod tests {
     }
 
     #[test]
+    fn consultation_dispatch_replay_and_folded_notices_keep_one_delivery() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store
+            .conn()
+            .unwrap()
+            .execute_batch(
+                "UPDATE consults SET answer_run=NULL; UPDATE runs SET task=1 WHERE id=1;",
+            )
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                store
+                    .deliver_consult(1, ConsultDelivery::Expert, WakeDecision::Queue, false, 0)
+                    .unwrap(),
+                Receipt::Queued
+            );
+        }
+        let mut result = store.consult_for_run(RunId(4)).unwrap().unwrap();
+        result.status = ConsultStatus::Answered;
+        store
+            .finish_consult(
+                &result,
+                &Post {
+                    author: "Member 2".into(),
+                    text: "Synthetic answer".into(),
+                    at: 0,
+                    unsupported: false,
+                },
+            )
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                store
+                    .deliver_consult(
+                        1,
+                        ConsultDelivery::Answer,
+                        WakeDecision::Fold(RunId(1)),
+                        false,
+                        0
+                    )
+                    .unwrap(),
+                Receipt::Folded
+            );
+        }
+        assert!(store.pending_consult_notices().unwrap().is_empty());
+        let count: i64 = store
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM wakes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 3,
+            "one dispatch and one fold, without audit spam on retries"
+        );
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE runs SET status='succeeded' WHERE id=1", [])
+            .unwrap();
+        assert_eq!(store.pending_consult_notices().unwrap().len(), 1);
+        for _ in 0..2 {
+            assert_eq!(
+                store
+                    .deliver_consult(1, ConsultDelivery::Answer, WakeDecision::Queue, false, 0)
+                    .unwrap(),
+                Receipt::Queued
+            );
+        }
+        assert!(store.pending_consult_notices().unwrap().is_empty());
+        assert_eq!(
+            store.consult_answers_for_run(RunId(5)).unwrap()[0].text,
+            "Synthetic answer"
+        );
+        assert!(store.consult_answers_for_run(RunId(3)).unwrap().is_empty());
+        let count: i64 = store
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM wakes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn recovery_adopts_an_unclaimed_legacy_expert_turn_instead_of_queuing_another() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store
+            .conn()
+            .unwrap()
+            .execute_batch(
+                "UPDATE consults SET answer_run=NULL;
+            UPDATE wakes SET member=2,reason='consulted' WHERE id=1;
+            UPDATE runs SET status='queued' WHERE id=2;",
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .deliver_consult(
+                    1,
+                    ConsultDelivery::Expert,
+                    WakeDecision::Fold(RunId(2)),
+                    false,
+                    0
+                )
+                .unwrap(),
+            Receipt::Queued
+        );
+        assert_eq!(store.consult_for_run(RunId(2)).unwrap().unwrap().id, 1);
+        assert!(store.pending_consult_dispatches().unwrap().is_empty());
+        let count: i64 = store
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM wakes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            store
+                .deliver_consult(1, ConsultDelivery::Expert, WakeDecision::Queue, false, 0)
+                .unwrap(),
+            Receipt::Queued
+        );
+    }
+
+    #[test]
     fn two_connections_cannot_claim_or_complete_the_same_consult_twice() {
         let folder = std::path::Path::new("target/consult-recovery");
         std::fs::create_dir_all(folder).unwrap();
@@ -594,6 +935,41 @@ mod tests {
             [a.join().unwrap(), b.join().unwrap()]
         });
         assert_eq!(accepted.into_iter().filter(|accepted| *accepted).count(), 1);
+        let deliveries = std::thread::scope(|scope| {
+            let a = scope.spawn(|| {
+                barrier.wait();
+                first
+                    .deliver_consult(
+                        result.id,
+                        ConsultDelivery::Answer,
+                        WakeDecision::Queue,
+                        false,
+                        0,
+                    )
+                    .unwrap()
+            });
+            let b = scope.spawn(|| {
+                barrier.wait();
+                second
+                    .deliver_consult(
+                        result.id,
+                        ConsultDelivery::Answer,
+                        WakeDecision::Queue,
+                        false,
+                        0,
+                    )
+                    .unwrap()
+            });
+            [a.join().unwrap(), b.join().unwrap()]
+        });
+        assert_eq!(deliveries, [Receipt::Queued, Receipt::Queued]);
+        let runs: i64 = first
+            .conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(runs, 4, "concurrent delivery reuses one queued result turn");
+        assert_eq!(first.consult_answers_for_run(RunId(4)).unwrap().len(), 1);
         drop(first);
         drop(second);
         let reopened = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();

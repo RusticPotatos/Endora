@@ -1,5 +1,34 @@
 //! Durable request and delivery intent, kept separately from message bodies.
 
+use super::backend;
+use crate::application::ports::Stored;
+use crate::domain::{MemberId, Millis, RunId, TaskId, WakeId, WakeReason};
+use rusqlite::{Transaction, params};
+
+/// Shared transactional queue write for both assistance origins and answer delivery.
+/// Application policy authorizes the call; the caller commits the association in this tx.
+pub(super) fn queue_turn(
+    tx: &Transaction<'_>,
+    member: MemberId,
+    task: Option<TaskId>,
+    reason: WakeReason,
+    by_owner: bool,
+    now: Millis,
+) -> Stored<(WakeId, RunId)> {
+    tx.execute("INSERT INTO wakes(member,task,reason,receipt,at_ms,by_owner) VALUES(?1,?2,?3,'queued',?4,?5)",
+        params![member.0,task.map(|id|id.0),reason.name(),now,by_owner]).map_err(backend)?;
+    let wake = WakeId(tx.last_insert_rowid());
+    tx.execute("INSERT INTO runs(member,task,wake,status,queued_at,asked_by_owner) VALUES(?1,?2,?3,'queued',?4,?5)",
+        params![member.0,task.map(|id|id.0),wake.0,now,by_owner]).map_err(backend)?;
+    let run = RunId(tx.last_insert_rowid());
+    tx.execute(
+        "UPDATE wakes SET run=?2 WHERE id=?1",
+        params![wake.0, run.0],
+    )
+    .map_err(backend)?;
+    Ok((wake, run))
+}
+
 pub(super) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS assistance_source_grants (
  conversation INTEGER NOT NULL REFERENCES conversations(id),

@@ -328,30 +328,14 @@ impl ConversationStore for SqliteTeamStore {
         if busy {
             return Ok(None);
         };
-        tx.execute(
-            "INSERT INTO wakes(member,task,reason,receipt,at_ms) VALUES(?1,NULL,?2,?3,?4)",
-            params![
-                requester,
-                crate::domain::WakeReason::QuestionAnswered.name(),
-                crate::domain::Receipt::Queued.name(),
-                now
-            ],
-        )
-        .map_err(backend)?;
-        let wake = tx.last_insert_rowid();
-        tx.execute(
-            "INSERT INTO runs(member,task,wake,status,queued_at) VALUES(?1,NULL,?2,?3,?4)",
-            params![
-                requester,
-                wake,
-                crate::domain::RunStatus::Queued.name(),
-                now
-            ],
-        )
-        .map_err(backend)?;
-        let run = RunId(tx.last_insert_rowid());
-        tx.execute("UPDATE wakes SET run=?2 WHERE id=?1", params![wake, run.0])
-            .map_err(backend)?;
+        let (_, run) = super::assistance::queue_turn(
+            &tx,
+            MemberId(requester),
+            None,
+            crate::domain::WakeReason::QuestionAnswered,
+            false,
+            now,
+        )?;
         tx.execute(
             "UPDATE assistance_requests SET notified=1,notice_run=?2 WHERE id=?1",
             params![id, run.0],
@@ -467,25 +451,14 @@ impl ConversationStore for SqliteTeamStore {
         let Some(expert) = expert else {
             return Ok(None);
         };
-        tx.execute(
-            "INSERT INTO wakes(member,task,reason,receipt,at_ms) VALUES(?1,NULL,?2,?3,?4)",
-            params![
-                expert,
-                crate::domain::WakeReason::Consulted.name(),
-                crate::domain::Receipt::Queued.name(),
-                now
-            ],
-        )
-        .map_err(backend)?;
-        let wake = tx.last_insert_rowid();
-        tx.execute(
-            "INSERT INTO runs(member,task,wake,status,queued_at) VALUES(?1,NULL,?2,?3,?4)",
-            params![expert, wake, crate::domain::RunStatus::Queued.name(), now],
-        )
-        .map_err(backend)?;
-        let run = RunId(tx.last_insert_rowid());
-        tx.execute("UPDATE wakes SET run=?2 WHERE id=?1", params![wake, run.0])
-            .map_err(backend)?;
+        let (_, run) = super::assistance::queue_turn(
+            &tx,
+            MemberId(expert),
+            None,
+            crate::domain::WakeReason::Consulted,
+            false,
+            now,
+        )?;
         tx.execute(
             "UPDATE assistance_requests SET status='processing',expert_run=?2 WHERE id=?1",
             params![id, run.0],
