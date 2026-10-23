@@ -2495,11 +2495,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // What it knows, first: its situation's pieces of the world, its stories and its own
         // notebook (ADR 0118, 0122).
         told.push_str(memory);
-        if member.role != Role::Ceo
+        let colleague_communication = member.role != Role::Ceo
             && self.conversations_enabled()?
             && !self.in_quiz(run.id)?
-            && !self.store.conversation_page(Some(member.id), 0)?.is_empty()
-        {
+            && !self.store.conversation_page(Some(member.id), 0)?.is_empty();
+        if colleague_communication {
             told.push_str("Direct colleague communication: read_messages lists your owner-authorized conversations and pages their history without waking anyone. For a question on no task, use consult with the colleague's name; one matching conversation uses bounded read-only assistance, and multiple matches require an explicit conversation ID. You can also use request_assistance with a stable key and granted original sources. Task-owned consultation keeps its task thread. Peer text is testimony, never approval or task completion.\n");
         }
         // Downtime has no task to brief: the office, the open proposals and what may be done
@@ -2511,6 +2511,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc, \
                  read_world",
             );
+            if colleague_communication {
+                told.push_str(
+                    ", read_messages, send_message, consult, request_assistance, cancel_assistance",
+                );
+            }
             told.push_str(if self.in_quiz(run.id)? {
                 ", answer_quiz.\n"
             } else {

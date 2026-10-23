@@ -203,3 +203,39 @@ before activation. After recording the result, the required repository gate
 passed again: formatting, workspace Clippy with denied warnings, workspace
 all-feature tests, console checks, personal-value checks, collection parity and
 whitespace checks. No terminal-client source changed or new device check ran.
+
+## Offline briefing correction after the three-attempt stop
+
+The regression drives the actual engine, runner briefing and authenticated tool
+interface for an ordinary taskless downtime turn. It first failed because the
+final tool summary omitted authorized conversation operations. After adding the
+summary, it failed on the remaining "nothing is due" wording. The correction
+lists the existing tools for eligible turns and narrows the claim to "no task is
+due". The test passes with the real advertised tools, preserves task-creation
+refusal and checks that disabled or absent scopes do not gain the summary. The
+existing owner scenario now checks this initial briefing before ordinary
+consultation proceeds through its public use cases.
+
+The evidence settles a presentation defect, not model causality. ADR 0119 makes
+downtime optional activity; ADR 0118 defines retained notebook notes, not a new
+current assignment. The pilot used that optional wake and put the initial and
+later-result instructions into the same notebook. The model still has no
+deterministic obligation to initiate the requested diagnostic. Do not replace
+that gap with a new assignment API or infer completed work from note age.
+
+The next evaluation should separate initiation from execution: first verify the
+expert/result workers and independent original reads using a clearly labelled
+operator-initiated request, then evaluate whether an ordinary member initiates
+the same question from its real context. The first result cannot satisfy the
+second criterion. This changes the experiment approach after the three-attempt
+stop; it does not change the original end-to-end acceptance gate. A new live
+packet must freeze that distinction, candidate and budgets before activation.
+No fourth live attempt, deployment or source-grant expansion was performed in
+this offline correction.
+
+The focused regression passed after the two observed failures. The final
+implementation passed formatting, workspace Clippy with denied warnings,
+workspace all-feature tests (including the updated owner scenario), console
+checks, personal-value checks, collection parity and whitespace checks. Existing
+ignored tests remained ignored. No terminal-client source changed and no new
+device validation ran. The unrelated baseline script edit remains excluded.

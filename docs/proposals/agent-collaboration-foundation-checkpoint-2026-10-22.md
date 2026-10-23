@@ -29,6 +29,16 @@ no production change occurred. The three-attempt series stops for offline review
 of the initiating wake, owner objective and briefing before another live attempt.
 A live assistance result is still unverified.
 
+The next offline slice reproduced a concrete briefing inconsistency: the final
+downtime tool summary omitted conversation tools already advertised to the same
+authorized turn. It now lists them only for an enabled participant with a scope,
+and downtime says no task is due rather than nothing is due. The regression also
+checks disabled/absent scopes and continued refusal of task creation. This is a
+briefing correction, not proof that a model will initiate the diagnostic. The
+pilot still supplied its objective through retained notebook notes during an
+optional downtime turn; it did not create a current owner assignment. No new
+wake or scheduling contract was added to make the experiment pass.
+
 ## This slice's acceptance criteria
 
 1. A normal taskless member can use the familiar `consult` tool to obtain one
@@ -183,8 +193,12 @@ device validation was performed for this branch slice.
    are implemented. Do not interpret passing local tests as live evaluation.
 2. Review the initiating wake and briefing offline after the three unsuccessful
    diagnostics. The corrected-guard run performed inference but proposed no
-   consultation. Resolve the conflicting downtime/owner-objective presentation
-   with regression evidence before proposing another isolated live attempt.
+   consultation. The missing tool summary and overbroad wording now have a
+   regression fix. Decide the next experiment's initiation contract explicitly:
+   optional spontaneous consultation and an assigned diagnostic are different
+   tests. Do not count an operator-initiated request as model initiation, or add
+   a taskless assignment API solely to pass a pilot. Renew candidate fingerprints
+   and source grants before any further authorized isolated live attempt.
 3. Complete the matched baseline/candidate evaluation and relevant device
    checks, then review the release and enablement evidence. Deploy through the
    existing NAS release workflow only with the deployment decision recorded.

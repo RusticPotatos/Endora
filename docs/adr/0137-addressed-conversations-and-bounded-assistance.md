@@ -86,6 +86,14 @@ Retries without an explicit key derive a stable label from the run and question;
 the persisted full payload must still match, so the label grants no authority.
 Normal eligible member briefings describe this path and paged discovery.
 
+Briefing clarification, 2026-10-22: an eligible downtime turn's final tool
+summary also names the authorized conversation tools, including ordinary
+`consult`. Downtime says no task is due, rather than claiming nothing is due.
+This aligns the briefing with existing permissions; it adds no assignment,
+wake, capability or requirement to initiate a conversation. Notebook content is
+not an execution receipt. A model choosing to stop during downtime does not prove
+that an outstanding diagnostic was performed.
+
 This is partial consolidation: task-owned calls, or taskless calls with an
 explicit task argument, still use legacy thread answers and record fallback.
 Their lifecycle and accounting still need the compatibility work described

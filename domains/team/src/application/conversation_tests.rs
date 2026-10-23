@@ -114,6 +114,72 @@ fn a_task_consults_expert_inherits_the_requesting_threads_project() {
 }
 
 #[test]
+fn downtime_briefing_lists_authorized_peer_tools_and_keeps_task_creation_refused() {
+    use serde_json::json;
+    for (enabled, has_scope) in [(true, true), (true, false), (false, true)] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = engine(&clock);
+        let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+        let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+        if has_scope {
+            hq.set_conversations_enabled(true).unwrap();
+            hq.create_conversation(project, [requester, expert])
+                .unwrap();
+        }
+        hq.set_conversations_enabled(enabled).unwrap();
+        hq.wake(requester, None, WakeReason::Downtime).unwrap();
+        hq.tick().unwrap();
+        let turn = turn_of(&hq, requester);
+        let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+        let summary = turn
+            .told
+            .lines()
+            .find(|line| line.starts_with("Your tools at HQ:"))
+            .unwrap();
+        let eligible = enabled && has_scope;
+        let advertised = super::protocol::tools_in(&hq, &run, &member);
+        for tool in [
+            "read_messages",
+            "send_message",
+            "consult",
+            "request_assistance",
+            "cancel_assistance",
+        ] {
+            assert_eq!(summary.contains(tool), eligible, "{tool}: {summary}");
+            if eligible {
+                assert!(
+                    advertised
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry["name"] == tool)
+                );
+            }
+        }
+        if eligible {
+            assert!(!turn.told.contains("nothing is due"), "{}", turn.told);
+            assert!(turn.told.contains("no task is due"), "{}", turn.told);
+        }
+        assert!(turn.task.is_none());
+        let refused = super::protocol::call(
+            &hq,
+            &run,
+            &member,
+            "create_task",
+            &json!({
+                "title":"Synthetic task", "description":"Fixture", "assignee":"Member 3"
+            }),
+        )
+        .unwrap_err();
+        assert!(refused.contains("downtime"), "{refused}");
+        assert!(hq.store().tasks().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn normal_taskless_consult_uses_the_authorized_assistance_path_and_retries_once() {
     use super::history_ports::HistoryStore;
     use serde_json::json;

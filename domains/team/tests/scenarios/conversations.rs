@@ -51,6 +51,28 @@ fn send(w: &mut Office, text: String) {
     assert!(sent.is_some(), "{:?}", w.refused);
 }
 
+#[then("Member1's taskless briefing lists the authorized colleague tools")]
+fn initial_briefing(w: &mut Office) {
+    let turn = w.turn_of("Member1");
+    assert!(turn.task.is_none());
+    let summary = turn
+        .told
+        .lines()
+        .find(|line| line.starts_with("Your tools at HQ:"))
+        .unwrap();
+    for tool in [
+        "read_messages",
+        "send_message",
+        "consult",
+        "request_assistance",
+        "cancel_assistance",
+    ] {
+        assert!(summary.contains(tool), "{tool}: {summary}");
+    }
+    assert!(!turn.told.contains("nothing is due"), "{}", turn.told);
+    assert!(turn.told.contains("create_task and hand_to are refused"));
+}
+
 #[then("the conversation has exactly one attributed message")]
 fn one(w: &mut Office) {
     let page =

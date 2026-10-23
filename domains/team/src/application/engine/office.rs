@@ -581,7 +581,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.unclassified_message_input(run)?;
         }
         let mut told = String::from(
-            "It is downtime: this turn is about no task, nothing is due in it, and it makes no \
+            "It is downtime: this turn is about no task, no task is due in it, and it makes no \
              work (create_task and hand_to are refused).\n",
         );
         told.push_str(&self.office_said(member)?);

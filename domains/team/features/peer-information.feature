@@ -6,6 +6,7 @@ Feature: Peer information is retained without scheduling work
     Given the owner authorizes two members to exchange information
 
   Scenario: The ordinary consult tool reaches a colleague without a task
+    Then Member1's taskless briefing lists the authorized colleague tools
     When Member1 asks Member2 with the ordinary consult tool
     Then accepting the request has not started any work
     When the assistance delivery tick runs
