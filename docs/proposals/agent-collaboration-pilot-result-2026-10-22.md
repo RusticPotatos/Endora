@@ -1,5 +1,10 @@
 # Agent collaboration: isolated diagnostic result
 
+Later status: the owner authorized the 16,384-token follow-up. It avoided
+truncation but was blocked by an overly strict experiment guard before
+application admission. See the [follow-up result and correction](agent-collaboration-pilot-followup-2026-10-22.md).
+The 8,192-token run described below remains a separate failed result.
+
 2026-10-22. AI-assisted work on `codex/agent-collaboration`. The owner explicitly
 authorized the single diagnostic in the [pilot packet](agent-collaboration-live-pilot-2026-10-22.md).
 Application candidate: `6ff6341a`; fixed local model/runtime and 8,192-token

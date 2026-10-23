@@ -90,6 +90,12 @@ The [pilot result](agent-collaboration-pilot-result-2026-10-22.md) records the
 failure, containment and proposed larger-context rerun. Live validation remains
 incomplete; a local test pass cannot replace it.
 
+The subsequently authorized larger-context follow-up removed truncation but
+was blocked by overly strict experiment-guard rules, not by an observed
+application refusal. The captured calls pass an offline replay through the
+actual application. The [follow-up record](agent-collaboration-pilot-followup-2026-10-22.md)
+records the corrected guard and the remaining live-validation gate.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less

@@ -15,6 +15,14 @@ local call, zero paid charges and the subsequent worker token-limit correction.
 Operational completion still requires a successful isolated pilot, matched
 evaluation and release/device gates. The latest changes are not deployed.
 
+The authorized 16,384-token follow-up avoided truncation but was blocked by the
+private experiment guard's exact-question and discovery restrictions before
+application admission. The [follow-up record](agent-collaboration-pilot-followup-2026-10-22.md)
+distinguishes this harness defect from application behavior: an offline replay
+through the actual protocol accepted the captured question and reused its
+request on retry, without a carrier task or model start. The corrected guard is
+prepared separately; a live assistance result is still unverified.
+
 ## This slice's acceptance criteria
 
 1. A normal taskless member can use the familiar `consult` tool to obtain one
