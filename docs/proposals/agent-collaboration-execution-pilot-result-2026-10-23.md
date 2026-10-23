@@ -93,3 +93,57 @@ offline/service replay. An operator-authored preflight answer must remain labell
 as such. Check `shell: false`, `only: []`, the granted-source tool and direct
 mutation refusal for both stages. Mocked assignment shapes alone did not expose
 this missing application boundary. Keep the live guard strict.
+
+## Fixed-policy follow-up: GPU compute failure
+
+The owner's next continuation authorized one execution-only follow-up with
+candidate `64a4253a` and the same scope, model, runtime, context and budgets.
+A fresh packet preserved the prior failure. Before model loading, an actual HQ
+HTTP rehearsal on a separate store verified both linked assignments:
+`shell: false`, node policy `only: []`, the granted-source tool, and direct
+mutation refusals. Operator calls in that rehearsal read the same original from
+both stages and retained project-scoped zero-amount reservations. Three broken
+policy controls per stage were correctly rejected. No worker or model performed
+the rehearsal; its operator-authored answer is explicitly labelled preflight.
+The primary preparation store remained stopped with no requests.
+
+The 20 harness tests, network isolation, source-grant refresh, binary/supervisor
+fingerprints and unapproved-entry refusal also passed. The ensuing live test
+accepted one operator-started request and started its actual expert worker with
+no shell. The model was offered eight permitted read/answer tools and no node
+contracts. The capability correction therefore held at the actual launch.
+
+The first model-call attempt failed with HTTP 500 `Compute error.` The pinned
+runtime logged Metal `Insufficient Memory` during prompt computation. The
+controller stopped after 5.07 seconds. There were no successful model responses,
+answers, original reads by a model, or result workers. The node recorded no
+successful usage row; that does not erase the failed call attempt or expert
+physical start. Paid charges remained zero. The one request was cancelled during
+cleanup, all pilot processes and listeners were verified stopped, conversations
+were disabled and the execution envelope was disarmed. No replacement request
+or changed-setting retry was made.
+
+The measured rendered prompt was 1,866 tokens, with 10,390 tokens beyond the
+response reserve and margin. This was not a context-exhaustion result. Reported
+system memory availability was 25 percent after model load and 27 percent at the
+worker sample, exceeding the existing 10-percent threshold. Those host readings
+did not establish that the GPU could allocate its compute buffers. Another
+`llama-server` process remained after pilot cleanup; its model, service identity
+and causal contribution were not established, and it was not changed or stopped.
+
+This follow-up verifies the actual permission boundary and its operator-driven
+HTTP sequence, not live model cooperation. Before another request is admitted,
+runtime readiness must exercise GPU computation in a controlled resource window;
+health/template/tokenizer responses and host free-memory percentages alone are
+insufficient. Any runtime control inference must be labelled and counted, with
+its settings and budget frozen before the next experiment. Do not pause another
+service without identifying it and establishing authorization to interrupt it.
+Expert/result model behavior, autonomous initiation, matched evaluation, relevant
+device checks and production release remain outstanding.
+
+Private records are retained separately in
+`.local/agent-collaboration-pilot-execution-v2/`, including the actual HTTP
+rehearsal, negative controls, runtime error, audited failed response, stopped
+stores, prompt measurement and evaluated result. Application source did not
+change in this follow-up. The complete passing gate recorded for `64a4253a` is
+reused; prose changes receive fresh privacy, local-link and whitespace checks.

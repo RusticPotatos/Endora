@@ -110,6 +110,13 @@ capabilities from explicit expert and verification-result turns and enforces
 read-only verification. This does not establish either live model execution or
 autonomous initiation, and no production change occurred.
 
+The fixed-policy follow-up passed actual HTTP permission and original-source
+preflight. The live expert then started with no shell or node contracts, but its
+first model call failed during GPU computation with an insufficient-memory error.
+No answer or model source read occurred. Runtime compute readiness must precede
+the next request; system-memory availability and metadata endpoints alone did
+not establish it. The existing live, comparison, device and release gates remain.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less

@@ -48,6 +48,15 @@ verification also has read-only handler enforcement and a six-read-round limit.
 The cancelled attempt is preserved. No guard relaxation or replacement request
 was used. Live execution and autonomous initiation are still unproven.
 
+The fixed-policy follow-up then passed an actual HTTP assignment/source-reading
+rehearsal with no model or worker. Its live expert started with the correct
+restrictions, but the first model call failed with a GPU insufficient-memory
+error before a response. The failed call and cancelled request are retained;
+production and other model processes were untouched. Runtime GPU computation
+readiness is now the immediate gate before another request, ahead of validating
+the expert/result model exchange. Host memory readings alone did not predict
+the allocation failure. The full application gate for `64a4253a` remains passed.
+
 ## This slice's acceptance criteria
 
 1. A normal taskless member can use the familiar `consult` tool to obtain one
