@@ -1,9 +1,10 @@
 //! Content-free provenance for forward-authored goal/task inputs (ADR 0138).
 
-use super::{backend, corrupt};
-use crate::application::ports::Stored;
-use crate::domain::RunId;
+use super::{TASK_COLUMNS, backend, task_from};
+use crate::application::history_ports::{GoalInput, PostInput, TaskInputs};
+use crate::application::ports::{Post, Stored};
 use crate::domain::history::{InputOrigin, InputRef};
+use crate::domain::{Goal, GoalId, GoalStatus, Ref, RunId, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub(super) const SCHEMA: &str = "
@@ -58,20 +59,100 @@ pub(super) fn record(conn: &Connection, input: InputRef, origin: InputOrigin) ->
 
 pub(super) fn read(conn: &Connection, input: InputRef) -> Stored<InputOrigin> {
     let (kind, id) = key(input);
-    let row: Option<(String, Option<i64>)> = conn
+    let row = conn
         .query_row(
             "SELECT origin,source_run FROM input_origins WHERE kind=?1 AND resource=?2",
             params![kind, id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| origin_at(r, 0),
         )
         .optional()
         .map_err(backend)?;
-    match row {
-        None => Ok(InputOrigin::Unknown),
-        Some((kind, None)) if kind == "owner" => Ok(InputOrigin::Owner),
-        Some((kind, Some(run))) if kind == "run" => Ok(InputOrigin::Run(RunId(run))),
-        _ => Err(corrupt("input provenance")),
+    Ok(row.unwrap_or(InputOrigin::Unknown))
+}
+
+fn origin_at(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<InputOrigin> {
+    match (
+        row.get::<_, Option<String>>(column)?,
+        row.get::<_, Option<i64>>(column + 1)?,
+    ) {
+        (None, None) => Ok(InputOrigin::Unknown),
+        (Some(kind), None) if kind == "owner" => Ok(InputOrigin::Owner),
+        (Some(kind), Some(run)) if kind == "run" && run > 0 => Ok(InputOrigin::Run(RunId(run))),
+        _ => Err(rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid input provenance",
+            )),
+        )),
     }
+}
+
+pub(super) fn task_inputs(conn: &Connection, task: TaskId) -> Stored<Option<TaskInputs>> {
+    // The joined row and task_from's dependent reads share this SELECT snapshot.
+    conn.query_row(&format!("SELECT {TASK_COLUMNS},b.origin,b.source_run,c.origin,c.source_run
+        FROM tasks LEFT JOIN input_origins b ON b.kind='task_body' AND b.resource=tasks.id
+        LEFT JOIN input_origins c ON c.kind='task_criteria' AND c.resource=tasks.id WHERE tasks.id=?1"),
+        [task.0], |r| Ok(TaskInputs { task:task_from(conn,r)?,body_origin:origin_at(r,13)?,criteria_origin:origin_at(r,15)? }))
+        .optional().map_err(backend)
+}
+
+pub(super) fn goal_input(conn: &Connection, goal: GoalId) -> Stored<Option<GoalInput>> {
+    conn.query_row(
+        "SELECT g.id,g.title,g.reason,g.status,g.parent,o.origin,o.source_run
+        FROM goals g LEFT JOIN input_origins o ON o.kind='goal' AND o.resource=g.id WHERE g.id=?1",
+        [goal.0],
+        |r| {
+            let status: String = r.get(3)?;
+            Ok(GoalInput {
+                goal: Goal {
+                    id: GoalId(r.get(0)?),
+                    title: r.get(1)?,
+                    reason: r.get(2)?,
+                    status: GoalStatus::from_name(&status).unwrap_or(GoalStatus::Proposed),
+                    parent: r.get::<_, Option<i64>>(4)?.map(GoalId),
+                },
+                origin: origin_at(r, 5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(backend)
+}
+
+pub(super) fn authored_posts(
+    conn: &Connection,
+    task: TaskId,
+    after: i64,
+    most: usize,
+) -> Stored<Vec<PostInput>> {
+    if most == 0 {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id,p.author,p.text,p.at_ms,p.unsupported,p.evidence,o.origin,o.source_run
+        FROM posts p LEFT JOIN input_origins o ON o.kind='post' AND o.resource=p.id
+        WHERE p.task=?1 AND p.id>?2 ORDER BY p.id LIMIT ?3",
+        )
+        .map_err(backend)?;
+    stmt.query_map(params![task.0, after.max(0), most.min(50) as i64], |r| {
+        Ok(PostInput {
+            id: r.get(0)?,
+            post: Post {
+                author: r.get(1)?,
+                text: r.get(2)?,
+                at: r.get(3)?,
+                unsupported: r.get::<_, i64>(4)? != 0,
+            },
+            evidence: Ref::read(&r.get::<_, String>(5)?),
+            origin: origin_at(r, 6)?,
+        })
+    })
+    .map_err(backend)?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(backend)
 }
 
 #[cfg(test)]
@@ -81,6 +162,27 @@ mod tests {
     use crate::application::ports::{NewTask, Post, TeamStore};
     use crate::domain::history::{InputOrigin, InputRef};
     use crate::domain::{GoalStatus, Priority, RunId};
+
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn new() -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "endora-input-lineage-{}-{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn task(goal: crate::domain::GoalId) -> NewTask {
         NewTask {
@@ -142,6 +244,103 @@ mod tests {
             store.input_origin(InputRef::Post(second)).unwrap(),
             InputOrigin::Owner
         );
+    }
+
+    #[test]
+    fn snapshot_readers_keep_content_sources_and_stable_post_ids_together() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let goal = store
+            .add_goal_from(
+                "Fixture",
+                "Owner-authored goal",
+                GoalStatus::Active,
+                None,
+                InputOrigin::Owner,
+            )
+            .unwrap();
+        let task = store
+            .add_task_from(&task(goal), 0, InputOrigin::Owner)
+            .unwrap();
+        store
+            .post(task, "owner", "Unclassified historical display author", 7)
+            .unwrap();
+        store
+            .post_from(
+                task,
+                &Post {
+                    author: "owner".into(),
+                    text: "Genuine owner input".into(),
+                    at: 7,
+                    unsupported: false,
+                },
+                &[crate::domain::Ref::Task(task)],
+                InputOrigin::Owner,
+            )
+            .unwrap();
+        let context = store.task_inputs(task).unwrap().expect("task snapshot");
+        assert_eq!(context.task.id, task);
+        assert_eq!(context.task.description, "Inspect the fixture");
+        assert_eq!(context.body_origin, InputOrigin::Owner);
+        assert_eq!(context.criteria_origin, InputOrigin::Owner);
+        let goal_context = store.goal_input(goal).unwrap().expect("goal snapshot");
+        assert_eq!(goal_context.goal.reason, "Owner-authored goal");
+        assert_eq!(goal_context.origin, InputOrigin::Owner);
+        let posts = store.authored_posts(task, 0, 50).unwrap();
+        assert_eq!(posts.len(), 2);
+        assert_eq!(posts[0].origin, InputOrigin::Unknown);
+        assert_eq!(posts[1].origin, InputOrigin::Owner);
+        assert_eq!(posts[1].post.text, "Genuine owner input");
+        assert_eq!(posts[1].evidence, [crate::domain::Ref::Task(task)]);
+        assert!(posts[0].id < posts[1].id);
+        assert_eq!(
+            store.authored_posts(task, posts[0].id, 50).unwrap(),
+            posts[1..]
+        );
+        store
+            .conn()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET title='Untracked edit' WHERE id=?1",
+                [task.0],
+            )
+            .unwrap();
+        let changed = store.task_inputs(task).unwrap().unwrap();
+        assert_eq!(changed.task.title, "Untracked edit");
+        assert_eq!(changed.body_origin, InputOrigin::Unknown);
+        assert_eq!(changed.criteria_origin, InputOrigin::Owner);
+    }
+
+    #[test]
+    fn authored_post_pages_are_bounded_without_losing_same_timestamp_history() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let goal = store
+            .add_goal("Fixture", "", GoalStatus::Active, None)
+            .unwrap();
+        let task = store.add_task(&task(goal), 0).unwrap();
+        for n in 0..101 {
+            store
+                .post(task, "owner", &format!("Synthetic post {n}"), 0)
+                .unwrap();
+        }
+        let first = store.authored_posts(task, -1, usize::MAX).unwrap();
+        assert_eq!(first.len(), 50);
+        let second = store
+            .authored_posts(task, first.last().unwrap().id, 50)
+            .unwrap();
+        assert_eq!(second.len(), 50);
+        let last = store
+            .authored_posts(task, second.last().unwrap().id, 50)
+            .unwrap();
+        assert_eq!(last.len(), 1);
+        assert_eq!(last[0].post.text, "Synthetic post 100");
+        assert!(
+            first
+                .iter()
+                .chain(&second)
+                .chain(&last)
+                .all(|p| p.origin == InputOrigin::Unknown)
+        );
+        assert!(store.authored_posts(task, 0, 0).unwrap().is_empty());
     }
 
     #[test]
@@ -395,21 +594,7 @@ mod tests {
 
     #[test]
     fn a_real_legacy_store_gains_no_invented_owner_lineage_on_reopen() {
-        struct TempDir(std::path::PathBuf);
-        impl Drop for TempDir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let folder = TempDir(std::env::temp_dir().join(format!(
-            "endora-input-lineage-{}-{nanos}",
-            std::process::id()
-        )));
-        std::fs::create_dir(&folder.0).unwrap();
+        let folder = TempDir::new();
         let path = folder.0.join("hq.db");
         let old =
             SqliteTeamStore::before_the_world(rusqlite::Connection::open(&path).unwrap()).unwrap();
@@ -451,5 +636,90 @@ mod tests {
             reopened.input_origin(InputRef::Post(1)).unwrap(),
             InputOrigin::Unknown
         );
+    }
+
+    #[test]
+    fn two_connections_cannot_pair_old_criteria_with_a_new_author() {
+        use crate::application::history_ports::TaskInputs;
+        use crate::domain::Criterion;
+        fn paired(input: &TaskInputs) -> bool {
+            let Some(criterion) = input.task.criteria.first() else {
+                return false;
+            };
+            match input.criteria_origin {
+                InputOrigin::Owner => criterion.text == "Owner criterion",
+                InputOrigin::Run(RunId(1)) => criterion.text == "Member criterion",
+                _ => false,
+            }
+        }
+        let folder = TempDir::new();
+        let path = folder.0.join("hq.db");
+        let reader = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        // Test-only WAL permits a writer to commit while another connection reads.
+        // This does not change the production database's journal policy.
+        reader
+            .conn()
+            .unwrap()
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .unwrap();
+        let goal = reader
+            .add_goal_from("Fixture", "", GoalStatus::Active, None, InputOrigin::Owner)
+            .unwrap();
+        let task = reader
+            .add_task_from(&task(goal), 0, InputOrigin::Owner)
+            .unwrap();
+        reader.conn().unwrap().execute_batch("INSERT INTO members(id,name,role,share_percent,slots) VALUES(1,'Member 1','developer',50,2);
+            INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,1,'assigned','queued',0);
+            INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,1,1,'running',0);").unwrap();
+        let writer = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        writer
+            .conn()
+            .unwrap()
+            .execute_batch("PRAGMA busy_timeout=5000;")
+            .unwrap();
+        reader
+            .set_criteria_from(
+                task,
+                &[Criterion::new("Owner criterion", false)],
+                InputOrigin::Owner,
+            )
+            .unwrap();
+        let old = reader.task(task).unwrap().unwrap();
+        writer
+            .set_criteria_from(
+                task,
+                &[Criterion::new("Member criterion", false)],
+                InputOrigin::Run(RunId(1)),
+            )
+            .unwrap();
+        // Deterministic negative control: two individually valid old APIs can mix
+        // snapshots. The same validator must reject that broken pairing.
+        let mixed = TaskInputs {
+            task: old,
+            body_origin: InputOrigin::Owner,
+            criteria_origin: reader.input_origin(InputRef::TaskCriteria(task)).unwrap(),
+        };
+        assert!(!paired(&mixed));
+        assert!(paired(&reader.task_inputs(task).unwrap().unwrap()));
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer_ready = ready.clone();
+        let work = std::thread::spawn(move || {
+            writer_ready.wait();
+            for n in 0..400 {
+                let (text, origin) = if n % 2 == 0 {
+                    ("Owner criterion", InputOrigin::Owner)
+                } else {
+                    ("Member criterion", InputOrigin::Run(RunId(1)))
+                };
+                writer
+                    .set_criteria_from(task, &[Criterion::new(text, false)], origin)
+                    .unwrap();
+            }
+        });
+        ready.wait();
+        for _ in 0..800 {
+            assert!(paired(&reader.task_inputs(task).unwrap().unwrap()));
+        }
+        work.join().unwrap();
     }
 }

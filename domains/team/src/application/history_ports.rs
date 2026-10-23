@@ -41,8 +41,58 @@ impl ConsultDelivery {
     }
 }
 
+/// Task content and independently authored components from one database snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskInputs {
+    /// Task content and structural links from the same snapshot as its provenance.
+    pub task: crate::domain::Task,
+    /// Source of title/body and goal/parent links.
+    pub body_origin: crate::domain::history::InputOrigin,
+    /// Source of acceptance criteria, independent of the body.
+    pub criteria_origin: crate::domain::history::InputOrigin,
+}
+
+/// Goal content paired with source identity in one database snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalInput {
+    /// Current goal content.
+    pub goal: crate::domain::Goal,
+    /// Source of that content.
+    pub origin: crate::domain::history::InputOrigin,
+}
+
+/// One task post with a stable keyset cursor and atomically read provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostInput {
+    /// Original post ID, never guessed from text or timestamps.
+    pub id: i64,
+    /// Retained content and presentation author.
+    pub post: Post,
+    /// Original evidence references; these do not grant access.
+    pub evidence: Vec<crate::domain::Ref>,
+    /// Source of this exact post content.
+    pub origin: crate::domain::history::InputOrigin,
+}
+
 /// The history's part of HQ's store.
 pub trait HistoryStore {
+    /// Task content and provenance in the same snapshot, including criteria.
+    /// # Errors
+    /// A store failure or corrupt record.
+    fn task_inputs(&self, task: crate::domain::TaskId) -> Stored<Option<TaskInputs>>;
+    /// Goal content and provenance in the same snapshot.
+    /// # Errors
+    /// A store failure or corrupt record.
+    fn goal_input(&self, goal: crate::domain::GoalId) -> Stored<Option<GoalInput>>;
+    /// At most fifty posts after a stable ID, with content and source read together.
+    /// # Errors
+    /// A store failure or corrupt record.
+    fn authored_posts(
+        &self,
+        task: crate::domain::TaskId,
+        after: i64,
+        most: usize,
+    ) -> Stored<Vec<PostInput>>;
     /// Reliable source identity, or Unknown for legacy/missing/invalidated input.
     /// This metadata lookup is for audit; a classifier must read content and origin
     /// together in one snapshot, not pair it with an earlier independent content read.

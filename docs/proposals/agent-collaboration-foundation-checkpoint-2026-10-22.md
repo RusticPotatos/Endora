@@ -403,6 +403,30 @@ and final logs are retained under `.local/input-lineage-*.log` and
 `.local/input-lineage-gate/`. The next slice must supply atomic content/source
 readers before changing any task-briefing classification or v2 admission rule.
 
+### Atomic content/source readers
+
+Task body and criteria, goal content, and paged task posts now have joined
+content/source readers. Each row uses one SQLite snapshot; the separate
+metadata-only lookup remains an audit API, not a classifier input. Post pages
+use stable IDs and a maximum of fifty records, preserving evidence references
+and posts with identical timestamps. No source is inferred from a display name.
+
+All nine focused lineage tests passed, including a two-connection writer/reader
+race. Its deterministic negative control rejects an old criterion paired with
+new source metadata, while the joined reader keeps each criterion paired with
+its actual author. Captures are in `.local/input-readers-expanded.log`; the
+initial missing-reader failure is in `.local/input-readers-red.log`.
+
+The full repository gate passed for this reader slice: formatting, workspace
+Clippy, all-feature tests, console, configured personal-value, collection parity
+and whitespace checks. Rust logs are in `.local/input-readers-gate/`. No model
+call, deployment or additional handheld check was performed for this change.
+
+The next application step is a bounded latest-post reader for `my_turn`, with
+source inheritance before text is returned. That removes its whole-thread read
+without relaxing the existing task-briefing guard. Full task briefing coverage
+and canonical task-linked admission remain separate, unfinished work.
+
 1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
    tools, request/delivery records, scheduler branches and UI readers in the old
    `consult` path. Mark each canonical replacement, thin adapter, historical

@@ -121,6 +121,29 @@ fn consult_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Consult> {
 }
 
 impl HistoryStore for SqliteTeamStore {
+    fn task_inputs(
+        &self,
+        task: TaskId,
+    ) -> Stored<Option<crate::application::history_ports::TaskInputs>> {
+        let conn = self.conn()?;
+        super::input_lineage::task_inputs(&conn, task)
+    }
+    fn goal_input(
+        &self,
+        goal: crate::domain::GoalId,
+    ) -> Stored<Option<crate::application::history_ports::GoalInput>> {
+        let conn = self.conn()?;
+        super::input_lineage::goal_input(&conn, goal)
+    }
+    fn authored_posts(
+        &self,
+        task: TaskId,
+        after: i64,
+        most: usize,
+    ) -> Stored<Vec<crate::application::history_ports::PostInput>> {
+        let conn = self.conn()?;
+        super::input_lineage::authored_posts(&conn, task, after, most)
+    }
     fn input_origin(&self, input: history::InputRef) -> Stored<history::InputOrigin> {
         let conn = self.conn()?;
         super::input_lineage::read(&conn, input)
