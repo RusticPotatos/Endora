@@ -371,7 +371,7 @@ fn usual(hq: &str, model: &str) -> Vec<(&'static str, String)> {
 fn with_node(hq: &str, model: &str, node: &str) -> Vec<(&'static str, String)> {
     vec![
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
-        ("ENDORA_HQ_MCP", format!("{hq}/v1/team/mcp")),
+        ("ENDORA_HQ_MCP", format!("{hq}/v2/team/mcp")),
         ("ENDORA_MODEL_URL", format!("{model}/team-relay/local/v1")),
         ("ENDORA_CONTRACTS", format!("{node}/team-relay/contracts")),
     ]
@@ -420,7 +420,7 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
         ]
     );
     let to_hq = to_hq.lock().unwrap().clone();
-    assert!(to_hq.iter().all(|s| s.path == "/v1/team/mcp"));
+    assert!(to_hq.iter().all(|s| s.path == "/v2/team/mcp"));
     assert_eq!(to_hq[0].body["params"]["protocolVersion"], "2025-06-18");
     assert_eq!(to_hq[4].body["params"]["arguments"], json!({ "task": 7 }));
     assert_eq!(
@@ -1335,7 +1335,7 @@ fn claude(text: &str, list: &[(&str, &str, Value)]) -> Value {
 fn on_claude(hq: &str, relay: &str, node: &str) -> Vec<(&'static str, String)> {
     vec![
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
-        ("ENDORA_HQ_MCP", format!("{hq}/v1/team/mcp")),
+        ("ENDORA_HQ_MCP", format!("{hq}/v2/team/mcp")),
         ("ENDORA_MODEL_URL", format!("{relay}/team-relay/v1")),
         ("ENDORA_MODEL", "claude-sonnet-5-5".to_owned()),
         ("ENDORA_CONTRACTS", format!("{node}/team-relay/contracts")),
@@ -1666,7 +1666,7 @@ fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_sta
     );
     let out = worker(&[
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
-        ("ENDORA_HQ_MCP", format!("{hq_url}/v1/team/mcp")),
+        ("ENDORA_HQ_MCP", format!("{hq_url}/v2/team/mcp")),
         ("ENDORA_MODEL_URL", format!("{listener}/team-relay/v1")),
         ("ENDORA_MODEL", "claude-sonnet-5-5".to_owned()),
     ]);
@@ -1957,7 +1957,7 @@ fn the_bridge_serves_hqs_tools_and_the_nodes_and_a_question_ends_the_turn() {
     let ledger = dir.join("did.json");
     let env = vec![
         ("ENDORA_TURN_TOKEN", TOKEN.to_owned()),
-        ("ENDORA_HQ_MCP", format!("{hq_url}/v1/team/mcp")),
+        ("ENDORA_HQ_MCP", format!("{hq_url}/v2/team/mcp")),
         (
             "ENDORA_CONTRACTS",
             format!("{node_url}/team-relay/contracts"),

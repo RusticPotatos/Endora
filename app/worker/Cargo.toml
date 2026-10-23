@@ -16,6 +16,8 @@ path = "src/main.rs"
 # How the home lab is built (ADR 0112), the one text the house log carries too. The shared
 # kernel, which depends on nothing.
 endora-kernel = { path = "../../shared/kernel" }
+# One versioned route contract for the worker, its Claude bridge and the runner.
+endora-protocol = { path = "../../shared/protocol" }
 serde_json = "1.0.150"
 ureq = { version = "3.4", features = ["json", "socks-proxy"] }
 # The wing's bundles (ADR 0115) travel inside the contracts' JSON as base64: the same crate

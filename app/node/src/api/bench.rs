@@ -951,6 +951,7 @@ mod tests {
             ("GET", "/team-relay/check/1/bundle"),
             ("POST", "/team-relay/local/v1/chat/completions"),
             ("POST", "/team-gateway/mcp"),
+            ("POST", "/team-gateway/v2/mcp"),
             ("POST", "/team-gateway/runner/next"),
         ] {
             let req = axum::http::Request::builder()

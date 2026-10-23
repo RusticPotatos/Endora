@@ -527,6 +527,40 @@ UI, failure/restart behavior and bounded work-triggered model run before NAS
 deployment. The complete ADR 0138 definition of done remains the release gate;
 this slice alone is not a replacement release.
 
+### Versioned worker caller migration
+
+The branch's worker and runner now default to `/v2/team/mcp`, or
+`/team-gateway/v2/mcp` through the node. The Pi launch script uses the latter.
+Configured `ENDORA_HQ_MCP` and `WORKER_HQ_MCP` values are validated rather than
+silently translated: old routes require an explicit configuration upgrade.
+Claude Code's independently started MCP bridge validates its environment too.
+The model relay, runner lease/check APIs and turn tokens retain their own paths
+and contracts. The bench-token exclusion check also covers the new gateway.
+
+One pure route validator lives in `shared/protocol`, used by worker setup,
+Claude bridge setup and runner setup. These three real callers justify the two
+new internal dependencies; no external crate or network stack was added. Errors
+never echo configured URL credentials. Existing positive worker HTTP/Docker
+fixtures now verify v2 paths; explicit negative tests preserve the old paths.
+Red captures are `.local/team-callers-*-red.log`, and focused protocol/worker/
+runner checks passed in `.local/team-callers-green.log`.
+
+The complete repository gate passed in `.local/team-callers-gate/`: formatting,
+workspace Clippy, all-feature tests, console, configured personal-value,
+collection parity and whitespace. The Pi launch script also passed its shell
+syntax check. Worker integration tests observed the exact v2 HTTP request path;
+runner tests observed that path in generated container environments. No model
+inference, live runner restart or deployment was performed.
+
+This caller change is not a deployable replacement by itself. HQ's ordinary
+task briefing selector remains default-off, v1 server routes and execution
+still exist for migration, and the old engine must be drained and retired.
+Next freeze the server upgrade response, separate retained record/history
+reads from `engine/consult.rs`, and remove the old admission, claim, completion,
+delivery and recovery callers without losing historical rows. Then enable the
+canonical briefing path as part of the verified single-engine cutover. Record
+actual migration/UI/model and NAS evidence before declaring the plan complete.
+
 1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
    tools, request/delivery records, scheduler branches and UI readers in the old
    `consult` path. Mark each canonical replacement, thin adapter, historical

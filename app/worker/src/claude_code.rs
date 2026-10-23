@@ -592,9 +592,11 @@ fn bridge_setup(env: impl Fn(&str) -> Option<String>) -> Result<Bridge, String> 
             .filter(|v| !v.is_empty())
     };
     let need = |name: &str| given(name).ok_or_else(|| format!("{name} is not set"));
+    let mcp = need("ENDORA_HQ_MCP")?;
+    endora_protocol::team::canonical_endpoint(&mcp).map_err(str::to_owned)?;
     Ok(Bridge {
         token: need("ENDORA_TURN_TOKEN")?,
-        mcp: need("ENDORA_HQ_MCP")?,
+        mcp,
         contracts: need("ENDORA_CONTRACTS")?,
         dir: given("ENDORA_WORKBENCH_DIR")
             .unwrap_or_else(|| "/work".to_owned())
@@ -896,7 +898,7 @@ mod tests {
     fn setup() -> Setup {
         Setup {
             token: "a".repeat(64),
-            mcp: "http://192.168.1.10:8788/team-gateway/mcp".to_owned(),
+            mcp: "http://192.168.1.10:8788/team-gateway/v2/mcp".to_owned(),
             model_url: "http://192.168.1.10:8788/team-relay/v1".to_owned(),
             contracts: "http://192.168.1.10:8788/team-relay/contracts".to_owned(),
             model: "claude-haiku-5-5".to_owned(),
@@ -905,6 +907,28 @@ mod tests {
             workbench: Some("/work".into()),
             effort: Some("low".to_owned()),
             claude_code: true,
+        }
+    }
+
+    #[test]
+    fn the_bridge_rejects_v1_even_when_started_directly() {
+        for endpoint in [
+            "http://hq:8790/v1/team/mcp",
+            "http://node:8788/team-gateway/mcp",
+        ] {
+            let result = bridge_setup(|name| {
+                Some(
+                    match name {
+                        "ENDORA_TURN_TOKEN" => "fixture-token",
+                        "ENDORA_HQ_MCP" => endpoint,
+                        "ENDORA_CONTRACTS" => "http://node:8788/team-relay/contracts",
+                        "ENDORA_LEDGER" => "/work/fixture-ledger",
+                        _ => return None,
+                    }
+                    .to_owned(),
+                )
+            });
+            assert!(result.err().unwrap().contains("v2"));
         }
     }
 
