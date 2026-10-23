@@ -87,6 +87,31 @@ the base principles every project shares. What follows is Endora's own.
   reason about. When something is going to be verified live, spend the minute
   first.
 
+## Use time and model usage carefully
+
+- **Work one bounded problem at a time.** State the acceptance criteria, use the
+  existing checkpoint and inspect only the relevant code and evidence. Recheck
+  repository state; reopen wider research only when new evidence requires it.
+- **Match reasoning to the task.** The owner's Codex default is GPT-6.1 Sol at
+  Medium when available. Routine edits can use lighter settings; escalate for
+  unresolved complexity, then return to the default. Respect the selected model;
+  do not silently change models, providers or account settings. Other assistants
+  should use their equivalent balanced setting rather than assume these names.
+- **Test narrowly while iterating.** Reproduce the behavior with a focused failing
+  test, fix it, then run the required handoff gate once for the final implementation.
+  Repeat checks when changes, failures or new evidence invalidate their result.
+- **Prove the experiment before spending a live run.** Inspect the actual rendered
+  briefing, wake purpose, advertised tools and guard decisions together. Replay
+  captured valid calls offline and show that invalid calls fail. Freeze scope and
+  limits; preserve failed results rather than retrying until a model succeeds.
+- **Keep communication and checkpoints compact.** Report outcomes, material
+  uncertainty and the next action. Reuse the existing research and checkpoint
+  documents; update changed facts rather than creating repeated summaries. At a
+  stopping point, record the commit, checks, blocker and exact next step.
+- **Stop unproductive loops.** Follow the shared three-attempt limit: report the
+  evidence and change the approach offline before proposing another live attempt.
+  Cost savings never waive privacy, authorization, TDD or release requirements.
+
 ## Before handoff
 
 Run from the workspace root and make sure they pass:
@@ -100,6 +125,12 @@ node scripts/check-nothing-personal.mjs
 sh scripts/check-collection-parity.sh
 git diff --check
 ```
+
+For prose-only follow-ups, an observed passing gate for the unchanged executable
+code, dependencies and configuration may be reused. Run fresh whitespace,
+personal-value and relevant document/link checks, and name the earlier gate and
+what was reused. Otherwise run the full gate above; never infer a pass or reuse
+results after a behavioral change.
 
 When the handheld terminal changed, also, from `clients/terminal`:
 
