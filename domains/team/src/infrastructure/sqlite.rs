@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS runs (
     posted INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0, label TEXT,
     asked_by_owner INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+-- Cutover recovery scans live taskless turns without visiting completed history.
+CREATE INDEX IF NOT EXISTS runs_live_taskless ON runs(id)
+ WHERE task IS NULL AND status IN ('queued','running','retry_waiting');
 -- A turn's token for the team protocol: its worker's only credential, valid while it runs.
 CREATE TABLE IF NOT EXISTS run_tokens (
     run INTEGER PRIMARY KEY REFERENCES runs(id), token TEXT NOT NULL UNIQUE

@@ -26,11 +26,49 @@ owner again for every evidence-backed follow-up within the agreed limits.
 Current branch checkpoint, 2026-10-23: typed forward provenance, atomic source
 readers, bounded ordinary task briefings, scoped v2 task assistance, v2 worker
 caller defaults and retained task-question inspection are implemented and
-tested. The old execution engine and v1 server compatibility still exist.
-Next remove that engine through a tested drain/cancellation and explicit v1
+tested. Bounded legacy cancellation and recoverable run selection are now
+implemented at the storage port, without a startup or HTTP caller. The old
+execution engine and v1 server compatibility still exist.
+Next fence admission/dispatch, stop and settle selected legacy runs through the
+application, and remove that engine through an explicit v1
 upgrade boundary, preserving the new read-only projections. The ordinary task
 briefing selector is still default-off. Final migration/UI/model evidence and
 NAS cutover remain outstanding; no deployment has occurred in these slices.
+
+### Legacy cancellation preparation
+
+`HistoryStore::retire_legacy_consultations` cancels at most fifty pending old
+questions in one immediate transaction and returns at most fifty still-live,
+taskless legacy expert turns for application cleanup. It preserves IDs,
+questions, authors, project snapshots, answer links and notification history.
+The cancellation explanation appends to an existing explanation. Cancelled
+records remain visible through the retained-history reader; they create no
+answer, record fallback, replacement work or requester notification.
+
+The selection uses exact request/delivery associations and original wake reasons,
+excluding canonical expert/result associations and all task-bearing turns.
+Unfinished cleanup remains discoverable after reopening the database. The port
+does not stop a process, settle accounting or revoke credentials: its documented
+precondition is an application fence against old admission/dispatch. It is not
+called by startup, scheduling or HTTP yet, and does not itself establish safe
+cutover or retirement of the old engine.
+
+Seven focused tests cover preserved history and canonical work, cancellation
+batches, bounded run batches, rollback, database reopen and archive growth.
+The initial notification test caught cancellation being treated as an answer;
+the growth test then caught notification scans walking cancelled history.
+Filtered answer indexes correct both paths without falsely marking cancelled
+requests as notified. The actual cancellation, live-run and notification SQL has
+identical VM-step counts with 1,000 and 100,000 completed/cancelled archive rows.
+Removing the live-run indexes makes the negative control exceed 100,000 steps.
+This demonstrates bounded query work, not a wall-clock speed improvement.
+Evidence is in ignored `.local/legacy-retirement-{red,notification-red,growth-red,green}.log`.
+The full repository gate passed: formatting, workspace Clippy with denied
+warnings, workspace all-feature tests, console, personal-value, collection
+parity and whitespace checks. Logs are in ignored
+`.local/legacy-retirement-gate/`. Handheld code did not change, so separate
+device checks were not run. No model call or deployment is part of this
+preparation.
 
 Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,

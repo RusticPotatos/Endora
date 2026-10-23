@@ -6,7 +6,8 @@ use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteTeamStore, backend};
 use crate::application::history_ports::{
-    ConsultDelivery, ConsultPostEffects, HistoryStore, LegacyConsultation, PostInput,
+    ConsultDelivery, ConsultPostEffects, HistoryStore, LegacyConsultation, LegacyRetirementBatch,
+    PostInput,
 };
 use crate::application::ports::{Post, Stored};
 use crate::domain::consult::{Consult, Status as ConsultStatus};
@@ -45,6 +46,12 @@ CREATE INDEX IF NOT EXISTS consults_pending ON consults(expert,id) WHERE status=
 CREATE INDEX IF NOT EXISTS consults_unread ON consults(asker,id) WHERE status!='queued' AND asker_woken=0;
 CREATE INDEX IF NOT EXISTS consults_undispatched ON consults(id) WHERE status='queued' AND answer_run IS NULL;
 CREATE INDEX IF NOT EXISTS consults_unnotified ON consults(id) WHERE status!='queued' AND asker_woken=0;
+-- Cancelled rows retain their original notification history; they must not make
+-- the remaining legacy answer scans walk the cancelled archive during cutover.
+CREATE INDEX IF NOT EXISTS consults_answer_unread ON consults(asker,id)
+ WHERE status IN ('answered','from_record') AND asker_woken=0;
+CREATE INDEX IF NOT EXISTS consults_answer_unnotified ON consults(id)
+ WHERE status IN ('answered','from_record') AND asker_woken=0;
 CREATE INDEX IF NOT EXISTS consults_open ON consults(id) WHERE status='queued';
 CREATE TABLE IF NOT EXISTS consult_deliveries (
  consult INTEGER NOT NULL REFERENCES consults(id), stage TEXT NOT NULL CHECK(stage IN ('expert','answer')),
@@ -92,17 +99,34 @@ pub(super) const CONSULT_PROJECT_FOR_RUN: &str = "(SELECT p.project FROM consult
 const CONSULT_FOR_RUN: &str = "WHERE answer_run=?1 ORDER BY id LIMIT 1";
 const CONSULT_NEXT: &str =
     "WHERE expert=?1 AND status='queued' AND answer_run IS NULL ORDER BY id LIMIT 1";
-const CONSULT_UNREAD: &str =
-    "WHERE asker=?1 AND status!='queued' AND asker_woken=0 ORDER BY id LIMIT 50";
+const CONSULT_UNREAD: &str = "WHERE asker=?1 AND status IN ('answered','from_record') AND asker_woken=0 ORDER BY id LIMIT 50";
 pub(super) const CONSULT_TURN_COUNT: &str =
     "SELECT count(*) FROM (SELECT id FROM consults WHERE asker_run=?1 LIMIT 2)";
 pub(super) const CONSULT_DAY_COUNT: &str = "SELECT count(*) FROM (SELECT id FROM consults WHERE asker=?1 AND at_ms>=?2 AND at_ms<?3 LIMIT 6)";
 const CONSULT_DISPATCHES: &str =
     "WHERE status='queued' AND answer_run IS NULL ORDER BY id LIMIT 50";
-const CONSULT_NOTICES: &str = "WHERE status!='queued' AND asker_woken=0 AND NOT EXISTS(
+const CONSULT_NOTICES: &str = "WHERE status IN ('answered','from_record') AND asker_woken=0 AND NOT EXISTS(
     SELECT 1 FROM consult_deliveries d JOIN runs r ON r.id=d.run WHERE d.consult=consults.id AND d.stage='answer' AND d.receipt='folded' AND r.status IN ('queued','running','retry_waiting')) ORDER BY id LIMIT 50";
 const CONSULT_ENDED: &str = "WHERE status='queued' AND answer_run IS NOT NULL AND EXISTS(
     SELECT 1 FROM runs r WHERE r.id=answer_run AND r.status NOT IN ('queued','running','retry_waiting')) ORDER BY id LIMIT 50";
+
+// A task-bearing turn keeps its task responsibility. Canonical expert/result
+// associations take precedence even though their wake may also say "consulted".
+// The live-run index keeps completed archive rows out of this recovery scan.
+const LEGACY_LIVE_RUNS: &str = "SELECT r.id FROM runs r
+    JOIN wakes w ON w.id=r.wake
+    WHERE r.task IS NULL AND r.status IN ('queued','running','retry_waiting')
+    AND NOT EXISTS(SELECT 1 FROM assistance_requests a WHERE a.expert_run=r.id)
+    AND NOT EXISTS(SELECT 1 FROM assistance_requests a WHERE a.notice_run=r.id)
+    AND (w.reason='consulted'
+      OR EXISTS(SELECT 1 FROM consults c WHERE c.answer_run=r.id)
+      OR EXISTS(SELECT 1 FROM consult_deliveries d WHERE d.run=r.id AND d.stage='expert'))
+    ORDER BY r.id LIMIT 50";
+
+const RETIREMENT_REASON: &str = "Legacy peer help retired; use protocol v2 assistance.";
+const RETIRE_LEGACY_REQUESTS: &str = "UPDATE consults SET status='cancelled',
+    why=CASE WHEN why='' THEN ?1 ELSE why || char(10) || ?1 END
+    WHERE id IN (SELECT id FROM consults WHERE status='queued' ORDER BY id LIMIT 50)";
 
 fn consult_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Consult> {
     let status: String = r.get(7)?;
@@ -133,6 +157,25 @@ fn consult_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Consult> {
 }
 
 impl HistoryStore for SqliteTeamStore {
+    fn retire_legacy_consultations(&self) -> Stored<LegacyRetirementBatch> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let cancelled = tx
+            .execute(RETIRE_LEGACY_REQUESTS, [RETIREMENT_REASON])
+            .map_err(backend)?;
+        let runs = {
+            let mut stmt = tx.prepare(LEGACY_LIVE_RUNS).map_err(backend)?;
+            stmt.query_map([], |r| Ok(RunId(r.get(0)?)))
+                .map_err(backend)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(backend)?
+        };
+        tx.commit().map_err(backend)?;
+        Ok(LegacyRetirementBatch { cancelled, runs })
+    }
+
     fn legacy_task_consultations(
         &self,
         task: TaskId,
@@ -660,6 +703,9 @@ impl HistoryStore for SqliteTeamStore {
         let found = tx
             .query_row(&format!("{CONSULT_SELECT} WHERE id=?1"), [id], consult_row)
             .map_err(backend)?;
+        if found.status == ConsultStatus::Cancelled {
+            return Ok(Receipt::Finished);
+        }
         let prior: Option<(String, Option<String>, Option<i64>)> = tx
             .query_row(
                 "SELECT receipt,refused,run FROM consult_deliveries WHERE consult=?1 AND stage=?2",
@@ -793,6 +839,290 @@ mod tests {
             INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,1,'assigned','queued',0);
             INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,1,1,'running',0),(2,2,1,'running',0),(3,2,1,'running',0);
             INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,answer_run,at_ms) VALUES(1,1,1,2,1,'Fixture?','queued',2,0);").unwrap();
+    }
+
+    #[test]
+    fn legacy_retirement_cancels_without_answering_or_rewriting_history() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        let before = store.legacy_task_consultations(TaskId(1), 0).unwrap();
+        let wakes = store.wakes().unwrap();
+        let batch = store.retire_legacy_consultations().unwrap();
+        assert_eq!(batch.cancelled, 1);
+        assert_eq!(batch.runs, vec![RunId(2)]);
+        let mut expected = before;
+        expected[0].outcome = "cancelled".into();
+        expected[0].reason = "Legacy peer help retired; use protocol v2 assistance.".into();
+        assert_eq!(
+            store.legacy_task_consultations(TaskId(1), 0).unwrap(),
+            expected
+        );
+        assert_eq!(store.wakes().unwrap(), wakes);
+        assert_eq!(
+            store
+                .conn()
+                .unwrap()
+                .query_row("SELECT count(*) FROM posts", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(store.runs().unwrap().len(), 3);
+        assert_eq!(
+            store.run(RunId(2)).unwrap().unwrap().status.name(),
+            "running"
+        );
+        let repeated = store.retire_legacy_consultations().unwrap();
+        assert_eq!(repeated.cancelled, 0);
+        assert_eq!(
+            repeated.runs, batch.runs,
+            "unsettled work remains discoverable"
+        );
+        assert!(store.pending_consult_dispatches().unwrap().is_empty());
+        assert!(store.pending_consult_notices().unwrap().is_empty());
+        assert!(store.unread_consults(MemberId(1)).unwrap().is_empty());
+        for stage in [ConsultDelivery::Expert, ConsultDelivery::Answer] {
+            assert_eq!(
+                store
+                    .deliver_consult(1, stage, WakeDecision::Queue, false, 0)
+                    .unwrap(),
+                Receipt::Finished
+            );
+        }
+        assert_eq!(store.wakes().unwrap(), wakes);
+    }
+
+    #[test]
+    fn legacy_retirement_preserves_task_work_and_canonical_expert_and_result_turns() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(2,2,'consulted','queued',0);
+            INSERT INTO runs(id,member,wake,task,status,queued_at) VALUES
+            (4,2,2,NULL,'queued',0),(5,2,1,NULL,'retry_waiting',0),
+            (6,2,2,1,'running',0),(7,2,2,NULL,'running',0),
+            (8,1,2,NULL,'queued',0),(9,2,2,NULL,'succeeded',0);
+            INSERT INTO consult_deliveries(consult,stage,wake,run,receipt) VALUES(1,'expert',1,5,'queued');
+            INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(1,1,'Fixture','',1,'active','owner',0,0);
+            INSERT INTO conversations(id,project,member1,member2,at_ms) VALUES(1,1,1,2,0);
+            INSERT INTO assistance_requests(conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status,expert_run,notice_run)
+            VALUES(1,1,1,1,2,'fixture-key','Fixture','',0,0,100,'answered',7,8);
+            INSERT INTO run_tokens(run,token) VALUES(2,'fixture-token');
+            INSERT INTO ledger(run,member,day,kind,amount,at_ms) VALUES(2,2,0,'reserve',100,0);").unwrap();
+        let batch = store.retire_legacy_consultations().unwrap();
+        assert_eq!(batch.cancelled, 1);
+        assert_eq!(batch.runs, vec![RunId(2), RunId(4), RunId(5)]);
+        let conn = store.conn().unwrap();
+        for table in [
+            "run_tokens",
+            "ledger",
+            "assistance_requests",
+            "consult_deliveries",
+        ] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+        assert_eq!(
+            conn.query_row("SELECT status FROM assistance_requests", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "answered"
+        );
+    }
+
+    #[test]
+    fn legacy_retirement_batches_pending_rows_and_keeps_exact_saved_answers() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store
+            .conn()
+            .unwrap()
+            .execute_batch(
+                "UPDATE consults SET status='answered',why='Original outcome';
+            INSERT INTO posts(id,task,author,text,at_ms) VALUES(1,1,'Member 2','Original answer',0);
+            INSERT INTO consult_answer_posts(consult,post) VALUES(1,1);
+            WITH RECURSIVE n(id) AS (VALUES(2) UNION ALL SELECT id+1 FROM n WHERE id<122)
+            INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,why,at_ms)
+            SELECT id,1,1,2,1,'Pending question','queued','Earlier explanation',0 FROM n;",
+            )
+            .unwrap();
+        let saved = store
+            .legacy_task_consultations(TaskId(1), 0)
+            .unwrap()
+            .remove(0);
+        for expected in [50, 50, 21, 0] {
+            let batch = store.retire_legacy_consultations().unwrap();
+            assert_eq!(batch.cancelled, expected);
+            assert!(batch.runs.len() <= 50);
+        }
+        let rows = store.legacy_task_consultations(TaskId(1), 0).unwrap();
+        assert_eq!(rows[0], saved);
+        assert_eq!(rows[1].outcome, "cancelled");
+        assert_eq!(
+            rows[1].reason,
+            format!("Earlier explanation\n{RETIREMENT_REASON}")
+        );
+        assert_eq!(
+            store.consults().unwrap().len(),
+            122,
+            "decoder retains cancelled history too"
+        );
+    }
+
+    #[test]
+    fn legacy_retirement_rolls_back_the_whole_batch_on_failure() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,at_ms) VALUES(2,1,1,2,1,'Pending question','queued',0);
+            CREATE TRIGGER fail_retirement BEFORE UPDATE ON consults WHEN new.id=2 BEGIN SELECT RAISE(ABORT,'fixture fault'); END;").unwrap();
+        let before = store.legacy_task_consultations(TaskId(1), 0).unwrap();
+        assert!(store.retire_legacy_consultations().is_err());
+        assert_eq!(
+            store.legacy_task_consultations(TaskId(1), 0).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn legacy_retirement_finds_unsettled_turns_after_database_reopen() {
+        let folder = std::path::Path::new("target/consult-recovery");
+        std::fs::create_dir_all(folder).unwrap();
+        let path = folder.join(format!("{}-retirement.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let store = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+            consult_fixture(&store);
+            let batch = store.retire_legacy_consultations().unwrap();
+            assert_eq!(batch.cancelled, 1);
+            assert_eq!(batch.runs, vec![RunId(2)]);
+        }
+        {
+            let reopened = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+            let batch = reopened.retire_legacy_consultations().unwrap();
+            assert_eq!(batch.cancelled, 0);
+            assert_eq!(batch.runs, vec![RunId(2)]);
+            // Simulate application settlement after recovering from the interruption.
+            reopened
+                .conn()
+                .unwrap()
+                .execute("UPDATE runs SET status='stopped' WHERE id=2", [])
+                .unwrap();
+            assert_eq!(
+                reopened.retire_legacy_consultations().unwrap(),
+                LegacyRetirementBatch::default()
+            );
+            assert_eq!(
+                reopened.legacy_task_consultations(TaskId(1), 0).unwrap()[0].outcome,
+                "cancelled"
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn legacy_retirement_run_selection_is_bounded_and_keeps_unsettled_tail() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(2,2,'consulted','queued',0);
+            WITH RECURSIVE n(id) AS (VALUES(4) UNION ALL SELECT id+1 FROM n WHERE id<124)
+            INSERT INTO runs(id,member,wake,status,queued_at) SELECT id,2,2,'queued',0 FROM n;").unwrap();
+        let mut stopped = Vec::new();
+        loop {
+            let batch = store.retire_legacy_consultations().unwrap();
+            assert!(batch.runs.len() <= 50);
+            if batch.runs.is_empty() {
+                break;
+            }
+            for run in batch.runs {
+                assert!(!stopped.contains(&run));
+                store
+                    .conn()
+                    .unwrap()
+                    .execute("UPDATE runs SET status='stopped' WHERE id=?1", [run.0])
+                    .unwrap();
+                stopped.push(run);
+            }
+        }
+        assert_eq!(stopped.len(), 122);
+        assert_eq!(stopped[0], RunId(2));
+        assert_eq!(stopped.last(), Some(&RunId(124)));
+        assert_eq!(
+            store.run(RunId(1)).unwrap().unwrap().status.name(),
+            "running"
+        );
+        assert_eq!(
+            store.run(RunId(3)).unwrap().unwrap().status.name(),
+            "running"
+        );
+    }
+
+    #[test]
+    fn legacy_retirement_queries_do_not_scan_completed_archives() {
+        use rusqlite::StatementStatus;
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        let mut measurements = Vec::new();
+        for size in [1_000, 100_000] {
+            let mut conn = store.conn().unwrap();
+            conn.execute("DELETE FROM runs WHERE id>=1000", []).unwrap();
+            conn.execute("DELETE FROM consults WHERE id>=1000", [])
+                .unwrap();
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(1000) UNION ALL SELECT id+1 FROM n WHERE id<999+?1)
+                INSERT INTO runs(id,member,wake,status,queued_at) SELECT id,2,1,'succeeded',0 FROM n", [size]).unwrap();
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(1000) UNION ALL SELECT id+1 FROM n WHERE id<999+?1)
+                INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,at_ms) SELECT id,1,1,2,1,'Saved question','cancelled',0 FROM n", [size]).unwrap();
+            let tx = conn.transaction().unwrap();
+            let mut retire = tx.prepare(RETIRE_LEGACY_REQUESTS).unwrap();
+            assert_eq!(retire.execute([RETIREMENT_REASON]).unwrap(), 1);
+            let cancel_steps = retire.get_status(StatementStatus::VmStep);
+            let mut live = tx.prepare(LEGACY_LIVE_RUNS).unwrap();
+            assert_eq!(
+                live.query_map([], |r| r.get::<_, i64>(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap(),
+                vec![2]
+            );
+            let live_steps = live.get_status(StatementStatus::VmStep);
+            let mut unread = tx
+                .prepare(&format!("{CONSULT_SELECT} {CONSULT_UNREAD}"))
+                .unwrap();
+            assert_eq!(unread.query_map([1], consult_row).unwrap().count(), 0);
+            let unread_steps = unread.get_status(StatementStatus::VmStep);
+            let mut notices = tx
+                .prepare(&format!("{CONSULT_SELECT} {CONSULT_NOTICES}"))
+                .unwrap();
+            assert_eq!(notices.query_map([], consult_row).unwrap().count(), 0);
+            let notice_steps = notices.get_status(StatementStatus::VmStep);
+            measurements.push((cancel_steps, live_steps, unread_steps, notice_steps));
+            drop(notices);
+            drop(unread);
+            drop(live);
+            drop(retire);
+            tx.rollback().unwrap();
+        }
+        assert_eq!(measurements[0], measurements[1]);
+        eprintln!("legacy retirement VM steps (cancel, live, unread, notices): {measurements:?}");
+        assert!(measurements[1].0 < 1_000);
+        assert!(measurements[1].1 < 1_000);
+        assert!(measurements[1].2 < 1_000);
+        assert!(measurements[1].3 < 1_000);
+        // The same query loses the bound when its live-run indexes are removed.
+        let conn = store.conn().unwrap();
+        conn.execute_batch("DROP INDEX runs_live_taskless; DROP INDEX assistance_live_member_run;")
+            .unwrap();
+        let mut unindexed = conn.prepare(LEGACY_LIVE_RUNS).unwrap();
+        assert_eq!(
+            unindexed
+                .query_map([], |r| r.get::<_, i64>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap(),
+            vec![2]
+        );
+        assert!(unindexed.get_status(StatementStatus::VmStep) > 100_000);
     }
 
     #[test]

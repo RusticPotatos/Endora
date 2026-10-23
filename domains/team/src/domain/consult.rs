@@ -30,6 +30,8 @@ pub enum Status {
     Answered,
     /// Its member was not woken, or did not answer: the record answered.
     FromRecord,
+    /// Explicitly closed at retirement, without inventing an answer.
+    Cancelled,
 }
 
 impl Status {
@@ -40,15 +42,21 @@ impl Status {
             Self::Queued => "queued",
             Self::Answered => "answered",
             Self::FromRecord => "from_record",
+            Self::Cancelled => "cancelled",
         }
     }
 
     /// The status with this [`name`](Self::name).
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Queued, Self::Answered, Self::FromRecord]
-            .into_iter()
-            .find(|s| s.name() == name)
+        [
+            Self::Queued,
+            Self::Answered,
+            Self::FromRecord,
+            Self::Cancelled,
+        ]
+        .into_iter()
+        .find(|s| s.name() == name)
     }
 }
 
@@ -193,7 +201,12 @@ mod tests {
 
     #[test]
     fn a_status_is_read_back() {
-        for s in [Status::Queued, Status::Answered, Status::FromRecord] {
+        for s in [
+            Status::Queued,
+            Status::Answered,
+            Status::FromRecord,
+            Status::Cancelled,
+        ] {
             assert_eq!(Status::from_name(s.name()), Some(s));
         }
         assert_eq!(Status::from_name("x"), None);

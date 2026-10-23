@@ -107,8 +107,28 @@ pub struct LegacyConsultation {
     pub answer: Option<PostInput>,
 }
 
+/// One bounded pass preparing legacy peer work for the ADR 0138 cutover.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LegacyRetirementBatch {
+    /// Requests explicitly cancelled in this transaction (at most fifty).
+    pub cancelled: usize,
+    /// Still-live taskless legacy expert turns to stop and settle (at most fifty).
+    /// These remain discoverable until the application finishes them, including
+    /// after a restart between cancellation and accounting settlement.
+    pub runs: Vec<RunId>,
+}
+
 /// The history's part of HQ's store.
 pub trait HistoryStore {
+    /// Cancel at most fifty queued legacy requests and identify at most fifty
+    /// live legacy expert turns, preserving all historical links and content.
+    /// The application must first fence legacy admission/dispatch, then stop and
+    /// settle returned turns before declaring cutover complete. This operation
+    /// creates no answer, notification, permission, charge or replacement work.
+    /// # Errors
+    /// A store failure; a failed transaction leaves cancellation unchanged.
+    fn retire_legacy_consultations(&self) -> Stored<LegacyRetirementBatch>;
+
     /// At most 51 legacy rows after an ID: fifty visible records and one lookahead.
     /// Historical inspection cannot create a conversation, grant or wake.
     /// # Errors
