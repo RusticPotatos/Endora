@@ -24,6 +24,12 @@ still needs work: the requester drew a conclusion the receipt did not support.
 Autonomous initiation, matched comparison and device/release gates remain open.
 The foundation and full plan are not complete; newer changes remain branch work.
 
+Quality follow-up: `f59e1ecc` adds evidence-versus-inference briefing guidance,
+and private pilot discovery now matches its enforced tool scope. Full checks
+passed. Its quality activation stopped on a busy resident runtime before any
+inference or worker start. Live quality verification remains outstanding; no
+existing service was interrupted or production deployment changed.
+
 Implementation checkpoint, 2026-10-22: Phases 0-2 are committed and validated on
 the separate branch; the [information checkpoint](agent-collaboration-information-checkpoint-2026-10-22.md)
 records that slice's scope. Phase 3's bounded read-only assistance, original-source

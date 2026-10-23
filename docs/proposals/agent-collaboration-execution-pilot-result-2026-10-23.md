@@ -357,3 +357,28 @@ Before activation, the corrected guidance passed the complete repository gate:
 formatting, workspace Clippy, all-feature tests, console, configured personal-value,
 collection parity and whitespace checks. The separate quality pilot harness
 passed 25 tests. No inference is included in these preparation results.
+
+## Quality activation stopped: resident runtime busy
+
+Candidate `f59e1ecc` passed the fresh admission, HTTP assignment, scope refusal,
+network/fingerprint and unapproved-entry checks. The one quality activation then
+stopped after 0.36 seconds: the authenticated resident slot reported processing
+other work. The gateway's readiness check refused before the runtime control or
+application admission. There were zero inference attempts, zero physical workers
+and zero accepted requests. This is no result on model quality, not a failed
+answer and not evidence that the new guidance works.
+
+The controller terminated only its temporary gateway, stopped/disabled the
+isolated store through the offline application cleanup and disarmed execution.
+There were no remaining pilot processes, listeners or live runs; the resident
+runtime remained alive with unchanged identity. No immediate retry or service
+preemption was attempted. Evidence is in
+`.local/agent-collaboration-quality-pilot/`; offline scope replay and negative
+controls are in `.local/agent-collaboration-quality-preflight/`.
+
+The next live gate is this same frozen quality diagnostic when the resident slot
+is idle, using fresh stopped stores/grants and preflight checks. Do not reuse the
+stopped packet as a resumed live session. The earlier bounded-execution pass is
+unchanged. Quality, autonomous initiation, matched comparison and device/release
+checks remain open. This prose-only outcome update reuses the full passing gate
+for `f59e1ecc`, with fresh personal-value, local-link and whitespace checks.

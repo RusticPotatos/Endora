@@ -77,6 +77,14 @@ The requester nevertheless made an unsupported inference excluding code defects
 and tried advertised read tools outside the private fixture scope. Answer quality
 and autonomous initiation remain unproven. This is not a production deployment.
 
+Quality follow-up on `f59e1ecc` adds tested evidence-versus-inference guidance to
+both real handoffs. The private pilot now advertises only its enforced read
+scope, without widening product permissions. Full repository checks and 25
+pilot harness tests passed. The subsequent quality activation stopped before
+inference because the resident runtime was busy; zero workers/requests/calls
+were started. Cleanup completed without changing that runtime. The frozen
+quality diagnostic remains the next live gate when the shared slot is idle.
+
 ## This slice's acceptance criteria
 
 1. A normal taskless member can use the familiar `consult` tool to obtain one
@@ -229,8 +237,10 @@ device validation was performed for this branch slice.
    cases. The ordinary taskless entry point,
    task-thread lifecycle, shared admission/queue mechanisms and answer effects
    are implemented, and the operator-started live expert/result flow has passed.
-   Tighten observed-fact versus inference guidance and align the private fixture's
-   advertised/enforced read scope before freezing the next quality evaluation.
+   The observed-fact versus inference guidance and private advertised/enforced
+   read scope are corrected and tested offline. Complete the frozen live quality
+   diagnostic when the shared slot is idle; its first activation stopped safely
+   on competing work before inference.
 2. Review the initiating wake and briefing offline after the three unsuccessful
    diagnostics. The corrected-guard run performed inference but proposed no
    consultation. The missing tool summary and overbroad wording now have a
