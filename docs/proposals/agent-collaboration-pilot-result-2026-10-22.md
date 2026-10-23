@@ -112,9 +112,27 @@ source changed and no new physical-device validation was performed.
 
 ## Next controlled run
 
-Prepare a separate immutable candidate/store packet, retaining this failed run.
-Pin the worker correction and propose only a context increase from 8,192 to
-16,384 tokens on the same model/runtime, with the same source, pair, objective,
+A separate stopped packet is now prepared privately at
+`.local/agent-collaboration-pilot-next/`, retaining this failed run in its
+original directory. It pins corrected application candidate `4735fdc1`, rebuilt
+with the locked three-binary build command. It uses a consistent copy of the
+original pre-live HQ preparation store, not a rewritten failed-run database;
+the original receipt is carried forward with its operator attribution. Node
+storage and credentials are fresh. The actual services reopened that scope,
+renewed only the same original-source grant and then stopped. No model was
+loaded for this proposed packet.
+
+The activation-store check, seven protocol-fence tests, four shell-boundary
+tests, three readiness tests and connection/fingerprint checks passed. A test
+listener initially encountered socket teardown state after service verification;
+after proving no listener was active, the test listener used address reuse and
+the full connection matrix passed. The actual controller also refused the
+unapproved packet with a nonzero exit before starting any service, model or
+worker. Final checks found zero requests, live turns, model usage or nonzero
+ledger rows. The packet remains stopped and unarmed, with approval unset.
+
+The proposed runtime change is a context increase from 8,192 to 16,384 tokens
+on the same model/runtime, with the same source, pair, objective,
 network/protocol fence, zero paid calls, one request, eight worker-start maximum,
 48-call maximum and 20-minute watchdog. Before inference, check the actual
 rendered prompt and output headroom; do not trim the tool list or change
