@@ -66,6 +66,36 @@ fn turn(hq: &Hq<'_>, token: &str) -> (Run, Member) {
 }
 
 #[test]
+fn my_turn_keeps_the_latest_twelve_posts_in_both_protocol_versions() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, setup, context) = started(&clock);
+    let (run, member) = turn(&hq, &context.token);
+    for n in 0..13 {
+        hq.post(Author::Owner, setup.task, &format!("Fixture post {n:03}"))
+            .unwrap();
+    }
+    for canonical in [false, true] {
+        let reply = if canonical {
+            super::protocol::call_v2(&hq, &run, &member, "my_turn", &json!({}))
+        } else {
+            call(&hq, &run, &member, "my_turn", &json!({}))
+        }
+        .unwrap();
+        let (_, thread) = reply.split_once("The thread, newest last:\n").unwrap();
+        assert!(!thread.contains("Fixture post 000"));
+        let positions: Vec<_> = (1..13)
+            .map(|n| thread.find(&format!("Fixture post {n:03}")).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+    assert_eq!(
+        hq.store().thread(setup.task).unwrap().len(),
+        13,
+        "bounded worker context must preserve all owner-visible history"
+    );
+}
+
+#[test]
 fn a_turns_token_opens_only_that_turn_and_only_while_it_runs() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
     let (hq, s, context) = started(&clock);

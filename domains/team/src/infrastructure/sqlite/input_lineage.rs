@@ -121,38 +121,62 @@ pub(super) fn goal_input(conn: &Connection, goal: GoalId) -> Stored<Option<GoalI
     .map_err(backend)
 }
 
+pub(super) fn latest_authored_posts(
+    conn: &Connection,
+    task: TaskId,
+    most: usize,
+) -> Stored<Vec<PostInput>> {
+    posts(conn, task, 0, most, true)
+}
+
 pub(super) fn authored_posts(
     conn: &Connection,
     task: TaskId,
     after: i64,
     most: usize,
 ) -> Stored<Vec<PostInput>> {
+    posts(conn, task, after, most, false)
+}
+
+fn posts(
+    conn: &Connection,
+    task: TaskId,
+    after: i64,
+    most: usize,
+    newest: bool,
+) -> Stored<Vec<PostInput>> {
     if most == 0 {
         return Ok(Vec::new());
     }
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT p.id,p.author,p.text,p.at_ms,p.unsupported,p.evidence,o.origin,o.source_run
         FROM posts p LEFT JOIN input_origins o ON o.kind='post' AND o.resource=p.id
-        WHERE p.task=?1 AND p.id>?2 ORDER BY p.id LIMIT ?3",
-        )
+        WHERE p.task=?1 AND p.id>?2 ORDER BY p.id {} LIMIT ?3",
+            if newest { "DESC" } else { "ASC" }
+        ))
         .map_err(backend)?;
-    stmt.query_map(params![task.0, after.max(0), most.min(50) as i64], |r| {
-        Ok(PostInput {
-            id: r.get(0)?,
-            post: Post {
-                author: r.get(1)?,
-                text: r.get(2)?,
-                at: r.get(3)?,
-                unsupported: r.get::<_, i64>(4)? != 0,
-            },
-            evidence: Ref::read(&r.get::<_, String>(5)?),
-            origin: origin_at(r, 6)?,
+    let mut found = stmt
+        .query_map(params![task.0, after.max(0), most.min(50) as i64], |r| {
+            Ok(PostInput {
+                id: r.get(0)?,
+                post: Post {
+                    author: r.get(1)?,
+                    text: r.get(2)?,
+                    at: r.get(3)?,
+                    unsupported: r.get::<_, i64>(4)? != 0,
+                },
+                evidence: Ref::read(&r.get::<_, String>(5)?),
+                origin: origin_at(r, 6)?,
+            })
         })
-    })
-    .map_err(backend)?
-    .collect::<rusqlite::Result<Vec<_>>>()
-    .map_err(backend)
+        .map_err(backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(backend)?;
+    if newest {
+        found.reverse();
+    }
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -341,6 +365,48 @@ mod tests {
                 .all(|p| p.origin == InputOrigin::Unknown)
         );
         assert!(store.authored_posts(task, 0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn latest_authored_posts_select_the_tail_without_reading_the_archive() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let goal = store
+            .add_goal("Fixture", "", GoalStatus::Active, None)
+            .unwrap();
+        let task = store.add_task(&task(goal), 0).unwrap();
+        for n in 0..101 {
+            store
+                .post_from(
+                    task,
+                    &Post {
+                        author: "owner".into(),
+                        text: format!("Synthetic post {n}"),
+                        at: 0,
+                        unsupported: n == 100,
+                    },
+                    &[],
+                    InputOrigin::Owner,
+                )
+                .unwrap();
+        }
+        let tail = store.latest_authored_posts(task, 12).unwrap();
+        assert_eq!(tail.len(), 12);
+        assert_eq!(tail[0].post.text, "Synthetic post 89");
+        assert_eq!(tail[11].post.text, "Synthetic post 100");
+        assert!(tail[11].post.unsupported);
+        assert!(tail.windows(2).all(|pair| pair[0].id < pair[1].id));
+        assert!(tail.iter().all(|p| p.origin == InputOrigin::Owner));
+        assert_eq!(
+            store.latest_authored_posts(task, usize::MAX).unwrap().len(),
+            50
+        );
+        assert!(store.latest_authored_posts(task, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_source_runs_cannot_be_read_as_internal() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        assert!(store.run_read_confidential(RunId(999)).unwrap());
     }
 
     #[test]

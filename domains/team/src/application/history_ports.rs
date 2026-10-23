@@ -93,6 +93,15 @@ pub trait HistoryStore {
         after: i64,
         most: usize,
     ) -> Stored<Vec<PostInput>>;
+    /// The newest posts, bounded to fifty and returned in original ID order.
+    /// Content and provenance share a snapshot; older history is not loaded.
+    /// # Errors
+    /// A store failure or corrupt record.
+    fn latest_authored_posts(
+        &self,
+        task: crate::domain::TaskId,
+        most: usize,
+    ) -> Stored<Vec<PostInput>>;
     /// Reliable source identity, or Unknown for legacy/missing/invalidated input.
     /// This metadata lookup is for audit; a classifier must read content and origin
     /// together in one snapshot, not pair it with an earlier independent content read.
@@ -108,6 +117,7 @@ pub trait HistoryStore {
     fn mark_confidential_input(&self, run: RunId) -> Stored<()>;
 
     /// Whether this turn read Confidential tool results or inherited Confidential history.
+    /// A missing source run also fails closed; existence and tier use one snapshot.
     /// # Errors
     /// A store failure.
     fn run_read_confidential(&self, run: RunId) -> Stored<bool>;

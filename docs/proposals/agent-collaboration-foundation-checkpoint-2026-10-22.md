@@ -422,10 +422,26 @@ Clippy, all-feature tests, console, configured personal-value, collection parity
 and whitespace checks. Rust logs are in `.local/input-readers-gate/`. No model
 call, deployment or additional handheld check was performed for this change.
 
-The next application step is a bounded latest-post reader for `my_turn`, with
-source inheritance before text is returned. That removes its whole-thread read
-without relaxing the existing task-briefing guard. Full task briefing coverage
-and canonical task-linked admission remain separate, unfinished work.
+`my_turn` now uses the indexed latest-post reader, selecting at most twelve
+posts in both protocol versions without loading the earlier archive. Sources
+are inherited before the reply is returned; unknown and Confidential posts
+raise the receiving turn's tier, and subsequent owner input cannot lower it.
+The underlying reader caps every request at fifty and preserves original ID
+order, evidence references and unsupported markings. Older UI history remains
+stored. Source existence and Confidential status are checked in one SQLite
+snapshot, so a deleted source fails closed.
+
+Red-first tests caught an earliest-page implementation, omitted source
+inheritance and the missing-source check. Those captures are under
+`.local/latest-posts-*-red.log`; the first tail failure is
+`.local/latest-posts-red.log`. The complete team library passed 939 tests, and
+the full repository gate passed in `.local/latest-posts-gate/`: formatting,
+workspace Clippy, all-feature tests, console, configured personal-value,
+collection parity and whitespace. No model call or deployment was performed.
+The blanket task-briefing guard remains. Next, cover every rendered task
+briefing input before changing canonical task-linked admission; known task,
+goal and criteria sources must not launder notes, evidence summaries or other
+unknown context into Internal messages.
 
 1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
    tools, request/delivery records, scheduler branches and UI readers in the old

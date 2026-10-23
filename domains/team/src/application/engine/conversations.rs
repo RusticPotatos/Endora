@@ -50,7 +50,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         let confidential = match source {
-            Some(id) if self.store.run(id)?.is_some() => self.store.run_read_confidential(id)?,
+            Some(id) => self.store.run_read_confidential(id)?,
             _ => true,
         };
         if confidential {
@@ -76,6 +76,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         self.store.mark_confidential_input(run)?;
         Ok(())
+    }
+
+    /// Read only the requested tail and record its source tiers before returning text.
+    pub(crate) fn latest_task_posts(
+        &self,
+        run: RunId,
+        task: crate::domain::TaskId,
+        most: usize,
+    ) -> Done<Vec<crate::application::history_ports::PostInput>> {
+        let posts = self.store.latest_authored_posts(task, most)?;
+        for post in &posts {
+            match post.origin {
+                crate::domain::history::InputOrigin::Owner => {}
+                crate::domain::history::InputOrigin::Run(source) => {
+                    self.inherit_input_from(run, Some(source))?;
+                }
+                crate::domain::history::InputOrigin::Unknown => {
+                    self.unclassified_message_input(run)?;
+                }
+            }
+        }
+        Ok(posts)
     }
 
     /// Whether the owner enabled information-only messaging; absent is off.

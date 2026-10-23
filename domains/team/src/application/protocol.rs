@@ -1107,11 +1107,14 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
         "my_turn" => {
             let mut out = run.told.clone();
             if let Some(task) = run.task {
-                let thread = engine.store().thread(task).map_err(|e| e.to_string())?;
+                let thread = engine
+                    .latest_task_posts(run.id, task, 12)
+                    .map_err(|e| e.to_string())?;
                 let members = engine.store().members().map_err(|e| e.to_string())?;
                 if !thread.is_empty() {
                     out.push_str("\n\nThe thread, newest last:\n");
-                    for p in thread.iter().rev().take(12).rev() {
+                    for input in &thread {
+                        let p = &input.post;
                         let line = Engine::<S, W, C>::post_line(
                             &members,
                             &p.author,

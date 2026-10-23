@@ -8,6 +8,79 @@ use super::ports::TeamStore;
 use crate::domain::{Role, WakeReason};
 
 #[test]
+fn returning_task_posts_inherits_their_sources_before_exposing_the_text() {
+    use super::history_ports::HistoryStore;
+    use super::ports::{NewTask, Post};
+    use crate::domain::history::InputOrigin;
+    for unknown in [true, false] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = engine(&clock);
+        let reader = hq.hire("Member 1", Role::Developer, 40, 2, 0).unwrap();
+        let source = hq.hire("Member 2", Role::Researcher, 30, 2, 0).unwrap();
+        hq.set_conversations_enabled(true).unwrap();
+        hq.wake(reader, None, WakeReason::Downtime).unwrap();
+        hq.wake(source, None, WakeReason::Downtime).unwrap();
+        hq.tick().unwrap();
+        let reader = turn_of(&hq, reader).run;
+        let source = turn_of(&hq, source).run;
+        assert!(!hq.store().run_read_confidential(reader).unwrap());
+        let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let task = hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: None,
+                    parent: None,
+                    title: "Fixture check".into(),
+                    description: String::new(),
+                    assignee: None,
+                    priority: crate::domain::Priority::Normal,
+                    waits_on: vec![],
+                },
+            )
+            .unwrap();
+        hq.post(Author::Owner, task, "Owner supplied finding")
+            .unwrap();
+        let owner = hq.latest_task_posts(reader, task, 12).unwrap();
+        assert_eq!(owner.len(), 1);
+        assert_eq!(owner[0].origin, InputOrigin::Owner);
+        assert!(!hq.store().run_read_confidential(reader).unwrap());
+        hq.store().mark_confidential_input(source).unwrap();
+        hq.store()
+            .post_from(
+                task,
+                &Post {
+                    author: "owner".into(),
+                    text: "Untrusted finding".into(),
+                    at: NOON,
+                    unsupported: true,
+                },
+                &[],
+                if unknown {
+                    InputOrigin::Unknown
+                } else {
+                    InputOrigin::Run(source)
+                },
+            )
+            .unwrap();
+        let received = hq.latest_task_posts(reader, task, 1).unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].post.text, "Untrusted finding");
+        assert!(
+            hq.store().run_read_confidential(reader).unwrap(),
+            "unknown={unknown}: receiving a post must inherit its source tier"
+        );
+        hq.post(Author::Owner, task, "New owner finding").unwrap();
+        hq.latest_task_posts(reader, task, 1).unwrap();
+        assert!(
+            hq.store().run_read_confidential(reader).unwrap(),
+            "a subsequent owner input cannot lower the reader's tier"
+        );
+    }
+}
+
+#[test]
 fn authoring_owner_work_records_typed_sources_without_display_name_inference() {
     use super::history_ports::HistoryStore;
     use super::ports::NewTask;

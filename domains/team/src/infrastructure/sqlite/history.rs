@@ -144,6 +144,14 @@ impl HistoryStore for SqliteTeamStore {
         let conn = self.conn()?;
         super::input_lineage::authored_posts(&conn, task, after, most)
     }
+    fn latest_authored_posts(
+        &self,
+        task: TaskId,
+        most: usize,
+    ) -> Stored<Vec<crate::application::history_ports::PostInput>> {
+        let conn = self.conn()?;
+        super::input_lineage::latest_authored_posts(&conn, task, most)
+    }
     fn input_origin(&self, input: history::InputRef) -> Stored<history::InputOrigin> {
         let conn = self.conn()?;
         super::input_lineage::read(&conn, input)
@@ -161,7 +169,10 @@ impl HistoryStore for SqliteTeamStore {
     fn run_read_confidential(&self, run: RunId) -> Stored<bool> {
         self.conn()?
             .query_row(
-                &format!("SELECT {}", super::record::read_secrets("?1")),
+                &format!(
+                    "SELECT NOT EXISTS(SELECT 1 FROM runs WHERE id=?1) OR {}",
+                    super::record::read_secrets("?1")
+                ),
                 [run.0],
                 |r| r.get(0),
             )
