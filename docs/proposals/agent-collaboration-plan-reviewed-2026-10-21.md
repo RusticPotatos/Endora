@@ -15,6 +15,15 @@ are required; no full-history load may enter the inbox, scheduler or model conte
 This update supersedes proposed short-retention defaults. Live pilot activation
 and deployment remain gated separately.
 
+Latest evidence, 2026-10-23: the
+[shared-runtime execution result](agent-collaboration-execution-pilot-result-2026-10-23.md#shared-runtime-execution-result)
+passed the bounded operator-started expert/result flow on `07eedb8d`: both real
+workers independently read the granted original, one answer and result were
+retained, project attribution matched and cleanup completed. Answer quality
+still needs work: the requester drew a conclusion the receipt did not support.
+Autonomous initiation, matched comparison and device/release gates remain open.
+The foundation and full plan are not complete; newer changes remain branch work.
+
 Implementation checkpoint, 2026-10-22: Phases 0-2 are committed and validated on
 the separate branch; the [information checkpoint](agent-collaboration-information-checkpoint-2026-10-22.md)
 records that slice's scope. Phase 3's bounded read-only assistance, original-source

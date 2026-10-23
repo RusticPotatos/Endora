@@ -1,7 +1,9 @@
 # Agent collaboration: execution-only pilot and capability correction
 
 2026-10-23, owner's local date. AI-assisted work on
-`codex/agent-collaboration`. Application candidate tested: `7337ecde`.
+`codex/agent-collaboration`. Initial application candidate: `7337ecde`.
+Latest candidate: `07eedb8d`; bounded shared-runtime execution passed with an
+answer-quality caveat. Earlier failed attempts below remain part of the record.
 
 ## Outcome: stopped before any worker or inference call
 
@@ -234,8 +236,8 @@ changed experiment boundary before execution:
 
 This trades full model-process isolation for avoiding duplicate GPU allocation.
 An exclusive-resource window with an identified, authorized stop/restore plan
-is the alternative. No shared-runtime gateway or new inference has been started
-under this proposal, and no existing service has been interrupted.
+is the alternative. At approval, no shared-runtime gateway or new inference had
+started under this proposal, and no existing service had been interrupted.
 
 Preparing this experiment exposed a separate reply-budget omission: the OpenAI
 worker path sent no output-token limit, while the Messages path already sent
@@ -252,3 +254,62 @@ the 30-screen console check, configured personal-value check, collection parity
 and whitespace checks. The private shared-runtime harness passed 24 tests;
 a permissive-gateway negative control failed the real HTTP boundary test as
 expected. These are preparation results, not live collaboration evidence.
+
+## Shared-runtime execution result
+
+The approved diagnostic ran against `07eedb8d`, using the resident runtime's
+verified 65,536-token context and unchanged process/settings. The sandboxed
+gateway initially could not launch the operating system's privileged process
+inspection utility. Before inference, its identity check was changed to read
+the current user's process arguments directly through the operating system API.
+The exact pinned argument hash and authenticated idle-slot metadata then passed
+inside the existing network profile. No network permission was broadened.
+
+Fresh source grants, actual HTTP expert/result assignment rehearsals, direct
+mutation refusals, wrong-policy negative controls, exact-retry admission,
+unapproved-entry refusal, connection restrictions and fingerprints passed. The
+rehearsal used a separate stopped copy and an operator answer, with zero model
+calls; it is distinct from the live evidence below.
+
+The live run met the frozen bounded-execution criteria:
+
+- One operator-started ordinary consultation and its exact retry produced one
+  accepted request and no new carrier task.
+- Two real workers completed successfully. Each independently read the same
+  granted original `r1`; their returned original-content hashes matched.
+- The expert persisted one answer citing `r1`: expected 200, observed 503,
+  dependency `fixture-cache` unavailable, no repair performed. The requester
+  received one result and independently confirmed these facts after its read.
+- Both linked worker runs reserved against the admitted project. All amounts
+  were zero. Eight successful application calls were recorded by the node:
+  16,270 prompt tokens and 1,726 completion tokens. One separate runtime control
+  used 1,866 prompt tokens and 66 completion tokens, proposed a tool and executed
+  none. The gateway's nine successful forwards reconcile with eight application
+  calls plus that control; there were no paid calls or external actions.
+- The run took 177.26 seconds and two physical worker starts, within the frozen
+  20-minute, eight-worker and 48-call limits. Cleanup disabled conversations,
+  stopped the isolated store and disarmed execution. An additional scheduled
+  downtime run was stopped without a physical worker start. No live runs, owned
+  processes or pilot listeners remained. The resident process identity was
+  unchanged and it remained running.
+
+This is a bounded-execution pass with a quality caveat, not a full evaluation
+pass. The requester tried `read_notebook` and `read_world`, which the application
+advertised as read-only tools but the private fixture fence refused. It still
+finished within four model calls. Its final response also asserted that no code
+defect was implicated and predicted restoring the dependency would make the
+check pass. The single diagnostic receipt does not establish either conclusion.
+No repair, recovery or deployment was actually claimed as completed or executed.
+
+Next, tighten the verification briefing's distinction between observed facts and
+inference, and align the fixture's advertised read scope with its enforced scope
+before freezing a quality evaluation. Preserve this result rather than rerun
+until wording improves. Autonomous initiation, matched baseline comparison,
+device checks and release review remain outstanding. Shared runtime capacity
+also prevents treating this timing as an exclusive-resource benchmark. Production
+remains on the previously deployed candidate with conversations disabled.
+
+Private traces, final responses, accounting checks and cleanup verification are
+retained in `.local/agent-collaboration-pilot-shared-runtime/`. The full passing
+application gate for `07eedb8d` is reused for this prose-only result update, with
+fresh personal-value, local-link and whitespace checks.

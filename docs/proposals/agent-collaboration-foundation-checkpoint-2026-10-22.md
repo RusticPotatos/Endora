@@ -12,8 +12,10 @@ earlier checkpoints below. The first authorized live diagnostic then failed:
 its initial prompt exhausted the frozen context before any consultation was
 accepted. The [result](agent-collaboration-pilot-result-2026-10-22.md) records one
 local call, zero paid charges and the subsequent worker token-limit correction.
-Operational completion still requires a successful isolated pilot, matched
-evaluation and release/device gates. The latest changes are not deployed.
+The later shared-runtime execution pilot passed its bounded flow criteria with
+an answer-quality caveat; see the current result below. Operational completion
+still requires quality/initiation evaluation, matched comparison and
+release/device gates. The latest changes are not deployed.
 
 The authorized 16,384-token follow-up avoided truncation but was blocked by the
 private experiment guard's exact-question and discovery restrictions before
@@ -60,10 +62,20 @@ the allocation failure. The full application gate for `64a4253a` remains passed.
 Runtime diagnosis reproduced the limit after a successful four-token control;
 the normal expert call still failed. Smaller physical batches did not establish
 an improvement. Further duplicate-model attempts have stopped. The execution
-record now proposes reusing the already resident, identically pinned model with
-isolated application/data and an explicit shared-runtime boundary. This requires
-the owner's acceptance of shared model capacity and weaker model-process
-isolation before execution. No resident service has been changed or stopped.
+record proposed reusing the already resident, identically pinned model with
+isolated application/data and an explicit shared-runtime boundary. The owner
+accepted shared model capacity and weaker model-process isolation. No resident
+service was changed or stopped.
+
+The [shared-runtime result](agent-collaboration-execution-pilot-result-2026-10-23.md#shared-runtime-execution-result)
+now records a bounded-execution pass on `07eedb8d`: two real workers each read
+the original, one answer and result were retained, project reservations matched,
+and cleanup completed. Eight application calls plus one runtime control took
+177.26 seconds with zero paid calls or external actions. The worker now sends
+an explicit 4,096-token reply limit on both provider paths; the full gate passed.
+The requester nevertheless made an unsupported inference excluding code defects
+and tried advertised read tools outside the private fixture scope. Answer quality
+and autonomous initiation remain unproven. This is not a production deployment.
 
 ## This slice's acceptance criteria
 
@@ -214,15 +226,18 @@ device validation was performed for this branch slice.
 ## Remaining foundation work, in order
 
 1. Review the completed offline foundation against the frozen compatibility
-   cases and refresh the isolated candidate. The ordinary taskless entry point,
+   cases. The ordinary taskless entry point,
    task-thread lifecycle, shared admission/queue mechanisms and answer effects
-   are implemented. Do not interpret passing local tests as live evaluation.
+   are implemented, and the operator-started live expert/result flow has passed.
+   Tighten observed-fact versus inference guidance and align the private fixture's
+   advertised/enforced read scope before freezing the next quality evaluation.
 2. Review the initiating wake and briefing offline after the three unsuccessful
    diagnostics. The corrected-guard run performed inference but proposed no
    consultation. The missing tool summary and overbroad wording now have a
    regression fix. Decide the next experiment's initiation contract explicitly:
    optional spontaneous consultation and an assigned diagnostic are different
-   tests. Do not count an operator-initiated request as model initiation, or add
+   tests. The successful operator-started execution does not settle this. Do not
+   count an operator-initiated request as model initiation, or add
    a taskless assignment API solely to pass a pilot. Renew candidate fingerprints
    and source grants before any further authorized isolated live attempt.
 3. Complete the matched baseline/candidate evaluation and relevant device
