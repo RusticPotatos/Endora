@@ -121,6 +121,10 @@ fn consult_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Consult> {
 }
 
 impl HistoryStore for SqliteTeamStore {
+    fn input_origin(&self, input: history::InputRef) -> Stored<history::InputOrigin> {
+        let conn = self.conn()?;
+        super::input_lineage::read(&conn, input)
+    }
     fn mark_confidential_input(&self, run: RunId) -> Stored<()> {
         self.conn()?
             .execute(

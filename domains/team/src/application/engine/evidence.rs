@@ -16,6 +16,7 @@ use crate::domain::chain;
 use crate::domain::evidence::{
     self, AfterNothing, CallReceipt, Checkers, Criterion, Found, Judged, Label, Ref, TurnFacts,
 };
+use crate::domain::history::InputOrigin;
 use crate::domain::record;
 use crate::domain::review::SendBackReason;
 use crate::domain::staffing;
@@ -779,8 +780,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             None => None,
         };
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
-        let id = self.add_task_held_lock(Author::Member(turn.member), task)?;
-        self.store.set_criteria(id, criteria)?;
+        let id = self.add_task_authored_held_lock(
+            Author::Member(turn.member),
+            task,
+            InputOrigin::Run(run),
+        )?;
+        self.store
+            .set_criteria_from(id, criteria, InputOrigin::Run(run))?;
         if let Some(n) = served {
             self.store
                 .set_setting(&super::discipline::serves_key(id), &n.to_string())?;
@@ -815,8 +821,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             _ => evidence::may_hand_on(criteria, false),
         };
         may.map_err(EngineError::Refused)?;
-        let id = self.add_task_held_lock(by, task)?;
-        self.store.set_criteria(id, criteria)?;
+        let origin = if by == Author::Owner {
+            InputOrigin::Owner
+        } else {
+            InputOrigin::Unknown
+        };
+        let id = self.add_task_authored_held_lock(by, task, origin)?;
+        self.store.set_criteria_from(id, criteria, origin)?;
         Ok(id)
     }
 

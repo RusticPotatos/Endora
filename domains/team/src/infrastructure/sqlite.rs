@@ -9,6 +9,7 @@ use crate::application::ports::{
     Wake,
 };
 use crate::application::ports::{LedgerRow, ThreadPost};
+use crate::domain::history::{InputOrigin, InputRef};
 use crate::domain::office;
 use crate::domain::{
     Brain, CheckBack, CheckBackStatus, DeskId, Event, Evidence, Goal, GoalId, GoalStatus, Member,
@@ -23,6 +24,7 @@ mod assistance;
 mod conversations;
 mod guards;
 mod history;
+mod input_lineage;
 mod map;
 mod record;
 mod world;
@@ -387,6 +389,7 @@ impl SqliteTeamStore {
         // The team's history (ADR 0129): new tables only, made if missing. The full-text index
         // is made if this SQLite has FTS5; searching works without it.
         conn.execute_batch(history::SCHEMA).map_err(backend)?;
+        conn.execute_batch(input_lineage::SCHEMA).map_err(backend)?;
         let _ = conn.execute_batch(history::FULL_TEXT);
         conn.execute_batch(conversations::SCHEMA).map_err(backend)?;
         conn.execute_batch(assistance::SCHEMA).map_err(backend)?;
@@ -910,13 +913,28 @@ impl TeamStore for SqliteTeamStore {
         status: GoalStatus,
         parent: Option<GoalId>,
     ) -> Stored<GoalId> {
-        let conn = self.conn()?;
-        conn.execute(
+        self.add_goal_from(title, reason, status, parent, InputOrigin::Unknown)
+    }
+
+    fn add_goal_from(
+        &self,
+        title: &str,
+        reason: &str,
+        status: GoalStatus,
+        parent: Option<GoalId>,
+        origin: InputOrigin,
+    ) -> Stored<GoalId> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().map_err(backend)?;
+        tx.execute(
             "INSERT INTO goals (title, reason, status, parent) VALUES (?1, ?2, ?3, ?4)",
             params![title, reason, status.name(), parent.map(|p| p.0)],
         )
         .map_err(backend)?;
-        Ok(GoalId(conn.last_insert_rowid()))
+        let id = GoalId(tx.last_insert_rowid());
+        input_lineage::record(&tx, InputRef::Goal(id), origin)?;
+        tx.commit().map_err(backend)?;
+        Ok(id)
     }
 
     fn goal(&self, id: GoalId) -> Stored<Option<Goal>> {
@@ -997,6 +1015,10 @@ impl TeamStore for SqliteTeamStore {
     }
 
     fn add_task(&self, task: &NewTask, depth: u8) -> Stored<TaskId> {
+        self.add_task_from(task, depth, InputOrigin::Unknown)
+    }
+
+    fn add_task_from(&self, task: &NewTask, depth: u8, origin: InputOrigin) -> Stored<TaskId> {
         let mut conn = self.conn()?;
         let tx = conn.transaction().map_err(backend)?;
         tx.execute(
@@ -1023,6 +1045,8 @@ impl TeamStore for SqliteTeamStore {
             )
             .map_err(backend)?;
         }
+        input_lineage::record(&tx, InputRef::TaskBody(TaskId(id)), origin)?;
+        input_lineage::record(&tx, InputRef::TaskCriteria(TaskId(id)), origin)?;
         tx.commit().map_err(backend)?;
         Ok(TaskId(id))
     }
@@ -1162,31 +1186,68 @@ impl TeamStore for SqliteTeamStore {
         evidence: &[crate::domain::Ref],
         unsupported: bool,
     ) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "INSERT INTO posts (task, author, text, at_ms, evidence, unsupported)
+        self.post_from(
+            task,
+            &Post {
+                author: author.to_owned(),
+                text: text.to_owned(),
+                at,
+                unsupported,
+            },
+            evidence,
+            InputOrigin::Unknown,
+        )
+    }
+
+    fn post_from(
+        &self,
+        task: TaskId,
+        post: &Post,
+        evidence: &[crate::domain::Ref],
+        origin: InputOrigin,
+    ) -> Stored<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().map_err(backend)?;
+        tx.execute(
+            "INSERT INTO posts (task, author, text, at_ms, evidence, unsupported)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    task.0,
-                    author,
-                    text,
-                    at,
-                    crate::domain::Ref::kept(evidence),
-                    unsupported
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
+            params![
+                task.0,
+                post.author,
+                post.text,
+                post.at,
+                crate::domain::Ref::kept(evidence),
+                post.unsupported
+            ],
+        )
+        .map_err(backend)?;
+        let id = tx.last_insert_rowid();
+        input_lineage::record(&tx, InputRef::Post(id), origin)?;
+        tx.commit().map_err(backend)
     }
 
     fn set_criteria(&self, task: TaskId, criteria: &[crate::domain::Criterion]) -> Stored<()> {
-        self.conn()?
+        self.set_criteria_from(task, criteria, InputOrigin::Unknown)
+    }
+
+    fn set_criteria_from(
+        &self,
+        task: TaskId,
+        criteria: &[crate::domain::Criterion],
+        origin: InputOrigin,
+    ) -> Stored<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().map_err(backend)?;
+        let changed = tx
             .execute(
                 "UPDATE tasks SET criteria = ?2 WHERE id = ?1",
                 params![task.0, crate::domain::Criterion::kept(criteria)],
             )
             .map_err(backend)?;
-        Ok(())
+        if changed == 1 {
+            input_lineage::record(&tx, InputRef::TaskCriteria(task), origin)?;
+        }
+        tx.commit().map_err(backend)
     }
 
     fn set_assignee(&self, task: TaskId, member: Option<MemberId>) -> Stored<()> {

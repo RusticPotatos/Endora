@@ -8,6 +8,106 @@ use super::ports::TeamStore;
 use crate::domain::{Role, WakeReason};
 
 #[test]
+fn authoring_owner_work_records_typed_sources_without_display_name_inference() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use crate::domain::history::{InputOrigin, InputRef};
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let task = hq
+        .add_task_with(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Fixture check".into(),
+                description: "Inspect the fixture".into(),
+                assignee: None,
+                priority: crate::domain::Priority::Normal,
+                waits_on: vec![],
+            },
+            &[crate::domain::Criterion::new(
+                "Fixture output is inspected",
+                false,
+            )],
+        )
+        .unwrap();
+    assert_eq!(
+        hq.store().input_origin(InputRef::Goal(goal)).unwrap(),
+        InputOrigin::Owner
+    );
+    assert_eq!(
+        hq.store().input_origin(InputRef::TaskBody(task)).unwrap(),
+        InputOrigin::Owner
+    );
+    assert_eq!(
+        hq.store()
+            .input_origin(InputRef::TaskCriteria(task))
+            .unwrap(),
+        InputOrigin::Owner
+    );
+    assert!(hq.store().thread(task).unwrap().is_empty());
+    hq.post(Author::Owner, task, "Owner supplied finding")
+        .unwrap();
+    assert_eq!(
+        hq.store().input_origin(InputRef::Post(1)).unwrap(),
+        InputOrigin::Owner
+    );
+}
+
+#[test]
+fn authoring_a_member_post_keeps_the_authenticated_source_run() {
+    use super::history_ports::HistoryStore;
+    use crate::domain::history::{InputOrigin, InputRef};
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let member = hq.hire("Member 1", Role::Developer, 40, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let task = super::history_tests::task_for(&hq, goal, member, "Fixture check");
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, member);
+    assert!(hq.store().thread(task).unwrap().is_empty());
+    hq.post_in(turn.run, task, "Source-backed fixture finding")
+        .unwrap();
+    hq.rename(member, "Member 2").unwrap();
+    assert_eq!(
+        hq.store().input_origin(InputRef::Post(1)).unwrap(),
+        InputOrigin::Run(turn.run)
+    );
+    let created = hq
+        .create_task_in(
+            turn.run,
+            super::ports::NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Additional fixture result".into(),
+                description: "Another synthetic responsibility".into(),
+                assignee: None,
+                priority: crate::domain::Priority::Normal,
+                waits_on: vec![],
+            },
+            &[],
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        hq.store()
+            .input_origin(InputRef::TaskBody(created))
+            .unwrap(),
+        InputOrigin::Run(turn.run)
+    );
+    assert_eq!(
+        hq.store()
+            .input_origin(InputRef::TaskCriteria(created))
+            .unwrap(),
+        InputOrigin::Run(turn.run)
+    );
+}
+
+#[test]
 fn task_and_conversation_requests_share_the_same_daily_allowance() {
     use super::history_tests::task_for;
     let clock = Hands(AtomicI64::new(NOON));

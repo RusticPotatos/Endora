@@ -14,7 +14,31 @@ use core::fmt;
 
 use endora_kernel::tier::Tier;
 
-use super::work::{MemberId, Millis, RunId, TaskId};
+use super::work::{GoalId, MemberId, Millis, RunId, TaskId};
+
+/// Source identity recorded by an authenticated application write, never by prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputOrigin {
+    /// No reliable forward-recorded source; readers must fail closed.
+    Unknown,
+    /// An actual owner write, selected by application authority.
+    Owner,
+    /// The authenticated run that supplied these bytes.
+    Run(RunId),
+}
+
+/// Independently authored inputs: changing criteria cannot relabel a task body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputRef {
+    /// Goal title/reason and parent link.
+    Goal(GoalId),
+    /// Task title/description and goal/parent links.
+    TaskBody(TaskId),
+    /// A task's current acceptance criteria.
+    TaskCriteria(TaskId),
+    /// One immutable-positioned task post.
+    Post(i64),
+}
 
 /// A day, in milliseconds.
 pub const DAY_MS: Millis = 24 * 60 * 60 * 1000;

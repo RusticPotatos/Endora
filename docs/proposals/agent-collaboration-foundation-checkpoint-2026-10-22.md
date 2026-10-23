@@ -362,6 +362,47 @@ legacy migration and source changes. Keep the blanket task guard until the
 complete rendered-input classification can replace it safely. History/UI
 preservation can progress independently while this prerequisite is implemented.
 
+### Forward source provenance: writer prerequisite
+
+The next slice records typed `Owner`, authenticated `Run` or `Unknown` origins
+for goal content, task bodies, criteria and individual task posts. The SQLite
+metadata contains IDs and origin kinds only, not duplicated conversation bodies.
+New authored writes commit their content and provenance together. Goal/task/post
+content changes made without a tracked source invalidate the associated proof;
+criteria changes cannot relabel the task body. Resource deletion and source-run
+deletion remove stale proof. Key and source-run indexes bound these operations.
+
+The application records actual owner goal/task creation and direct owner posts,
+and authenticated member task creation and posts. Display author strings do not
+establish identity. Generated work, copied decision/report text and legacy writes
+remain unknown even when their display actor or budget is the owner. A red-first
+scenario regression exposed that distinction before the writer slice shipped.
+The engineering wing's generated goal is likewise not recorded as owner-authored.
+
+Real SQLite tests cover valid and invalid sources, selective invalidation,
+source loss, transactional rollback including an earlier provenance write in
+the same failed transaction, and reopening a populated pre-lineage schema.
+Historical content remains readable and an old `owner` display author is never
+backfilled as trusted. Application tests cover genuine owner writes, member
+rename with stable source-run identity and member-created task criteria/body.
+
+This does not yet classify task briefings or permit task-linked conversation
+requests: the existing blanket guard remains. The next step is atomic reads of
+content and provenance, followed by classification of every input actually
+rendered. Do not pair a new provenance lookup with an earlier content read:
+another connection could change the content/source between them. Parent/goal
+context, criteria, notes and rendered posts must all be covered; missing sources
+stay unclassified. No model inference, UI behavior change or deployment is part
+of this writer prerequisite.
+
+The complete repository gate passed for the writer slice: formatting, workspace
+Clippy, all-feature tests, console, configured personal-value, collection parity
+and whitespace checks. The six focused SQLite cases and two authored-input use
+cases passed, as did the generated-owner-context regression. Red/green captures
+and final logs are retained under `.local/input-lineage-*.log` and
+`.local/input-lineage-gate/`. The next slice must supply atomic content/source
+readers before changing any task-briefing classification or v2 admission rule.
+
 1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
    tools, request/delivery records, scheduler branches and UI readers in the old
    `consult` path. Mark each canonical replacement, thin adapter, historical

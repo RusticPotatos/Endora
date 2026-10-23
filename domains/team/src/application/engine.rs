@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::ports::{
-    Clock, DeskItem, NewRoutine, NewTask, Run, RunContext, StoreError, TeamStore, Wake,
+    Clock, DeskItem, NewRoutine, NewTask, Post, Run, RunContext, StoreError, TeamStore, Wake,
     WorkerAdapter,
 };
 use super::scorecard;
@@ -17,6 +17,7 @@ use crate::domain::chain::{self, Decision};
 use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
 use crate::domain::guards::{GuardRefusal, Stopped};
+use crate::domain::history::InputOrigin;
 use crate::domain::lessons;
 use crate::domain::mac::{self, MacFacts};
 use crate::domain::money::{self, Micros};
@@ -836,8 +837,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if by != Author::Owner {
             return self.propose_goal_held_lock(title, reason, None, &format!("A goal: {title}"));
         }
+        self.set_goal_authored_held_lock(title, reason, InputOrigin::Owner)
+    }
+
+    fn set_generated_goal(&self, title: &str, reason: &str) -> Done<GoalId> {
+        let _held = self.held();
+        self.set_goal_authored_held_lock(title, reason, InputOrigin::Unknown)
+    }
+
+    fn set_goal_authored_held_lock(
+        &self,
+        title: &str,
+        reason: &str,
+        origin: InputOrigin,
+    ) -> Done<GoalId> {
         let status = GoalStatus::Active;
-        let goal = self.store.add_goal(title, reason, status, None)?;
+        let goal = self
+            .store
+            .add_goal_from(title, reason, status, None, origin)?;
         self.emit(
             EventKind::GoalChanged,
             json!({ "goal": goal.0, "title": title, "status": status.name() }),
@@ -882,10 +899,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn add_task(&self, by: Author, task: NewTask) -> Done<TaskId> {
         let _held = self.held();
         let _asked = (by == Author::Owner).then(|| self.for_owner());
-        self.add_task_held_lock(by, task)
+        let origin = if by == Author::Owner {
+            InputOrigin::Owner
+        } else {
+            InputOrigin::Unknown
+        };
+        self.add_task_authored_held_lock(by, task, origin)
     }
 
     fn add_task_held_lock(&self, by: Author, task: NewTask) -> Done<TaskId> {
+        // Generated work may spend the owner's budget; that does not establish
+        // that the owner authored its title, body or borrowed context.
+        self.add_task_authored_held_lock(by, task, InputOrigin::Unknown)
+    }
+
+    fn add_task_authored_held_lock(
+        &self,
+        by: Author,
+        task: NewTask,
+        origin: InputOrigin,
+    ) -> Done<TaskId> {
         self.store
             .goal(task.goal)?
             .ok_or(EngineError::Unknown("goal"))?;
@@ -936,7 +969,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             (None, Author::Member(_)) => 1,
             (None, _) => 0,
         };
-        let id = self.store.add_task(&task, depth)?;
+        let id = self.store.add_task_from(&task, depth, origin)?;
         self.emit(
             EventKind::TaskCreated,
             json!({
@@ -1512,7 +1545,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // its turn has no receipt (ADR 0114, amended). The worker's last word (`answers`
         // false) is what the model said as it stopped, never tagged.
         let unsupported = answers && cited.is_empty() && !self.has_receipts(run.id)?;
-        self.post_held_lock_marked(Author::Member(member.id), task, text, cited, unsupported)?;
+        self.post_authored_held_lock_marked(
+            Author::Member(member.id),
+            task,
+            text,
+            cited,
+            unsupported,
+            InputOrigin::Run(run.id),
+        )?;
         let members = self.store.members()?;
         let named = mentions(text, &members);
         for asker in askers {
@@ -1603,7 +1643,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if found.status.finished() {
             return Err(EngineError::Refused(Refusal::Finished));
         }
-        self.post_held_lock(by, task, text)?;
+        self.post_authored_held_lock_marked(by, task, text, &[], false, InputOrigin::Owner)?;
         let Some(member) = found.owner.or(found.assignee) else {
             return Ok(());
         };
@@ -1670,11 +1710,41 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         cited: &[crate::domain::Ref],
         unsupported: bool,
     ) -> Done<()> {
+        // A generated approval/report can contain borrowed model text even when
+        // its display actor is the owner. Only an explicit authored path has proof.
+        self.post_authored_held_lock_marked(
+            by,
+            task,
+            text,
+            cited,
+            unsupported,
+            InputOrigin::Unknown,
+        )
+    }
+
+    fn post_authored_held_lock_marked(
+        &self,
+        by: Author,
+        task: TaskId,
+        text: &str,
+        cited: &[crate::domain::Ref],
+        unsupported: bool,
+        origin: InputOrigin,
+    ) -> Done<()> {
         self.task(task)?;
         let author = self.author_name(by)?;
         let at = self.clock.now();
-        self.store
-            .post_marked(task, &author, text, at, cited, unsupported)?;
+        self.store.post_from(
+            task,
+            &Post {
+                author,
+                text: text.to_owned(),
+                at,
+                unsupported,
+            },
+            cited,
+            origin,
+        )?;
         self.after_thread_post(by, task, text, unsupported)
     }
 

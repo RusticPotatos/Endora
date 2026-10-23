@@ -1133,10 +1133,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .find(|g| g.title.trim().eq_ignore_ascii_case(WING_GOAL) && g.status != GoalStatus::Dropped)
         {
             Some(goal) => goal.id,
-            None => self.set_goal(
+            None => self.set_generated_goal(
                 WING_GOAL,
                 "The wing cleans up the lab's ansible-nas fork, one reviewed branch at a time; the owner merges.",
-                Author::Owner,
             )?,
         };
         if self.store.goal_note(goal)?.trim().is_empty() {

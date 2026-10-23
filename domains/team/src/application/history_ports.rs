@@ -43,6 +43,15 @@ impl ConsultDelivery {
 
 /// The history's part of HQ's store.
 pub trait HistoryStore {
+    /// Reliable source identity, or Unknown for legacy/missing/invalidated input.
+    /// This metadata lookup is for audit; a classifier must read content and origin
+    /// together in one snapshot, not pair it with an earlier independent content read.
+    /// # Errors
+    /// A store failure.
+    fn input_origin(
+        &self,
+        input: crate::domain::history::InputRef,
+    ) -> Stored<crate::domain::history::InputOrigin>;
     /// Persist that HQ supplied Confidential history to this turn, before returning it.
     /// # Errors
     /// A store failure.
