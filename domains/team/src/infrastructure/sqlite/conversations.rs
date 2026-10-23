@@ -916,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn competing_request_origins_cannot_spend_the_last_turn_allowance_twice() {
+    fn canonical_requests_share_the_last_turn_allowance_with_retained_legacy_usage() {
         use crate::domain::consult::{Consult, Status};
         let folder = std::path::Path::new("target/consult-recovery");
         std::fs::create_dir_all(folder).unwrap();
@@ -928,7 +928,7 @@ mod tests {
         let conversation = first
             .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
             .unwrap();
-        let mut intent = Consult {
+        let intent = Consult {
             id: 0,
             asker: MemberId(2),
             asker_run: RunId(1),
@@ -942,10 +942,11 @@ mod tests {
             asker_woken: true,
             at: 0,
         };
-        first.add_consult(&intent).unwrap();
-        intent.question = "New fixture?".into();
-        intent.status = Status::Queued;
-        intent.asker_woken = false;
+        first.seed_legacy_consultation(&intent).unwrap();
+        first.conn().unwrap().execute("INSERT INTO members(id,name,role,share_percent,slots) VALUES(3,'Member 3','developer',30,2)", []).unwrap();
+        let other_conversation = first
+            .add_conversation(ProjectId(1), [MemberId(2), MemberId(3)], 0)
+            .unwrap();
         let request = NewRequest {
             conversation,
             project: ProjectId(1),
@@ -959,6 +960,19 @@ mod tests {
             day_start: 0,
             at: 0,
         };
+        let other_request = NewRequest {
+            conversation: other_conversation,
+            expert: MemberId(3),
+            key: "shared_race_2".into(),
+            project: request.project,
+            requester: request.requester,
+            requester_run: request.requester_run,
+            objective: request.objective.clone(),
+            evidence: request.evidence.clone(),
+            day: request.day,
+            day_start: request.day_start,
+            at: request.at,
+        };
         let second = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
         for store in [&first, &second] {
             store
@@ -969,22 +983,22 @@ mod tests {
         }
         let barrier = std::sync::Barrier::new(2);
         let accepted = std::thread::scope(|scope| {
-            let legacy = scope.spawn(|| {
+            let first_request = scope.spawn(|| {
                 barrier.wait();
-                first.accept_consult(&intent, 0, 0).unwrap().is_ok()
+                first.accept_assistance(&request).unwrap().is_ok()
             });
             let conversation = scope.spawn(|| {
                 barrier.wait();
-                second.accept_assistance(&request).unwrap().is_ok()
+                second.accept_assistance(&other_request).unwrap().is_ok()
             });
-            [legacy.join().unwrap(), conversation.join().unwrap()]
+            [first_request.join().unwrap(), conversation.join().unwrap()]
         });
         assert_eq!(accepted.into_iter().filter(|accepted| *accepted).count(), 1);
         if accepted[0] {
-            assert!(!first.accept_consult(&intent, 0, 0).unwrap().unwrap().1);
+            first.accept_assistance(&request).unwrap().unwrap();
         }
         if accepted[1] {
-            second.accept_assistance(&request).unwrap().unwrap();
+            second.accept_assistance(&other_request).unwrap().unwrap();
         }
         assert_eq!(
             super::super::assistance::consultation_usage(

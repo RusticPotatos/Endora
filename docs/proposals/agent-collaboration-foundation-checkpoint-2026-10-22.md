@@ -29,10 +29,10 @@ caller defaults and retained task-question inspection are implemented and
 tested. HQ startup now cancels legacy requests and stops/settles their expert
 turns before opening HTTP or seeding work; failure aborts startup. The old
 application admission, claim, answer/fallback, dispatch and recovery implementation
-has been removed. Authenticated v1 worker calls receive HTTP 410 with the v2
+and its production storage writer APIs have been removed. Authenticated v1 worker calls receive HTTP 410 with the v2
 route; invalid or ended tokens still receive 401. The service candidate selects
 the source-classified ordinary task context; its temporary selector remains.
-Next remove unused legacy storage writers and old protocol policy branches,
+Next remove old protocol policy branches,
 complete the ordinary-context/implicit-wake audit and remove the selector.
 Actual migration rehearsal, final UI/model evidence and NAS cutover remain
 outstanding. No deployment has occurred in these slices.
@@ -88,9 +88,9 @@ retired-turn/answer refusals; no application record-fallback scheduler remains.
 The source-classified ordinary task briefing is selected in the service candidate.
 The rollout selector remains for the context migration tests; deleting it still
 requires checking retained task/owner/review responsibilities. It does not select
-between two executing consultation engines. Legacy SQLite admission/completion
-writers are still present without production application callers and must be
-removed next. Task-post mention wakes and old protocol policy branches also need
+between two executing consultation engines. At this application checkpoint,
+legacy SQLite admission/completion writers were still present without production
+callers; the storage cleanup below removes them. Task-post mention wakes and old protocol policy branches also need
 the final responsibility audit. This is not full ADR 0138 completion or release
 approval based solely on the focused tests.
 
@@ -114,6 +114,35 @@ Only prose/comments changed after that executable-code gate, followed by fresh
 format, personal-value and whitespace checks. Handheld code did not change;
 separate device checks were not run. No model call, NAS change or deployment is
 included.
+
+### Legacy storage execution removed
+
+The production history port and SQLite adapter no longer admit, claim, complete,
+save or deliver old consultations, query their work queues, or manufacture
+fallback posts/events/knowledge effects. The old domain's execution policy is
+also gone. Retained tables, IDs, question/answer links, project snapshots and
+historical outcome readers remain. Startup's bounded cancellation is the only
+production mutation of these legacy request rows. A separately named fixture
+import exists only under `cfg(test)`; the behavior harness imports pre-upgrade
+rows directly into its synthetic fixture database, without a production writer.
+
+The last-slot race now runs two canonical requests in distinct authorized
+conversations after one retained legacy acceptance, proving that only one can
+spend the remaining allowance and replay cannot charge it twice. Archive-growth
+checks retain the actual old-usage SQL used by canonical admission. Historical
+project attribution is exercised through reserve, use, settlement and late use
+after the current task project changes, without executing an old admission path.
+Tests for the deleted execution APIs were removed; retained-history, migration,
+accounting, privacy and canonical lifecycle coverage remains.
+
+The full repository gate passed: formatting, workspace denied-warning Clippy,
+workspace all-feature tests (936 team tests, 76 HQ tests, 158 team scenarios /
+1,972 steps), console, personal-value, collection-parity and whitespace checks.
+Ignored evidence is in `.local/legacy-writer-removal-gate/`. Only documentation
+changed after the executable-code gate; fresh privacy/whitespace checks followed.
+No model call, device change or deployment is included. Protocol aliases, the
+ordinary-context selector and task-post wake responsibilities still require
+cleanup/audit before the final migration/UI/model and NAS release gates.
 
 Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,

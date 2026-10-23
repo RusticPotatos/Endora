@@ -81,7 +81,7 @@ fn retained_task_questions_are_owner_readable_in_bounded_pages_without_peer_enab
     let run = turn_of(&hq, requester).run;
     for n in 0..61 {
         hq.store()
-            .add_consult(&Consult {
+            .seed_legacy_consultation(&Consult {
                 id: 0,
                 asker: requester,
                 asker_run: run,

@@ -160,29 +160,29 @@ fn retained_legacy_question(
     expert: String,
     title: String,
 ) {
-    use endora_team::application::history_ports::HistoryStore;
-    use endora_team::domain::consult::{Consult, Status};
     let run = w.turn_of(&asker).run;
-    w.hq.store()
-        .add_consult(&Consult {
-            id: 0,
-            asker: w.member(&asker),
-            asker_run: run,
-            expert: w.member(&expert),
-            topic: None,
-            thread: w.task(&title),
-            question: "Original saved fixture question".into(),
-            status: match state.as_str() {
-                "pending" => Status::Queued,
-                "answered" => Status::Answered,
-                _ => panic!("unknown historical fixture state"),
-            },
-            answer_run: None,
-            why: String::new(),
-            asker_woken: false,
-            at: w.clock.now(),
-        })
-        .unwrap();
+    let status = match state.as_str() {
+        "pending" => "queued",
+        "answered" => "answered",
+        _ => panic!("unknown historical fixture state"),
+    };
+    // Import pre-upgrade fixture data; production exposes no legacy writer.
+    let conn =
+        rusqlite::Connection::open(w.file.as_ref().expect("persisted historical fixture")).unwrap();
+    conn.execute(
+        "INSERT INTO consults(asker,asker_run,expert,thread,question,status,at_ms)
+        VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        rusqlite::params![
+            w.member(&asker).0,
+            run.0,
+            w.member(&expert).0,
+            w.task(&title).0,
+            "Original saved fixture question",
+            status,
+            w.clock.now(),
+        ],
+    )
+    .unwrap();
     w.wakes_at_ask = w.hq.wakes().unwrap().len();
 }
 

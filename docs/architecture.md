@@ -10,8 +10,9 @@ Accepted collaboration target ([ADR 0138](adr/0138-one-conversation-and-assistan
 one conversation/assistance lifecycle replaces legacy task-thread consultation
 execution, while the existing Work UI retains readable historical conversations
 and task/run links. The old application consultation scheduler and record-answer
-fallback have been removed. Legacy storage writer removal, migration rehearsal
-and live cutover remain required before calling this complete.
+fallback and their legacy storage writers have been removed. Protocol/context
+cleanup, migration rehearsal and live cutover remain required before calling
+this complete.
 The migration boundary now includes HQ `/v2/team/mcp` and the node's team-only
 `/team-gateway/v2/mcp`, which select canonical assistance semantics. Worker/runner
 defaults use v2 and reject stale configured routes. The v1 worker endpoint
@@ -32,8 +33,8 @@ Retained task questions have a bounded owner-only projection through
 inspector. Exact original IDs, project snapshots and answer-post associations
 are retained; missing links remain unavailable. Reading history creates no
 conversation permissions or work. This separates historical inspection from
-the retired application execution path; unused legacy storage writers remain
-scheduled for removal.
+the retired execution path. Production keeps the historical readers and bounded
+startup cancellation, with no legacy admission/claim/answer/delivery writer API.
 
 Endora is a **domain-first modular monolith**. A single authoritative backend —
 the **node** — is the trust boundary. It holds all authority and the secrets. **Endora HQ**

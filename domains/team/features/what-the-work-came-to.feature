@@ -78,7 +78,8 @@ Feature: What the team's work came to
     Then the outcomes count 1 piece of work reinvented this week
 
   Scenario: Asking the record and retained historical consultations are counted
-    Given Mara is the CEO
+    Given HQ keeps its team in a file
+    And Mara is the CEO
     And Ada is the lead
     And Zed is the developer
     And the goal "Keep the home lab healthy"

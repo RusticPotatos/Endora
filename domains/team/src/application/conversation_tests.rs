@@ -652,7 +652,7 @@ fn retained_legacy_requests_still_count_toward_the_canonical_daily_allowance() {
         for n in 0..2 {
             // Retained pre-upgrade history; no old execution engine is called.
             hq.store()
-                .add_consult(&Consult {
+                .seed_legacy_consultation(&Consult {
                     id: 0,
                     asker,
                     asker_run: current.run,

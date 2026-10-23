@@ -2,18 +2,17 @@
 //! store gains them empty and no row of any other table changes; running the schema again
 //! changes nothing.
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 
 use super::{SqliteTeamStore, backend};
 use crate::application::history_ports::{
-    ConsultDelivery, ConsultPostEffects, HistoryStore, LegacyConsultation, LegacyRetirementBatch,
-    PostInput,
+    HistoryStore, LegacyConsultation, LegacyRetirementBatch, PostInput,
 };
 use crate::application::ports::{Post, Stored};
 use crate::domain::consult::{Consult, Status as ConsultStatus};
 use crate::domain::history::{self, Kept, Transcript};
 use crate::domain::record::{Passage, Query};
-use crate::domain::{MemberId, Receipt, RunId, TaskId, WakeDecision, WakeReason};
+use crate::domain::{MemberId, RunId, TaskId};
 
 pub(super) const SCHEMA: &str = "
 -- Runtime-observed history input taint survives restart and transcript expiry.
@@ -46,12 +45,6 @@ CREATE INDEX IF NOT EXISTS consults_pending ON consults(expert,id) WHERE status=
 CREATE INDEX IF NOT EXISTS consults_unread ON consults(asker,id) WHERE status!='queued' AND asker_woken=0;
 CREATE INDEX IF NOT EXISTS consults_undispatched ON consults(id) WHERE status='queued' AND answer_run IS NULL;
 CREATE INDEX IF NOT EXISTS consults_unnotified ON consults(id) WHERE status!='queued' AND asker_woken=0;
--- Cancelled rows retain their original notification history; they must not make
--- the remaining legacy answer scans walk the cancelled archive during cutover.
-CREATE INDEX IF NOT EXISTS consults_answer_unread ON consults(asker,id)
- WHERE status IN ('answered','from_record') AND asker_woken=0;
-CREATE INDEX IF NOT EXISTS consults_answer_unnotified ON consults(id)
- WHERE status IN ('answered','from_record') AND asker_woken=0;
 CREATE INDEX IF NOT EXISTS consults_open ON consults(id) WHERE status='queued';
 CREATE TABLE IF NOT EXISTS consult_deliveries (
  consult INTEGER NOT NULL REFERENCES consults(id), stage TEXT NOT NULL CHECK(stage IN ('expert','answer')),
@@ -96,19 +89,9 @@ const LEGACY_TASK_PAGE: &str =
     LEFT JOIN input_origins o ON o.kind='post' AND o.resource=p.id
     WHERE c.thread=?1 AND c.id>?2 ORDER BY c.id LIMIT 51";
 pub(super) const CONSULT_PROJECT_FOR_RUN: &str = "(SELECT p.project FROM consults c JOIN consult_projects p ON p.consult=c.id WHERE c.answer_run=?1 ORDER BY c.id LIMIT 1)";
-const CONSULT_FOR_RUN: &str = "WHERE answer_run=?1 ORDER BY id LIMIT 1";
-const CONSULT_NEXT: &str =
-    "WHERE expert=?1 AND status='queued' AND answer_run IS NULL ORDER BY id LIMIT 1";
-const CONSULT_UNREAD: &str = "WHERE asker=?1 AND status IN ('answered','from_record') AND asker_woken=0 ORDER BY id LIMIT 50";
 pub(super) const CONSULT_TURN_COUNT: &str =
     "SELECT count(*) FROM (SELECT id FROM consults WHERE asker_run=?1 LIMIT 2)";
 pub(super) const CONSULT_DAY_COUNT: &str = "SELECT count(*) FROM (SELECT id FROM consults WHERE asker=?1 AND at_ms>=?2 AND at_ms<?3 LIMIT 6)";
-const CONSULT_DISPATCHES: &str =
-    "WHERE status='queued' AND answer_run IS NULL ORDER BY id LIMIT 50";
-const CONSULT_NOTICES: &str = "WHERE status IN ('answered','from_record') AND asker_woken=0 AND NOT EXISTS(
-    SELECT 1 FROM consult_deliveries d JOIN runs r ON r.id=d.run WHERE d.consult=consults.id AND d.stage='answer' AND d.receipt='folded' AND r.status IN ('queued','running','retry_waiting')) ORDER BY id LIMIT 50";
-const CONSULT_ENDED: &str = "WHERE status='queued' AND answer_run IS NOT NULL AND EXISTS(
-    SELECT 1 FROM runs r WHERE r.id=answer_run AND r.status NOT IN ('queued','running','retry_waiting')) ORDER BY id LIMIT 50";
 
 // A task-bearing turn keeps its task responsibility. Canonical expert/result
 // associations take precedence even though their wake may also say "consulted".
@@ -366,7 +349,8 @@ impl HistoryStore for SqliteTeamStore {
         self.search(query)
     }
 
-    fn add_consult(&self, c: &Consult) -> Stored<i64> {
+    #[cfg(test)]
+    fn seed_legacy_consultation(&self, c: &Consult) -> Stored<i64> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO consults (asker, asker_run, expert, topic, thread, question, status,
@@ -393,435 +377,12 @@ impl HistoryStore for SqliteTeamStore {
     fn consults(&self) -> Stored<Vec<Consult>> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(
-                "SELECT id, asker, asker_run, expert, topic, thread, question, status, answer_run,
-                    why, asker_woken, at_ms FROM consults ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    Consult {
-                        id: r.get(0)?,
-                        asker: MemberId(r.get(1)?),
-                        asker_run: RunId(r.get(2)?),
-                        expert: MemberId(r.get(3)?),
-                        topic: r.get::<_, Option<i64>>(4)?.map(TaskId),
-                        thread: TaskId(r.get(5)?),
-                        question: r.get(6)?,
-                        status: ConsultStatus::Queued,
-                        answer_run: r.get::<_, Option<i64>>(8)?.map(RunId),
-                        why: r.get(9)?,
-                        asker_woken: r.get(10)?,
-                        at: r.get(11)?,
-                    },
-                    r.get::<_, String>(7)?,
-                ))
-            })
-            .map_err(backend)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(backend)?;
-        rows.into_iter()
-            .map(|(mut c, status)| {
-                c.status = ConsultStatus::from_name(&status)
-                    .ok_or_else(|| super::corrupt("a consult's status"))?;
-                Ok(c)
-            })
-            .collect()
-    }
-
-    fn accept_consult(
-        &self,
-        c: &Consult,
-        day: i64,
-        day_start: i64,
-    ) -> Stored<Result<(Consult, bool), crate::domain::history::HistoryRefusal>> {
-        use crate::domain::history::HistoryRefusal;
-        if c.status != ConsultStatus::Queued || c.answer_run.is_some() || c.asker_woken {
-            return Err(super::corrupt(
-                "consult admission requires a new queued intent",
-            ));
-        }
-        let mut conn = self.conn()?;
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(backend)?;
-        let prior=tx.query_row(&format!("{CONSULT_SELECT} WHERE asker_run=?1 AND expert=?2 AND thread=?3 AND topic IS ?4 AND question=?5 AND asker=?6 ORDER BY id LIMIT 1"),
-            params![c.asker_run.0,c.expert.0,c.thread.0,c.topic.map(|id|id.0),c.question,c.asker.0],consult_row).optional().map_err(backend)?;
-        if let Some(prior) = prior {
-            return Ok(Ok((prior, false)));
-        }
-        let (turn, today) =
-            super::assistance::consultation_usage(&tx, c.asker_run, c.asker, day, day_start)?;
-        if turn >= crate::domain::consult::PER_TURN {
-            return Ok(Err(HistoryRefusal::TooManyThisTurn));
-        }
-        if today >= crate::domain::consult::PER_DAY {
-            return Ok(Err(HistoryRefusal::TooManyToday));
-        }
-        tx.execute("INSERT INTO consults(asker,asker_run,expert,topic,thread,question,status,at_ms) VALUES(?1,?2,?3,?4,?5,?6,'queued',?7)",
-            params![c.asker.0,c.asker_run.0,c.expert.0,c.topic.map(|id|id.0),c.thread.0,c.question,c.at]).map_err(backend)?;
-        let id = tx.last_insert_rowid();
-        tx.execute("INSERT INTO consult_projects(consult,project) SELECT ?1,project FROM tasks WHERE id=?2",params![id,c.thread.0]).map_err(backend)?;
-        let mut accepted = c.clone();
-        accepted.id = id;
-        tx.commit().map_err(backend)?;
-        Ok(Ok((accepted, true)))
-    }
-
-    fn consult_counts(
-        &self,
-        run: RunId,
-        asker: MemberId,
-        start: i64,
-        end: i64,
-    ) -> Stored<(usize, usize)> {
-        let conn = self.conn()?;
-        let turn: u8 = conn
-            .query_row(CONSULT_TURN_COUNT, [run.0], |row| row.get(0))
-            .map_err(backend)?;
-        let day: u8 = conn
-            .query_row(CONSULT_DAY_COUNT, params![asker.0, start, end], |row| {
-                row.get(0)
-            })
-            .map_err(backend)?;
-        Ok((usize::from(turn), usize::from(day)))
-    }
-
-    fn consult_for_run(&self, run: RunId) -> Stored<Option<Consult>> {
-        self.conn()?
-            .query_row(
-                &format!("{CONSULT_SELECT} {CONSULT_FOR_RUN}"),
-                [run.0],
-                consult_row,
-            )
-            .optional()
-            .map_err(backend)
-    }
-
-    fn claim_consult(&self, run: RunId, expert: MemberId) -> Stored<Option<Consult>> {
-        let mut conn = self.conn()?;
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(backend)?;
-        if let Some(own) = tx
-            .query_row(
-                &format!("{CONSULT_SELECT} {CONSULT_FOR_RUN}"),
-                [run.0],
-                consult_row,
-            )
-            .optional()
-            .map_err(backend)?
-        {
-            return Ok(Some(own));
-        }
-        let Some(mut next) = tx
-            .query_row(
-                &format!("{CONSULT_SELECT} {CONSULT_NEXT}"),
-                [expert.0],
-                consult_row,
-            )
-            .optional()
-            .map_err(backend)?
-        else {
-            return Ok(None);
-        };
-        tx.execute("UPDATE consults SET answer_run=?2 WHERE id=?1 AND status='queued' AND answer_run IS NULL",params![next.id,run.0]).map_err(backend)?;
-        next.answer_run = Some(run);
-        tx.commit().map_err(backend)?;
-        Ok(Some(next))
-    }
-
-    fn unread_consults(&self, asker: MemberId) -> Stored<Vec<Consult>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!("{CONSULT_SELECT} {CONSULT_UNREAD}"))
-            .map_err(backend)?;
-        stmt.query_map([asker.0], consult_row)
-            .map_err(backend)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(backend)
-    }
-
-    fn save_consult(&self, c: &Consult) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE consults SET status = ?2, answer_run = ?3, why = ?4, asker_woken = ?5
-                 WHERE id = ?1",
-                params![
-                    c.id,
-                    c.status.name(),
-                    c.answer_run.map(|r| r.0),
-                    c.why,
-                    c.asker_woken
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn finish_consult_with_effects(
-        &self,
-        c: &Consult,
-        post: &Post,
-        effects: &ConsultPostEffects,
-    ) -> Stored<bool> {
-        if c.status == ConsultStatus::Queued {
-            return Err(super::corrupt("a consult completion must be terminal"));
-        }
-        let mut conn = self.conn()?;
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(backend)?;
-        let changed = tx.execute("UPDATE consults SET status=?2,why=?3 WHERE id=?1 AND status='queued' AND answer_run IS ?4 AND thread=?5",
-            params![c.id,c.status.name(),c.why,c.answer_run.map(|run|run.0),c.thread.0]).map_err(backend)?;
-        if changed == 0 {
-            return Ok(false);
-        }
-        tx.execute("INSERT INTO posts(task,author,text,at_ms,evidence,unsupported) VALUES(?1,?2,?3,?4,'',?5)",
-            params![c.thread.0,post.author,post.text,post.at,post.unsupported]).map_err(backend)?;
-        let post_id = tx.last_insert_rowid();
-        tx.execute(
-            "INSERT INTO consult_answer_posts(consult,post) VALUES(?1,?2)",
-            params![c.id, post_id],
-        )
-        .map_err(backend)?;
-        let place: i64 = tx
-            .query_row(
-                "SELECT count(*)-1 FROM posts WHERE task=?1",
-                [c.thread.0],
-                |row| row.get(0),
-            )
-            .map_err(backend)?;
-        let mut preview: String = post.text.chars().take(80).collect();
-        let cut = post.text.chars().count() > 80;
-        if cut {
-            preview.push('…');
-        }
-        let data = serde_json::json!({"task":c.thread.0,"author":post.author,"preview":preview,"cut":cut,"post":place,"unsupported":post.unsupported});
-        if let Some(member) = effects.member {
-            tx.execute(
-                "UPDATE runs SET posted=1 WHERE member=?1 AND task=?2 AND status='running'",
-                params![member.0, c.thread.0],
-            )
-            .map_err(backend)?;
-            for story in &effects.stories {
-                tx.execute(
-                    "UPDATE stories SET last_used_at=MAX(last_used_at,?2) WHERE id=?1",
-                    params![story, post.at],
-                )
-                .map_err(backend)?;
-            }
-            for section in &effects.sections {
-                tx.execute(
-                    "UPDATE world_sections SET last_used_at=MAX(last_used_at,?2) WHERE id=?1",
-                    params![section, post.at],
-                )
-                .map_err(backend)?;
-            }
-        }
-        tx.execute(
-            "INSERT INTO events(at_ms,kind,data) VALUES(?1,?2,?3)",
-            params![
-                post.at,
-                crate::domain::EventKind::ThreadPosted.name(),
-                data.to_string()
-            ],
-        )
-        .map_err(backend)?;
-        tx.commit().map_err(backend)?;
-        Ok(true)
-    }
-
-    fn pending_consult_dispatches(&self) -> Stored<Vec<Consult>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!("{CONSULT_SELECT} {CONSULT_DISPATCHES}"))
+            .prepare(&format!("{CONSULT_SELECT} ORDER BY id"))
             .map_err(backend)?;
         stmt.query_map([], consult_row)
             .map_err(backend)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(backend)
-    }
-
-    fn consult_answers_for_run(&self, run: RunId) -> Stored<Vec<Post>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT p.author,p.text,p.at_ms,p.unsupported FROM consult_deliveries d
-            JOIN consult_answer_posts a ON a.consult=d.consult JOIN posts p ON p.id=a.post
-            WHERE d.run=?1 AND d.stage='answer' AND d.receipt='queued' ORDER BY d.consult LIMIT 50",
-            )
-            .map_err(backend)?;
-        stmt.query_map([run.0], |row| {
-            Ok(Post {
-                author: row.get(0)?,
-                text: row.get(1)?,
-                at: row.get(2)?,
-                unsupported: row.get(3)?,
-            })
-        })
-        .map_err(backend)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(backend)
-    }
-
-    fn pending_consult_notices(&self) -> Stored<Vec<Consult>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!("{CONSULT_SELECT} {CONSULT_NOTICES}"))
-            .map_err(backend)?;
-        stmt.query_map([], consult_row)
-            .map_err(backend)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(backend)
-    }
-
-    fn ended_consults(&self) -> Stored<Vec<Consult>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!("{CONSULT_SELECT} {CONSULT_ENDED}"))
-            .map_err(backend)?;
-        stmt.query_map([], consult_row)
-            .map_err(backend)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(backend)
-    }
-
-    fn deliver_consult(
-        &self,
-        id: i64,
-        stage: ConsultDelivery,
-        decision: WakeDecision,
-        by_owner: bool,
-        now: i64,
-    ) -> Stored<Receipt> {
-        let mut conn = self.conn()?;
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(backend)?;
-        let found = tx
-            .query_row(&format!("{CONSULT_SELECT} WHERE id=?1"), [id], consult_row)
-            .map_err(backend)?;
-        if found.status == ConsultStatus::Cancelled {
-            return Ok(Receipt::Finished);
-        }
-        let prior: Option<(String, Option<String>, Option<i64>)> = tx
-            .query_row(
-                "SELECT receipt,refused,run FROM consult_deliveries WHERE consult=?1 AND stage=?2",
-                params![id, stage.name()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        if let Some((receipt, why, run)) = prior {
-            let receipt = super::receipt_from(&receipt, why.as_deref())?;
-            if stage == ConsultDelivery::Expert || receipt != Receipt::Folded {
-                return Ok(receipt);
-            }
-            let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE id=?1 AND status IN ('queued','running','retry_waiting'))",[run],|row|row.get(0)).map_err(backend)?;
-            if live {
-                return Ok(receipt);
-            }
-        }
-        if (stage == ConsultDelivery::Expert && found.status != ConsultStatus::Queued)
-            || (stage == ConsultDelivery::Answer && found.asker_woken)
-        {
-            return Ok(Receipt::Finished);
-        }
-        if stage == ConsultDelivery::Expert && found.answer_run.is_some() {
-            return Ok(Receipt::Queued);
-        }
-        if stage == ConsultDelivery::Answer && found.status == ConsultStatus::Queued {
-            return Err(super::corrupt("an unanswered consult cannot notify"));
-        }
-        // Adopt an unclaimed pre-upgrade queued expert turn using the old oldest-question
-        // rule. Never take a run already associated with either assistance origin.
-        if let (ConsultDelivery::Expert, WakeDecision::Fold(run)) = (stage, decision) {
-            let wake:Option<i64>=tx.query_row("SELECT r.wake FROM runs r JOIN wakes w ON w.id=r.wake
-                WHERE r.id=?1 AND r.member=?2 AND r.task IS NULL AND r.started_at IS NULL
-                AND r.status IN ('queued','retry_waiting') AND w.reason='consulted'
-                AND NOT EXISTS(SELECT 1 FROM consults c WHERE c.answer_run=r.id)
-                AND NOT EXISTS(SELECT 1 FROM assistance_requests a WHERE a.expert_run=r.id)
-                AND NOT EXISTS(SELECT 1 FROM consults c WHERE c.expert=?2 AND c.status='queued' AND c.answer_run IS NULL AND c.id<?3)",
-                params![run.0,found.expert.0,id],|row|row.get(0)).optional().map_err(backend)?;
-            if let Some(wake) = wake {
-                tx.execute(
-                    "UPDATE consults SET answer_run=?2 WHERE id=?1",
-                    params![id, run.0],
-                )
-                .map_err(backend)?;
-                tx.execute("INSERT INTO consult_deliveries(consult,stage,wake,run,receipt) VALUES(?1,'expert',?2,?3,'queued')",params![id,wake,run.0]).map_err(backend)?;
-                tx.commit().map_err(backend)?;
-                return Ok(Receipt::Queued);
-            }
-        }
-        let (member, task, reason) = match stage {
-            ConsultDelivery::Expert => (found.expert, None, WakeReason::Consulted),
-            ConsultDelivery::Answer => (
-                found.asker,
-                Some(found.thread),
-                WakeReason::QuestionAnswered,
-            ),
-        };
-        let (receipt, run, why) = match decision {
-            WakeDecision::Queue => (Receipt::Queued, None, None),
-            WakeDecision::Fold(run) => (Receipt::Folded, Some(run), None),
-            WakeDecision::Hold => (Receipt::Held, None, None),
-            WakeDecision::Refuse(why) => (Receipt::Refused(why), None, Some(why.name())),
-        };
-        let (wake, run) = if receipt == Receipt::Queued {
-            let (wake, run) =
-                super::assistance::queue_turn(&tx, member, task, reason, by_owner, now)?;
-            (wake.0, Some(run))
-        } else {
-            tx.execute("INSERT INTO wakes(member,task,reason,receipt,refused,run,at_ms,by_owner) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![member.0,task.map(|id|id.0),reason.name(),receipt.name(),why,run.map(|id|id.0),now,by_owner]).map_err(backend)?;
-            let wake = tx.last_insert_rowid();
-            if let (true, Some(run)) = (by_owner, run) {
-                tx.execute(
-                    "UPDATE runs SET asked_by_owner=1 WHERE id=?1 AND started_at IS NULL",
-                    [run.0],
-                )
-                .map_err(backend)?;
-            }
-            (wake, run)
-        };
-        if stage == ConsultDelivery::Expert && receipt == Receipt::Queued {
-            tx.execute(
-                "UPDATE consults SET answer_run=?2 WHERE id=?1",
-                params![id, run.map(|id| id.0)],
-            )
-            .map_err(backend)?;
-        }
-        if stage == ConsultDelivery::Answer {
-            tx.execute(
-                "UPDATE consults SET asker_woken=?2 WHERE id=?1",
-                params![id, receipt != Receipt::Folded],
-            )
-            .map_err(backend)?;
-        }
-        tx.execute("INSERT INTO consult_deliveries(consult,stage,wake,run,receipt,refused) VALUES(?1,?2,?3,?4,?5,?6)
-            ON CONFLICT(consult,stage) DO UPDATE SET wake=excluded.wake,run=excluded.run,receipt=excluded.receipt,refused=excluded.refused",
-            params![id,stage.name(),wake,run.map(|id|id.0),receipt.name(),why]).map_err(backend)?;
-        let kind = match receipt {
-            Receipt::Queued => crate::domain::EventKind::WakeQueued,
-            Receipt::Folded => crate::domain::EventKind::WakeFolded,
-            Receipt::Held => crate::domain::EventKind::WakeHeld,
-            _ => crate::domain::EventKind::WakeRefused,
-        };
-        let mut data =
-            serde_json::json!({"member":member.0,"task":task.map(|id|id.0),"reason":reason.name()});
-        if let Some(why) = why {
-            data["why"] = serde_json::json!(why);
-        }
-        tx.execute(
-            "INSERT INTO events(at_ms,kind,data) VALUES(?1,?2,?3)",
-            params![now, kind.name(), data.to_string()],
-        )
-        .map_err(backend)?;
-        tx.commit().map_err(backend)?;
-        Ok(receipt)
     }
 }
 
@@ -831,6 +392,7 @@ mod tests {
     use rusqlite::Connection;
 
     use super::*;
+    use crate::domain::{Receipt, WakeReason};
 
     fn consult_fixture(store: &SqliteTeamStore) {
         store.conn().unwrap().execute_batch("INSERT INTO members(id,name,role,share_percent,slots) VALUES(1,'Member 1','lead',50,2),(2,'Member 2','developer',50,2);
@@ -877,17 +439,6 @@ mod tests {
             repeated.runs, batch.runs,
             "unsettled work remains discoverable"
         );
-        assert!(store.pending_consult_dispatches().unwrap().is_empty());
-        assert!(store.pending_consult_notices().unwrap().is_empty());
-        assert!(store.unread_consults(MemberId(1)).unwrap().is_empty());
-        for stage in [ConsultDelivery::Expert, ConsultDelivery::Answer] {
-            assert_eq!(
-                store
-                    .deliver_consult(1, stage, WakeDecision::Queue, false, 0)
-                    .unwrap(),
-                Receipt::Finished
-            );
-        }
         assert_eq!(store.wakes().unwrap(), wakes);
     }
 
@@ -1226,29 +777,15 @@ mod tests {
                 vec![2]
             );
             let live_steps = live.get_status(StatementStatus::VmStep);
-            let mut unread = tx
-                .prepare(&format!("{CONSULT_SELECT} {CONSULT_UNREAD}"))
-                .unwrap();
-            assert_eq!(unread.query_map([1], consult_row).unwrap().count(), 0);
-            let unread_steps = unread.get_status(StatementStatus::VmStep);
-            let mut notices = tx
-                .prepare(&format!("{CONSULT_SELECT} {CONSULT_NOTICES}"))
-                .unwrap();
-            assert_eq!(notices.query_map([], consult_row).unwrap().count(), 0);
-            let notice_steps = notices.get_status(StatementStatus::VmStep);
-            measurements.push((cancel_steps, live_steps, unread_steps, notice_steps));
-            drop(notices);
-            drop(unread);
+            measurements.push((cancel_steps, live_steps));
             drop(live);
             drop(retire);
             tx.rollback().unwrap();
         }
         assert_eq!(measurements[0], measurements[1]);
-        eprintln!("legacy retirement VM steps (cancel, live, unread, notices): {measurements:?}");
+        eprintln!("legacy retirement VM steps (cancel, live): {measurements:?}");
         assert!(measurements[1].0 < 1_000);
         assert!(measurements[1].1 < 1_000);
-        assert!(measurements[1].2 < 1_000);
-        assert!(measurements[1].3 < 1_000);
         // The same query loses the bound when its live-run indexes are removed.
         let conn = store.conn().unwrap();
         conn.execute_batch("DROP INDEX runs_live_taskless; DROP INDEX assistance_live_member_run;")
@@ -1369,85 +906,16 @@ mod tests {
     }
 
     #[test]
-    fn knowledge_effect_failure_rolls_back_the_answer_feed_and_usage_markers() {
-        let store = SqliteTeamStore::in_memory().unwrap();
-        consult_fixture(&store);
-        store.conn().unwrap().execute_batch("INSERT INTO stories(id,scope,handle,instead,stage,author,written_at,last_used_at) VALUES(1,'house','fixture-story','Read the check','observation','owner',0,0);
-            INSERT INTO world_sections(id,page,anchor,heading,headline,stage,written_by,revision,updated_at,last_used_at) VALUES(1,'house','fixture','Fixture','Synthetic check','observation','owner',1,0,0);
-            CREATE TRIGGER fail_consult_knowledge BEFORE UPDATE ON world_sections BEGIN SELECT RAISE(ABORT,'synthetic knowledge failure'); END;").unwrap();
-        let mut found = store.consult_for_run(RunId(2)).unwrap().unwrap();
-        found.status = ConsultStatus::Answered;
-        let post = Post {
-            author: "Member 2".into(),
-            text: "See fixture-story and world:house#fixture.".into(),
-            at: 10,
-            unsupported: false,
-        };
-        let effects = ConsultPostEffects {
-            member: Some(MemberId(2)),
-            stories: vec![1],
-            sections: vec![1],
-        };
-        assert!(
-            store
-                .finish_consult_with_effects(&found, &post, &effects)
-                .unwrap_err()
-                .to_string()
-                .contains("synthetic knowledge failure")
-        );
-        assert_eq!(
-            store.consult_for_run(RunId(2)).unwrap().unwrap().status,
-            ConsultStatus::Queued
-        );
-        let unchanged:bool=store.conn().unwrap().query_row("SELECT NOT EXISTS(SELECT 1 FROM posts) AND NOT EXISTS(SELECT 1 FROM events WHERE kind='thread.posted') AND (SELECT last_used_at FROM stories WHERE id=1)=0",[],|row|row.get(0)).unwrap();
-        assert!(unchanged);
-        store
-            .conn()
-            .unwrap()
-            .execute_batch("DROP TRIGGER fail_consult_knowledge")
-            .unwrap();
-        assert!(
-            store
-                .finish_consult_with_effects(&found, &post, &effects)
-                .unwrap()
-        );
-        assert!(
-            !store
-                .finish_consult_with_effects(&found, &post, &effects)
-                .unwrap()
-        );
-        let markers:bool=store.conn().unwrap().query_row("SELECT (SELECT last_used_at FROM stories WHERE id=1)=10 AND (SELECT last_used_at FROM world_sections WHERE id=1)=10 AND (SELECT count(*) FROM events WHERE kind='thread.posted')=1",[],|row|row.get(0)).unwrap();
-        assert!(markers);
-    }
-
-    #[test]
-    fn a_consult_keeps_its_admitted_project_through_all_ledger_rows() {
+    fn retained_consult_project_survives_cutover_settlement_and_late_usage() {
         use crate::application::conversation_ports::ConversationStore;
         use crate::application::ports::TeamStore;
         let store = SqliteTeamStore::in_memory().unwrap();
         consult_fixture(&store);
-        let mut intent = store.consult_for_run(RunId(2)).unwrap().unwrap();
-        intent.id = 0;
-        intent.answer_run = None;
-        store.conn().unwrap().execute_batch("DELETE FROM consults;
-            INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(1,1,'Fixture','',1,'active','owner',0,0),(2,1,'Other fixture','',1,'active','owner',0,0);
-            UPDATE tasks SET project=1 WHERE id=1;").unwrap();
-        let (accepted, fresh) = store.accept_consult(&intent, 0, 0).unwrap().unwrap();
-        assert!(fresh);
-        store
-            .conn()
-            .unwrap()
-            .execute("UPDATE tasks SET project=2 WHERE id=1", [])
-            .unwrap();
-        store
-            .deliver_consult(
-                accepted.id,
-                ConsultDelivery::Expert,
-                WakeDecision::Queue,
-                false,
-                0,
-            )
-            .unwrap();
+        store.conn().unwrap().execute_batch("INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(1,1,'Fixture','',1,'active','owner',0,0),(2,1,'Other fixture','',1,'active','owner',0,0);
+            INSERT INTO consult_projects(consult,project) VALUES(1,1);
+            INSERT INTO runs(id,member,wake,status,queued_at) VALUES(4,2,1,'running',0);
+            UPDATE consults SET answer_run=4,status='cancelled',why='Retired before cutover' WHERE id=1;
+            UPDATE tasks SET project=2 WHERE id=1;").unwrap();
         let run = RunId(4);
         assert_eq!(
             store.assistance_charging_project(run).unwrap(),
@@ -1480,391 +948,33 @@ mod tests {
     }
 
     #[test]
-    fn routine_consult_queries_stay_bounded_as_retained_history_grows() {
+    fn retained_legacy_quota_queries_stay_bounded_as_unrelated_history_grows() {
         use rusqlite::StatementStatus;
         let mut observed = Vec::new();
         for size in [1_000, 100_000] {
             let store = SqliteTeamStore::in_memory().unwrap();
             consult_fixture(&store);
-            store.conn().unwrap().execute_batch(&format!("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<{size})
-                INSERT INTO consults(asker,asker_run,expert,thread,question,status,asker_woken,at_ms)
-                SELECT 1,2,2,1,'Retained fixture','answered',1,-1 FROM n")).unwrap();
-            let queries = [
-                format!("{CONSULT_SELECT} {CONSULT_FOR_RUN}"),
-                format!("{CONSULT_SELECT} {CONSULT_NEXT}"),
-                format!("{CONSULT_SELECT} {CONSULT_UNREAD}"),
-                CONSULT_TURN_COUNT.to_owned(),
-                CONSULT_DAY_COUNT.to_owned(),
-                format!("{CONSULT_SELECT} {CONSULT_DISPATCHES}"),
-                format!("{CONSULT_SELECT} {CONSULT_NOTICES}"),
-                format!("{CONSULT_SELECT} {CONSULT_ENDED}"),
-            ];
-            let measure = || {
-                let conn = store.conn().unwrap();
-                let mut costs = Vec::new();
-                for (index, sql) in queries.iter().enumerate() {
-                    let mut stmt = conn.prepare(sql).unwrap();
-                    let parameters: Vec<i64> = match index {
-                        0 => vec![3],
-                        1 => vec![2],
-                        4 => vec![1, 0, 86_400_000],
-                        5.. => vec![],
-                        _ => vec![1],
-                    };
-                    let mut rows = stmt.query(rusqlite::params_from_iter(parameters)).unwrap();
-                    while rows.next().unwrap().is_some() {}
-                    drop(rows);
-                    costs.push(stmt.get_status(StatementStatus::VmStep));
-                }
-                costs
-            };
-            let costs = measure();
-            assert!(
-                costs.iter().all(|cost| *cost < 1_000),
-                "unbounded query costs at {size}: {costs:?}"
-            );
-            observed.push(costs);
+            let conn = store.conn().unwrap();
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(1000) UNION ALL SELECT id+1 FROM n WHERE id<999+?1)
+                INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,at_ms)
+                SELECT id,1,2,2,1,'Retained fixture','cancelled',-1 FROM n", [size]).unwrap();
+            let mut turn = conn.prepare(CONSULT_TURN_COUNT).unwrap();
+            assert_eq!(turn.query_row([1], |r| r.get::<_, i64>(0)).unwrap(), 1);
+            let mut day = conn.prepare(CONSULT_DAY_COUNT).unwrap();
             assert_eq!(
-                store
-                    .consult_counts(RunId(1), MemberId(1), 0, 86_400_000)
+                day.query_row([1, 0, 86_400_000], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                (1, 1)
+                1
             );
-            assert_eq!(store.consult_for_run(RunId(2)).unwrap().unwrap().id, 1);
-            assert!(store.unread_consults(MemberId(1)).unwrap().is_empty());
-            assert!(
-                store
-                    .claim_consult(RunId(3), MemberId(2))
-                    .unwrap()
-                    .is_none()
-            );
-            if size == 100_000 {
-                store.conn().unwrap().execute_batch("DROP INDEX consults_answer_run; DROP INDEX consults_pending; DROP INDEX consults_unread; DROP INDEX consults_asker_run;").unwrap();
-                assert!(
-                    measure().iter().any(|cost| *cost > 100_000),
-                    "missing-index negative control must fail the bound"
-                );
-            }
+            observed.push((
+                turn.get_status(StatementStatus::VmStep),
+                day.get_status(StatementStatus::VmStep),
+            ));
         }
         assert_eq!(observed[0], observed[1]);
+        assert!(observed[1].0 < 1_000 && observed[1].1 < 1_000);
     }
 
-    #[test]
-    fn completion_rolls_back_on_post_failure_and_a_terminal_result_cannot_be_overwritten() {
-        for status in [ConsultStatus::Answered, ConsultStatus::FromRecord] {
-            let store = SqliteTeamStore::in_memory().unwrap();
-            consult_fixture(&store);
-            let mut found = store.consult_for_run(RunId(2)).unwrap().unwrap();
-            found.status = status;
-            found.why = if status == ConsultStatus::FromRecord {
-                "did not answer".into()
-            } else {
-                String::new()
-            };
-            let post = Post {
-                author: "Member 2".into(),
-                text: "Synthetic answer".into(),
-                at: 0,
-                unsupported: false,
-            };
-            store.conn().unwrap().execute_batch("CREATE TRIGGER fail_consult_post BEFORE INSERT ON posts BEGIN SELECT RAISE(ABORT,'synthetic post failure'); END;").unwrap();
-            assert!(
-                store
-                    .finish_consult(&found, &post)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("synthetic post failure")
-            );
-            assert_eq!(
-                store.consult_for_run(RunId(2)).unwrap().unwrap().status,
-                ConsultStatus::Queued
-            );
-            store
-                .conn()
-                .unwrap()
-                .execute_batch("DROP TRIGGER fail_consult_post")
-                .unwrap();
-            assert!(store.finish_consult(&found, &post).unwrap());
-            assert!(!store.finish_consult(&found, &post).unwrap());
-            found.status = if status == ConsultStatus::Answered {
-                ConsultStatus::FromRecord
-            } else {
-                ConsultStatus::Answered
-            };
-            assert!(!store.finish_consult(&found, &post).unwrap());
-            assert_eq!(
-                store.consult_for_run(RunId(2)).unwrap().unwrap().status,
-                status
-            );
-            let count: i64 = store
-                .conn()
-                .unwrap()
-                .query_row("SELECT count(*) FROM posts", [], |row| row.get(0))
-                .unwrap();
-            assert_eq!(count, 1);
-        }
-    }
-
-    #[test]
-    fn claiming_a_consult_reuses_its_association_and_skips_a_taken_question() {
-        let store = SqliteTeamStore::in_memory().unwrap();
-        consult_fixture(&store);
-        store
-            .conn()
-            .unwrap()
-            .execute("UPDATE consults SET answer_run=NULL", [])
-            .unwrap();
-        let first = store.claim_consult(RunId(2), MemberId(2)).unwrap().unwrap();
-        assert_eq!(first.answer_run, Some(RunId(2)));
-        assert_eq!(
-            store.claim_consult(RunId(2), MemberId(2)).unwrap(),
-            Some(first)
-        );
-        assert!(
-            store
-                .claim_consult(RunId(3), MemberId(2))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn consultation_dispatch_replay_and_folded_notices_keep_one_delivery() {
-        let store = SqliteTeamStore::in_memory().unwrap();
-        consult_fixture(&store);
-        store
-            .conn()
-            .unwrap()
-            .execute_batch(
-                "UPDATE consults SET answer_run=NULL; UPDATE runs SET task=1 WHERE id=1;",
-            )
-            .unwrap();
-        for _ in 0..2 {
-            assert_eq!(
-                store
-                    .deliver_consult(1, ConsultDelivery::Expert, WakeDecision::Queue, false, 0)
-                    .unwrap(),
-                Receipt::Queued
-            );
-        }
-        let mut result = store.consult_for_run(RunId(4)).unwrap().unwrap();
-        result.status = ConsultStatus::Answered;
-        store
-            .finish_consult(
-                &result,
-                &Post {
-                    author: "Member 2".into(),
-                    text: "Synthetic answer".into(),
-                    at: 0,
-                    unsupported: false,
-                },
-            )
-            .unwrap();
-        for _ in 0..2 {
-            assert_eq!(
-                store
-                    .deliver_consult(
-                        1,
-                        ConsultDelivery::Answer,
-                        WakeDecision::Fold(RunId(1)),
-                        false,
-                        0
-                    )
-                    .unwrap(),
-                Receipt::Folded
-            );
-        }
-        assert!(store.pending_consult_notices().unwrap().is_empty());
-        let count: i64 = store
-            .conn()
-            .unwrap()
-            .query_row("SELECT count(*) FROM wakes", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(
-            count, 3,
-            "one dispatch and one fold, without audit spam on retries"
-        );
-        store
-            .conn()
-            .unwrap()
-            .execute("UPDATE runs SET status='succeeded' WHERE id=1", [])
-            .unwrap();
-        assert_eq!(store.pending_consult_notices().unwrap().len(), 1);
-        for _ in 0..2 {
-            assert_eq!(
-                store
-                    .deliver_consult(1, ConsultDelivery::Answer, WakeDecision::Queue, false, 0)
-                    .unwrap(),
-                Receipt::Queued
-            );
-        }
-        assert!(store.pending_consult_notices().unwrap().is_empty());
-        assert_eq!(
-            store.consult_answers_for_run(RunId(5)).unwrap()[0].text,
-            "Synthetic answer"
-        );
-        assert!(store.consult_answers_for_run(RunId(3)).unwrap().is_empty());
-        let count: i64 = store
-            .conn()
-            .unwrap()
-            .query_row("SELECT count(*) FROM wakes", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 4);
-    }
-
-    #[test]
-    fn recovery_adopts_an_unclaimed_legacy_expert_turn_instead_of_queuing_another() {
-        let store = SqliteTeamStore::in_memory().unwrap();
-        consult_fixture(&store);
-        store
-            .conn()
-            .unwrap()
-            .execute_batch(
-                "UPDATE consults SET answer_run=NULL;
-            UPDATE wakes SET member=2,reason='consulted' WHERE id=1;
-            UPDATE runs SET status='queued' WHERE id=2;",
-            )
-            .unwrap();
-        assert_eq!(
-            store
-                .deliver_consult(
-                    1,
-                    ConsultDelivery::Expert,
-                    WakeDecision::Fold(RunId(2)),
-                    false,
-                    0
-                )
-                .unwrap(),
-            Receipt::Queued
-        );
-        assert_eq!(store.consult_for_run(RunId(2)).unwrap().unwrap().id, 1);
-        assert!(store.pending_consult_dispatches().unwrap().is_empty());
-        let count: i64 = store
-            .conn()
-            .unwrap()
-            .query_row("SELECT count(*) FROM wakes", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
-        assert_eq!(
-            store
-                .deliver_consult(1, ConsultDelivery::Expert, WakeDecision::Queue, false, 0)
-                .unwrap(),
-            Receipt::Queued
-        );
-    }
-
-    #[test]
-    fn two_connections_cannot_claim_or_complete_the_same_consult_twice() {
-        let folder = std::path::Path::new("target/consult-recovery");
-        std::fs::create_dir_all(folder).unwrap();
-        let path = folder.join(format!("{}-claim.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let first = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
-        consult_fixture(&first);
-        first
-            .conn()
-            .unwrap()
-            .execute("UPDATE consults SET answer_run=NULL", [])
-            .unwrap();
-        let second = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
-        for store in [&first, &second] {
-            store
-                .conn()
-                .unwrap()
-                .busy_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
-        }
-        let barrier = std::sync::Barrier::new(2);
-        let claimed = std::thread::scope(|scope| {
-            let a = scope.spawn(|| {
-                barrier.wait();
-                first.claim_consult(RunId(2), MemberId(2)).unwrap()
-            });
-            let b = scope.spawn(|| {
-                barrier.wait();
-                second.claim_consult(RunId(3), MemberId(2)).unwrap()
-            });
-            [a.join().unwrap(), b.join().unwrap()]
-        });
-        assert_eq!(claimed.iter().filter(|claim| claim.is_some()).count(), 1);
-        let mut result = claimed.into_iter().flatten().next().unwrap();
-        result.status = ConsultStatus::Answered;
-        let post = Post {
-            author: "Member 2".into(),
-            text: "Synthetic answer".into(),
-            at: 0,
-            unsupported: false,
-        };
-        let accepted = std::thread::scope(|scope| {
-            let a = scope.spawn(|| {
-                barrier.wait();
-                first.finish_consult(&result, &post).unwrap()
-            });
-            let b = scope.spawn(|| {
-                barrier.wait();
-                second.finish_consult(&result, &post).unwrap()
-            });
-            [a.join().unwrap(), b.join().unwrap()]
-        });
-        assert_eq!(accepted.into_iter().filter(|accepted| *accepted).count(), 1);
-        let deliveries = std::thread::scope(|scope| {
-            let a = scope.spawn(|| {
-                barrier.wait();
-                first
-                    .deliver_consult(
-                        result.id,
-                        ConsultDelivery::Answer,
-                        WakeDecision::Queue,
-                        false,
-                        0,
-                    )
-                    .unwrap()
-            });
-            let b = scope.spawn(|| {
-                barrier.wait();
-                second
-                    .deliver_consult(
-                        result.id,
-                        ConsultDelivery::Answer,
-                        WakeDecision::Queue,
-                        false,
-                        0,
-                    )
-                    .unwrap()
-            });
-            [a.join().unwrap(), b.join().unwrap()]
-        });
-        assert_eq!(deliveries, [Receipt::Queued, Receipt::Queued]);
-        let runs: i64 = first
-            .conn()
-            .unwrap()
-            .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(runs, 4, "concurrent delivery reuses one queued result turn");
-        assert_eq!(first.consult_answers_for_run(RunId(4)).unwrap().len(), 1);
-        drop(first);
-        drop(second);
-        let reopened = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
-        assert_eq!(
-            reopened
-                .consult_for_run(result.answer_run.unwrap())
-                .unwrap()
-                .unwrap()
-                .status,
-            ConsultStatus::Answered
-        );
-        let count: i64 = reopened
-            .conn()
-            .unwrap()
-            .query_row("SELECT count(*) FROM posts", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
-        drop(reopened);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    /// The bundled SQLite is built with FTS5 (rusqlite's `bundled` feature compiles it in), so
-    /// the conversations are searched through an index with no new dependency.
     #[test]
     fn the_bundled_sqlite_has_fts5_and_the_history_schema_makes_its_index() {
         let conn = Connection::open_in_memory().unwrap();
