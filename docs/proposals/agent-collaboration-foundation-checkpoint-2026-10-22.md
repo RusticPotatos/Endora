@@ -4,6 +4,15 @@
 [ADR 0137](../adr/0137-addressed-conversations-and-bounded-assistance.md) and the
 [reviewed plan](agent-collaboration-plan-reviewed-2026-10-21.md).
 
+Accepted final goal, 2026-10-23: [ADR 0138](../adr/0138-one-conversation-and-assistance-lifecycle.md)
+requires full retirement of the old conversation execution framework, with one
+canonical conversation/assistance lifecycle and retained, readable UI history.
+Thin entry-point adapters and read-only history views may remain; two execution
+engines may not. Useful work-triggered assistance is required, not spontaneous
+downtime chatter. The older four validation gates below describe the previous
+integration scope, not the new definition of done. Replacement is not implemented
+yet, and no new deployment is implied.
+
 Current branch scope: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,
 idempotent admission, shared allowances, trusted expert project attribution and
@@ -241,32 +250,50 @@ device validation was performed for this branch slice.
 
 ## Remaining foundation work, in order
 
-1. Review the completed offline foundation against the frozen compatibility
-   cases. The ordinary taskless entry point,
-   task-thread lifecycle, shared admission/queue mechanisms and answer effects
-   are implemented, and the operator-started live expert/result flow has passed.
-   The observed-fact versus inference guidance and private advertised/enforced
-   read scope are corrected and tested offline. Complete the frozen live quality
-   diagnostic for the revised handoff. The idle-slot trial retained uncertainty
-   correctly but omitted a required final fact; the subsequent original-question
-   and completeness guidance still needs live validation.
-2. Review the initiating wake and briefing offline after the three unsuccessful
-   diagnostics. The corrected-guard run performed inference but proposed no
-   consultation. The missing tool summary and overbroad wording now have a
-   regression fix. Decide the next experiment's initiation contract explicitly:
-   optional spontaneous consultation and an assigned diagnostic are different
-   tests. The successful operator-started execution does not settle this. Do not
-   count an operator-initiated request as model initiation, or add
-   a taskless assignment API solely to pass a pilot. Renew candidate fingerprints
-   and source grants before any further authorized isolated live attempt.
-3. Complete the matched baseline/candidate evaluation, preserving workload,
-   evidence scope and full failed-attempt cost records.
-4. Complete relevant device checks and review release/enablement evidence.
-   Deploy through the existing NAS release workflow only with the deployment
-   decision recorded.
+The owner expanded the final goal after the integration pilots. Execute these
+stages against ADR 0138; do not use the earlier four-gate estimate as a complete
+replacement plan.
+
+1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
+   tools, request/delivery records, scheduler branches and UI readers in the old
+   `consult` path. Mark each canonical replacement, thin adapter, historical
+   read projection or deletion. Version incompatible behavior instead of silently
+   breaking current-major contracts. Define legacy queued/running work drain or
+   cancellation and missing-scope refusals before writing the migration. ADR 0138
+   fixes the final definition of done; this detailed caller/data mapping is next.
+2. **Replace the active lifecycle.** Route supported task-linked and taskless
+   help through the conversation/assistance application and persistence path.
+   Use trusted conversation/project/task metadata; never invent a grant or payer.
+   Replace old admission, claim, completion/fallback and recovery code rather
+   than maintaining parallel engines. Remove obsolete branches, tools/config
+   and behavior tests after their callers are accounted for. Thin compatibility
+   adapters must not own another lifecycle.
+3. **Preserve and verify visible history.** Rehearse idempotent mapping/read views
+   for retained posts, questions, answers and final findings. Keep source IDs,
+   authorship, ordering and task/run links; do not recreate missing history or
+   transfer evidence access. Verify the actual Work UI for fresh/migrated history,
+   progress and terminal failures, pagination, export/delete and archive growth.
+   Historical tables may remain for reading, without their retired execution code.
+4. **Prove the smaller workflow.** Write red-first public-use-case scenarios for
+   the replacement and retired behavior. Validate complete, grounded final
+   findings; work-triggered agent initiation; unavailable peers/sources; trusted
+   charging; restart, retries, cancellation and permission changes. Retain prior
+   pilots as evidence, not proof of the replacement. Compare equivalent workloads
+   honestly and run the full gate and relevant device checks. Do not make optional
+   downtime chatter or a performance win a release requirement.
+5. **Cut over and retire in production.** Follow the existing NAS/Ansible workflow
+   with backups, migration/version rehearsal, drain, one active engine, actual
+   history/UI smoke checks and recorded enablement/rollback evidence. Rollback
+   restores a compatible release/database pair. Confirm no obsolete engine is
+   active before declaring ADR 0138 complete.
 
 The foundation and full plan remain incomplete. The NAS remains on the prior
 deployed candidate with conversations disabled; this checkpoint is branch work.
+
+Planning validation: this goal update changes documentation only. It reuses the
+observed full passing gate for the unchanged executable code in `e3f03e80`, with
+fresh personal-value, document/link and whitespace checks. No migration, code
+deletion, model call or deployment was performed for this decision.
 
 ## Admission, accounting and completion effects follow-up
 

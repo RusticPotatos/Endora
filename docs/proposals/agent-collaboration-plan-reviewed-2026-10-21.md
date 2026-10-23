@@ -4,6 +4,21 @@ Status: proposed, 2026-10-21. Prepared with AI assistance. Research and planning
 only. No implementation, policy amendment, paid experiment or deployment is
 authorized by this document.
 
+Final-goal change accepted by the owner, 2026-10-23:
+[ADR 0138](../adr/0138-one-conversation-and-assistance-lifecycle.md) now defines
+completion as replacement of the old conversation execution framework by one
+canonical conversation/assistance lifecycle. Retained UI conversation history
+must survive; legacy behavior need not be reproduced one for one. Compatibility
+adapters may call the new lifecycle, but a permanent second engine is not done.
+Task commitments, deterministic authority and evidence rules remain. Spontaneous
+downtime conversation is not required; useful bounded help triggered by real work
+is. This supersedes preservation of both execution contracts as the final goal
+and the earlier four-gate description of remaining work. The
+[foundation checkpoint](agent-collaboration-foundation-checkpoint-2026-10-22.md#remaining-foundation-work-in-order)
+now includes actual retirement, history/caller migration and versioned cutover.
+This is an accepted target and planning update, not a claim of replacement or a
+new deployment.
+
 Execution update: the owner subsequently authorized starting this work on
 `codex/agent-collaboration`. Phase 0 now has an
 [operational baseline](agent-collaboration-baseline-2026-10-21.md),

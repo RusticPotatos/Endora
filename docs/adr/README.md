@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Eighty-six records stand, all accepted but three still proposed (marked in the *Consolidates*
+Eighty-seven records stand, all accepted but three still proposed (marked in the *Consolidates*
 column below), and forty-nine earlier ones are archived into them (the same column). A handful of
 ideas sit underneath all of them. Read this before reading any individual record; each line is a
 rule the code actually follows, with the decision that established it.
@@ -319,6 +319,7 @@ of an existing record and take the next number.
 | [0135](0135-scenarios-worlds-the-team-acts-in.md) | Scenarios: worlds the team acts in, which only the world closes | - |
 | [0136](0136-endora-is-hq.md) | Endora is HQ | - |
 | [0137](0137-addressed-conversations-and-bounded-assistance.md) | Addressed conversations and bounded assistance | - |
+| [0138](0138-one-conversation-and-assistance-lifecycle.md) | One conversation and assistance lifecycle | Accepted target |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

@@ -6,6 +6,12 @@
 
 ## Overview
 
+Accepted collaboration target ([ADR 0138](adr/0138-one-conversation-and-assistance-lifecycle.md)):
+one conversation/assistance lifecycle replaces legacy task-thread consultation
+execution, while the existing Work UI retains readable historical conversations
+and task/run links. Current branch code still has both execution paths; retirement,
+history migration and live cutover are required before calling this complete.
+
 Endora is a **domain-first modular monolith**. A single authoritative backend —
 the **node** — is the trust boundary. It holds all authority and the secrets. **Endora HQ**
 (`app/hq`), the team of agents that does the home lab's work, is a separate service the node
