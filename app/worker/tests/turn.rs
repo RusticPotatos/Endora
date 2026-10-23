@@ -207,6 +207,91 @@ fn says(text: &str) -> Value {
         "message": { "role": "assistant", "content": text } }] })
 }
 
+#[test]
+fn an_empty_reply_at_the_token_limit_is_not_a_successful_turn() {
+    let (hq_url, to_hq) = hq(None);
+    let mut limited = says("");
+    limited["choices"][0]["finish_reason"] = json!("length");
+    let (model_url, to_model) = model(vec![(200, limited)]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    assert!(said(&out).contains("token limit"), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 1);
+    assert!(
+        !to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|sent| sent.method() == "tools/call post"),
+        "an empty limited reply must not become a task answer"
+    );
+}
+
+#[test]
+fn a_limited_reply_cannot_execute_even_a_complete_tool_call() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, to_node) = fake(Box::new(|sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (200, json!({"tools":[]}).to_string()),
+        "/team-relay/transcript" => (200, json!({"kept":true}).to_string()),
+        _ => (404, "{}".to_owned()),
+    }));
+    let mut limited = calls(&[(
+        "limited-post",
+        "post",
+        r#"{"task":7,"text":"Partial model finding"}"#,
+    )]);
+    limited["choices"][0]["finish_reason"] = json!("length");
+    let (model_url, to_model) = model(vec![(200, limited), (200, says("Done."))]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    assert!(said(&out).contains("token limit"), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 1);
+    assert!(
+        !to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|sent| sent.method() == "tools/call post"),
+        "limited model output must not execute a proposed tool call"
+    );
+    assert!(
+        to_node.lock().unwrap().iter().any(|sent| {
+            sent.path == "/team-relay/transcript"
+                && sent.body["text"].as_str().is_some_and(|text| {
+                    text.contains("--- call: post ---") && text.contains("Partial model finding")
+                })
+        }),
+        "the limited proposal is retained for inspection"
+    );
+}
+
+#[test]
+fn a_claude_reply_at_its_token_limit_cannot_execute_a_tool_call() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(json!([]), None);
+    let mut limited = claude(
+        "Partial finding",
+        &[(
+            "limited-post",
+            "post",
+            json!({"task":7,"text":"Partial finding"}),
+        )],
+    );
+    limited["stop_reason"] = json!("max_tokens");
+    let (model_url, to_model) = model(vec![(200, limited), (200, claude("Done.", &[]))]);
+    let out = worker(&on_claude(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    assert!(said(&out).contains("token limit"), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 1);
+    assert!(
+        !to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|sent| sent.method() == "tools/call post")
+    );
+}
+
 /// The node's contracts (ADR 0106): it lists `offered`, answers `homelab_status` and
 /// `container_logs`, refuses a restart as its limits would (429), and answers `status` to every
 /// call when given.

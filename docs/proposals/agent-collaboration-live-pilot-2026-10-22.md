@@ -1,8 +1,11 @@
 # Agent collaboration: isolated live pilot packet
 
 2026-10-22. Prepared with AI assistance on `codex/agent-collaboration`.
-The owner authorized preparing this pilot. Live model execution is awaiting
-approval under [ADR 0137](../adr/0137-addressed-conversations-and-bounded-assistance.md).
+The owner subsequently authorized the single live diagnostic. It ran and failed
+before request acceptance because the frozen context was exhausted. The
+[result and follow-up](agent-collaboration-pilot-result-2026-10-22.md) supersede
+the preparation statuses below. The isolated team is stopped and disabled;
+this authorization is spent and does not cover a changed-setting rerun.
 This packet narrows the next experiment; it does not authorize production access,
 paid calls, deployment or broader adoption.
 
@@ -12,7 +15,7 @@ the participants, project, conversation and one original-source grant. The actua
 HQ and node services reopened those records successfully under per-process network
 profiles, including the authenticated node proxy. All preparation services were
 then stopped. See the [setup record](agent-collaboration-pilot-setup-2026-10-22.md).
-The diagnostic has not run.
+At that setup checkpoint, the diagnostic had not run.
 
 Operational fixture revision: `diagnostic-pilot-v2-receipt` replaces this packet's
 original document fixture with the immutable receipt of an actual synthetic-file
@@ -21,13 +24,14 @@ project's supported source types and avoids fabricating a branch/check document.
 
 ## Candidate and preparation evidence
 
-Current isolated application candidate: `6ff6341a`. The foundation refresh is
+Application candidate for the completed isolated diagnostic: `6ff6341a`. Its foundation refresh is
 recorded in the [setup record](agent-collaboration-pilot-setup-2026-10-22.md#foundation-candidate-refresh).
-Its three binaries, model and runtime fingerprints were checked. Preparation
-remains stopped and unarmed; no model loading, worker start or inference occurred.
+Its three binaries, model and runtime fingerprints were checked. At that refresh,
+preparation was stopped and unarmed; no model loading, worker start or inference had occurred.
 The changed supervisor and worker fence described there supersede the original
-worker-to-HQ direct connection below. Live activation still needs explicit
-authorization of this refreshed packet.
+worker-to-HQ direct connection below. Live activation required explicit
+authorization of this refreshed packet. That authorization and the failed
+execution are now recorded in the result linked above.
 
 Initial application candidate, superseded for the isolated pilot: `21dfca63` and its ancestors, including Phase 3
 `fe4571bc`. Subsequent packet documentation does not change application behavior.

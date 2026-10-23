@@ -1,5 +1,10 @@
 # Agent collaboration: configured isolated pilot
 
+Later status: the owner authorized one diagnostic, which ran and failed before
+request acceptance. See the [result](agent-collaboration-pilot-result-2026-10-22.md).
+The preparation observations below are historical. The retained isolated store
+is now stopped, conversations disabled and the execution envelope unarmed.
+
 2026-10-22. Prepared with AI assistance. The owner requested completion of the
 agreed pilot setup. This record distinguishes configured resources from a live
 model result; no diagnostic model call has occurred.

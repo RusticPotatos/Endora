@@ -8,9 +8,12 @@ Current branch scope: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,
 idempotent admission, shared allowances, trusted expert project attribution and
 atomic answer effects. These close the implementation gaps listed in the
-earlier checkpoints below. Operational completion still requires the refreshed
-isolated pilot, matched evaluation and release/device gates. The latest changes
-are not deployed, and the prepared diagnostic has performed no inference.
+earlier checkpoints below. The first authorized live diagnostic then failed:
+its initial prompt exhausted the frozen context before any consultation was
+accepted. The [result](agent-collaboration-pilot-result-2026-10-22.md) records one
+local call, zero paid charges and the subsequent worker token-limit correction.
+Operational completion still requires a successful isolated pilot, matched
+evaluation and release/device gates. The latest changes are not deployed.
 
 ## This slice's acceptance criteria
 

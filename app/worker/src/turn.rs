@@ -213,6 +213,11 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             let said = model.ask(&talk)?;
             // Its words are part of what the turn said, its last ones too.
             talk.said(&said);
+            if said.limit_reached {
+                return Err(Stopped::Failed(
+                    "the model reached its token limit; its incomplete reply cannot finish the turn or execute tool calls".to_owned(),
+                ));
+            }
             if said.calls.is_empty() {
                 last_word(&mut hq, task, said.text.trim(), &did.line())?;
                 return Ok(Taken::Answered);
@@ -704,6 +709,8 @@ struct Said {
     calls: Vec<Call>,
     /// Its message, as the conversation keeps it.
     message: Value,
+    /// The provider stopped at its output/context limit, so this proposal is incomplete.
+    limit_reached: bool,
 }
 
 /// What the worker answers one call with.
@@ -1603,6 +1610,7 @@ impl<'a> Model<'a> {
                     .collect(),
                 message: json!({ "role": "assistant", "content": message["content"],
                                  "tool_calls": calls }),
+                limit_reached: reply["choices"][0]["finish_reason"] == "length",
             });
         }
         let Some(content) = reply["content"].as_array() else {
@@ -1626,6 +1634,7 @@ impl<'a> Model<'a> {
             text: text.join("\n"),
             calls,
             message: json!({ "role": "assistant", "content": content }),
+            limit_reached: reply["stop_reason"] == "max_tokens",
         })
     }
 }

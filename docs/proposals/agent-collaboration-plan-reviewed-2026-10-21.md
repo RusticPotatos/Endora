@@ -81,6 +81,15 @@ controls, concurrency and ledger evidence. This closes the offline code gaps;
 the real-worker pilot, matched evaluation, relevant-device checks and release
 approval remain. The newly integrated code is not deployed.
 
+Live follow-up, 2026-10-22: the owner authorized the isolated diagnostic. It
+failed before accepting a request: the initial prompt exhausted the frozen
+8,192-token context. One local model call was made, with no paid charge or
+production change. A worker correction now rejects token-limited responses
+before treating them as a successful turn or executing their proposed calls.
+The [pilot result](agent-collaboration-pilot-result-2026-10-22.md) records the
+failure, containment and proposed larger-context rerun. Live validation remains
+incomplete; a local test pass cannot replace it.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less

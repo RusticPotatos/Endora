@@ -155,6 +155,16 @@ mention wakes. No approval, task acceptance or external act is granted by an
 answer. The previously listed offline lifecycle implementation gaps are closed
 and the full repository gate passed; live evaluation and release gates remain.
 
+Live diagnostic follow-up, 2026-10-22: the authorized isolated run failed before
+request acceptance when its frozen context was exhausted. The worker had treated
+the empty response as a successful turn. A subsequent regression fix rejects
+provider token-limit responses before executing their proposed calls or
+finishing the turn; the existing transcript path still attempts retention.
+This does not undo prior completed calls or authorize another run. The
+[pilot result](../proposals/agent-collaboration-pilot-result-2026-10-22.md) records
+one local inference call, zero paid charges, stopped/disabled scope and the
+separate larger-context proposal. No live assistance result is established.
+
 ### Pilot scope, identity and authority
 
 The owner enables the pilot, selects one existing project and creates a
