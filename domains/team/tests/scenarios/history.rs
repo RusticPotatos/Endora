@@ -152,97 +152,53 @@ fn nobody_woken(w: &mut Office) {
     );
 }
 
-#[when(expr = "{word} consults {word} about {string}: {string}")]
-fn consults(w: &mut Office, name: String, expert: String, title: String, question: String) {
-    let task = w.task(&title);
-    let said = w.use_tool(
-        &name,
-        "consult",
-        &json!({ "member": expert, "question": question, "task": task.0 }),
-    );
-    w.answer = said;
-}
-
-#[when(expr = "{word} answers the consult: {string}")]
-fn answers_the_consult(w: &mut Office, name: String, answer: String) {
-    let done = w.use_tool(&name, "answer_consult", &json!({ "answer": answer }));
-    assert!(done.is_some(), "refused: {:?}", w.refused);
-}
-
-#[when("the consultation status store fails")]
-fn consult_status_failure(w: &mut Office) {
-    let file = w.file.as_ref().expect("a persisted team");
-    rusqlite::Connection::open(file).unwrap().execute_batch("CREATE TRIGGER fail_consult_completion BEFORE UPDATE OF status ON consults WHEN NEW.status != 'queued' BEGIN SELECT RAISE(ABORT,'synthetic completion failure'); END;").unwrap();
-}
-
-#[when("consultation storage recovers")]
-fn consult_storage_recovers(w: &mut Office) {
-    let file = w.file.as_ref().expect("a persisted team");
-    rusqlite::Connection::open(file)
-        .unwrap()
-        .execute_batch("DROP TRIGGER fail_consult_completion")
+#[when(expr = "a retained {word} legacy question from {word} to {word} on {string} exists")]
+fn retained_legacy_question(
+    w: &mut Office,
+    state: String,
+    asker: String,
+    expert: String,
+    title: String,
+) {
+    use endora_team::application::history_ports::HistoryStore;
+    use endora_team::domain::consult::{Consult, Status};
+    let run = w.turn_of(&asker).run;
+    w.hq.store()
+        .add_consult(&Consult {
+            id: 0,
+            asker: w.member(&asker),
+            asker_run: run,
+            expert: w.member(&expert),
+            topic: None,
+            thread: w.task(&title),
+            question: "Original saved fixture question".into(),
+            status: match state.as_str() {
+                "pending" => Status::Queued,
+                "answered" => Status::Answered,
+                _ => panic!("unknown historical fixture state"),
+            },
+            answer_run: None,
+            why: String::new(),
+            asker_woken: false,
+            at: w.clock.now(),
+        })
         .unwrap();
+    w.wakes_at_ask = w.hq.wakes().unwrap().len();
 }
 
-#[when(expr = "{word} tries to answer the consult: {string}")]
-fn tries_consult_answer(w: &mut Office, name: String, answer: String) {
-    assert!(
-        w.use_tool(&name, "answer_consult", &json!({"answer":answer}))
-            .is_none()
-    );
+#[when("HQ performs protocol v2 legacy cleanup")]
+fn legacy_cleanup(w: &mut Office) {
+    w.hq.retire_legacy_peer_work().unwrap();
 }
 
-#[when("the consultation run store fails")]
-fn consult_run_failure(w: &mut Office) {
-    rusqlite::Connection::open(w.file.as_ref().unwrap()).unwrap().execute_batch("CREATE TRIGGER fail_consult_dispatch BEFORE INSERT ON runs WHEN NEW.task IS NULL BEGIN SELECT RAISE(ABORT,'synthetic dispatch failure'); END;").unwrap();
-}
-
-#[when("the consultation run store recovers")]
-fn consult_run_recovers(w: &mut Office) {
-    rusqlite::Connection::open(w.file.as_ref().unwrap())
-        .unwrap()
-        .execute_batch("DROP TRIGGER fail_consult_dispatch")
-        .unwrap();
-}
-
-#[when("the consultation notification store fails")]
-fn consult_notice_failure(w: &mut Office) {
-    rusqlite::Connection::open(w.file.as_ref().unwrap()).unwrap().execute_batch("CREATE TRIGGER fail_consult_notice BEFORE UPDATE OF asker_woken ON consults WHEN NEW.asker_woken=1 BEGIN SELECT RAISE(ABORT,'synthetic notice failure'); END;").unwrap();
-}
-
-#[when("the consultation notification store recovers")]
-fn consult_notice_recovers(w: &mut Office) {
-    rusqlite::Connection::open(w.file.as_ref().unwrap())
-        .unwrap()
-        .execute_batch("DROP TRIGGER fail_consult_notice")
-        .unwrap();
-}
-
-#[when(expr = "{word} tries to consult {word} about {string}: {string}")]
-fn tries_consult(w: &mut Office, asker: String, expert: String, task: String, question: String) {
-    let task = w.task(&task);
-    assert!(
-        w.use_tool(
-            &asker,
-            "consult",
-            &json!({"member":expert,"task":task.0,"question":question})
-        )
-        .is_none()
-    );
-}
-
-#[then(expr = "{word} has one consultation answer wake")]
-fn one_consult_notice(w: &mut Office, member: String) {
-    let member = w.member(&member);
-    assert_eq!(
-        w.hq.wakes()
-            .unwrap()
-            .iter()
-            .filter(|wake| wake.member == member
-                && wake.reason == endora_team::domain::WakeReason::QuestionAnswered)
-            .count(),
-        1
-    );
+#[then(expr = "the legacy question on {string} is cancelled and readable")]
+fn readable_cancelled_question(w: &mut Office, title: String) {
+    let page = w.hq.legacy_task_conversations(w.task(&title), 0).unwrap();
+    let records = page["records"].as_array().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["outcome"], "cancelled");
+    assert_eq!(records[0]["question"], "Original saved fixture question");
+    assert!(records[0]["answer"].is_null());
 }
 
 #[then(expr = "the task {string} has {int} consultation answers")]
@@ -255,36 +211,6 @@ fn consult_answer_count(w: &mut Office, title: String, expected: usize) {
             .count(),
         expected
     );
-}
-
-#[then(expr = "the team has {int} consultation requests")]
-fn consultation_request_count(w: &mut Office, expected: usize) {
-    use endora_team::application::history_ports::HistoryStore;
-    assert_eq!(w.hq.store().consults().unwrap().len(), expected);
-}
-
-#[then(expr = "{word} is woken to read the answer")]
-fn woken_to_read(w: &mut Office, name: String) {
-    use endora_team::domain::WakeReason;
-    let id = w.member(&name);
-    let woken =
-        w.hq.wakes()
-            .expect("the store answers")
-            .iter()
-            .any(|x| x.member == id && x.reason == WakeReason::QuestionAnswered);
-    assert!(woken, "{name} was not woken to read an answer");
-}
-
-#[then(expr = "{word} was not woken by it")]
-fn not_woken_by_it(w: &mut Office, name: String) {
-    use endora_team::domain::WakeReason;
-    let id = w.member(&name);
-    let woken =
-        w.hq.wakes()
-            .expect("the store answers")
-            .iter()
-            .any(|x| x.member == id && x.reason == WakeReason::Consulted);
-    assert!(!woken, "{name} was woken to be consulted");
 }
 
 #[then(expr = "the thread of {string} says {string}")]

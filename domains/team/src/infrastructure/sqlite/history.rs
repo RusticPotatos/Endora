@@ -892,6 +892,146 @@ mod tests {
     }
 
     #[test]
+    fn startup_retirement_stops_and_settles_only_legacy_peer_work_once() {
+        use crate::application::engine::{Engine, Settings};
+        use crate::application::ports::Clock;
+        use crate::infrastructure::simulated::SimulatedRunner;
+        struct Fixed;
+        impl Clock for Fixed {
+            fn now(&self) -> i64 {
+                100
+            }
+        }
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(2,2,'consulted','queued',0),(3,2,'assigned','queued',0),(7,2,'consulted','queued',0),(8,1,'question_answered','queued',0);
+            UPDATE runs SET wake=2,started_at=1,reserved=100,spent=20 WHERE id=2;
+            UPDATE runs SET wake=3 WHERE id=3;
+            UPDATE runs SET task=1 WHERE id=1;
+            INSERT INTO runs(id,member,wake,status,queued_at) VALUES(7,2,7,'running',0),(8,1,8,'queued',0);
+            INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(1,1,'Fixture','',1,'active','owner',0,0);
+            INSERT INTO conversations(id,project,member1,member2,at_ms) VALUES(1,1,1,2,0);
+            INSERT INTO assistance_requests(conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status,expert_run,notice_run)
+            VALUES(1,1,1,1,2,'fixture-key','Fixture','',0,0,1000,'answered',7,8);
+            INSERT INTO run_tokens(run,token) VALUES(2,'fixture-expert-token');
+            INSERT INTO ledger(run,member,day,kind,amount,at_ms) VALUES(2,2,0,'reserve',100,1),(2,2,0,'use',20,2);").unwrap();
+        let hq = Engine::new(store, SimulatedRunner::new(8), Fixed, Settings::default());
+        assert_eq!(hq.retire_legacy_peer_work().unwrap(), 1);
+        assert_eq!(hq.runner().stopped(), vec![RunId(2)]);
+        assert_eq!(
+            hq.store().run(RunId(2)).unwrap().unwrap().status.name(),
+            "stopped"
+        );
+        assert!(hq.turn_of("fixture-expert-token").unwrap().is_none());
+        for run in [RunId(1), RunId(3), RunId(7)] {
+            assert_eq!(
+                hq.store().run(run).unwrap().unwrap().status.name(),
+                "running"
+            );
+        }
+        assert_eq!(
+            hq.store().run(RunId(8)).unwrap().unwrap().status.name(),
+            "queued"
+        );
+        let ledger = hq.store().ledger_of(RunId(2)).unwrap();
+        assert_eq!(ledger.len(), 4, "one charge and one release");
+        assert_eq!(hq.retire_legacy_peer_work().unwrap(), 0);
+        assert_eq!(hq.store().ledger_of(RunId(2)).unwrap(), ledger);
+        assert_eq!(hq.runner().stopped(), vec![RunId(2)]);
+        let history = hq.legacy_task_conversations(TaskId(1), 0).unwrap();
+        assert_eq!(history["records"][0]["outcome"], "cancelled");
+        assert!(history["records"][0]["answer"].is_null());
+        assert_eq!(hq.store().wakes().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn startup_retirement_failure_is_recoverable_without_repeated_accounting() {
+        use crate::application::engine::{Engine, Settings};
+        use crate::application::ports::Clock;
+        use crate::infrastructure::simulated::SimulatedRunner;
+        struct Fixed;
+        impl Clock for Fixed {
+            fn now(&self) -> i64 {
+                100
+            }
+        }
+        let folder = std::path::Path::new("target/consult-recovery");
+        std::fs::create_dir_all(folder).unwrap();
+        let path = folder.join(format!("{}-startup-retirement.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let store = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+            consult_fixture(&store);
+            store.conn().unwrap().execute_batch("UPDATE runs SET started_at=1,reserved=100,spent=20 WHERE id=2;
+                INSERT INTO ledger(run,member,day,kind,amount,at_ms) VALUES(2,2,0,'reserve',100,1),(2,2,0,'use',20,2);
+                CREATE TRIGGER fail_cleanup BEFORE UPDATE ON runs WHEN new.id=2 BEGIN SELECT RAISE(ABORT,'fixture cleanup fault'); END;").unwrap();
+            let hq = Engine::new(store, SimulatedRunner::new(8), Fixed, Settings::default());
+            assert!(hq.retire_legacy_peer_work().is_err(), "startup must abort");
+            assert_eq!(
+                hq.store().run(RunId(2)).unwrap().unwrap().status.name(),
+                "running"
+            );
+            assert_eq!(hq.store().ledger_of(RunId(2)).unwrap().len(), 4);
+        }
+        {
+            let store = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+            store
+                .conn()
+                .unwrap()
+                .execute_batch("DROP TRIGGER fail_cleanup;")
+                .unwrap();
+            let hq = Engine::new(store, SimulatedRunner::new(8), Fixed, Settings::default());
+            assert_eq!(hq.retire_legacy_peer_work().unwrap(), 1);
+            let ledger = hq.store().ledger_of(RunId(2)).unwrap();
+            assert_eq!(ledger.len(), 4, "recovery cannot repeat charge/release");
+            assert_eq!(hq.retire_legacy_peer_work().unwrap(), 0);
+            assert_eq!(hq.store().ledger_of(RunId(2)).unwrap(), ledger);
+            assert_eq!(
+                hq.store().legacy_task_consultations(TaskId(1), 0).unwrap()[0].outcome,
+                "cancelled"
+            );
+            assert_eq!(hq.store().wakes().unwrap().len(), 1);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn single_wake_lookup_does_not_decode_unrelated_retained_history() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(2,2,'consulted','invalid historical receipt',0);").unwrap();
+        let wake = store.wake(crate::domain::WakeId(1)).unwrap().unwrap();
+        assert_eq!(wake.reason, WakeReason::Assigned);
+        assert_eq!(wake.receipt, Receipt::Queued);
+        assert!(store.wake(crate::domain::WakeId(2)).is_err());
+        assert!(store.wake(crate::domain::WakeId(999)).unwrap().is_none());
+        assert!(store.wakes().is_err(), "whole-history negative control");
+    }
+
+    #[test]
+    fn single_wake_lookup_work_stays_constant_as_the_archive_grows() {
+        use rusqlite::StatementStatus;
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        let conn = store.conn().unwrap();
+        let mut steps = Vec::new();
+        for size in [1_000, 100_000] {
+            conn.execute("DELETE FROM wakes WHERE id>=1000", [])
+                .unwrap();
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(1000) UNION ALL SELECT id+1 FROM n WHERE id<999+?1)
+                INSERT INTO wakes(id,member,reason,receipt,at_ms) SELECT id,2,'assigned','finished',0 FROM n", [size]).unwrap();
+            let mut stmt = conn.prepare(super::super::WAKE_BY_ID).unwrap();
+            assert_eq!(
+                stmt.query_row([1], super::super::wake_from).unwrap().0.id.0,
+                1
+            );
+            steps.push(stmt.get_status(StatementStatus::VmStep));
+        }
+        assert_eq!(steps[0], steps[1]);
+        assert!(steps[1] < 100);
+    }
+
+    #[test]
     fn legacy_retirement_preserves_task_work_and_canonical_expert_and_result_turns() {
         let store = SqliteTeamStore::in_memory().unwrap();
         consult_fixture(&store);

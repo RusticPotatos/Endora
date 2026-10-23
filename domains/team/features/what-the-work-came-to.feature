@@ -77,7 +77,7 @@ Feature: What the team's work came to
     And Grace sends back "Restart the downloads" because it already exists: "The restart job is in the media stack."
     Then the outcomes count 1 piece of work reinvented this week
 
-  Scenario: Asking the record and consulting a colleague are counted
+  Scenario: Asking the record and retained historical consultations are counted
     Given Mara is the CEO
     And Ada is the lead
     And Zed is the developer
@@ -89,8 +89,5 @@ Feature: What the team's work came to
     Given Ada has the task "Plan the week"
     When Ada's turn starts
     And Ada asks the record "Why did we cap sonarr's memory?"
-    And a minute passes
-    And Ada consults Zed about "Cap sonarr's memory": "Why did you cap sonarr at 512M?"
-    And Zed's turn starts
-    And Zed answers the consult: "The NAS was swapping; 512M kept it steady."
+    And a retained answered legacy question from Ada to Zed on "Plan the week" exists
     Then the outcomes count 1 ask of the record, 1 consult asked and 1 answered this week

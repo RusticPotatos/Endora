@@ -609,7 +609,7 @@ pub fn tools(role: Role) -> Value {
 
 /// The tools one turn is offered (what `tools/list` answers): its member's role's, and, in the
 /// turn that is for it, the tool a special turn answers with (ADR 0131, amended): `answer_quiz`
-/// in the night's quiz turn, `answer_consult` in a consulted one, and neither anywhere else. The
+/// in the night's quiz turn and `answer_assistance` in an assigned expert turn. The
 /// number of tools a model is offered is a measured failure mode for the house's model (ADR
 /// 0085). A store that cannot say what the turn is offers it the role's, as every other turn.
 #[must_use]
@@ -654,7 +654,7 @@ pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
         list.push(super::protocol_world::quiz_tool());
     }
     if engine.in_consult(run.id).unwrap_or(false) {
-        list.push(super::protocol_history::answer_consult_tool());
+        return json!([]);
     }
     list.extend(super::protocol_conversations::tools(engine, run));
     // A scenario's turn acts in its world with its tool (the Holodeck plan's phases 5 and 6).
@@ -871,8 +871,8 @@ fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("`{key}` is needed"))
 }
 
-/// Team protocol v2 advertises only the canonical conversation contract. Legacy
-/// expert turns must finish through v1 before the versioned cutover.
+/// Team protocol v2 advertises only the canonical conversation contract.
+/// Retired legacy expert turns receive no tools.
 #[must_use]
 pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     engine: &Engine<S, W, C>,
@@ -946,7 +946,7 @@ pub fn call_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     args: &Value,
 ) -> Result<String, String> {
     if engine.in_consult(run.id).map_err(|e| said(&e))? {
-        return Err("this legacy expert turn must finish through team protocol v1".into());
+        return Err("this legacy expert turn is retired; no tools are authorized".into());
     }
     if tool == "answer_consult" {
         return Err("answer_consult is retired in team protocol v2; only an assigned assistance expert may use answer_assistance".into());
@@ -1004,7 +1004,7 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // Legacy tool replies do not all carry source-run lineage. Until they do, an admitted
     // model-visible reply makes this turn ineligible to label a new message Internal.
     // A successful canonical consult returns only the typed assistance acceptance.
-    // Task-thread consult/fallback text still follows the legacy lineage rule below.
+    // Other unclassified tool results still follow the conservative lineage rule below.
     let peer_consult = tool == "consult"
         && (canonical || run.task.is_none())
         && args.get("task").is_none_or(Value::is_null);

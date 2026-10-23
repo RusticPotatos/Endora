@@ -28,6 +28,35 @@ pub struct TranscriptKept {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
+    /// Before publishing the protocol at startup, close legacy peer work while
+    /// retaining its history. The retired protocol must admit no new work.
+    /// # Errors
+    /// A store failure; startup must fail rather than serve a partial cutover.
+    pub fn retire_legacy_peer_work(&self) -> Done<usize> {
+        let _held = self.held();
+        let mut stopped = 0;
+        loop {
+            let batch = self.store.retire_legacy_consultations()?;
+            if batch.cancelled == 0 && batch.runs.is_empty() {
+                return Ok(stopped);
+            }
+            for id in batch.runs {
+                let Some(run) = self.store.run(id)?.filter(|run| run.status.live()) else {
+                    continue;
+                };
+                if run.status == crate::domain::RunStatus::Running {
+                    self.runner.stop(id, std::time::Duration::from_secs(5));
+                }
+                self.end(
+                    run,
+                    crate::domain::RunStatus::Stopped,
+                    "legacy peer help retired at protocol v2 cutover",
+                )?;
+                stopped += 1;
+            }
+        }
+    }
+
     /// Owner inspection of retained task questions, independent of current peer permissions.
     /// # Errors
     /// An unknown task or a store failure.

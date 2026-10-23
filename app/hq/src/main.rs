@@ -300,6 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The caps on a runaway (ADR 0133) are on for a real team from the start. The scripted
         // demo takes a turn as fast as its tick lets it, costs nothing, and is exempt.
         scripted: demo_mode,
+        canonical_task_briefings: true,
         ..Settings::default()
     };
     let hq: Arc<Hq> = Arc::new(
@@ -311,6 +312,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_docs(public_docs::PUBLIC_DOCS),
     );
+    // Before seeding work, publishing HTTP or starting ticks: no v1 peer work
+    // may execute in this process. Failure aborts startup; the next startup
+    // repeats the bounded cleanup and settles only still-live legacy turns.
+    hq.retire_legacy_peer_work()?;
     let goal = if demo_mode {
         Some(api::demo_goal(&hq)?)
     } else {

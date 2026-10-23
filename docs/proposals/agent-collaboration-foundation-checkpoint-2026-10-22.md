@@ -26,14 +26,16 @@ owner again for every evidence-backed follow-up within the agreed limits.
 Current branch checkpoint, 2026-10-23: typed forward provenance, atomic source
 readers, bounded ordinary task briefings, scoped v2 task assistance, v2 worker
 caller defaults and retained task-question inspection are implemented and
-tested. Bounded legacy cancellation and recoverable run selection are now
-implemented at the storage port, without a startup or HTTP caller. The old
-execution engine and v1 server compatibility still exist.
-Next fence admission/dispatch, stop and settle selected legacy runs through the
-application, and remove that engine through an explicit v1
-upgrade boundary, preserving the new read-only projections. The ordinary task
-briefing selector is still default-off. Final migration/UI/model evidence and
-NAS cutover remain outstanding; no deployment has occurred in these slices.
+tested. HQ startup now cancels legacy requests and stops/settles their expert
+turns before opening HTTP or seeding work; failure aborts startup. The old
+application admission, claim, answer/fallback, dispatch and recovery implementation
+has been removed. Authenticated v1 worker calls receive HTTP 410 with the v2
+route; invalid or ended tokens still receive 401. The service candidate selects
+the source-classified ordinary task context; its temporary selector remains.
+Next remove unused legacy storage writers and old protocol policy branches,
+complete the ordinary-context/implicit-wake audit and remove the selector.
+Actual migration rehearsal, final UI/model evidence and NAS cutover remain
+outstanding. No deployment has occurred in these slices.
 
 ### Legacy cancellation preparation
 
@@ -49,9 +51,9 @@ The selection uses exact request/delivery associations and original wake reasons
 excluding canonical expert/result associations and all task-bearing turns.
 Unfinished cleanup remains discoverable after reopening the database. The port
 does not stop a process, settle accounting or revoke credentials: its documented
-precondition is an application fence against old admission/dispatch. It is not
-called by startup, scheduling or HTTP yet, and does not itself establish safe
-cutover or retirement of the old engine.
+precondition is an application fence against old admission/dispatch. This first
+storage preparation did not yet have a startup caller; the application cutover
+below supplies it before publishing the protocol.
 
 Seven focused tests cover preserved history and canonical work, cancellation
 batches, bounded run batches, rollback, database reopen and archive growth.
@@ -69,6 +71,49 @@ parity and whitespace checks. Logs are in ignored
 `.local/legacy-retirement-gate/`. Handheld code did not change, so separate
 device checks were not run. No model call or deployment is part of this
 preparation.
+
+### Application startup cutover
+
+`Engine::retire_legacy_peer_work` holds the application lock, repeats bounded
+cancellation batches, stops running legacy experts and ends each selected turn
+through normal accounting and wake settlement. Cleanup preserves ordinary task
+runs and canonical expert/result associations. A fault after accounting but
+before run closure aborts startup; reopening and repeating cleanup settles the
+remaining run without duplicate charges/releases or an invented answer.
+The v1 HTTP boundary authenticates first and refuses entire batches with a
+specific upgrade response. The sole served RPC dispatcher calls v2. Old task
+consultation execution was replaced by a thin canonical adapter and explicit
+retired-turn/answer refusals; no application record-fallback scheduler remains.
+
+The source-classified ordinary task briefing is selected in the service candidate.
+The rollout selector remains for the context migration tests; deleting it still
+requires checking retained task/owner/review responsibilities. It does not select
+between two executing consultation engines. Legacy SQLite admission/completion
+writers are still present without production application callers and must be
+removed next. Task-post mention wakes and old protocol policy branches also need
+the final responsibility audit. This is not full ADR 0138 completion or release
+approval based solely on the focused tests.
+
+Obsolete task-thread execution scenarios were replaced by retained-history
+cleanup/restart coverage; explicit record search, transcript retention, privacy
+and current assistance scenarios remain. A mixed quota test now imports retained
+legacy records instead of calling a removed engine, and proves the seventh
+canonical daily request is refused. The first transport check caught a stale
+tool-count expectation after disabling legacy consultation advertising; the
+test now explicitly checks that disabled peer tools are absent.
+The retired-turn guard also exposed a whole-wake-history lookup. A primary-key
+wake reader replaces it, with corruption isolation and archive-growth tests.
+The final full repository gate passed: formatting, denied-warning workspace
+Clippy, workspace all-feature tests (946 team tests, 76 HQ tests, and 158 team
+scenarios / 1,971 steps), console, personal-value, collection-parity and whitespace
+checks. Logs are in ignored `.local/peer-cutover-gate/`; the first transport-gate
+failure is preserved there as an explicitly transcribed excerpt. Startup red/green
+evidence is in `.local/startup-retirement-{red,green}.log`, and focused quota,
+scenario, HTTP and wake-reader evidence uses the `.local/peer-cutover-` prefix.
+Only prose/comments changed after that executable-code gate, followed by fresh
+format, personal-value and whitespace checks. Handheld code did not change;
+separate device checks were not run. No model call, NAS change or deployment is
+included.
 
 Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,

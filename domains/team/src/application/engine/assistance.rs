@@ -1,4 +1,4 @@
-//! Explicit read-only assistance, separate from legacy task-thread consultation.
+//! Canonical read-only peer assistance for task-linked and taskless work (ADR 0138).
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
@@ -621,7 +621,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(task) = turn.task else {
             return Ok(true);
         };
-        Ok(self.settings.canonical_task_briefings && self.task(task)?.project == Some(project))
+        Ok(self.task(task)?.project == Some(project))
     }
 
     /// Accept an explicit request and its durable delivery intent. No model starts

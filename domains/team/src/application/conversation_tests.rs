@@ -596,10 +596,12 @@ fn authoring_a_member_post_keeps_the_authenticated_source_run() {
 }
 
 #[test]
-fn task_and_conversation_requests_share_the_same_daily_allowance() {
-    use super::history_tests::task_for;
+fn retained_legacy_requests_still_count_toward_the_canonical_daily_allowance() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use crate::domain::consult::{Consult, Status};
     let clock = Hands(AtomicI64::new(NOON));
-    let hq = engine(&clock);
+    let hq = canonical_hq(&clock);
     let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
     let asker = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
     let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
@@ -626,25 +628,54 @@ fn task_and_conversation_requests_share_the_same_daily_allowance() {
     }
     hq.runner().finish(caller.run, true);
     hq.tick().unwrap();
-    hq.furlough(expert).unwrap();
-    let task = task_for(&hq, goal, asker, "Synthetic check");
-    hq.tick().unwrap();
+    let fresh_task = |title: &str| {
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: title.into(),
+                description: String::new(),
+                assignee: Some(asker),
+                priority: crate::domain::Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap()
+    };
     for round in 0..2 {
+        let task = fresh_task(&format!("Historical fixture {round}"));
+        hq.tick().unwrap();
         let current = turn_of(&hq, asker);
         assert_eq!(current.task, Some(task));
         for n in 0..2 {
-            hq.consult_in(
-                current.run,
-                "Member 3",
-                &format!("Which fixture failed in case {round}-{n}?"),
-                None,
-            )
-            .unwrap();
+            // Retained pre-upgrade history; no old execution engine is called.
+            hq.store()
+                .add_consult(&Consult {
+                    id: 0,
+                    asker,
+                    asker_run: current.run,
+                    expert,
+                    topic: Some(task),
+                    thread: task,
+                    question: format!("Which fixture failed in case {round}-{n}?"),
+                    status: Status::Cancelled,
+                    answer_run: None,
+                    why: "Retired before cutover".into(),
+                    asker_woken: false,
+                    at: NOON,
+                })
+                .unwrap();
         }
         hq.runner().finish(current.run, true);
+        hq.drop_task(task).unwrap();
         hq.tick().unwrap();
     }
+    fresh_task("Current canonical fixture");
+    hq.tick().unwrap();
     let current = turn_of(&hq, asker);
+    assert!(hq.turn_of(&current.token).unwrap().is_some());
     let error = hq
         .consult_in(
             current.run,
@@ -653,51 +684,9 @@ fn task_and_conversation_requests_share_the_same_daily_allowance() {
             None,
         )
         .unwrap_err();
-    assert!(error.to_string().contains("six times today"), "{error}");
-}
-
-#[test]
-fn a_task_consults_expert_inherits_the_requesting_threads_project() {
-    use super::conversation_ports::ConversationStore;
-    use super::ports::NewTask;
-    use crate::domain::Priority;
-    let clock = Hands(AtomicI64::new(NOON));
-    let hq = engine(&clock);
-    let asker = hq.hire("Member 1", Role::Lead, 50, 2, 0).unwrap();
-    let expert = hq.hire("Member 2", Role::Developer, 50, 2, 0).unwrap();
-    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
-    let project = hq.add_project(goal, "Fixture", "", asker, None).unwrap();
-    hq.add_task(
-        Author::Owner,
-        NewTask {
-            goal,
-            project: Some(project),
-            parent: None,
-            title: "Synthetic check".into(),
-            description: String::new(),
-            assignee: Some(asker),
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        },
-    )
-    .unwrap();
-    hq.tick().unwrap();
-    let caller = turn_of(&hq, asker);
-    hq.consult_in(caller.run, "Member 2", "Which fixture failed?", None)
-        .unwrap();
-    hq.tick().unwrap();
-    let answerer = turn_of(&hq, expert);
-    let ledger = hq.store().ledger_of(answerer.run).unwrap();
-    let rows: Vec<_> = ledger
-        .iter()
-        .filter(|row| row.run == answerer.run)
-        .collect();
-    assert!(!rows.is_empty());
-    assert_eq!(
-        hq.store()
-            .assistance_charging_project(answerer.run)
-            .unwrap(),
-        Some(project)
+    assert!(
+        error.to_string().contains("two per turn and six per day"),
+        "{error}"
     );
 }
 
@@ -1038,51 +1027,6 @@ fn normal_consult_preserves_scope_source_and_confidentiality_boundaries() {
         1
     );
     assert!(hq.store().consults().unwrap().is_empty());
-}
-
-#[test]
-fn normal_task_owned_consult_keeps_its_thread_when_peer_assistance_is_enabled() {
-    use super::history_ports::HistoryStore;
-    use super::history_tests::task_for;
-    use serde_json::json;
-    let clock = Hands(AtomicI64::new(NOON));
-    let hq = engine(&clock);
-    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
-    let a = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
-    let b = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
-    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
-    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
-    hq.set_conversations_enabled(true).unwrap();
-    let conversation = hq.create_conversation(project, [a, b]).unwrap();
-    let task = task_for(&hq, goal, a, "Synthetic check");
-    hq.tick().unwrap();
-    let turn = turn_of(&hq, a);
-    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
-    let extended =
-        json!({"member":"Member 3","question":"Which fixture failed?","conversation":conversation});
-    assert!(super::protocol::call(&hq, &run, &member, "consult", &extended).is_err());
-    let args = json!({"member":"Member 3","question":"Which fixture failed?"});
-    let reply = super::protocol::call(&hq, &run, &member, "consult", &args).unwrap();
-    assert!(reply.contains("thread"));
-    assert_eq!(hq.store().consults().unwrap()[0].thread, task);
-    assert!(hq.store().run_read_confidential(run.id).unwrap());
-    assert!(
-        hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    hq.tick().unwrap();
-    let expert = turn_of(&hq, b);
-    hq.answer_consult_in(expert.run, "The synthetic cache failed.")
-        .unwrap();
-    assert!(
-        hq.store()
-            .thread(task)
-            .unwrap()
-            .iter()
-            .any(|post| post.text.contains("synthetic cache failed"))
-    );
 }
 
 #[test]

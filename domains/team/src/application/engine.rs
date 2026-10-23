@@ -170,8 +170,8 @@ pub struct Settings {
     /// it. Off for everything else, so the caps are on wherever a team is real, and in every
     /// test that is not about the demo.
     pub scripted: bool,
-    /// Migration selector for source-classified task briefings (ADR 0138).
-    /// Keep off until the versioned worker cutover; remove the legacy branch at retirement.
+    /// Select source-classified ordinary task context during the v2 cutover.
+    /// Specialized briefings retain their existing authority responsibilities.
     pub canonical_task_briefings: bool,
 }
 
@@ -1230,6 +1230,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         task: Option<TaskId>,
         reason: WakeReason,
     ) -> Done<Receipt> {
+        if reason == WakeReason::Consulted {
+            return Err(EngineError::Refused(Refusal::Conversation(
+                "legacy consultation wakes are retired; use authorized assistance",
+            )));
+        }
         let (decision, coordination_held) = self.decide_wake(member, task, reason)?;
         let now = self.clock.now();
         let mut about = json!({
@@ -2375,12 +2380,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     fn reason_for(&self, run: &Run) -> Done<&'static str> {
-        Ok(self
-            .store
-            .wakes()?
-            .iter()
-            .find(|w| w.id == run.wake)
-            .map_or("", |w| w.reason.name()))
+        Ok(self.store.wake(run.wake)?.map_or("", |w| w.reason.name()))
     }
 
     /// Ends a turn: settles its money, closes its wake, and lets the next held wake on its task
@@ -2390,8 +2390,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if run.started_at.is_some() {
             self.store.settle(run.id, run.member, self.today(), now)?;
         }
-        let consulted = self.reason_for(&run)? == WakeReason::Consulted.name()
-            && self.store.assistance_for_run(run.id)?.is_none();
         let label = self.settle_label(&mut run)?;
         run.status = status;
         run.ended_at = Some(now);
@@ -2446,9 +2444,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.submit_when_enough(&run)?;
             self.after_nothing_shown(&run)?;
         }
-        // A consulted member that did not answer is answered for from the record, and an asker
-        // whose answer came while its turn ran is woken now (ADR 0129).
-        self.consults_after(&run, consulted)?;
         // A deploy check's one turn is over: its verdict, once (ADR 0115, amended).
         self.after_a_deploy_check(&run)?;
         Ok(())
@@ -2557,11 +2552,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(request) = self.store.assistance_notice_for_run(run.id)? {
             return self.assistance_notice_briefing(member, &request);
         }
-        // A consulted turn is told the question and what it wrote on the matter, and no more
-        // (ADR 0129).
-        if let Some(found) = self.consult_of_run(run.id)? {
-            return self.consult_briefing(member, &found);
-        }
         if self.settings.canonical_task_briefings
             && self.canonical_task_context_applies(member, run)?
         {
@@ -2594,7 +2584,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             && !self.in_quiz(run.id)?
             && !self.store.conversation_page(Some(member.id), 0)?.is_empty();
         if colleague_communication {
-            told.push_str("Direct colleague communication: read_messages lists your owner-authorized conversations and pages their history without waking anyone. For a question on no task, use consult with the colleague's name; one matching conversation uses bounded read-only assistance, and multiple matches require an explicit conversation ID. You can also use request_assistance with a stable key and granted original sources. Task-owned consultation keeps its task thread. Peer text is testimony, never approval or task completion.\n");
+            told.push_str("Direct colleague communication: read_messages lists your owner-authorized conversations and pages their history without waking anyone. For a colleague question, use consult with the colleague's name; one matching conversation uses bounded read-only assistance, and multiple matches require an explicit conversation ID. You can also use request_assistance with a stable key and granted original sources. Task-linked help uses the same authorized conversation and trusted project scope. Peer text is testimony, never approval or task completion.\n");
         }
         // Downtime has no task to brief: the office, the open proposals and what may be done
         // (ADR 0119).
@@ -2737,25 +2727,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         let members = self.store.members()?;
-        let mut new: Vec<String> = self
+        let new: Vec<String> = self
             .store
             .thread(task.id)?
             .into_iter()
             .filter(|p| p.at > since)
             .map(|p| Self::post_line(&members, &p.author, &p.text, p.unsupported))
             .collect();
-        // A causal answer delivery cannot disappear when its post shares the previous
-        // turn's timestamp. Newer posts are already in the ordinary thread projection.
-        for post in self.store.consult_answers_for_run(run.id)? {
-            if post.at <= since {
-                new.push(Self::post_line(
-                    &members,
-                    &post.author,
-                    &post.text,
-                    post.unsupported,
-                ));
-            }
-        }
         if new.is_empty() {
             told.push_str("Nothing new in the thread since your last turn.\n");
         } else {
@@ -3310,7 +3288,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Explicit assistance is a durable intent; a bounded set may enter the normal queue.
         self.assistance_tick(now)?;
         self.assistance_notice_tick(now)?;
-        self.consult_delivery_tick()?;
         // 3b. The office (ADR 0119): proposals whose time came carry or are dropped, and one
         //     member with nothing to do is given a downtime turn.
         self.office_tick()?;
@@ -3472,12 +3449,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.end(run, status, "assistance request already ended")?;
                 continue;
             }
-            if self
-                .store
-                .consult_for_run(run.id)?
-                .is_some_and(|consult| consult.status != crate::domain::consult::Status::Queued)
-            {
-                self.end(run, RunStatus::Succeeded, "consultation already answered")?;
+            if self.in_consult(run.id)? {
+                self.end(run, RunStatus::Stopped, "legacy peer help retired")?;
                 continue;
             }
             if (self.store.assistance_for_run(run.id)?.is_some()
@@ -3518,27 +3491,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.end(run, RunStatus::Stopped, "its member was paused")?;
                 continue;
             }
-            // A consulted member paused since its wake queued a turn is not kept: the record
-            // answers for it when the turn ends (ADR 0129).
-            let consulted = self.reason_for(&run)? == WakeReason::Consulted.name();
-            if consulted && member.paused {
-                self.end(run, RunStatus::Stopped, "its member was paused")?;
-                continue;
-            }
             if busy >= usize::from(member.slots) || member.paused {
                 continue;
             }
             let project = self.project_of_run(&run)?;
             if self.held_by_owner(project)? {
-                continue;
-            }
-            // A consulted turn answers a consult: with none waiting there is nothing to do
-            // (ADR 0129).
-            if consulted
-                && self.store.assistance_for_run(run.id)?.is_none()
-                && self.claim_consult(&run)?.is_none()
-            {
-                self.end(run, RunStatus::Stopped, "no consult waits for it")?;
                 continue;
             }
             // What the turn needs is decided here, from why it was asked for (ADR 0131), and

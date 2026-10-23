@@ -1398,15 +1398,15 @@ mod tests {
             st.hq.store().consults().unwrap().is_empty(),
             "v2 must not enter the legacy engine"
         );
-        // The explicit v1 endpoint still honors its current-major record fallback.
-        let legacy = json_of(
-            app.oneshot(call("POST", "/v1/team/mcp", Some(&work.turn.token), &body))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(legacy["result"]["isError"], false, "{legacy}");
-        assert_eq!(st.hq.store().consults().unwrap().len(), 1);
+        // An authenticated old caller receives an explicit upgrade boundary.
+        let legacy = app
+            .oneshot(call("POST", "/v1/team/mcp", Some(&work.turn.token), &body))
+            .await
+            .unwrap();
+        assert_eq!(legacy.status(), StatusCode::GONE);
+        let legacy = json_of(legacy).await;
+        assert!(legacy["error"].as_str().unwrap().contains("/v2/team/mcp"));
+        assert!(st.hq.store().consults().unwrap().is_empty());
         assert_eq!(
             st.hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
                 .as_array()
@@ -1870,13 +1870,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retired_team_v1_requires_a_live_token_and_never_dispatches_a_batch() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let app = app(st.clone());
+        let body = json!([
+            {"jsonrpc":"2.0","id":1,"method":"initialize"},
+            {"jsonrpc":"2.0","id":2,"method":"tools/list"},
+            {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"consult","arguments":{"member":"Member 2","question":"Fixture?"}}},
+            {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"answer_consult","arguments":{"answer":"Fixture answer"}}}
+        ]).to_string();
+        let before = (
+            st.hq.store().runs().unwrap().len(),
+            st.hq.wakes().unwrap().len(),
+        );
+        for token in [None, Some(TOKEN), Some("not-a-turn")] {
+            let res = app
+                .clone()
+                .oneshot(call("POST", "/v1/team/mcp", token, &body))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        }
+        let res = app
+            .clone()
+            .oneshot(call("POST", "/v1/team/mcp", Some(&turn.token), &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::GONE);
+        assert!(
+            json_of(res).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("/v2/team/mcp")
+        );
+        assert_eq!(
+            before,
+            (
+                st.hq.store().runs().unwrap().len(),
+                st.hq.wakes().unwrap().len()
+            )
+        );
+        scripted(&st).finish(turn.run, true);
+        st.hq.tick().unwrap();
+        let res = app
+            .oneshot(call("POST", "/v1/team/mcp", Some(&turn.token), &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn mcp_answers_batches_and_never_answers_a_notification() {
         let st = state(true);
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
         let app = app(st.clone());
         let speak = |body: serde_json::Value| {
-            call("POST", "/v1/team/mcp", Some(&turn.token), &body.to_string())
+            call("POST", "/v2/team/mcp", Some(&turn.token), &body.to_string())
         };
         let batch = json_of(
             app.clone()
@@ -1937,7 +1989,7 @@ mod tests {
                 .clone()
                 .oneshot(call(
                     "POST",
-                    "/v1/team/mcp",
+                    "/v2/team/mcp",
                     token,
                     &rpc(1, "tools/list", json!({})),
                 ))
@@ -1945,7 +1997,7 @@ mod tests {
                 .unwrap();
             assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{token:?}");
         }
-        let speak = |body: String| call("POST", "/v1/team/mcp", Some(&turn.token), &body);
+        let speak = |body: String| call("POST", "/v2/team/mcp", Some(&turn.token), &body);
         let hello = json_of(
             app.clone()
                 .oneshot(speak(rpc(
@@ -1989,11 +2041,12 @@ mod tests {
         // (ADR 0120). It reads the world, tells stories (a lesson is one now), confirms and
         // retires what it stewards, and proposes canon (ADR 0122). And it may play chess (ADR 0121).
         // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
-        // keeps (ADR 0126). And it asks the record and consults (ADR 0129); the answers to a
-        // consult and to the quiz are the tools of those turns alone (ADR 0131, amended). And it
+        // keeps (ADR 0126). It asks the record; peer help is absent while disabled.
+        // The quiz's answer belongs only to its own turn (ADR 0131, amended). And it
         // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
         // for work in its area (ADR 0133).
-        assert_eq!(names.len(), 38, "{names:?}");
+        assert_eq!(names.len(), 37, "{names:?}");
+        assert!(!names.contains(&"consult") && !names.contains(&"answer_consult"));
         assert!(names.contains(&"recheck"));
         assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"narrow_criteria"));

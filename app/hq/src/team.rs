@@ -31,7 +31,6 @@ fn answer(
     run: &endora_team::application::ports::Run,
     member: &endora_team::domain::Member,
     msg: &Value,
-    canonical: bool,
 ) -> Option<Value> {
     // A notification has no id, and no answer.
     let id = msg.get("id")?;
@@ -53,17 +52,13 @@ fn answer(
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "endora-hq", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": if canonical {
-                    "Endora team protocol v2. Call my_turn first. Peer consultation uses authorized conversations and answer_assistance; no task-thread or record-fallback consultation."
-                } else {
-                    "Call my_turn first. You are one member of a team: use only these tools, and end your turn when your part is done."
-                },
+                "instructions": "Endora team protocol v2. Call my_turn first. Peer consultation uses authorized conversations and answer_assistance; no task-thread or record-fallback consultation.",
             })
         }
         "ping" => json!({}),
         // The role's tools, and the one tool of the special turn this is (a quiz, a consult).
         "tools/list" => {
-            json!({ "tools": if canonical { protocol::tools_in_v2(hq, run, member) } else { protocol::tools_in(hq, run, member) } })
+            json!({ "tools": protocol::tools_in_v2(hq, run, member) })
         }
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
@@ -71,11 +66,7 @@ fn answer(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let called = if canonical {
-                protocol::call_v2(hq, run, member, name, &args)
-            } else {
-                protocol::call(hq, run, member, name, &args)
-            };
+            let called = protocol::call_v2(hq, run, member, name, &args);
             let (text, failed) = match called {
                 Ok(text) => (text, false),
                 Err(text) => (text, true),
@@ -120,15 +111,18 @@ async fn mcp_for(state: State, headers: HeaderMap, msg: Value, canonical: bool) 
         let Ok(Some((run, member))) = hq.turn_of(&token) else {
             return Err(StatusCode::UNAUTHORIZED);
         };
+        if !canonical {
+            return Err(StatusCode::GONE);
+        }
         let Value::Array(batch) = msg else {
-            return Ok(answer(hq.as_ref(), &run, &member, &msg, canonical));
+            return Ok(answer(hq.as_ref(), &run, &member, &msg));
         };
         if batch.is_empty() {
             return Ok(Some(error(&Value::Null, -32600, "an empty batch")));
         }
         let answers: Vec<Value> = batch
             .iter()
-            .filter_map(|m| answer(hq.as_ref(), &run, &member, m, canonical))
+            .filter_map(|m| answer(hq.as_ref(), &run, &member, m))
             .collect();
         if answers.is_empty() {
             return Ok(None);
@@ -138,6 +132,11 @@ async fn mcp_for(state: State, headers: HeaderMap, msg: Value, canonical: bool) 
     .await;
     match answered {
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Err(StatusCode::GONE)) => (
+            StatusCode::GONE,
+            Json(json!({ "error": "team protocol v1 is retired; configure /v2/team/mcp" })),
+        )
+            .into_response(),
         Ok(Err(status)) => (
             status,
             Json(json!({ "error": "no running turn has that token" })),

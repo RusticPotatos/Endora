@@ -1,13 +1,10 @@
-//! The team protocol's tools for asking the past (ADR 0129): `ask_record`, which searches what
-//! the team said and wakes no one; `consult`, a question to a member that takes one short turn of
-//! theirs; and `answer_consult`, with which a consulted member answers. The engine's rules decide
-//! every call.
+//! Explicit historical search and canonical colleague assistance (ADRs 0129/0138).
+//! Historical testimony never substitutes automatically for a live peer answer.
 
 use serde_json::{Value, json};
 
 use super::engine::Engine;
 use super::ports::{Clock, Run, TeamStore, WorkerAdapter};
-use crate::domain::consult;
 use crate::domain::record;
 use crate::domain::{Member, TaskId};
 
@@ -19,9 +16,7 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
     })
 }
 
-/// The history's tools every member is offered (the CEO's consult is held to leads by the
-/// engine, not by what it is offered), but not the consulted member's answer, which is its own
-/// turn's ([`answer_consult_tool`]).
+/// Explicit historical search and the canonical colleague-assistance adapter.
 #[must_use]
 pub fn tools() -> Vec<Value> {
     vec![
@@ -38,31 +33,17 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "consult",
-            "Ask a colleague directly. With a task, the answer returns in your task thread; an unavailable expert uses labelled record fallback, and the CEO consults leads only. Repeating the same colleague, question, thread and topic in one turn reuses that request. With no task argument and a taskless turn, use an existing owner-authorized conversation: one matching pair routes automatically to bounded read-only assistance; select conversation explicitly if ambiguous. That result returns in the conversation, and a paused expert waits within its deadline. Taskless evidence must already be granted. Consult and assistance share at most two new requests per turn and six per day. Consulted work runs on the local model. Try ask_record first. Ask the owner with ask_owner.",
+            "Ask a colleague through an owner-authorized conversation and bounded read-only assistance. Select the conversation when more than one scope matches the pair. The result stays in that conversation; there is no task-thread answer or automatic record fallback. Sources must already be granted. At most two new requests per turn and six per day. Use ask_owner for owner decisions.",
             json!({
                 "member": { "type": "string", "description": "the member's name" },
                 "question": { "type": "string", "maxLength": record::QUESTION_MOST },
-                "task": { "type": "integer", "description": "the task the question is about (what they wrote on it is read to them); the answer goes in your own task's thread, or this one when your turn is about none" },
-                "conversation": { "type": "integer", "minimum":1, "description": "For a taskless question, an existing owner-authorized conversation with this colleague. Required when more than one matches. With no task and one matching conversation, consult uses bounded assistance automatically." },
-                "key": { "type": "string", "minLength":8, "maxLength":64, "description":"Optional stable retry key for taskless assistance; otherwise derived from this turn and question." },
-                "evidence": { "type":"array", "maxItems":5, "items":{"type":"string"}, "description":"Original document/receipt locators already granted to the selected taskless conversation." },
+                "conversation": { "type": "integer", "minimum":1, "description": "An existing owner-authorized conversation with this colleague; required when more than one matches." },
+                "key": { "type": "string", "minLength":8, "maxLength":64, "description":"Optional stable retry key for assistance; otherwise derived from this turn and question." },
+                "evidence": { "type":"array", "maxItems":5, "items":{"type":"string"}, "description":"Original document/receipt locators already granted to the selected conversation." },
             }),
             &["member", "question"],
         ),
     ]
-}
-
-/// The tool a consulted member answers with. Offered in a consulted turn and in no other (ADR
-/// 0131, amended): a tool only a consulted member can use is not one more for every other turn
-/// to choose among.
-#[must_use]
-pub fn answer_consult_tool() -> Value {
-    tool(
-        "answer_consult",
-        "Answer the colleague who consulted you (your turn says so): in a few sentences, from what you know and the record; say so if you do not know. It is posted in their thread and wakes them. Then stop.",
-        json!({ "answer": { "type": "string", "maxLength": consult::ANSWER_MOST } }),
-        &["answer"],
-    )
 }
 
 fn text<'a>(args: &'a Value, key: &str) -> &'a str {

@@ -572,6 +572,9 @@ fn receipt_from(name: &str, refused: Option<&str>) -> Stored<Receipt> {
     })
 }
 
+const WAKE_BY_ID: &str =
+    "SELECT id,member,task,reason,receipt,refused,run,at_ms,by_owner FROM wakes WHERE id=?1";
+
 fn wake_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<(Wake, String, Option<String>)> {
     let reason: String = row.get(3)?;
     Ok((
@@ -1489,6 +1492,20 @@ impl TeamStore for SqliteTeamStore {
                 Ok(wake)
             })
             .collect()
+    }
+
+    fn wake(&self, id: WakeId) -> Stored<Option<Wake>> {
+        let found = self
+            .conn()?
+            .query_row(WAKE_BY_ID, [id.0], wake_from)
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(mut wake, receipt, refused)| {
+                wake.receipt = receipt_from(&receipt, refused.as_deref())?;
+                Ok(wake)
+            })
+            .transpose()
     }
 
     fn add_run(

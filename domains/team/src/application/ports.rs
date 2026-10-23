@@ -623,6 +623,10 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn held_wakes(&self, task: TaskId) -> Stored<Vec<Wake>>;
+    /// One wake by its stable ID, without reading retained wake history.
+    /// # Errors
+    /// A store failure or corrupt matching record.
+    fn wake(&self, id: WakeId) -> Stored<Option<Wake>>;
     /// Every wake, oldest first.
     ///
     /// # Errors

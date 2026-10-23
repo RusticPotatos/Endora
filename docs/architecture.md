@@ -9,17 +9,22 @@
 Accepted collaboration target ([ADR 0138](adr/0138-one-conversation-and-assistance-lifecycle.md)):
 one conversation/assistance lifecycle replaces legacy task-thread consultation
 execution, while the existing Work UI retains readable historical conversations
-and task/run links. Current branch code still has both execution paths; retirement,
-history migration and live cutover are required before calling this complete.
+and task/run links. The old application consultation scheduler and record-answer
+fallback have been removed. Legacy storage writer removal, migration rehearsal
+and live cutover remain required before calling this complete.
 The migration boundary now includes HQ `/v2/team/mcp` and the node's team-only
 `/team-gateway/v2/mcp`, which select canonical assistance semantics. Worker/runner
-defaults now use v2 and reject stale configured routes; v1 server compatibility
-remains until the explicit cutover. Task-linked v2 admission now checks
+defaults use v2 and reject stale configured routes. The v1 worker endpoint
+authenticates first, then returns HTTP 410 with the supported route.
+Before publishing HTTP, HQ startup cancels legacy questions, stops and settles
+their expert runs, preserving ordinary task work and canonical assistance.
+Cleanup failure aborts startup and remains recoverable. Task-linked v2 admission checks
 the authorized conversation against trusted task/project context, including
 transactional revalidation and original-task replay identity. Atomic content/source
-readers and a default-off internal selector for smaller source-classified ordinary
-task briefings are implemented. Specialized task briefings retain their old guard;
-the selector is temporary migration wiring, to be removed with the legacy path.
+readers and smaller source-classified ordinary task briefings are implemented.
+The service candidate selects them; the temporary internal selector remains
+until the context responsibility audit is complete. Specialized task briefings
+retain their conservative input guard.
 This is not a completed production cutover.
 
 Retained task questions have a bounded owner-only projection through
@@ -27,7 +32,8 @@ Retained task questions have a bounded owner-only projection through
 inspector. Exact original IDs, project snapshots and answer-post associations
 are retained; missing links remain unavailable. Reading history creates no
 conversation permissions or work. This separates historical inspection from
-the legacy execution code still awaiting retirement.
+the retired application execution path; unused legacy storage writers remain
+scheduled for removal.
 
 Endora is a **domain-first modular monolith**. A single authoritative backend —
 the **node** — is the trust boundary. It holds all authority and the secrets. **Endora HQ**
@@ -104,8 +110,10 @@ The owner authorizes fixed project/participant scopes through the node. Existing
 exchange bounded Internal information without creating tasks, wakes or model calls. Conversation
 history is retained until explicit owner deletion; routine access uses indexed cursor pages and
 deletion uses bounded batches. The owner inspects message and content-free operation pages in
-HQ Work. The feature defaults off. Executing assistance, new evidence grants and charging changes
-remain later slices; existing consultation keeps its current path.
+HQ Work. The feature defaults off. Explicit assistance uses one bounded expert
+and requester-result lifecycle, owner-granted original evidence and trusted
+project charging. Ordinary consultation is a thin adapter to that lifecycle;
+it has no task-thread queue or automatic historical-answer substitution.
 
 ## Layers within each context
 
