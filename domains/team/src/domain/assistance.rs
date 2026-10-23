@@ -77,10 +77,12 @@ pub const GRANT_MS: Millis = 24 * 60 * 60 * 1_000;
 pub const SOURCES_MOST: usize = 5;
 /// Maximum objective length before canonicalization.
 pub const OBJECTIVE_MOST: usize = 400;
-/// Existing consultation's per-turn bound, also used by explicit assistance.
-pub const PER_TURN: usize = super::consult::PER_TURN;
-/// Existing consultation's daily requester bound.
-pub const PER_DAY: usize = super::consult::PER_DAY;
+/// Maximum new peer-help requests admitted in one turn.
+pub const PER_TURN: usize = 2;
+/// Maximum new peer-help requests per requester and owner-calendar day.
+pub const PER_DAY: usize = 6;
+/// Maximum read rounds before an expert answers or a verifier finishes.
+pub const READ_ROUNDS: usize = 6;
 
 /// The validated intent presented to the persistence boundary.
 pub struct NewRequest {

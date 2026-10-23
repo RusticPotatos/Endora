@@ -546,6 +546,18 @@ fn a_consult_takes_the_experts_short_turn_and_answers_in_the_askers_thread_and_w
     let run = hq.store().run(linus.run).unwrap().unwrap();
     assert_eq!(run.task, None, "a consulted turn is about no task");
     assert!(hq.in_consult(run.id).unwrap());
+    let (_, member) = hq.turn_of(&linus.token).unwrap().unwrap();
+    assert_eq!(super::protocol::tools_in_v2(&hq, &run, &member), json!([]));
+    let versioned = super::protocol::call_v2(
+        &hq,
+        &run,
+        &member,
+        "answer_consult",
+        &json!({"answer":"Wrong protocol"}),
+    )
+    .unwrap_err();
+    assert!(versioned.contains("must finish through team protocol v1"));
+    assert_eq!(hq.store().consults().unwrap()[0].status, Status::Queued);
     assert!(
         hq.wakes()
             .unwrap()

@@ -141,6 +141,16 @@ fn downtime_briefing_lists_authorized_peer_tools_and_keeps_task_creation_refused
             .unwrap();
         let eligible = enabled && has_scope;
         let advertised = super::protocol::tools_in(&hq, &run, &member);
+        let canonical = super::protocol::tools_in_v2(&hq, &run, &member);
+        assert_eq!(
+            canonical
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "consult"),
+            eligible,
+            "v2 must not advertise a legacy fallback when conversation scope is absent"
+        );
         for tool in [
             "read_messages",
             "send_message",
@@ -282,7 +292,7 @@ fn normal_taskless_consult_uses_the_authorized_assistance_path_and_retries_once(
             "{tool}"
         );
     }
-    for _ in 0..crate::domain::consult::ROUNDS {
+    for _ in 0..crate::domain::assistance::READ_ROUNDS {
         super::protocol::call(&hq, &result_run, &result_member, "my_turn", &json!({})).unwrap();
     }
     let exhausted =

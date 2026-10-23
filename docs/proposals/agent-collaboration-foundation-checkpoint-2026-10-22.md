@@ -264,6 +264,104 @@ The owner expanded the final goal after the integration pilots. Execute these
 stages against ADR 0138; do not use the earlier four-gate estimate as a complete
 replacement plan.
 
+### Retirement mapping and cutover contract, 2026-10-23
+
+Repository inspection identifies these production seams. This is a mapping of
+work to perform, not a claim that the listed code has been retired.
+
+| Current seam | Replacement or retained responsibility |
+|---|---|
+| `application/engine/consult.rs`: `consult_in`, claim, record fallback, completion, delivery tick and post-turn hooks | Replace executing consultation with the canonical assistance use case. Move `ask_record`/historical excerpt formatting out before deleting the old lifecycle. |
+| `application/protocol_history.rs`: `consult`, `answer_consult` | Version the incompatible tool contract; the new `consult` enters canonical assistance, and experts use `answer_assistance`. No task-thread/fallback branch in the new contract. |
+| `application/protocol.rs`: tool listing, consulted-turn guard and reply lineage | New contract advertises only its own answer tool and uses the canonical guard. Keep live-token, drain, source lineage and role checks. |
+| `application/engine.rs`: briefing, completion, dispatch/recovery and timestamp-tied answer injection | Replace old consult hooks with canonical associations. Preserve genuine task reporting and decision escalation; peer answers are shown through conversation history/task links, not a second post-and-wake loop. |
+| `application/history_ports.rs`: `ConsultDelivery`, admission/claim/delivery/finish ports | Retire execution ports after callers move. Retain transcript retention, explicit record search and bounded historical reads. |
+| `infrastructure/sqlite/history.rs`: `consults`, `consult_deliveries`, `consult_answer_posts`, `consult_projects` | Preserve rows and exact post/run/project links for historical inspection and cutover audit. No new legacy lifecycle writes after cutover. No guessed post binding from matching text. |
+| `infrastructure/sqlite/assistance.rs` and `sqlite/conversations.rs` | Canonical request/delivery state, atomic acceptance, quotas and charging. Historical quota reads may remain read-only through the transition. |
+| `domain/assistance.rs` importing legacy `consult` limits | Make canonical assistance own its bounds; temporary legacy aliases point toward it, not the other way round. |
+| HQ `app/hq/src/team.rs` and `api.rs` | Add the versioned canonical team entry point without silently changing the current-major tool contract. Remove the old executing entry point at the recorded cutover. |
+| Node `api/gateway.rs`, runner `main.rs`/`runner.rs`, worker `main.rs`/`claude_code.rs`, `scripts/pi-runner.sh`, node bench | Audit and move both direct and proxied callers, including environment overrides and Claude Code's MCP bridge. A default URL change alone is insufficient. |
+| Work `47-hq.js` and `47e-hq-conversations.js`; replay/transcript owner API | Retain existing task and run history. Add bounded legacy consultation inspection where exact questions/results are otherwise missing; link canonical task-associated requests into this same Work home. |
+| `post_in`, `post`, `ask_owner` and worker protocol tools | Retain task status and real authority decisions. Audit implicit question/mention answer wakes so they cannot keep a hidden peer-help engine alive. |
+| Existing consultation scenarios, SQL races and HQ/gateway tests | Replace retired-behavior assertions at cutover; retain history, quota, idempotency, source, budget and recovery guarantees as tests of the canonical path. |
+
+The public worker surface currently uses `/v1/team/mcp`; node gateway and runner
+defaults explicitly point to it. MCP's date-based negotiation identifies the
+transport specification, not Endora's tool semantics. Use an explicit Endora
+team protocol v2 entry point (`/v2/team/mcp` and its versioned node gateway),
+with the existing owner/history APIs unchanged. During migration, v1 retains
+its published behavior. After caller migration and drain, record v1 peer-tool
+retirement as a breaking team-protocol cutover; an old worker must receive an
+explicit upgrade outcome, not silently enter different semantics. The final
+release must contain no v1 execution engine. Transport-version negotiation alone
+cannot claim compatibility with changed tool behavior.
+
+Task-linked execution has a prerequisite the pilots did not exercise:
+`briefing_body` marks every task briefing as unclassified because task bodies and
+thread posts lack immutable input lineage. `Post` currently stores presentation
+author, text, time and an unsupported flag, not an authoritative source run.
+Do not remove the blanket guard to pass a task-linked test. Introduce trustworthy,
+forward-recorded task/post provenance and inherit all actually rendered inputs;
+legacy or missing lineage remains unclassified. Owner input needs a typed owner
+origin, not a display-name match. Preserve permission/source grants and test
+Confidential and unknown-input refusals before enabling task-linked requests.
+
+Canonical task context comes from the authenticated requester's run and trusted
+task/project records, never a model-selected payer. A task project must agree
+with the selected conversation project; absent/mismatched/ambiguous scope fails
+closed. Existing `requester_run` is the durable origin link. Any added task/history
+projection must retain that link and not transfer task ownership or source reach.
+
+Historical migration is read-only where possible: keep task posts/transcripts
+in their current stores and expose stable tagged legacy IDs. Use exact
+`consult_answer_posts` associations when present; older missing associations
+remain explicitly unavailable. Do not copy old rows into an authorized active
+conversation or create grants from them. Drain old live work before the final
+engine removal, and explicitly cancel anything that cannot safely drain; retain
+the outcome. Rehearse twice against a copied populated store and compare counts,
+IDs, links, ordering and stopped/restart state before a live cutover.
+
+The first implementation slice now makes canonical assistance own the unchanged
+two-per-turn, six-per-day and six-read bounds; legacy constants temporarily alias
+the canonical values. The new HQ `/v2/team/mcp` and team-listener-only node
+`/team-gateway/v2/mcp` reuse the token/authority/drain gates. V2 `consult` always
+selects canonical assistance, rejects task-routing/authority fields and the old
+answer tool, and never selects automatic record fallback. Tool advertising omits
+new peer sends when the scope/policy/input state cannot permit them. A v2
+`my_turn` states its contract explicitly while retaining the original stored
+briefing and final drain notice. Legacy expert turns must finish through v1.
+
+The actual HQ HTTP regression first failed on the missing route, then passed
+authentication, malformed/forged options, canonical retry identity, paused-peer
+waiting and zero carrier/legacy requests. It also verifies an actual task turn
+is refused by v2 before any legacy admission while v1 retains its published
+record-fallback behavior. Node tests prove the exact v2 upstream path, unchanged
+worker token/body, no node-owner credential leakage and exclusion from the owner
+listener. Further red-first checks corrected unavailable-scope tool advertising
+and the missing v2 `my_turn` contract. The existing legacy-expert scenario also
+proves v2 cannot finish that old request and v1 still can.
+
+Worker, runner and Claude Code defaults have not switched. Neither lifecycle has
+been deleted and no deployment or inference is included in this slice. The
+versioned boundary is a migration step, not completion of ADR 0138.
+
+The complete repository gate passed for this boundary: formatting, workspace
+Clippy with denied warnings, all-feature tests, console, configured personal-value,
+collection parity and whitespace checks. No client/device behavior changed.
+Private red/green captures and final gate logs are under `.local/team-v2-*.log`
+and `.local/team-v2-gate/`. The unrelated baseline-script edit is excluded.
+
+The next implementation is forward-recorded typed input provenance for task
+work, before allowing task-linked canonical admission. Cover task title/body,
+criteria, rendered parent/goal context and posts actually supplied to a turn;
+tracking only one clean new post must not relabel the rest of a legacy thread.
+Record real owner or source-run identity at the authenticated write, preserve
+Confidential inheritance, detect untracked text changes and leave old/missing
+origins unclassified. Test ownership/display-name forgery, rename, restart,
+legacy migration and source changes. Keep the blanket task guard until the
+complete rendered-input classification can replace it safely. History/UI
+preservation can progress independently while this prerequisite is implemented.
+
 1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
    tools, request/delivery records, scheduler branches and UI readers in the old
    `consult` path. Mark each canonical replacement, thin adapter, historical

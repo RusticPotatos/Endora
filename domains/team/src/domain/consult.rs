@@ -10,13 +10,13 @@ use super::history::HistoryRefusal;
 use super::work::{Member, MemberId, Millis, Role, RunId, TaskId};
 
 /// The most consults one turn makes.
-pub const PER_TURN: usize = 2;
+pub const PER_TURN: usize = super::assistance::PER_TURN;
 
 /// The most consults one member makes in a day.
-pub const PER_DAY: usize = 6;
+pub const PER_DAY: usize = super::assistance::PER_DAY;
 
 /// The most rounds a consulted member's turn takes before it must answer.
-pub const ROUNDS: usize = 6;
+pub const ROUNDS: usize = super::assistance::READ_ROUNDS;
 
 /// The most characters of a consult's answer.
 pub const ANSWER_MOST: usize = 1_200;

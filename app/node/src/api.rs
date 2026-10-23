@@ -689,6 +689,7 @@ fn relay_routes() -> Router<AppState> {
         // The team gateway (ADR 0110): HQ's two doors for callers on the house's network,
         // passed on untouched.
         .route("/team-gateway/mcp", axum::routing::any(gateway::mcp))
+        .route("/team-gateway/v2/mcp", axum::routing::any(gateway::mcp_v2))
         .route(
             "/team-gateway/runner/{*route}",
             axum::routing::any(gateway::runner),

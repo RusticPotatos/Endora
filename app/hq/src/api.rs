@@ -193,6 +193,7 @@ pub fn app(state: State) -> Router {
         .route("/health", get(health))
         // A worker's door: its turn's token, not the node's (spec section 6).
         .route("/v1/team/mcp", post(crate::team::mcp))
+        .route("/v2/team/mcp", post(crate::team::mcp_v2))
         // A runner's door: the runner's token, not the node's.
         .merge(crate::runner::routes(state.clone()))
         // A check job's report (ADR 0115): the job's own token, which HQ made for it.
@@ -1229,6 +1230,179 @@ mod tests {
 
     const TOKEN: &str = "a-token-of-at-least-thirty-two-characters";
     const RUNNER: &str = "a-runner-token-of-at-least-thirty-two-chars";
+
+    #[tokio::test]
+    async fn team_v2_consult_admits_only_canonical_requests_and_never_record_fallback() {
+        use endora_team::application::history_ports::HistoryStore as _;
+        use endora_team::domain::WakeReason;
+        let st = state(false);
+        let lead = st.hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let requester = st.hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        let expert = st.hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+        let goal = st.hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = st.hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+        st.hq.set_conversations_enabled(true).unwrap();
+        let conversation = st
+            .hq
+            .create_conversation(project, [requester, expert])
+            .unwrap();
+        st.hq.pause(expert, true).unwrap();
+        st.hq.wake(requester, None, WakeReason::Downtime).unwrap();
+        st.hq.tick().unwrap();
+        let handed = st.hq.runner().remote().unwrap().next().unwrap();
+        assert_eq!(handed.turn.member, requester);
+        let app = app(st.clone());
+        for token in [None, Some(TOKEN), Some("foreign-turn")] {
+            let response = app
+                .clone()
+                .oneshot(call(
+                    "POST",
+                    "/v2/team/mcp",
+                    token,
+                    r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let rpc = |name: &str, arguments: serde_json::Value| {
+            call(
+                "POST",
+                "/v2/team/mcp",
+                Some(&handed.turn.token),
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":name,"arguments":arguments}})
+                .to_string(),
+            )
+        };
+        for (name, args) in [
+            ("answer_consult", json!({"answer":"Not a legacy expert"})),
+            (
+                "consult",
+                json!({"member":"Member 3","question":"Fixture?","task":1}),
+            ),
+            (
+                "consult",
+                json!({"member":"Member 3","question":"Fixture?","payer":project.0}),
+            ),
+        ] {
+            let response = json_of(app.clone().oneshot(rpc(name, args)).await.unwrap()).await;
+            assert_eq!(response["result"]["isError"], true, "{response}");
+        }
+        let args = json!({"member":"Member 3","question":"Which fixture dependency failed?"});
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(rpc("consult", args.clone()))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let response = json_of(response).await;
+            assert_eq!(response["result"]["isError"], false, "{response}");
+            let acceptance: serde_json::Value =
+                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(acceptance["conversation"], conversation);
+            assert_eq!(acceptance["state"], "queued");
+            ids.push(acceptance["request"].clone());
+        }
+        assert_eq!(ids[0], ids[1]);
+        assert!(st.hq.store().consults().unwrap().is_empty());
+        assert!(st.hq.store().tasks().unwrap().is_empty());
+        let page = st.hq.assistance_requests_page(conversation, 0).unwrap();
+        assert_eq!(page["requests"].as_array().unwrap().len(), 1);
+        assert!(page["requests"][0]["answer"].is_null());
+        let listing = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v2/team/mcp",
+                    Some(&handed.turn.token),
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let tools = listing["result"]["tools"].as_array().unwrap();
+        assert!(!tools.iter().any(|t| t["name"] == "answer_consult"));
+        let consult = tools.iter().find(|t| t["name"] == "consult").unwrap();
+        assert!(consult["inputSchema"]["properties"].get("task").is_none());
+        let briefing = json_of(
+            app.clone()
+                .oneshot(rpc("my_turn", json!({})))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            briefing["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Endora team protocol v2")
+        );
+        assert!(
+            st.hq
+                .runner()
+                .remote()
+                .unwrap()
+                .ended(handed.turn.run, handed.lease, true)
+        );
+        let task = st
+            .hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: Some(project),
+                    parent: None,
+                    title: "Fixture work".into(),
+                    description: "Diagnose the fixture".into(),
+                    assignee: Some(requester),
+                    priority: Priority::Normal,
+                    waits_on: vec![],
+                },
+            )
+            .unwrap();
+        st.hq.tick().unwrap();
+        let work = st.hq.runner().remote().unwrap().next().unwrap();
+        assert_eq!(work.turn.task, Some(task));
+        let body = json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"consult","arguments":args}})
+        .to_string();
+        let denied = json_of(
+            app.clone()
+                .oneshot(call("POST", "/v2/team/mcp", Some(&work.turn.token), &body))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            denied["result"]["isError"], true,
+            "task lineage is not migrated: {denied}"
+        );
+        assert!(
+            st.hq.store().consults().unwrap().is_empty(),
+            "v2 must not enter the legacy engine"
+        );
+        // The explicit v1 endpoint still honors its current-major record fallback.
+        let legacy = json_of(
+            app.oneshot(call("POST", "/v1/team/mcp", Some(&work.turn.token), &body))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(legacy["result"]["isError"], false, "{legacy}");
+        assert_eq!(st.hq.store().consults().unwrap().len(), 1);
+        assert_eq!(
+            st.hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     #[tokio::test]
     async fn conversation_owner_routes_are_signed_and_disabled_until_selected() {

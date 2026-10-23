@@ -871,6 +871,100 @@ fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("`{key}` is needed"))
 }
 
+/// Team protocol v2 advertises only the canonical conversation contract. Legacy
+/// expert turns must finish through v1 before the versioned cutover.
+#[must_use]
+pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+) -> Value {
+    if !matches!(engine.in_consult(run.id), Ok(false)) {
+        return json!([]);
+    }
+    let mut tools = tools_in(engine, run, member);
+    if let Some(list) = tools.as_array_mut() {
+        let can_send = run.task.is_none()
+            && member.role != Role::Ceo
+            && engine.conversation_turn_ready(run.id).unwrap_or(false)
+            && !engine.store().run_read_confidential(run.id).unwrap_or(true)
+            && engine
+                .conversation_directory(Some(member.id), 0)
+                .ok()
+                .is_some_and(|directory| {
+                    directory["conversations"]
+                        .as_array()
+                        .is_some_and(|scopes| !scopes.is_empty())
+                });
+        list.retain(|tool| {
+            tool["name"] != "answer_consult"
+                && (can_send
+                    || !matches!(
+                        tool["name"].as_str(),
+                        Some("consult" | "request_assistance" | "send_message")
+                    ))
+        });
+        for tool in list.iter_mut().filter(|tool| tool["name"] == "consult") {
+            tool["description"] = json!(
+                "Ask a colleague through one owner-authorized conversation and bounded read-only assistance. No task-thread answer or automatic record fallback is created. A paused peer waits within the request deadline. Use read_messages to discover the scope and cite only granted original sources."
+            );
+            if let Some(properties) = tool["inputSchema"]["properties"].as_object_mut() {
+                properties.remove("task");
+                properties["conversation"]["description"] = json!(
+                    "Owner-authorized conversation; select explicitly when more than one scope matches this pair."
+                );
+                properties["key"]["description"] = json!(
+                    "Optional stable retry key; otherwise derived from this turn and question."
+                );
+                properties["evidence"]["description"] = json!(
+                    "Original document/receipt locators already granted to the selected conversation."
+                );
+            }
+            tool["inputSchema"]["additionalProperties"] = json!(false);
+        }
+    }
+    tools
+}
+
+/// Run a v2 tool through the existing token, authority, lineage and drain gates.
+/// This adapter cannot select the legacy task-thread consultation lifecycle.
+/// # Errors
+/// Retired/invalid arguments, a legacy expert turn, or a policy refusal.
+pub fn call_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+    tool: &str,
+    args: &Value,
+) -> Result<String, String> {
+    if engine.in_consult(run.id).map_err(|e| said(&e))? {
+        return Err("this legacy expert turn must finish through team protocol v1".into());
+    }
+    if tool == "answer_consult" {
+        return Err("answer_consult is retired in team protocol v2; only an assigned assistance expert may use answer_assistance".into());
+    }
+    if tool != "consult" {
+        let mut result = call(engine, run, member, tool, args)?;
+        if tool == "my_turn" {
+            result.insert_str(0, "Endora team protocol v2: peer help uses authorized conversations and answer_assistance. Any task-thread consultation or record-fallback guidance in the saved turn below belongs to v1 and does not apply to this endpoint. Task-linked peer help remains unavailable until its source-provenance cutover. Task reporting, acceptance and owner-decision authority are unchanged.\n\n");
+        }
+        return Ok(result);
+    }
+    let mut canonical = args
+        .as_object()
+        .ok_or("consult arguments must be an object")?
+        .clone();
+    if canonical.keys().any(|key| {
+        !["member", "question", "conversation", "key", "evidence"].contains(&key.as_str())
+    }) {
+        return Err("team protocol v2 consult accepts conversation scope, not task routing or caller-supplied authority".into());
+    }
+    // The current-major adapter selects assistance when any conversation option
+    // is present. An explicit empty evidence list is canonical, not a grant.
+    canonical.entry("evidence").or_insert_with(|| json!([]));
+    call(engine, run, member, tool, &Value::Object(canonical))
+}
+
 /// Runs one tool for a turn. `Ok` is what the worker reads back; `Err` is a refusal it reads
 /// as a tool error, said so that it can do something about it.
 ///

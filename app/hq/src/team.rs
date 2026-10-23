@@ -31,6 +31,7 @@ fn answer(
     run: &endora_team::application::ports::Run,
     member: &endora_team::domain::Member,
     msg: &Value,
+    canonical: bool,
 ) -> Option<Value> {
     // A notification has no id, and no answer.
     let id = msg.get("id")?;
@@ -52,19 +53,30 @@ fn answer(
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "endora-hq", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Call my_turn first. You are one member of a team: use only these tools, and end your turn when your part is done.",
+                "instructions": if canonical {
+                    "Endora team protocol v2. Call my_turn first. Peer consultation uses authorized conversations and answer_assistance; no task-thread or record-fallback consultation."
+                } else {
+                    "Call my_turn first. You are one member of a team: use only these tools, and end your turn when your part is done."
+                },
             })
         }
         "ping" => json!({}),
         // The role's tools, and the one tool of the special turn this is (a quiz, a consult).
-        "tools/list" => json!({ "tools": protocol::tools_in(hq, run, member) }),
+        "tools/list" => {
+            json!({ "tools": if canonical { protocol::tools_in_v2(hq, run, member) } else { protocol::tools_in(hq, run, member) } })
+        }
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
             let args = params
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let (text, failed) = match protocol::call(hq, run, member, name, &args) {
+            let called = if canonical {
+                protocol::call_v2(hq, run, member, name, &args)
+            } else {
+                protocol::call(hq, run, member, name, &args)
+            };
+            let (text, failed) = match called {
                 Ok(text) => (text, false),
                 Err(text) => (text, true),
             };
@@ -83,6 +95,19 @@ pub async fn mcp(
     headers: HeaderMap,
     Json(msg): Json<Value>,
 ) -> Response {
+    mcp_for(state, headers, msg, false).await
+}
+
+/// The versioned canonical conversation contract, using the same turn-token door.
+pub async fn mcp_v2(
+    Extract(state): Extract<State>,
+    headers: HeaderMap,
+    Json(msg): Json<Value>,
+) -> Response {
+    mcp_for(state, headers, msg, true).await
+}
+
+async fn mcp_for(state: State, headers: HeaderMap, msg: Value, canonical: bool) -> Response {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -96,14 +121,14 @@ pub async fn mcp(
             return Err(StatusCode::UNAUTHORIZED);
         };
         let Value::Array(batch) = msg else {
-            return Ok(answer(hq.as_ref(), &run, &member, &msg));
+            return Ok(answer(hq.as_ref(), &run, &member, &msg, canonical));
         };
         if batch.is_empty() {
             return Ok(Some(error(&Value::Null, -32600, "an empty batch")));
         }
         let answers: Vec<Value> = batch
             .iter()
-            .filter_map(|m| answer(hq.as_ref(), &run, &member, m))
+            .filter_map(|m| answer(hq.as_ref(), &run, &member, m, canonical))
             .collect();
         if answers.is_empty() {
             return Ok(None);

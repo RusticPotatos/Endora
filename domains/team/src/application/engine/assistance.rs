@@ -269,7 +269,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .setting(&key)?
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        if used >= crate::domain::consult::ROUNDS {
+        if used >= assistance::READ_ROUNDS {
             let why = if answering {
                 "this assistance turn has used its six read rounds; answer now"
             } else {
