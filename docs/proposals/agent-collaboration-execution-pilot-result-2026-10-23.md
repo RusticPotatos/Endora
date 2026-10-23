@@ -313,3 +313,47 @@ Private traces, final responses, accounting checks and cleanup verification are
 retained in `.local/agent-collaboration-pilot-shared-runtime/`. The full passing
 application gate for `07eedb8d` is reused for this prose-only result update, with
 fresh personal-value, local-link and whitespace checks.
+
+## Quality follow-up contract
+
+The owner's continuation authorizes the next bounded follow-up under the same
+accepted shared-runtime boundary. Before another inference, both actual expert
+and result briefings now require separating original observations, explicitly
+labelled inference and remaining unknowns. They prohibit ruling out other causes
+or predicting successful repair without evidence. A rendered-handoff regression
+failed before this guidance and passed afterward. This is prompt guidance, not
+a deterministic guarantee of factual model output; capability policy still
+authorizes every action independently.
+
+The next private fixture gateway intersects the real application's advertised
+tool list with its existing stage allowlist, preserving schemas and call-time
+argument/source checks. It adds no tool and grants no access. Real HTTP tests
+first exposed the advertised/refused mismatch at all three stages, then passed
+after filtering. A permissive-discovery negative control failed at every stage.
+Replay of the completed pilot's actual tool lists leaves only `my_turn`,
+`read_assistance_source` and, for the expert, `answer_assistance`. The three
+previously refused notebook/world calls are now unadvertised. The completed
+pilot packet is preserved unchanged; preparation uses separate private packets.
+
+Freeze one new operator-started quality diagnostic: same original source bytes,
+pair/project, model/runtime/context, explicit 4,096-token output limit, six
+rounds per worker and prior 20-minute/eight-worker/48-call envelope. Fresh stores,
+grants, credentials, binaries and fingerprint/network/assignment checks precede
+activation. No paid calls, external actions or production changes are permitted.
+Count the runtime control separately within the total call limit.
+
+All prior bounded-execution criteria still apply. Additionally, inspect every
+claim in both final responses against the original. Required facts are the
+expected 200, observed 503 and unavailable fixture dependency. An inference must
+be labelled and grounded; unsupported exclusion of code defects or predicted
+repair success fails quality even if the required facts are present. Missing
+evidence must remain unknown. Any call to a tool absent from the intersected
+stage list fails the tool-alignment criterion. Keyword matching alone cannot
+award a quality pass. Retain a failed outcome without rerunning for better prose.
+This follow-up cannot establish autonomous initiation, a matched baseline or
+general model reliability.
+
+Before activation, the corrected guidance passed the complete repository gate:
+formatting, workspace Clippy, all-feature tests, console, configured personal-value,
+collection parity and whitespace checks. The separate quality pilot harness
+passed 25 tests. No inference is included in these preparation results.

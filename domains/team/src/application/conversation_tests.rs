@@ -230,6 +230,19 @@ fn normal_taskless_consult_uses_the_authorized_assistance_path_and_retries_once(
     hq.tick().unwrap();
     let result = turn_of(&hq, a);
     assert!(result.told.contains("fixture cache"));
+    for briefing in [&expert.told, &result.told] {
+        for guidance in [
+            "Separate what the originals establish, what you infer, and what remains unknown.",
+            "Label inference explicitly and cite its basis.",
+            "Do not rule out other causes or predict a repair will succeed without supporting evidence.",
+            "Finish with a concise finding; if the evidence is insufficient, say so.",
+        ] {
+            assert!(
+                briefing.contains(guidance),
+                "missing {guidance}: {briefing}"
+            );
+        }
+    }
     assert!(
         !hq.may_use_a_shell(result.run).unwrap(),
         "source-verification result must not be handed a shell"
