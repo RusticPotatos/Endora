@@ -1,12 +1,99 @@
 //! Public-use-case steps for the information-only collaboration slice.
 
 use cucumber::{given, then, when};
+use endora_team::application::conversation_ports::ConversationStore;
+use endora_team::application::history_ports::HistoryStore;
 use endora_team::application::{Author, TeamStore};
 use endora_team::domain::{Role, WakeReason};
 use endora_team::infrastructure::Script;
 use serde_json::json;
 
 use super::Office;
+
+#[given("the owner has assigned classified task work in an authorized conversation project")]
+fn classified_task(w: &mut Office) {
+    use endora_team::application::{Engine, NewTask, Settings};
+    use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
+    w.hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(4),
+        w.clock.clone(),
+        Settings {
+            canonical_task_briefings: true,
+            ..Default::default()
+        },
+    );
+    authorized(w);
+    let previous = w.turn_of("Member1").run;
+    w.hq.runner().finish(previous, true);
+    w.tick();
+    let scope =
+        w.hq.store()
+            .conversation(w.conversation.unwrap())
+            .unwrap()
+            .unwrap();
+    let project =
+        w.hq.store()
+            .projects()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == scope.project)
+            .unwrap();
+    w.hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal: project.goal,
+            project: Some(project.id),
+            parent: None,
+            title: "Fixture task".into(),
+            description: "Inspect the synthetic check".into(),
+            assignee: Some(w.member("Member1")),
+            priority: endora_team::domain::Priority::Normal,
+            waits_on: vec![],
+        },
+    )
+    .unwrap();
+    w.tick();
+    let turn =
+        w.hq.runner()
+            .started()
+            .into_iter()
+            .rfind(|turn| turn.member == w.member("Member1"))
+            .unwrap();
+    assert!(turn.task.is_some());
+    w.turns.insert("Member1".into(), turn);
+    w.before_information = Some((
+        w.hq.store().tasks().unwrap().len(),
+        w.hq.wakes().unwrap().len(),
+        w.hq.store().runs().unwrap().len(),
+    ));
+}
+
+#[when("Member1 requests task help through the canonical protocol twice")]
+fn task_help(w: &mut Office) {
+    let turn = w.turn_of("Member1");
+    let (run, member) = w.hq.turn_of(&turn.token).unwrap().unwrap();
+    let args = json!({"member":"Member2","question":"Which synthetic check should be read?","conversation":w.conversation.unwrap(),"key":"scenario_task_help_1"});
+    let mut accepted = None;
+    for _ in 0..2 {
+        let reply =
+            endora_team::application::protocol::call_v2(&w.hq, &run, &member, "consult", &args)
+                .unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        if let Some(id) = accepted {
+            assert_eq!(reply["request"], id);
+        }
+        accepted = Some(reply["request"].clone());
+    }
+}
+
+#[then("task help has no legacy request or automatic task completion")]
+fn no_legacy_task_help(w: &mut Office) {
+    assert!(w.hq.store().consults().unwrap().is_empty());
+    let task = w.hq.store().task(w.task("Fixture task")).unwrap().unwrap();
+    assert_ne!(task.status, endora_team::domain::TaskStatus::Done);
+    assert!(w.hq.store().thread(task.id).unwrap().is_empty());
+}
 
 #[given("the owner authorizes two members to exchange information")]
 fn authorized(w: &mut Office) {

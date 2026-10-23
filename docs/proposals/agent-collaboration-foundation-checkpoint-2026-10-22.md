@@ -478,13 +478,54 @@ library passed 943 tests. No model inference, deployment or handheld change is
 included; both the production defaults and the separate legacy source guard
 are unchanged.
 
-Canonical task-linked admission is still closed. Next, add its explicit v2
-application/protocol path, checking the authenticated turn's task/project against
-the authorized conversation and keeping v1 semantics intact until cutover.
-Exercise real task admission, expert/result execution, retries, project mismatch,
-unknown/Confidential input refusals and zero legacy request rows. The worker
-defaults, remaining specialized briefing migration, legacy execution retirement,
-UI/history proof and NAS cutover remain unfinished.
+This source-context slice left canonical task-linked admission closed; the next
+slice below adds its explicit v2 path. Worker defaults, specialized briefing
+migration, legacy execution retirement, UI/history proof and NAS cutover remain
+unfinished.
+
+### Canonical task-linked admission and offline execution
+
+V2 `consult` and `request_assistance` now use the same canonical application and
+persistence lifecycle for eligible task work. Both pass through the common live
+turn, role/special-turn, project-tool, input-tier and drain checks. The task's
+trusted project must match the authorized active conversation; absent or
+mismatched scope fails closed. The migration selector is still default-off.
+V1 retains its legacy consultation path and explicit task-owned assistance
+refusal. No worker default or production setting has switched.
+
+Acceptance rechecks the requester's actual run/member and task/project inside
+the SQLite transaction. A project edit between application preflight and the
+transaction cannot leave an accepted request or consume its key. Replay retains
+the original task identity: another task cannot reuse the old key and question
+as its own request, while a later turn on the original task can retry it.
+
+The public protocol scenario covers accepted retry identity, one expert/result
+flow, read-only expert capability restrictions, retained conversation answer and
+unchanged task-completion authority, with zero legacy request rows or duplicated
+task-thread answers. Missing/mismatched scope and unknown/Confidential inputs
+are refused through both v2 entry points; unavailable assistance is omitted from
+the v2 tool list. The owner-readable behavior scenario is
+`features/canonical-task-assistance.feature` in the team context. Private
+red/green captures are under `.local/task-assistance-*.log`. These are offline
+simulated-worker checks, not proof of autonomous model initiation or final
+answer quality. The initial scenario harness needed trait imports, a borrow
+fix and its supported filter syntax before it ran successfully.
+
+The complete repository gate passed for this admission slice in
+`.local/task-assistance-gate/`: formatting, workspace Clippy, all-feature tests,
+console, configured personal-value, collection parity and whitespace. The team
+library passed 947 tests. Both storage regressions were observed failing before
+their fixes and passing afterward. No paid or local model call, production
+deployment or handheld change was performed.
+
+Next audit the remaining task briefing purposes and migrate the callers, then
+retire the old executing lifecycle behind the explicit version cutover. Retain
+specialized approval/acceptance context and its source guards where needed;
+remove its old peer-consult hooks rather than forcing unclassified management
+context to become Internal. Keep historical rows/readers and verify the actual
+UI, failure/restart behavior and bounded work-triggered model run before NAS
+deployment. The complete ADR 0138 definition of done remains the release gate;
+this slice alone is not a replacement release.
 
 1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
    tools, request/delivery records, scheduler branches and UI readers in the old

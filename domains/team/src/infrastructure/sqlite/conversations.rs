@@ -489,21 +489,47 @@ impl ConversationStore for SqliteTeamStore {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(backend)?;
-        let active: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id=?1 AND project=?2 AND deleted_at IS NULL AND (member1=?3 OR member2=?3) AND (member1=?4 OR member2=?4))",
-            params![request.conversation,request.project.0,request.requester.0,request.expert.0], |r|r.get(0)
-        ).map_err(backend)?;
+        let active: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM conversations c
+                JOIN runs r ON r.id=?5 AND r.member=?3
+                JOIN projects p ON p.id=c.project AND p.status='active'
+                LEFT JOIN tasks t ON t.id=r.task
+                WHERE c.id=?1 AND c.project=?2 AND c.deleted_at IS NULL
+                AND (c.member1=?3 OR c.member2=?3) AND (c.member1=?4 OR c.member2=?4)
+                AND (r.task IS NULL OR t.project=c.project))",
+                params![
+                    request.conversation,
+                    request.project.0,
+                    request.requester.0,
+                    request.expert.0,
+                    request.requester_run.0
+                ],
+                |r| r.get(0),
+            )
+            .map_err(backend)?;
         if !active {
             return Ok(Err("conversation unavailable"));
         }
         let evidence = SourceRef::kept(&request.evidence);
-        let prior: Option<(i64,i64,String,String)> = tx.query_row(
-            "SELECT id,expert,objective,evidence FROM assistance_requests WHERE conversation=?1 AND requester=?2 AND client_key=?3",
+        let task: Option<i64> = tx
+            .query_row(
+                "SELECT task FROM runs WHERE id=?1",
+                [request.requester_run.0],
+                |r| r.get(0),
+            )
+            .map_err(backend)?;
+        let prior: Option<(i64,i64,String,String,Option<i64>)> = tx.query_row(
+            "SELECT id,expert,objective,evidence,(SELECT task FROM runs WHERE id=assistance_requests.requester_run) FROM assistance_requests WHERE conversation=?1 AND requester=?2 AND client_key=?3",
             params![request.conversation,request.requester.0,request.key],
-            |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))
+            |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))
         ).optional().map_err(backend)?;
-        if let Some((id, expert, objective, refs)) = prior {
-            if expert == request.expert.0 && objective == request.objective && refs == evidence {
+        if let Some((id, expert, objective, refs, original_task)) = prior {
+            if expert == request.expert.0
+                && objective == request.objective
+                && refs == evidence
+                && original_task == task
+            {
                 tx.execute("INSERT INTO conversation_operations(conversation,run,operation,reason,at_ms) VALUES(?1,?2,'request','replayed',?3)",
                     params![request.conversation,request.requester_run.0,request.at]).map_err(backend)?;
                 tx.commit().map_err(backend)?;
@@ -792,6 +818,101 @@ mod tests {
             INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,2,'downtime','queued',0);
             INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,2,1,'running',0);
         ").unwrap();
+    }
+
+    #[test]
+    fn task_project_changes_cannot_race_assistance_admission() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO tasks(id,goal,title,description,status,priority,depth,project) VALUES(1,1,'Fixture','','ready','normal',0,1);
+            UPDATE runs SET task=1 WHERE id=1;").unwrap();
+        let conversation = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        let request = NewRequest {
+            conversation,
+            project: ProjectId(1),
+            requester: MemberId(2),
+            requester_run: RunId(1),
+            expert: MemberId(1),
+            key: "task_scope_race_1".into(),
+            objective: "Fixture outcome?".into(),
+            evidence: vec![],
+            day: 0,
+            day_start: 0,
+            at: 0,
+        };
+        assert_eq!(
+            store
+                .task(crate::domain::TaskId(1))
+                .unwrap()
+                .unwrap()
+                .project,
+            Some(request.project)
+        );
+        // Simulate an edit after application preflight, before the admission transaction.
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE tasks SET project=NULL WHERE id=1", [])
+            .unwrap();
+        assert!(store.accept_assistance(&request).unwrap().is_err());
+        assert!(store.assistance_page(conversation, 0).unwrap().is_empty());
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE tasks SET project=1 WHERE id=1", [])
+            .unwrap();
+        assert!(
+            store.accept_assistance(&request).unwrap().is_ok(),
+            "a refusal must not consume admission or the retry key"
+        );
+    }
+
+    #[test]
+    fn task_assistance_replay_cannot_attach_a_request_to_another_task() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO tasks(id,goal,title,description,status,priority,depth,project) VALUES(1,1,'First','','ready','normal',0,1),(2,1,'Other','','ready','normal',0,1);
+            UPDATE runs SET task=1 WHERE id=1;
+            INSERT INTO wakes(id,member,task,reason,receipt,at_ms) VALUES(2,2,2,'assigned','queued',0),(3,2,1,'assigned','queued',0);
+            INSERT INTO runs(id,member,task,wake,status,queued_at) VALUES(2,2,2,2,'running',0),(3,2,1,3,'running',0);").unwrap();
+        let conversation = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        let mut request = NewRequest {
+            conversation,
+            project: ProjectId(1),
+            requester: MemberId(2),
+            requester_run: RunId(1),
+            expert: MemberId(1),
+            key: "task_scope_replay_1".into(),
+            objective: "Fixture outcome?".into(),
+            evidence: vec![],
+            day: 0,
+            day_start: 0,
+            at: 0,
+        };
+        let accepted = store.accept_assistance(&request).unwrap().unwrap();
+        request.requester_run = RunId(2);
+        assert!(
+            store.accept_assistance(&request).unwrap().is_err(),
+            "the same question and key cannot bind a different task to the old request"
+        );
+        request.requester_run = RunId(3);
+        assert_eq!(
+            store.accept_assistance(&request).unwrap().unwrap(),
+            accepted,
+            "a later turn on the original task may retry its accepted request"
+        );
+        assert_eq!(
+            store
+                .assistance_request(accepted)
+                .unwrap()
+                .unwrap()
+                .requester_run,
+            RunId(1)
+        );
     }
 
     #[test]

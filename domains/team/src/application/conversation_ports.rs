@@ -123,6 +123,7 @@ pub trait ConversationStore {
     /// A store failure.
     fn purge_conversation_batch(&self) -> Stored<usize>;
     /// Atomically accept one bounded request and its delivery intent, or replay its key.
+    /// Recheck the requester's trusted task/project and preserve the original task on replay.
     /// # Errors
     /// A storage failure; conflicts and quotas are returned as policy refusals.
     fn accept_assistance(&self, request: &NewRequest) -> Stored<Accepted>;

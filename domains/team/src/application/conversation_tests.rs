@@ -20,6 +20,195 @@ fn canonical_hq(clock: &Hands) -> super::history_tests::Hq<'_> {
 }
 
 #[test]
+fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() {
+    use super::conversation_ports::ConversationStore;
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use serde_json::{Value, json};
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = canonical_hq(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq
+        .add_project(goal, "Fixture project", "", lead, None)
+        .unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    let task = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Inspect fixture".into(),
+                description: "Find the observed fixture outcome".into(),
+                assignee: Some(requester),
+                priority: crate::domain::Priority::Normal,
+                waits_on: vec![],
+            },
+        )
+        .unwrap();
+    hq.tick().unwrap();
+    let requester_turn = turn_of(&hq, requester);
+    let (run, member) = hq.turn_of(&requester_turn.token).unwrap().unwrap();
+    assert!(!hq.store().run_read_confidential(run.id).unwrap());
+    let args = json!({"member":"Member 3", "question":"What does the fixture show?", "conversation":conversation, "key":"task_help_01"});
+    let accepted = super::protocol::call_v2(&hq, &run, &member, "consult", &args).unwrap();
+    let accepted: Value = serde_json::from_str(&accepted).unwrap();
+    let id = accepted["request"].as_i64().unwrap();
+    let repeated: Value = serde_json::from_str(
+        &super::protocol::call_v2(&hq, &run, &member, "consult", &args).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(repeated["request"], id);
+    let direct = json!({"conversation":conversation, "key":"task_help_01", "objective":"What does the fixture show?", "evidence":[]});
+    assert!(
+        super::protocol::call(&hq, &run, &member, "request_assistance", &direct).is_err(),
+        "v1 must retain its explicit task-owned refusal during migration"
+    );
+    let direct: Value = serde_json::from_str(
+        &super::protocol::call_v2(&hq, &run, &member, "request_assistance", &direct).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        direct["request"], id,
+        "both v2 entry points share the same durable request"
+    );
+    let request = hq.store().assistance_request(id).unwrap().unwrap();
+    assert_eq!(request.project, project);
+    assert_eq!(request.requester_run, run.id);
+    assert!(hq.store().consults().unwrap().is_empty());
+    assert!(
+        super::protocol::tools_in_v2(&hq, &run, &member)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "consult")
+    );
+    hq.runner().finish(run.id, true);
+    hq.tick().unwrap();
+    let expert_turn = turn_of(&hq, expert);
+    assert!(hq.in_assistance(expert_turn.run).unwrap());
+    assert!(!hq.may_use_a_shell(expert_turn.run).unwrap());
+    hq.answer_assistance_in(
+        expert_turn.run,
+        "The fixture returned its expected marker.",
+        &[],
+    )
+    .unwrap();
+    hq.runner().finish(expert_turn.run, true);
+    hq.tick().unwrap();
+    let result = turn_of(&hq, requester);
+    let notice = hq
+        .store()
+        .assistance_notice_for_run(result.run)
+        .unwrap()
+        .unwrap();
+    assert_eq!(notice.id, id);
+    assert!(result.told.contains("What does the fixture show?"));
+    assert!(result.told.contains("expected marker"));
+    assert_ne!(
+        hq.store().task(task).unwrap().unwrap().status,
+        crate::domain::TaskStatus::Done
+    );
+    assert!(
+        hq.store()
+            .thread(task)
+            .unwrap()
+            .iter()
+            .all(|post| !post.text.contains("expected marker")),
+        "peer answers stay in canonical conversation history, not a second task-post lifecycle"
+    );
+    assert!(hq.store().consults().unwrap().is_empty());
+}
+
+#[test]
+fn canonical_task_help_refuses_missing_mismatched_or_unclassified_scope() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use serde_json::json;
+    for invalid in ["missing", "mismatch", "unknown", "confidential"] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = canonical_hq(&clock);
+        let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+        let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = hq
+            .add_project(goal, "Fixture project", "", lead, None)
+            .unwrap();
+        let task_project = match invalid {
+            "missing" => None,
+            "mismatch" => Some(
+                hq.add_project(goal, "Other project", "", lead, None)
+                    .unwrap(),
+            ),
+            _ => Some(project),
+        };
+        hq.set_conversations_enabled(true).unwrap();
+        let conversation = hq
+            .create_conversation(project, [requester, expert])
+            .unwrap();
+        let task = hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: task_project,
+                    parent: None,
+                    title: "Inspect fixture".into(),
+                    description: "Find the fixture outcome".into(),
+                    assignee: Some(requester),
+                    priority: crate::domain::Priority::Normal,
+                    waits_on: vec![],
+                },
+            )
+            .unwrap();
+        if invalid == "unknown" {
+            hq.store()
+                .post(task, "owner", "Unsourced fixture finding", NOON)
+                .unwrap();
+        }
+        hq.tick().unwrap();
+        let turn = turn_of(&hq, requester);
+        let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+        if invalid == "confidential" {
+            hq.store().mark_confidential_input(run.id).unwrap();
+        }
+        let args = json!({"member":"Member 3","conversation":conversation,"key":"task_refusal_01","question":"What is the observed outcome?"});
+        assert!(
+            super::protocol::call_v2(&hq, &run, &member, "consult", &args).is_err(),
+            "{invalid}"
+        );
+        let direct = json!({"conversation":conversation,"key":"task_refusal_01","objective":"What is the observed outcome?"});
+        assert!(
+            super::protocol::call_v2(&hq, &run, &member, "request_assistance", &direct).is_err(),
+            "{invalid}"
+        );
+        assert!(
+            hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(hq.store().consults().unwrap().is_empty());
+        let tools = super::protocol::tools_in_v2(&hq, &run, &member);
+        assert!(
+            tools.as_array().unwrap().iter().all(|tool| !matches!(
+                tool["name"].as_str(),
+                Some("consult" | "request_assistance")
+            )),
+            "{invalid}: do not advertise assistance that cannot use this scope"
+        );
+    }
+}
+
+#[test]
 fn a_fresh_owner_task_briefing_has_classified_inputs_without_clearing_taint() {
     use super::history_ports::HistoryStore;
     use super::ports::NewTask;

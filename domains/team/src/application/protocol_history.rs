@@ -76,6 +76,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     _member: &Member,
     tool: &str,
     args: &Value,
+    canonical: bool,
 ) -> Option<Result<String, String>> {
     let said = |e: super::engine::EngineError| e.to_string();
     Some(match tool {
@@ -94,7 +95,9 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .any(|key| args.get(*key).is_some()) =>
         {
             (|| {
-                if run.task.is_some() || args.get("task").is_some_and(|value| !value.is_null()) {
+                if (!canonical && run.task.is_some())
+                    || args.get("task").is_some_and(|value| !value.is_null())
+                {
                     return Err("task-owned consultation uses its task thread; conversation options are taskless only".to_owned());
                 }
                 if args.to_string().len() > crate::domain::conversation::ARGUMENT_BYTES {

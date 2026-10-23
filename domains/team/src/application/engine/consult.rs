@@ -244,7 +244,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
-    /// Compatibility entry point for a taskless ordinary consult. The owner-created scope
+    /// Compatibility entry point for a canonical ordinary consult. The owner-created scope
     /// supplies participants and payer; this never creates a conversation or task.
     /// # Errors
     /// The same live-turn, scope, source and execution limits as explicit assistance.
@@ -258,11 +258,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         evidence: &[crate::domain::assistance::SourceRef],
     ) -> Done<String> {
         let turn = self.running(run)?;
-        if turn.task.is_some() {
-            return Err(EngineError::Refused(Refusal::Conversation(
-                "task-owned consultation uses its task thread",
-            )));
-        }
         let expert = self.named(expert.trim())?;
         if !self.conversations_enabled()? {
             return Err(refused(HistoryRefusal::NeedsTask));

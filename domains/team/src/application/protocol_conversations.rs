@@ -86,6 +86,7 @@ fn assistance_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     run: &Run,
     tool: &str,
     args: &Value,
+    canonical: bool,
 ) -> Option<Result<String, String>> {
     if !matches!(
         tool,
@@ -94,6 +95,9 @@ fn assistance_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         return None;
     }
     let result = (|| {
+        if tool == "request_assistance" && run.task.is_some() && !canonical {
+            return Err("team protocol v1 task-owned investigations use their task path".into());
+        }
         if args.to_string().len() > ARGUMENT_BYTES {
             return Err("assistance arguments exceed 8 KiB".into());
         }
@@ -179,8 +183,9 @@ pub(super) fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     run: &Run,
     tool: &str,
     args: &Value,
+    canonical: bool,
 ) -> Option<Result<String, String>> {
-    if let Some(answer) = assistance_call(engine, run, tool, args) {
+    if let Some(answer) = assistance_call(engine, run, tool, args, canonical) {
         return Some(answer);
     }
     if !matches!(tool, "send_message" | "read_messages") {

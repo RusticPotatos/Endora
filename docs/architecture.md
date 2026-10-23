@@ -13,10 +13,11 @@ and task/run links. Current branch code still has both execution paths; retireme
 history migration and live cutover are required before calling this complete.
 The migration boundary now includes HQ `/v2/team/mcp` and the node's team-only
 `/team-gateway/v2/mcp`, which select canonical assistance semantics. Existing v1
-callers remain unchanged during migration; task-linked v2 admission still waits
-for its explicit task/project admission path. Atomic content/source readers and
-a default-off internal selector for smaller source-classified ordinary task
-briefings are implemented. Specialized task briefings retain their old guard;
+callers remain unchanged during migration. Task-linked v2 admission now checks
+the authorized conversation against trusted task/project context, including
+transactional revalidation and original-task replay identity. Atomic content/source
+readers and a default-off internal selector for smaller source-classified ordinary
+task briefings are implemented. Specialized task briefings retain their old guard;
 the selector is temporary migration wiring, to be removed with the legacy path.
 This is not a completed production cutover.
 

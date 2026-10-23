@@ -543,7 +543,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
-    /// Accept an explicit taskless request and its durable delivery intent. No model starts
+    /// Whether trusted task context can use this conversation's project at cutover.
+    pub(crate) fn assistance_scope_matches(
+        &self,
+        turn: &crate::application::ports::Run,
+        project: ProjectId,
+    ) -> Done<bool> {
+        if self.project(project)?.status != ProjectStatus::Active {
+            return Ok(false);
+        }
+        let Some(task) = turn.task else {
+            return Ok(true);
+        };
+        Ok(self.settings.canonical_task_briefings && self.task(task)?.project == Some(project))
+    }
+
+    /// Accept an explicit request and its durable delivery intent. No model starts
     /// during acceptance; the bounded scheduler subsequently attempts delivery.
     /// # Errors
     /// An ended, ineligible or confidential turn; invalid context; quota or key conflict.
@@ -566,9 +581,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "assistance cannot start another assistance request",
             ));
         }
-        if turn.task.is_some() {
+        if !self.assistance_scope_matches(&turn, scope.project)? {
             return Err(refused(
-                "a task-owned investigation uses the existing task path",
+                "the task's trusted project must match the authorized conversation and worker generation",
             ));
         }
         if evidence.len() > assistance::SOURCES_MOST {
