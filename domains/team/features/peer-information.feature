@@ -11,6 +11,7 @@ Feature: Peer information is retained without scheduling work
     Then accepting the request has not started any work
     When the assistance delivery tick runs
     Then only Member2 receives one assistance turn
+    And the assistance turn has no shell or node capabilities
     And the assistance turn cannot delegate work
     When Member2 answers the assistance request twice with the same answer
     Then the owner sees one answered request with the original author and project

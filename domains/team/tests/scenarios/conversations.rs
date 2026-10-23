@@ -194,6 +194,13 @@ fn no_delegate(w: &mut Office) {
     );
 }
 
+#[then("the assistance turn has no shell or node capabilities")]
+fn no_execution_capabilities(w: &mut Office) {
+    let run = w.turn_of("Member2").run;
+    assert!(!w.hq.may_use_a_shell(run).unwrap());
+    assert_eq!(w.hq.lab_tools_of(run).unwrap(), Some(Vec::new()));
+}
+
 #[when("Member2 answers the assistance request twice with the same answer")]
 fn answer_twice(w: &mut Office) {
     for _ in 0..2 {

@@ -622,36 +622,33 @@ pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
     let Some(list) = all.as_array_mut() else {
         return all;
     };
-    match engine.in_assistance(run.id) {
-        Ok(true) => {
-            const MAY: &[&str] = &[
-                "my_turn",
-                "read_world",
-                "read_notebook",
-                "read_doc",
-                "read_document",
-                "ask_record",
-            ];
-            list.retain(|tool| {
-                tool["name"]
-                    .as_str()
-                    .is_some_and(|name| MAY.contains(&name))
-            });
-            list.push(super::protocol_conversations::answer_assistance_tool());
-            list.push(super::protocol_conversations::read_assistance_source_tool());
-            return all;
-        }
+    let answering = match engine.in_assistance(run.id) {
+        Ok(answering) => answering,
         Err(_) => return json!([]),
-        Ok(false) => {}
-    }
-    if engine
-        .store()
-        .assistance_notice_for_run(run.id)
-        .ok()
-        .flatten()
-        .is_some()
-    {
+    };
+    let verifying = match engine.store().assistance_notice_for_run(run.id) {
+        Ok(request) => request.is_some(),
+        Err(_) => return json!([]),
+    };
+    if answering || verifying {
+        const MAY: &[&str] = &[
+            "my_turn",
+            "read_world",
+            "read_notebook",
+            "read_doc",
+            "read_document",
+            "ask_record",
+        ];
+        list.retain(|tool| {
+            tool["name"]
+                .as_str()
+                .is_some_and(|name| MAY.contains(&name))
+        });
+        if answering {
+            list.push(super::protocol_conversations::answer_assistance_tool());
+        }
         list.push(super::protocol_conversations::read_assistance_source_tool());
+        return all;
     }
     if engine.in_quiz(run.id).unwrap_or(false) {
         list.push(super::protocol_world::quiz_tool());

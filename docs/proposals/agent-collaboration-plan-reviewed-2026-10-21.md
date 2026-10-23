@@ -102,6 +102,14 @@ said nothing was due. All three outcomes are retained; further live attempts
 stop pending offline review of the initiating wake and briefing. No production
 change occurred, and live assistance remains unverified.
 
+The 2026-10-23 [execution-only pilot](agent-collaboration-execution-pilot-result-2026-10-23.md)
+separated operator admission from model execution. It stopped before any worker
+or inference because the expert was shell-eligible, exposing a missing
+application capability boundary. The regression correction removes shell/node
+capabilities from explicit expert and verification-result turns and enforces
+read-only verification. This does not establish either live model execution or
+autonomous initiation, and no production change occurred.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less

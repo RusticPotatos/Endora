@@ -214,6 +214,15 @@ fn normal_taskless_consult_uses_the_authorized_assistance_path_and_retries_once(
     hq.tick().unwrap();
     let expert = turn_of(&hq, b);
     assert!(hq.in_assistance(expert.run).unwrap());
+    assert!(
+        !hq.may_use_a_shell(expert.run).unwrap(),
+        "read-only expert must not be handed a shell"
+    );
+    assert_eq!(
+        hq.lab_tools_of(expert.run).unwrap(),
+        Some(Vec::new()),
+        "read-only expert has no node capabilities"
+    );
     hq.answer_assistance_in(expert.run, "The fixture cache was unavailable.", &[])
         .unwrap();
     hq.runner().finish(turn.run, true);
@@ -221,6 +230,46 @@ fn normal_taskless_consult_uses_the_authorized_assistance_path_and_retries_once(
     hq.tick().unwrap();
     let result = turn_of(&hq, a);
     assert!(result.told.contains("fixture cache"));
+    assert!(
+        !hq.may_use_a_shell(result.run).unwrap(),
+        "source-verification result must not be handed a shell"
+    );
+    assert_eq!(
+        hq.lab_tools_of(result.run).unwrap(),
+        Some(Vec::new()),
+        "source verification has no node capabilities"
+    );
+    let (result_run, result_member) = hq.turn_of(&result.token).unwrap().unwrap();
+    let offered = super::protocol::tools_in(&hq, &result_run, &result_member);
+    assert!(
+        offered
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "read_assistance_source")
+    );
+    for tool in ["office", "create_task", "consult", "answer_assistance"] {
+        assert!(
+            !offered
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["name"] == tool)
+        );
+        assert!(
+            super::protocol::call(&hq, &result_run, &result_member, tool, &json!({}))
+                .unwrap_err()
+                .contains("read-only assistance"),
+            "{tool}"
+        );
+    }
+    for _ in 0..crate::domain::consult::ROUNDS {
+        super::protocol::call(&hq, &result_run, &result_member, "my_turn", &json!({})).unwrap();
+    }
+    let exhausted =
+        super::protocol::call(&hq, &result_run, &result_member, "my_turn", &json!({})).unwrap_err();
+    assert!(exhausted.contains("six read rounds"), "{exhausted}");
+    assert!(exhausted.contains("finish now"), "{exhausted}");
     assert_eq!(
         hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
             .as_array()

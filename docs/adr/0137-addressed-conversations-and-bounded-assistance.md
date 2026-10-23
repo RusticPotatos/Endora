@@ -94,6 +94,18 @@ wake, capability or requirement to initiate a conversation. Notebook content is
 not an execution receipt. A model choosing to stop during downtime does not prove
 that an outstanding diagnostic was performed.
 
+Capability correction, 2026-10-23: explicit conversation-assistance experts and
+their result-verification turns are shell-ineligible and receive an empty node
+tool list, regardless of role or the conversation project's tools. Both stages
+are restricted to their read-only HQ operations by tool advertising and handler
+policy; the expert alone may submit the answer. Verification has the same six
+protocol read-round bound. The persisted request/run associations select this
+policy. Ordinary and legacy task-thread turns keep their existing contracts.
+The isolated execution-only pilot exposed the missing runner/node restrictions
+before any physical worker or inference call; the
+[result](../proposals/agent-collaboration-execution-pilot-result-2026-10-23.md)
+records the regression and remaining live gate.
+
 This is partial consolidation: task-owned calls, or taskless calls with an
 explicit task argument, still use legacy thread answers and record fallback.
 Their lifecycle and accounting still need the compatibility work described

@@ -194,6 +194,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.assistance_for_run(run)?.is_some())
     }
 
+    /// Explicit expert and source-verification turns have no execution capabilities.
+    pub(super) fn in_assistance_flow(&self, run: RunId) -> Done<bool> {
+        Ok(self.store.assistance_for_run(run)?.is_some()
+            || self.store.assistance_notice_for_run(run)?.is_some())
+    }
+
     /// A terminal logical result cannot be reopened by worker recovery or a stale queue.
     pub(super) fn assistance_terminal_for(
         &self,
@@ -217,12 +223,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(None)
     }
 
-    /// Handler-level read-only boundary, independent of advertised tools.
+    /// Expert and result-verification read-only boundary, independent of advertised tools.
     /// # Errors
     /// A store failure.
     pub fn assistance_turn_refuses(&self, run: RunId, tool: &str) -> Done<Option<String>> {
-        let Some(request) = self.store.assistance_for_run(run)? else {
-            return Ok(None);
+        let (request, answering) = match self.store.assistance_for_run(run)? {
+            Some(request) => (request, true),
+            None => match self.store.assistance_notice_for_run(run)? {
+                Some(request) => (request, false),
+                None => return Ok(None),
+            },
         };
         if !self.conversations_enabled()? || self.store.stopped()? {
             return Ok(Some("assistance is disabled".into()));
@@ -237,15 +247,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "ask_record",
             "answer_assistance",
         ];
-        if !MAY.contains(&tool) {
-            return Ok(Some(
-                "this turn only answers a read-only assistance request".into(),
-            ));
+        if !MAY.contains(&tool) || (!answering && tool == "answer_assistance") {
+            return Ok(Some("this turn is limited to read-only assistance".into()));
         }
-        if tool == "answer_assistance" {
+        if answering && tool == "answer_assistance" {
             return Ok(None);
         }
-        if request.status != "processing" || request.deadline_at <= self.clock.now() {
+        let active = if answering {
+            request.status == "processing" && request.deadline_at > self.clock.now()
+        } else {
+            request.status == "answered" && !request.notice_cancelled
+        };
+        if !active {
             return Ok(Some("this assistance request has ended".into()));
         }
         let key = format!("assistance_calls:{}", run.0);
@@ -255,9 +268,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         if used >= crate::domain::consult::ROUNDS {
-            return Ok(Some(
-                "this assistance turn has used its six read rounds; answer now".into(),
-            ));
+            let why = if answering {
+                "this assistance turn has used its six read rounds; answer now"
+            } else {
+                "this verification turn has used its six read rounds; finish now"
+            };
+            return Ok(Some(why.into()));
         }
         self.store.set_setting(&key, &(used + 1).to_string())?;
         Ok(None)

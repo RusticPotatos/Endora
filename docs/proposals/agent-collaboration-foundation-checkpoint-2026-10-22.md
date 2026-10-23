@@ -39,6 +39,15 @@ pilot still supplied its objective through retained notebook notes during an
 optional downtime turn; it did not create a current owner assignment. No new
 wake or scheduling contract was added to make the experiment pass.
 
+The next [execution-only check](agent-collaboration-execution-pilot-result-2026-10-23.md)
+used operator admission to separate model execution from model initiation. It
+stopped before a worker or inference call: the expert was incorrectly marked
+shell-eligible. A regression confirmed the application policy gap. Explicit
+experts and their verification-result turns now have no shell or node tools;
+verification also has read-only handler enforcement and a six-read-round limit.
+The cancelled attempt is preserved. No guard relaxation or replacement request
+was used. Live execution and autonomous initiation are still unproven.
+
 ## This slice's acceptance criteria
 
 1. A normal taskless member can use the familiar `consult` tool to obtain one

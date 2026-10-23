@@ -2584,9 +2584,85 @@ mod tests {
         }
     }
 
-    /// The check after a deploy (ADR 0115, amended): HQ tells the runner to start its turn
-    /// without a shell, and the node to give it the lab's three reads and nothing else; every
-    /// other turn is told nothing new, and is as it was.
+    /// Explicit assistance and its result verification do not inherit execution capabilities.
+    #[tokio::test]
+    async fn assistance_expert_and_result_are_handed_without_shell_or_node_capabilities() {
+        let st = state(false);
+        let lead = st.hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let requester = st.hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        let expert = st.hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+        let goal = st.hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = st.hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+        st.hq
+            .set_project_tools(project, Some(vec!["shell".into(), "homelab_status".into()]))
+            .unwrap();
+        st.hq.set_conversations_enabled(true).unwrap();
+        let conversation = st
+            .hq
+            .create_conversation(project, [requester, expert])
+            .unwrap();
+        st.hq
+            .wake(requester, None, endora_team::domain::WakeReason::Downtime)
+            .unwrap();
+        st.hq.tick().unwrap();
+        let app = app(st.clone());
+        let next = || call("POST", "/v1/runner/next", Some(RUNNER), r#"{"free":2}"#);
+        let initial = json_of(app.clone().oneshot(next()).await.unwrap()).await;
+        assert_eq!(initial["member"], "Member 2");
+        assert_eq!(
+            initial["shell"], true,
+            "ordinary turns retain existing eligibility"
+        );
+        st.hq
+            .request_assistance_in(
+                RunId(initial["run"].as_i64().unwrap()),
+                conversation,
+                "http_policy_once",
+                "Which fixture failed?",
+                &[],
+            )
+            .unwrap();
+        assert!(st.hq.runner().remote().unwrap().ended(
+            RunId(initial["run"].as_i64().unwrap()),
+            initial["lease"].as_u64().unwrap(),
+            true
+        ));
+        st.hq.tick().unwrap();
+        for name in ["Member 3", "Member 2"] {
+            let turn = json_of(app.clone().oneshot(next()).await.unwrap()).await;
+            assert_eq!(turn["member"], name);
+            assert_eq!(turn["task"], serde_json::Value::Null);
+            assert_eq!(turn["shell"], false, "{turn}");
+            let found = json_of(
+                app.clone()
+                    .oneshot(call(
+                        "POST",
+                        "/v1/team/turn",
+                        Some(TOKEN),
+                        &json!({"token":turn["token"]}).to_string(),
+                    ))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(found["only"], json!([]), "{found}");
+            let run = RunId(turn["run"].as_i64().unwrap());
+            if name == "Member 3" {
+                st.hq
+                    .answer_assistance_in(run, "The fixture cache was unavailable.", &[])
+                    .unwrap();
+            }
+            assert!(st.hq.runner().remote().unwrap().ended(
+                run,
+                turn["lease"].as_u64().unwrap(),
+                true
+            ));
+            st.hq.tick().unwrap();
+        }
+        assert!(st.hq.store().tasks().unwrap().is_empty());
+    }
+
+    /// A deploy check receives the lab reads alone and no shell (ADR 0115, amended).
     #[tokio::test]
     async fn a_deploy_checks_turn_is_handed_without_a_shell_and_with_the_lab_reads_alone() {
         let st = state(false);
