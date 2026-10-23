@@ -14,7 +14,11 @@ history migration and live cutover are required before calling this complete.
 The migration boundary now includes HQ `/v2/team/mcp` and the node's team-only
 `/team-gateway/v2/mcp`, which select canonical assistance semantics. Existing v1
 callers remain unchanged during migration; task-linked v2 admission still waits
-for trustworthy input provenance. This is not a completed production cutover.
+for its explicit task/project admission path. Atomic content/source readers and
+a default-off internal selector for smaller source-classified ordinary task
+briefings are implemented. Specialized task briefings retain their old guard;
+the selector is temporary migration wiring, to be removed with the legacy path.
+This is not a completed production cutover.
 
 Endora is a **domain-first modular monolith**. A single authoritative backend —
 the **node** — is the trust boundary. It holds all authority and the secrets. **Endora HQ**

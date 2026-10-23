@@ -7,6 +7,232 @@ use super::history_tests::{Hands, NOON, engine, turn_of};
 use super::ports::TeamStore;
 use crate::domain::{Role, WakeReason};
 
+fn canonical_hq(clock: &Hands) -> super::history_tests::Hq<'_> {
+    super::engine::Engine::new(
+        crate::infrastructure::SqliteTeamStore::in_memory().unwrap(),
+        crate::infrastructure::SimulatedRunner::new(8),
+        clock,
+        super::engine::Settings {
+            canonical_task_briefings: true,
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn a_fresh_owner_task_briefing_has_classified_inputs_without_clearing_taint() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = canonical_hq(&clock);
+    let member = hq.hire("Member 1", Role::Developer, 40, 2, 0).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let goal = hq
+        .set_goal("Fixture objective", "Owner supplied reason", Author::Owner)
+        .unwrap();
+    let task = hq
+        .add_task_with(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Fixture task".into(),
+                description: "Owner supplied work".into(),
+                assignee: Some(member),
+                priority: crate::domain::Priority::Normal,
+                waits_on: vec![],
+            },
+            &[crate::domain::Criterion::new(
+                "Owner supplied criterion",
+                false,
+            )],
+        )
+        .unwrap();
+    hq.post(Author::Owner, task, "Owner supplied constraint")
+        .unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, member);
+    assert!(turn.told.contains("Owner supplied work"));
+    assert!(turn.told.contains("Owner supplied criterion"));
+    assert!(turn.told.contains("Owner supplied constraint"));
+    assert!(turn.told.contains("Fixture objective"));
+    assert!(
+        !hq.store().run_read_confidential(turn.run).unwrap(),
+        "typed owner inputs should not be blanket-classified as unknown"
+    );
+}
+
+#[test]
+fn canonical_task_briefings_preserve_unknown_constraints_and_fail_closed() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use crate::domain::{Criterion, GoalStatus, Priority};
+    for unknown in [
+        "body", "criteria", "goal", "parent", "post", "note", "strategy",
+    ] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = canonical_hq(&clock);
+        let member = hq.hire("Member 1", Role::Developer, 40, 2, 0).unwrap();
+        hq.set_conversations_enabled(true).unwrap();
+        let goal = if unknown == "goal" {
+            hq.store()
+                .add_goal("Fixture goal", "", GoalStatus::Active, None)
+                .unwrap()
+        } else {
+            hq.set_goal("Fixture goal", "", Author::Owner).unwrap()
+        };
+        let new_task = NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: "Fixture task".into(),
+            description: "Fixture body".into(),
+            assignee: Some(member),
+            priority: Priority::Normal,
+            waits_on: vec![],
+        };
+        let parent = if unknown == "parent" {
+            Some(
+                hq.store()
+                    .add_task(
+                        &NewTask {
+                            title: "Unclassified ancestor".into(),
+                            assignee: None,
+                            ..new_task.clone()
+                        },
+                        0,
+                    )
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        let new_task = NewTask { parent, ..new_task };
+        let criteria = [Criterion::new("Fixture criterion", false)];
+        let task = if unknown == "body" {
+            let task = hq.store().add_task(&new_task, 0).unwrap();
+            hq.wake(member, Some(task), WakeReason::Assigned).unwrap();
+            task
+        } else {
+            hq.add_task_with(Author::Owner, new_task, &criteria)
+                .unwrap()
+        };
+        match unknown {
+            "criteria" => hq.store().set_criteria(task, &criteria).unwrap(),
+            "post" => hq
+                .store()
+                .post(task, "owner", "Unclassified input", NOON)
+                .unwrap(),
+            "note" => hq.set_goal_note(goal, "Unclassified input").unwrap(),
+            "strategy" => {
+                hq.set_strategy(
+                    goal,
+                    &crate::domain::areas::StrategyEdit {
+                        not_now: Some("Unclassified input".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+            _ => {}
+        }
+        // A new owner post cannot launder older inputs that remain in the briefing.
+        hq.post(Author::Owner, task, "New owner input").unwrap();
+        hq.tick().unwrap();
+        let turn = turn_of(&hq, member);
+        let expected = match unknown {
+            "body" => "Fixture body",
+            "criteria" => "Fixture criterion",
+            "goal" => "Fixture goal",
+            "parent" => "Unclassified ancestor",
+            _ => "Unclassified input",
+        };
+        assert!(
+            turn.told.contains(expected),
+            "{unknown}: its constraint must remain visible"
+        );
+        assert!(turn.told.contains("New owner input"));
+        assert!(
+            hq.store().run_read_confidential(turn.run).unwrap(),
+            "{unknown}: a clean post must not launder other rendered inputs"
+        );
+    }
+}
+
+#[test]
+fn canonical_task_briefings_inherit_source_runs_without_using_display_authors() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use crate::domain::history::InputOrigin;
+    for confidential in [false, true] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = canonical_hq(&clock);
+        let source = hq.hire("Member 1", Role::Researcher, 30, 2, 0).unwrap();
+        let reader = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        hq.set_conversations_enabled(true).unwrap();
+        hq.wake(source, None, WakeReason::Downtime).unwrap();
+        hq.tick().unwrap();
+        let source_run = turn_of(&hq, source).run;
+        if confidential {
+            hq.store().mark_confidential_input(source_run).unwrap();
+        }
+        hq.rename(source, "Member 3").unwrap();
+        let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let task = hq
+            .store()
+            .add_task_from(
+                &NewTask {
+                    goal,
+                    project: None,
+                    parent: None,
+                    title: "Source-authored task".into(),
+                    description: "Source-authored work".into(),
+                    assignee: Some(reader),
+                    priority: crate::domain::Priority::Normal,
+                    waits_on: vec![],
+                },
+                0,
+                InputOrigin::Run(source_run),
+            )
+            .unwrap();
+        hq.post(Author::Owner, task, "Later owner input").unwrap();
+        hq.wake(reader, Some(task), WakeReason::Assigned).unwrap();
+        hq.tick().unwrap();
+        let received = turn_of(&hq, reader);
+        assert!(received.told.contains("Source-authored work"));
+        assert!(received.told.contains("Later owner input"));
+        assert_eq!(
+            hq.store().run_read_confidential(received.run).unwrap(),
+            confidential,
+            "source tier, not a later owner post or renamed display author, governs sharing"
+        );
+    }
+}
+
+#[test]
+fn canonical_task_briefings_bound_context_while_retaining_older_posts() {
+    use super::history_ports::HistoryStore;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = canonical_hq(&clock);
+    let member = hq.hire("Member 1", Role::Developer, 40, 2, 0).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let task = super::history_tests::task_for(&hq, goal, member, "Fixture check");
+    for n in 0..60 {
+        hq.post(Author::Owner, task, &format!("Fixture post {n:03}"))
+            .unwrap();
+    }
+    hq.tick().unwrap();
+    let received = turn_of(&hq, member);
+    assert!(!received.told.contains("Fixture post 047"));
+    assert!(received.told.contains("Fixture post 048"));
+    assert!(received.told.contains("Fixture post 059"));
+    assert_eq!(received.told.matches("- owner: Fixture post").count(), 12);
+    assert_eq!(hq.store().thread(task).unwrap().len(), 60);
+    assert!(!hq.store().run_read_confidential(received.run).unwrap());
+}
+
 #[test]
 fn returning_task_posts_inherits_their_sources_before_exposing_the_text() {
     use super::history_ports::HistoryStore;

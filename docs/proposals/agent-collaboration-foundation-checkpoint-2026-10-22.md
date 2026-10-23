@@ -443,6 +443,49 @@ briefing input before changing canonical task-linked admission; known task,
 goal and criteria sources must not launder notes, evidence summaries or other
 unknown context into Internal messages.
 
+### Source-classified ordinary task briefing
+
+An internal, default-off migration selector (`canonical_task_briefings`) now
+selects a smaller briefing for developer/researcher assigned work, retries,
+recovery and owner replies. It is not an owner-facing feature or an enabled
+production setting. Remove this selector and the legacy branch at final
+retirement. Management, review, decision and other specialized wake purposes
+continue through their existing briefing until their contracts are migrated;
+their blanket source guard remains.
+
+The selected briefing consumes atomic task/criteria, parent and goal inputs,
+and the latest twelve task posts. A served parent criterion inherits its own
+source. It retains goal notes, strategy exclusions and document/branch context,
+marking these older unsourced fields unclassified rather than dropping owner
+constraints to permit a request. Source-run tiers survive member rename and
+later clean owner posts. It does not automatically inject the broader world
+memory; notebook/world reading remains available through guarded tools. Task
+ownership, reporting, approvals and acceptance still use existing policy.
+
+Focused tests show a fresh genuinely owner-authored task can start without
+artificially clearing a tier. Separate cases preserve and refuse to relabel
+unknown bodies, criteria, goals, ancestors, posts, notes and strategy constraints.
+Both Internal and Confidential source-run tasks keep their source tier; sixty
+stored posts yield twelve briefing posts while all sixty remain retained.
+Captures are under `.local/task-context-*.log`. The original red test failed
+against the blanket guard; an initial implementation also hit an unsupported
+Rust let-chain and was rewritten for the repository's compiler.
+
+The full repository gate passed for this source-context slice in
+`.local/task-context-gate/`: formatting, workspace Clippy, all-feature tests,
+console, configured personal-value, collection parity and whitespace. The team
+library passed 943 tests. No model inference, deployment or handheld change is
+included; both the production defaults and the separate legacy source guard
+are unchanged.
+
+Canonical task-linked admission is still closed. Next, add its explicit v2
+application/protocol path, checking the authenticated turn's task/project against
+the authorized conversation and keeping v1 semantics intact until cutover.
+Exercise real task admission, expert/result execution, retries, project mismatch,
+unknown/Confidential input refusals and zero legacy request rows. The worker
+defaults, remaining specialized briefing migration, legacy execution retirement,
+UI/history proof and NAS cutover remain unfinished.
+
 1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
    tools, request/delivery records, scheduler branches and UI readers in the old
    `consult` path. Mark each canonical replacement, thin adapter, historical

@@ -70,6 +70,7 @@ mod runaway;
 mod runtime;
 mod scenario;
 mod staffing;
+mod task_context;
 mod trials;
 mod wing;
 mod world;
@@ -168,6 +169,9 @@ pub struct Settings {
     /// it. Off for everything else, so the caps are on wherever a team is real, and in every
     /// test that is not about the demo.
     pub scripted: bool,
+    /// Migration selector for source-classified task briefings (ADR 0138).
+    /// Keep off until the versioned worker cutover; remove the legacy branch at retirement.
+    pub canonical_task_briefings: bool,
 }
 
 impl Default for Settings {
@@ -180,6 +184,7 @@ impl Default for Settings {
             games: false,
             quiz: false,
             scripted: false,
+            canonical_task_briefings: false,
         }
     }
 }
@@ -2542,6 +2547,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // (ADR 0129).
         if let Some(found) = self.consult_of_run(run.id)? {
             return self.consult_briefing(member, &found);
+        }
+        if self.settings.canonical_task_briefings
+            && self.canonical_task_context_applies(member, run)?
+        {
+            return self.canonical_task_briefing(member, run);
         }
         let (_, memory) = self.memory(member, run)?;
         let mut told = self.briefing_body(member, run, &memory.text)?;

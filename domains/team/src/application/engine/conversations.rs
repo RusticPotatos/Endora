@@ -87,17 +87,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<Vec<crate::application::history_ports::PostInput>> {
         let posts = self.store.latest_authored_posts(task, most)?;
         for post in &posts {
-            match post.origin {
-                crate::domain::history::InputOrigin::Owner => {}
-                crate::domain::history::InputOrigin::Run(source) => {
-                    self.inherit_input_from(run, Some(source))?;
-                }
-                crate::domain::history::InputOrigin::Unknown => {
-                    self.unclassified_message_input(run)?;
-                }
-            }
+            self.inherit_authored_input(run, post.origin)?;
         }
         Ok(posts)
+    }
+
+    pub(super) fn inherit_authored_input(
+        &self,
+        run: RunId,
+        origin: crate::domain::history::InputOrigin,
+    ) -> Done<()> {
+        match origin {
+            crate::domain::history::InputOrigin::Owner => Ok(()),
+            crate::domain::history::InputOrigin::Run(source) => {
+                self.inherit_input_from(run, Some(source))
+            }
+            crate::domain::history::InputOrigin::Unknown => self.unclassified_message_input(run),
+        }
     }
 
     /// Whether the owner enabled information-only messaging; absent is off.
