@@ -94,7 +94,13 @@ The subsequently authorized larger-context follow-up removed truncation but
 was blocked by overly strict experiment-guard rules, not by an observed
 application refusal. The captured calls pass an offline replay through the
 actual application. The [follow-up record](agent-collaboration-pilot-followup-2026-10-22.md)
-records the corrected guard and the remaining live-validation gate.
+records the corrected guard and the remaining live-validation gate. The owner
+then authorized that corrected-guard run: two local calls completed without
+truncation or guard refusal, but the requester proposed no consultation and
+stopped. The briefing mixed the owner objective with downtime instructions that
+said nothing was due. All three outcomes are retained; further live attempts
+stop pending offline review of the initiating wake and briefing. No production
+change occurred, and live assistance remains unverified.
 
 ## Recommendation
 

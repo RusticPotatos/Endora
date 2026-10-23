@@ -20,8 +20,14 @@ private experiment guard's exact-question and discovery restrictions before
 application admission. The [follow-up record](agent-collaboration-pilot-followup-2026-10-22.md)
 distinguishes this harness defect from application behavior: an offline replay
 through the actual protocol accepted the captured question and reused its
-request on retry, without a carrier task or model start. The corrected guard is
-prepared separately; a live assistance result is still unverified.
+request on retry, without a carrier task or model start. The owner then
+authorized the corrected-guard rerun. It ended after two local model calls with
+no consultation proposed: the requester treated the owner notes as already
+served and followed the downtime briefing's option to stop. There was no
+truncation or guard refusal. All services stopped and conversations were disabled;
+no production change occurred. The three-attempt series stops for offline review
+of the initiating wake, owner objective and briefing before another live attempt.
+A live assistance result is still unverified.
 
 ## This slice's acceptance criteria
 
@@ -175,9 +181,10 @@ device validation was performed for this branch slice.
    cases and refresh the isolated candidate. The ordinary taskless entry point,
    task-thread lifecycle, shared admission/queue mechanisms and answer effects
    are implemented. Do not interpret passing local tests as live evaluation.
-2. Verify the revised path with the real worker and local model in the stopped,
-   isolated pilot. Re-pin the candidate, renew the source grant and repeat
-   preflight before activation. The prepared pilot has performed no inference.
+2. Review the initiating wake and briefing offline after the three unsuccessful
+   diagnostics. The corrected-guard run performed inference but proposed no
+   consultation. Resolve the conflicting downtime/owner-objective presentation
+   with regression evidence before proposing another isolated live attempt.
 3. Complete the matched baseline/candidate evaluation and relevant device
    checks, then review the release and enablement evidence. Deploy through the
    existing NAS release workflow only with the deployment decision recorded.

@@ -118,7 +118,7 @@ red/green guard tests and the actual application replay. Credentials, machine
 paths and raw records remain ignored. The unrelated baseline-collector edit was
 preserved and not used as a checker.
 
-## Corrected packet, not executed
+## Corrected packet preparation
 
 A separate packet is prepared at `.local/agent-collaboration-pilot-corrected/`.
 It retains application/model/runtime identities and the 16,384-token setting;
@@ -137,10 +137,69 @@ whitespace checks. It included 923 team tests, 162 behavior scenarios with 2,055
 steps and 33 worker process tests. Existing explicitly ignored tests remained
 ignored. No new physical-device validation occurred.
 
-The corrected packet is stopped and unarmed, with zero new requests, live turns,
-worker starts or model calls. No source access or capability was broadened.
-Another live attempt needs explicit authorization: the one approved follow-up
-is finished. It would retain one diagnostic request, eight worker starts at
-most, 48 model calls at most, a 20-minute watchdog, zero paid calls and the same
-stop conditions. Live end-to-end validation, matched comparison, device checks
-and production release remain incomplete.
+At preparation, the corrected packet was stopped and unarmed, with zero new
+requests, live turns, worker starts or model calls. No source access or capability
+was broadened. The owner subsequently authorized its one execution with "Yes run
+it", retaining one diagnostic request, eight worker starts at most, 48 model
+calls at most, a 20-minute watchdog, zero paid calls and the same stop conditions.
+
+## Corrected-guard execution: no consultation proposed
+
+The authorized rerun completed in 147.3 seconds with one physical requester
+worker and two local model calls. The controller exited nonzero because the
+requester ended without an accepted consultation. The worker itself exited zero;
+that is a completed turn, not a passing diagnostic. No expert or result worker
+started, no original source was read and no answer was produced.
+
+| Measured item | Observed result |
+|---|---|
+| Node-recorded prompt/completion tokens | 17,371 / 470 across two calls |
+| Provider-reported cached input | 8,013 tokens; node cache counter remains zero |
+| Response finishes | `tool_calls`, then `stop`; no truncation |
+| Minimum space after response reserve and margin | 2,902 tokens |
+| Sampled memory availability | 21 to 23 percent |
+| Forwarded tool calls | `my_turn` twice |
+| Guard refusals / consultation proposals | 0 / 0 |
+| Accepted requests / answers / source reads | 0 / 0 / 0 |
+| Paid charges | 0 microdollars |
+| Final scope | Conversations disabled, global stop persisted, envelope unarmed |
+| Final processes | All pilot listeners closed; no live runs remain |
+
+The actual briefing included both owner-authored notebook instructions: submit
+the initial consultation and independently read `r1` on the later result turn.
+It also explicitly called this a downtime turn, said nothing was due, described
+office recreation and said leaving the office unchanged was a good turn before
+stopping. Its final tools summary omitted consultation even though the earlier
+colleague guidance described it and the advertised tool schema included it.
+The private activation helper had deliberately selected `WakeReason::Downtime`;
+it did not queue an explicit owner assignment. The model reread the briefing,
+then called the notebook instructions already served and stopped. That claim
+is contradicted by the fresh packet's empty request table; it is not evidence
+of prior execution.
+
+This result establishes an unsuccessful initiating turn. Conflicting briefing
+instructions are a plausible contributor, not a proven causal explanation of
+the model's decision. Neither a guard rejection nor an application admission
+failure occurred, because no consultation was proposed. The corrected guard's
+live consultation path therefore remains unexercised. No prompt, guard or
+objective was changed during execution, and no extra requester was started.
+
+All three live diagnostic outcomes are retained separately. This series now
+stops for an offline review under the standards' three-attempt rule. The next
+review must reconcile the initiating wake's purpose, owner objective, actual
+briefing and advertised tools before proposing any further live attempt. Any
+behavioral correction requires a failing regression first; do not simply change
+the model's question or repeat inference until it happens to consult. Live
+end-to-end validation, matched comparison, device checks and production release
+remain incomplete. Production was not changed.
+
+The corrected packet retains raw protocol/model responses, measured prompts,
+usage rows, the stopped stores, controller failure and a separate evaluated
+result in `.local/agent-collaboration-pilot-corrected/`. Private records and
+credentials remain ignored. No application source changed in this execution.
+
+The 20 private harness tests and refreshed network/fingerprint preflight passed
+before activation. After recording the result, the required repository gate
+passed again: formatting, workspace Clippy with denied warnings, workspace
+all-feature tests, console checks, personal-value checks, collection parity and
+whitespace checks. No terminal-client source changed or new device check ran.
