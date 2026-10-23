@@ -561,6 +561,24 @@ delivery and recovery callers without losing historical rows. Then enable the
 canonical briefing path as part of the verified single-engine cutover. Record
 actual migration/UI/model and NAS evidence before declaring the plan complete.
 
+### Retained reads detached from legacy execution
+
+Explicit `ask_record` search and testimony formatting now live in
+`engine/record_search.rs`; canonical `consult_peer_in` lives with assistance.
+Member-name resolution is a common engine helper. These responsibilities no
+longer reside in the old consultation module, so deleting that module later
+will not delete historical search or the canonical adapter. This is a move of
+existing behavior; legacy consultation still executes during migration.
+
+The complete repository gate passed in `.local/consult-detach-gate/`, including
+the 947-test team library, workspace/all-feature checks, console, configured
+personal-value, collection parity and whitespace. The first compile caught a
+module-name collision with the domain record import; `record_search` resolves
+it without changing that import or its callers. No data migration, inference
+or deployment occurred. Next provide bounded owner inspection of retained
+legacy questions and exact answer-post associations before removing old write
+ports; never guess answer identity by matching text or participant names.
+
 1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
    tools, request/delivery records, scheduler branches and UI readers in the old
    `consult` path. Mark each canonical replacement, thin adapter, historical

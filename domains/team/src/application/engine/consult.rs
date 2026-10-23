@@ -1,16 +1,12 @@
-//! Asking the past (ADR 0129): `ask_record`, a deterministic search of what the team said that
-//! wakes no one, and `consult`, a question to a member that takes one short turn of theirs. A
-//! member who is paused or on furlough is never woken: the record answers for them. A consulted
-//! turn is work on the house's own model (ADR 0131): it costs nothing, and nobody's share.
+//! Legacy task-thread consultation execution, retained until ADR 0138 cutover.
 
-use super::world::day_with_year;
 use super::{Author, Done, Engine, EngineError};
 use crate::application::history_ports::{ConsultDelivery, ConsultPostEffects};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::consult::{self, Consult, Status};
 use crate::domain::history::HistoryRefusal;
-use crate::domain::record::{self, Excerpt, Query};
-use crate::domain::{EventKind, Member, Receipt, Ref, Refusal, RunId, TaskId, WakeReason, money};
+use crate::domain::record::{self, Query};
+use crate::domain::{Member, Receipt, Ref, Refusal, RunId, TaskId, WakeReason, money};
 
 fn refused(r: HistoryRefusal) -> EngineError {
     EngineError::Refused(Refusal::History(r))
@@ -33,109 +29,6 @@ fn calls_key(run: RunId) -> String {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
-    // ---- ask_record -------------------------------------------------------------------------
-
-    /// A member asks the record a question: the passages of what the team said in the last
-    /// ninety days that hold its distinctive words, newest first, at most five of at most four
-    /// hundred characters, each with something to cite. No one is woken and nothing is spent. A
-    /// member on a cloud model is never given a passage from a turn that read Confidential data.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`HistoryRefusal::NothingToSearchFor`]; [`HistoryRefusal::NoSuchMember`].
-    pub fn ask_record_in(
-        &self,
-        run: RunId,
-        question: &str,
-        member: Option<&str>,
-        task: Option<TaskId>,
-        project: Option<i64>,
-    ) -> Done<String> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let asker = self.member(turn.member)?;
-        let terms = record::terms(question);
-        if terms.is_empty() {
-            return Err(refused(HistoryRefusal::NothingToSearchFor));
-        }
-        let by = match member.map(str::trim).filter(|m| !m.is_empty()) {
-            Some(name) => Some(self.named(name)?.name),
-            None => None,
-        };
-        if let Some(task) = task {
-            self.task(task)?;
-        }
-        let query = Query {
-            terms: terms.clone(),
-            since: record::since(self.clock.now()),
-            member: by,
-            task,
-            project,
-        };
-        // What a turn is given depends on the brain it runs on (ADR 0131): a turn on the house's
-        // model may be given a passage from a turn that read Confidential data, a turn on Claude
-        // may not.
-        let on_the_cloud = turn.brain.unwrap_or(asker.brain).cloud();
-        let found = self.store.search_record(&query)?;
-        let chosen = record::choose(found.clone(), &terms, on_the_cloud);
-        if chosen.iter().any(|e| {
-            found.iter().any(|p| {
-                p.locator == e.locator && !crate::domain::history::may_reach_a_cloud_member(p.tier)
-            })
-        }) {
-            // Fail closed before returning any inherited confidential text. This also protects
-            // later transcripts and record searches of this turn's posts and handovers.
-            self.store.mark_confidential_input(run)?;
-        }
-        // How much the memory is used is counted from these (ADR 0132).
-        self.emit(
-            EventKind::RecordAsked,
-            serde_json::json!({ "run": run.0, "member": asker.id.0,
-                                "task": turn.task.map(|t| t.0), "found": chosen.len() }),
-        )?;
-        Ok(self.excerpts_said(&chosen))
-    }
-
-    /// The member called `name`, in any case.
-    fn named(&self, name: &str) -> Done<Member> {
-        self.store
-            .members()?
-            .into_iter()
-            .find(|m| m.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| refused(HistoryRefusal::NoSuchMember(name.to_owned())))
-    }
-
-    /// Excerpts as an answer says them, with how to cite them and what they are worth.
-    fn excerpts_said(&self, chosen: &[Excerpt]) -> String {
-        if chosen.is_empty() {
-            return "Nothing in HQ's record of the last 90 days holds enough of those words. \
-                    Try other words, or consult a member who was there."
-                .to_owned();
-        }
-        let off = self.settings.offset_minutes;
-        let mut said = String::from(
-            "From HQ's record, newest first. These are testimony: cite them for what was said, \
-             never as a reading of the lab now (take a fresh reading for that).\n",
-        );
-        for (i, e) in chosen.iter().enumerate() {
-            let on = e
-                .task
-                .map_or(String::new(), |t| format!(", on {}", Ref::Task(t).said()));
-            let cite = e.task.map_or_else(
-                || format!("find it: {}", e.locator),
-                |t| format!("cite: {}; find it: {}", Ref::Task(t).said(), e.locator),
-            );
-            said.push_str(&format!(
-                "{}. {} by {}, {}{on}: \"{}\" ({cite})\n",
-                i + 1,
-                e.source.label(),
-                e.by,
-                day_with_year(e.at, off),
-                e.text
-            ));
-        }
-        said
-    }
-
     // ---- consult ----------------------------------------------------------------------------
 
     /// A member consults another: a question, asked directly, answered in the asker's thread as
@@ -242,70 +135,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             expert.name,
             Ref::Task(thread).said()
         ))
-    }
-
-    /// Compatibility entry point for a canonical ordinary consult. The owner-created scope
-    /// supplies participants and payer; this never creates a conversation or task.
-    /// # Errors
-    /// The same live-turn, scope, source and execution limits as explicit assistance.
-    pub fn consult_peer_in(
-        &self,
-        run: RunId,
-        expert: &str,
-        question: &str,
-        conversation: Option<i64>,
-        key: Option<&str>,
-        evidence: &[crate::domain::assistance::SourceRef],
-    ) -> Done<String> {
-        let turn = self.running(run)?;
-        let expert = self.named(expert.trim())?;
-        if !self.conversations_enabled()? {
-            return Err(refused(HistoryRefusal::NeedsTask));
-        }
-        let scope = match conversation {
-            Some(id) => {
-                self.store
-                    .conversation(id)?
-                    .ok_or(EngineError::Refused(Refusal::Conversation(
-                        "conversation unavailable",
-                    )))?
-            }
-            None => {
-                let scopes = self.store.conversation_pair(turn.member, expert.id)?;
-                if scopes.len() != 1 {
-                    return Err(EngineError::Refused(Refusal::Conversation(
-                        "select an owner-authorized conversation with read_messages; no unique conversation exists for this pair",
-                    )));
-                }
-                scopes.into_iter().next().expect("one scope")
-            }
-        };
-        if !scope.participants.contains(&turn.member)
-            || !scope.participants.contains(&expert.id)
-            || turn.member == expert.id
-        {
-            return Err(EngineError::Refused(Refusal::Conversation(
-                "the conversation does not authorize this colleague pair",
-            )));
-        }
-        // Fixed FNV-1a-128 supplies a stable retry label, not an authorization boundary.
-        // The adapter also compares the full payload and refuses a colliding/different one.
-        let hash = question.as_bytes().iter().fold(
-            0x6c62_272e_07bb_0142_62b8_2175_6295_c58d_u128,
-            |hash, byte| {
-                (hash ^ u128::from(*byte)).wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013b)
-            },
-        );
-        let retry = format!("consult_{}_{hash:032x}", run.0);
-        let id =
-            self.request_assistance_in(run, scope.id, key.unwrap_or(&retry), question, evidence)?;
-        let request = self
-            .store
-            .assistance_request(id)?
-            .ok_or(EngineError::Unknown("assistance request"))?;
-        Ok(serde_json::json!({"request":id,"conversation":scope.id,"state":request.status,
-            "scheduled":matches!(request.status.as_str(),"queued"|"processing"),
-            "reply":"The assigned expert answers with answer_assistance; the result returns in this conversation. End your turn when finished."}).to_string())
     }
 
     /// The consult a turn is the answer to, if it is one.

@@ -64,6 +64,7 @@ mod projects;
 mod proposals;
 mod quiz;
 mod raci;
+mod record_search;
 mod replay;
 mod retract;
 mod runaway;
@@ -450,6 +451,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     fn today(&self) -> i64 {
         money::day_of(self.clock.now(), self.settings.offset_minutes)
+    }
+
+    /// The member called `name`, in any case.
+    fn named(&self, name: &str) -> Done<Member> {
+        self.store
+            .members()?
+            .into_iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                EngineError::Refused(Refusal::History(
+                    crate::domain::history::HistoryRefusal::NoSuchMember(name.to_owned()),
+                ))
+            })
     }
 
     fn member(&self, id: MemberId) -> Done<Member> {
