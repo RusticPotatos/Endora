@@ -112,3 +112,66 @@ async function hqConversationAct(what, id) {
   finally { HQ_CHAT.busy = false; render(); }
   return true;
 }
+
+// Older task questions stay read-only. Keep one page and at most 64 back cursors.
+const HQ_PAST = { task: null, page: null, after: 0, previous: [], busy: false, error: "" };
+
+function hqPastQuestions(task) {
+  task = Number(task);
+  if (!Number.isSafeInteger(task) || task <= 0) return "";
+  const same = HQ_PAST.task === task, page = same && HQ_PAST.page;
+  const button = (what, label, disabled = false) => `<button class="hq-btn tall" data-act="hq:past-questions:${task}:${what}"${disabled || HQ_PAST.busy ? " disabled" : ""}>${label}</button>`;
+  const run = (id, label) => Number.isSafeInteger(id) && id > 0 ? replayRunLink(id, label) : "";
+  const outcomes = { queued: "Waiting when recorded", answered: "Answered", from_record: "Answer from the record", cancelled: "Cancelled" };
+  let body = button("first", "Load saved questions");
+  if (page) {
+    const records = (page.records || []).slice(0, 50).map((row) => {
+      const answer = row.answer;
+      const said = answer ? `<p><b>${esc(answer.author)}</b>${answer.unsupported ? ' <span class="hq-unsupported">unsupported</span>' : ""}</p><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(answer.text)}</p>${(answer.evidence || []).length ? `<small>Saved references: ${answer.evidence.map(esc).join(", ")}</small>` : ""}`
+        : '<p class="hq-note">Saved answer unavailable.</p>';
+      return `<li style="padding:12px 0;border-top:1px solid var(--hq-line)"><b>${esc(hqName(Number(row.requester)))} asked ${esc(hqName(Number(row.expert)))}</b>
+        <small style="display:block">${esc(outcomes[row.outcome] || row.outcome || "Outcome unavailable")}${row.at ? `; ${esc(new Date(row.at).toLocaleString())}` : ""}; ${row.project == null ? "Project not recorded" : `Project ${Number(row.project)}`}</small>
+        <p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(row.question)}</p>${said}
+        ${row.reason ? `<p class="hq-note" style="overflow-wrap:anywhere">${esc(row.reason)}</p>` : ""}
+        <div class="hq-row">${run(row.requester_run, "Asking turn")}${run(row.expert_run, "Answering turn")}</div></li>`;
+    }).join("");
+    body = `<p class="hq-note">Saved in recorded order. Missing answers are marked unavailable.</p><ul class="hq-thread">${records || '<li class="hq-empty">No saved questions on this page.</li>'}</ul>
+      <div class="hq-row">${button("first", "First page")}${button("previous", "Previous page", !HQ_PAST.previous.length)}${button("next", "Next page", !page.has_more)}${button("refresh", "Refresh page")}${button("save", "Save page")}</div>`;
+  }
+  return `<section class="hq-card"><h3>Past colleague questions</h3>${same && HQ_PAST.busy ? '<p class="hq-note">Loading saved questions...</p>' : ""}${same && HQ_PAST.error ? `<p class="hq-note" role="alert">${esc(HQ_PAST.error)}</p>` : ""}${body}</section>`;
+}
+
+async function hqPastQuestionsAct(rawTask, what) {
+  const task = Number(rawTask);
+  if (!Number.isSafeInteger(task) || task <= 0 || !["first", "previous", "next", "refresh", "save"].includes(what)) return false;
+  if (HQ_PAST.busy) return true;
+  const same = HQ_PAST.task === task;
+  if (what === "save") {
+    if (!same || !HQ_PAST.page) return true;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(HQ_PAST.page, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = `task-${task}-questions-after-${HQ_PAST.after}.json`; link.click(); URL.revokeObjectURL(url);
+    return true;
+  }
+  let after = same ? HQ_PAST.after : 0;
+  let previous = same ? HQ_PAST.previous.slice(-64) : [];
+  if (what === "first" || !same) { after = 0; previous = []; }
+  if (what === "next") {
+    if (!same || !HQ_PAST.page || !HQ_PAST.page.has_more) return true;
+    previous.push(after); previous = previous.slice(-64); after = Number(HQ_PAST.page.after);
+  }
+  if (what === "previous") {
+    if (!previous.length) return true;
+    after = previous.pop();
+  }
+  if (!Number.isSafeInteger(after) || after < 0) return true;
+  if (!same) { HQ_PAST.task = task; HQ_PAST.page = null; HQ_PAST.previous = []; HQ_PAST.after = 0; }
+  HQ_PAST.busy = true; HQ_PAST.error = ""; render();
+  try {
+    const page = await api("GET", `/v1/hq/tasks/${task}/consultations?after=${after}`);
+    if (!Array.isArray(page.records)) throw new Error("Saved history is unavailable.");
+    HQ_PAST.page = { ...page, records: page.records.slice(0, 50) };
+    HQ_PAST.after = after; HQ_PAST.previous = previous;
+  } catch (error) { HQ_PAST.error = String(error.message || error); }
+  finally { HQ_PAST.busy = false; render(); }
+  return true;
+}

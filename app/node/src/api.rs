@@ -376,6 +376,10 @@ pub fn app(state: AppState) -> Router {
         // Replay: a turn, or a task's turns, read back in full (the owner's only).
         .route("/v1/hq/runs/{id}/replay", get(hq_run_replay))
         .route("/v1/hq/tasks/{id}/replay", get(hq_task_replay))
+        .route(
+            "/v1/hq/tasks/{id}/consultations",
+            get(hq_task_consultations),
+        )
         .route("/v1/hq/goals", post(hq_goal))
         .route("/v1/hq/tasks", post(hq_task))
         .route("/v1/hq/desk/{id}", post(hq_decide))

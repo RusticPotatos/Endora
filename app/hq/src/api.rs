@@ -76,6 +76,7 @@ pub fn app(state: State) -> Router {
         // Replay: a turn, or a task's turns, read back in full for the owner's screen.
         .route("/v1/runs/{id}/replay", get(run_replay))
         .route("/v1/tasks/{id}/replay", get(task_replay))
+        .route("/v1/tasks/{id}/consultations", get(task_consultations))
         .route("/v1/goals", post(set_goal))
         .route("/v1/tasks", post(add_task))
         .route("/v1/desk/{id}", post(decide))
@@ -330,6 +331,17 @@ async fn run_replay(
     let hq = state.hq.clone();
     let replay = blocking(move || hq.replay_run(RunId(id))).await?;
     Ok(Json(json!({ "replay": replay.shown() })))
+}
+
+/// Retained task questions, paged for the owner without peer execution or grants.
+async fn task_consultations(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Query(q): Query<After>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let page = blocking(move || hq.legacy_task_conversations(TaskId(id), q.after)).await?;
+    Ok(Json(page))
 }
 
 /// A task's turns read back, oldest first.
@@ -2202,6 +2214,62 @@ mod tests {
                 .as_str()
                 .is_some_and(|t| t.contains("cap sonarr at 512M")),
             "{replay}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_task_questions_are_owner_only_and_read_only() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let task = turn.task.unwrap();
+        let path = format!("/v1/tasks/{}/consultations?after=-1", task.0);
+        let before = (
+            st.hq.wakes().unwrap().len(),
+            st.hq.store().runs().unwrap().len(),
+        );
+        let app = app(st.clone());
+        for token in [None, Some("wrong"), Some(turn.token.as_str()), Some(RUNNER)] {
+            let response = app
+                .clone()
+                .oneshot(call("GET", &path, token, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let response = app
+            .clone()
+            .oneshot(call("GET", &path, Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = json_of(response).await;
+        assert_eq!(page["source"], "legacy-task-consultation");
+        assert_eq!(page["task"], task.0);
+        assert!(page["records"].as_array().unwrap().is_empty());
+        assert_eq!(page["after"], 0);
+        let response = app
+            .clone()
+            .oneshot(call(
+                "GET",
+                "/v1/tasks/999999/consultations",
+                Some(TOKEN),
+                "",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = app
+            .oneshot(call("POST", &path, Some(TOKEN), "{}"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            before,
+            (
+                st.hq.wakes().unwrap().len(),
+                st.hq.store().runs().unwrap().len()
+            )
         );
     }
 

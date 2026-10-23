@@ -23,7 +23,16 @@ existing preservation, backup, migration, privacy and release gates pass.
 Earlier per-run approval records describe history, not a requirement to ask the
 owner again for every evidence-backed follow-up within the agreed limits.
 
-Current branch scope: ordinary consultation is integrated with authorized
+Current branch checkpoint, 2026-10-23: typed forward provenance, atomic source
+readers, bounded ordinary task briefings, scoped v2 task assistance, v2 worker
+caller defaults and retained task-question inspection are implemented and
+tested. The old execution engine and v1 server compatibility still exist.
+Next remove that engine through a tested drain/cancellation and explicit v1
+upgrade boundary, preserving the new read-only projections. The ordinary task
+briefing selector is still default-off. Final migration/UI/model evidence and
+NAS cutover remain outstanding; no deployment has occurred in these slices.
+
+Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,
 idempotent admission, shared allowances, trusted expert project attribution and
 atomic answer effects. These close the implementation gaps listed in the
@@ -578,6 +587,52 @@ it without changing that import or its callers. No data migration, inference
 or deployment occurred. Next provide bounded owner inspection of retained
 legacy questions and exact answer-post associations before removing old write
 ports; never guess answer identity by matching text or participant names.
+
+### Retained task-question inspection
+
+The owner can inspect earlier questions in the existing Work task inspector,
+independently of peer-messaging enablement. The signed HQ read route is
+`/v1/tasks/{id}/consultations?after=...`, with a fixed node owner proxy. Worker
+and runner tokens cannot read it. Pages contain at most fifty records, ordered
+by original IDs; the query reads one additional row for its next-page flag.
+The browser replaces its current page and retains at most 64 back cursors.
+Navigation, refresh and page export stay within the task inspector.
+
+The projection keeps original asker/expert/run/task IDs, question, outcome,
+recorded project snapshot, and exact `consult_answer_posts` association. It
+never fills a missing project from the task's current project or selects an
+answer by matching text. Missing and wrong-thread answer links remain visibly
+unavailable. No historical row is copied into an authorized active conversation,
+and inspection creates no wake, grant, task or audit action.
+
+Focused red/green tests cover exact and unavailable links, absent project
+snapshots, same-time paging, signed HTTP access, the fixed node proxy and escaped
+UI content. The actual query uses the new `(thread,id)` index: VM work stays
+equal from 1,000 to 100,000 unrelated rows; dropping that index makes the negative
+control exceed 10,000 steps. This is an indexed-read bound, not a latency claim.
+
+The browser check rendered the actual component and stylesheet with synthetic
+data at desktop and phone widths, and exercised next/previous navigation. That
+review led to larger phone controls and clearer record separators. Screenshots
+are in `.local/legacy-history-ui/`; this was not a production UI smoke check.
+The temporary browser tab and local layout server were closed. Captures and
+focused logs are under `.local/legacy-history-*.log`.
+
+The repository gate passed: formatting, workspace Clippy, all-feature tests
+(including the 950-test team library), console, configured personal-value,
+collection parity and whitespace. Logs are in `.local/legacy-history-gate/`.
+The first console job exposed a missing browser `performance` clock in its VM
+when the sound keep-up timer fired. The harness now provides that clock and
+explicitly tests fresh/stale stream behavior. Console and the remaining checks
+then passed; the already-passing Rust checks used unchanged Rust sources. The
+observed failure excerpt is retained separately because the corrected console
+run replaced that log. No shipped sound code changed. No model call, history
+deletion or production deployment occurred.
+
+Next retire the old server/execution path with an explicit v1 upgrade outcome
+and tested drain/cancellation of pending legacy work. Preserve these read ports
+and populated history tables. Final migration rehearsal, restart/failure checks,
+actual work-triggered model evidence and NAS cutover are still required.
 
 1. **Map retirement and freeze cutover contracts.** Inventory callers, protocol
    tools, request/delivery records, scheduler branches and UI readers in the old

@@ -28,6 +28,45 @@ pub struct TranscriptKept {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
+    /// Owner inspection of retained task questions, independent of current peer permissions.
+    /// # Errors
+    /// An unknown task or a store failure.
+    pub fn legacy_task_conversations(
+        &self,
+        task: crate::domain::TaskId,
+        after: i64,
+    ) -> Done<serde_json::Value> {
+        let _held = self.held();
+        self.task(task)?;
+        let after = after.max(0);
+        let mut rows = self.store.legacy_task_consultations(task, after)?;
+        let more = rows.len() > 50;
+        rows.truncate(50);
+        let cursor = rows.last().map_or(after, |row| row.id);
+        let records: Vec<_> = rows.into_iter().map(|row| {
+            let answer = row.answer.map(|answer| {
+                let origin = match answer.origin {
+                    history::InputOrigin::Owner => serde_json::json!({"kind":"owner"}),
+                    history::InputOrigin::Run(run) => serde_json::json!({"kind":"run","run":run.0}),
+                    history::InputOrigin::Unknown => serde_json::json!({"kind":"unknown"}),
+                };
+                serde_json::json!({"id":answer.id,"author":answer.post.author,"text":answer.post.text,
+                    "at":answer.post.at,"unsupported":answer.post.unsupported,"origin":origin,
+                    "evidence":answer.evidence.iter().map(|e|e.said()).collect::<Vec<_>>()})
+            });
+            serde_json::json!({"id":format!("legacy-consult:{}",row.id),"legacy_id":row.id,
+                "requester":row.requester.0,"requester_run":row.requester_run.0,
+                "expert":row.expert.0,"expert_run":row.expert_run.map(|id|id.0),
+                "thread":row.thread.0,"topic":row.topic.map(|id|id.0),"project":row.project.map(|id|id.0),
+                "question":row.question,"outcome":row.outcome,"reason":row.reason,"at":row.at,
+                "answer_post":row.answer_post,"answer":answer})
+        }).collect();
+        Ok(
+            serde_json::json!({"source":"legacy-task-consultation","task":task.0,
+            "records":records,"after":cursor,"has_more":more}),
+        )
+    }
+
     /// The node tells HQ a turn's conversation, as plain text already scrubbed of secrets,
     /// naming the turn by its own token: kept only while that turn runs, so neither a model nor
     /// a turn that has ended can write one. Capped at [`history::TRANSCRIPT_MOST`] bytes (head

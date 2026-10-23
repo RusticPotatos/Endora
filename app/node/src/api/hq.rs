@@ -125,6 +125,20 @@ pub(super) async fn hq_run_replay(State(state): State<AppState>, Path(id): Path<
     ask(&state, format!("/v1/runs/{id}/replay"), None).await
 }
 
+/// Owner-only retained questions; rebuild the bounded cursor route from numbers.
+pub(super) async fn hq_task_consultations(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<HqAfter>,
+) -> Answer {
+    ask(
+        &state,
+        format!("/v1/tasks/{id}/consultations?after={}", q.after.max(0)),
+        None,
+    )
+    .await
+}
+
 /// Replay: a task's turns read back, oldest first.
 pub(super) async fn hq_task_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
     ask(&state, format!("/v1/tasks/{id}/replay"), None).await
@@ -874,6 +888,37 @@ pub(super) async fn hq_note_delete(
 mod tests {
     use super::super::relay::tests::{fake, node};
     use super::*;
+
+    #[tokio::test]
+    async fn retained_task_history_uses_a_fixed_read_route_and_preserves_the_page() {
+        let expected = json!({"source":"legacy-task-consultation","task":7,"records":[{"id":"legacy-consult:9","question":"<b>retained question</b>","answer":null}],"after":9,"has_more":true});
+        let page = expected.clone();
+        let (url, seen) = fake(Arc::new(move |_, _| {
+            (200, "application/json", page.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let received = hq_task_consultations(
+            State(state.clone()),
+            Path(7),
+            Query(HqAfter {
+                after: -1,
+                before: None,
+                limit: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(received.0, expected);
+        assert_eq!(
+            seen.lock().unwrap()[0].0,
+            "/v1/tasks/7/consultations?after=0"
+        );
+        assert!(
+            endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[tokio::test]
     async fn a_replay_is_read_from_hq_as_it_answers_and_records_nothing() {

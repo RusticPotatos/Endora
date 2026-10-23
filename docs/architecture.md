@@ -12,14 +12,22 @@ execution, while the existing Work UI retains readable historical conversations
 and task/run links. Current branch code still has both execution paths; retirement,
 history migration and live cutover are required before calling this complete.
 The migration boundary now includes HQ `/v2/team/mcp` and the node's team-only
-`/team-gateway/v2/mcp`, which select canonical assistance semantics. Existing v1
-callers remain unchanged during migration. Task-linked v2 admission now checks
+`/team-gateway/v2/mcp`, which select canonical assistance semantics. Worker/runner
+defaults now use v2 and reject stale configured routes; v1 server compatibility
+remains until the explicit cutover. Task-linked v2 admission now checks
 the authorized conversation against trusted task/project context, including
 transactional revalidation and original-task replay identity. Atomic content/source
 readers and a default-off internal selector for smaller source-classified ordinary
 task briefings are implemented. Specialized task briefings retain their old guard;
 the selector is temporary migration wiring, to be removed with the legacy path.
 This is not a completed production cutover.
+
+Retained task questions have a bounded owner-only projection through
+`/v1/tasks/{id}/consultations`, proxied by the node into the existing Work task
+inspector. Exact original IDs, project snapshots and answer-post associations
+are retained; missing links remain unavailable. Reading history creates no
+conversation permissions or work. This separates historical inspection from
+the legacy execution code still awaiting retirement.
 
 Endora is a **domain-first modular monolith**. A single authoritative backend —
 the **node** — is the trust boundary. It holds all authority and the secrets. **Endora HQ**

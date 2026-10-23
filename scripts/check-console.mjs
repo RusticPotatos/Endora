@@ -68,6 +68,7 @@ const element = () => ({
 
 const stubs = {
   console,
+  performance,
   setTimeout,
   clearTimeout,
   setInterval,
@@ -3126,6 +3127,43 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if(JSON.stringify(calls)!==JSON.stringify(expected)) throw new Error("assistance: controls asked unexpected routes: "+JSON.stringify(calls));
   runInContext('api=assistanceKeepApi;render=assistanceKeepRender;HQ_CHAT.page=null;HQ_CHAT.assistance=null;HQ_CHAT.id=null;',context);
   console.log("assistance: original evidence and peer testimony stay escaped, pages bounded, and owner cancel/revoke controls use fixed routes");
+}
+
+{
+  const first = {records:[
+    {id:"legacy-consult:1",legacy_id:1,requester:1,requester_run:8,expert:2,expert_run:9,question:"<img src=x onerror=bad()>",outcome:"answered",reason:"<em>old reason</em>",answer_post:3,answer:{author:"Member 2",text:"<b>retained answer</b>",unsupported:true,evidence:["task 7"]}},
+    {id:"legacy-consult:2",legacy_id:2,requester:1,requester_run:8,expert:2,question:"Missing association",outcome:"answered",answer:null,project:null}
+  ],after:9,has_more:true};
+  runInContext(`var pastKeepApi=api,pastKeepRender=render,pastKeepSnap=HQ.snap; var pastReply=${JSON.stringify(first)}; HQ.snap={members:[{id:1,name:"Member 1"},{id:2,name:"Member 2"}]}; HQ_PAST.task=7; HQ_PAST.page=pastReply; HQ_PAST.after=0; HQ_PAST.previous=[]; HQ_PAST.error="";`,context);
+  const html=runInContext('hqPastQuestions(7)',context);
+  for (const text of ["&lt;img", "&lt;b&gt;retained answer", "&lt;em&gt;old reason", "Saved answer unavailable", "hq:past-questions:7:next", "Save page", "replay:run:8"]) {
+    if (!html.includes(text)) throw new Error("past questions: missing escaped history or control: "+text);
+  }
+  if (html.includes('<img src=x') || html.includes('<b>retained answer')) throw new Error("past questions: history became markup");
+  runInContext(`var pastCalls=[]; render=()=>{}; api=async(method,path)=>{pastCalls.push(method+" "+path); return {...pastReply,records:[{...pastReply.records[0],id:"legacy-consult:12",legacy_id:12,question:"Only this page"}],after:12,has_more:false};};`,context);
+  await runInContext('hqPastQuestionsAct("7","next")',context);
+  if (runInContext('HQ_PAST.page.records.length!==1 || HQ_PAST.page.records[0].legacy_id!==12 || HQ_PAST.after!==9 || HQ_PAST.previous[0]!==0',context)) throw new Error("past questions: paging accumulated records or lost the original cursor");
+  if (JSON.stringify(runInContext('pastCalls',context))!==JSON.stringify(["GET /v1/hq/tasks/7/consultations?after=9"])) throw new Error("past questions: unexpected history route");
+  runInContext('api=async()=>{throw new Error("<img>failed history read");};',context);
+  await runInContext('hqPastQuestionsAct("7","previous")',context);
+  if (!runInContext('hqPastQuestions(7)',context).includes("&lt;img&gt;failed history read")) throw new Error("past questions: error was hidden or became markup");
+  if (runInContext('HQ_PAST.after!==9 || HQ_PAST.previous.length!==1',context)) throw new Error("past questions: a failed page changed navigation state");
+  runInContext('HQ_PAST.page.has_more=true;api=async(method,path)=>({...pastReply,records:[pastReply.records[0]],after:Number(path.split("after=")[1])+1,has_more:true});',context);
+  for (let page=0;page<70;page++) await runInContext('hqPastQuestionsAct("7","next")',context);
+  if (runInContext('HQ_PAST.previous.length>64 || HQ_PAST.page.records.length!==1',context)) throw new Error("past questions: page navigation grew retained history in memory");
+  runInContext('api=pastKeepApi;render=pastKeepRender;HQ.snap=pastKeepSnap;HQ_PAST.task=null;HQ_PAST.page=null;HQ_PAST.previous=[];HQ_PAST.error="";',context);
+  console.log("past questions: retained answers are escaped, unavailable links stay explicit, and paging replaces the current page");
+}
+
+{
+  runInContext(`var clockKeep={fetch,soundTicket,soundReconnect,listening:SOUND.listening,mode:SOUND.mode,session:LIVE.session};
+    var clockTicket=0,clockReconnect=0;fetch=async()=>({json:async()=>({build:"dev"})});
+    soundTicket=()=>{clockTicket++;};soundReconnect=()=>{clockReconnect++;};SOUND.listening=true;SOUND.mode="live";LIVE.session={lastAt:performance.now()};`,context);
+  await runInContext('soundKeepUp()',context);
+  runInContext('LIVE.session.lastAt=performance.now()-6000;',context);
+  await runInContext('soundKeepUp()',context);
+  if (runInContext('clockTicket!==1 || clockReconnect!==1',context)) throw new Error("sound keep-up: fresh and stale live streams did not use the browser clock");
+  runInContext('fetch=clockKeep.fetch;soundTicket=clockKeep.soundTicket;soundReconnect=clockKeep.soundReconnect;SOUND.listening=clockKeep.listening;SOUND.mode=clockKeep.mode;LIVE.session=clockKeep.session;',context);
 }
 
 console.log(`console check: ${named.length} screens render`);

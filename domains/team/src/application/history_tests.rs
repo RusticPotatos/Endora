@@ -68,6 +68,67 @@ pub(super) fn task_for(hq: &Hq<'_>, goal: GoalId, to: MemberId, title: &str) -> 
     .unwrap()
 }
 
+#[test]
+fn retained_task_questions_are_owner_readable_in_bounded_pages_without_peer_enablement() {
+    use crate::domain::consult::{Consult, Status};
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let requester = hq.hire("Member 1", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 2", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let task = task_for(&hq, goal, requester, "Fixture task");
+    hq.tick().unwrap();
+    let run = turn_of(&hq, requester).run;
+    for n in 0..61 {
+        hq.store()
+            .add_consult(&Consult {
+                id: 0,
+                asker: requester,
+                asker_run: run,
+                expert,
+                topic: None,
+                thread: task,
+                question: format!("Historical question {n:03}"),
+                status: Status::FromRecord,
+                answer_run: None,
+                why: "Historical outcome".into(),
+                asker_woken: true,
+                at: NOON,
+            })
+            .unwrap();
+    }
+    let before = (
+        hq.store().tasks().unwrap().len(),
+        hq.wakes().unwrap().len(),
+        hq.store().runs().unwrap().len(),
+    );
+    assert!(!hq.conversations_enabled().unwrap());
+    let first = hq.legacy_task_conversations(task, -1).unwrap();
+    assert_eq!(first["records"].as_array().unwrap().len(), 50);
+    assert_eq!(first["records"][0]["id"], "legacy-consult:1");
+    assert_eq!(first["records"][0]["question"], "Historical question 000");
+    assert_eq!(first["records"][0]["requester_run"], run.0);
+    assert_eq!(first["records"][0]["project"], serde_json::Value::Null);
+    assert_eq!(first["records"][0]["answer"], serde_json::Value::Null);
+    assert_eq!(first["after"], 50);
+    assert_eq!(first["has_more"], true);
+    let second = hq
+        .legacy_task_conversations(task, first["after"].as_i64().unwrap())
+        .unwrap();
+    assert_eq!(second["records"].as_array().unwrap().len(), 11);
+    assert_eq!(second["records"][0]["question"], "Historical question 050");
+    assert_eq!(second["has_more"], false);
+    assert!(hq.legacy_task_conversations(TaskId(999), 0).is_err());
+    assert_eq!(
+        before,
+        (
+            hq.store().tasks().unwrap().len(),
+            hq.wakes().unwrap().len(),
+            hq.store().runs().unwrap().len()
+        )
+    );
+}
+
 /// The newest turn the runner started for `member`.
 pub(super) fn turn_of(hq: &Hq<'_>, member: MemberId) -> RunContext {
     hq.runner()

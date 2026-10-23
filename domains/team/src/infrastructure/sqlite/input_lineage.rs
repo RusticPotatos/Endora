@@ -70,7 +70,7 @@ pub(super) fn read(conn: &Connection, input: InputRef) -> Stored<InputOrigin> {
     Ok(row.unwrap_or(InputOrigin::Unknown))
 }
 
-fn origin_at(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<InputOrigin> {
+pub(super) fn origin_at(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<InputOrigin> {
     match (
         row.get::<_, Option<String>>(column)?,
         row.get::<_, Option<i64>>(column + 1)?,

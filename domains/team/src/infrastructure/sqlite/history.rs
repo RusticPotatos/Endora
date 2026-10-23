@@ -5,7 +5,9 @@
 use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteTeamStore, backend};
-use crate::application::history_ports::{ConsultDelivery, ConsultPostEffects, HistoryStore};
+use crate::application::history_ports::{
+    ConsultDelivery, ConsultPostEffects, HistoryStore, LegacyConsultation, PostInput,
+};
 use crate::application::ports::{Post, Stored};
 use crate::domain::consult::{Consult, Status as ConsultStatus};
 use crate::domain::history::{self, Kept, Transcript};
@@ -36,6 +38,7 @@ CREATE TABLE IF NOT EXISTS consults (
     why TEXT NOT NULL DEFAULT '', asker_woken INTEGER NOT NULL DEFAULT 0, at_ms INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX IF NOT EXISTS consults_by_asker ON consults(asker, at_ms);
+CREATE INDEX IF NOT EXISTS consults_thread_history ON consults(thread,id);
 CREATE INDEX IF NOT EXISTS consults_asker_run ON consults(asker_run,id);
 CREATE INDEX IF NOT EXISTS consults_answer_run ON consults(answer_run,id) WHERE answer_run IS NOT NULL;
 CREATE INDEX IF NOT EXISTS consults_pending ON consults(expert,id) WHERE status='queued' AND answer_run IS NULL;
@@ -76,6 +79,15 @@ const TRANSCRIPT_SELECT: &str = "SELECT run, member, task, runtime, brain, tier,
     cut, at_ms, kept_until FROM transcripts";
 
 const CONSULT_SELECT: &str = "SELECT id,asker,asker_run,expert,topic,thread,question,status,answer_run,why,asker_woken,at_ms FROM consults";
+const LEGACY_TASK_PAGE: &str =
+    "SELECT c.id,c.asker,c.asker_run,c.expert,c.answer_run,c.topic,c.thread,
+    cp.project,c.question,c.status,c.why,c.at_ms,a.post,
+    p.id,p.author,p.text,p.at_ms,p.unsupported,p.evidence,o.origin,o.source_run
+    FROM consults c LEFT JOIN consult_projects cp ON cp.consult=c.id
+    LEFT JOIN consult_answer_posts a ON a.consult=c.id
+    LEFT JOIN posts p ON p.id=a.post AND p.task=c.thread
+    LEFT JOIN input_origins o ON o.kind='post' AND o.resource=p.id
+    WHERE c.thread=?1 AND c.id>?2 ORDER BY c.id LIMIT 51";
 pub(super) const CONSULT_PROJECT_FOR_RUN: &str = "(SELECT p.project FROM consults c JOIN consult_projects p ON p.consult=c.id WHERE c.answer_run=?1 ORDER BY c.id LIMIT 1)";
 const CONSULT_FOR_RUN: &str = "WHERE answer_run=?1 ORDER BY id LIMIT 1";
 const CONSULT_NEXT: &str =
@@ -121,6 +133,51 @@ fn consult_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Consult> {
 }
 
 impl HistoryStore for SqliteTeamStore {
+    fn legacy_task_consultations(
+        &self,
+        task: TaskId,
+        after: i64,
+    ) -> Stored<Vec<LegacyConsultation>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(LEGACY_TASK_PAGE).map_err(backend)?;
+        stmt.query_map(params![task.0, after.max(0)], |row| {
+            let post_id: Option<i64> = row.get(13)?;
+            let answer = post_id
+                .map(|id| {
+                    Ok::<_, rusqlite::Error>(PostInput {
+                        id,
+                        post: Post {
+                            author: row.get(14)?,
+                            text: row.get(15)?,
+                            at: row.get(16)?,
+                            unsupported: row.get(17)?,
+                        },
+                        evidence: crate::domain::Ref::read(&row.get::<_, String>(18)?),
+                        origin: super::input_lineage::origin_at(row, 19)?,
+                    })
+                })
+                .transpose()?;
+            Ok(LegacyConsultation {
+                id: row.get(0)?,
+                requester: MemberId(row.get(1)?),
+                requester_run: RunId(row.get(2)?),
+                expert: MemberId(row.get(3)?),
+                expert_run: row.get::<_, Option<i64>>(4)?.map(RunId),
+                topic: row.get::<_, Option<i64>>(5)?.map(TaskId),
+                thread: TaskId(row.get(6)?),
+                project: row.get::<_, Option<i64>>(7)?.map(crate::domain::ProjectId),
+                question: row.get(8)?,
+                outcome: row.get(9)?,
+                reason: row.get(10)?,
+                at: row.get(11)?,
+                answer_post: row.get(12)?,
+                answer,
+            })
+        })
+        .map_err(backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(backend)
+    }
     fn task_inputs(
         &self,
         task: TaskId,
@@ -724,6 +781,7 @@ impl HistoryStore for SqliteTeamStore {
 
 #[cfg(test)]
 mod tests {
+    use crate::application::ports::TeamStore;
     use rusqlite::Connection;
 
     use super::*;
@@ -735,6 +793,109 @@ mod tests {
             INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,1,'assigned','queued',0);
             INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,1,1,'running',0),(2,2,1,'running',0),(3,2,1,'running',0);
             INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,answer_run,at_ms) VALUES(1,1,1,2,1,'Fixture?','queued',2,0);").unwrap();
+    }
+
+    #[test]
+    fn legacy_history_uses_only_exact_post_and_project_associations() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(1,1,'Fixture','',1,'active','owner',0,0);
+            UPDATE tasks SET project=1 WHERE id=1;
+            INSERT INTO tasks(id,goal,title,description,status,priority,depth) VALUES(2,1,'Other task','','ready','normal',0);
+            UPDATE consults SET status='answered' WHERE id=1;
+            INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,answer_run,at_ms) VALUES(2,1,1,2,1,'No answer link','answered',3,0),(3,1,1,2,1,'Wrong thread link','answered',3,0);
+            INSERT INTO posts(id,task,author,text,at_ms) VALUES(1,1,'Member 2','Matching text is not an identity',0),(2,1,'Member 2','The exact linked answer',0),(3,2,'Member 2','Another task answer',0);
+            INSERT INTO consult_answer_posts(consult,post) VALUES(1,2),(3,3);
+            INSERT INTO consult_projects(consult,project) VALUES(1,1);").unwrap();
+        let before = (
+            store.consults().unwrap().len(),
+            store.wakes().unwrap().len(),
+            store.runs().unwrap().len(),
+        );
+        let rows = store.legacy_task_consultations(TaskId(1), -1).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].id, 1);
+        assert_eq!(rows[0].question, "Fixture?");
+        assert_eq!(rows[0].requester, MemberId(1));
+        assert_eq!(rows[0].requester_run, RunId(1));
+        assert_eq!(rows[0].expert_run, Some(RunId(2)));
+        assert_eq!(rows[0].project, Some(crate::domain::ProjectId(1)));
+        assert_eq!(rows[0].answer_post, Some(2));
+        assert_eq!(
+            rows[0].answer.as_ref().unwrap().post.text,
+            "The exact linked answer"
+        );
+        assert!(rows[1].answer.is_none());
+        assert_eq!(
+            rows[1].project, None,
+            "current task project is not a historical project snapshot"
+        );
+        assert_eq!(rows[2].answer_post, Some(3));
+        assert!(
+            rows[2].answer.is_none(),
+            "a linked post on another task must remain unavailable"
+        );
+        assert_eq!(
+            store.legacy_task_consultations(TaskId(1), 1).unwrap().len(),
+            2
+        );
+        assert!(
+            store
+                .legacy_task_consultations(TaskId(2), 0)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            before,
+            (
+                store.consults().unwrap().len(),
+                store.wakes().unwrap().len(),
+                store.runs().unwrap().len()
+            )
+        );
+    }
+
+    #[test]
+    fn legacy_task_history_work_stays_bounded_as_other_history_grows() {
+        use rusqlite::StatementStatus;
+        let mut steps = Vec::new();
+        for size in [1_000, 100_000] {
+            let store = SqliteTeamStore::in_memory().unwrap();
+            consult_fixture(&store);
+            store.conn().unwrap().execute_batch(&format!("INSERT INTO tasks(id,goal,title,description,status,priority,depth) VALUES(2,1,'Other task','','ready','normal',0);
+                WITH RECURSIVE n(x) AS (SELECT 2 UNION ALL SELECT x+1 FROM n WHERE x<{size})
+                INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,at_ms)
+                SELECT x,1,1,2,2,'Other historical question','from_record',0 FROM n;")).unwrap();
+            let measure = || {
+                let conn = store.conn().unwrap();
+                let mut query = conn.prepare(LEGACY_TASK_PAGE).unwrap();
+                let ids = query
+                    .query_map([1, 0], |row| row.get::<_, i64>(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap();
+                assert_eq!(ids, [1]);
+                query.get_status(StatementStatus::VmStep)
+            };
+            steps.push(measure());
+            assert_eq!(
+                store.legacy_task_consultations(TaskId(1), 0).unwrap().len(),
+                1
+            );
+            if size == 100_000 {
+                store
+                    .conn()
+                    .unwrap()
+                    .execute_batch("DROP INDEX consults_thread_history")
+                    .unwrap();
+                assert!(
+                    measure() > 10_000,
+                    "negative control must detect the missing task-history index"
+                );
+            }
+        }
+        assert_eq!(steps[0], steps[1]);
+        assert!(steps[1] < 1_000, "{steps:?}");
     }
 
     #[test]

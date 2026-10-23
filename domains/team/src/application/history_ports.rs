@@ -74,8 +74,50 @@ pub struct PostInput {
     pub origin: crate::domain::history::InputOrigin,
 }
 
+/// Retained task consultation with original IDs and exact associations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyConsultation {
+    /// Stable original row ID; distinct from canonical conversation IDs.
+    pub id: i64,
+    /// Recorded requester and source turn, never inferred from names.
+    pub requester: MemberId,
+    /// Original requesting turn.
+    pub requester_run: RunId,
+    /// Recorded intended expert.
+    pub expert: MemberId,
+    /// Exact associated expert turn, if retained.
+    pub expert_run: Option<RunId>,
+    /// Task whose thread originally held the answer.
+    pub thread: crate::domain::TaskId,
+    /// Optional original question topic, not an authority grant.
+    pub topic: Option<crate::domain::TaskId>,
+    /// Recorded project snapshot only; absent associations remain unscoped.
+    pub project: Option<crate::domain::ProjectId>,
+    /// Original retained question.
+    pub question: String,
+    /// Original recorded state, retained as testimony rather than a live workflow.
+    pub outcome: String,
+    /// Original outcome explanation.
+    pub reason: String,
+    /// Original creation time.
+    pub at: Millis,
+    /// Exact answer-post association, even when its body is unavailable.
+    pub answer_post: Option<i64>,
+    /// Answer content only when the exact linked post belongs to this thread.
+    pub answer: Option<PostInput>,
+}
+
 /// The history's part of HQ's store.
 pub trait HistoryStore {
+    /// At most 51 legacy rows after an ID: fifty visible records and one lookahead.
+    /// Historical inspection cannot create a conversation, grant or wake.
+    /// # Errors
+    /// A store failure or corrupt retained record.
+    fn legacy_task_consultations(
+        &self,
+        task: crate::domain::TaskId,
+        after: i64,
+    ) -> Stored<Vec<LegacyConsultation>>;
     /// Task content and provenance in the same snapshot, including criteria.
     /// # Errors
     /// A store failure or corrupt record.
