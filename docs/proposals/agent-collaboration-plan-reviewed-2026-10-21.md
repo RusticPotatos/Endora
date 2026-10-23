@@ -1,8 +1,27 @@
 # Endora agent collaboration: reviewed implementation plan
 
-Status: proposed, 2026-10-21. Prepared with AI assistance. Research and planning
+## Current execution authorization
+
+2026-10-23: the owner explicitly authorized completing the ADR 0138 replacement
+continuously, including commits and normal pushes on `codex/agent-collaboration`
+and deployments to the existing local home Endora system. Advance between steps
+and phases when their recorded evidence meets exit criteria. Do not request
+another "continue", push or routine deployment approval. The canonical
+[working instructions](../../AGENTS.md#standing-authorization-for-the-collaboration-replacement)
+define the scope and exceptions. This supersedes older approval-waiting language
+in this plan and its pilot records; those records remain historical evidence.
+
+Tests, bounded experiments, privacy review, preserved history, backup/migration
+rehearsal and the NAS/Ansible release gates remain mandatory. Standing consent
+allows an evidence-ready release, not a release over a failing check. Diagnose
+and correct failures, then proceed without another routine authorization round.
+
+## Original review and execution history
+
+Initial status: proposed, 2026-10-21. Prepared with AI assistance. Research and planning
 only. No implementation, policy amendment, paid experiment or deployment is
-authorized by this document.
+authorized by that initial review. Later owner authorizations are recorded above
+and below.
 
 Final-goal change accepted by the owner, 2026-10-23:
 [ADR 0138](../adr/0138-one-conversation-and-assistance-lifecycle.md) now defines

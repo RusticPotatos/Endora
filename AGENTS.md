@@ -89,6 +89,48 @@ the base principles every project shares. What follows is Endora's own.
 
 ## Use time and model usage carefully
 
+### Standing authorization for the collaboration replacement
+
+The owner authorized continuous execution of
+[ADR 0138](docs/adr/0138-one-conversation-and-assistance-lifecycle.md) on
+`codex/agent-collaboration`, including commits, normal pushes to that branch,
+and deployments/cutover/enablement/rollback on the existing local home Endora
+system through its established NAS/Ansible workflow. Do not ask for another
+"continue", phase approval, branch push approval or routine deployment approval.
+This instruction records the owner's explicit authorization, not an inference
+from the environment being local.
+
+- **Advance on evidence.** For each step, define its exit criteria, implement,
+  run the appropriate checks and record the result. When those criteria pass,
+  proceed directly to the next ready step in the
+  [checkpoint](docs/proposals/agent-collaboration-foundation-checkpoint-2026-10-22.md#remaining-foundation-work-in-order).
+  A bounded work item is a unit of execution, not a reason to end the session.
+- **Resolve failures without routine permission requests.** Preserve failed
+  trials, diagnose offline, fix and revalidate. Respect experiment limits and
+  the three-attempt rule; a new evidence-backed approach within this authorized
+  scope does not need another owner continuation. Never relabel a failure as a
+  pass to advance. Continue independent ready work when another step is blocked.
+- **Deploy when ready.** Standing consent satisfies the human authorization
+  gate. Candidate checks, privacy review of outgoing diffs, history-preservation
+  proof, backups, migration rehearsal, drain, live checks and rollback readiness
+  remain required. Record the deployment decision and evidence yourself; a red
+  release check blocks deployment until corrected, not until the owner says yes.
+- **Keep the owner informed without making them operate the workflow.** Send
+  concise progress and material failure updates. Do not end an otherwise
+  unblocked phase with a request or offer to continue. At an unavoidable session
+  interruption, preserve the exact next action and reuse this authorization.
+- **Ask only for a decision or input the evidence cannot supply.** Examples are
+  an unavailable credential/account, new paid spending outside existing limits,
+  an external service or unrelated-system change, or permanent loss of retained
+  history. Routine migrations with verified preservation and rollback are in
+  scope. Existing zero-paid-call pilot limits and per-run caps still apply;
+  standing consent is not permission to bypass them or automatic tool rejection.
+
+`CLAUDE.md` links to this file and receives the same instructions. This standing
+authorization supersedes earlier per-phase approval wording for this work only.
+
+### Execution efficiency
+
 - **Work one bounded problem at a time.** State the acceptance criteria, use the
   existing checkpoint and inspect only the relevant code and evidence. Recheck
   repository state; reopen wider research only when new evidence requires it.
@@ -109,7 +151,7 @@ the base principles every project shares. What follows is Endora's own.
   documents; update changed facts rather than creating repeated summaries. At a
   stopping point, record the commit, checks, blocker and exact next step.
 - **Stop unproductive loops.** Follow the shared three-attempt limit: report the
-  evidence and change the approach offline before proposing another live attempt.
+  evidence and change the approach offline before starting another live attempt.
   Cost savings never waive privacy, authorization, TDD or release requirements.
 
 ## Before handoff

@@ -13,6 +13,16 @@ downtime chatter. The older four validation gates below describe the previous
 integration scope, not the new definition of done. Replacement is not implemented
 yet, and no new deployment is implied.
 
+Standing execution consent, 2026-10-23: the owner authorizes commits, normal
+branch pushes and deployment to the existing home Endora system, and automatic
+progression once each step's evidence meets its criteria. Follow the
+[canonical instructions](../../AGENTS.md#standing-authorization-for-the-collaboration-replacement).
+Do not stop for routine "continue", phase, push or deployment approval. Diagnose
+failed checks, preserve evidence and continue ready work; deploy only after the
+existing preservation, backup, migration, privacy and release gates pass.
+Earlier per-run approval records describe history, not a requirement to ask the
+owner again for every evidence-backed follow-up within the agreed limits.
+
 Current branch scope: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,
 idempotent admission, shared allowances, trusted expert project attribution and
