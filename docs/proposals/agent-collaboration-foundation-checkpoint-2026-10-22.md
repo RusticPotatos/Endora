@@ -85,6 +85,14 @@ inference because the resident runtime was busy; zero workers/requests/calls
 were started. Cleanup completed without changing that runtime. The frozen
 quality diagnostic remains the next live gate when the shared slot is idle.
 
+The fresh idle-slot quality trial completed with correct evidence reads, one
+answer/result and only advertised tools. Its causal uncertainty handling passed
+claim review, but the requester omitted expected 200 from its final finding.
+Quality therefore remains incomplete. The result briefing now restores the
+original question as bounded, untrusted quoted material, and both handoffs
+require explicitly restating key evidence in the final finding. Live validation
+of this further guidance is still outstanding; no production change occurred.
+
 ## This slice's acceptance criteria
 
 1. A normal taskless member can use the familiar `consult` tool to obtain one
@@ -239,8 +247,9 @@ device validation was performed for this branch slice.
    are implemented, and the operator-started live expert/result flow has passed.
    The observed-fact versus inference guidance and private advertised/enforced
    read scope are corrected and tested offline. Complete the frozen live quality
-   diagnostic when the shared slot is idle; its first activation stopped safely
-   on competing work before inference.
+   diagnostic for the revised handoff. The idle-slot trial retained uncertainty
+   correctly but omitted a required final fact; the subsequent original-question
+   and completeness guidance still needs live validation.
 2. Review the initiating wake and briefing offline after the three unsuccessful
    diagnostics. The corrected-guard run performed inference but proposed no
    consultation. The missing tool summary and overbroad wording now have a
@@ -250,9 +259,11 @@ device validation was performed for this branch slice.
    count an operator-initiated request as model initiation, or add
    a taskless assignment API solely to pass a pilot. Renew candidate fingerprints
    and source grants before any further authorized isolated live attempt.
-3. Complete the matched baseline/candidate evaluation and relevant device
-   checks, then review the release and enablement evidence. Deploy through the
-   existing NAS release workflow only with the deployment decision recorded.
+3. Complete the matched baseline/candidate evaluation, preserving workload,
+   evidence scope and full failed-attempt cost records.
+4. Complete relevant device checks and review release/enablement evidence.
+   Deploy through the existing NAS release workflow only with the deployment
+   decision recorded.
 
 The foundation and full plan remain incomplete. The NAS remains on the prior
 deployed candidate with conversations disabled; this checkpoint is branch work.

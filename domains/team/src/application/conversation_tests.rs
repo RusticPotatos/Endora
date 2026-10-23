@@ -230,12 +230,18 @@ fn normal_taskless_consult_uses_the_authorized_assistance_path_and_retries_once(
     hq.tick().unwrap();
     let result = turn_of(&hq, a);
     assert!(result.told.contains("fixture cache"));
+    assert!(
+        result.told.contains("Which synthetic dependency failed?"),
+        "verification must retain the original question: {}",
+        result.told
+    );
     for briefing in [&expert.told, &result.told] {
         for guidance in [
             "Separate what the originals establish, what you infer, and what remains unknown.",
             "Label inference explicitly and cite its basis.",
             "Do not rule out other causes or predict a repair will succeed without supporting evidence.",
             "Finish with a concise finding; if the evidence is insufficient, say so.",
+            "In your final finding, explicitly restate the key evidence that answers the question and cite the original locators; agreement with a colleague's summary is insufficient.",
         ] {
             assert!(
                 briefing.contains(guidance),

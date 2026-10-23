@@ -382,3 +382,56 @@ stopped packet as a resumed live session. The earlier bounded-execution pass is
 unchanged. Quality, autonomous initiation, matched comparison and device/release
 checks remain open. This prose-only outcome update reuses the full passing gate
 for `f59e1ecc`, with fresh personal-value, local-link and whitespace checks.
+
+## Fresh quality trial: grounded answers, incomplete final finding
+
+After the owner's continuation, the unchanged resident runtime was idle. A fresh
+packet retained application candidate `f59e1ecc`, the frozen source and quality
+rubric, new stores/credentials/grants and all earlier scope/stop limits. The 25
+harness tests, actual HTTP assignment/admission rehearsals, network/fingerprint
+checks and unapproved-entry refusal passed before activation. The stopped busy
+attempt was preserved separately.
+
+Two real workers completed in 166.13 seconds. Both independently read the same
+original. One answer and one result were retained, with no new carrier task;
+both linked runs reserved against the admitted project and all amounts were
+zero. The node recorded eight successful application calls, 11,683 prompt tokens
+and 1,631 completion tokens. One separate runtime control used 1,866 prompt and
+75 completion tokens and executed no proposed tool. Nine gateway forwards
+reconcile with those eight calls plus the control. There were no paid calls or
+external actions. Every model-proposed tool was in its intersected stage list.
+
+Claim-by-claim review found the expert's persisted answer accurately reported
+expected 200, observed 503 and dependency unavailability. It labelled the causal
+connection as an inference from co-occurrence and kept alternative causes
+unknown. The requester independently read `r1` and correctly retained uncertainty
+about causation, other causes and repair outcomes. Neither final response made
+the earlier unsupported causal exclusion or repair prediction.
+
+The frozen quality criterion nevertheless remains incomplete: the requester's
+final finding omitted expected 200 and did not restate the check by name. Saying
+the colleague's summary is accurate does not explicitly restate all required
+facts. Record this as an execution pass and incomplete quality result, not a full
+quality pass. Do not infer general model reliability or a causal token/time
+improvement from these two differing, shared-runtime trials.
+
+Cleanup stopped/disabled the isolated store, disarmed execution and left no live
+runs, owned processes or pilot listeners. The resident runtime remained alive
+with unchanged identity. Full traces and the explicit semantic review are in
+`.local/agent-collaboration-quality-pilot-v2/`. No immediate model retry followed.
+
+Offline review then confirmed that the result briefing omitted the original
+question entirely. A rendered-handoff regression failed on that omission. The
+briefing now includes the bounded original question using the existing untrusted
+quotation wrapper. Both assistance stages also require explicitly restating key
+evidence with original locators in the final finding; agreement with a peer
+summary is insufficient. These are context/guidance corrections, not proof that
+the next model response will be complete. The revised candidate needs fresh
+live quality validation before that gate can close.
+
+The revised handoff passed the focused regression and complete repository gate:
+formatting, workspace Clippy, all-feature tests, console, configured personal-value,
+collection parity and whitespace checks. Changed documents also passed ASCII and
+local-link checks. There was no further inference or deployment for this offline
+correction. Four validation gates remain: quality completion, autonomous
+initiation, matched comparison and device/release validation.

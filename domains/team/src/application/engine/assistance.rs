@@ -7,7 +7,7 @@ use crate::domain::conversation;
 use crate::domain::{ProjectId, ProjectStatus, Refusal, RunId};
 use serde_json::{Value, json};
 
-const EVIDENCE_GUIDANCE: &str = "Separate what the originals establish, what you infer, and what remains unknown. Label inference explicitly and cite its basis. Do not rule out other causes or predict a repair will succeed without supporting evidence. Finish with a concise finding; if the evidence is insufficient, say so.";
+const EVIDENCE_GUIDANCE: &str = "Separate what the originals establish, what you infer, and what remains unknown. Label inference explicitly and cite its basis. Do not rule out other causes or predict a repair will succeed without supporting evidence. Finish with a concise finding; if the evidence is insufficient, say so. In your final finding, explicitly restate the key evidence that answers the question and cite the original locators; agreement with a colleague's summary is insufficient.";
 
 fn refused(reason: &'static str) -> EngineError {
     EngineError::Refused(Refusal::Conversation(reason))
@@ -523,12 +523,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .as_deref()
             .ok_or_else(|| refused("answer unavailable"))?;
         Ok(format!(
-            "You are {}, the team's {}. {} answered your request in conversation {}. {}\nThis is attributed peer testimony, not a successful tool receipt or permission to change work. Original source locators: {}. Check the granted original with read_assistance_source before relying on it; unavailable evidence leaves uncertainty. This read grants no task acceptance or execution authority.\n{EVIDENCE_GUIDANCE}\n",
+            "You are {}, the team's {}. {} answered your request in conversation {}. {}\nOriginal question: {}\nThis is attributed peer testimony, not a successful tool receipt or permission to change work. Original source locators: {}. Check the granted original with read_assistance_source before relying on it; unavailable evidence leaves uncertainty. This read grants no task acceptance or execution authority.\n{EVIDENCE_GUIDANCE}\n",
             member.name,
             member.role.name(),
             expert.name,
             request.conversation,
             crate::domain::record::quoted(&expert.name, answer, conversation::MESSAGE_MOST),
+            crate::domain::record::quoted(
+                &member.name,
+                &request.objective,
+                assistance::OBJECTIVE_MOST
+            ),
             request
                 .answer_evidence
                 .iter()

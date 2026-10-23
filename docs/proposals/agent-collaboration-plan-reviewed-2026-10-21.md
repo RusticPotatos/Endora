@@ -30,6 +30,14 @@ passed. Its quality activation stopped on a busy resident runtime before any
 inference or worker start. Live quality verification remains outstanding; no
 existing service was interrupted or production deployment changed.
 
+The subsequent idle-slot quality trial completed the real expert/result flow
+with grounded, explicitly uncertain conclusions and only advertised tools.
+The requester's final finding omitted a required status value, so the frozen
+quality gate remains incomplete. An offline correction restores the original
+question in the result briefing and requires explicit final evidence. Four
+gates remain: complete quality validation, autonomous initiation, matched
+comparison, and device/release validation. See the updated foundation checkpoint.
+
 Implementation checkpoint, 2026-10-22: Phases 0-2 are committed and validated on
 the separate branch; the [information checkpoint](agent-collaboration-information-checkpoint-2026-10-22.md)
 records that slice's scope. Phase 3's bounded read-only assistance, original-source
