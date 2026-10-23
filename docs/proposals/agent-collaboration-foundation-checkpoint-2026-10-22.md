@@ -57,6 +57,14 @@ readiness is now the immediate gate before another request, ahead of validating
 the expert/result model exchange. Host memory readings alone did not predict
 the allocation failure. The full application gate for `64a4253a` remains passed.
 
+Runtime diagnosis reproduced the limit after a successful four-token control;
+the normal expert call still failed. Smaller physical batches did not establish
+an improvement. Further duplicate-model attempts have stopped. The execution
+record now proposes reusing the already resident, identically pinned model with
+isolated application/data and an explicit shared-runtime boundary. This requires
+the owner's acceptance of shared model capacity and weaker model-process
+isolation before execution. No resident service has been changed or stopped.
+
 ## This slice's acceptance criteria
 
 1. A normal taskless member can use the familiar `consult` tool to obtain one

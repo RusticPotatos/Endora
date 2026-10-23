@@ -147,3 +147,92 @@ rehearsal, negative controls, runtime error, audited failed response, stopped
 stores, prompt measurement and evaluated result. Application source did not
 change in this follow-up. The complete passing gate recorded for `64a4253a` is
 reused; prose changes receive fresh privacy, local-link and whitespace checks.
+
+## Runtime diagnosis and compute-gated follow-up
+
+Read-only inspection found a resident local server using the same pinned runtime
+binary, model file and sampling settings, with a 65,536-token context rather
+than the isolated pilot's 16,384. Its slot was idle when inspected. It was not
+stopped, restarted, reconfigured or used for control inference. Two copies of
+the model were therefore resident during an isolated model load, but this alone
+does not prove the exact GPU allocation that failed.
+
+The failed pilot's log also showed GPU insufficient-memory errors during warmup,
+before its health endpoint reported ready. A readiness regression using that
+actual captured startup log failed with the former health-only predicate and
+passed with explicit startup/compute-error rejection. The earlier successful
+runtime capture and loading-state checks passed too: three focused tests total.
+
+A bounded resource check then compared the original profile with one change:
+physical batch size 64. It allowed two model starts, two direct local control
+calls at most, four output tokens per call and a five-minute original watchdog.
+The original profile completed one control call. The smaller physical batch
+logged a warmup memory error, so readiness rejected it before a call was sent.
+The check made two isolated model starts and one inference call, no agent
+requests and no paid calls; both test processes stopped. Elapsed time was 173.43
+seconds, including setup. The first slots-status check lacked authentication and
+failed before any model start; its record was retained, the scoped read was
+corrected, and the original watchdog was not reset. The mixed results do not
+establish that smaller batches improve this host's allocation behavior, so that
+variant was not adopted.
+
+A fresh compute-gated diagnostic retained the original profile and unchanged
+application candidate `64a4253a`. Actual HTTP assignment/source rehearsal,
+network/fingerprint checks and all 23 harness/readiness tests passed. Its new
+gate required clean startup plus one direct four-token control on the same model
+process before operator admission. That control used the captured synthetic
+expert input and tool schemas, with no tool execution or HQ turn. Its 1,866
+input and four output tokens are runtime-control usage, not application usage.
+Its deliberate `length` finish cannot count as a successful agent answer.
+
+The control passed, the operator request was admitted, and one correctly
+restricted expert worker started. Its first normal model call still failed with
+HTTP 500 and GPU insufficient memory. The controller stopped after 21.58 seconds.
+There were two total model-call attempts: one successful short runtime control
+and one failed application call. There were no successful application responses,
+answers, model source reads or result workers. The node's successful-usage table
+remained empty; all ledger amounts were zero. The request was cancelled and the
+store stopped/disabled through the public application use cases, including an
+offline cleanup path. All recorded processes, pilot listeners and live turns
+were verified stopped. No other model process was changed.
+
+This reproduces the GPU limit after a short successful control. A four-token
+probe is not a sufficient readiness criterion for the normal response workload.
+Further duplicate-model GPU attempts stop here. Captures are kept separately in
+`.local/agent-collaboration-runtime-preflight/` and
+`.local/agent-collaboration-pilot-execution-v3/`. No application source changed;
+the complete passing gate for `64a4253a` is reused with fresh document checks.
+
+## Proposed next experiment: reuse the resident runtime
+
+The evidence supports avoiding another full model load. This proposal needs the
+owner's acceptance of a changed experiment boundary before execution:
+
+- Keep the candidate HQ, node, SQLite stores, credentials, conversation, grants
+  and worker permissions isolated. Continue using synthetic fixture data only.
+- Reuse the already running model server without restarting or reconfiguring
+  it. Freeze its verified binary/model hashes, sampling settings and actual
+  65,536-token context. Do not present it as the former 16,384-token condition;
+  any matched comparison must use the same recorded runtime condition.
+- Place a temporary authenticated loopback gateway between the isolated node
+  and the existing runtime. Allow only required metadata/template/tokenizer and
+  completion routes. Keep the resident server's credential outside worker
+  access. Deny model-management routes and tool execution; record the connection
+  allowlist and negative controls before any inference.
+- Check that the resident slot is idle before admission. First replay the normal
+  captured expert payload with its normal response budget, as a labelled runtime
+  control that executes no proposed tool. A short four-token response is
+  insufficient. Count that control inside the total model-call limit.
+- Retain one operator-started diagnostic, at most eight physical workers and
+  48 total calls, a 20-minute watchdog, zero paid calls and zero house actions.
+  Abort on competing workload, failed runtime control or scope/policy drift.
+  Never terminate or change the resident runtime during cleanup.
+- Label the result accurately: application/data/capability isolation remains;
+  model-process and compute-resource isolation do not. The resident runtime
+  retains its current networking and shares capacity with ordinary work.
+  Operator admission still cannot prove autonomous initiation.
+
+This trades full model-process isolation for avoiding duplicate GPU allocation.
+An exclusive-resource window with an identified, authorized stop/restore plan
+is the alternative. No shared-runtime gateway or new inference has been started
+under this proposal, and no existing service has been interrupted.

@@ -117,6 +117,13 @@ No answer or model source read occurred. Runtime compute readiness must precede
 the next request; system-memory availability and metadata endpoints alone did
 not establish it. The existing live, comparison, device and release gates remain.
 
+Further runtime controls found that a short compute check can pass while the
+normal expert call still exhausts GPU memory. Duplicate-model attempts stop.
+The execution record proposes an owner-reviewed shared-runtime condition using
+the already resident model, while retaining isolated application state and
+capability controls. Model-process isolation would change; no such experiment
+or resident-service interruption has been performed yet.
+
 ## Recommendation
 
 Keep the supplied plan's objective: more independently verified work with less
