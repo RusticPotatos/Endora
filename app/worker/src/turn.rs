@@ -764,7 +764,8 @@ impl Talk {
     /// every round so far, which never change once sent. Only what is new is written.
     fn body(&self, model: &str) -> Value {
         if self.api == Api::OpenAi {
-            return json!({ "model": model, "messages": self.messages, "tools": self.tools });
+            return json!({ "model": model, "max_tokens": MOST_A_REPLY,
+                           "messages": self.messages, "tools": self.tools });
         }
         let mut body = json!({
             "model": model, "max_tokens": MOST_A_REPLY, "system": self.system,

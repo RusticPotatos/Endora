@@ -203,10 +203,10 @@ Further duplicate-model GPU attempts stop here. Captures are kept separately in
 `.local/agent-collaboration-pilot-execution-v3/`. No application source changed;
 the complete passing gate for `64a4253a` is reused with fresh document checks.
 
-## Proposed next experiment: reuse the resident runtime
+## Approved next experiment: reuse the resident runtime
 
-The evidence supports avoiding another full model load. This proposal needs the
-owner's acceptance of a changed experiment boundary before execution:
+The evidence supports avoiding another full model load. The owner accepted the
+changed experiment boundary before execution:
 
 - Keep the candidate HQ, node, SQLite stores, credentials, conversation, grants
   and worker permissions isolated. Continue using synthetic fixture data only.
@@ -236,3 +236,19 @@ This trades full model-process isolation for avoiding duplicate GPU allocation.
 An exclusive-resource window with an identified, authorized stop/restore plan
 is the alternative. No shared-runtime gateway or new inference has been started
 under this proposal, and no existing service has been interrupted.
+
+Preparing this experiment exposed a separate reply-budget omission: the OpenAI
+worker path sent no output-token limit, while the Messages path already sent
+4,096. The worker now sends the same explicit 4,096-token limit on both paths.
+A process-level regression first failed on the missing field, then passed after
+the correction; the existing exact request-shape assertion was updated too.
+The captured earlier expert request was uncapped. The shared-runtime control
+uses that synthetic payload with the newly explicit limit, rather than claiming
+the earlier request already had it. This bounds new output but does not prove
+that a particular model will complete useful work within the limit.
+
+The corrected worker passed formatting, workspace Clippy and all-feature tests,
+the 30-screen console check, configured personal-value check, collection parity
+and whitespace checks. The private shared-runtime harness passed 24 tests;
+a permissive-gateway negative control failed the real HTTP boundary test as
+expected. These are preparation results, not live collaboration evidence.

@@ -208,6 +208,20 @@ fn says(text: &str) -> Value {
 }
 
 #[test]
+fn local_model_replies_have_the_same_token_bound_as_messages_replies() {
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![(200, says("The bounded turn finished."))]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let sent = to_model.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].body["max_tokens"], 4096,
+        "local completion must be explicitly bounded"
+    );
+}
+
+#[test]
 fn an_empty_reply_at_the_token_limit_is_not_a_successful_turn() {
     let (hq_url, to_hq) = hq(None);
     let mut limited = says("");
@@ -1551,7 +1565,7 @@ fn the_local_relay_is_sent_no_effort_and_no_cache_mark() {
     let body = to_model.lock().unwrap()[0].body.clone();
     let mut fields: Vec<&String> = body.as_object().unwrap().keys().collect();
     fields.sort();
-    assert_eq!(fields, ["messages", "model", "tools"]);
+    assert_eq!(fields, ["max_tokens", "messages", "model", "tools"]);
 }
 
 #[test]
