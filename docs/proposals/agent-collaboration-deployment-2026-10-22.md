@@ -177,3 +177,13 @@ image tag, fresh integrity-checked snapshots and `make deploy-check` (0 running
 turns, 0 cut, both smoke tests passed). At phone width all 15 controls now
 measure at least 44 px, nothing overflows, and the three conversations are
 intact. This was the in-app browser's phone emulation, not a physical phone.
+
+## Caller audit release: `2cc9dc6e`, 2026-10-24
+
+Releases the [caller audit](agent-collaboration-caller-audit-2026-10-24.md)
+follow-ups: `ask_owner` now describes escalation for decisions and points a
+colleague's help to `consult`, and dead consultation code is removed. Workers read
+their tools from HQ each turn, so the Pi was not redeployed. The full gate passed
+(2,356 tests). Released with a `before-2cc9dc6e` tag, fresh integrity-checked
+snapshots and `make deploy-check`: 0 running turns, 0 cut, both smoke tests
+passed, `/health` build `2cc9dc6e`, and the three conversations are intact.
