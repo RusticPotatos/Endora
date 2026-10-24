@@ -40,9 +40,11 @@ A synthetic old-binary startup/backup/restore rehearsal now passes against
 `25edbd06`, including active accepted-help recovery and the extended findings
 schema. Actual browser inspection through the candidate node and HQ also passes
 the checks described below. A task-owned model diagnostic now passes for the
-frozen synthetic case. Production-backup rehearsal, remaining UI/device/release
-evidence and NAS cutover remain outstanding. No deployment has occurred in these
-slices.
+frozen synthetic case. The production-backup rehearsal passed and `6e67eb6c`
+was deployed to the NAS and the Pi on 2026-10-24, with history preserved; see the
+[release record](agent-collaboration-deployment-2026-10-22.md#replacement-cutover-6e67eb6c-2026-10-24).
+Conversations remain disabled in production; signed-in UI and device checks
+against production remain outstanding.
 
 The requester-result finding is now retained with the canonical request and
 shown in the existing Work history/export payload, rather than depending on an
@@ -122,9 +124,11 @@ configuration are unchanged; reuse the passing `25edbd06` full gate (954 team
 tests, 76 HQ API tests, 158 scenarios / 1,980 steps), with fresh documentation
 privacy, relative-link and whitespace checks before push.
 
-Next: relevant device checks, production-backup rehearsal and the NAS/Ansible
-release/caller cutover. The full
-ADR 0138 definition of done remains open.
+Production-backup rehearsal and the NAS/Pi cutover are done (see the
+[release record](agent-collaboration-deployment-2026-10-22.md#replacement-cutover-6e67eb6c-2026-10-24)).
+Next: signed-in Work UI and device checks against production, then the owner's
+decision on enabling conversations. The full ADR 0138 definition of done remains
+open until those pass.
 
 ### Legacy cancellation preparation
 

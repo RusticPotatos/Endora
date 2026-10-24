@@ -81,3 +81,60 @@ the supported response to a collaboration failure; restoring older data requires
 an explicit decision because it could discard later work. See the
 [reviewed implementation plan](agent-collaboration-plan-reviewed-2026-10-21.md)
 for the remaining gates.
+
+## Replacement cutover: `6e67eb6c`, 2026-10-24
+
+AI-assisted release of the [ADR 0138](../adr/0138-one-conversation-and-assistance-lifecycle.md)
+replacement from a clean detached checkout of `6e67eb6c`. Its executable code is
+unchanged from `25edbd06`, whose full gate passed (see the
+[checkpoint](agent-collaboration-foundation-checkpoint-2026-10-22.md)). The live
+build `753984ee` is an ancestor of `6e67eb6c`, and `develop` is fully merged, so
+the release reverts no deployed work.
+
+Before the cutover:
+
+- Production snapshots of the node and HQ databases were opened twice by the
+  candidate's store adapters and by a compatible-restore build, offline and
+  without network, secrets, workers or model calls. Integrity, foreign keys,
+  original columns and row counts were preserved; the backups were unchanged.
+- The ansible-nas preview of the Endora block changed nothing; it manages only
+  the shutdown drain, as in the previous release. The Pi was reachable and its
+  runner untouched.
+- The NAS (`amd64`) and Pi (`arm64`) images were built off the NAS. The first
+  workbench builds failed while Ansible Galaxy returned HTTP 500 for every
+  collection download; the unchanged build passed once Galaxy recovered.
+- The running NAS node and the Pi's node/workbench images were tagged
+  `before-replacement-6e67eb6c` as the rollback release. Fresh integrity-checked
+  node and HQ snapshots were written to the NAS backups folder immediately
+  before the restart; they are its rollback database pair.
+- Production HQ held two legacy consultations, both answered: no queued or
+  running legacy work needed draining or cancelling.
+
+Cutover:
+
+- `make deploy-check`: the drain reported 0 running turns, node, HQ and the
+  sound senders/AirPlay 2 services were recreated, the drain was lifted with
+  0 cut turns, and both live smoke tests passed (one filtered out, as before).
+- `make deploy-pi`: the drain again reported 0 running turns; the Pi's runner
+  restarted on the new node and workbench images and lifted the drain with 0 cut.
+
+Observed results:
+
+- `/health` reports status `ok`, version `0.12.0`, build `6e67eb6c`; the Pi
+  runner reports build `6e67eb6c`.
+- HQ before/after snapshots both pass integrity and foreign-key checks. No table
+  was dropped and no table lost rows; the five new tables are the replacement's
+  history and provenance tables. Only the event and game logs grew in between.
+- The old consultation engine is not in this build; its tests show v1 worker
+  calls receive HTTP 410. The startup cancellation had nothing pending.
+- The first real turn after the restart ran in the new workbench on the Pi and
+  exited 0. Neither the runner nor HQ logged an error.
+- Conversations stay disabled, as before. Signed-in Work UI and physical device
+  checks were not repeated against production in this release.
+
+Rollback is the tagged prior images with the pre-restart snapshot pair, restored
+as one compatible release/database pair; it would discard work recorded after
+the restart, so it needs an explicit decision. Private evidence (logs, snapshots,
+container identities and before/after comparisons) is in the ignored
+`.local/release-6e67eb6c/` and `.local/replacement-release-readiness-6e67eb6c/`
+directories.
