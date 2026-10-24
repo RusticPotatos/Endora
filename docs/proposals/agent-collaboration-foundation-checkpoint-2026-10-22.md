@@ -37,8 +37,10 @@ identity and input classification, and accepted help holds automatic task recove
 until delivery/verification ends or the request terminates. Implicit model-post
 and final-word mentions no longer dispatch peer work. Next complete the
 final migration/history rehearsal and actual UI/model release evidence.
-Actual migration rehearsal, final UI/model evidence and NAS cutover remain
-outstanding. No deployment has occurred in these slices.
+A synthetic old-binary startup/backup/restore rehearsal now passes, including
+active accepted-help recovery. Production-backup rehearsal, final UI/model
+evidence and NAS cutover remain outstanding. No deployment has occurred in
+these slices.
 
 ### Legacy cancellation preparation
 
@@ -286,6 +288,49 @@ steps), console, configured privacy, collection-parity and whitespace checks.
 Only documentation changed afterward. No live model call or deployment is
 included. Next rehearse versioned startup/history preservation, then freeze the
 actual task-owned model envelope and verify UI/cutover evidence.
+
+### Synthetic versioned startup and compatible restore rehearsal
+
+The actual HQ binary at `c8f9cd0d` was exercised against a synthetic database
+created by the captured, hash-verified older pilot binary `f59e1ec`. This is not
+a rehearsal against the current NAS backup or a production deployment. Separate
+SQLite backup copies were opened sequentially; no two engines shared a store.
+The application sandbox denied outbound networking and writes outside its trial
+directory. No runner connected: physical worker starts and model calls were zero.
+
+Stopped and active startup, plus a second candidate startup for each, passed.
+Original member/goal/task rows, posts, message bodies, transcripts, legacy answer
+and project links, delivery associations and immutable canonical-request fields
+were preserved. The older inputs acquired no fabricated source lineage. The
+legacy queued question became visibly cancelled and its expert stopped. In the
+active case, ordinary and canonical expert runs entered bounded platform retry;
+the same accepted request stayed processing with the same expert association.
+In the stopped case, the existing global Stop policy intentionally cancelled
+canonical help and stopped its expert. Free-run accounting remained unchanged
+across reopening; this rehearsal does not claim to test nonzero paid settlement.
+
+The actual owner history HTTP route returned the cancelled question and original
+completed answer with exact IDs and answer text. Valid v1 worker authentication
+received 410, invalid authentication received 401, and the retired expert's token
+was refused. Restoring the compatible older binary/database pair also passed;
+the restored legacy question remained queued rather than inheriting the newer
+database's cancelled status. Every temporary HQ process was terminated and waited
+for before another was started.
+
+Evidence is in ignored `.local/replacement-migration-c8f9cd0d-v5/`, including
+`result.json`, binary hashes, profiles, database copies and the rehearsal script.
+Four earlier trials are retained separately. Their fixture/checker failures were
+a missing required message key/day, default member migration and an incorrect
+global-Stop expectation, an incorrect expectation of zero-value accounting rows,
+and epoch-era running timestamps causing normal timeouts. Offline checker and
+timestamp precondition controls preceded the corrected final trial. No application
+code was changed to make those fixture expectations pass.
+
+The unchanged candidate reuses `.local/context-policy-gate/` for repository checks;
+fresh documentation privacy/whitespace checks follow. Remaining release evidence
+includes actual Work UI interaction, a frozen task-owned model pilot with a
+complete independently grounded finding, the production-backup/NAS rehearsal and
+the final controlled deployment/enablement/rollback decision.
 
 Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,
