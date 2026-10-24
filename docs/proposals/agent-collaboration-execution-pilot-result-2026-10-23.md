@@ -435,3 +435,24 @@ collection parity and whitespace checks. Changed documents also passed ASCII and
 local-link checks. There was no further inference or deployment for this offline
 correction. Four validation gates remain: quality completion, autonomous
 initiation, matched comparison and device/release validation.
+
+## Task-owned replacement diagnostic, 2026-10-24
+
+Candidate `25edbd06` now passes one frozen synthetic task-owned diagnostic:
+the real worker claims an owner task, the model initiates canonical help, both
+assigned workers independently read the original, and the requester retains its
+own complete finding. The actual Work screen displays it and its downloaded
+JSON matches the store. Quality completion and task-assigned initiation are
+established for this case; general reliability, production scheduler liveness
+and a matched performance improvement are not established.
+
+Two attempts are retained: the first stopped on an experiment guard's refusal of
+the worker's automatic final task post; a captured-response worker replay and
+fresh actual HTTP rehearsal corrected that harness before the second trial.
+The completed trial used three workers, 14 application calls and 303.76 seconds.
+Including the failed trial: four workers, 19 calls, 35,341 prompt tokens and
+3,991 completion tokens. All charges and external actions were zero. Extra
+polling after help admission counts in those totals. The isolated system is
+stopped and disabled; the resident runtime's identity is unchanged. Production
+was not deployed. Full scope, limitations, browser evidence and the next
+release checks are in the [foundation checkpoint](agent-collaboration-foundation-checkpoint-2026-10-22.md#extended-candidate-migration-and-actual-browser-inspection-2026-10-24).

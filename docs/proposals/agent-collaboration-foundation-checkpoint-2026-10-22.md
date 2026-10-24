@@ -35,17 +35,96 @@ the source-classified ordinary task context when messaging is enabled.
 Protocol aliases now share the canonical policy. Real worker startup preserves
 identity and input classification, and accepted help holds automatic task recovery
 until delivery/verification ends or the request terminates. Implicit model-post
-and final-word mentions no longer dispatch peer work. Next complete the
-final migration/history rehearsal and actual UI/model release evidence.
-A synthetic old-binary startup/backup/restore rehearsal now passes, including
-active accepted-help recovery. Production-backup rehearsal, final UI/model
-evidence and NAS cutover remain outstanding. No deployment has occurred in
-these slices.
+and final-word mentions no longer dispatch peer work.
+A synthetic old-binary startup/backup/restore rehearsal now passes against
+`25edbd06`, including active accepted-help recovery and the extended findings
+schema. Actual browser inspection through the candidate node and HQ also passes
+the checks described below. A task-owned model diagnostic now passes for the
+frozen synthetic case. Production-backup rehearsal, remaining UI/device/release
+evidence and NAS cutover remain outstanding. No deployment has occurred in these
+slices.
 
 The requester-result finding is now retained with the canonical request and
 shown in the existing Work history/export payload, rather than depending on an
-expiring transcript. Final browser/model proof and a repeated migration rehearsal
-against this extended candidate remain required before deployment.
+expiring transcript. The repeated synthetic migration and initial actual browser
+proof and task-owned model diagnostic are complete for the scopes below. The
+remaining release checks must pass before deployment.
+
+### Extended candidate migration and actual browser inspection, 2026-10-24
+
+Rebuilt actual HQ/node/worker binaries from `25edbd06`. The sequential synthetic
+upgrade, reopen, active recovery and compatible backup/old-binary restore pass
+against the extended findings schema, preserving original rows and links. Old
+requests explicitly return `finding: null`; migration invents no conclusion.
+This uses the captured older pilot binary, not a current NAS backup/release.
+
+Actual browser inspection through candidate node/HQ verifies migrated history,
+ordered pages of 50 and 1 messages without overlap, empty history, cancelled
+assistance, attributed expert/requester findings, escaped markup, invalid-source
+feedback and original run replay. The task inspector retains original legacy
+questions/answers and links. The first UI finding was explicitly seeded. The
+later model-authored finding was displayed and its actual downloaded JSON
+independently compared with the store, `r1` citation and run IDs. A stopped copy
+also displays the completed model result while messaging is disabled. Its
+message-page download matches the explicitly labelled synthetic message and run
+ID, and an explicitly seeded failed request displays no invented answer/finding.
+That rendering fixture is not a live model failure. Owner deletion
+immediately hides a synthetic conversation; bounded maintenance then removes
+messages, requests and findings with no foreign-key errors. The first checker
+wrongly expected immediate physical purge; the corrected check follows the
+existing tombstone/batched-purge contract.
+
+The operator HTTP preflight passes claim, canonical admission, expert original
+read/answer, requester independent original read/finding and unchanged task
+ownership/status, including the worker's final status post. Initial fixture
+failures are retained: a stopped task's wake was refused, and an empty project
+allow-list correctly excluded peer tools. Explicitly granting only `consult`
+and `read_messages` fixes the fixture without relaxing production policy or
+granting an external capability.
+
+The first live attempt proves model initiation but fails the experiment guard:
+one worker, five calls, 9,292 prompt / 758 completion tokens, 72.81 seconds.
+The guard rejected the worker's automatic final task post. Before another live
+attempt, replaying all five captured model replies through the real worker and
+explicitly fake transports reproduced exit 1, then passed with exit 0. The guard
+now allows only the original task's bounded `last_word: true` post after the one
+admission, without advertising post to the model. Other tasks, stages and status
+changes are refused. The actual HTTP preflight and 26 harness checks pass.
+
+The fresh live trial completes in 303.76 seconds: three workers, 14 application
+calls, 26,049 prompt / 3,233 completion tokens, no extra control completion. The
+model initiates exactly one request from its automatically claimed owner task.
+Expert and requester independently read byte-identical original replies. Both
+stored conclusions explicitly name health-check-v1, expected 200, observed 503
+and unavailable fixture-cache, distinguish causal inference from co-occurrence,
+and leave other causes unknown. The requester says restoring the dependency is
+not proven to resolve the failure. The finding is retained with the request.
+The task stays owned and Doing; there is no acceptance, legacy request, paid
+charge, repair claim or external action. This passes one frozen synthetic case.
+
+Across both live attempts, count four workers, 19 calls, 35,341 prompt / 3,991
+completion tokens, including the failed harness attempt. Initial requester
+polling used all six rounds and counts in the totals. As frozen, the operator
+suppressed one synthetic idle lease without starting a model; this is not proof
+of unassisted production scheduler liveness. General reliability and a matched
+performance improvement are not established. Cleanup stopped/disabled the
+isolated stores, disarmed execution and closed owned processes/listeners. The
+resident process and argument fingerprint are unchanged.
+
+Ignored evidence: `.local/replacement-migration-25edbd06/`,
+`.local/replacement-ui-25edbd06/` and
+`.local/replacement-task-pilot-25edbd06{,-v2}/`, including evaluation, original
+traces, captured-response red/green replay, browser screenshots/downloads and all
+failed attempts. Final stopped-history/message-download/failure-display evidence
+is in `.local/replacement-ui-final-25edbd06/`; those services also shut down with
+no workers or inference. No NAS deployment occurred. Tracked executable code and release
+configuration are unchanged; reuse the passing `25edbd06` full gate (954 team
+tests, 76 HQ API tests, 158 scenarios / 1,980 steps), with fresh documentation
+privacy, relative-link and whitespace checks before push.
+
+Next: relevant device checks, production-backup rehearsal and the NAS/Ansible
+release/caller cutover. The full
+ADR 0138 definition of done remains open.
 
 ### Legacy cancellation preparation
 
