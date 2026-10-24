@@ -34,8 +34,9 @@ route; invalid or ended tokens still receive 401. The service candidate selects
 the source-classified ordinary task context; its temporary selector remains.
 Protocol aliases now share the canonical policy. Real worker startup preserves
 identity and input classification, and accepted help holds automatic task recovery
-until delivery/verification ends or the request terminates. Next complete the
-ordinary-context/implicit-wake audit and remove the selector.
+until delivery/verification ends or the request terminates. Implicit model-post
+and final-word mentions no longer dispatch peer work. Next complete the
+ordinary-context responsibility audit and remove the selector.
 Actual migration rehearsal, final UI/model evidence and NAS cutover remain
 outstanding. No deployment has occurred in these slices.
 
@@ -191,6 +192,35 @@ restored after fixing first-line compatibility. The diagnosis skill's temporary
 instrumentation check found none to remove. Only documentation changed after the
 final executable-code gate, followed by fresh privacy/whitespace checks. No model
 call, device change or deployment is included.
+
+### Task-post dispatch retirement
+
+Task posts and worker final words retain their original text, attribution and
+history, but member mentions schedule no peer work. Only an explicit
+owner-authored post may dispatch mentions; generated text does not gain that
+authority from its displayed actor. The tool description no longer tells models
+to wake colleagues through posts. Canonical assistance is the peer-help path.
+
+Actual management escalation still explicitly schedules `QuestionAsked`, and
+management replies still return `QuestionAnswered` even when they mention their
+requester. Owner requests, board decisions, task ownership and independent tester
+acceptance retain their responsibilities. The complete board/manager/developer
+round-trip test now includes named replies to catch a lost or duplicate dispatch.
+
+Focused tests reproduced both ordinary-post and worker-final-word dispatch before
+the fix. The history scenario now checks that a hostile model post schedules
+nothing, then uses an explicit owner request to read the same retained, cleaned
+post. An older protocol fixture also depended on implicit peer dispatch; it now
+uses an explicit owner request while preserving its decision-recipient check.
+Ignored evidence is in `.local/thread-wakes-{red,team-first,scenario-green}.log`,
+`.local/final-word-wake-red.log` and `.local/thread-wakes-gate/`.
+The first scenario command had invalid harness arguments and ran no scenario;
+the corrected command passed all 12 steps. The full gate then passed: formatting,
+workspace denied-warning Clippy, all-feature tests (942 team tests, 76 HQ API
+tests, 158 team scenarios / 1,973 steps), console, configured privacy,
+collection-parity and whitespace checks. Its earlier failed scenario expectation
+is retained in `first-tests-failure.log`. Only documentation changed afterward.
+No model call or deployment is part of this slice.
 
 Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,

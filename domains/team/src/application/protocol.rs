@@ -477,7 +477,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "post",
-            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mention a member by name to wake them. A finding cites its evidence; a post that cites none in a turn with no receipts is marked unsupported.",
+            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mentions in your post schedule no peer work; use authorized bounded assistance for peer help. Actual management replies still return authority decisions to their requester. A finding cites its evidence; a post that cites none in a turn with no receipts is marked unsupported.",
             json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What the post rests on, if anything."), "handover": drain_handover_schema() }),
             &["task", "text"]
         ),

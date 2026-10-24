@@ -380,7 +380,16 @@ fn seeing_a_question_wakes_the_member_who_asked_not_the_tasks_owner() {
         &json!({ "task": s.task.0, "text": "@Grace can you look at the list?" }),
     )
     .unwrap();
-    // Her wake waits for his turn on the task to end. She is the tester, whose work is the
+    assert!(
+        !hq.store()
+            .wakes()
+            .unwrap()
+            .iter()
+            .any(|wake| wake.member != s.dev)
+    );
+    hq.post(Author::Owner, s.task, "@Grace please inspect the list")
+        .unwrap();
+    // The owner's explicit request waits for his turn to end. She is the tester, whose work is the
     // Mac's (ADR 0131), and the node says it is free.
     hq.tell_mac(true, "ready");
     hq.runner().finish(context.run, true);

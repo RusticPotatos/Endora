@@ -2,7 +2,7 @@
 //! while and read back in the turn's replay, and what stays when it goes.
 
 use cucumber::{then, when};
-use endora_team::application::{Clock as _, TeamStore};
+use endora_team::application::{Author, Clock as _, TeamStore};
 use endora_team::domain::history::{DAY_MS, KEPT_DAYS, TRANSCRIPT_MOST};
 use serde_json::json;
 
@@ -271,8 +271,25 @@ fn shows_it_cleaned(text: &str, name: &str) -> Result<(), String> {
 )]
 fn posts_a_hostile_line(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);
+    let before = w.hq.store().wakes().unwrap().len();
     let posted = w.use_tool(&name, "post", &json!({ "task": task.0, "text": HOSTILE }));
     assert!(posted.is_some(), "refused: {:?}", w.refused);
+    assert_eq!(
+        w.hq.store().wakes().unwrap().len(),
+        before,
+        "mentions in a model post must schedule no peer work"
+    );
+}
+
+#[when(expr = "the owner asks {word} to inspect the thread on {string}")]
+fn owner_requests_thread_inspection(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.hq.post(
+        Author::Owner,
+        task,
+        &format!("@{name} please inspect this thread"),
+    )
+    .unwrap();
 }
 
 #[then(expr = "{word}'s briefing shows {word}'s post on one line, under his name, cleaned")]

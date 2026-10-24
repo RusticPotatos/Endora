@@ -37,6 +37,11 @@ help or result-verification turn remains pending, then resumes without completin
 the task or changing its owner. These checks use indexed canonical metadata,
 independent of retained question/answer bodies.
 
+Task-thread posts and worker final words remain readable reporting. Their member
+mentions dispatch no peer work; only explicit owner-authored posts may schedule
+mentions. Real management question/reply and owner-decision pathways retain their
+own authority responsibilities, including replies that name their requester.
+
 Retained task questions have a bounded owner-only projection through
 `/v1/tasks/{id}/consultations`, proxied by the node into the existing Work task
 inspector. Exact original IDs, project snapshots and answer-post associations

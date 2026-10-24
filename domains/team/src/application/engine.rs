@@ -1577,10 +1577,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             unsupported,
             InputOrigin::Run(run.id),
         )?;
-        let members = self.store.members()?;
-        let named = mentions(text, &members);
         for asker in askers {
-            if asker.id == member.id || named.iter().any(|m| m.id == asker.id) {
+            if asker.id == member.id {
                 continue;
             }
             self.wake_held_lock(asker.id, Some(task), WakeReason::QuestionAnswered)?;
@@ -1646,8 +1644,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Writes to a task's thread, as the owner or Endora. Anyone named in it is woken. A
-    /// member writes only in its turn, through [`Self::post_in`].
+    /// Writes to a task's thread, as the owner or Endora. An explicit owner post may
+    /// wake named members. A member writes only in its turn, through [`Self::post_in`].
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a task that does not exist; [`Refusal::OutOfReach`] for a
@@ -1769,17 +1767,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             cited,
             origin,
         )?;
-        self.after_thread_post(by, task, text, unsupported)
+        self.after_thread_post(by, task, text, unsupported, origin)
     }
 
-    /// Effects after a persisted thread post. Consultation completion persists its post
-    /// with its terminal state, then uses the same existing thread behavior here.
+    /// Reporting effects after a persisted task post. Only explicit owner-authored
+    /// text dispatches mentions; model prose is not a second peer-help scheduler.
     fn after_thread_post(
         &self,
         by: Author,
         task: TaskId,
         text: &str,
         unsupported: bool,
+        origin: InputOrigin,
     ) -> Done<()> {
         let author = self.author_name(by)?;
         // A short line for a bubble. The feed shows the whole post: `post` is its place in the
@@ -1800,11 +1799,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // The stories and sections it names were used (ADR 0122).
             self.world_used(text)?;
         }
+        if by != Author::Owner || origin != InputOrigin::Owner {
+            return Ok(());
+        }
         let members = self.store.members()?;
         for named in mentions(text, &members) {
-            if by == Author::Member(named.id) {
-                continue;
-            }
             self.wake_held_lock(named.id, Some(task), WakeReason::Mentioned)?;
         }
         Ok(())

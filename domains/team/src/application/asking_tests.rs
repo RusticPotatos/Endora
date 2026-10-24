@@ -1,8 +1,6 @@
-//! Asking the past (ADR 0129): `ask_record` finds what the team said and wakes no one;
-//! `consult` takes a colleague's one short turn and answers in the asker's thread; a member who
-//! cannot be woken is answered for from the record; a cloud member is never given what a turn
-//! that read Confidential data said; and what one member wrote cannot forge a line in another's
-//! briefing.
+//! Explicit record search and authority questions: retained testimony wakes no one,
+//! source privacy holds, and another member's text cannot forge a briefing line.
+//! New peer help uses the canonical lifecycle tested in conversation_tests (ADR 0138).
 
 use serde_json::{Value, json};
 
@@ -187,8 +185,8 @@ fn a_turn_on_claude_is_never_given_what_a_turn_that_read_confidential_data_said(
 
 #[test]
 fn what_one_member_posts_cannot_forge_a_line_or_hide_text_in_anothers_briefing_or_my_turn() {
-    // A post goes into the thread as it was written, where a mention wakes whoever it names;
-    // what another member is told of it, in its briefing and in my_turn, is cleaned (ADR 0129).
+    // A post is retained as written; its mentions schedule nothing. What another
+    // member reads after an owner request is cleaned (ADRs 0129, 0138).
     let clock = Hands(AtomicI64::new(NOON));
     let hq = engine(&clock);
     let t = team(&hq);

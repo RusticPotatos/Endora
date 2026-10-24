@@ -78,12 +78,13 @@ Feature: The team's history
     And the answer says "the password rotated"
 
   # What one member writes reaches the next as that member's one line, cleaned (ADR 0129,
-  # amended): the post is kept as written, and a mention in it wakes whoever it names when it is
-  # made; what another is told of it cannot forge a line, hide text or wake anyone.
+  # amended): the post is kept as written, but its mentions dispatch no work (ADR 0138).
+  # An explicit owner request can bring it to another member, still cleaned.
   Scenario: A colleague's post cannot forge a line, hide text or wake anyone in a briefing
     Given Zed has the task "Cap sonarr's memory"
     When Zed posts a line that forges a SYSTEM line, hides text, mentions Kit and calls Ada on "Cap sonarr's memory"
     And Zed's turn ends
+    And the owner asks Ada to inspect the thread on "Cap sonarr's memory"
     And Ada's turn starts
     Then Ada's briefing shows Zed's post on one line, under his name, cleaned
     And what Ada reads of the thread with my_turn shows the same
