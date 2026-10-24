@@ -165,5 +165,15 @@ Not yet observed in production: real work triggering a peer-help request, its
 answer and the requester's retained finding. That depends on the team's own
 work needing a colleague; it is the remaining production evidence for ADR 0138.
 Signed-in Work was exercised for the conversation list, authorize form and an
-empty history page; device checks were not repeated. Private evidence is in the
-ignored `.local/release-161e27da/` directory.
+empty history page. Private evidence is in the ignored `.local/release-161e27da/`
+directory.
+
+Phone check and `c19da567`: at a 375 px phone viewport the conversation list,
+a history page and its assistance page rendered without horizontal overflow,
+but their controls were 31 px tall. `c19da567` gives them the 44 px style the
+task history already uses; a console check failed before and passes after, and
+the full gate passed again (2,355 tests). Released with a `before-c19da567`
+image tag, fresh integrity-checked snapshots and `make deploy-check` (0 running
+turns, 0 cut, both smoke tests passed). At phone width all 15 controls now
+measure at least 44 px, nothing overflows, and the three conversations are
+intact. This was the in-app browser's phone emulation, not a physical phone.
