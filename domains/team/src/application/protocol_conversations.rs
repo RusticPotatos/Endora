@@ -55,6 +55,12 @@ pub(super) fn answer_assistance_tool() -> Value {
         "inputSchema":{"type":"object","properties":{"answer":{"type":"string","maxLength":MESSAGE_MOST},"evidence":{"type":"array","maxItems":5,"items":{"type":"string"}}},"required":["answer"],"additionalProperties":false}})
 }
 
+/// A requester-result turn retains its own conclusion in the existing request.
+pub(super) fn record_assistance_finding_tool() -> Value {
+    json!({"name":"record_assistance_finding","description":"Retain your own final finding for the one requester-result turn assigned to you, then stop. Restate key original evidence and cite its granted locators. If originals are unavailable, record an inconclusive finding without unsupported citations. This is your attributed claim, never task acceptance or action authority.",
+        "inputSchema":{"type":"object","properties":{"finding":{"type":"string","maxLength":MESSAGE_MOST},"evidence":{"type":"array","maxItems":5,"items":{"type":"string"}}},"required":["finding"],"additionalProperties":false}})
+}
+
 pub(super) fn read_assistance_source_tool() -> Value {
     json!({"name":"read_assistance_source","description":"Read an original document or receipt explicitly granted to this request. A locator is not authority; unavailable or expired grants are refused.",
         "inputSchema":{"type":"object","properties":{"source":{"type":"string"},"part":{"type":"integer","minimum":1}},"required":["source"],"additionalProperties":false}})
@@ -89,7 +95,11 @@ fn assistance_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
 ) -> Option<Result<String, String>> {
     if !matches!(
         tool,
-        "request_assistance" | "answer_assistance" | "read_assistance_source" | "cancel_assistance"
+        "request_assistance"
+            | "answer_assistance"
+            | "record_assistance_finding"
+            | "read_assistance_source"
+            | "cancel_assistance"
     ) {
         return None;
     }
@@ -104,6 +114,8 @@ fn assistance_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             &["conversation", "key", "objective", "evidence"]
         } else if tool == "answer_assistance" {
             &["answer", "evidence"]
+        } else if tool == "record_assistance_finding" {
+            &["finding", "evidence"]
         } else if tool == "read_assistance_source" {
             &["source", "part"]
         } else {
@@ -138,6 +150,16 @@ fn assistance_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             return engine
                 .read_assistance_source(run.id, source, part)
                 .map_err(|e| e.to_string());
+        }
+        if tool == "record_assistance_finding" {
+            let finding = args["finding"].as_str().ok_or("finding required")?;
+            let evidence = assistance_sources(args)?;
+            let id = engine
+                .record_assistance_finding_in(run.id, finding, &evidence)
+                .map_err(|e| e.to_string())?;
+            return Ok(
+                json!({"request":id,"state":"finding_recorded","scheduled":false}).to_string(),
+            );
         }
         if tool == "answer_assistance" {
             let answer = args["answer"].as_str().ok_or("answer required")?;

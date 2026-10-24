@@ -159,6 +159,24 @@ pub trait ConversationStore {
     /// # Errors
     /// A store failure.
     fn assistance_page(&self, conversation: i64, after: i64) -> Stored<Vec<Request>>;
+    /// Atomically retain one finding from its live associated requester-result
+    /// turn. Exact retries reuse it; conflicting replacements refuse.
+    /// # Errors
+    /// A store failure; policy refusals are returned in Accepted.
+    fn record_assistance_finding(
+        &self,
+        run: RunId,
+        text: &str,
+        evidence: &[SourceRef],
+        now: Millis,
+    ) -> Stored<Accepted>;
+    /// Read one retained finding by its exact request ID.
+    /// # Errors
+    /// A store failure.
+    fn assistance_finding(
+        &self,
+        request: i64,
+    ) -> Stored<Option<crate::domain::assistance::Finding>>;
     /// Expire at most fifty due open requests, returning associated expert turns to stop.
     /// # Errors
     /// A store failure.

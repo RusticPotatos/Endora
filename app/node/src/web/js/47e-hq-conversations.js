@@ -37,9 +37,11 @@ function hqConversations(s) {
         const delivery = r.notice_cancelled ? "Delivery cancelled" : r.notified ? `Result turn ${esc(r.notice_status || "queued")}` : "Waiting to notify requester";
         return `<li>Request ${Number(r.id)} · ${esc(r.status)} · ${esc(requester)} to ${esc(expert)}
           <p>${esc(r.objective)}</p>${r.reason ? `<p>${esc(r.reason)}</p>` : ""}
+          <small>Requester turn: ${r.requester_run ? replayRunLink(r.requester_run, `R${Number(r.requester_run)}`) : "unavailable"} · expert turn: ${r.expert_run ? replayRunLink(r.expert_run, `R${Number(r.expert_run)}`) : "unavailable"}</small>
           <small>Project ${Number(r.project)} · ${Number(r.attempts || 0)} attempts · exchange spend $${spend} · deadline ${esc(new Date(r.deadline_at).toLocaleString())}${r.status === "processing" && r.run_status === "retry_waiting" && r.retry_at ? ` · next attempt ${esc(new Date(r.retry_at).toLocaleString())}` : ""}</small>
           ${(r.evidence || []).length ? `<p>Original source locators: ${r.evidence.map(esc).join(", ")}</p>` : ""}
           ${r.answer ? `<p>Answer: ${esc(r.answer)}</p><small>Answer sources: ${(r.answer_evidence || []).map(esc).join(", ") || "none cited"} · ${delivery}</small>` : ""}
+          ${r.finding ? `<p>Requester finding: ${esc(r.finding.text)}</p><small>Attributed claim · ${replayRunLink(r.finding.run, `result run ${Number(r.finding.run)}`)} · original sources: ${(r.finding.evidence || []).map(esc).join(", ") || "none cited"}</small>` : '<p class="hq-note">No retained requester finding recorded.</p>'}
           ${["queued", "processing"].includes(r.status) ? button("cancel-request", r.id, "Cancel request") : ""}</li>`;
       }).join("");
       body += `<section class="hq-card" style="overflow-wrap:anywhere"><h3>Assistance in conversation ${Number(HQ_CHAT.id)}</h3>

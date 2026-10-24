@@ -82,6 +82,15 @@ fn task_help_tool_discovery_does_not_depend_on_the_first_directory_page() {
 
 #[test]
 fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() {
+    canonical_task_help_with_finding(false);
+}
+
+#[test]
+fn a_retained_requester_finding_does_not_restart_model_work_after_worker_loss() {
+    canonical_task_help_with_finding(true);
+}
+
+fn canonical_task_help_with_finding(lose_worker_after_finding: bool) {
     use super::conversation_ports::ConversationStore;
     use super::history_ports::HistoryStore;
     use super::ports::NewTask;
@@ -158,6 +167,16 @@ fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() 
     assert_eq!(request.requester_run, run.id);
     assert!(hq.store().consults().unwrap().is_empty());
     assert!(
+        super::protocol::call(
+            &hq,
+            &run,
+            &member,
+            "record_assistance_finding",
+            &json!({"finding":"An ordinary turn cannot finish its own peer exchange."})
+        )
+        .is_err()
+    );
+    assert!(
         super::protocol::tools_in_v2(&hq, &run, &member)
             .as_array()
             .unwrap()
@@ -169,6 +188,17 @@ fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() 
     let expert_turn = turn_of(&hq, expert);
     assert!(hq.in_assistance(expert_turn.run).unwrap());
     assert!(!hq.may_use_a_shell(expert_turn.run).unwrap());
+    let (expert_run, expert_member) = hq.turn_of(&expert_turn.token).unwrap().unwrap();
+    assert!(
+        super::protocol::call(
+            &hq,
+            &expert_run,
+            &expert_member,
+            "record_assistance_finding",
+            &json!({"finding":"An expert cannot write the requester finding."})
+        )
+        .is_err()
+    );
     hq.answer_assistance_in(
         expert_turn.run,
         "The fixture returned its expected marker.",
@@ -186,6 +216,64 @@ fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() 
     assert_eq!(notice.id, id);
     assert!(result.told.contains("What does the fixture show?"));
     assert!(result.told.contains("expected marker"));
+    let (result_run, result_member) = hq.turn_of(&result.token).unwrap().unwrap();
+    let offered = super::protocol::tools_in(&hq, &result_run, &result_member);
+    assert!(
+        offered
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "record_assistance_finding")
+    );
+    assert!(
+        !offered
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "answer_assistance")
+    );
+    let finding =
+        "Inconclusive: peer testimony reports the marker; no original evidence was granted.";
+    super::protocol::call(
+        &hq,
+        &result_run,
+        &result_member,
+        "record_assistance_finding",
+        &json!({"finding":finding,"evidence":[]}),
+    )
+    .unwrap();
+    let retained = hq.assistance_requests_page(conversation, 0).unwrap();
+    assert_eq!(retained["requests"][0]["finding"]["text"], finding);
+    assert_eq!(retained["requests"][0]["finding"]["run"], result.run.0);
+    assert!(
+        !hq.events_after(0)
+            .unwrap()
+            .iter()
+            .any(|event| event.data.to_string().contains(finding)),
+        "finding bodies stay out of the general activity feed"
+    );
+    super::protocol::call(
+        &hq,
+        &result_run,
+        &result_member,
+        "record_assistance_finding",
+        &json!({"finding":finding,"evidence":[]}),
+    )
+    .unwrap();
+    assert!(
+        super::protocol::call(
+            &hq,
+            &result_run,
+            &result_member,
+            "record_assistance_finding",
+            &json!({"finding":"A conflicting replacement","evidence":[]})
+        )
+        .is_err()
+    );
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["finding"]["text"],
+        finding
+    );
     assert_ne!(
         hq.store().task(task).unwrap().unwrap().status,
         crate::domain::TaskStatus::Done
@@ -199,6 +287,47 @@ fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() 
         "peer answers stay in canonical conversation history, not a second task-post lifecycle"
     );
     assert!(hq.store().consults().unwrap().is_empty());
+    hq.record_transcript(&result.token, "worker", "Temporary raw transcript")
+        .unwrap();
+    if lose_worker_after_finding {
+        let starts = hq
+            .runner()
+            .started()
+            .iter()
+            .filter(|turn| turn.run == result.run)
+            .count();
+        hq.runner().vanish(result.run);
+        hq.tick().unwrap();
+        clock
+            .0
+            .fetch_add(61_000, std::sync::atomic::Ordering::SeqCst);
+        hq.tick().unwrap();
+        assert_eq!(
+            hq.runner()
+                .started()
+                .iter()
+                .filter(|turn| turn.run == result.run)
+                .count(),
+            starts,
+            "a durable finding must not require another model attempt"
+        );
+    } else {
+        hq.runner().finish(result.run, true);
+        hq.tick().unwrap();
+    }
+    clock.0.fetch_add(
+        31 * 24 * 60 * 60 * 1000,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    assert!(hq.prune_transcripts().unwrap() >= 1);
+    assert!(hq.store().transcript(result.run).unwrap().is_none());
+    assert_eq!(
+        hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["finding"]["text"],
+        finding
+    );
+    hq.delete_conversation(conversation).unwrap();
+    while hq.store().purge_conversation_batch().unwrap() > 0 {}
+    assert!(hq.store().assistance_finding(id).unwrap().is_none());
 }
 
 #[test]

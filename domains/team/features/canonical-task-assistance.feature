@@ -14,3 +14,10 @@ Feature: Task work asks colleagues through one bounded assistance lifecycle
     When Member2 answers the assistance request twice with the same answer
     Then the owner sees one answered request with the original author and project
     And task help has no legacy request or automatic task completion
+    When the requester records its own inconclusive finding
+    Then the owner sees the retained requester finding
+    When the raw worker transcripts expire
+    Then the owner sees the retained requester finding
+    And task help has no legacy request or automatic task completion
+    When the owner deletes the conversation and its retained finding
+    Then the conversation history is unavailable

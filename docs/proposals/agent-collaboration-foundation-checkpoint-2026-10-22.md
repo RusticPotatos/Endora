@@ -42,6 +42,11 @@ active accepted-help recovery. Production-backup rehearsal, final UI/model
 evidence and NAS cutover remain outstanding. No deployment has occurred in
 these slices.
 
+The requester-result finding is now retained with the canonical request and
+shown in the existing Work history/export payload, rather than depending on an
+expiring transcript. Final browser/model proof and a repeated migration rehearsal
+against this extended candidate remain required before deployment.
+
 ### Legacy cancellation preparation
 
 `HistoryStore::retire_legacy_consultations` cancels at most fifty pending old
@@ -331,6 +336,53 @@ fresh documentation privacy/whitespace checks follow. Remaining release evidence
 includes actual Work UI interaction, a frozen task-owned model pilot with a
 complete independently grounded finding, the production-backup/NAS rehearsal and
 the final controlled deployment/enablement/rollback decision.
+
+### Retained requester findings, 2026-10-24
+
+The UI/retention audit found that expert answers were retained, but the requester's
+own final finding existed only in its expiring worker transcript. ADR 0138 now
+spells out the existing lifecycle's retained-finding contract. The associated
+requester-result turn uses `record_assistance_finding`; ordinary turns and experts
+cannot write it. This adds no queue, wake, grant, payer, task completion or owner
+approval authority. The owner sees an attributed claim, including an inconclusive
+finding when original evidence is unavailable, not a deterministic truth verdict.
+
+One bounded finding is stored with its authenticated result run, original source
+locators and time. An immediate transaction revalidates current requester and
+source-run identity, conversation/project membership, readiness revision, owner
+switch/Stop state, input privacy, and cited original-source grants and revisions.
+Identical live retries reuse it; conflicting reports cannot replace it. Two
+concurrent reports retain one finding and one content-free operation record.
+No finding body enters the general activity feed. A previously recorded finding
+allows a recovering result turn to finish without another model attempt.
+
+The existing Work request card escapes the finding and locators, labels it a
+claim, follows original requester/expert/result run links, and explicitly shows
+when no retained finding exists. The existing request-page export carries the
+same payload. Old findings are never inferred from answers, completion status or
+transcript fragments. Transcript pruning leaves the retained finding intact;
+explicit owner deletion removes it in the existing bounded purge.
+
+Red-first public-use-case checks reproduced the missing report tool, incomplete
+deletion, mismatched original requester, and an unnecessary model restart after
+a saved finding. The final code passes those cases. Storage tests cover current
+privacy/authority/source refusals, immutable replay and a real two-connection
+race. The actual primary-key lookup has identical VM work with 1,000 and 100,000
+retained findings, with an unindexed scan negative control. The owner scenario
+passes all 18 steps through reporting, transcript expiry and explicit deletion.
+Component checks show the old UI omits the finding and the new UI escapes it;
+this is not yet the actual browser smoke test.
+
+The complete repository gate passed: formatting, workspace denied-warning Clippy,
+all-feature tests (954 team tests, 76 HQ API tests, 158 team scenarios / 1,980
+steps), console, configured privacy, collection-parity and whitespace checks.
+Ignored evidence: `.local/retained-finding-*.log` and
+`.local/retained-finding-gate/`. The earlier passing gate before the recovery fix
+is retained separately. Only documentation changed after the final gate, followed
+by fresh privacy/whitespace checks. No live model call or deployment occurred.
+The earlier `c8f9cd0d` migration rehearsal must be repeated against this extended
+candidate before release; the actual browser and task-owned model envelope are
+the next ready validation work.
 
 Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,

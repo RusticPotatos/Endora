@@ -106,6 +106,8 @@ const TASK_AWAITS_ASSISTANCE: &str = "SELECT EXISTS(
 const PENDING_NOTICES: &str = " FROM assistance_requests WHERE status='answered' AND notified=0 AND notice_cancelled=0 ORDER BY id LIMIT 50";
 const REQUEST_PAGE: &str =
     " FROM assistance_requests WHERE conversation=?1 AND id>?2 ORDER BY id LIMIT 51";
+const FINDING_BY_REQUEST: &str =
+    "SELECT run,text,evidence,at_ms FROM assistance_findings WHERE request=?1";
 
 fn request(row: &rusqlite::Row<'_>) -> rusqlite::Result<Request> {
     Ok(Request {
@@ -157,6 +159,139 @@ fn source_revision(
 }
 
 impl ConversationStore for SqliteTeamStore {
+    fn assistance_finding(&self, request: i64) -> Stored<Option<assistance::Finding>> {
+        self.conn()?
+            .query_row(FINDING_BY_REQUEST, [request], |r| {
+                Ok(assistance::Finding {
+                    run: RunId(r.get(0)?),
+                    text: r.get(1)?,
+                    evidence: SourceRef::read(&r.get::<_, String>(2)?),
+                    at: r.get(3)?,
+                })
+            })
+            .optional()
+            .map_err(backend)
+    }
+
+    fn record_assistance_finding(
+        &self,
+        run: RunId,
+        text: &str,
+        evidence: &[SourceRef],
+        now: Millis,
+    ) -> Stored<Accepted> {
+        let clean = match conversation::words("finding_01", text, &[]) {
+            Ok(clean) if clean == text => clean,
+            _ => return Ok(Err("a bounded canonical finding is required")),
+        };
+        if evidence.len() > assistance::SOURCES_MOST {
+            return Ok(Err("too many finding sources"));
+        }
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let enabled: Option<String> = tx
+            .query_row(
+                "SELECT value FROM settings WHERE key='conversations_enabled'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(revision) = enabled
+            .as_deref()
+            .and_then(|s| s.strip_prefix("1:"))
+            .and_then(|s| s.parse::<i64>().ok())
+        else {
+            return Ok(Err("assistance is disabled"));
+        };
+        let sql = format!("SELECT a.id,a.conversation,a.evidence FROM assistance_requests a
+            JOIN runs r ON r.id=a.notice_run AND r.member=a.requester
+            JOIN runs s ON s.id=a.requester_run AND s.member=a.requester
+            JOIN members m ON m.id=r.member JOIN conversations c ON c.id=a.conversation
+            JOIN projects p ON p.id=c.project
+            JOIN conversation_ready_runs ready ON ready.run=r.id AND ready.revision=?2
+            WHERE r.id=?1 AND r.status='running' AND a.status='answered' AND a.notice_cancelled=0
+            AND c.deleted_at IS NULL AND c.project=a.project AND p.status='active' AND m.paused=0 AND m.furloughed_at IS NULL AND m.role!='ceo'
+            AND (c.member1=m.id OR c.member2=m.id)
+            AND NOT EXISTS(SELECT 1 FROM settings WHERE key='stopped' AND value='1') AND NOT {}", super::record::read_secrets("r.id"));
+        let associated: Option<(i64, i64, String)> = tx
+            .query_row(&sql, params![run.0, revision], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()
+            .map_err(backend)?;
+        let Some((id, conversation, original_sources)) = associated else {
+            return Ok(Err(
+                "no active requester-result turn belongs to this finding",
+            ));
+        };
+        let kept = SourceRef::kept(evidence);
+        let prior: Option<(i64, String, String)> = tx
+            .query_row(
+                "SELECT run,text,evidence FROM assistance_findings WHERE request=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((prior_run, prior_text, prior_sources)) = prior {
+            return Ok(
+                if prior_run == run.0 && prior_text == clean && prior_sources == kept {
+                    Ok(id)
+                } else {
+                    Err("the request already has a different finding")
+                },
+            );
+        }
+        let originals = SourceRef::read(&original_sources);
+        for source in evidence {
+            if !originals.contains(source) {
+                return Ok(Err("finding sources must come from this request"));
+            }
+            let Some(revision) = source_revision(&tx, conversation, *source)? else {
+                return Ok(Err("original evidence unavailable"));
+            };
+            let (kind, resource) = source_key(*source);
+            let granted: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM assistance_source_grants WHERE conversation=?1 AND kind=?2 AND resource=?3 AND revision=?4 AND expires_at>?5)", params![conversation,kind,resource,revision,now], |r| r.get(0)).map_err(backend)?;
+            if !granted {
+                return Ok(Err("original evidence grant unavailable"));
+            }
+            let origin_sql = match source {
+                SourceRef::Document(_) => "SELECT run FROM documents WHERE id=?1",
+                SourceRef::Receipt(_) => {
+                    "SELECT run FROM call_receipts WHERE id=?1 AND confidential=0"
+                }
+            };
+            let origin = tx
+                .query_row(origin_sql, [resource], |r| r.get::<_, Option<i64>>(0))
+                .optional()
+                .map_err(backend)?
+                .flatten();
+            let Some(origin) = origin else {
+                return Ok(Err("original evidence source unavailable"));
+            };
+            let private: bool = tx
+                .query_row(
+                    &format!(
+                        "SELECT NOT EXISTS(SELECT 1 FROM runs WHERE id=?1) OR {}",
+                        super::record::read_secrets("?1")
+                    ),
+                    [origin],
+                    |r| r.get(0),
+                )
+                .map_err(backend)?;
+            if private {
+                return Ok(Err("original evidence source is not Internal"));
+            }
+        }
+        tx.execute("INSERT INTO assistance_findings(request,run,text,evidence,at_ms) VALUES(?1,?2,?3,?4,?5)", params![id,run.0,clean,kept,now]).map_err(backend)?;
+        tx.execute("INSERT INTO conversation_operations(conversation,run,operation,reason,at_ms) VALUES(?1,?2,'finding','accepted',?3)", params![conversation,run.0,now]).map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(Ok(id))
+    }
+
     fn has_active_conversation(
         &self,
         member: MemberId,
@@ -831,10 +966,14 @@ impl ConversationStore for SqliteTeamStore {
             params![id,i64::try_from(conversation::PURGE_BATCH-messages).map_err(backend)?]).map_err(backend)?;
         let grants=tx.execute("DELETE FROM assistance_source_grants WHERE rowid IN (SELECT rowid FROM assistance_source_grants WHERE conversation=?1 LIMIT ?2)",
             params![id,i64::try_from(conversation::PURGE_BATCH-messages-operations).map_err(backend)?]).map_err(backend)?;
+        let findings=tx.execute("DELETE FROM assistance_findings WHERE request IN
+            (SELECT f.request FROM assistance_findings f JOIN assistance_requests a ON a.id=f.request
+             WHERE a.conversation=?1 ORDER BY f.request LIMIT ?2)",
+            params![id,i64::try_from(conversation::PURGE_BATCH-messages-operations-grants).map_err(backend)?]).map_err(backend)?;
         let requests=tx.execute("DELETE FROM assistance_requests WHERE id IN (SELECT a.id FROM assistance_requests a WHERE a.conversation=?1
             AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.id IN (a.expert_run,a.notice_run) AND r.status IN ('queued','running','retry_waiting'))
             ORDER BY a.id LIMIT ?2)",
-            params![id,i64::try_from(conversation::PURGE_BATCH-messages-operations-grants).map_err(backend)?]).map_err(backend)?;
+            params![id,i64::try_from(conversation::PURGE_BATCH-messages-operations-grants-findings).map_err(backend)?]).map_err(backend)?;
         let remaining: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation=?1) OR EXISTS(SELECT 1 FROM conversation_operations WHERE conversation=?1) OR EXISTS(SELECT 1 FROM assistance_requests WHERE conversation=?1) OR EXISTS(SELECT 1 FROM assistance_source_grants WHERE conversation=?1)",
             [id],|r|r.get(0)).map_err(backend)?;
         if !remaining {
@@ -842,7 +981,7 @@ impl ConversationStore for SqliteTeamStore {
                 .map_err(backend)?;
         }
         tx.commit().map_err(backend)?;
-        Ok(messages + operations + grants + requests)
+        Ok(messages + operations + grants + findings + requests)
     }
 }
 
@@ -861,6 +1000,250 @@ mod tests {
             INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,2,'downtime','queued',0);
             INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,2,1,'running',0);
         ").unwrap();
+    }
+
+    #[test]
+    fn concurrent_result_reports_keep_one_finding_and_one_audit_row() {
+        use std::sync::{Arc, Barrier};
+        let path =
+            std::env::temp_dir().join(format!("endora-finding-race-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        finding_fixture(&store);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut writers = Vec::new();
+        for finding in ["First limited finding.", "Second limited finding."] {
+            let other = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+            let barrier = barrier.clone();
+            writers.push(std::thread::spawn(move || {
+                barrier.wait();
+                other
+                    .record_assistance_finding(RunId(2), finding, &[SourceRef::Document(1)], 50)
+                    .unwrap()
+            }));
+        }
+        let accepted: Vec<_> = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect();
+        assert_eq!(accepted.iter().filter(|result| result.is_ok()).count(), 1);
+        let finding = store.assistance_finding(1).unwrap().unwrap();
+        assert!(
+            ["First limited finding.", "Second limited finding."].contains(&finding.text.as_str())
+        );
+        assert_eq!(
+            store
+                .conn()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM conversation_operations WHERE operation='finding'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn retained_finding_lookup_does_not_scan_the_archive() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        finding_fixture(&store);
+        let conn = store.conn().unwrap();
+        let mut steps = Vec::new();
+        for size in [1_000, 100_000] {
+            let previous = if size == 1_000 { 999 } else { 1999 };
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(?1+1) UNION ALL SELECT id+1 FROM n WHERE id<999+?2)
+                INSERT INTO runs(id,member,wake,status,queued_at) SELECT id,2,1,'succeeded',0 FROM n", params![previous,size]).unwrap();
+            conn.execute("INSERT INTO assistance_requests(id,conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status)
+                SELECT id,1,1,2,1,1,'archive_'||id,'Fixture','',0,0,1000,'answered' FROM runs WHERE id>?1 AND id>=1000", [previous]).unwrap();
+            conn.execute(
+                "INSERT INTO assistance_findings(request,run,text,evidence,at_ms)
+                SELECT id,id,'Retained finding','',0 FROM runs WHERE id>?1 AND id>=1000",
+                [previous],
+            )
+            .unwrap();
+            let mut lookup = conn.prepare(FINDING_BY_REQUEST).unwrap();
+            assert!(
+                lookup
+                    .query_row([9999999], |r| r.get::<_, i64>(0))
+                    .optional()
+                    .unwrap()
+                    .is_none()
+            );
+            steps.push(lookup.get_status(StatementStatus::VmStep));
+        }
+        assert_eq!(steps[0], steps[1]);
+        assert!(steps[1] < 100);
+        conn.execute_batch("CREATE TABLE unindexed_findings AS SELECT * FROM assistance_findings;
+            DROP TABLE assistance_findings; ALTER TABLE unindexed_findings RENAME TO assistance_findings;").unwrap();
+        let mut lookup = conn.prepare(FINDING_BY_REQUEST).unwrap();
+        assert!(
+            lookup
+                .query_row([9999999], |r| r.get::<_, i64>(0))
+                .optional()
+                .unwrap()
+                .is_none()
+        );
+        assert!(lookup.get_status(StatementStatus::VmStep) > 100000);
+    }
+
+    #[test]
+    fn retained_findings_revalidate_current_authority_and_original_sources() {
+        for invalid in [
+            "none",
+            "ordinary_turn",
+            "private_turn",
+            "private_source",
+            "revoked_source",
+            "expired_source",
+            "stale_source",
+            "wrong_source",
+            "stopped",
+            "disabled",
+            "revision",
+            "paused_member",
+            "deleted_scope",
+            "inactive_project",
+            "cancelled_notice",
+            "wrong_member",
+            "wrong_origin",
+            "wrong_project",
+        ] {
+            let store = SqliteTeamStore::in_memory().unwrap();
+            finding_fixture(&store);
+            let mut run = RunId(2);
+            let mut sources = vec![SourceRef::Document(1)];
+            let change = match invalid {
+                "ordinary_turn" => {
+                    run = RunId(1);
+                    "SELECT 1;"
+                }
+                "private_turn" => "INSERT INTO run_confidential_inputs(run) VALUES(2);",
+                "private_source" => "INSERT INTO run_confidential_inputs(run) VALUES(1);",
+                "revoked_source" => "DELETE FROM assistance_source_grants;",
+                "expired_source" => "UPDATE assistance_source_grants SET expires_at=49;",
+                "stale_source" => "UPDATE assistance_source_grants SET revision=41;",
+                "wrong_source" => {
+                    sources = vec![SourceRef::Document(2)];
+                    "SELECT 1;"
+                }
+                "stopped" => "INSERT INTO settings(key,value) VALUES('stopped','1');",
+                "disabled" => "UPDATE settings SET value='0:2' WHERE key='conversations_enabled';",
+                "revision" => "UPDATE settings SET value='1:2' WHERE key='conversations_enabled';",
+                "paused_member" => "UPDATE members SET paused=1 WHERE id=2;",
+                "deleted_scope" => "UPDATE conversations SET deleted_at=1;",
+                "inactive_project" => "UPDATE projects SET status='paused';",
+                "cancelled_notice" => "UPDATE assistance_requests SET notice_cancelled=1;",
+                "wrong_member" => "UPDATE runs SET member=1 WHERE id=2;",
+                "wrong_origin" => "UPDATE runs SET member=1 WHERE id=1;",
+                "wrong_project" => {
+                    "INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(2,1,'Other fixture','',1,'active','owner',0,0); UPDATE assistance_requests SET project=2;"
+                }
+                _ => "SELECT 1;",
+            };
+            store.conn().unwrap().execute_batch(change).unwrap();
+            let recorded = store
+                .record_assistance_finding(
+                    run,
+                    "The original supports this limited finding.",
+                    &sources,
+                    50,
+                )
+                .unwrap();
+            assert_eq!(
+                recorded.is_ok(),
+                invalid == "none",
+                "{invalid}: {recorded:?}"
+            );
+            assert_eq!(
+                store.assistance_finding(1).unwrap().is_some(),
+                invalid == "none"
+            );
+            assert_eq!(
+                store
+                    .conn()
+                    .unwrap()
+                    .query_row("SELECT count(*) FROM wakes", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                2
+            );
+            assert_eq!(
+                store
+                    .conn()
+                    .unwrap()
+                    .query_row("SELECT status FROM tasks WHERE id=1", [], |r| r
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "doing"
+            );
+        }
+    }
+
+    fn finding_fixture(store: &SqliteTeamStore) {
+        fixture(store);
+        store.conn().unwrap().execute_batch("INSERT INTO settings(key,value) VALUES('conversations_enabled','1:1');
+            INSERT INTO tasks(id,goal,title,description,status,priority,depth,project,owner)
+            VALUES(1,1,'Fixture','','doing','normal',0,1,2);
+            UPDATE runs SET task=1 WHERE id=1;
+            INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(2,2,'question_answered','started',42);
+            INSERT INTO runs(id,member,wake,status,queued_at) VALUES(2,2,2,'running',42);
+            INSERT INTO conversation_ready_runs(run,revision) VALUES(2,1);
+            INSERT INTO conversations(id,project,member1,member2,at_ms) VALUES(1,1,1,2,42);
+            INSERT INTO documents(id,task,run,title,text,at_ms) VALUES(1,1,1,'Fixture','Original evidence',42);
+            INSERT INTO assistance_source_grants(conversation,kind,resource,revision,granted_at,expires_at)
+            VALUES(1,'d',1,42,42,1000);
+            INSERT INTO assistance_requests(id,conversation,project,requester,requester_run,expert,client_key,
+                objective,evidence,accepted_day,accepted_at,deadline_at,status,answer,notified,notice_run)
+            VALUES(1,1,1,2,1,1,'fixture_request','Fixture objective','d1',0,42,1000,'answered','Peer testimony',1,2);").unwrap();
+    }
+
+    #[test]
+    fn finding_retries_are_immutable_and_do_not_regrant_an_original() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        finding_fixture(&store);
+        let sources = [SourceRef::Document(1)];
+        let finding = "A limited original-based finding.";
+        assert_eq!(
+            store
+                .record_assistance_finding(RunId(2), finding, &sources, 50)
+                .unwrap(),
+            Ok(1)
+        );
+        store
+            .conn()
+            .unwrap()
+            .execute_batch("DELETE FROM assistance_source_grants;")
+            .unwrap();
+        assert_eq!(
+            store
+                .record_assistance_finding(RunId(2), finding, &sources, 60)
+                .unwrap(),
+            Ok(1)
+        );
+        assert!(
+            store
+                .record_assistance_finding(RunId(2), "A different finding.", &sources, 60)
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(store.assistance_finding(1).unwrap().unwrap().at, 50);
+        assert_eq!(store.assistance_finding(1).unwrap().unwrap().text, finding);
+        assert_eq!(
+            store
+                .conn()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM conversation_operations WHERE operation='finding'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert!(!store.assistance_source_granted(1, sources[0], 60).unwrap());
     }
 
     #[test]

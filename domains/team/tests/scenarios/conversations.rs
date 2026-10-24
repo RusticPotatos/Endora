@@ -10,6 +10,90 @@ use serde_json::json;
 
 use super::Office;
 
+const REQUESTER_FINDING: &str =
+    "Inconclusive: no original source was granted; the expert answer remains testimony.";
+
+#[when("the requester records its own inconclusive finding")]
+fn requester_records_finding(w: &mut Office) {
+    let caller = w.turn_of("Member1");
+    let expert = w.turn_of("Member2");
+    w.hq.runner().finish(caller.run, true);
+    w.hq.runner().finish(expert.run, true);
+    w.tick();
+    let result =
+        w.hq.runner()
+            .started()
+            .into_iter()
+            .rfind(|turn| turn.member == w.member("Member1"))
+            .unwrap();
+    assert!(
+        w.hq.store()
+            .assistance_notice_for_run(result.run)
+            .unwrap()
+            .is_some()
+    );
+    w.turns.insert("Member1".into(), result.clone());
+    assert!(
+        w.use_tool(
+            "Member1",
+            "record_assistance_finding",
+            &json!({"finding":REQUESTER_FINDING,"evidence":[]})
+        )
+        .is_some(),
+        "{:?}",
+        w.refused
+    );
+    w.hq.record_transcript(&result.token, "worker", "Temporary worker transcript")
+        .unwrap();
+    w.hq.runner().finish(result.run, true);
+    w.tick();
+}
+
+#[then("the owner sees the retained requester finding")]
+fn owner_sees_finding(w: &mut Office) {
+    let page =
+        w.hq.assistance_requests_page(w.conversation.unwrap(), 0)
+            .unwrap();
+    assert_eq!(page["requests"][0]["finding"]["text"], REQUESTER_FINDING);
+    assert_eq!(
+        page["requests"][0]["finding"]["run"],
+        w.turns.get("Member1").unwrap().run.0
+    );
+}
+
+#[when("the raw worker transcripts expire")]
+fn raw_transcripts_expire(w: &mut Office) {
+    w.clock.0.fetch_add(
+        31 * 24 * 60 * 60 * 1000,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    assert!(w.hq.prune_transcripts().unwrap() >= 1);
+    assert!(
+        w.hq.store()
+            .transcript(w.turns.get("Member1").unwrap().run)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[when("the owner deletes the conversation and its retained finding")]
+fn delete_retained_finding(w: &mut Office) {
+    let conversation = w.conversation.unwrap();
+    let page = w.hq.assistance_requests_page(conversation, 0).unwrap();
+    let request = page["requests"][0]["id"].as_i64().unwrap();
+    w.hq.delete_conversation(conversation).unwrap();
+    while w.hq.store().purge_conversation_batch().unwrap() > 0 {}
+    assert!(w.hq.store().assistance_finding(request).unwrap().is_none());
+}
+
+#[then("the conversation history is unavailable")]
+fn deleted_conversation_is_unavailable(w: &mut Office) {
+    assert!(
+        w.hq.assistance_requests_page(w.conversation.unwrap(), 0)
+            .is_err()
+    );
+}
+
 #[given("the owner has assigned classified task work in an authorized conversation project")]
 fn classified_task(w: &mut Office) {
     use endora_team::application::{Engine, NewTask, Settings};

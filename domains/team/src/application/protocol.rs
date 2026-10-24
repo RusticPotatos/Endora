@@ -646,6 +646,8 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
         });
         if answering {
             list.push(super::protocol_conversations::answer_assistance_tool());
+        } else {
+            list.push(super::protocol_conversations::record_assistance_finding_tool());
         }
         list.push(super::protocol_conversations::read_assistance_source_tool());
         return all;
@@ -1002,6 +1004,7 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
             tool,
             "my_turn"
                 | "claim"
+                | "record_assistance_finding"
                 | "read_notebook"
                 | "read_doc"
                 | "read_document"

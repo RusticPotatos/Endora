@@ -46,6 +46,13 @@ mentions dispatch no peer work; only explicit owner-authored posts may schedule
 mentions. Real management question/reply and owner-decision pathways retain their
 own authority responsibilities, including replies that name their requester.
 
+The associated requester-result turn can retain one final finding with its
+assistance request. Current scope, source grants and input tiers are revalidated
+atomically. It remains an attributed claim in Work and its request-page export,
+with original run/source links; it does not complete or approve a task. Findings
+survive raw transcript expiry and are purged with explicit owner conversation
+deletion. A durable finding prevents another model attempt after worker loss.
+
 Retained task questions have a bounded owner-only projection through
 `/v1/tasks/{id}/consultations`, proxied by the node into the existing Work task
 inspector. Exact original IDs, project snapshots and answer-post associations

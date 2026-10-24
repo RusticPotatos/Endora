@@ -11,6 +11,19 @@ pub enum SourceRef {
     Receipt(i64),
 }
 
+/// The requester's retained conclusion: attributed testimony, never task acceptance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    /// Authenticated requester-result turn.
+    pub run: super::RunId,
+    /// Its original words, with peer-input controls defused.
+    pub text: String,
+    /// Original locators; these convey no source grant.
+    pub evidence: Vec<SourceRef>,
+    /// When the finding was recorded.
+    pub at: super::Millis,
+}
+
 impl SourceRef {
     /// Stable form shown to a member.
     #[must_use]

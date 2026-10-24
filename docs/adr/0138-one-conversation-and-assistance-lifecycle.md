@@ -84,6 +84,21 @@ Use bounded indexed pages and bounded model context. Growing archives may grow
 storage but must not introduce whole-history reads into routine scheduling or UI
 refresh. Historical body text stays out of the general activity feed.
 
+### Retained requester finding
+
+The associated requester-result turn records its final finding through
+`record_assistance_finding`, within the same assistance lifecycle. Retain one
+immutable finding, its authenticated run, original-source locators and time with
+the request until owner deletion; do not rely on the expiring raw transcript.
+Only the live associated requester-result turn may write it. Identical retries
+reuse the record; conflicting replacements refuse. Current conversation/source
+permissions and input tiers still apply. The finding is an attributed claim,
+including an inconclusive finding when originals are unavailable; recording it
+does not prove truth, complete a task, authorize an action or grant evidence.
+Expose it in the existing bounded Work request page and its export. Legacy
+requests without a retained finding remain explicitly unavailable; never invent
+one from an answer, a run status or a transcript fragment.
+
 ### Compatibility and migration
 
 Preserve public contracts within their major version. Inventory callers and

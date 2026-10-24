@@ -3105,16 +3105,17 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   const fixture={members:[{id:1,name:"Member 1",role:"developer"},{id:2,name:"Member 2",role:"researcher"}],projects:[]};
   const assistance={conversation:1,requests:[{id:8,project:1,requester:1,expert:2,status:"answered",objective:"<img src=x onerror=bad()>",answer:"<b>Untrusted answer</b>",evidence:["d12"],answer_evidence:["d12"],notified:false,deadline_at:42},{id:9,project:1,requester:1,expert:2,status:"processing",objective:"Synthetic question",evidence:[],deadline_at:42}],grants:[{source:"d12",expires_at:42}],has_more:true,after:9};
   assistance.requests[1].reason="<em>worker unavailable</em>";
+  assistance.requests[0].finding={run:12,text:"<strong>Requester conclusion</strong>",evidence:["<d12>"],at:42};
   assistance.requests[1].retry_at=60000;
   assistance.requests[1].run_status="retry_waiting";
   assistance.requests[0].retry_at=60000;
   assistance.requests[0].run_status="stopped";
   runInContext(`HQ_CHAT.id=1; HQ_CHAT.page={messages:[]}; HQ_CHAT.assistance=${JSON.stringify(assistance)};`,context);
   const html=runInContext(`hqConversations(${JSON.stringify(fixture)})`,context);
-  for(const required of ["&lt;img","&lt;b&gt;Untrusted answer","&lt;em&gt;worker unavailable","next attempt","Answer sources: d12","Waiting to notify requester","hq:conversations:cancel-request:9","hq:conversations:revoke-source:d12","Save this request page"]) {
+  for(const required of ["&lt;img","&lt;b&gt;Untrusted answer","&lt;em&gt;worker unavailable","next attempt","Answer sources: d12","Waiting to notify requester","hq:conversations:cancel-request:9","hq:conversations:revoke-source:d12","Save this request page","Requester finding: &lt;strong&gt;Requester conclusion","Attributed claim", "replay:run:12", "result run 12","&lt;d12&gt;","No retained requester finding recorded."]) {
     if(!html.includes(required)) throw new Error("assistance: missing escaped request/evidence/control: "+required);
   }
-  if(html.includes("<img src=x") || html.includes("<b>Untrusted answer") || html.includes("<em>worker unavailable")) throw new Error("assistance: peer testimony or a failure cause became markup");
+  if(html.includes("<img src=x") || html.includes("<b>Untrusted answer") || html.includes("<em>worker unavailable") || html.includes("<strong>Requester conclusion") || html.includes("<d12>")) throw new Error("assistance: peer testimony, requester finding or a failure cause became markup");
   if((html.match(/next attempt/g)||[]).length!==1) throw new Error("assistance: a terminal result advertises a stale worker retry");
   runInContext(`var assistanceKeepApi=api, assistanceKeepRender=render, assistanceCalls=[];
     render=()=>{}; api=async(method,path,body)=>{assistanceCalls.push([method,path,body]);return {requests:[{id:10}],grants:[],has_more:false,after:10};};`,context);

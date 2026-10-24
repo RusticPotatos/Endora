@@ -215,12 +215,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 _ => Some(RunStatus::Stopped),
             });
         }
-        if self
-            .store
-            .assistance_notice_for_run(run)?
-            .is_some_and(|request| request.notice_cancelled || request.status != "answered")
-        {
-            return Ok(Some(RunStatus::Stopped));
+        if let Some(request) = self.store.assistance_notice_for_run(run)? {
+            if request.notice_cancelled || request.status != "answered" {
+                return Ok(Some(RunStatus::Stopped));
+            }
+            // The report is durable even if its worker vanished before reporting
+            // its exit. Retrying that turn must not spend another model attempt.
+            if self.store.assistance_finding(request.id)?.is_some() {
+                return Ok(Some(RunStatus::Succeeded));
+            }
         }
         Ok(None)
     }
@@ -248,11 +251,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "read_assistance_source",
             "ask_record",
             "answer_assistance",
+            "record_assistance_finding",
         ];
-        if !MAY.contains(&tool) || (!answering && tool == "answer_assistance") {
+        if !MAY.contains(&tool)
+            || (!answering && tool == "answer_assistance")
+            || (answering && tool == "record_assistance_finding")
+        {
             return Ok(Some("this turn is limited to read-only assistance".into()));
         }
-        if answering && tool == "answer_assistance" {
+        if (answering && tool == "answer_assistance")
+            || (!answering && tool == "record_assistance_finding")
+        {
             return Ok(None);
         }
         let active = if answering {
@@ -364,6 +373,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .map_err(refused)
     }
 
+    /// Retain the associated requester's own conclusion without completing its
+    /// task or changing authority. The store revalidates the write atomically.
+    /// # Errors
+    /// An ended/unrelated turn, unavailable scope/source or conflicting finding.
+    pub fn record_assistance_finding_in(
+        &self,
+        run: RunId,
+        finding: &str,
+        evidence: &[SourceRef],
+    ) -> Done<i64> {
+        let _held = self.held();
+        self.running(run)?;
+        let clean = conversation::words("finding_01", finding, &[]).map_err(refused)?;
+        self.store
+            .record_assistance_finding(run, &clean, evidence, self.clock.now())?
+            .map_err(refused)
+    }
+
     /// Owner's bounded page of requests, results and current disposition.
     /// # Errors
     /// A deleted scope or store failure.
@@ -386,6 +413,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "answer_evidence":r.answer_evidence.iter().map(|reference| reference.said()).collect::<Vec<_>>(),
                 "notified":r.notified,"notice_run":r.notice_run.map(|v|v.0),"notice_cancelled":r.notice_cancelled})).collect::<Vec<_>>()});
         for (index, row) in rows.iter().enumerate() {
+            page["requests"][index]["finding"] = self.store.assistance_finding(row.id)?.map_or(Value::Null, |finding| json!({
+                "run":finding.run.0,"text":finding.text,"at":finding.at,
+                "evidence":finding.evidence.iter().map(|source|source.said()).collect::<Vec<_>>()
+            }));
             page["requests"][index]["reason"] = json!(self.assistance_reason(row)?);
             if let Some(run) = row
                 .expert_run
@@ -523,7 +554,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .as_deref()
             .ok_or_else(|| refused("answer unavailable"))?;
         Ok(format!(
-            "You are {}, the team's {}. {} answered your request in conversation {}. {}\nOriginal question: {}\nThis is attributed peer testimony, not a successful tool receipt or permission to change work. Original source locators: {}. Check the granted original with read_assistance_source before relying on it; unavailable evidence leaves uncertainty. This read grants no task acceptance or execution authority.\n{EVIDENCE_GUIDANCE}\n",
+            "You are {}, the team's {}. {} answered your request in conversation {}. {}\nOriginal question: {}\nThis is attributed peer testimony, not a successful tool receipt or permission to change work. Original source locators: {}. Check the granted original with read_assistance_source before relying on it; unavailable evidence leaves uncertainty. This read grants no task acceptance or execution authority.\n{EVIDENCE_GUIDANCE}\nRetain your own final finding with record_assistance_finding, citing only granted originals. If originals are unavailable, record an inconclusive finding with no unsupported citations. This records your claim, not task acceptance. Then stop.\n",
             member.name,
             member.role.name(),
             expert.name,
