@@ -48,6 +48,80 @@ conversations on Home lab upkeep (`161e27da` fixed the authorize form first).
 A work-triggered request observed in production, and device checks, remain
 outstanding.
 
+### Path to agentic operation, 2026-10-24
+
+A review of the reviewed plan, ADRs 0137 and 0138 and production found the
+replacement complete and live, but the team not yet agentic: no agent can ask for
+help, and its real work is stalled. This is the ordered plan to the plan's end
+state: real work leads an agent to ask a colleague, the asker checks the answer
+against originals and records a finding, the owner sees it, accounting holds, and
+the owner decides adoption on a matched comparison. It supersedes the "Next" lines
+below. Every step keeps the Confidential guard; none relaxes a data tier.
+
+**Evidence.** All 14 production turns after the first conversations were
+authorized were marked Confidential, which withholds `consult`,
+`request_assistance` and `send_message` (`protocol.rs` `tools_in`), while their
+briefing still told them to use `consult`. The older task briefing marks every
+task turn unclassified because legacy posts lack source lineage (`engine.rs`,
+`unclassified_message_input`); it serves leads, testers, the CEO and rework wakes.
+The classified task context serves only developers and researchers on five wake
+reasons, and fails closed on unclassified pre-cutover inputs. Tasks without a
+project have no help scope. Separately, all 8 open tasks were blocked, most since
+18 October; the paired developer and researcher had no turn after 05:00.
+
+**A. Make help reachable without weakening the guard** (engineering)
+
+1. Brief only what is offered: the colleague paragraph appears only on turns
+   that actually have the help tools; reword `ask_record`'s "before you consult
+   anyone" so it does not compete. Red test: a Confidential turn's briefing omits
+   it.
+2. Give every task turn the classified task context (all roles, all wake reasons)
+   so a turn is Confidential only for an actual unclassified or Confidential
+   input, not for being on the older briefing path. Post-cutover posts and task
+   bodies already carry origins; keep pre-cutover threads fail-closed.
+3. Measure before and after: replay recent production briefings offline and
+   report the share of task turns that would be offered help, by role and wake.
+   Exit: a non-zero, explained share on routine Home lab work that read no
+   Confidential receipt.
+4. Give unscoped recurring work a trusted project where the owner names one
+   (decision D2), so its turns have help scope and budgets.
+
+**B. Unstick the team's real work** (engineering and operations)
+
+1. Rae's Claude Code shell: the workbench's managed settings deny every Bash
+   command in don't-ask mode because they allow none. Propose a scoped allow list
+   for git and the lab's checks within ADR 0117's sandbox (decision D1), test it in
+   the workbench, redeploy the Pi.
+2. Check c1's exit 127: on 18 October `ansible-core`, `ansible-lint` and
+   `yamllint` were missing where checks run. Verify the current workbench's
+   `/opt/venv` tools are on the check's path, then re-run c2 for #671.
+3. Escalations left undecided since 18 October (#672, #675, #677, #678 "to Mara:
+   the lead did not decide it"): find why the CEO's ladder does not decide them,
+   fix it, and clear or decide the backlog on evidence.
+4. Put the unscoped open tasks (#673 gluetun restarts, #676, #677, #678) in their
+   project, and give the idle developer and researcher work, so authorized pairs
+   have reasons to talk.
+
+**C. Prove it and decide** (observation, then owner decisions)
+
+1. Observe the first production request triggered by real work; verify its
+   answer, finding, task section, feed lines and accounting in Work.
+2. Observe a real failure outcome (expired, declined or cancelled) displayed.
+3. Physical phone check of Work (owner).
+4. Phase 6 matched comparison against the retained consult and manager-relay
+   baseline, within a frozen budget (decision D3).
+5. Record the owner's adopt, revise or disable decision (decision D4); ADR 0138
+   is complete only then.
+
+**Order.** A1 and B1–B2 first (independent and quick), then A2–A3, then B3–B4
+and A4, then C. Each step: red test or reproduction, fix, full gate, release with
+rollback tag and snapshots, production check, record.
+
+**Owner decisions.** D1 the workbench Bash allow list (accepting a sandbox
+risk); D2 which project owns unscoped recurring work; D3 the comparison budget;
+D4 adoption. A Confidential turn sending only source locators, with no free
+text, would be a data-tier change and needs its own ADR before it is proposed.
+
 The requester-result finding is now retained with the canonical request and
 shown in the existing Work history/export payload, rather than depending on an
 expiring transcript. The repeated synthetic migration and initial actual browser
@@ -130,8 +204,7 @@ Production-backup rehearsal and the NAS/Pi cutover are done (see the
 [release record](agent-collaboration-deployment-2026-10-22.md#replacement-cutover-6e67eb6c-2026-10-24)).
 The [caller audit](agent-collaboration-caller-audit-2026-10-24.md) found no
 violation of items 1 and 2; its follow-ups are done.
-Next: observe the first work-triggered peer-help request in production (its
-answer and retained finding in Work), then a check on a physical phone. The full ADR 0138
+Next: the [path to agentic operation](#path-to-agentic-operation-2026-10-24). The full ADR 0138
 definition of done remains open until those pass.
 
 ### Legacy cancellation preparation
