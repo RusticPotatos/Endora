@@ -286,6 +286,10 @@ function hqTell(e, live, older) {
     "task.claimed": ["run", `${name} checked out ${key}`],
     "task.released": ["warn", `${name} handed ${key} back`],
     "thread.posted": ["run", `${d.author}: ${d.preview}`],
+    // A colleague's help, step by step; its words are on the task and in the conversation.
+    "help.asked": ["run", `${name} asked ${hqName(d.expert)} for help${on}`],
+    "help.answered": ["done", `${hqName(d.expert)} answered ${name}${on}`],
+    "help.concluded": ["done", `${name} concluded from ${hqName(d.expert)}'s answer${on}`],
     "wake.queued": ["wake", `Woke ${name}: ${reason}${on}`],
     "wake.folded": ["wake", `${reason} → folded into ${name}'s live run${on}`],
     "wake.held": ["wake", d.why === "coordination_budget" ? `${name} waits: talk on ${key} is over its budget, and its lead decides (${reason})`

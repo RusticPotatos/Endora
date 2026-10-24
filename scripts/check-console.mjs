@@ -695,6 +695,10 @@ if (failures.length) {
     hqTell({ id: 52, at: 0, kind: "run.ended", data: { run: 10, member: 2, task: 7, result: "succeeded", label: "talk only" } }, false);
     hqTell({ id: 53, at: 0, kind: "huddle.called", data: { task: 7, lead: 1, members: [1, 2] } }, false);
     hqTell({ id: 54, at: 0, kind: "huddle.decided", data: { task: 7, lead: 1, decision: "hand_to" } }, false);
+    // A colleague's help, step by step, without its words (ADR 0138).
+    hqTell({ id: 60, at: 0, kind: "help.asked", data: { member: 2, expert: 1, task: 7, conversation: 4, request: 3, run: 11 } }, false);
+    hqTell({ id: 61, at: 0, kind: "help.answered", data: { member: 2, expert: 1, task: 7, conversation: 4, request: 3, run: 11 } }, false);
+    hqTell({ id: 62, at: 0, kind: "help.concluded", data: { member: 2, expert: 1, task: null, conversation: 4, request: 3, run: 12 } }, false);
     // Caps on talk and runaway (ADR 0133): a wake held for a task's budget of talk, the owner
     // switching that guard, a lead narrowing what done means, and who stopped the team.
     hqTell({ id: 56, at: 0, kind: "wake.held", data: { member: 2, task: 7, reason: "mentioned", why: "coordination_budget" } }, false);
@@ -715,6 +719,7 @@ if (failures.length) {
     "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now judges with claude-sonnet-5-5", "Ada now works with the owner&#39;s Mac",
     "Mara joined the team as CEO", "Mara noted in the house log: - 17 Oct: The NAS has 16 GB.",
     "Huddle on EL-7: Ada, Bo", "Ada decided EL-7: hand to",
+    "Bo asked Ada for help (EL-7)", "Ada answered Bo (EL-7)", "Bo concluded from Ada&#39;s answer",
     // Caps on talk and runaway (ADR 0133).
     "Bo waits: talk on EL-7 is over its budget, and its lead decides (mentioned)",
     "Bo waits: EL-7 is being worked (mentioned)",

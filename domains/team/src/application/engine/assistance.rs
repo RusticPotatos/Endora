@@ -4,7 +4,7 @@ use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::assistance::{self, NewRequest, Request, SourceRef};
 use crate::domain::conversation;
-use crate::domain::{ProjectId, ProjectStatus, Refusal, RunId};
+use crate::domain::{EventKind, ProjectId, ProjectStatus, Refusal, RunId};
 use serde_json::{Value, json};
 
 const EVIDENCE_GUIDANCE: &str = "Separate what the originals establish, what you infer, and what remains unknown. Label inference explicitly and cite its basis. Do not rule out other causes or predict a repair will succeed without supporting evidence. Finish with a concise finding; if the evidence is insufficient, say so. In your final finding, explicitly restate the key evidence that answers the question and cite the original locators; agreement with a colleague's summary is insufficient.";
@@ -368,9 +368,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 return Err(refused("original evidence grant unavailable"));
             }
         }
-        self.store
+        let id = self
+            .store
             .accept_assistance_answer(run, &clean, evidence, self.clock.now())?
-            .map_err(refused)
+            .map_err(refused)?;
+        // Only a first answer reaches here: a retried one returned above.
+        self.emit_help(EventKind::HelpAnswered, &request, run)?;
+        Ok(id)
     }
 
     /// Retain the associated requester's own conclusion without completing its
@@ -386,9 +390,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         self.running(run)?;
         let clean = conversation::words("finding_01", finding, &[]).map_err(refused)?;
-        self.store
+        // An identical retry reuses the finding: only the first is the feed's "concluded".
+        let first = match self.store.assistance_notice_for_run(run)? {
+            Some(request) if self.store.assistance_finding(request.id)?.is_none() => Some(request),
+            _ => None,
+        };
+        let id = self
+            .store
             .record_assistance_finding(run, &clean, evidence, self.clock.now())?
-            .map_err(refused)
+            .map_err(refused)?;
+        if let Some(request) = first {
+            self.emit_help(EventKind::HelpConcluded, &request, run)?;
+        }
+        Ok(id)
     }
 
     /// Owner's bounded page of requests, results and current disposition.
@@ -508,9 +522,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if !expert.at_work() || self.project(pending.project)?.status != ProjectStatus::Active {
                 continue;
             }
-            self.store.queue_assistance(pending.id, now)?;
+            // Queued once: the moment the question reaches the colleague is the feed's "asked".
+            if let Some(run) = self.store.queue_assistance(pending.id, now)? {
+                self.emit_help(EventKind::HelpAsked, &pending, run)?;
+            }
         }
         Ok(())
+    }
+
+    /// One line of the exchange for the feed: who asked whom, on which task and in which
+    /// conversation. The question, answer and finding stay in Work (ADR 0138).
+    fn emit_help(&self, kind: EventKind, request: &Request, run: RunId) -> Done<()> {
+        let task = self
+            .store
+            .run(request.requester_run)?
+            .and_then(|turn| turn.task)
+            .map(|task| task.0);
+        self.emit(
+            kind,
+            json!({"member":request.requester.0,"expert":request.expert.0,"task":task,
+                "conversation":request.conversation,"request":request.id,"run":run.0}),
+        )
     }
 
     /// Wait for an existing requester turn to finish, then atomically queue one result turn.

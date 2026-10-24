@@ -161,6 +161,13 @@ pub enum EventKind {
     DrainBegan,
     /// A drain ended, and how many turns ended before it and how many the restart cut.
     DrainEnded,
+    /// A member's question went to the colleague it asked: who, whom, the task and the
+    /// conversation, never the words (ADR 0138).
+    HelpAsked,
+    /// The colleague answered a question asked of them.
+    HelpAnswered,
+    /// The asker recorded what it concluded from the answer.
+    HelpConcluded,
 }
 
 impl EventKind {
@@ -244,6 +251,9 @@ impl EventKind {
             Self::GuardMode => "guard.mode",
             Self::DrainBegan => "drain.began",
             Self::DrainEnded => "drain.ended",
+            Self::HelpAsked => "help.asked",
+            Self::HelpAnswered => "help.answered",
+            Self::HelpConcluded => "help.concluded",
         }
     }
 }

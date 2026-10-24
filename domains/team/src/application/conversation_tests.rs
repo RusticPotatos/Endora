@@ -311,6 +311,31 @@ fn canonical_task_help_with_finding(lose_worker_after_finding: bool) {
         hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["finding"]["text"],
         finding
     );
+    // The feed says who asked whom, the answer and the conclusion, once each despite the
+    // retried calls above, and never the words themselves.
+    let events = hq.events_after(0).unwrap();
+    for kind in ["help.asked", "help.answered", "help.concluded"] {
+        let seen: Vec<_> = events.iter().filter(|event| event.kind == kind).collect();
+        assert_eq!(seen.len(), 1, "{kind}: {seen:?}");
+        let data = &seen[0].data;
+        assert_eq!(
+            (data["member"].clone(), data["expert"].clone()),
+            (json!(requester.0), json!(expert.0)),
+            "{kind}"
+        );
+        assert_eq!(
+            (
+                data["task"].clone(),
+                data["conversation"].clone(),
+                data["request"].clone()
+            ),
+            (json!(task.0), json!(conversation), json!(id)),
+            "{kind}"
+        );
+        for words in ["What does the fixture show?", "expected marker", finding] {
+            assert!(!data.to_string().contains(words), "{kind} carried {words}");
+        }
+    }
     assert_ne!(
         hq.store().task(task).unwrap().unwrap().status,
         crate::domain::TaskStatus::Done
