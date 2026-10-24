@@ -5,12 +5,12 @@
 const HQ_CHAT = { directory: null, page: null, assistance: null, operations: null, id: null, after: 0, busy: false, error: "", draft: null, manage: false, loadedAt: 0 };
 const HQ_CHAT_FRESH_MS = 30000;
 
-// A quiet background refresh of the first page: no busy state, and no redraw under someone typing.
+// A quiet background refresh of the first page: no busy state, and no redraw of its own; HQ's
+// three-second redraw shows it, and holds off while someone types.
 async function hqConversationsRefresh() {
   HQ_CHAT.loadedAt = Date.now();
   try {
     HQ_CHAT.directory = await api("GET", "/v1/hq/conversations?after=0");
-    if (!hqTyping()) render();
   } catch (_) { /* the next refresh tries again */ }
 }
 
@@ -146,6 +146,37 @@ async function hqConversationAct(what, id) {
   } catch (e) { HQ_CHAT.error = String(e.message || e); }
   finally { HQ_CHAT.busy = false; render(); }
   return true;
+}
+
+// The help a task's own turns asked colleagues for, shown on the task where its work is read.
+// One task's first page is kept, and refreshed in the background while the task stays open.
+const HQ_TASK_HELP = { task: null, page: null, loadedAt: 0 };
+
+async function hqTaskHelpRefresh(task) {
+  HQ_TASK_HELP.loadedAt = Date.now();
+  try {
+    const page = await api("GET", `/v1/hq/tasks/${Number(task)}/assistance?after=0`);
+    if (HQ_TASK_HELP.task === task) HQ_TASK_HELP.page = page;
+  } catch (_) { /* the next refresh tries again */ }
+}
+
+function hqTaskHelp(task) {
+  task = Number(task);
+  if (!Number.isSafeInteger(task) || task <= 0) return "";
+  if (HQ_TASK_HELP.task !== task) Object.assign(HQ_TASK_HELP, { task, page: null, loadedAt: 0 });
+  if (Date.now() - HQ_TASK_HELP.loadedAt > HQ_CHAT_FRESH_MS) setTimeout(() => hqTaskHelpRefresh(task), 0);
+  const requests = (HQ_TASK_HELP.page && HQ_TASK_HELP.page.requests) || [];
+  if (!requests.length) return "";
+  const said = { queued: "waiting for an answer", processing: "being answered", declined: "declined", cancelled: "cancelled", expired: "no answer in time", failed: "failed" };
+  const rows = requests.map((r) => {
+    const asker = esc(hqName(r.requester)), expert = esc(hqName(r.expert));
+    const outcome = r.answer
+      ? `<p><b>${expert}</b>: ${esc(r.answer)}</p>${r.finding ? `<p><b>${asker}</b> concluded: ${esc(r.finding.text)}</p>` : ""}`
+      : `<p class="hq-note">${esc(said[r.status] || r.status)}${r.reason ? `: ${esc(r.reason)}` : ""}</p>`;
+    return `<li><b>${asker}</b> asked <b>${expert}</b>: ${esc(r.objective)}${outcome}
+      <button class="hq-link" data-act="hq:conversations:open:${Number(r.conversation)}">Their conversation</button></li>`;
+  }).join("");
+  return `<h3>Help on this task</h3><ul class="hq-thread" style="overflow-wrap:anywhere">${rows}</ul>${HQ_TASK_HELP.page.has_more ? '<p class="hq-note">The first 50 exchanges; their conversations hold the rest.</p>' : ""}`;
 }
 
 // Older task questions stay read-only. Keep one page and at most 64 back cursors.

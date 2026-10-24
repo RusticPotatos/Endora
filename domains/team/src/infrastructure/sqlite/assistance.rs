@@ -105,6 +105,8 @@ CREATE INDEX IF NOT EXISTS assistance_waiting_task
  WHERE notice_cancelled=0 AND (status IN ('queued','processing') OR (status='answered' AND notified=0));
 CREATE INDEX IF NOT EXISTS assistance_live_member_run
  ON runs(member,status) WHERE status IN ('queued','running','retry_waiting');
+CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task,id) WHERE task IS NOT NULL;
+CREATE INDEX IF NOT EXISTS assistance_by_requester_run ON assistance_requests(requester_run,id);
 CREATE TABLE IF NOT EXISTS assistance_findings (
  request INTEGER PRIMARY KEY REFERENCES assistance_requests(id),
  run INTEGER NOT NULL UNIQUE REFERENCES runs(id), text TEXT NOT NULL,

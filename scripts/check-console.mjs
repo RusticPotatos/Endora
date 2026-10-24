@@ -3162,6 +3162,33 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
 }
 
 {
+  // A task shows the help its own turns asked for, where the work is read: who asked whom, the
+  // answer and the asker's conclusion, all escaped; and nothing at all when there was none.
+  const fail = (message) => { throw new Error(message); };
+  const exchange = {task:7,has_more:false,after:3,requests:[{id:3,conversation:2,requester:1,expert:2,status:"answered",
+    objective:"<img src=x onerror=bad()>Why 503?",answer:"<b>cache down</b>",finding:{run:9,text:"<i>Restoring it is unproven</i>",evidence:[],at:5}},
+    {id:4,conversation:2,requester:1,expert:2,status:"processing",objective:"Still waiting?",answer:null,finding:null}]};
+  runInContext(`var helpKeepApi = api, helpKeepRender = render, helpCalls = [];
+    render = () => {};
+    api = async (method, path) => { helpCalls.push(method + " " + path); return path.includes("/tasks/8/") ? {task:8,has_more:false,after:0,requests:[]} : ${JSON.stringify(exchange)}; };
+    HQ.snap = Object.assign({}, HQ.snap || {}, {members:[{id:1,name:"Member 1"},{id:2,name:"Member 2"}]});
+    Object.assign(HQ_TASK_HELP, {task:null,page:null,loadedAt:0});`, context);
+  runInContext("hqTaskHelp(7)", context);
+  await new Promise((done) => setTimeout(done, 5));
+  if (!runInContext('helpCalls.includes("GET /v1/hq/tasks/7/assistance?after=0")', context)) fail("task help: the task did not load its exchanges");
+  const html = runInContext("hqTaskHelp(7)", context);
+  for (const wanted of ["Help on this task", "Member 1", "Member 2", "&lt;img", "&lt;b&gt;cache down", "&lt;i&gt;Restoring it is unproven", "hq:conversations:open:2", "Still waiting?"]) {
+    if (!html.includes(wanted)) fail("task help: missing " + wanted);
+  }
+  if (html.includes("<img src=x") || html.includes("<b>cache") || html.includes("<i>Restoring")) fail("task help: peer text became markup");
+  runInContext("hqTaskHelp(8)", context);
+  await new Promise((done) => setTimeout(done, 5));
+  if (runInContext("hqTaskHelp(8)", context) !== "") fail("task help: a task with no exchanges shows an empty section");
+  runInContext(`api = helpKeepApi; render = helpKeepRender; Object.assign(HQ_TASK_HELP, {task:null,page:null,loadedAt:0});`, context);
+  console.log("task help: a task shows its own exchanges, escaped, and nothing when it has none");
+}
+
+{
   const fixture={members:[{id:1,name:"Member 1",role:"developer"},{id:2,name:"Member 2",role:"researcher"}],projects:[]};
   const assistance={conversation:1,requests:[{id:8,project:1,requester:1,expert:2,status:"answered",objective:"<img src=x onerror=bad()>",answer:"<b>Untrusted answer</b>",evidence:["d12"],answer_evidence:["d12"],notified:false,deadline_at:42},{id:9,project:1,requester:1,expert:2,status:"processing",objective:"Synthetic question",evidence:[],deadline_at:42}],grants:[{source:"d12",expires_at:42}],has_more:true,after:9};
   assistance.requests[1].reason="<em>worker unavailable</em>";

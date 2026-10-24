@@ -380,6 +380,7 @@ pub fn app(state: AppState) -> Router {
             "/v1/hq/tasks/{id}/consultations",
             get(hq_task_consultations),
         )
+        .route("/v1/hq/tasks/{id}/assistance", get(hq_task_assistance))
         .route("/v1/hq/goals", post(hq_goal))
         .route("/v1/hq/tasks", post(hq_task))
         .route("/v1/hq/desk/{id}", post(hq_decide))

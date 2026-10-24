@@ -245,6 +245,43 @@ fn canonical_task_help_with_finding(lose_worker_after_finding: bool) {
     let retained = hq.assistance_requests_page(conversation, 0).unwrap();
     assert_eq!(retained["requests"][0]["finding"]["text"], finding);
     assert_eq!(retained["requests"][0]["finding"]["run"], result.run.0);
+    // The exchange is also read where the work is: its task's page, in the same shape.
+    let on_task = hq.task_assistance_page(task, 0).unwrap();
+    assert_eq!(on_task["task"], task.0);
+    assert_eq!(on_task["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(on_task["requests"][0]["id"], id);
+    assert_eq!(on_task["requests"][0]["conversation"], conversation);
+    assert_eq!(
+        on_task["requests"][0]["answer"],
+        "The fixture returned its expected marker."
+    );
+    assert_eq!(on_task["requests"][0]["finding"]["text"], finding);
+    assert_eq!(on_task["has_more"], false);
+    let unrelated = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Unrelated fixture".into(),
+                description: String::new(),
+                assignee: Some(lead),
+                priority: crate::domain::Priority::Normal,
+                waits_on: vec![],
+            },
+        )
+        .unwrap();
+    assert!(
+        hq.task_assistance_page(unrelated, 0).unwrap()["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        hq.task_assistance_page(crate::domain::TaskId(999_999), 0)
+            .is_err()
+    );
     assert!(
         !hq.events_after(0)
             .unwrap()
