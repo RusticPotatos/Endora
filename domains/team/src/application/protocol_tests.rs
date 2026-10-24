@@ -66,6 +66,24 @@ fn turn(hq: &Hq<'_>, token: &str) -> (Run, Member) {
 }
 
 #[test]
+fn asking_up_the_chain_is_for_decisions_and_a_colleagues_help_is_consult() {
+    // ADR 0138 keeps management escalation for decisions and drops routing ordinary peer
+    // help through it: the tool says so, and names the canonical way to ask a colleague.
+    let ask = tools(Role::Developer)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "ask_owner")
+        .unwrap()["description"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(ask.contains("decision"), "{ask}");
+    assert!(ask.contains("consult"), "{ask}");
+    assert!(!ask.contains("Ask a question"), "{ask}");
+}
+
+#[test]
 fn my_turn_keeps_the_latest_twelve_posts_in_both_protocol_versions() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
     let (hq, setup, context) = started(&clock);
@@ -244,9 +262,10 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     // A huddle on stuck work asks every member's view (ADR 0120), and every member shapes the
     // office (ADR 0119), and may play chess (ADR 0121); every member reads the world and tells stories (ADR 0122),
     // and proposes to a page it does not keep and reports what its map lacks (ADR 0126); and
-    // every member asks the record and consults (ADR 0129); and a developer asks for its kept
-    // branch to be checked again (ADR 0115). The answers to a quiz and to a consult are the
-    // tools of those turns alone (ADR 0131, amended): two fewer than every turn was offered.
+    // every member asks the record (ADR 0129) and asks a colleague through consult, which is
+    // canonical assistance (ADR 0138); and a developer asks for its kept branch to be checked
+    // again (ADR 0115). A quiz's answer is that turn's tool alone (ADR 0131, amended), and
+    // answer_consult is retired (ADR 0138).
     assert_eq!(names.len(), 23, "{names:?}");
     assert!(names.contains(&"recheck".to_owned()));
     for tool in ["ask_record", "consult"] {

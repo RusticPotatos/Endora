@@ -1089,11 +1089,13 @@ fn retained_legacy_requests_still_count_toward_the_canonical_daily_allowance() {
     let current = turn_of(&hq, asker);
     assert!(hq.turn_of(&current.token).unwrap().is_some());
     let error = hq
-        .consult_in(
+        .consult_peer_in(
             current.run,
             "Member 3",
             "A distinct seventh question?",
             None,
+            None,
+            &[],
         )
         .unwrap_err();
     assert!(

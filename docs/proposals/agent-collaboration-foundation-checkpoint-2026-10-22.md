@@ -128,8 +128,10 @@ privacy, relative-link and whitespace checks before push.
 
 Production-backup rehearsal and the NAS/Pi cutover are done (see the
 [release record](agent-collaboration-deployment-2026-10-22.md#replacement-cutover-6e67eb6c-2026-10-24)).
+The [caller audit](agent-collaboration-caller-audit-2026-10-24.md) found no
+violation of items 1 and 2; its follow-ups are done.
 Next: observe the first work-triggered peer-help request in production (its
-answer and retained finding in Work), then the device checks. The full ADR 0138
+answer and retained finding in Work), then a check on a physical phone. The full ADR 0138
 definition of done remains open until those pass.
 
 ### Legacy cancellation preparation

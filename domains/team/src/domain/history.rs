@@ -215,22 +215,6 @@ pub enum HistoryRefusal {
     NothingToSearchFor,
     /// A name that is no member of the team.
     NoSuchMember(String),
-    /// A consult of oneself.
-    NotYourself,
-    /// The CEO consulting anyone but a lead.
-    CeoConsultsLeads,
-    /// A third consult in one turn.
-    TooManyThisTurn,
-    /// A seventh consult in one day.
-    TooManyToday,
-    /// A consult without a question.
-    NeedsQuestion,
-    /// A consult from a turn about no task, naming none.
-    NeedsTask,
-    /// `answer_consult` outside a consulted turn, or twice.
-    NoConsultForYou,
-    /// An answer with nothing in it.
-    NeedsAnswer,
 }
 
 impl fmt::Display for HistoryRefusal {
@@ -245,32 +229,6 @@ impl fmt::Display for HistoryRefusal {
                 f,
                 "nobody on the team is called `{name}`: read world:team for who is at work"
             ),
-            Self::NotYourself => f.write_str(
-                "you cannot consult yourself: ask_record searches what you and the others said",
-            ),
-            Self::CeoConsultsLeads => f.write_str(
-                "the CEO consults leads only (ADR 0120 keeps the CEO out of the weeds): consult \
-                 a lead, or direct one",
-            ),
-            Self::TooManyThisTurn => f.write_str(
-                "you have already consulted twice in this turn, the most a turn may: use \
-                 ask_record, which searches the record and wakes no one, or wait for their answers",
-            ),
-            Self::TooManyToday => f.write_str(
-                "you have consulted six times today, the most a member may in a day: use \
-                 ask_record, which searches the record and costs nothing",
-            ),
-            Self::NeedsQuestion => {
-                f.write_str("a consult asks something: give `question`, in a sentence or two")
-            }
-            Self::NeedsTask => f.write_str(
-                "this turn is about no task, and the answer goes in a task's thread: name one \
-                 with `task`",
-            ),
-            Self::NoConsultForYou => {
-                f.write_str("no consult is waiting for an answer from you in this turn")
-            }
-            Self::NeedsAnswer => f.write_str("an answer says something: give `answer`"),
         }
     }
 }
