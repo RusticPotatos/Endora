@@ -1,10 +1,23 @@
 // Information-only peer conversations (ADR 0137). Keep one bounded page in memory.
 // `draft` holds the authorize form's picks: HQ redraws every few seconds, and a redraw would
 // otherwise reset both members to the same first choice.
-const HQ_CHAT = { directory: null, page: null, assistance: null, operations: null, id: null, after: 0, busy: false, error: "", draft: null };
+// The list loads itself and stays fresh (`loadedAt`); the owner's switches wait under `manage`.
+const HQ_CHAT = { directory: null, page: null, assistance: null, operations: null, id: null, after: 0, busy: false, error: "", draft: null, manage: false, loadedAt: 0 };
+const HQ_CHAT_FRESH_MS = 30000;
+
+// A quiet background refresh of the first page: no busy state, and no redraw of its own; HQ's
+// three-second redraw shows it, and holds off while someone types.
+async function hqConversationsRefresh() {
+  HQ_CHAT.loadedAt = Date.now();
+  try {
+    HQ_CHAT.directory = await api("GET", "/v1/hq/conversations?after=0");
+  } catch (_) { /* the next refresh tries again */ }
+}
 
 function hqConversations(s) {
+  if (!HQ_CHAT.busy && Date.now() - HQ_CHAT.loadedAt > HQ_CHAT_FRESH_MS) setTimeout(hqConversationsRefresh, 0);
   const d = HQ_CHAT.directory;
+  const name = (id) => esc(((s.members || []).find((m) => m.id === id) || {}).name || `Member ${id}`);
   const button = (what, id, label, disabled = false) => `<button class="hq-btn tall" data-act="hq:conversations:${what}:${id}"${disabled || HQ_CHAT.busy ? " disabled" : ""}>${label}</button>`;
   const members = (s.members || []).filter((m) => m.role !== "ceo" && !m.paused && !m.furloughed);
   const projects = (s.projects || []).filter((p) => p.status === "active");
@@ -13,18 +26,25 @@ function hqConversations(s) {
   const pick = { project: picked(projects, draft.project, projects[0]), a: picked(members, draft.a, members[0]), b: picked(members, draft.b, members[1]) };
   const options = (list, id, label) => list.map((x) => `<option value="${Number(x.id)}"${x.id === id ? " selected" : ""}>${esc(label(x))}</option>`).join("");
   const select = (field, list, label) => `<select id="hq-conversation-${field}" data-change="hq:conversations:pick-${field}">${options(list, pick[field], label)}</select>`;
-  let body = button("load", "first", "Load conversations");
+  let body = '<p class="hq-note">Loading conversations…</p>';
   if (d) {
-    body = `<p class="hq-note">Information messaging is ${d.enabled ? "enabled" : "disabled"}. Sending information creates no task or agent wake. Conversations are kept until you delete them.</p>
-      <div class="hq-row">${button("enable", d.enabled ? "off" : "on", d.enabled ? "Disable messaging" : "Enable messaging")}${button("load", "first", "Refresh list")}${button("operations", "first", "Operation history")}</div>
-      <ul class="hq-thread">${(d.conversations || []).map((c) => `<li>Conversation ${Number(c.id)}: ${c.participants.map((id) => esc(((s.members || []).find((m) => m.id === id) || {}).name || `Member ${id}`)).join(" / ")} (${Number(c.messages)} messages) ${button("open", c.id, "Open history")}</li>`).join("") || '<li class="hq-empty">No conversations on this page.</li>'}</ul>
-      ${d.has_more ? button("load", d.after, "Next conversations") : ""}`;
-    if (d.enabled && members.length >= 2 && projects.length) {
-      body += `<details${HQ_CHAT.draft ? " open" : ""}><summary>Authorize a conversation</summary><p class="hq-note">Choose two members and the project. This permits information exchange, without granting task or tool authority.</p>
-        <div class="hq-row"><label>Project ${select("project", projects, (p) => p.title)}</label>
-        <label>First member ${select("a", members, (m) => m.name)}</label>
-        <label>Second member ${select("b", members, (m) => m.name)}</label>
-        ${button("create", "new", "Authorize")}</div></details>`;
+    // The latest activity first; one with nothing said yet goes last, newest authorized first.
+    const latest = [...(d.conversations || [])].sort((x, y) => (y.latest || 0) - (x.latest || 0) || (y.at || 0) - (x.at || 0));
+    const when = (c) => c.latest ? `last ${esc(new Date(c.latest).toLocaleString())}` : "nothing said yet";
+    body = `<p class="hq-note">Who the agents may talk to, and what they said. Conversations are kept until you delete them.</p>
+      <ul class="hq-thread">${latest.map((c) => `<li><b>${c.participants.map(name).join(" ↔ ")}</b> <small>${Number(c.messages)} messages · ${when(c)}</small> ${button("open", c.id, HQ_CHAT.id === c.id && HQ_CHAT.page ? "Refresh" : "Open")}</li>`).join("") || `<li class="hq-empty">${d.enabled ? "No conversation is authorized yet: Manage authorizes one." : "Messaging is off: Manage turns it on."}</li>`}</ul>
+      <div class="hq-row">${d.has_more ? button("load", d.after, "Next conversations") : ""}${button("manage", "toggle", HQ_CHAT.manage ? "Done managing" : "Manage")}</div>`;
+    if (HQ_CHAT.manage) {
+      body += `<section class="hq-card"><h3>Manage</h3><p class="hq-note">Information messaging is ${d.enabled ? "enabled" : "disabled"}. Sending information creates no task or agent wake.</p>
+        <div class="hq-row">${button("enable", d.enabled ? "off" : "on", d.enabled ? "Disable messaging" : "Enable messaging")}${button("load", "first", "Refresh list")}${button("operations", "first", "Operation history")}</div>`;
+      if (d.enabled && members.length >= 2 && projects.length) {
+        body += `<p class="hq-note">Authorize a conversation: choose two members and the project. This permits information exchange, without granting task or tool authority.</p>
+          <div class="hq-row"><label>Project ${select("project", projects, (p) => p.title)}</label>
+          <label>First member ${select("a", members, (m) => m.name)}</label>
+          <label>Second member ${select("b", members, (m) => m.name)}</label>
+          ${button("create", "new", "Authorize")}</div>`;
+      }
+      body += "</section>";
     }
   }
   if (HQ_CHAT.page) {
@@ -72,6 +92,7 @@ async function hqConversationAct(what, id) {
   // A pick is kept for the next redraw; nothing is sent until Authorize.
   const field = /^pick-(project|a|b)$/.exec(what);
   if (field) { HQ_CHAT.draft = { ...HQ_CHAT.draft, [field[1]]: Number(id) }; return true; }
+  if (what === "manage") { HQ_CHAT.manage = !HQ_CHAT.manage; render(); return true; }
   if (what === "delete" && !confirm("Delete this conversation and all its messages?")) return true;
   if (what === "save" || what === "save-assistance") {
     const page = what === "save-assistance" ? HQ_CHAT.assistance : HQ_CHAT.page;
@@ -94,6 +115,7 @@ async function hqConversationAct(what, id) {
       HQ_CHAT.directory = await api("GET", "/v1/hq/conversations?after=0");
     } else if (what === "load") {
       HQ_CHAT.directory = await api("GET", `/v1/hq/conversations?after=${id === "first" ? 0 : Number(id)}`);
+      HQ_CHAT.loadedAt = Date.now();
     } else if (what === "operations") {
       HQ_CHAT.operations = await api("GET", `/v1/hq/conversations/operations?after=${id === "first" ? 0 : Number(id)}`);
     } else if (["open", "next", "refresh"].includes(what)) {
@@ -101,7 +123,8 @@ async function hqConversationAct(what, id) {
       HQ_CHAT.page = null;
       HQ_CHAT.id = Number(id); HQ_CHAT.after = after;
       HQ_CHAT.page = await api("GET", `/v1/hq/conversations/${Number(id)}?after=${after}`);
-      if (what === "open") HQ_CHAT.assistance = null;
+      // Opening one shows what was asked and answered in it too: one tap to watch the exchange.
+      if (what === "open") HQ_CHAT.assistance = await api("GET", `/v1/hq/conversations/${Number(id)}/assistance?after=0`);
     } else if (what === "assistance" || what === "assistance-next") {
       const after = what === "assistance-next" ? Number((HQ_CHAT.assistance || {}).after) || 0 : 0;
       HQ_CHAT.assistance = await api("GET", `/v1/hq/conversations/${Number(id)}/assistance?after=${after}`);
@@ -123,6 +146,37 @@ async function hqConversationAct(what, id) {
   } catch (e) { HQ_CHAT.error = String(e.message || e); }
   finally { HQ_CHAT.busy = false; render(); }
   return true;
+}
+
+// The help a task's own turns asked colleagues for, shown on the task where its work is read.
+// One task's first page is kept, and refreshed in the background while the task stays open.
+const HQ_TASK_HELP = { task: null, page: null, loadedAt: 0 };
+
+async function hqTaskHelpRefresh(task) {
+  HQ_TASK_HELP.loadedAt = Date.now();
+  try {
+    const page = await api("GET", `/v1/hq/tasks/${Number(task)}/assistance?after=0`);
+    if (HQ_TASK_HELP.task === task) HQ_TASK_HELP.page = page;
+  } catch (_) { /* the next refresh tries again */ }
+}
+
+function hqTaskHelp(task) {
+  task = Number(task);
+  if (!Number.isSafeInteger(task) || task <= 0) return "";
+  if (HQ_TASK_HELP.task !== task) Object.assign(HQ_TASK_HELP, { task, page: null, loadedAt: 0 });
+  if (Date.now() - HQ_TASK_HELP.loadedAt > HQ_CHAT_FRESH_MS) setTimeout(() => hqTaskHelpRefresh(task), 0);
+  const requests = (HQ_TASK_HELP.page && HQ_TASK_HELP.page.requests) || [];
+  if (!requests.length) return "";
+  const said = { queued: "waiting for an answer", processing: "being answered", declined: "declined", cancelled: "cancelled", expired: "no answer in time", failed: "failed" };
+  const rows = requests.map((r) => {
+    const asker = esc(hqName(r.requester)), expert = esc(hqName(r.expert));
+    const outcome = r.answer
+      ? `<p><b>${expert}</b>: ${esc(r.answer)}</p>${r.finding ? `<p><b>${asker}</b> concluded: ${esc(r.finding.text)}</p>` : ""}`
+      : `<p class="hq-note">${esc(said[r.status] || r.status)}${r.reason ? `: ${esc(r.reason)}` : ""}</p>`;
+    return `<li><b>${asker}</b> asked <b>${expert}</b>: ${esc(r.objective)}${outcome}
+      <button class="hq-link" data-act="hq:conversations:open:${Number(r.conversation)}">Their conversation</button></li>`;
+  }).join("");
+  return `<h3>Help on this task</h3><ul class="hq-thread" style="overflow-wrap:anywhere">${rows}</ul>${HQ_TASK_HELP.page.has_more ? '<p class="hq-note">The first 50 exchanges; their conversations hold the rest.</p>' : ""}`;
 }
 
 // Older task questions stay read-only. Keep one page and at most 64 back cursors.

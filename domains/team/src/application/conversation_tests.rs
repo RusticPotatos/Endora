@@ -245,6 +245,43 @@ fn canonical_task_help_with_finding(lose_worker_after_finding: bool) {
     let retained = hq.assistance_requests_page(conversation, 0).unwrap();
     assert_eq!(retained["requests"][0]["finding"]["text"], finding);
     assert_eq!(retained["requests"][0]["finding"]["run"], result.run.0);
+    // The exchange is also read where the work is: its task's page, in the same shape.
+    let on_task = hq.task_assistance_page(task, 0).unwrap();
+    assert_eq!(on_task["task"], task.0);
+    assert_eq!(on_task["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(on_task["requests"][0]["id"], id);
+    assert_eq!(on_task["requests"][0]["conversation"], conversation);
+    assert_eq!(
+        on_task["requests"][0]["answer"],
+        "The fixture returned its expected marker."
+    );
+    assert_eq!(on_task["requests"][0]["finding"]["text"], finding);
+    assert_eq!(on_task["has_more"], false);
+    let unrelated = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Unrelated fixture".into(),
+                description: String::new(),
+                assignee: Some(lead),
+                priority: crate::domain::Priority::Normal,
+                waits_on: vec![],
+            },
+        )
+        .unwrap();
+    assert!(
+        hq.task_assistance_page(unrelated, 0).unwrap()["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        hq.task_assistance_page(crate::domain::TaskId(999_999), 0)
+            .is_err()
+    );
     assert!(
         !hq.events_after(0)
             .unwrap()
@@ -274,6 +311,31 @@ fn canonical_task_help_with_finding(lose_worker_after_finding: bool) {
         hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["finding"]["text"],
         finding
     );
+    // The feed says who asked whom, the answer and the conclusion, once each despite the
+    // retried calls above, and never the words themselves.
+    let events = hq.events_after(0).unwrap();
+    for kind in ["help.asked", "help.answered", "help.concluded"] {
+        let seen: Vec<_> = events.iter().filter(|event| event.kind == kind).collect();
+        assert_eq!(seen.len(), 1, "{kind}: {seen:?}");
+        let data = &seen[0].data;
+        assert_eq!(
+            (data["member"].clone(), data["expert"].clone()),
+            (json!(requester.0), json!(expert.0)),
+            "{kind}"
+        );
+        assert_eq!(
+            (
+                data["task"].clone(),
+                data["conversation"].clone(),
+                data["request"].clone()
+            ),
+            (json!(task.0), json!(conversation), json!(id)),
+            "{kind}"
+        );
+        for words in ["What does the fixture show?", "expected marker", finding] {
+            assert!(!data.to_string().contains(words), "{kind} carried {words}");
+        }
+    }
     assert_ne!(
         hq.store().task(task).unwrap().unwrap().status,
         crate::domain::TaskStatus::Done

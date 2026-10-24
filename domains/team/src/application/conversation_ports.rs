@@ -159,6 +159,10 @@ pub trait ConversationStore {
     /// # Errors
     /// A store failure.
     fn assistance_page(&self, conversation: i64, after: i64) -> Stored<Vec<Request>>;
+    /// One page (plus one) of the requests asked from a task's turns, oldest first.
+    /// # Errors
+    /// A store failure.
+    fn task_assistance_page(&self, task: TaskId, after: i64) -> Stored<Vec<Request>>;
     /// Atomically retain one finding from its live associated requester-result
     /// turn. Exact retries reuse it; conflicting replacements refuse.
     /// # Errors

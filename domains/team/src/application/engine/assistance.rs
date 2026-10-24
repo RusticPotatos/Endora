@@ -4,7 +4,7 @@ use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::assistance::{self, NewRequest, Request, SourceRef};
 use crate::domain::conversation;
-use crate::domain::{ProjectId, ProjectStatus, Refusal, RunId};
+use crate::domain::{EventKind, ProjectId, ProjectStatus, Refusal, RunId};
 use serde_json::{Value, json};
 
 const EVIDENCE_GUIDANCE: &str = "Separate what the originals establish, what you infer, and what remains unknown. Label inference explicitly and cite its basis. Do not rule out other causes or predict a repair will succeed without supporting evidence. Finish with a concise finding; if the evidence is insufficient, say so. In your final finding, explicitly restate the key evidence that answers the question and cite the original locators; agreement with a colleague's summary is insufficient.";
@@ -368,9 +368,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 return Err(refused("original evidence grant unavailable"));
             }
         }
-        self.store
+        let id = self
+            .store
             .accept_assistance_answer(run, &clean, evidence, self.clock.now())?
-            .map_err(refused)
+            .map_err(refused)?;
+        // Only a first answer reaches here: a retried one returned above.
+        self.emit_help(EventKind::HelpAnswered, &request, run)?;
+        Ok(id)
     }
 
     /// Retain the associated requester's own conclusion without completing its
@@ -386,9 +390,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         self.running(run)?;
         let clean = conversation::words("finding_01", finding, &[]).map_err(refused)?;
-        self.store
+        // An identical retry reuses the finding: only the first is the feed's "concluded".
+        let first = match self.store.assistance_notice_for_run(run)? {
+            Some(request) if self.store.assistance_finding(request.id)?.is_none() => Some(request),
+            _ => None,
+        };
+        let id = self
+            .store
             .record_assistance_finding(run, &clean, evidence, self.clock.now())?
-            .map_err(refused)
+            .map_err(refused)?;
+        if let Some(request) = first {
+            self.emit_help(EventKind::HelpConcluded, &request, run)?;
+        }
+        Ok(id)
     }
 
     /// Owner's bounded page of requests, results and current disposition.
@@ -404,33 +418,57 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let grants = self
             .store
             .assistance_grants(conversation, self.clock.now())?;
-        let mut page = json!({"conversation":conversation,"has_more":more,"after":rows.last().map_or(after,|r|r.id),
+        Ok(
+            json!({"conversation":conversation,"has_more":more,"after":rows.last().map_or(after,|r|r.id),
             "grants":grants.iter().map(|(source,expires)|json!({"source":source.said(),"expires_at":expires})).collect::<Vec<_>>(),
-            "requests":rows.iter().map(|r|json!({"id":r.id,"project":r.project.0,"requester":r.requester.0,
-                "requester_run":r.requester_run.0,"expert":r.expert.0,"objective":r.objective,
-                "evidence":r.evidence.iter().map(|reference| reference.said()).collect::<Vec<_>>(),"status":r.status,
-                "deadline_at":r.deadline_at,"expert_run":r.expert_run.map(|v|v.0),"answer":r.answer,
-                "answer_evidence":r.answer_evidence.iter().map(|reference| reference.said()).collect::<Vec<_>>(),
-                "notified":r.notified,"notice_run":r.notice_run.map(|v|v.0),"notice_cancelled":r.notice_cancelled})).collect::<Vec<_>>()});
-        for (index, row) in rows.iter().enumerate() {
-            page["requests"][index]["finding"] = self.store.assistance_finding(row.id)?.map_or(Value::Null, |finding| json!({
+            "requests":self.assistance_rows(&rows)?}),
+        )
+    }
+
+    /// The owner's bounded page of the exchanges asked from a task's own turns, in the
+    /// conversation page's shape, so the task can show who asked whom and what came back.
+    /// # Errors
+    /// An unknown task or store failure.
+    pub fn task_assistance_page(&self, task: crate::domain::TaskId, after: i64) -> Done<Value> {
+        self.task(task)?;
+        let after = after.max(0);
+        let mut rows = self.store.task_assistance_page(task, after)?;
+        let more = rows.len() > conversation::PAGE;
+        rows.truncate(conversation::PAGE);
+        Ok(
+            json!({"task":task.0,"has_more":more,"after":rows.last().map_or(after,|r|r.id),
+            "requests":self.assistance_rows(&rows)?}),
+        )
+    }
+
+    /// Each request as the owner reads it: the exchange, its finding and its current disposition.
+    fn assistance_rows(&self, rows: &[Request]) -> Done<Vec<Value>> {
+        let mut shown = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut r = json!({"id":row.id,"conversation":row.conversation,"project":row.project.0,"requester":row.requester.0,
+                "requester_run":row.requester_run.0,"expert":row.expert.0,"objective":row.objective,
+                "evidence":row.evidence.iter().map(|reference| reference.said()).collect::<Vec<_>>(),"status":row.status,
+                "deadline_at":row.deadline_at,"expert_run":row.expert_run.map(|v|v.0),"answer":row.answer,
+                "answer_evidence":row.answer_evidence.iter().map(|reference| reference.said()).collect::<Vec<_>>(),
+                "notified":row.notified,"notice_run":row.notice_run.map(|v|v.0),"notice_cancelled":row.notice_cancelled});
+            r["finding"] = self.store.assistance_finding(row.id)?.map_or(Value::Null, |finding| json!({
                 "run":finding.run.0,"text":finding.text,"at":finding.at,
                 "evidence":finding.evidence.iter().map(|source|source.said()).collect::<Vec<_>>()
             }));
-            page["requests"][index]["reason"] = json!(self.assistance_reason(row)?);
+            r["reason"] = json!(self.assistance_reason(row)?);
             if let Some(run) = row
                 .expert_run
                 .and_then(|id| self.store.run(id).transpose())
                 .transpose()?
             {
-                page["requests"][index]["attempts"] = json!(run.attempts);
-                page["requests"][index]["spent"] = json!(run.spent);
-                page["requests"][index]["run_status"] = json!(run.status.name());
-                page["requests"][index]["retry_at"] = json!(run.retry_at);
+                r["attempts"] = json!(run.attempts);
+                r["spent"] = json!(run.spent);
+                r["run_status"] = json!(run.status.name());
+                r["retry_at"] = json!(run.retry_at);
                 if matches!(row.status.as_str(), "processing" | "failed")
                     && !run.end_reason.is_empty()
                 {
-                    page["requests"][index]["reason"] = json!(run.end_reason);
+                    r["reason"] = json!(run.end_reason);
                 }
             }
             let notice = row
@@ -439,11 +477,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .transpose()?
                 .flatten();
             if let Some(run) = notice {
-                page["requests"][index]["notice_status"] = json!(run.status.name());
-                page["requests"][index]["notice_spent"] = json!(run.spent);
+                r["notice_status"] = json!(run.status.name());
+                r["notice_spent"] = json!(run.spent);
             }
+            shown.push(r);
         }
-        Ok(page)
+        Ok(shown)
     }
 
     fn assistance_reason(&self, request: &Request) -> Done<&'static str> {
@@ -483,9 +522,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if !expert.at_work() || self.project(pending.project)?.status != ProjectStatus::Active {
                 continue;
             }
-            self.store.queue_assistance(pending.id, now)?;
+            // Queued once: the moment the question reaches the colleague is the feed's "asked".
+            if let Some(run) = self.store.queue_assistance(pending.id, now)? {
+                self.emit_help(EventKind::HelpAsked, &pending, run)?;
+            }
         }
         Ok(())
+    }
+
+    /// One line of the exchange for the feed: who asked whom, on which task and in which
+    /// conversation. The question, answer and finding stay in Work (ADR 0138).
+    fn emit_help(&self, kind: EventKind, request: &Request, run: RunId) -> Done<()> {
+        let task = self
+            .store
+            .run(request.requester_run)?
+            .and_then(|turn| turn.task)
+            .map(|task| task.0);
+        self.emit(
+            kind,
+            json!({"member":request.requester.0,"expert":request.expert.0,"task":task,
+                "conversation":request.conversation,"request":request.id,"run":run.0}),
+        )
     }
 
     /// Wait for an existing requester turn to finish, then atomically queue one result turn.

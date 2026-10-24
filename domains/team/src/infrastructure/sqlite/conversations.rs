@@ -106,6 +106,9 @@ const TASK_AWAITS_ASSISTANCE: &str = "SELECT EXISTS(
 const PENDING_NOTICES: &str = " FROM assistance_requests WHERE status='answered' AND notified=0 AND notice_cancelled=0 ORDER BY id LIMIT 50";
 const REQUEST_PAGE: &str =
     " FROM assistance_requests WHERE conversation=?1 AND id>?2 ORDER BY id LIMIT 51";
+// A task's exchanges are the requests its own turns asked: both sides are indexed, so the page's
+// work follows the task's runs, not the archive.
+const TASK_REQUEST_PAGE: &str = " FROM assistance_requests WHERE requester_run IN (SELECT id FROM runs WHERE task=?1) AND id>?2 ORDER BY id LIMIT 51";
 const FINDING_BY_REQUEST: &str =
     "SELECT run,text,evidence,at_ms FROM assistance_findings WHERE request=?1";
 
@@ -571,6 +574,17 @@ impl ConversationStore for SqliteTeamStore {
             .prepare(&format!("SELECT {REQUEST_COLUMNS}{REQUEST_PAGE}"))
             .map_err(backend)?;
         stmt.query_map(params![conversation, after], request)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn task_assistance_page(&self, task: TaskId, after: i64) -> Stored<Vec<Request>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {REQUEST_COLUMNS}{TASK_REQUEST_PAGE}"))
+            .map_err(backend)?;
+        stmt.query_map(params![task.0, after], request)
             .map_err(backend)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(backend)
@@ -1462,7 +1476,8 @@ mod tests {
         }
         assert_eq!(steps[0], steps[1]);
         assert!(steps[1] < 1_000);
-        conn.execute_batch("DROP INDEX assistance_waiting_task; DROP INDEX assistance_unnotified; DROP INDEX assistance_pending; DROP INDEX assistance_live_member_run;").unwrap();
+        // A task's help page indexes runs by task and requests by run: either also bounds this.
+        conn.execute_batch("DROP INDEX assistance_waiting_task; DROP INDEX assistance_unnotified; DROP INDEX assistance_pending; DROP INDEX assistance_live_member_run; DROP INDEX runs_by_task; DROP INDEX assistance_by_requester_run;").unwrap();
         let mut unindexed = conn.prepare(TASK_AWAITS_ASSISTANCE).unwrap();
         assert!(
             !unindexed
@@ -2282,6 +2297,61 @@ mod tests {
         assert!(
             request_query_work(&store, PENDING_NOTICES, &[]) > 5000,
             "the archive-work check must catch a missing result-notification index"
+        );
+    }
+
+    #[test]
+    fn a_tasks_help_page_stays_bounded_as_the_archive_grows_and_a_missing_index_is_detected() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        store.conn().unwrap().execute_batch("
+            INSERT INTO tasks(id,goal,title,description,status,priority,depth,project) VALUES(1,1,'Fixture task','','doing','normal',0,1);
+            INSERT INTO runs(id,member,task,wake,status,queued_at) VALUES(2,2,1,1,'succeeded',0);
+        ").unwrap();
+        let scope = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        // Other turns' older requests, then the task's own exchanges from its run, then more.
+        let archive="INSERT INTO assistance_requests(conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status,notified)
+            WITH RECURSIVE n(x) AS (VALUES(?2) UNION ALL SELECT x+1 FROM n WHERE x<?3)
+            SELECT ?1,1,2,1,1,printf('archive_%d',x),'Old fixture','',0,0,1000000,'answered',1 FROM n";
+        store
+            .conn()
+            .unwrap()
+            .execute(archive, params![scope, 1, 5000])
+            .unwrap();
+        store.conn().unwrap().execute("INSERT INTO assistance_requests(conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status,notified)
+            WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<51)
+            SELECT ?1,1,2,2,1,printf('task_%d',x),'Task fixture','',0,0,1000000,'answered',1 FROM n",[scope]).unwrap();
+        assert_eq!(store.task_assistance_page(TaskId(1), 0).unwrap().len(), 51);
+        assert!(
+            store
+                .task_assistance_page(TaskId(1), 0)
+                .unwrap()
+                .iter()
+                .all(|request| request.requester_run == RunId(2)),
+            "only the task's own turns' requests"
+        );
+        let small = request_query_work(&store, TASK_REQUEST_PAGE, &[1, 0]);
+        store
+            .conn()
+            .unwrap()
+            .execute(archive, params![scope, 5001, 100000])
+            .unwrap();
+        let bounded = request_query_work(&store, TASK_REQUEST_PAGE, &[1, 0]);
+        eprintln!("task help page SQL work: {small} -> {bounded}");
+        assert!(
+            bounded < 5000 && bounded <= small + 100,
+            "archive growth expanded a task's help page: {small} -> {bounded}"
+        );
+        store
+            .conn()
+            .unwrap()
+            .execute_batch("DROP INDEX assistance_by_requester_run; DROP INDEX runs_by_task;")
+            .unwrap();
+        assert!(
+            request_query_work(&store, TASK_REQUEST_PAGE, &[1, 0]) > 5000,
+            "the archive-work check must catch a missing task help index"
         );
     }
 

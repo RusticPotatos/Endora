@@ -187,3 +187,31 @@ their tools from HQ each turn, so the Pi was not redeployed. The full gate passe
 (2,356 tests). Released with a `before-2cc9dc6e` tag, fresh integrity-checked
 snapshots and `make deploy-check`: 0 running turns, 0 cut, both smoke tests
 passed, `/health` build `2cc9dc6e`, and the three conversations are intact.
+
+## Watching the agents talk: `c89e6592`, `92003669`, `5eb933b0`, 2026-10-24
+
+The owner could not see agents talking. Before ADR 0138 a consultation's question
+and answer were posted in the task's thread, so the task and the feed showed them;
+the canonical lifecycle kept exchanges only in the conversation store, behind a
+Load button and two more taps. Three releases restore what was visible, keeping
+the one lifecycle and the rule that message bodies stay out of the general feed:
+
+- `c89e6592`: the Conversations card loads itself and refreshes every thirty
+  seconds, lists the latest activity first, and Open shows a conversation's
+  messages and help requests together. Messaging on/off, authorizing and the
+  operation log moved under Manage.
+- `92003669`: a task shows the help its own turns asked for: who asked whom, the
+  answer and the asker's conclusion, linking to their conversation. A bounded,
+  indexed reader (`/v1/tasks/{id}/assistance`, proxied by the node) serves it; its
+  SQL work stayed the same from 5,000 to 100,000 unrelated archived requests, and
+  dropping its indexes is detected. Two indexes are added at HQ start; an older
+  build ignores them, so rollback is unchanged.
+- `5eb933b0`: the activity feed says "Bo asked Cy for help (EL-…)", "Cy answered
+  Bo" and "Bo concluded from Cy's answer": once each however often a call is
+  retried, and without the words.
+
+Each passed the full gate (2,359 tests at the last) and was released with a
+rollback tag, fresh integrity-checked snapshots and `make deploy-check` (0 running
+turns, 0 cut, smoke tests passed). Workers were unaffected, so the Pi was not
+redeployed. Production shows the card and an empty task section correctly; no
+real exchange has happened yet to show in the task view or feed.

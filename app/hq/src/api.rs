@@ -77,6 +77,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/runs/{id}/replay", get(run_replay))
         .route("/v1/tasks/{id}/replay", get(task_replay))
         .route("/v1/tasks/{id}/consultations", get(task_consultations))
+        .route("/v1/tasks/{id}/assistance", get(task_assistance))
         .route("/v1/goals", post(set_goal))
         .route("/v1/tasks", post(add_task))
         .route("/v1/desk/{id}", post(decide))
@@ -341,6 +342,17 @@ async fn task_consultations(
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
     let page = blocking(move || hq.legacy_task_conversations(TaskId(id), q.after)).await?;
+    Ok(Json(page))
+}
+
+/// The help a task's own turns asked colleagues for, paged for the owner (ADR 0138).
+async fn task_assistance(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Query(q): Query<After>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let page = blocking(move || hq.task_assistance_page(TaskId(id), q.after)).await?;
     Ok(Json(page))
 }
 
@@ -2309,6 +2321,59 @@ mod tests {
                 Some(TOKEN),
                 "",
             ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = app
+            .oneshot(call("POST", &path, Some(TOKEN), "{}"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            before,
+            (
+                st.hq.wakes().unwrap().len(),
+                st.hq.store().runs().unwrap().len()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tasks_help_exchanges_are_owner_only_and_read_only() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let task = turn.task.unwrap();
+        let path = format!("/v1/tasks/{}/assistance?after=-1", task.0);
+        let before = (
+            st.hq.wakes().unwrap().len(),
+            st.hq.store().runs().unwrap().len(),
+        );
+        let app = app(st.clone());
+        for token in [None, Some("wrong"), Some(turn.token.as_str()), Some(RUNNER)] {
+            let response = app
+                .clone()
+                .oneshot(call("GET", &path, token, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let response = app
+            .clone()
+            .oneshot(call("GET", &path, Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = json_of(response).await;
+        assert_eq!(page["task"], task.0);
+        assert!(page["requests"].as_array().unwrap().is_empty());
+        assert_eq!(
+            (page["after"].clone(), page["has_more"].clone()),
+            (json!(0), json!(false))
+        );
+        let response = app
+            .clone()
+            .oneshot(call("GET", "/v1/tasks/999999/assistance", Some(TOKEN), ""))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
