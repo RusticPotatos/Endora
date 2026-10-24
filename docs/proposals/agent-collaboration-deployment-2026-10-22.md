@@ -140,3 +140,30 @@ the restart, so it needs an explicit decision. Private evidence (logs, snapshots
 container identities and before/after comparisons) is in the ignored
 `.local/release-6e67eb6c/` and `.local/replacement-release-readiness-6e67eb6c/`
 directories.
+
+## Authorize form fix: `161e27da`, and the first conversations, 2026-10-24
+
+The owner's first attempt to authorize a conversation was refused with "Choose
+two different members." HQ redraws every few seconds; the form's two member
+pickers started on the same member and kept no pick across a redraw. `161e27da`
+keeps the picks and the open form across redraws and starts the second picker
+on a different member. A console check failed on the old form and passes on the
+fix; the full repository gate passed (2,355 tests, console, personal-value,
+collection parity and whitespace checks).
+
+Released the same way: the running image was tagged `before-161e27da`, fresh
+node and HQ snapshots were integrity-checked, and `make deploy-check` drained
+with 0 running turns, cut none and passed both smoke tests. The served console
+shows build `161e27da`. Only the console changed, so the Pi was not redeployed.
+
+The owner then authorized, in Work, three conversations on Home lab upkeep:
+Bo with Cy, Ada with Bo and Dee with Kit. All three are empty and are kept as
+set up. New peer help between those pairs can now be admitted, charged to that
+project, within the existing per-turn and per-day limits.
+
+Not yet observed in production: real work triggering a peer-help request, its
+answer and the requester's retained finding. That depends on the team's own
+work needing a colleague; it is the remaining production evidence for ADR 0138.
+Signed-in Work was exercised for the conversation list, authorize form and an
+empty history page; device checks were not repeated. Private evidence is in the
+ignored `.local/release-161e27da/` directory.
