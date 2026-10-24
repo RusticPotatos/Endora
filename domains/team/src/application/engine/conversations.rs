@@ -18,6 +18,22 @@ fn shown(c: &Conversation) -> Value {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
+    /// Discovery uses trusted task metadata and an indexed scope existence check,
+    /// not the first presentation page. Admission still revalidates authority.
+    pub(crate) fn has_communication_scope(
+        &self,
+        run: &crate::application::ports::Run,
+    ) -> Done<bool> {
+        let project = match run.task {
+            Some(task) => match self.task(task)?.project {
+                Some(project) => Some(project),
+                None => return Ok(false),
+            },
+            None => None,
+        };
+        Ok(self.store.has_active_conversation(run.member, project)?)
+    }
+
     fn conversation_revision(&self) -> Done<Option<i64>> {
         let stored = self.store.setting("conversations_enabled")?;
         Ok(stored

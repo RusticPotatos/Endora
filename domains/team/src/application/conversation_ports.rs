@@ -87,6 +87,12 @@ pub trait ConversationStore {
     /// # Errors
     /// A store failure.
     fn conversation_pair(&self, a: MemberId, b: MemberId) -> Stored<Vec<Conversation>>;
+    /// Metadata-only existence check for an active project scope, independent of
+    /// history pages. A project restricts task-linked discovery, never grants it.
+    /// # Errors
+    /// A store failure.
+    fn has_active_conversation(&self, member: MemberId, project: Option<ProjectId>)
+    -> Stored<bool>;
     /// Read at most PAGE+1 summaries after an ID, optionally for one participant.
     /// # Errors
     /// A store failure.

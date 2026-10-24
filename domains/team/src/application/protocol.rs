@@ -897,23 +897,7 @@ pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
         let can_send = member.role != Role::Ceo
             && engine.conversation_turn_ready(run.id).unwrap_or(false)
             && !engine.store().run_read_confidential(run.id).unwrap_or(true)
-            && engine
-                .conversation_directory(Some(member.id), 0)
-                .ok()
-                .is_some_and(|directory| {
-                    directory["conversations"].as_array().is_some_and(|scopes| {
-                        scopes.iter().any(|scope| {
-                            scope["project"].as_i64().is_some_and(|project| {
-                                engine
-                                    .assistance_scope_matches(
-                                        run,
-                                        crate::domain::ProjectId(project),
-                                    )
-                                    .unwrap_or(false)
-                            })
-                        })
-                    })
-                });
+            && engine.has_communication_scope(run).unwrap_or(false);
         list.retain(|tool| {
             tool["name"] != "answer_consult"
                 && (can_send

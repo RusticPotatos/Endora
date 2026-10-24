@@ -222,6 +222,29 @@ collection-parity and whitespace checks. Its earlier failed scenario expectation
 is retained in `first-tests-failure.log`. Only documentation changed afterward.
 No model call or deployment is part of this slice.
 
+### Scope discovery across retained history
+
+A focused test reproduced a valid task project's conversation being hidden from
+the worker tools when fifty earlier scopes belonged to another project. Discovery
+now uses an indexed metadata existence check against the authenticated member,
+trusted task project and active project state. It does not use the first history
+page as policy. Admission still independently revalidates the chosen scope;
+discovery grants no participant, evidence or payer authority.
+
+The lookup checks either fixed participant position, excludes deleted scopes and
+inactive projects, and returns only a boolean. The actual task-linked and taskless
+SQL performs identical VM work with 1,000 and 100,000 inactive-project/deleted-scope
+archive rows; the missing-index negative control scans the archive. This does not
+claim constant cost as active work grows or global scheduler latency invariance.
+Focused admission/discovery and storage tests passed. Ignored evidence:
+`.local/tool-discovery-page-{red,green}.log`,
+`.local/tool-discovery-storage-green.log` and `.local/tool-discovery-gate/`.
+The full repository gate passed: formatting, workspace denied-warning Clippy,
+all-feature tests (945 team tests, 76 HQ API tests, 158 team scenarios / 1,973
+steps), console, configured privacy, collection-parity and whitespace checks.
+Only documentation changed afterward for this slice. No model call or deployment
+is included.
+
 Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,
 idempotent admission, shared allowances, trusted expert project attribution and

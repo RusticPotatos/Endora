@@ -20,6 +20,70 @@ fn canonical_hq(clock: &Hands) -> super::history_tests::Hq<'_> {
 }
 
 #[test]
+fn task_help_tool_discovery_does_not_depend_on_the_first_directory_page() {
+    use super::ports::NewTask;
+    use serde_json::json;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = canonical_hq(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let other = hq
+        .add_project(goal, "Other fixture", "", lead, None)
+        .unwrap();
+    let project = hq
+        .add_project(goal, "Task fixture", "", lead, None)
+        .unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    for _ in 0..50 {
+        hq.create_conversation(other, [requester, expert]).unwrap();
+    }
+    let conversation = hq
+        .create_conversation(project, [requester, expert])
+        .unwrap();
+    hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: Some(project),
+            parent: None,
+            title: "Inspect fixture".into(),
+            description: String::new(),
+            assignee: Some(requester),
+            priority: crate::domain::Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let caller = turn_of(&hq, requester);
+    let (run, member) = hq.turn_of(&caller.token).unwrap().unwrap();
+    let offered = super::protocol::tools_in(&hq, &run, &member);
+    for tool in ["consult", "request_assistance", "send_message"] {
+        assert!(
+            offered
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["name"] == tool),
+            "authorized task help must remain discoverable beyond page one: {tool}"
+        );
+    }
+    super::protocol::call(
+        &hq,
+        &run,
+        &member,
+        "consult",
+        &json!({
+            "member":"Member 3", "conversation":conversation,
+            "key":"later_scope", "question":"What does the fixture show?"
+        }),
+    )
+    .unwrap();
+}
+
+#[test]
 fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() {
     use super::conversation_ports::ConversationStore;
     use super::history_ports::HistoryStore;

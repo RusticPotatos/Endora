@@ -24,6 +24,9 @@ CREATE INDEX IF NOT EXISTS conversations_deleted ON conversations(id) WHERE dele
 CREATE INDEX IF NOT EXISTS conversations_member1 ON conversations(member1,id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS conversations_member2 ON conversations(member2,id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS conversations_pair ON conversations(member1,member2,id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS conversations_member1_project ON conversations(member1,project) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS conversations_member2_project ON conversations(member2,project) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS conversations_active_projects ON projects(id) WHERE status='active';
 CREATE TABLE IF NOT EXISTS conversation_messages (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  conversation INTEGER NOT NULL REFERENCES conversations(id),
@@ -85,6 +88,12 @@ fn scope(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
 
 const REQUEST_COLUMNS: &str = "id,conversation,project,requester,requester_run,expert,objective,evidence,status,deadline_at,expert_run,answer,answer_evidence,notified,notice_run,notice_cancelled";
 const DUE_REQUESTS: &str = " FROM assistance_requests WHERE status='queued' AND expert_run IS NULL AND deadline_at>?1 ORDER BY deadline_at,id LIMIT 50";
+const ACTIVE_MEMBER_SCOPE: &str = "SELECT EXISTS(SELECT 1 FROM projects p WHERE p.status='active' AND
+    (EXISTS(SELECT 1 FROM conversations c WHERE c.member1=?1 AND c.project=p.id AND c.deleted_at IS NULL)
+    OR EXISTS(SELECT 1 FROM conversations c WHERE c.member2=?1 AND c.project=p.id AND c.deleted_at IS NULL)))";
+const ACTIVE_TASK_SCOPE: &str = "SELECT EXISTS(SELECT 1 FROM projects p WHERE p.id=?2 AND p.status='active' AND
+    (EXISTS(SELECT 1 FROM conversations c WHERE c.member1=?1 AND c.project=p.id AND c.deleted_at IS NULL)
+    OR EXISTS(SELECT 1 FROM conversations c WHERE c.member2=?1 AND c.project=p.id AND c.deleted_at IS NULL)))";
 const TASK_AWAITS_ASSISTANCE: &str = "SELECT EXISTS(
     SELECT 1 FROM assistance_requests a JOIN runs s ON s.id=a.requester_run
     WHERE a.requester=?1 AND s.member=?1 AND s.task=?2 AND a.notice_cancelled=0
@@ -148,6 +157,23 @@ fn source_revision(
 }
 
 impl ConversationStore for SqliteTeamStore {
+    fn has_active_conversation(
+        &self,
+        member: MemberId,
+        project: Option<ProjectId>,
+    ) -> Stored<bool> {
+        let conn = self.conn()?;
+        if let Some(project) = project {
+            return conn
+                .query_row(ACTIVE_TASK_SCOPE, params![member.0, project.0], |r| {
+                    r.get(0)
+                })
+                .map_err(backend);
+        }
+        conn.query_row(ACTIVE_MEMBER_SCOPE, [member.0], |r| r.get(0))
+            .map_err(backend)
+    }
+
     fn task_awaits_assistance(&self, task: TaskId, member: MemberId) -> Stored<bool> {
         self.conn()?
             .query_row(TASK_AWAITS_ASSISTANCE, params![member.0, task.0], |row| {
@@ -835,6 +861,109 @@ mod tests {
             INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,2,'downtime','queued',0);
             INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,2,1,'running',0);
         ").unwrap();
+    }
+
+    #[test]
+    fn scope_discovery_checks_membership_project_status_and_deletion() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        assert!(!store.has_active_conversation(MemberId(2), None).unwrap());
+        let id = store
+            .add_conversation(ProjectId(1), [MemberId(1), MemberId(2)], 0)
+            .unwrap();
+        for member in [MemberId(1), MemberId(2)] {
+            assert!(store.has_active_conversation(member, None).unwrap());
+            assert!(
+                store
+                    .has_active_conversation(member, Some(ProjectId(1)))
+                    .unwrap()
+            );
+            assert!(
+                !store
+                    .has_active_conversation(member, Some(ProjectId(2)))
+                    .unwrap()
+            );
+        }
+        assert!(!store.has_active_conversation(MemberId(3), None).unwrap());
+        store
+            .conn()
+            .unwrap()
+            .execute_batch("UPDATE projects SET status='paused';")
+            .unwrap();
+        assert!(!store.has_active_conversation(MemberId(2), None).unwrap());
+        assert!(
+            !store
+                .has_active_conversation(MemberId(2), Some(ProjectId(1)))
+                .unwrap()
+        );
+        store
+            .conn()
+            .unwrap()
+            .execute_batch("UPDATE projects SET status='active';")
+            .unwrap();
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE conversations SET deleted_at=1 WHERE id=?1", [id])
+            .unwrap();
+        assert!(!store.has_active_conversation(MemberId(2), None).unwrap());
+        assert!(
+            !store
+                .has_active_conversation(MemberId(2), Some(ProjectId(1)))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn scope_discovery_does_not_scan_inactive_project_or_deleted_conversation_archives() {
+        use rusqlite::StatementStatus;
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        let conn = store.conn().unwrap();
+        let mut steps = Vec::new();
+        for size in [1_000, 100_000] {
+            conn.execute_batch("DELETE FROM conversations; DELETE FROM projects WHERE id>=1000;")
+                .unwrap();
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(1000) UNION ALL SELECT id+1 FROM n WHERE id<999+?1)
+                INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at)
+                SELECT id,1,'Fixture','',1,'paused','owner',0,0 FROM n", [size]).unwrap();
+            conn.execute(
+                "INSERT INTO conversations(project,member1,member2,at_ms)
+                SELECT id,1,2,0 FROM projects WHERE id>=1000",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversations(project,member1,member2,at_ms,deleted_at)
+                SELECT 1,1,2,0,1 FROM projects WHERE id>=1000",
+                [],
+            )
+            .unwrap();
+            let mut sample = Vec::new();
+            for sql in [ACTIVE_MEMBER_SCOPE, ACTIVE_TASK_SCOPE] {
+                let mut query = conn.prepare(sql).unwrap();
+                let mut params = vec![2];
+                if sql == ACTIVE_TASK_SCOPE {
+                    params.push(1);
+                }
+                assert!(
+                    !query
+                        .query_row(rusqlite::params_from_iter(params), |r| r.get::<_, bool>(0))
+                        .unwrap()
+                );
+                sample.push(query.get_status(StatementStatus::VmStep));
+            }
+            steps.push(sample);
+        }
+        assert_eq!(steps[0], steps[1]);
+        assert!(steps[1].iter().all(|steps| *steps < 1000));
+        conn.execute_batch("DROP INDEX conversations_member1_project; DROP INDEX conversations_member2_project; DROP INDEX conversations_active_projects;").unwrap();
+        let mut unindexed = conn.prepare(ACTIVE_MEMBER_SCOPE).unwrap();
+        assert!(!unindexed.query_row([2], |r| r.get::<_, bool>(0)).unwrap());
+        assert!(
+            unindexed.get_status(StatementStatus::VmStep) > 100_000,
+            "negative control must scan the retained archive"
+        );
     }
 
     #[test]
