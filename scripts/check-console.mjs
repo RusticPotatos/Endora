@@ -3077,7 +3077,7 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
     projects:[{id:1,title:"Fixture",status:"active"}]};
   const loaded = {enabled:true,conversations:[{id:1,project:1,participants:[1,2],messages:2}],has_more:false};
   const fail = (message) => { throw new Error(message); };
-  runInContext(`HQ_CHAT.directory = ${JSON.stringify(loaded)}; HQ_CHAT.page = {conversation:{id:1},messages:[{id:1,member:1,text:'<img src=x onerror=bad()>',evidence:['r12'],run:7}],has_more:true,after:1}; HQ_CHAT.id = 1;`,context);
+  runInContext(`HQ_CHAT.manage = true; HQ_CHAT.loadedAt = Date.now(); HQ_CHAT.directory = ${JSON.stringify(loaded)}; HQ_CHAT.page = {conversation:{id:1},messages:[{id:1,member:1,text:'<img src=x onerror=bad()>',evidence:['r12'],run:7}],has_more:true,after:1}; HQ_CHAT.id = 1;`,context);
   const html=runInContext(`hqConversations(${JSON.stringify(fixture)})`,context);
   for (const wanted of ["Conversations","kept until you delete", "&lt;img", "Save this page", "Next page", "hq:conversations:delete:1", "Operation history"]) {
     if (!html.includes(wanted)) fail("conversations: missing escaped history/control: "+wanted);
@@ -3099,7 +3099,7 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (runInContext('HQ_CHAT.page !== null || HQ_CHAT.operations !== null',context)) fail("conversations: deleted data stayed in the view");
   const calls = runInContext('conversationCalls.map(c => c[0]+" "+c[1])',context);
   if (JSON.stringify(calls) !== JSON.stringify(["GET /v1/hq/conversations/1?after=1","GET /v1/hq/conversations/operations?after=0","POST /v1/hq/conversations/1/delete","GET /v1/hq/conversations?after=0"])) fail("conversations: controls asked unexpected routes: "+JSON.stringify(calls));
-  runInContext("api = conversationKeepApi; render = conversationKeepRender; confirm = conversationKeepConfirm; HQ_CHAT.directory = null; HQ_CHAT.page = null; HQ_CHAT.operations = null; HQ_CHAT.id = null;",context);
+  runInContext("api = conversationKeepApi; render = conversationKeepRender; confirm = conversationKeepConfirm; HQ_CHAT.directory = null; HQ_CHAT.page = null; HQ_CHAT.operations = null; HQ_CHAT.id = null; HQ_CHAT.manage = false;",context);
   console.log("conversations: bounded history is escaped, retained and inspectable in Work");
 }
 
@@ -3110,17 +3110,55 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
     projects:[{id:1,title:"First",status:"active"},{id:2,title:"Second",status:"active"}]};
   const fail = (message) => { throw new Error(message); };
   const chosen = (html, field) => (html.match(new RegExp(`id="hq-conversation-${field}"[^>]*>.*?<option value="(\\d+)" selected`, "s")) || [])[1];
-  runInContext(`HQ_CHAT.directory = {enabled:true,conversations:[],has_more:false}; HQ_CHAT.draft = null;`, context);
+  runInContext(`HQ_CHAT.manage = true; HQ_CHAT.loadedAt = Date.now(); HQ_CHAT.directory = {enabled:true,conversations:[],has_more:false}; HQ_CHAT.draft = null;`, context);
   let html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
   if (chosen(html, "a") === chosen(html, "b")) fail("conversations: the form starts with the same member twice");
-  if (/<details open><summary>Authorize/.test(html)) fail("conversations: the untouched form opened itself");
   for (const [field, value] of [["project", 2], ["a", 2], ["b", 3]]) await runInContext(`hqConversationAct("pick-${field}","${value}")`, context);
   html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
   if (chosen(html, "project") !== "2" || chosen(html, "a") !== "2" || chosen(html, "b") !== "3") fail("conversations: a redraw lost the authorize form's picks");
-  if (!/<details open><summary>Authorize/.test(html)) fail("conversations: a redraw closed the authorize form mid-pick");
+  if (!html.includes('data-act="hq:conversations:create:new"')) fail("conversations: a redraw hid the authorize form mid-pick");
   if (!html.includes('data-change="hq:conversations:pick-b"')) fail("conversations: a member pick is not remembered");
-  runInContext(`HQ_CHAT.directory = null; HQ_CHAT.draft = null;`, context);
+  runInContext(`HQ_CHAT.directory = null; HQ_CHAT.draft = null; HQ_CHAT.manage = false;`, context);
   console.log("conversations: the authorize form keeps its picks across a redraw");
+}
+
+{
+  // Watching the agents talk is the card's job: it loads itself, puts the latest activity first,
+  // opens messages and help requests in one tap, and keeps the owner's switches under Manage.
+  const fixture = {members:[{id:1,name:"Member 1",role:"lead"},{id:2,name:"Member 2",role:"developer"},{id:3,name:"Member 3",role:"researcher"}],
+    projects:[{id:1,title:"First",status:"active"}]};
+  const fail = (message) => { throw new Error(message); };
+  const listed = {enabled:true,has_more:false,after:2,conversations:[
+    {id:1,project:1,participants:[1,2],messages:1,latest:1000,at:10},
+    {id:2,project:1,participants:[2,3],messages:4,latest:5000,at:20},
+    {id:3,project:1,participants:[1,3],messages:0,latest:null,at:30}]};
+  runInContext(`var watchKeepApi = api, watchKeepRender = render, watchCalls = [];
+    render = () => {};
+    api = async (method, path) => { watchCalls.push(method + " " + path);
+      if (path.endsWith("/assistance?after=0")) return {conversation:2,requests:[],grants:[],has_more:false,after:0};
+      if (/conversations\\/2\\?/.test(path)) return {messages:[],has_more:false,after:0};
+      return ${JSON.stringify(listed)}; };
+    Object.assign(HQ_CHAT, {directory:null,page:null,assistance:null,operations:null,id:null,error:"",busy:false,manage:false,loadedAt:0,draft:null});`, context);
+  let html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
+  if (html.includes("Load conversations")) fail("conversations: the card waits for a Load tap");
+  await new Promise((done) => setTimeout(done, 5));
+  if (!runInContext('watchCalls.includes("GET /v1/hq/conversations?after=0")', context)) fail("conversations: the card did not load itself");
+  html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
+  const order = [...html.matchAll(/data-act="hq:conversations:open:(\d+)"/g)].map((m) => m[1]).join(",");
+  if (order !== "2,1,3") fail("conversations: the latest activity is not first: " + order);
+  for (const hidden of ["Disable messaging", "Authorize", "Operation history"]) {
+    if (html.includes(hidden)) fail("conversations: the owner's switches are not under Manage: " + hidden);
+  }
+  if (!html.includes('data-act="hq:conversations:manage:toggle"')) fail("conversations: no Manage control");
+  await runInContext('hqConversationAct("manage","toggle")', context);
+  html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
+  for (const shown of ["Disable messaging", "Authorize", "Operation history"]) {
+    if (!html.includes(shown)) fail("conversations: Manage does not show " + shown);
+  }
+  await runInContext('hqConversationAct("open","2")', context);
+  if (!runInContext('watchCalls.includes("GET /v1/hq/conversations/2?after=0") && watchCalls.includes("GET /v1/hq/conversations/2/assistance?after=0")', context)) fail("conversations: opening one does not show its help requests too");
+  runInContext(`api = watchKeepApi; render = watchKeepRender; Object.assign(HQ_CHAT, {directory:null,page:null,assistance:null,operations:null,id:null,manage:false,loadedAt:0});`, context);
+  console.log("conversations: the card loads itself, latest first, with the owner's switches under Manage");
 }
 
 {
