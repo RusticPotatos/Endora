@@ -12,10 +12,7 @@ fn canonical_hq(clock: &Hands) -> super::history_tests::Hq<'_> {
         crate::infrastructure::SqliteTeamStore::in_memory().unwrap(),
         crate::infrastructure::SimulatedRunner::new(8),
         clock,
-        super::engine::Settings {
-            canonical_task_briefings: true,
-            ..Default::default()
-        },
+        super::engine::Settings::default(),
     )
 }
 
@@ -568,6 +565,18 @@ fn canonical_task_briefings_preserve_unknown_constraints_and_fail_closed() {
             "{unknown}: its constraint must remain visible"
         );
         assert!(turn.told.contains("New owner input"));
+        if unknown == "note" {
+            let at = turn
+                .told
+                .lines()
+                .position(|line| line.starts_with("Notes from the owner for this goal:"))
+                .unwrap();
+            assert!(
+                at <= 4,
+                "owner constraints must remain near the top: {}",
+                turn.told
+            );
+        }
         assert!(
             hq.store().run_read_confidential(turn.run).unwrap(),
             "{unknown}: a clean post must not launder other rendered inputs"

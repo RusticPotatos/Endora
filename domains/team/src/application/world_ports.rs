@@ -8,7 +8,7 @@ use super::ports::Stored;
 use crate::domain::situations::Briefed;
 use crate::domain::world::{Handover, Section, Story};
 use crate::domain::world_migration::{Fix, Plan, Row, TimelineLine};
-use crate::domain::{Millis, RunId, TaskId};
+use crate::domain::{MemberId, Millis, RunId, TaskId};
 
 /// The world's part of HQ's store.
 pub trait WorldStore {
@@ -79,6 +79,11 @@ pub trait WorldStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn handovers(&self, task: TaskId) -> Stored<Vec<Handover>>;
+    /// Latest note for this recipient, otherwise the task's latest note. Reads at
+    /// most one row from each indexed branch; retained notes stay unchanged.
+    /// # Errors
+    /// A store failure.
+    fn latest_handover(&self, task: TaskId, member: MemberId) -> Stored<Option<Handover>>;
 
     /// Records what a turn was briefed (its latest attempt's).
     ///

@@ -23,9 +23,13 @@ Cleanup failure aborts startup and remains recoverable. Task-linked v2 admission
 the authorized conversation against trusted task/project context, including
 transactional revalidation and original-task replay identity. Atomic content/source
 readers and smaller source-classified ordinary task briefings are implemented.
-The service candidate selects them; the temporary internal selector remains
-until the context responsibility audit is complete. Specialized task briefings
-retain their conservative input guard.
+The owner's messaging switch selects this input policy for ordinary developer
+and researcher work; there is no separate migration selector. Messaging-disabled
+work retains its world/notebook context. Specialized task briefings retain their
+authority responsibilities and conservative input guard. Both contexts use the
+same canonical peer policy; neither selects legacy consultation execution.
+Classified context retains owner notes near the top, actual management routing
+and the latest indexed handover, inheriting that note's original source tier.
 This is not a completed production cutover.
 
 Protocol tool directories and familiar call names use the same canonical policy.

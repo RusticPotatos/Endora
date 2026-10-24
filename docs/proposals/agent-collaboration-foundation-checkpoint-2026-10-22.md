@@ -31,12 +31,12 @@ turns before opening HTTP or seeding work; failure aborts startup. The old
 application admission, claim, answer/fallback, dispatch and recovery implementation
 and its production storage writer APIs have been removed. Authenticated v1 worker calls receive HTTP 410 with the v2
 route; invalid or ended tokens still receive 401. The service candidate selects
-the source-classified ordinary task context; its temporary selector remains.
+the source-classified ordinary task context when messaging is enabled.
 Protocol aliases now share the canonical policy. Real worker startup preserves
 identity and input classification, and accepted help holds automatic task recovery
 until delivery/verification ends or the request terminates. Implicit model-post
 and final-word mentions no longer dispatch peer work. Next complete the
-ordinary-context responsibility audit and remove the selector.
+final migration/history rehearsal and actual UI/model release evidence.
 Actual migration rehearsal, final UI/model evidence and NAS cutover remain
 outstanding. No deployment has occurred in these slices.
 
@@ -244,6 +244,48 @@ all-feature tests (945 team tests, 76 HQ API tests, 158 team scenarios / 1,973
 steps), console, configured privacy, collection-parity and whitespace checks.
 Only documentation changed afterward for this slice. No model call or deployment
 is included.
+
+### Context responsibilities and removal of the migration selector
+
+`canonical_task_briefings` is removed from Settings, the service composition root
+and test fixtures. The existing owner messaging switch selects source-classified
+context for ordinary developer/researcher assigned work, retries, recovery and
+owner replies. Messaging-disabled work retains its world/notebook responsibilities;
+specialized management, review and decision contexts retain their conservative
+guard. This is input-policy selection, not another conversation framework: the
+retired consultation lifecycle is unavailable in either context.
+
+The responsibility audit reproduced two missing inputs on the classified path:
+actual management routing and the restart handover. Both are now retained.
+Handover reads select the recipient's latest note, otherwise the task's latest,
+using bounded indexed branches shared with the existing memory reader. Its
+original source run determines privacy; missing/unknown lineage fails closed,
+and Internal/Confidential source cases preserve their tier. Notes remain stored
+unchanged. The actual SQL has equal VM work at 1,000 and 100,000 retained notes,
+with a missing-index scan negative control. This does not establish bounds for
+all existing scheduler/history reads.
+
+A separate red test caught owner goal notes appearing too late in the classified
+briefing. They now remain near the top without displacing worker identity, and
+their older unsourced field still closes peer sharing. No constraint is dropped
+or relabelled to make a model trial pass. The restart note precedes task bodies;
+ordinary peer help is distinguished from actual authority questions.
+
+The initial experiment forcing the smaller context onto messaging-disabled work
+broke existing world/notebook responsibilities; that failed result is retained.
+The final policy uses the real owner switch without a separate migration option.
+No old behavioral tests were deleted or weakened for this change. The team suite
+passed 949 tests, and 13 focused canonical tests passed after the owner-note fix.
+Ignored evidence: `.local/context-responsibilities-{red,green}.log`,
+`.local/context-owner-note-red.log`,
+`.local/context-selector-forced-everywhere-failure.log`,
+`.local/context-policy-{team,focused-green}.log`, and `.local/context-policy-gate/`.
+The final repository gate passed: formatting, workspace denied-warning Clippy,
+all-feature tests (949 team tests, 76 HQ API tests, 158 team scenarios / 1,973
+steps), console, configured privacy, collection-parity and whitespace checks.
+Only documentation changed afterward. No live model call or deployment is
+included. Next rehearse versioned startup/history preservation, then freeze the
+actual task-owned model envelope and verify UI/cutover evidence.
 
 Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,

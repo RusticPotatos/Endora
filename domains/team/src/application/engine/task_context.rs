@@ -6,6 +6,12 @@ use crate::domain::{Member, Role, WakeReason};
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn canonical_task_context_applies(&self, member: &Member, run: &Run) -> Done<bool> {
+        // The owner messaging switch selects its classified input policy. Work
+        // with messaging disabled keeps its existing world/notebook responsibilities;
+        // neither context can select the retired peer execution lifecycle.
+        if !self.conversations_enabled()? {
+            return Ok(false);
+        }
         let reason = self.reason_for(run)?;
         Ok(run.task.is_some()
             && matches!(member.role, Role::Developer | Role::Researcher)
@@ -31,19 +37,52 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !task.criteria.is_empty() {
             self.inherit_authored_input(run.id, input.criteria_origin)?;
         }
+        // Owner constraints stay near the top, including on the classified path.
+        // This older field still has no immutable source, so it fails closed.
+        let note = self.store.goal_note(task.goal)?;
+        let owner_note = if note.is_empty() {
+            String::new()
+        } else {
+            self.unclassified_message_input(run.id)?;
+            format!("Notes from the owner for this goal: {note}\n")
+        };
         let mut told = format!(
-            "You are {}, the team's {}. Today is {}.\n{}{}\nYour task: {} (#{}, {}, {})\n{}\n",
+            "You are {}, the team's {}. Today is {}.\n{}{}{}\n",
             member.name,
             member.role.name(),
             self.said_today(),
+            owner_note,
             super::STANDARDS,
-            self.wing_rules(member)?,
+            self.wing_rules(member)?
+        );
+        if let Some(above) = self.asked_of(member, Some(&task))? {
+            told.push_str(&format!(
+                "Your questions (ask_owner) go to {}, the {}, in the task's thread, and they answer there: the owner's desk is the CEO's to use. Use this route for authority decisions; ordinary peer help uses authorized conversations.\n",
+                above.name, if above.role == Role::Ceo { "CEO" } else { above.role.name() }
+            ));
+        }
+        if let Some(handover) = self.store.latest_handover(task.id, member.id)? {
+            self.inherit_input_from(run.id, handover.run)?;
+            let label = if handover.by == member.id {
+                "Your own note, left when a restart ended your turn".to_owned()
+            } else {
+                format!("Handed over by {}", self.member(handover.by)?.name)
+            };
+            told.push_str(&format!(
+                "{label} on #{} ({}). {}\n",
+                task.id,
+                self.said_day(handover.at),
+                crate::domain::record::clean(&handover.note.line())
+            ));
+        }
+        told.push_str(&format!(
+            "Your task: {} (#{}, {}, {})\n{}\n",
             task.title,
             task.id,
             task.status.name(),
             task.priority.name(),
             task.description
-        );
+        ));
         told.push_str(&self.criteria_said(&task));
         if let Some(project) = task.project {
             told.push_str(&format!("Trusted task project: #{project}.\n"));
@@ -101,11 +140,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ));
         // These older fields have no immutable authorship yet. Preserve constraints,
         // and keep peer sharing closed rather than omit them to obtain a clean tier.
-        let note = self.store.goal_note(task.goal)?;
-        if !note.is_empty() {
-            self.unclassified_message_input(run.id)?;
-            told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
-        }
         let not_now = self.strategy_of(task.goal)?.not_now;
         if !not_now.is_empty() {
             self.unclassified_message_input(run.id)?;

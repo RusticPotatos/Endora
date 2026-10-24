@@ -170,9 +170,6 @@ pub struct Settings {
     /// it. Off for everything else, so the caps are on wherever a team is real, and in every
     /// test that is not about the demo.
     pub scripted: bool,
-    /// Select source-classified ordinary task context during the v2 cutover.
-    /// Specialized briefings retain their existing authority responsibilities.
-    pub canonical_task_briefings: bool,
 }
 
 impl Default for Settings {
@@ -185,7 +182,6 @@ impl Default for Settings {
             games: false,
             quiz: false,
             scripted: false,
-            canonical_task_briefings: false,
         }
     }
 }
@@ -2551,9 +2547,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(request) = self.store.assistance_notice_for_run(run.id)? {
             return self.assistance_notice_briefing(member, &request);
         }
-        if self.settings.canonical_task_briefings
-            && self.canonical_task_context_applies(member, run)?
-        {
+        if self.canonical_task_context_applies(member, run)? {
             return self.canonical_task_briefing(member, run);
         }
         let (_, memory) = self.memory(member, run)?;

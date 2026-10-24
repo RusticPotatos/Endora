@@ -444,13 +444,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(task) = run.task else {
             return Ok(String::new());
         };
-        let notes = self.store.handovers(task)?;
-        let note = notes
-            .iter()
-            .rev()
-            .find(|h| h.to == Some(member.id))
-            .or_else(|| notes.last());
-        if let Some(h) = note {
+        if let Some(h) = self.store.latest_handover(task, member.id)? {
             // A note a member left itself when a restart ended its turn (ADR 0134).
             if h.by == member.id {
                 return Ok(format!(

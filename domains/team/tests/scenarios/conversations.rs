@@ -18,10 +18,7 @@ fn classified_task(w: &mut Office) {
         SqliteTeamStore::in_memory().unwrap(),
         SimulatedRunner::new(4),
         w.clock.clone(),
-        Settings {
-            canonical_task_briefings: true,
-            ..Default::default()
-        },
+        Settings::default(),
     );
     authorized(w);
     let previous = w.turn_of("Member1").run;
