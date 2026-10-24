@@ -5,7 +5,7 @@ const HQ_CHAT = { directory: null, page: null, assistance: null, operations: nul
 
 function hqConversations(s) {
   const d = HQ_CHAT.directory;
-  const button = (what, id, label, disabled = false) => `<button class="hq-btn" data-act="hq:conversations:${what}:${id}"${disabled || HQ_CHAT.busy ? " disabled" : ""}>${label}</button>`;
+  const button = (what, id, label, disabled = false) => `<button class="hq-btn tall" data-act="hq:conversations:${what}:${id}"${disabled || HQ_CHAT.busy ? " disabled" : ""}>${label}</button>`;
   const members = (s.members || []).filter((m) => m.role !== "ceo" && !m.paused && !m.furloughed);
   const projects = (s.projects || []).filter((p) => p.status === "active");
   const draft = HQ_CHAT.draft || {};

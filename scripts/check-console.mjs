@@ -3083,6 +3083,8 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
     if (!html.includes(wanted)) fail("conversations: missing escaped history/control: "+wanted);
   }
   if (html.includes('<img src=x')) fail("conversations: message text became markup");
+  // Work is used from a phone: every conversation control is a fingertip's size, as the task history's are.
+  if (/<button class="hq-btn" data-act="hq:conversations:/.test(html)) fail("conversations: a control is smaller than a fingertip on a phone");
   runInContext(`var conversationKeepApi = api, conversationKeepRender = render, conversationKeepConfirm = confirm, conversationCalls = [];
     render = () => {}; confirm = () => true;
     api = async (method,path,body) => { conversationCalls.push([method,path,body]);
