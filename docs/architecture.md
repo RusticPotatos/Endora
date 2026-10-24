@@ -10,7 +10,7 @@ Accepted collaboration target ([ADR 0138](adr/0138-one-conversation-and-assistan
 one conversation/assistance lifecycle replaces legacy task-thread consultation
 execution, while the existing Work UI retains readable historical conversations
 and task/run links. The old application consultation scheduler and record-answer
-fallback and their legacy storage writers have been removed. Protocol/context
+fallback and their legacy storage writers have been removed. Context/wake
 cleanup, migration rehearsal and live cutover remain required before calling
 this complete.
 The migration boundary now includes HQ `/v2/team/mcp` and the node's team-only
@@ -27,6 +27,15 @@ The service candidate selects them; the temporary internal selector remains
 until the context responsibility audit is complete. Specialized task briefings
 retain their conservative input guard.
 This is not a completed production cutover.
+
+Protocol tool directories and familiar call names use the same canonical policy.
+The worker's first-line identity contract is preserved; version guidance follows
+the briefing and restart notices remain last. The automatic claim acknowledgment
+contains only the checked task ID and does not invent a private input or clear
+existing private inputs. Automatic task recovery waits while that task's accepted
+help or result-verification turn remains pending, then resumes without completing
+the task or changing its owner. These checks use indexed canonical metadata,
+independent of retained question/answer bodies.
 
 Retained task questions have a bounded owner-only projection through
 `/v1/tasks/{id}/consultations`, proxied by the node into the existing Work task

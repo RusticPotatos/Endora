@@ -3,7 +3,7 @@
 use super::ports::Stored;
 use crate::domain::assistance::{NewRequest, Request, SourceRef};
 use crate::domain::conversation::{Conversation, Information, Message, Operation};
-use crate::domain::{MemberId, Millis, ProjectId, RunId};
+use crate::domain::{MemberId, Millis, ProjectId, RunId, TaskId};
 
 /// Atomic message/request acceptance result, including a deterministic policy refusal.
 pub type Accepted = Result<i64, &'static str>;
@@ -173,4 +173,9 @@ pub trait ConversationStore {
     /// # Errors
     /// A store failure.
     fn assistance_notice_for_run(&self, run: RunId) -> Stored<Option<Request>>;
+    /// Whether a member awaits accepted help for this task or its live result
+    /// verification. Callers supply the current owner; this holds only recovery.
+    /// # Errors
+    /// A store failure.
+    fn task_awaits_assistance(&self, task: TaskId, member: MemberId) -> Stored<bool>;
 }

@@ -100,6 +100,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS assistance_notice_run
  ON assistance_requests(notice_run) WHERE notice_run IS NOT NULL;
 CREATE INDEX IF NOT EXISTS assistance_unnotified
  ON assistance_requests(status,notified,notice_cancelled,id);
+CREATE INDEX IF NOT EXISTS assistance_waiting_task
+ ON assistance_requests(requester,requester_run,id)
+ WHERE notice_cancelled=0 AND (status IN ('queued','processing') OR (status='answered' AND notified=0));
 CREATE INDEX IF NOT EXISTS assistance_live_member_run
  ON runs(member,status) WHERE status IN ('queued','running','retry_waiting');
 CREATE TABLE IF NOT EXISTS assistance_turn_usage (

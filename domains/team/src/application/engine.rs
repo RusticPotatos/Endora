@@ -3341,6 +3341,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(owner) = task.owner else {
                 continue;
             };
+            // An accepted canonical question is deliberate work in progress.
+            // Recovery must not occupy the requester ahead of its result turn.
+            if self.store.task_awaits_assistance(task.id, owner)? {
+                if task.nudged {
+                    self.store.set_nudged(task.id, false)?;
+                }
+                continue;
+            }
             // A scenario's world wakes its players (ADR 0135): waiting for it is no stall.
             if self.in_a_scenario(task.id)? {
                 continue;
@@ -3449,7 +3457,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.end(run, status, "assistance request already ended")?;
                 continue;
             }
-            if self.in_consult(run.id)? {
+            if self.retired_peer_turn(run.id)? {
                 self.end(run, RunStatus::Stopped, "legacy peer help retired")?;
                 continue;
             }

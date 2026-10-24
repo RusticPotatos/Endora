@@ -7,7 +7,7 @@ use crate::application::conversation_ports::{Accepted, ConversationStore};
 use crate::application::ports::Stored;
 use crate::domain::assistance::{self, NewRequest, Request, SourceRef};
 use crate::domain::conversation::{self, Conversation, Information, Message, Operation};
-use crate::domain::{MemberId, Millis, ProjectId, Ref, RunId};
+use crate::domain::{MemberId, Millis, ProjectId, Ref, RunId, TaskId};
 
 pub(super) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS conversation_ready_runs (
@@ -85,6 +85,15 @@ fn scope(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
 
 const REQUEST_COLUMNS: &str = "id,conversation,project,requester,requester_run,expert,objective,evidence,status,deadline_at,expert_run,answer,answer_evidence,notified,notice_run,notice_cancelled";
 const DUE_REQUESTS: &str = " FROM assistance_requests WHERE status='queued' AND expert_run IS NULL AND deadline_at>?1 ORDER BY deadline_at,id LIMIT 50";
+const TASK_AWAITS_ASSISTANCE: &str = "SELECT EXISTS(
+    SELECT 1 FROM assistance_requests a JOIN runs s ON s.id=a.requester_run
+    WHERE a.requester=?1 AND s.member=?1 AND s.task=?2 AND a.notice_cancelled=0
+    AND (a.status IN ('queued','processing') OR (a.status='answered' AND a.notified=0)))
+    OR EXISTS(SELECT 1 FROM runs n JOIN assistance_requests a ON a.notice_run=n.id
+    JOIN runs s ON s.id=a.requester_run
+    WHERE n.member=?1 AND n.status IN ('queued','running','retry_waiting')
+    AND a.requester=?1 AND s.member=?1 AND s.task=?2
+    AND a.status='answered' AND a.notice_cancelled=0)";
 const PENDING_NOTICES: &str = " FROM assistance_requests WHERE status='answered' AND notified=0 AND notice_cancelled=0 ORDER BY id LIMIT 50";
 const REQUEST_PAGE: &str =
     " FROM assistance_requests WHERE conversation=?1 AND id>?2 ORDER BY id LIMIT 51";
@@ -139,6 +148,14 @@ fn source_revision(
 }
 
 impl ConversationStore for SqliteTeamStore {
+    fn task_awaits_assistance(&self, task: TaskId, member: MemberId) -> Stored<bool> {
+        self.conn()?
+            .query_row(TASK_AWAITS_ASSISTANCE, params![member.0, task.0], |row| {
+                row.get(0)
+            })
+            .map_err(backend)
+    }
+
     fn assistance_charging_project(&self, run: RunId) -> Stored<Option<ProjectId>> {
         self.conn()?
             .query_row(
@@ -818,6 +835,132 @@ mod tests {
             INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,2,'downtime','queued',0);
             INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,2,1,'running',0);
         ").unwrap();
+    }
+
+    #[test]
+    fn task_help_wait_tracks_only_the_original_task_and_unfinished_delivery() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO tasks(id,goal,title,description,status,priority,depth,project,owner) VALUES(1,1,'Fixture','','doing','normal',0,1,2),(2,1,'Other fixture','','doing','normal',0,1,2);
+            UPDATE runs SET task=1 WHERE id=1;
+            INSERT INTO conversations(id,project,member1,member2,at_ms) VALUES(1,1,1,2,0);
+            INSERT INTO assistance_requests(id,conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at)
+            VALUES(1,1,1,2,1,1,'fixture-key','Fixture','',0,0,1000);").unwrap();
+        for status in ["queued", "processing", "answered"] {
+            store
+                .conn()
+                .unwrap()
+                .execute("UPDATE assistance_requests SET status=?1", [status])
+                .unwrap();
+            assert!(
+                store
+                    .task_awaits_assistance(TaskId(1), MemberId(2))
+                    .unwrap(),
+                "{status}"
+            );
+            assert!(
+                !store
+                    .task_awaits_assistance(TaskId(2), MemberId(2))
+                    .unwrap()
+            );
+            assert!(
+                !store
+                    .task_awaits_assistance(TaskId(1), MemberId(1))
+                    .unwrap()
+            );
+        }
+        for status in ["cancelled", "expired", "failed", "declined"] {
+            store
+                .conn()
+                .unwrap()
+                .execute("UPDATE assistance_requests SET status=?1", [status])
+                .unwrap();
+            assert!(
+                !store
+                    .task_awaits_assistance(TaskId(1), MemberId(2))
+                    .unwrap(),
+                "{status}"
+            );
+        }
+        store.conn().unwrap().execute_batch("INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(3,2,'question_answered','queued',0);
+            INSERT INTO runs(id,member,wake,status,queued_at) VALUES(3,2,3,'queued',0);
+            UPDATE assistance_requests SET status='answered',notified=1,notice_run=3;").unwrap();
+        for status in ["queued", "running", "retry_waiting"] {
+            store
+                .conn()
+                .unwrap()
+                .execute("UPDATE runs SET status=?1 WHERE id=3", [status])
+                .unwrap();
+            assert!(
+                store
+                    .task_awaits_assistance(TaskId(1), MemberId(2))
+                    .unwrap(),
+                "{status}"
+            );
+        }
+        store
+            .conn()
+            .unwrap()
+            .execute_batch("UPDATE runs SET status='succeeded' WHERE id=3;")
+            .unwrap();
+        assert!(
+            !store
+                .task_awaits_assistance(TaskId(1), MemberId(2))
+                .unwrap()
+        );
+        store.conn().unwrap().execute_batch("UPDATE runs SET status='running' WHERE id=3; UPDATE assistance_requests SET notice_cancelled=1;").unwrap();
+        assert!(
+            !store
+                .task_awaits_assistance(TaskId(1), MemberId(2))
+                .unwrap()
+        );
+        store.conn().unwrap().execute_batch("UPDATE assistance_requests SET notice_cancelled=0,notified=0,notice_run=NULL,status='queued'; UPDATE runs SET task=NULL WHERE id=1;").unwrap();
+        assert!(
+            !store
+                .task_awaits_assistance(TaskId(1), MemberId(2))
+                .unwrap(),
+            "scope alone cannot invent a task association"
+        );
+    }
+
+    #[test]
+    fn task_help_wait_does_not_scan_completed_request_or_run_archives() {
+        use rusqlite::StatementStatus;
+        let store = SqliteTeamStore::in_memory().unwrap();
+        fixture(&store);
+        let conn = store.conn().unwrap();
+        conn.execute_batch("INSERT INTO tasks(id,goal,title,description,status,priority,depth,project,owner) VALUES(1,1,'Fixture','','doing','normal',0,1,2),(2,1,'Other fixture','','doing','normal',0,1,2);
+            UPDATE runs SET task=1 WHERE id=1;
+            INSERT INTO conversations(id,project,member1,member2,at_ms) VALUES(1,1,1,2,0);
+            INSERT INTO assistance_requests(id,conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at)
+            VALUES(1,1,1,2,1,1,'fixture-key','Fixture','',0,0,1000);").unwrap();
+        let mut steps = Vec::new();
+        for size in [1_000, 100_000] {
+            conn.execute("DELETE FROM assistance_requests WHERE id>=1000", [])
+                .unwrap();
+            conn.execute("DELETE FROM runs WHERE id>=1000", []).unwrap();
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(1000) UNION ALL SELECT id+1 FROM n WHERE id<999+?1)
+                INSERT INTO runs(id,member,wake,status,queued_at) SELECT id,2,1,'succeeded',0 FROM n", [size]).unwrap();
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(1000) UNION ALL SELECT id+1 FROM n WHERE id<999+?1)
+                INSERT INTO assistance_requests(id,conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status,notified,notice_run)
+                SELECT id,1,1,2,1,1,'archive_'||id,'Fixture','',0,0,1000,'answered',1,id FROM n", [size]).unwrap();
+            let mut query = conn.prepare(TASK_AWAITS_ASSISTANCE).unwrap();
+            assert!(!query.query_row([2, 2], |r| r.get::<_, bool>(0)).unwrap());
+            steps.push(query.get_status(StatementStatus::VmStep));
+        }
+        assert_eq!(steps[0], steps[1]);
+        assert!(steps[1] < 1_000);
+        conn.execute_batch("DROP INDEX assistance_waiting_task; DROP INDEX assistance_unnotified; DROP INDEX assistance_pending; DROP INDEX assistance_live_member_run;").unwrap();
+        let mut unindexed = conn.prepare(TASK_AWAITS_ASSISTANCE).unwrap();
+        assert!(
+            !unindexed
+                .query_row([2, 2], |r| r.get::<_, bool>(0))
+                .unwrap()
+        );
+        assert!(
+            unindexed.get_status(StatementStatus::VmStep) > 100_000,
+            "negative control must scan the archive"
+        );
     }
 
     #[test]

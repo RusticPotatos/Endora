@@ -57,7 +57,6 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     _member: &Member,
     tool: &str,
     args: &Value,
-    canonical: bool,
 ) -> Option<Result<String, String>> {
     let said = |e: super::engine::EngineError| e.to_string();
     Some(match tool {
@@ -70,77 +69,46 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 args["project"].as_i64(),
             )
             .map_err(said),
-        "consult"
-            if ["conversation", "key", "evidence"]
-                .iter()
-                .any(|key| args.get(*key).is_some()) =>
-        {
-            (|| {
-                if (!canonical && run.task.is_some())
-                    || args.get("task").is_some_and(|value| !value.is_null())
-                {
-                    return Err("task-owned consultation uses its task thread; conversation options are taskless only".to_owned());
-                }
-                if args.to_string().len() > crate::domain::conversation::ARGUMENT_BYTES {
-                    return Err("consult arguments exceed 8 KiB".to_owned());
-                }
-                let object = args
-                    .as_object()
-                    .ok_or("consult arguments must be an object")?;
-                if object.keys().any(|key| {
-                    ![
-                        "member",
-                        "question",
-                        "task",
-                        "conversation",
-                        "key",
-                        "evidence",
-                    ]
-                    .contains(&key.as_str())
-                }) {
-                    return Err(
-                        "identity and authority come from the live turn, not extra fields"
-                            .to_owned(),
-                    );
-                }
-                let conversation = args
-                    .get("conversation")
-                    .map(|value| {
-                        value
-                            .as_i64()
-                            .filter(|id| *id > 0)
-                            .ok_or("positive conversation ID required".to_owned())
-                    })
-                    .transpose()?;
-                let key = args
-                    .get("key")
-                    .map(|value| value.as_str().ok_or("retry key must be text".to_owned()))
-                    .transpose()?;
-                let evidence = super::protocol_conversations::assistance_sources(args)?;
-                engine
-                    .consult_peer_in(
-                        run.id,
-                        text(args, "member"),
-                        text(args, "question"),
-                        conversation,
-                        key,
-                        &evidence,
-                    )
-                    .map_err(said)
-            })()
-        }
-        "consult" => engine
-            .consult_in(
-                run.id,
-                text(args, "member"),
-                text(args, "question"),
-                args["task"].as_i64().map(TaskId),
-            )
-            .map_err(said),
-        "answer_consult" => engine
-            .answer_consult_in(run.id, text(args, "answer"))
-            .map(|()| "Your answer is posted and your colleague is woken. Stop here.".to_owned())
-            .map_err(said),
+        "consult" => (|| {
+            if args.to_string().len() > crate::domain::conversation::ARGUMENT_BYTES {
+                return Err("consult arguments exceed 8 KiB".to_owned());
+            }
+            let object = args
+                .as_object()
+                .ok_or("consult arguments must be an object")?;
+            if object.keys().any(|key| {
+                !["member", "question", "conversation", "key", "evidence"].contains(&key.as_str())
+            }) {
+                return Err(
+                    "identity and authority come from the live turn, not extra fields".to_owned(),
+                );
+            }
+            let conversation = args
+                .get("conversation")
+                .map(|value| {
+                    value
+                        .as_i64()
+                        .filter(|id| *id > 0)
+                        .ok_or("positive conversation ID required".to_owned())
+                })
+                .transpose()?;
+            let key = args
+                .get("key")
+                .map(|value| value.as_str().ok_or("retry key must be text".to_owned()))
+                .transpose()?;
+            let evidence = super::protocol_conversations::assistance_sources(args)?;
+            engine
+                .consult_peer_in(
+                    run.id,
+                    text(args, "member"),
+                    text(args, "question"),
+                    conversation,
+                    key,
+                    &evidence,
+                )
+                .map_err(said)
+        })(),
+        "answer_consult" => Err("answer_consult is retired; use assigned answer_assistance".into()),
         _ => return None,
     })
 }

@@ -559,9 +559,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let turn = self.running(run)?;
         let expert = self.named(expert.trim())?;
         if !self.conversations_enabled()? {
-            return Err(EngineError::Refused(Refusal::History(
-                crate::domain::history::HistoryRefusal::NeedsTask,
-            )));
+            return Err(refused("peer messaging and assistance are disabled"));
         }
         let scope = match conversation {
             Some(id) => {

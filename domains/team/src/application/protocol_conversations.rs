@@ -16,7 +16,7 @@ pub(super) fn tools<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if !engine.conversations_enabled().unwrap_or(false)
         || !engine.conversation_turn_ready(run.id).unwrap_or(false)
         || engine.in_assistance(run.id).unwrap_or(true)
-        || engine.in_consult(run.id).unwrap_or(true)
+        || engine.retired_peer_turn(run.id).unwrap_or(true)
         || engine.in_quiz(run.id).unwrap_or(true)
     {
         return Vec::new();
@@ -86,7 +86,6 @@ fn assistance_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     run: &Run,
     tool: &str,
     args: &Value,
-    canonical: bool,
 ) -> Option<Result<String, String>> {
     if !matches!(
         tool,
@@ -95,9 +94,6 @@ fn assistance_call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         return None;
     }
     let result = (|| {
-        if tool == "request_assistance" && run.task.is_some() && !canonical {
-            return Err("team protocol v1 task-owned investigations use their task path".into());
-        }
         if args.to_string().len() > ARGUMENT_BYTES {
             return Err("assistance arguments exceed 8 KiB".into());
         }
@@ -183,9 +179,8 @@ pub(super) fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     run: &Run,
     tool: &str,
     args: &Value,
-    canonical: bool,
 ) -> Option<Result<String, String>> {
-    if let Some(answer) = assistance_call(engine, run, tool, args, canonical) {
+    if let Some(answer) = assistance_call(engine, run, tool, args) {
         return Some(answer);
     }
     if !matches!(tool, "send_message" | "read_messages") {
@@ -196,7 +191,9 @@ pub(super) fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         if args.to_string().len() > ARGUMENT_BYTES {
             return Err("message arguments exceed 8 KiB".into());
         }
-        if engine.in_consult(run.id).map_err(|e| e.to_string())?
+        if engine
+            .retired_peer_turn(run.id)
+            .map_err(|e| e.to_string())?
             || engine.in_quiz(run.id).map_err(|e| e.to_string())?
         {
             return Err("this special turn cannot use information messaging".into());

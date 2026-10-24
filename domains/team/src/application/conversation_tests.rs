@@ -57,6 +57,15 @@ fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() 
     let requester_turn = turn_of(&hq, requester);
     let (run, member) = hq.turn_of(&requester_turn.token).unwrap().unwrap();
     assert!(!hq.store().run_read_confidential(run.id).unwrap());
+    // Both actual worker adapters fetch my_turn, then claim before starting a model.
+    super::protocol::call(&hq, &run, &member, "my_turn", &json!({})).unwrap();
+    let claimed =
+        super::protocol::call(&hq, &run, &member, "claim", &json!({"task":task.0})).unwrap();
+    assert_eq!(claimed, format!("Task {} is yours.", task.0));
+    assert!(
+        !hq.store().run_read_confidential(run.id).unwrap(),
+        "claim acknowledgment contains no private input"
+    );
     let args = json!({"member":"Member 3", "question":"What does the fixture show?", "conversation":conversation, "key":"task_help_01"});
     let accepted = super::protocol::call_v2(&hq, &run, &member, "consult", &args).unwrap();
     let accepted: Value = serde_json::from_str(&accepted).unwrap();
@@ -67,9 +76,13 @@ fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() 
     .unwrap();
     assert_eq!(repeated["request"], id);
     let direct = json!({"conversation":conversation, "key":"task_help_01", "objective":"What does the fixture show?", "evidence":[]});
-    assert!(
-        super::protocol::call(&hq, &run, &member, "request_assistance", &direct).is_err(),
-        "v1 must retain its explicit task-owned refusal during migration"
+    let alias: Value = serde_json::from_str(
+        &super::protocol::call(&hq, &run, &member, "request_assistance", &direct).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        alias["request"], id,
+        "the familiar entry point is a canonical alias"
     );
     let direct: Value = serde_json::from_str(
         &super::protocol::call_v2(&hq, &run, &member, "request_assistance", &direct).unwrap(),
@@ -128,6 +141,148 @@ fn canonical_task_help_uses_one_assistance_lifecycle_and_keeps_task_authority() 
 }
 
 #[test]
+fn claimed_task_waits_for_its_canonical_result_before_recovery() {
+    use super::conversation_ports::ConversationStore;
+    use super::ports::NewTask;
+    for outcome in ["answered", "cancelled", "expired"] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = canonical_hq(&clock);
+        let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        let expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+        let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+        hq.set_conversations_enabled(true).unwrap();
+        let conversation = hq
+            .create_conversation(project, [requester, expert])
+            .unwrap();
+        let task = hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: Some(project),
+                    parent: None,
+                    title: "Inspect fixture".into(),
+                    description: String::new(),
+                    assignee: Some(requester),
+                    priority: crate::domain::Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+        // Restored/ongoing work may already have spent its recovery nudge.
+        hq.claim(requester, task).unwrap();
+        hq.store().set_nudged(task, true).unwrap();
+        clock.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        hq.tick().unwrap();
+        let caller = turn_of(&hq, requester);
+        hq.claim_in(caller.run, task).unwrap();
+        let request = hq
+            .request_assistance_in(
+                caller.run,
+                conversation,
+                "waiting_fixture",
+                "What does the fixture show?",
+                &[],
+            )
+            .unwrap();
+        hq.runner().finish(caller.run, true);
+        hq.tick().unwrap();
+        let live_work: Vec<_> = hq
+            .store()
+            .runs()
+            .unwrap()
+            .into_iter()
+            .filter(|run| run.member == requester && run.task == Some(task) && run.status.live())
+            .map(|run| {
+                (
+                    run.id.0,
+                    run.status.name(),
+                    hq.store().wake(run.wake).unwrap().unwrap().reason.name(),
+                )
+            })
+            .collect();
+        assert!(
+            live_work.is_empty(),
+            "ordinary recovery must wait for accepted help: {live_work:?}; request={request}"
+        );
+
+        match outcome {
+            "answered" => {
+                let expert_turn = turn_of(&hq, expert);
+                hq.answer_assistance_in(
+                    expert_turn.run,
+                    "The fixture has its expected marker.",
+                    &[],
+                )
+                .unwrap();
+                hq.runner().finish(expert_turn.run, true);
+                hq.tick().unwrap();
+                let result = turn_of(&hq, requester);
+                assert_eq!(
+                    hq.store()
+                        .assistance_notice_for_run(result.run)
+                        .unwrap()
+                        .unwrap()
+                        .id,
+                    request
+                );
+                assert!(
+                    hq.store().task_awaits_assistance(task, requester).unwrap(),
+                    "verification is still in progress"
+                );
+                assert!(
+                    !hq.store()
+                        .runs()
+                        .unwrap()
+                        .iter()
+                        .any(|run| run.member == requester
+                            && run.task == Some(task)
+                            && run.status.live())
+                );
+                hq.runner().finish(result.run, true);
+                hq.tick().unwrap();
+            }
+            "cancelled" => {
+                hq.cancel_assistance_request(conversation, request).unwrap();
+                hq.tick().unwrap();
+            }
+            "expired" => {
+                let due = hq
+                    .store()
+                    .assistance_request(request)
+                    .unwrap()
+                    .unwrap()
+                    .deadline_at;
+                clock.0.store(due + 1, std::sync::atomic::Ordering::SeqCst);
+                hq.tick().unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            !hq.store().task_awaits_assistance(task, requester).unwrap(),
+            "{outcome}"
+        );
+        let kept = hq.store().task(task).unwrap().unwrap();
+        assert_eq!(kept.owner, Some(requester));
+        assert_eq!(kept.status, crate::domain::TaskStatus::Doing);
+        assert_eq!(
+            hq.store()
+                .runs()
+                .unwrap()
+                .iter()
+                .filter(|run| run.member == requester
+                    && run.task == Some(task)
+                    && run.status.live())
+                .count(),
+            1,
+            "ordinary work resumes after {outcome}"
+        );
+    }
+}
+
+#[test]
 fn canonical_task_help_refuses_missing_mismatched_or_unclassified_scope() {
     use super::history_ports::HistoryStore;
     use super::ports::NewTask;
@@ -180,6 +335,13 @@ fn canonical_task_help_refuses_missing_mismatched_or_unclassified_scope() {
         if invalid == "confidential" {
             hq.store().mark_confidential_input(run.id).unwrap();
         }
+        let private_before_claim = hq.store().run_read_confidential(run.id).unwrap();
+        super::protocol::call(&hq, &run, &member, "claim", &json!({"task":task.0})).unwrap();
+        assert_eq!(
+            hq.store().run_read_confidential(run.id).unwrap(),
+            private_before_claim,
+            "claim cannot clear or invent private inputs: {invalid}"
+        );
         let args = json!({"member":"Member 3","conversation":conversation,"key":"task_refusal_01","question":"What is the observed outcome?"});
         assert!(
             super::protocol::call_v2(&hq, &run, &member, "consult", &args).is_err(),
@@ -592,6 +754,54 @@ fn authoring_a_member_post_keeps_the_authenticated_source_run() {
             .input_origin(InputRef::TaskCriteria(created))
             .unwrap(),
         InputOrigin::Run(turn.run)
+    );
+}
+
+#[test]
+fn canonical_protocol_aliases_hide_disabled_help_without_suggesting_a_task_detour() {
+    use serde_json::json;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = canonical_hq(&clock);
+    let requester = hq.hire("Member 1", Role::Developer, 40, 2, 0).unwrap();
+    hq.hire("Member 2", Role::Researcher, 30, 2, 0).unwrap();
+    hq.wake(requester, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    let briefing = super::protocol::call(&hq, &run, &member, "my_turn", &json!({})).unwrap();
+    assert!(
+        briefing.starts_with("You are Member 1,"),
+        "worker identity is parsed from the first line: {briefing}"
+    );
+    let offered = super::protocol::tools_in(&hq, &run, &member);
+    for tool in [
+        "consult",
+        "send_message",
+        "request_assistance",
+        "answer_consult",
+    ] {
+        assert!(
+            !offered
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["name"] == tool)
+        );
+    }
+    let error = super::protocol::call(
+        &hq,
+        &run,
+        &member,
+        "consult",
+        &json!({
+            "member":"Member 2", "question":"What does the fixture show?"
+        }),
+    )
+    .unwrap_err();
+    assert!(error.contains("disabled"), "{error}");
+    assert!(
+        !error.contains("name one with"),
+        "must not recommend a retired task detour: {error}"
     );
 }
 

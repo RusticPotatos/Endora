@@ -27,7 +27,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Canonical expert and requester-result associations take precedence.
     /// # Errors
     /// A store failure or unknown run.
-    pub fn in_consult(&self, run: RunId) -> Done<bool> {
+    pub(crate) fn retired_peer_turn(&self, run: RunId) -> Done<bool> {
         let Some(turn) = self.store.run(run)? else {
             return Ok(true);
         };
@@ -35,23 +35,5 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             && self.reason_for(&turn)? == WakeReason::Consulted.name()
             && self.store.assistance_for_run(run)?.is_none()
             && self.store.assistance_notice_for_run(run)?.is_none())
-    }
-
-    /// Retired answer API: it can never post an answer or schedule work.
-    /// # Errors
-    /// Always refuses; assigned canonical experts use `answer_assistance`.
-    pub fn answer_consult_in(&self, _run: RunId, _answer: &str) -> Done<()> {
-        Err(EngineError::Refused(Refusal::Conversation(
-            "answer_consult is retired; use assigned answer_assistance",
-        )))
-    }
-
-    /// Refuse any surviving obsolete expert token, rather than offering a fallback.
-    /// # Errors
-    /// A store failure or unknown run.
-    pub fn consulted_turn_refuses(&self, run: RunId, _tool: &str) -> Done<Option<String>> {
-        Ok(self
-            .in_consult(run)?
-            .then(|| "legacy expert turn retired; no tools are authorized".into()))
     }
 }

@@ -32,8 +32,10 @@ application admission, claim, answer/fallback, dispatch and recovery implementat
 and its production storage writer APIs have been removed. Authenticated v1 worker calls receive HTTP 410 with the v2
 route; invalid or ended tokens still receive 401. The service candidate selects
 the source-classified ordinary task context; its temporary selector remains.
-Next remove old protocol policy branches,
-complete the ordinary-context/implicit-wake audit and remove the selector.
+Protocol aliases now share the canonical policy. Real worker startup preserves
+identity and input classification, and accepted help holds automatic task recovery
+until delivery/verification ends or the request terminates. Next complete the
+ordinary-context/implicit-wake audit and remove the selector.
 Actual migration rehearsal, final UI/model evidence and NAS cutover remain
 outstanding. No deployment has occurred in these slices.
 
@@ -143,6 +145,52 @@ changed after the executable-code gate; fresh privacy/whitespace checks followed
 No model call, device change or deployment is included. Protocol aliases, the
 ordinary-context selector and task-post wake responsibilities still require
 cleanup/audit before the final migration/UI/model and NAS release gates.
+
+### Canonical protocol and actual worker startup
+
+The familiar `call` and `tools_in` entry points now use v2's policy. The temporary
+canonical/legacy booleans and alternate task-owned consultation branches are gone.
+Disabled help reports that it is disabled, rather than suggesting the retired
+task-thread detour. Retired expert detection is an internal guard, not a lifecycle.
+
+Reviewing both actual worker adapters exposed two startup defects that the earlier
+direct-admission tests missed: `member_of` reads identity from the first line,
+which the v2 banner had displaced; and automatic `claim` was being treated as an
+unclassified input. Version guidance now follows the briefing, preserving the
+first line and near-top owner constraints, with drain notices still last. The
+exact claim response contains only its checked task ID. Its acknowledgment leaves
+input classification unchanged; Unknown and Confidential test cases stay closed.
+
+Replaying that real startup also reproduced an integration failure after the
+task became Doing: ordinary recovery entered retry-wait while its expert was
+answering, blocking requester notification. A minimized public-use-case test
+reproduced this deterministically in 0.04 seconds. Recovery now reads canonical
+request/delivery state and waits for pending help or live result verification.
+A deliberate wait refreshes recovery bookkeeping; completed result turns,
+cancellation and expiry release it even for previously claimed/nudged work.
+Tests preserve ownership and Doing status, with one ordinary recovery afterward.
+No peer answer completes a task or replaces independent acceptance.
+
+The metadata query uses an active-request index and live-run lookup. Its actual
+SQL has identical VM-step counts with 1,000 and 100,000 completed request/run
+archives; removing its supporting indexes makes the negative control scan the
+archive. Different tasks/members and taskless source runs do not inherit a hold.
+The original end-to-end task-help scenario now passes through automatic claim,
+expert answer and requester result delivery. This is offline evidence, not yet
+proof of model initiation or final-finding quality.
+
+The full repository gate passed: formatting, workspace denied-warning Clippy,
+workspace all-feature tests (940 team tests, 76 HQ tests, 158 team scenarios /
+1,972 steps), console, privacy, collection-parity and whitespace checks.
+Evidence: ignored `.local/canonical-aliases-gate/`,
+`.local/canonical-aliases-{red,green}.log`,
+`.local/canonical-worker-startup-{red,green,first-fix-failure}.log`, and
+`.local/task-help-{wait,resume}-{red,green}.log`. An earlier gate's two expectation
+failures are retained in `first-tests-failure.log`; the owner-note assertion was
+restored after fixing first-line compatibility. The diagnosis skill's temporary
+instrumentation check found none to remove. Only documentation changed after the
+final executable-code gate, followed by fresh privacy/whitespace checks. No model
+call, device change or deployment is included.
 
 Earlier integration checkpoint: ordinary consultation is integrated with authorized
 taskless assistance; task-thread consultation now has durable delivery,

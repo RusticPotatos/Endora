@@ -613,7 +613,7 @@ pub fn tools(role: Role) -> Value {
 /// number of tools a model is offered is a measured failure mode for the house's model (ADR
 /// 0085). A store that cannot say what the turn is offers it the role's, as every other turn.
 #[must_use]
-pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
+fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     engine: &Engine<S, W, C>,
     run: &Run,
     member: &Member,
@@ -653,7 +653,7 @@ pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if engine.in_quiz(run.id).unwrap_or(false) {
         list.push(super::protocol_world::quiz_tool());
     }
-    if engine.in_consult(run.id).unwrap_or(false) {
+    if engine.retired_peer_turn(run.id).unwrap_or(false) {
         return json!([]);
     }
     list.extend(super::protocol_conversations::tools(engine, run));
@@ -871,6 +871,16 @@ fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("`{key}` is needed"))
 }
 
+/// Familiar tool-directory entry point, using the canonical scope policy.
+#[must_use]
+pub fn tools_in<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+) -> Value {
+    tools_in_v2(engine, run, member)
+}
+
 /// Team protocol v2 advertises only the canonical conversation contract.
 /// Retired legacy expert turns receive no tools.
 #[must_use]
@@ -879,10 +889,10 @@ pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     run: &Run,
     member: &Member,
 ) -> Value {
-    if !matches!(engine.in_consult(run.id), Ok(false)) {
+    if !matches!(engine.retired_peer_turn(run.id), Ok(false)) {
         return json!([]);
     }
-    let mut tools = tools_in(engine, run, member);
+    let mut tools = tools_for_turn(engine, run, member);
     if let Some(list) = tools.as_array_mut() {
         let can_send = member.role != Role::Ceo
             && engine.conversation_turn_ready(run.id).unwrap_or(false)
@@ -945,18 +955,14 @@ pub fn call_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     tool: &str,
     args: &Value,
 ) -> Result<String, String> {
-    if engine.in_consult(run.id).map_err(|e| said(&e))? {
+    if engine.retired_peer_turn(run.id).map_err(|e| said(&e))? {
         return Err("this legacy expert turn is retired; no tools are authorized".into());
     }
     if tool == "answer_consult" {
         return Err("answer_consult is retired in team protocol v2; only an assigned assistance expert may use answer_assistance".into());
     }
     if tool != "consult" {
-        let mut result = call_for(engine, run, member, tool, args, true)?;
-        if tool == "my_turn" {
-            result.insert_str(0, "Endora team protocol v2: peer help uses authorized conversations and answer_assistance. Any task-thread consultation or record-fallback guidance in the saved turn below belongs to v1 and does not apply to this endpoint. Task-linked help requires classified input and the task's trusted project to match its authorized conversation. Task reporting, acceptance and owner-decision authority are unchanged.\n\n");
-        }
-        return Ok(result);
+        return call_for(engine, run, member, tool, args);
     }
     let mut canonical = args
         .as_object()
@@ -967,10 +973,9 @@ pub fn call_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     }) {
         return Err("team protocol v2 consult accepts conversation scope, not task routing or caller-supplied authority".into());
     }
-    // The current-major adapter selects assistance when any conversation option
-    // is present. An explicit empty evidence list is canonical, not a grant.
+    // Normalize omitted evidence without creating a source grant.
     canonical.entry("evidence").or_insert_with(|| json!([]));
-    call_for(engine, run, member, tool, &Value::Object(canonical), true)
+    call_for(engine, run, member, tool, &Value::Object(canonical))
 }
 
 /// Runs one tool for a turn. `Ok` is what the worker reads back; `Err` is a refusal it reads
@@ -989,7 +994,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     tool: &str,
     args: &Value,
 ) -> Result<String, String> {
-    call_for(engine, run, member, tool, args, false)
+    call_v2(engine, run, member, tool, args)
 }
 
 fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
@@ -998,22 +1003,21 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
     member: &Member,
     tool: &str,
     args: &Value,
-    canonical: bool,
 ) -> Result<String, String> {
-    let answer = call_tool(engine, run, member, tool, args, canonical);
+    let answer = call_tool(engine, run, member, tool, args);
     // Legacy tool replies do not all carry source-run lineage. Until they do, an admitted
     // model-visible reply makes this turn ineligible to label a new message Internal.
     // A successful canonical consult returns only the typed assistance acceptance.
+    // claim returns only a typed task-ID acknowledgment, not newly read content.
     // Other unclassified tool results still follow the conservative lineage rule below.
-    let peer_consult = tool == "consult"
-        && (canonical || run.task.is_none())
-        && args.get("task").is_none_or(Value::is_null);
+    let peer_consult = tool == "consult";
     if answer.is_ok()
         && !peer_consult
         && engine.conversations_enabled().unwrap_or(false)
         && !matches!(
             tool,
             "my_turn"
+                | "claim"
                 | "read_notebook"
                 | "read_doc"
                 | "read_document"
@@ -1031,6 +1035,16 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
             .unclassified_message_input(run.id)
             .map_err(|e| e.to_string())?;
     }
+    // Preserve the worker's first-line identity contract. Version guidance follows
+    // the briefing, while the drain notice below remains the final instruction.
+    let answer = if tool == "my_turn" {
+        answer.map(|mut text| {
+            text.push_str("\nEndora team protocol v2: peer help uses authorized conversations and answer_assistance. Any task-thread consultation or record-fallback guidance in the saved turn belongs to v1 and does not apply to this endpoint. Task-linked help requires classified input and the task's trusted project to match its authorized conversation. Task reporting, acceptance and owner-decision authority are unchanged.\n");
+            text
+        })
+    } else {
+        answer
+    };
     // A turn the call ended has nothing more to read: it was told when it ended it.
     let over = engine
         .store()
@@ -1054,7 +1068,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     member: &Member,
     tool: &str,
     args: &Value,
-    canonical: bool,
 ) -> Result<String, String> {
     // A call that set out while the turn ran, and arrived after it ended, does nothing.
     let still = engine.store().run(run.id).map_err(|e| e.to_string())?;
@@ -1087,13 +1100,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     {
         return refused(refusal);
     }
-    // A consulted turn reads and answers, and has a few rounds to do it in (ADR 0129).
-    if let Some(refusal) = engine
-        .consulted_turn_refuses(run.id, tool)
-        .map_err(|e| said(&e))?
-    {
-        return refused(refusal);
-    }
     // The check after a deploy reads the lab and closes its check, and nothing more (ADR 0115,
     // amended): refused here, whatever the model was told.
     if let Some(refusal) = engine
@@ -1115,11 +1121,10 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if let Some(answer) = super::protocol_world::call(engine, run, member, tool, args) {
         return answer;
     }
-    if let Some(answer) = super::protocol_history::call(engine, run, member, tool, args, canonical)
-    {
+    if let Some(answer) = super::protocol_history::call(engine, run, member, tool, args) {
         return answer;
     }
-    if let Some(answer) = super::protocol_conversations::call(engine, run, tool, args, canonical) {
+    if let Some(answer) = super::protocol_conversations::call(engine, run, tool, args) {
         return answer;
     }
     match tool {
