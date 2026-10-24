@@ -43,8 +43,8 @@ the checks described below. A task-owned model diagnostic now passes for the
 frozen synthetic case. The production-backup rehearsal passed and `6e67eb6c`
 was deployed to the NAS and the Pi on 2026-10-24, with history preserved; see the
 [release record](agent-collaboration-deployment-2026-10-22.md#replacement-cutover-6e67eb6c-2026-10-24).
-Conversations remain disabled in production; signed-in UI and device checks
-against production remain outstanding.
+Messaging is enabled in production but no conversation is authorized yet;
+signed-in UI and device checks against production remain outstanding.
 
 The requester-result finding is now retained with the canonical request and
 shown in the existing Work history/export payload, rather than depending on an
@@ -126,8 +126,8 @@ privacy, relative-link and whitespace checks before push.
 
 Production-backup rehearsal and the NAS/Pi cutover are done (see the
 [release record](agent-collaboration-deployment-2026-10-22.md#replacement-cutover-6e67eb6c-2026-10-24)).
-Next: signed-in Work UI and device checks against production, then the owner's
-decision on enabling conversations. The full ADR 0138 definition of done remains
+Next: the owner authorizes the first production conversation, then signed-in
+Work UI, device and work-triggered help checks against production. The full ADR 0138 definition of done remains
 open until those pass.
 
 ### Legacy cancellation preparation

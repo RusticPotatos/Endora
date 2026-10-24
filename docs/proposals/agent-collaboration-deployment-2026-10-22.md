@@ -129,8 +129,10 @@ Observed results:
   calls receive HTTP 410. The startup cancellation had nothing pending.
 - The first real turn after the restart ran in the new workbench on the Pi and
   exited 0. Neither the runner nor HQ logged an error.
-- Conversations stay disabled, as before. Signed-in Work UI and physical device
-  checks were not repeated against production in this release.
+- Information messaging was already enabled before this release, and still is.
+  Production has no authorized conversation, so new peer help fails closed until
+  the owner authorizes one. Signed-in Work UI and physical device checks were
+  not repeated against production in this release.
 
 Rollback is the tagged prior images with the pre-restart snapshot pair, restored
 as one compatible release/database pair; it would discard work recorded after
