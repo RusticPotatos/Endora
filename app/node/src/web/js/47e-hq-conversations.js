@@ -1,12 +1,18 @@
 // Information-only peer conversations (ADR 0137). Keep one bounded page in memory.
-const HQ_CHAT = { directory: null, page: null, assistance: null, operations: null, id: null, after: 0, busy: false, error: "" };
+// `draft` holds the authorize form's picks: HQ redraws every few seconds, and a redraw would
+// otherwise reset both members to the same first choice.
+const HQ_CHAT = { directory: null, page: null, assistance: null, operations: null, id: null, after: 0, busy: false, error: "", draft: null };
 
 function hqConversations(s) {
   const d = HQ_CHAT.directory;
   const button = (what, id, label, disabled = false) => `<button class="hq-btn" data-act="hq:conversations:${what}:${id}"${disabled || HQ_CHAT.busy ? " disabled" : ""}>${label}</button>`;
   const members = (s.members || []).filter((m) => m.role !== "ceo" && !m.paused && !m.furloughed);
-  const memberOptions = members.map((m) => `<option value="${Number(m.id)}">${esc(m.name)}</option>`).join("");
   const projects = (s.projects || []).filter((p) => p.status === "active");
+  const draft = HQ_CHAT.draft || {};
+  const picked = (list, id, fallback) => (list.some((x) => x.id === id) ? id : fallback && fallback.id);
+  const pick = { project: picked(projects, draft.project, projects[0]), a: picked(members, draft.a, members[0]), b: picked(members, draft.b, members[1]) };
+  const options = (list, id, label) => list.map((x) => `<option value="${Number(x.id)}"${x.id === id ? " selected" : ""}>${esc(label(x))}</option>`).join("");
+  const select = (field, list, label) => `<select id="hq-conversation-${field}" data-change="hq:conversations:pick-${field}">${options(list, pick[field], label)}</select>`;
   let body = button("load", "first", "Load conversations");
   if (d) {
     body = `<p class="hq-note">Information messaging is ${d.enabled ? "enabled" : "disabled"}. Sending information creates no task or agent wake. Conversations are kept until you delete them.</p>
@@ -14,10 +20,10 @@ function hqConversations(s) {
       <ul class="hq-thread">${(d.conversations || []).map((c) => `<li>Conversation ${Number(c.id)}: ${c.participants.map((id) => esc(((s.members || []).find((m) => m.id === id) || {}).name || `Member ${id}`)).join(" / ")} (${Number(c.messages)} messages) ${button("open", c.id, "Open history")}</li>`).join("") || '<li class="hq-empty">No conversations on this page.</li>'}</ul>
       ${d.has_more ? button("load", d.after, "Next conversations") : ""}`;
     if (d.enabled && members.length >= 2 && projects.length) {
-      body += `<details><summary>Authorize a conversation</summary><p class="hq-note">Choose two members and the project. This permits information exchange, without granting task or tool authority.</p>
-        <div class="hq-row"><label>Project <select id="hq-conversation-project">${projects.map((p) => `<option value="${Number(p.id)}">${esc(p.title)}</option>`).join("")}</select></label>
-        <label>First member <select id="hq-conversation-a">${memberOptions}</select></label>
-        <label>Second member <select id="hq-conversation-b">${memberOptions}</select></label>
+      body += `<details${HQ_CHAT.draft ? " open" : ""}><summary>Authorize a conversation</summary><p class="hq-note">Choose two members and the project. This permits information exchange, without granting task or tool authority.</p>
+        <div class="hq-row"><label>Project ${select("project", projects, (p) => p.title)}</label>
+        <label>First member ${select("a", members, (m) => m.name)}</label>
+        <label>Second member ${select("b", members, (m) => m.name)}</label>
         ${button("create", "new", "Authorize")}</div></details>`;
     }
   }
@@ -63,6 +69,9 @@ function hqConversations(s) {
 
 async function hqConversationAct(what, id) {
   if (HQ_CHAT.busy) return true;
+  // A pick is kept for the next redraw; nothing is sent until Authorize.
+  const field = /^pick-(project|a|b)$/.exec(what);
+  if (field) { HQ_CHAT.draft = { ...HQ_CHAT.draft, [field[1]]: Number(id) }; return true; }
   if (what === "delete" && !confirm("Delete this conversation and all its messages?")) return true;
   if (what === "save" || what === "save-assistance") {
     const page = what === "save-assistance" ? HQ_CHAT.assistance : HQ_CHAT.page;
@@ -81,6 +90,7 @@ async function hqConversationAct(what, id) {
       const participants = [Number(val("hq-conversation-a")), Number(val("hq-conversation-b"))];
       if (participants[0] === participants[1]) throw new Error("Choose two different members.");
       await api("POST", "/v1/hq/conversations", { project, participants });
+      HQ_CHAT.draft = null;
       HQ_CHAT.directory = await api("GET", "/v1/hq/conversations?after=0");
     } else if (what === "load") {
       HQ_CHAT.directory = await api("GET", `/v1/hq/conversations?after=${id === "first" ? 0 : Number(id)}`);

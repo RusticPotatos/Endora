@@ -3102,6 +3102,26 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
 }
 
 {
+  // HQ redraws every few seconds: the authorize form must come back with the owner's picks, and
+  // must not start with the same member twice.
+  const fixture = {members:[{id:1,name:"Member 1",role:"lead"},{id:2,name:"Member 2",role:"developer"},{id:3,name:"Member 3",role:"researcher"}],
+    projects:[{id:1,title:"First",status:"active"},{id:2,title:"Second",status:"active"}]};
+  const fail = (message) => { throw new Error(message); };
+  const chosen = (html, field) => (html.match(new RegExp(`id="hq-conversation-${field}"[^>]*>.*?<option value="(\\d+)" selected`, "s")) || [])[1];
+  runInContext(`HQ_CHAT.directory = {enabled:true,conversations:[],has_more:false}; HQ_CHAT.draft = null;`, context);
+  let html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
+  if (chosen(html, "a") === chosen(html, "b")) fail("conversations: the form starts with the same member twice");
+  if (/<details open><summary>Authorize/.test(html)) fail("conversations: the untouched form opened itself");
+  for (const [field, value] of [["project", 2], ["a", 2], ["b", 3]]) await runInContext(`hqConversationAct("pick-${field}","${value}")`, context);
+  html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
+  if (chosen(html, "project") !== "2" || chosen(html, "a") !== "2" || chosen(html, "b") !== "3") fail("conversations: a redraw lost the authorize form's picks");
+  if (!/<details open><summary>Authorize/.test(html)) fail("conversations: a redraw closed the authorize form mid-pick");
+  if (!html.includes('data-change="hq:conversations:pick-b"')) fail("conversations: a member pick is not remembered");
+  runInContext(`HQ_CHAT.directory = null; HQ_CHAT.draft = null;`, context);
+  console.log("conversations: the authorize form keeps its picks across a redraw");
+}
+
+{
   const fixture={members:[{id:1,name:"Member 1",role:"developer"},{id:2,name:"Member 2",role:"researcher"}],projects:[]};
   const assistance={conversation:1,requests:[{id:8,project:1,requester:1,expert:2,status:"answered",objective:"<img src=x onerror=bad()>",answer:"<b>Untrusted answer</b>",evidence:["d12"],answer_evidence:["d12"],notified:false,deadline_at:42},{id:9,project:1,requester:1,expert:2,status:"processing",objective:"Synthetic question",evidence:[],deadline_at:42}],grants:[{source:"d12",expires_at:42}],has_more:true,after:9};
   assistance.requests[1].reason="<em>worker unavailable</em>";
