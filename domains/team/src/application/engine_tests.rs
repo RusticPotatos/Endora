@@ -311,7 +311,7 @@ fn a_member_hands_work_only_down_and_the_task_counts_the_hands() {
 }
 
 #[test]
-fn naming_a_member_in_a_thread_wakes_them_but_not_the_writer() {
+fn member_thread_mentions_record_history_without_scheduling_peer_work() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
@@ -319,7 +319,59 @@ fn naming_a_member_in_a_thread_wakes_them_but_not_the_writer() {
     hq.post_as(t.dev, task, "@Grace can you check this? @Linus noted")
         .unwrap();
     let woken: Vec<MemberId> = hq.wakes().unwrap().iter().map(|w| w.member).collect();
+    assert!(
+        woken.is_empty(),
+        "a model's prose cannot dispatch peer work"
+    );
+    assert!(hq.store().thread(task).unwrap()[0].text.contains("@Grace"));
+}
+
+#[test]
+fn explicit_owner_thread_mentions_still_wake_the_requested_member() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, None, "Pick a database");
+    hq.post(Author::Endora, task, "@Grace appears in a generated report")
+        .unwrap();
+    assert!(hq.wakes().unwrap().is_empty());
+    hq.post(Author::Owner, task, "@Grace please inspect this")
+        .unwrap();
+    let woken: Vec<MemberId> = hq.wakes().unwrap().iter().map(|w| w.member).collect();
     assert_eq!(woken, [t.reviewer]);
+}
+
+#[test]
+fn worker_final_words_keep_mentions_without_dispatching_peer_work() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, Some(t.dev), "Inspect fixture");
+    hq.tick().unwrap();
+    let run = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .find(|run| run.member == t.dev && run.status == RunStatus::Running)
+        .unwrap();
+    hq.last_word_in(run.id, task, "@Grace the fixture needs checking")
+        .unwrap();
+    assert!(
+        !hq.wakes()
+            .unwrap()
+            .iter()
+            .any(|wake| wake.member == t.reviewer)
+    );
+    assert!(
+        hq.store()
+            .thread(task)
+            .unwrap()
+            .last()
+            .unwrap()
+            .text
+            .contains("@Grace")
+    );
 }
 
 #[test]

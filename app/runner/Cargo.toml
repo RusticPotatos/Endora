@@ -16,6 +16,8 @@ path = "src/main.rs"
 # speaks HTTP/1.1 itself, to Docker on the socket and to HQ on the house's network.
 [dependencies]
 serde_json = "1.0.150"
+# Pure wire contract validation, shared with both worker entry points; no HTTP stack.
+endora-protocol = { path = "../../shared/protocol" }
 
 [lints]
 workspace = true

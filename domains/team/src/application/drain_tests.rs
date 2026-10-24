@@ -17,6 +17,126 @@ use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 const MINUTE: i64 = 60_000;
 
+fn canonical_team(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
+    use super::engine::Author;
+    use super::ports::NewTask;
+    use crate::domain::{Priority, Role};
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(4),
+        clock,
+        Settings::default(),
+    );
+    hq.seat_ceo("Member 1").unwrap();
+    let lead = hq.hire("Member 2", Role::Lead, 25, 2, 0).unwrap();
+    let dev = hq.hire("Member 3", Role::Developer, 40, 2, 0).unwrap();
+    hq.set_reports_to(dev, lead).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let task = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Inspect fixture".into(),
+                description: String::new(),
+                assignee: Some(dev),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    (hq, dev, task)
+}
+
+#[test]
+fn canonical_context_inherits_restart_handover_source_privacy() {
+    use super::history_ports::HistoryStore;
+    use crate::domain::world::HandoverNote;
+    for source in ["internal", "confidential", "unknown"] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let (hq, dev, task) = canonical_team(&clock);
+        let worker = working(&hq, dev, task);
+        if source == "confidential" {
+            hq.store().mark_confidential_input(worker.run).unwrap();
+        }
+        hq.begin_drain(None).unwrap();
+        hq.wrap_up_in(
+            worker.run,
+            task,
+            &HandoverNote {
+                done: "Fixture read".into(),
+                not_done: "Finding pending".into(),
+                next: "Check fixture".into(),
+                watch_out: "Retain original evidence".into(),
+            },
+        )
+        .unwrap();
+        if source == "unknown" {
+            let mut legacy = hq.store().handovers(task).unwrap().pop().unwrap();
+            legacy.id = 0;
+            legacy.run = None;
+            hq.store().add_handover(&legacy).unwrap();
+        }
+        later(&clock, 2 * MINUTE);
+        hq.end_drain().unwrap();
+        hq.tick().unwrap();
+        assert_eq!(
+            hq.store().run_read_confidential(worker.run).unwrap(),
+            source != "internal",
+            "handover source: {source}"
+        );
+    }
+}
+
+#[test]
+fn canonical_context_preserves_actual_management_decision_routing() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task) = canonical_team(&clock);
+    let worker = working(&hq, dev, task);
+    assert!(
+        worker
+            .told
+            .contains("Your questions (ask_owner) go to Member 2"),
+        "the worker needs its actual authority route: {}",
+        worker.told
+    );
+}
+
+#[test]
+fn canonical_context_preserves_its_restart_handover() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, task) = canonical_team(&clock);
+    let worker = working(&hq, dev, task);
+    hq.begin_drain(None).unwrap();
+    use_tool(
+        &hq,
+        &worker,
+        "post",
+        &json!({
+            "task":task.0, "text":"Migration paused safely.", "handover":note()
+        }),
+    )
+    .unwrap();
+    later(&clock, 2 * MINUTE);
+    hq.end_drain().unwrap();
+    hq.tick().unwrap();
+    let again = hq
+        .runner()
+        .started()
+        .into_iter()
+        .rfind(|turn| turn.member == dev)
+        .unwrap();
+    assert_eq!(again.run, worker.run);
+    assert!(
+        again.told.contains("Your own note") && again.told.contains("Rebuild the index"),
+        "restart context must survive: {}",
+        again.told
+    );
+}
+
 /// A note for the next turn, in all four parts.
 fn note() -> Value {
     json!({

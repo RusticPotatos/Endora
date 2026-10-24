@@ -2,7 +2,7 @@
 //! while and read back in the turn's replay, and what stays when it goes.
 
 use cucumber::{then, when};
-use endora_team::application::{Clock as _, TeamStore};
+use endora_team::application::{Author, Clock as _, TeamStore};
 use endora_team::domain::history::{DAY_MS, KEPT_DAYS, TRANSCRIPT_MOST};
 use serde_json::json;
 
@@ -152,45 +152,65 @@ fn nobody_woken(w: &mut Office) {
     );
 }
 
-#[when(expr = "{word} consults {word} about {string}: {string}")]
-fn consults(w: &mut Office, name: String, expert: String, title: String, question: String) {
-    let task = w.task(&title);
-    let said = w.use_tool(
-        &name,
-        "consult",
-        &json!({ "member": expert, "question": question, "task": task.0 }),
+#[when(expr = "a retained {word} legacy question from {word} to {word} on {string} exists")]
+fn retained_legacy_question(
+    w: &mut Office,
+    state: String,
+    asker: String,
+    expert: String,
+    title: String,
+) {
+    let run = w.turn_of(&asker).run;
+    let status = match state.as_str() {
+        "pending" => "queued",
+        "answered" => "answered",
+        _ => panic!("unknown historical fixture state"),
+    };
+    // Import pre-upgrade fixture data; production exposes no legacy writer.
+    let conn =
+        rusqlite::Connection::open(w.file.as_ref().expect("persisted historical fixture")).unwrap();
+    conn.execute(
+        "INSERT INTO consults(asker,asker_run,expert,thread,question,status,at_ms)
+        VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        rusqlite::params![
+            w.member(&asker).0,
+            run.0,
+            w.member(&expert).0,
+            w.task(&title).0,
+            "Original saved fixture question",
+            status,
+            w.clock.now(),
+        ],
+    )
+    .unwrap();
+    w.wakes_at_ask = w.hq.wakes().unwrap().len();
+}
+
+#[when("HQ performs protocol v2 legacy cleanup")]
+fn legacy_cleanup(w: &mut Office) {
+    w.hq.retire_legacy_peer_work().unwrap();
+}
+
+#[then(expr = "the legacy question on {string} is cancelled and readable")]
+fn readable_cancelled_question(w: &mut Office, title: String) {
+    let page = w.hq.legacy_task_conversations(w.task(&title), 0).unwrap();
+    let records = page["records"].as_array().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["outcome"], "cancelled");
+    assert_eq!(records[0]["question"], "Original saved fixture question");
+    assert!(records[0]["answer"].is_null());
+}
+
+#[then(expr = "the task {string} has {int} consultation answers")]
+fn consult_answer_count(w: &mut Office, title: String, expected: usize) {
+    let posts = w.hq.store().thread(w.task(&title)).unwrap();
+    assert_eq!(
+        posts
+            .iter()
+            .filter(|post| post.text.contains(" answers (consulted): "))
+            .count(),
+        expected
     );
-    w.answer = said;
-}
-
-#[when(expr = "{word} answers the consult: {string}")]
-fn answers_the_consult(w: &mut Office, name: String, answer: String) {
-    let done = w.use_tool(&name, "answer_consult", &json!({ "answer": answer }));
-    assert!(done.is_some(), "refused: {:?}", w.refused);
-}
-
-#[then(expr = "{word} is woken to read the answer")]
-fn woken_to_read(w: &mut Office, name: String) {
-    use endora_team::domain::WakeReason;
-    let id = w.member(&name);
-    let woken =
-        w.hq.wakes()
-            .expect("the store answers")
-            .iter()
-            .any(|x| x.member == id && x.reason == WakeReason::QuestionAnswered);
-    assert!(woken, "{name} was not woken to read an answer");
-}
-
-#[then(expr = "{word} was not woken by it")]
-fn not_woken_by_it(w: &mut Office, name: String) {
-    use endora_team::domain::WakeReason;
-    let id = w.member(&name);
-    let woken =
-        w.hq.wakes()
-            .expect("the store answers")
-            .iter()
-            .any(|x| x.member == id && x.reason == WakeReason::Consulted);
-    assert!(!woken, "{name} was woken to be consulted");
 }
 
 #[then(expr = "the thread of {string} says {string}")]
@@ -251,8 +271,25 @@ fn shows_it_cleaned(text: &str, name: &str) -> Result<(), String> {
 )]
 fn posts_a_hostile_line(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);
+    let before = w.hq.store().wakes().unwrap().len();
     let posted = w.use_tool(&name, "post", &json!({ "task": task.0, "text": HOSTILE }));
     assert!(posted.is_some(), "refused: {:?}", w.refused);
+    assert_eq!(
+        w.hq.store().wakes().unwrap().len(),
+        before,
+        "mentions in a model post must schedule no peer work"
+    );
+}
+
+#[when(expr = "the owner asks {word} to inspect the thread on {string}")]
+fn owner_requests_thread_inspection(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.hq.post(
+        Author::Owner,
+        task,
+        &format!("@{name} please inspect this thread"),
+    )
+    .unwrap();
 }
 
 #[then(expr = "{word}'s briefing shows {word}'s post on one line, under his name, cleaned")]

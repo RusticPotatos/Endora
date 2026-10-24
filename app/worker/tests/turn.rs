@@ -207,6 +207,105 @@ fn says(text: &str) -> Value {
         "message": { "role": "assistant", "content": text } }] })
 }
 
+#[test]
+fn local_model_replies_have_the_same_token_bound_as_messages_replies() {
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![(200, says("The bounded turn finished."))]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let sent = to_model.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].body["max_tokens"], 4096,
+        "local completion must be explicitly bounded"
+    );
+}
+
+#[test]
+fn an_empty_reply_at_the_token_limit_is_not_a_successful_turn() {
+    let (hq_url, to_hq) = hq(None);
+    let mut limited = says("");
+    limited["choices"][0]["finish_reason"] = json!("length");
+    let (model_url, to_model) = model(vec![(200, limited)]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    assert!(said(&out).contains("token limit"), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 1);
+    assert!(
+        !to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|sent| sent.method() == "tools/call post"),
+        "an empty limited reply must not become a task answer"
+    );
+}
+
+#[test]
+fn a_limited_reply_cannot_execute_even_a_complete_tool_call() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, to_node) = fake(Box::new(|sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (200, json!({"tools":[]}).to_string()),
+        "/team-relay/transcript" => (200, json!({"kept":true}).to_string()),
+        _ => (404, "{}".to_owned()),
+    }));
+    let mut limited = calls(&[(
+        "limited-post",
+        "post",
+        r#"{"task":7,"text":"Partial model finding"}"#,
+    )]);
+    limited["choices"][0]["finish_reason"] = json!("length");
+    let (model_url, to_model) = model(vec![(200, limited), (200, says("Done."))]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    assert!(said(&out).contains("token limit"), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 1);
+    assert!(
+        !to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|sent| sent.method() == "tools/call post"),
+        "limited model output must not execute a proposed tool call"
+    );
+    assert!(
+        to_node.lock().unwrap().iter().any(|sent| {
+            sent.path == "/team-relay/transcript"
+                && sent.body["text"].as_str().is_some_and(|text| {
+                    text.contains("--- call: post ---") && text.contains("Partial model finding")
+                })
+        }),
+        "the limited proposal is retained for inspection"
+    );
+}
+
+#[test]
+fn a_claude_reply_at_its_token_limit_cannot_execute_a_tool_call() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(json!([]), None);
+    let mut limited = claude(
+        "Partial finding",
+        &[(
+            "limited-post",
+            "post",
+            json!({"task":7,"text":"Partial finding"}),
+        )],
+    );
+    limited["stop_reason"] = json!("max_tokens");
+    let (model_url, to_model) = model(vec![(200, limited), (200, claude("Done.", &[]))]);
+    let out = worker(&on_claude(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    assert!(said(&out).contains("token limit"), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 1);
+    assert!(
+        !to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|sent| sent.method() == "tools/call post")
+    );
+}
+
 /// The node's contracts (ADR 0106): it lists `offered`, answers `homelab_status` and
 /// `container_logs`, refuses a restart as its limits would (429), and answers `status` to every
 /// call when given.
@@ -272,7 +371,7 @@ fn usual(hq: &str, model: &str) -> Vec<(&'static str, String)> {
 fn with_node(hq: &str, model: &str, node: &str) -> Vec<(&'static str, String)> {
     vec![
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
-        ("ENDORA_HQ_MCP", format!("{hq}/v1/team/mcp")),
+        ("ENDORA_HQ_MCP", format!("{hq}/v2/team/mcp")),
         ("ENDORA_MODEL_URL", format!("{model}/team-relay/local/v1")),
         ("ENDORA_CONTRACTS", format!("{node}/team-relay/contracts")),
     ]
@@ -321,7 +420,7 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
         ]
     );
     let to_hq = to_hq.lock().unwrap().clone();
-    assert!(to_hq.iter().all(|s| s.path == "/v1/team/mcp"));
+    assert!(to_hq.iter().all(|s| s.path == "/v2/team/mcp"));
     assert_eq!(to_hq[0].body["params"]["protocolVersion"], "2025-06-18");
     assert_eq!(to_hq[4].body["params"]["arguments"], json!({ "task": 7 }));
     assert_eq!(
@@ -1236,7 +1335,7 @@ fn claude(text: &str, list: &[(&str, &str, Value)]) -> Value {
 fn on_claude(hq: &str, relay: &str, node: &str) -> Vec<(&'static str, String)> {
     vec![
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
-        ("ENDORA_HQ_MCP", format!("{hq}/v1/team/mcp")),
+        ("ENDORA_HQ_MCP", format!("{hq}/v2/team/mcp")),
         ("ENDORA_MODEL_URL", format!("{relay}/team-relay/v1")),
         ("ENDORA_MODEL", "claude-sonnet-5-5".to_owned()),
         ("ENDORA_CONTRACTS", format!("{node}/team-relay/contracts")),
@@ -1466,7 +1565,7 @@ fn the_local_relay_is_sent_no_effort_and_no_cache_mark() {
     let body = to_model.lock().unwrap()[0].body.clone();
     let mut fields: Vec<&String> = body.as_object().unwrap().keys().collect();
     fields.sort();
-    assert_eq!(fields, ["messages", "model", "tools"]);
+    assert_eq!(fields, ["max_tokens", "messages", "model", "tools"]);
 }
 
 #[test]
@@ -1567,7 +1666,7 @@ fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_sta
     );
     let out = worker(&[
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
-        ("ENDORA_HQ_MCP", format!("{hq_url}/v1/team/mcp")),
+        ("ENDORA_HQ_MCP", format!("{hq_url}/v2/team/mcp")),
         ("ENDORA_MODEL_URL", format!("{listener}/team-relay/v1")),
         ("ENDORA_MODEL", "claude-sonnet-5-5".to_owned()),
     ]);
@@ -1858,7 +1957,7 @@ fn the_bridge_serves_hqs_tools_and_the_nodes_and_a_question_ends_the_turn() {
     let ledger = dir.join("did.json");
     let env = vec![
         ("ENDORA_TURN_TOKEN", TOKEN.to_owned()),
-        ("ENDORA_HQ_MCP", format!("{hq_url}/v1/team/mcp")),
+        ("ENDORA_HQ_MCP", format!("{hq_url}/v2/team/mcp")),
         (
             "ENDORA_CONTRACTS",
             format!("{node_url}/team-relay/contracts"),

@@ -49,7 +49,7 @@ docker run -d --name endora-runner --restart unless-stopped \
     -e HQ_URL="$gateway/team-gateway" \
     -e HQ_RUNNER_TOKEN_FILE=/runner-token/token \
     -e TEAM_NETWORK=endora_sandbox \
-    -e WORKER_HQ_MCP="$gateway/team-gateway/mcp" \
+    -e WORKER_HQ_MCP="$gateway/team-gateway/v2/mcp" \
     -e WORKER_MODEL_URL="$gateway/team-relay/local/v1" \
     -e WORKER_CLOUD_URL="$gateway/team-relay/v1" \
     -v /var/run/docker.sock:/var/run/docker.sock \

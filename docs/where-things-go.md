@@ -45,6 +45,10 @@ Settings.
   while you were away), Team (with how the team is doing: outcomes first), Work, Knowledge,
   Office (games, last; a match's step-by-step replay is a tap on its result). The Holodeck's
   scenarios and trials are work, so they are a card in Work, each opened step by step there.
+  Information conversations also live in Work: their owner switch, fixed participant/project
+  authorization, paged history and operation outcomes share one Conversations card (ADR 0137).
+  Explicit assistance requests, their results and project charges, source grants/revocation,
+  and cancellation stay inside that conversation's Work view; they add no top-level screen.
   Something that needs your word goes on the desk; something you may want
   to look at, but nothing waits on, goes in the digest. Fun and decoration go in Office, never
   above the desk. A switch for a guard that is tried in shadow sits on that guard's line of the
@@ -62,9 +66,12 @@ Settings.
 | `crates/` | The orchestration layer and infrastructure adapters shared by several contexts |
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
 | `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js` |
+| `app/node/src/web/js/47e-hq-conversations.js` | HQ Work's bounded conversation inspection and owner controls, including retained questions in the existing task inspector; no new top-level screen |
+| `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
 | `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
 | `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`) |
 | `docs/adr/` | One decision each; a new architectural choice needs one |
+| `docs/proposals/` | Research and proposed changes, with sources and tradeoffs; accepted architectural decisions go in `docs/adr/` |
 | `docs/homelab.md` | How to set up and run each part in the house |
 | `local.mk` | Your own values (addresses, paths, names). Git-ignored; never in a tracked file |

@@ -96,6 +96,15 @@ fn a_scenario_is_played_through_its_tool_alone_and_the_world_closes_it() {
     let (dev, project) = holodeck(&hq);
     let seed = seed_for(Cause::Bulb);
     let task = hq.start_scenario(project, dev, seed).unwrap();
+    assert_eq!(
+        super::history_ports::HistoryStore::input_origin(
+            hq.store(),
+            crate::domain::history::InputRef::TaskBody(task)
+        )
+        .unwrap(),
+        crate::domain::history::InputOrigin::Unknown,
+        "owner-budgeted generated content is not an authenticated owner-authored input"
+    );
     let found = hq.store().task(task).unwrap().unwrap();
     assert_eq!((found.project, found.assignee), (Some(project), Some(dev)));
     assert!(

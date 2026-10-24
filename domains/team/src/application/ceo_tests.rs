@@ -308,14 +308,16 @@ fn a_question_goes_up_the_chain_to_a_decision_on_the_boards_desk_and_back_down()
 
     // The CEO answers the lead in the thread; the lead answers the developer.
     let ceo = turn(&hq, t.ceo);
+    let before_reply = hq.store().wakes().unwrap().len();
     use_tool(
         &hq,
         &ceo,
         "post",
-        &json!({ "task": task.0, "text": "Approved: 2 GB for sonarr until the upgrade." }),
+        &json!({ "task": task.0, "text": "@Ada approved: 2 GB for sonarr until the upgrade." }),
     )
     .unwrap();
     let (to, on, why, _) = last_wake(&hq);
+    assert_eq!(hq.store().wakes().unwrap().len(), before_reply + 1);
     assert_eq!(
         (to, on, why),
         (t.lead, Some(task), WakeReason::QuestionAnswered),
@@ -323,14 +325,16 @@ fn a_question_goes_up_the_chain_to_a_decision_on_the_boards_desk_and_back_down()
     );
     hq.runner().finish(ceo.run, true);
     let lead = turn(&hq, t.lead);
+    let before_reply = hq.store().wakes().unwrap().len();
     use_tool(
         &hq,
         &lead,
         "post",
-        &json!({ "task": task.0, "text": "Yes, 2 GB: the board agreed." }),
+        &json!({ "task": task.0, "text": "@Linus yes, 2 GB: the board agreed." }),
     )
     .unwrap();
     let (to, on, why, _) = last_wake(&hq);
+    assert_eq!(hq.store().wakes().unwrap().len(), before_reply + 1);
     assert_eq!(
         (to, on, why),
         (t.dev, Some(task), WakeReason::QuestionAnswered)
@@ -384,6 +388,7 @@ fn the_ceo_wakes_for_escalations_and_its_own_work_never_for_being_named() {
     let t = team(&hq, false);
     let task = task_for(&hq, t.goal, t.lead, "Plan the week");
     let lead = turn(&hq, t.lead);
+    let before = hq.store().wakes().unwrap().len();
     use_tool(
         &hq,
         &lead,
@@ -392,13 +397,9 @@ fn the_ceo_wakes_for_escalations_and_its_own_work_never_for_being_named() {
     )
     .unwrap();
     assert_eq!(
-        last_wake(&hq),
-        (
-            t.ceo,
-            Some(task),
-            WakeReason::Mentioned,
-            Receipt::Refused(Refused::NotForTheCeo)
-        )
+        hq.store().wakes().unwrap().len(),
+        before,
+        "a member's mention dispatches no peer work, even a refused wake"
     );
     assert_eq!(
         hq.wake(t.ceo, Some(task), WakeReason::Alarm).unwrap(),

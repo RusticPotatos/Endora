@@ -5,12 +5,14 @@
 //! stayed green. It happened: the handheld waited for a `progress` event the server never sends,
 //! and never showed the `step` and `error` events it does.
 //!
-//! This crate is the one place those shapes are written down. The server checks what it is
+//! This crate is the one place those shapes and supported team route contracts are written down. The server checks what it is
 //! about to send against these types, and its tests prove each response fits. [`samples`] holds
 //! one canonical value of each, which the clients' tests render, so a change here fails on the
 //! side that did not follow. Serde only: no server or client code.
 
 use serde::{Deserialize, Serialize};
+
+pub mod team;
 
 /// A handheld page: a line of summary and a list of items (`GET /v1/terminal/{view}`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

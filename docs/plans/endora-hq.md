@@ -605,7 +605,7 @@ thinks with the **local model** first; Claude through the relay, per member, fol
 2026-10-17 ([ADR 0109](../adr/0109-a-brain-per-member.md): the lead may think with Sonnet). The
 team pool stays $70 a month. The pieces and their contracts:
 
-1. **The team protocol** (built): `POST /v1/team/mcp` on HQ, JSON-RPC, opened by a turn's own
+1. **The team protocol** (built): `POST /v2/team/mcp` on HQ, JSON-RPC, opened by a turn's own
    token (`Authorization: Bearer <token>`).
 2. **The model relays** in the node, outside `/v1`, opened by the same token. The workers
    reach them on a plain-HTTP listener of their own (`ENDORA_TEAM_ADDR`, `0.0.0.0:8788` in
@@ -631,7 +631,7 @@ team pool stays $70 a month. The pieces and their contracts:
      using that entry's model whatever the worker named, and records the use as `team-local`
      at no cost.
 3. **The worker**, `endora-worker` (crate `app/worker`, in the same image). It reads
-   `ENDORA_RUN_TOKEN`, `ENDORA_HQ_MCP` (`http://hq:8790/v1/team/mcp`), `ENDORA_MODEL_URL`
+   `ENDORA_RUN_TOKEN`, `ENDORA_HQ_MCP` (`http://hq:8790/v2/team/mcp`), `ENDORA_MODEL_URL`
    (`http://node:8788/team-relay/local/v1`) and `ENDORA_MOST_ROUNDS` (default 12), and
    `ENDORA_CONTRACTS` (default: `/team-relay/contracts` beside the model relay), and
    `ENDORA_MODEL` (the model it names, default `local`; the local relay uses its own whatever
@@ -813,7 +813,7 @@ in `domains/capabilities/src/bridge.rs`, in this order:
   test containers, later), production (the NAS, only through the contracts and the bridge,
   with evidence and undo, later). Agents never hold keys; Endora is the gatekeeper.
 - **The team gateway**: the node's team listener, published on 8788 (every route needs a
-  token), passes `/team-gateway/mcp` to HQ's `/v1/team/mcp` and `/team-gateway/runner/...` to
+  token), passes `/team-gateway/v2/mcp` to HQ's `/v2/team/mcp` and `/team-gateway/runner/...` to
   HQ's `/v1/runner/...`, the method, body and caller's `Authorization` untouched, to HQ's URL
   and nowhere else (4 MB in, 8 MB out, ten seconds, no redirects followed). HQ stays
   unpublished.

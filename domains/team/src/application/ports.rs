@@ -283,6 +283,7 @@ pub trait TeamStore:
     + super::guard_ports::GuardStore
     + super::map_ports::MapStore
     + super::history_ports::HistoryStore
+    + super::conversation_ports::ConversationStore
 {
     /// Adds a member.
     ///
@@ -395,6 +396,17 @@ pub trait TeamStore:
         status: GoalStatus,
         parent: Option<GoalId>,
     ) -> Stored<GoalId>;
+    /// Atomically create a goal with its application-selected source identity.
+    /// # Errors
+    /// A store failure or invalid source run.
+    fn add_goal_from(
+        &self,
+        title: &str,
+        reason: &str,
+        status: GoalStatus,
+        parent: Option<GoalId>,
+        origin: crate::domain::history::InputOrigin,
+    ) -> Stored<GoalId>;
     /// A goal.
     ///
     /// # Errors
@@ -426,6 +438,15 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn add_task(&self, task: &NewTask, depth: u8) -> Stored<TaskId>;
+    /// Atomically create task body and empty criteria with reliable source identity.
+    /// # Errors
+    /// A store failure or invalid source run.
+    fn add_task_from(
+        &self,
+        task: &NewTask,
+        depth: u8,
+        origin: crate::domain::history::InputOrigin,
+    ) -> Stored<TaskId>;
     /// A task.
     ///
     /// # Errors
@@ -504,11 +525,30 @@ pub trait TeamStore:
         evidence: &[Ref],
         unsupported: bool,
     ) -> Stored<()>;
+    /// Atomically append a post and the authenticated source, without inferring it from author.
+    /// # Errors
+    /// A store failure or invalid source run.
+    fn post_from(
+        &self,
+        task: TaskId,
+        post: &Post,
+        evidence: &[Ref],
+        origin: crate::domain::history::InputOrigin,
+    ) -> Stored<()>;
     /// Sets what done means for a task.
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_criteria(&self, task: TaskId, criteria: &[Criterion]) -> Stored<()>;
+    /// Change only the criteria's provenance; task-body provenance is independent.
+    /// # Errors
+    /// A store failure or invalid source run.
+    fn set_criteria_from(
+        &self,
+        task: TaskId,
+        criteria: &[Criterion],
+        origin: crate::domain::history::InputOrigin,
+    ) -> Stored<()>;
     /// Hands a task to a member, or to nobody.
     ///
     /// # Errors
@@ -583,6 +623,10 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn held_wakes(&self, task: TaskId) -> Stored<Vec<Wake>>;
+    /// One wake by its stable ID, without reading retained wake history.
+    /// # Errors
+    /// A store failure or corrupt matching record.
+    fn wake(&self, id: WakeId) -> Stored<Option<Wake>>;
     /// Every wake, oldest first.
     ///
     /// # Errors

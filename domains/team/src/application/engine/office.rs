@@ -570,9 +570,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// and makes no work, what the office has and how much of each kind, what the member
     /// placed itself, the open proposals, what may be placed and the rules, and what it may
     /// do, leaving the office alone among it. Kept short.
-    pub(super) fn downtime_said(&self, member: &Member) -> Done<String> {
+    pub(super) fn downtime_said(&self, member: &Member, run: crate::domain::RunId) -> Done<String> {
+        if self
+            .store
+            .office_proposals()?
+            .iter()
+            .any(|p| p.status == Status::Open)
+        {
+            // Proposal reasons are legacy free text without a source-run tier on this view.
+            self.unclassified_message_input(run)?;
+        }
         let mut told = String::from(
-            "It is downtime: this turn is about no task, nothing is due in it, and it makes no \
+            "It is downtime: this turn is about no task, no task is due in it, and it makes no \
              work (create_task and hand_to are refused).\n",
         );
         told.push_str(&self.office_said(member)?);

@@ -338,9 +338,48 @@ pub fn app(state: AppState) -> Router {
         .route("/hq-art/{*file}", get(hq_art))
         .route("/v1/hq", get(hq_snapshot))
         .route("/v1/hq/events", get(hq_events))
+        .route(
+            "/v1/hq/conversations",
+            get(hq_conversations)
+                .post(hq_conversation_create)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route(
+            "/v1/hq/conversations/enabled",
+            post(hq_conversation_enable).layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route("/v1/hq/conversations/{id}", get(hq_conversation_page))
+        .route(
+            "/v1/hq/conversations/{id}/assistance/{request}/cancel",
+            post(hq_assistance_cancel),
+        )
+        .route(
+            "/v1/hq/conversations/{id}/sources",
+            post(hq_conversation_source_grant),
+        )
+        .route(
+            "/v1/hq/conversations/{id}/sources/revoke",
+            post(hq_conversation_source_revoke),
+        )
+        .route(
+            "/v1/hq/conversations/{id}/assistance",
+            get(hq_conversation_assistance),
+        )
+        .route(
+            "/v1/hq/conversations/operations",
+            get(hq_conversation_operations),
+        )
+        .route(
+            "/v1/hq/conversations/{id}/delete",
+            post(hq_conversation_delete),
+        )
         // Replay: a turn, or a task's turns, read back in full (the owner's only).
         .route("/v1/hq/runs/{id}/replay", get(hq_run_replay))
         .route("/v1/hq/tasks/{id}/replay", get(hq_task_replay))
+        .route(
+            "/v1/hq/tasks/{id}/consultations",
+            get(hq_task_consultations),
+        )
         .route("/v1/hq/goals", post(hq_goal))
         .route("/v1/hq/tasks", post(hq_task))
         .route("/v1/hq/desk/{id}", post(hq_decide))
@@ -654,6 +693,7 @@ fn relay_routes() -> Router<AppState> {
         // The team gateway (ADR 0110): HQ's two doors for callers on the house's network,
         // passed on untouched.
         .route("/team-gateway/mcp", axum::routing::any(gateway::mcp))
+        .route("/team-gateway/v2/mcp", axum::routing::any(gateway::mcp_v2))
         .route(
             "/team-gateway/runner/{*route}",
             axum::routing::any(gateway::runner),

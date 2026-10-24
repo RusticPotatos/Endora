@@ -24,6 +24,11 @@ pub(super) async fn mcp(State(state): State<AppState>, request: Request) -> Resp
     pass(state, "/v1/team/mcp".to_owned(), request).await
 }
 
+/// Canonical team protocol; never silently maps back to v1 semantics.
+pub(super) async fn mcp_v2(State(state): State<AppState>, request: Request) -> Response {
+    pass(state, "/v2/team/mcp".to_owned(), request).await
+}
+
 /// `/team-gateway/runner/<route>`, passed on to HQ's `/v1/runner/<route>`. Only a plain route
 /// passes: segments of letters, digits, `-` and `_`, so nothing can climb out of
 /// `/v1/runner/`.
@@ -207,6 +212,33 @@ mod tests {
             .iter()
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.as_str())
+    }
+
+    #[tokio::test]
+    async fn the_version_two_gateway_keeps_the_new_contract_and_the_workers_token() {
+        let (url, seen) = fake_hq(200, r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        let app = team_relay(node(Some(&url)));
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_vec();
+        let response = app
+            .oneshot(call(
+                "POST",
+                "/team-gateway/v2/mcp",
+                "synthetic-turn-token",
+                body.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let (path, headers, forwarded) = &seen[0];
+        assert_eq!(path, "POST /v2/team/mcp");
+        assert_eq!(
+            header(headers, "authorization"),
+            Some("Bearer synthetic-turn-token")
+        );
+        assert_eq!(forwarded, &body);
+        assert!(!headers.iter().any(|(_, value)| value.contains(NODES_TOKEN)));
     }
 
     #[tokio::test]
@@ -399,6 +431,7 @@ mod tests {
         let main = super::super::app(node(Some(&url)));
         for (method, uri) in [
             ("POST", "/team-gateway/mcp"),
+            ("POST", "/team-gateway/v2/mcp"),
             ("GET", "/team-gateway/runner/stops"),
         ] {
             let res = main

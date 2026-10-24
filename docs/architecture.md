@@ -6,6 +6,61 @@
 
 ## Overview
 
+Accepted collaboration target ([ADR 0138](adr/0138-one-conversation-and-assistance-lifecycle.md)):
+one conversation/assistance lifecycle replaces legacy task-thread consultation
+execution, while the existing Work UI retains readable historical conversations
+and task/run links. The old application consultation scheduler and record-answer
+fallback and their legacy storage writers have been removed. Context/wake
+cleanup, migration rehearsal and live cutover remain required before calling
+this complete.
+The migration boundary now includes HQ `/v2/team/mcp` and the node's team-only
+`/team-gateway/v2/mcp`, which select canonical assistance semantics. Worker/runner
+defaults use v2 and reject stale configured routes. The v1 worker endpoint
+authenticates first, then returns HTTP 410 with the supported route.
+Before publishing HTTP, HQ startup cancels legacy questions, stops and settles
+their expert runs, preserving ordinary task work and canonical assistance.
+Cleanup failure aborts startup and remains recoverable. Task-linked v2 admission checks
+the authorized conversation against trusted task/project context, including
+transactional revalidation and original-task replay identity. Atomic content/source
+readers and smaller source-classified ordinary task briefings are implemented.
+The owner's messaging switch selects this input policy for ordinary developer
+and researcher work; there is no separate migration selector. Messaging-disabled
+work retains its world/notebook context. Specialized task briefings retain their
+authority responsibilities and conservative input guard. Both contexts use the
+same canonical peer policy; neither selects legacy consultation execution.
+Classified context retains owner notes near the top, actual management routing
+and the latest indexed handover, inheriting that note's original source tier.
+This is not a completed production cutover.
+
+Protocol tool directories and familiar call names use the same canonical policy.
+The worker's first-line identity contract is preserved; version guidance follows
+the briefing and restart notices remain last. The automatic claim acknowledgment
+contains only the checked task ID and does not invent a private input or clear
+existing private inputs. Automatic task recovery waits while that task's accepted
+help or result-verification turn remains pending, then resumes without completing
+the task or changing its owner. These checks use indexed canonical metadata,
+independent of retained question/answer bodies.
+
+Task-thread posts and worker final words remain readable reporting. Their member
+mentions dispatch no peer work; only explicit owner-authored posts may schedule
+mentions. Real management question/reply and owner-decision pathways retain their
+own authority responsibilities, including replies that name their requester.
+
+The associated requester-result turn can retain one final finding with its
+assistance request. Current scope, source grants and input tiers are revalidated
+atomically. It remains an attributed claim in Work and its request-page export,
+with original run/source links; it does not complete or approve a task. Findings
+survive raw transcript expiry and are purged with explicit owner conversation
+deletion. A durable finding prevents another model attempt after worker loss.
+
+Retained task questions have a bounded owner-only projection through
+`/v1/tasks/{id}/consultations`, proxied by the node into the existing Work task
+inspector. Exact original IDs, project snapshots and answer-post associations
+are retained; missing links remain unavailable. Reading history creates no
+conversation permissions or work. This separates historical inspection from
+the retired execution path. Production keeps the historical readers and bounded
+startup cancellation, with no legacy admission/claim/answer/delivery writer API.
+
 Endora is a **domain-first modular monolith**. A single authoritative backend —
 the **node** — is the trust boundary. It holds all authority and the secrets. **Endora HQ**
 (`app/hq`), the team of agents that does the home lab's work, is a separate service the node
@@ -75,6 +130,16 @@ other's internals; they collaborate through application-layer ports, and the
 dependency graph is acyclic.
 
 See [domain-map.md](domain-map.md) for what each context owns.
+
+HQ's information conversations are also owned by `team` ([ADR 0137](adr/0137-addressed-conversations-and-bounded-assistance.md)).
+The owner authorizes fixed project/participant scopes through the node. Existing live turns can
+exchange bounded Internal information without creating tasks, wakes or model calls. Conversation
+history is retained until explicit owner deletion; routine access uses indexed cursor pages and
+deletion uses bounded batches. The owner inspects message and content-free operation pages in
+HQ Work. The feature defaults off. Explicit assistance uses one bounded expert
+and requester-result lifecycle, owner-granted original evidence and trusted
+project charging. Ordinary consultation is a thin adapter to that lifecycle;
+it has no task-thread queue or automatic historical-answer substitution.
 
 ## Layers within each context
 

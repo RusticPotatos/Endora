@@ -25,6 +25,7 @@ use endora_team::infrastructure::demo;
 
 use crate::Hq;
 
+mod conversations;
 mod drain;
 mod guards;
 mod world;
@@ -75,6 +76,7 @@ pub fn app(state: State) -> Router {
         // Replay: a turn, or a task's turns, read back in full for the owner's screen.
         .route("/v1/runs/{id}/replay", get(run_replay))
         .route("/v1/tasks/{id}/replay", get(task_replay))
+        .route("/v1/tasks/{id}/consultations", get(task_consultations))
         .route("/v1/goals", post(set_goal))
         .route("/v1/tasks", post(add_task))
         .route("/v1/desk/{id}", post(decide))
@@ -180,6 +182,7 @@ pub fn app(state: State) -> Router {
         .merge(world::routes())
         // The guards (ADR 0124): the owner's verdict on a finding.
         .merge(guards::routes())
+        .merge(conversations::routes())
         // The drain before a restart (ADR 0134): HQ's own token, for a deploy and the NAS's
         // shutdown; the node does not proxy it.
         .merge(drain::routes())
@@ -191,6 +194,7 @@ pub fn app(state: State) -> Router {
         .route("/health", get(health))
         // A worker's door: its turn's token, not the node's (spec section 6).
         .route("/v1/team/mcp", post(crate::team::mcp))
+        .route("/v2/team/mcp", post(crate::team::mcp_v2))
         // A runner's door: the runner's token, not the node's.
         .merge(crate::runner::routes(state.clone()))
         // A check job's report (ADR 0115): the job's own token, which HQ made for it.
@@ -327,6 +331,17 @@ async fn run_replay(
     let hq = state.hq.clone();
     let replay = blocking(move || hq.replay_run(RunId(id))).await?;
     Ok(Json(json!({ "replay": replay.shown() })))
+}
+
+/// Retained task questions, paged for the owner without peer execution or grants.
+async fn task_consultations(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Query(q): Query<After>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let page = blocking(move || hq.legacy_task_conversations(TaskId(id), q.after)).await?;
+    Ok(Json(page))
 }
 
 /// A task's turns read back, oldest first.
@@ -1228,6 +1243,314 @@ mod tests {
     const TOKEN: &str = "a-token-of-at-least-thirty-two-characters";
     const RUNNER: &str = "a-runner-token-of-at-least-thirty-two-chars";
 
+    #[tokio::test]
+    async fn team_v2_consult_admits_only_canonical_requests_and_never_record_fallback() {
+        use endora_team::application::history_ports::HistoryStore as _;
+        use endora_team::domain::WakeReason;
+        let st = state(false);
+        let lead = st.hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let requester = st.hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        let expert = st.hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+        let goal = st.hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = st.hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+        st.hq.set_conversations_enabled(true).unwrap();
+        let conversation = st
+            .hq
+            .create_conversation(project, [requester, expert])
+            .unwrap();
+        st.hq.pause(expert, true).unwrap();
+        st.hq.wake(requester, None, WakeReason::Downtime).unwrap();
+        st.hq.tick().unwrap();
+        let handed = st.hq.runner().remote().unwrap().next().unwrap();
+        assert_eq!(handed.turn.member, requester);
+        let app = app(st.clone());
+        for token in [None, Some(TOKEN), Some("foreign-turn")] {
+            let response = app
+                .clone()
+                .oneshot(call(
+                    "POST",
+                    "/v2/team/mcp",
+                    token,
+                    r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let rpc = |name: &str, arguments: serde_json::Value| {
+            call(
+                "POST",
+                "/v2/team/mcp",
+                Some(&handed.turn.token),
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":name,"arguments":arguments}})
+                .to_string(),
+            )
+        };
+        for (name, args) in [
+            ("answer_consult", json!({"answer":"Not a legacy expert"})),
+            (
+                "consult",
+                json!({"member":"Member 3","question":"Fixture?","task":1}),
+            ),
+            (
+                "consult",
+                json!({"member":"Member 3","question":"Fixture?","payer":project.0}),
+            ),
+        ] {
+            let response = json_of(app.clone().oneshot(rpc(name, args)).await.unwrap()).await;
+            assert_eq!(response["result"]["isError"], true, "{response}");
+        }
+        let args = json!({"member":"Member 3","question":"Which fixture dependency failed?"});
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(rpc("consult", args.clone()))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let response = json_of(response).await;
+            assert_eq!(response["result"]["isError"], false, "{response}");
+            let acceptance: serde_json::Value =
+                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(acceptance["conversation"], conversation);
+            assert_eq!(acceptance["state"], "queued");
+            ids.push(acceptance["request"].clone());
+        }
+        assert_eq!(ids[0], ids[1]);
+        assert!(st.hq.store().consults().unwrap().is_empty());
+        assert!(st.hq.store().tasks().unwrap().is_empty());
+        let page = st.hq.assistance_requests_page(conversation, 0).unwrap();
+        assert_eq!(page["requests"].as_array().unwrap().len(), 1);
+        assert!(page["requests"][0]["answer"].is_null());
+        let listing = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v2/team/mcp",
+                    Some(&handed.turn.token),
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let tools = listing["result"]["tools"].as_array().unwrap();
+        assert!(!tools.iter().any(|t| t["name"] == "answer_consult"));
+        let consult = tools.iter().find(|t| t["name"] == "consult").unwrap();
+        assert!(consult["inputSchema"]["properties"].get("task").is_none());
+        let briefing = json_of(
+            app.clone()
+                .oneshot(rpc("my_turn", json!({})))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            briefing["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Endora team protocol v2")
+        );
+        assert!(
+            st.hq
+                .runner()
+                .remote()
+                .unwrap()
+                .ended(handed.turn.run, handed.lease, true)
+        );
+        let task = st
+            .hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: Some(project),
+                    parent: None,
+                    title: "Fixture work".into(),
+                    description: "Diagnose the fixture".into(),
+                    assignee: Some(requester),
+                    priority: Priority::Normal,
+                    waits_on: vec![],
+                },
+            )
+            .unwrap();
+        st.hq.tick().unwrap();
+        let work = st.hq.runner().remote().unwrap().next().unwrap();
+        assert_eq!(work.turn.task, Some(task));
+        let body = json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"consult","arguments":args}})
+        .to_string();
+        let denied = json_of(
+            app.clone()
+                .oneshot(call("POST", "/v2/team/mcp", Some(&work.turn.token), &body))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            denied["result"]["isError"], true,
+            "task lineage is not migrated: {denied}"
+        );
+        assert!(
+            st.hq.store().consults().unwrap().is_empty(),
+            "v2 must not enter the legacy engine"
+        );
+        // An authenticated old caller receives an explicit upgrade boundary.
+        let legacy = app
+            .oneshot(call("POST", "/v1/team/mcp", Some(&work.turn.token), &body))
+            .await
+            .unwrap();
+        assert_eq!(legacy.status(), StatusCode::GONE);
+        let legacy = json_of(legacy).await;
+        assert!(legacy["error"].as_str().unwrap().contains("/v2/team/mcp"));
+        assert!(st.hq.store().consults().unwrap().is_empty());
+        assert_eq!(
+            st.hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_owner_routes_are_signed_and_disabled_until_selected() {
+        let st = state(false);
+        let app = app(st.clone());
+        let unsigned = app
+            .clone()
+            .oneshot(call("GET", "/v1/conversations", None, ""))
+            .await
+            .unwrap();
+        assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
+        let response = app
+            .clone()
+            .oneshot(call("GET", "/v1/conversations", Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_of(response).await["enabled"], false);
+        let operations = app
+            .clone()
+            .oneshot(call("GET", "/v1/conversations/operations", Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(operations.status(), StatusCode::OK);
+        assert!(
+            json_of(operations).await["operations"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(call("GET", "/v1/conversations/operations", None, ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let lead = st.hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let other = st.hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        let goal = st.hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = st
+            .hq
+            .add_project(goal, "Fixture project", "", lead, None)
+            .unwrap();
+        let body = json!({"project":project.0,"participants":[lead.0,other.0]}).to_string();
+        let disabled = app
+            .clone()
+            .oneshot(call("POST", "/v1/conversations", Some(TOKEN), &body))
+            .await
+            .unwrap();
+        assert!(!disabled.status().is_success());
+        let switched = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                "/v1/conversations/enabled",
+                Some(TOKEN),
+                "{\"enabled\":true}",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(switched.status(), StatusCode::OK);
+        let created = app
+            .clone()
+            .oneshot(call("POST", "/v1/conversations", Some(TOKEN), &body))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let id = json_of(created).await["conversation"].as_i64().unwrap();
+        let path = format!("/v1/conversations/{id}");
+        for (method, suffix, body) in [
+            ("GET", "assistance", ""),
+            ("POST", "sources", r#"{"source":"d1"}"#),
+            ("POST", "sources/revoke", r#"{"source":"d1"}"#),
+        ] {
+            assert_eq!(
+                app.clone()
+                    .oneshot(call(method, &format!("{path}/{suffix}"), None, body))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        let assistance = app
+            .clone()
+            .oneshot(call("GET", &format!("{path}/assistance"), Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(assistance.status(), StatusCode::OK);
+        assert!(
+            json_of(assistance).await["requests"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        for source in ["d0", "d1 trailing prose", "https://example.com/source"] {
+            let invalid = json!({"source":source}).to_string();
+            assert_eq!(
+                app.clone()
+                    .oneshot(call(
+                        "POST",
+                        &format!("{path}/sources"),
+                        Some(TOKEN),
+                        &invalid
+                    ))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let page = json_of(
+            app.clone()
+                .oneshot(call("GET", &path, Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(page["messages"].as_array().unwrap().len(), 0);
+        let deleted = app
+            .clone()
+            .oneshot(call("POST", &format!("{path}/delete"), Some(TOKEN), "{}"))
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::OK);
+        assert!(
+            !app.oneshot(call("GET", &path, Some(TOKEN), ""))
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+    }
+
     /// HQ as it runs: the demo team on the simulated runner, or no demo and the remote one.
     fn state(demo: bool) -> State {
         let runner = if demo {
@@ -1547,13 +1870,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retired_team_v1_requires_a_live_token_and_never_dispatches_a_batch() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let app = app(st.clone());
+        let body = json!([
+            {"jsonrpc":"2.0","id":1,"method":"initialize"},
+            {"jsonrpc":"2.0","id":2,"method":"tools/list"},
+            {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"consult","arguments":{"member":"Member 2","question":"Fixture?"}}},
+            {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"answer_consult","arguments":{"answer":"Fixture answer"}}}
+        ]).to_string();
+        let before = (
+            st.hq.store().runs().unwrap().len(),
+            st.hq.wakes().unwrap().len(),
+        );
+        for token in [None, Some(TOKEN), Some("not-a-turn")] {
+            let res = app
+                .clone()
+                .oneshot(call("POST", "/v1/team/mcp", token, &body))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        }
+        let res = app
+            .clone()
+            .oneshot(call("POST", "/v1/team/mcp", Some(&turn.token), &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::GONE);
+        assert!(
+            json_of(res).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("/v2/team/mcp")
+        );
+        assert_eq!(
+            before,
+            (
+                st.hq.store().runs().unwrap().len(),
+                st.hq.wakes().unwrap().len()
+            )
+        );
+        scripted(&st).finish(turn.run, true);
+        st.hq.tick().unwrap();
+        let res = app
+            .oneshot(call("POST", "/v1/team/mcp", Some(&turn.token), &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn mcp_answers_batches_and_never_answers_a_notification() {
         let st = state(true);
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
         let app = app(st.clone());
         let speak = |body: serde_json::Value| {
-            call("POST", "/v1/team/mcp", Some(&turn.token), &body.to_string())
+            call("POST", "/v2/team/mcp", Some(&turn.token), &body.to_string())
         };
         let batch = json_of(
             app.clone()
@@ -1614,7 +1989,7 @@ mod tests {
                 .clone()
                 .oneshot(call(
                     "POST",
-                    "/v1/team/mcp",
+                    "/v2/team/mcp",
                     token,
                     &rpc(1, "tools/list", json!({})),
                 ))
@@ -1622,7 +1997,7 @@ mod tests {
                 .unwrap();
             assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{token:?}");
         }
-        let speak = |body: String| call("POST", "/v1/team/mcp", Some(&turn.token), &body);
+        let speak = |body: String| call("POST", "/v2/team/mcp", Some(&turn.token), &body);
         let hello = json_of(
             app.clone()
                 .oneshot(speak(rpc(
@@ -1666,11 +2041,12 @@ mod tests {
         // (ADR 0120). It reads the world, tells stories (a lesson is one now), confirms and
         // retires what it stewards, and proposes canon (ADR 0122). And it may play chess (ADR 0121).
         // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
-        // keeps (ADR 0126). And it asks the record and consults (ADR 0129); the answers to a
-        // consult and to the quiz are the tools of those turns alone (ADR 0131, amended). And it
+        // keeps (ADR 0126). It asks the record; peer help is absent while disabled.
+        // The quiz's answer belongs only to its own turn (ADR 0131, amended). And it
         // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
         // for work in its area (ADR 0133).
-        assert_eq!(names.len(), 38, "{names:?}");
+        assert_eq!(names.len(), 37, "{names:?}");
+        assert!(!names.contains(&"consult") && !names.contains(&"answer_consult"));
         assert!(names.contains(&"recheck"));
         assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"narrow_criteria"));
@@ -1891,6 +2267,62 @@ mod tests {
                 .as_str()
                 .is_some_and(|t| t.contains("cap sonarr at 512M")),
             "{replay}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_task_questions_are_owner_only_and_read_only() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let task = turn.task.unwrap();
+        let path = format!("/v1/tasks/{}/consultations?after=-1", task.0);
+        let before = (
+            st.hq.wakes().unwrap().len(),
+            st.hq.store().runs().unwrap().len(),
+        );
+        let app = app(st.clone());
+        for token in [None, Some("wrong"), Some(turn.token.as_str()), Some(RUNNER)] {
+            let response = app
+                .clone()
+                .oneshot(call("GET", &path, token, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let response = app
+            .clone()
+            .oneshot(call("GET", &path, Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = json_of(response).await;
+        assert_eq!(page["source"], "legacy-task-consultation");
+        assert_eq!(page["task"], task.0);
+        assert!(page["records"].as_array().unwrap().is_empty());
+        assert_eq!(page["after"], 0);
+        let response = app
+            .clone()
+            .oneshot(call(
+                "GET",
+                "/v1/tasks/999999/consultations",
+                Some(TOKEN),
+                "",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = app
+            .oneshot(call("POST", &path, Some(TOKEN), "{}"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            before,
+            (
+                st.hq.wakes().unwrap().len(),
+                st.hq.store().runs().unwrap().len()
+            )
         );
     }
 
@@ -2447,9 +2879,85 @@ mod tests {
         }
     }
 
-    /// The check after a deploy (ADR 0115, amended): HQ tells the runner to start its turn
-    /// without a shell, and the node to give it the lab's three reads and nothing else; every
-    /// other turn is told nothing new, and is as it was.
+    /// Explicit assistance and its result verification do not inherit execution capabilities.
+    #[tokio::test]
+    async fn assistance_expert_and_result_are_handed_without_shell_or_node_capabilities() {
+        let st = state(false);
+        let lead = st.hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let requester = st.hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        let expert = st.hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+        let goal = st.hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = st.hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+        st.hq
+            .set_project_tools(project, Some(vec!["shell".into(), "homelab_status".into()]))
+            .unwrap();
+        st.hq.set_conversations_enabled(true).unwrap();
+        let conversation = st
+            .hq
+            .create_conversation(project, [requester, expert])
+            .unwrap();
+        st.hq
+            .wake(requester, None, endora_team::domain::WakeReason::Downtime)
+            .unwrap();
+        st.hq.tick().unwrap();
+        let app = app(st.clone());
+        let next = || call("POST", "/v1/runner/next", Some(RUNNER), r#"{"free":2}"#);
+        let initial = json_of(app.clone().oneshot(next()).await.unwrap()).await;
+        assert_eq!(initial["member"], "Member 2");
+        assert_eq!(
+            initial["shell"], true,
+            "ordinary turns retain existing eligibility"
+        );
+        st.hq
+            .request_assistance_in(
+                RunId(initial["run"].as_i64().unwrap()),
+                conversation,
+                "http_policy_once",
+                "Which fixture failed?",
+                &[],
+            )
+            .unwrap();
+        assert!(st.hq.runner().remote().unwrap().ended(
+            RunId(initial["run"].as_i64().unwrap()),
+            initial["lease"].as_u64().unwrap(),
+            true
+        ));
+        st.hq.tick().unwrap();
+        for name in ["Member 3", "Member 2"] {
+            let turn = json_of(app.clone().oneshot(next()).await.unwrap()).await;
+            assert_eq!(turn["member"], name);
+            assert_eq!(turn["task"], serde_json::Value::Null);
+            assert_eq!(turn["shell"], false, "{turn}");
+            let found = json_of(
+                app.clone()
+                    .oneshot(call(
+                        "POST",
+                        "/v1/team/turn",
+                        Some(TOKEN),
+                        &json!({"token":turn["token"]}).to_string(),
+                    ))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(found["only"], json!([]), "{found}");
+            let run = RunId(turn["run"].as_i64().unwrap());
+            if name == "Member 3" {
+                st.hq
+                    .answer_assistance_in(run, "The fixture cache was unavailable.", &[])
+                    .unwrap();
+            }
+            assert!(st.hq.runner().remote().unwrap().ended(
+                run,
+                turn["lease"].as_u64().unwrap(),
+                true
+            ));
+            st.hq.tick().unwrap();
+        }
+        assert!(st.hq.store().tasks().unwrap().is_empty());
+    }
+
+    /// A deploy check receives the lab reads alone and no shell (ADR 0115, amended).
     #[tokio::test]
     async fn a_deploy_checks_turn_is_handed_without_a_shell_and_with_the_lab_reads_alone() {
         let st = state(false);

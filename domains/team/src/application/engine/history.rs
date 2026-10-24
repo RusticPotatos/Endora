@@ -28,6 +28,74 @@ pub struct TranscriptKept {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
+    /// Before publishing the protocol at startup, close legacy peer work while
+    /// retaining its history. The retired protocol must admit no new work.
+    /// # Errors
+    /// A store failure; startup must fail rather than serve a partial cutover.
+    pub fn retire_legacy_peer_work(&self) -> Done<usize> {
+        let _held = self.held();
+        let mut stopped = 0;
+        loop {
+            let batch = self.store.retire_legacy_consultations()?;
+            if batch.cancelled == 0 && batch.runs.is_empty() {
+                return Ok(stopped);
+            }
+            for id in batch.runs {
+                let Some(run) = self.store.run(id)?.filter(|run| run.status.live()) else {
+                    continue;
+                };
+                if run.status == crate::domain::RunStatus::Running {
+                    self.runner.stop(id, std::time::Duration::from_secs(5));
+                }
+                self.end(
+                    run,
+                    crate::domain::RunStatus::Stopped,
+                    "legacy peer help retired at protocol v2 cutover",
+                )?;
+                stopped += 1;
+            }
+        }
+    }
+
+    /// Owner inspection of retained task questions, independent of current peer permissions.
+    /// # Errors
+    /// An unknown task or a store failure.
+    pub fn legacy_task_conversations(
+        &self,
+        task: crate::domain::TaskId,
+        after: i64,
+    ) -> Done<serde_json::Value> {
+        let _held = self.held();
+        self.task(task)?;
+        let after = after.max(0);
+        let mut rows = self.store.legacy_task_consultations(task, after)?;
+        let more = rows.len() > 50;
+        rows.truncate(50);
+        let cursor = rows.last().map_or(after, |row| row.id);
+        let records: Vec<_> = rows.into_iter().map(|row| {
+            let answer = row.answer.map(|answer| {
+                let origin = match answer.origin {
+                    history::InputOrigin::Owner => serde_json::json!({"kind":"owner"}),
+                    history::InputOrigin::Run(run) => serde_json::json!({"kind":"run","run":run.0}),
+                    history::InputOrigin::Unknown => serde_json::json!({"kind":"unknown"}),
+                };
+                serde_json::json!({"id":answer.id,"author":answer.post.author,"text":answer.post.text,
+                    "at":answer.post.at,"unsupported":answer.post.unsupported,"origin":origin,
+                    "evidence":answer.evidence.iter().map(|e|e.said()).collect::<Vec<_>>()})
+            });
+            serde_json::json!({"id":format!("legacy-consult:{}",row.id),"legacy_id":row.id,
+                "requester":row.requester.0,"requester_run":row.requester_run.0,
+                "expert":row.expert.0,"expert_run":row.expert_run.map(|id|id.0),
+                "thread":row.thread.0,"topic":row.topic.map(|id|id.0),"project":row.project.map(|id|id.0),
+                "question":row.question,"outcome":row.outcome,"reason":row.reason,"at":row.at,
+                "answer_post":row.answer_post,"answer":answer})
+        }).collect();
+        Ok(
+            serde_json::json!({"source":"legacy-task-consultation","task":task.0,
+            "records":records,"after":cursor,"has_more":more}),
+        )
+    }
+
     /// The node tells HQ a turn's conversation, as plain text already scrubbed of secrets,
     /// naming the turn by its own token: kept only while that turn runs, so neither a model nor
     /// a turn that has ended can write one. Capped at [`history::TRANSCRIPT_MOST`] bytes (head
@@ -59,11 +127,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             )));
         }
         let member = self.member(run.member)?;
-        let confidential = self
-            .store
-            .call_receipts_of(run.id)?
-            .iter()
-            .any(|r| r.confidential);
+        let confidential = self.store.run_read_confidential(run.id)?;
         let (body, cut) = history::cap(text, history::TRANSCRIPT_MOST);
         let now = self.clock.now();
         let kept = Transcript {

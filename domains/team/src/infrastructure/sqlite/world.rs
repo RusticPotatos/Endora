@@ -18,6 +18,13 @@ pub(super) const MIGRATED: &str = "world_migrated";
 /// Set, in the same transaction as the mending, once the move's wrong dates are mended.
 pub(super) const REPAIRED: &str = "world_dates_repaired";
 
+const LATEST_RECIPIENT_HANDOVER: &str =
+    "SELECT id,task,by_member,from_member,to_member,run,done,not_done,next,watch_out,evidence,at_ms
+    FROM handovers WHERE task=?1 AND to_member=?2 ORDER BY id DESC LIMIT 1";
+const LATEST_TASK_HANDOVER: &str =
+    "SELECT id,task,by_member,from_member,to_member,run,done,not_done,next,watch_out,evidence,at_ms
+    FROM handovers WHERE task=?1 ORDER BY id DESC LIMIT 1";
+
 /// The trigger that keeps a timeline row as written; the mending lifts it and puts it back
 /// within its one transaction.
 const TIMELINE_KEPT: &str = "CREATE TRIGGER IF NOT EXISTS world_timeline_is_kept_update
@@ -73,6 +80,7 @@ CREATE TABLE IF NOT EXISTS handovers (
     evidence TEXT NOT NULL DEFAULT '', at_ms INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX IF NOT EXISTS handovers_by_task ON handovers(task);
+CREATE INDEX IF NOT EXISTS handovers_for_member ON handovers(task,to_member,id);
 CREATE TRIGGER IF NOT EXISTS handovers_are_kept_update
     BEFORE UPDATE ON handovers BEGIN SELECT RAISE(ABORT, 'a handover note is kept as written'); END;
 CREATE TRIGGER IF NOT EXISTS handovers_are_kept_delete
@@ -147,6 +155,25 @@ fn story_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(Story, String, String)>
         scope,
         stage,
     ))
+}
+
+fn handover(r: &rusqlite::Row<'_>) -> rusqlite::Result<Handover> {
+    Ok(Handover {
+        id: r.get(0)?,
+        task: TaskId(r.get(1)?),
+        by: MemberId(r.get(2)?),
+        from: r.get::<_, Option<i64>>(3)?.map(MemberId),
+        to: r.get::<_, Option<i64>>(4)?.map(MemberId),
+        run: r.get::<_, Option<i64>>(5)?.map(RunId),
+        note: HandoverNote {
+            done: r.get(6)?,
+            not_done: r.get(7)?,
+            next: r.get(8)?,
+            watch_out: r.get(9)?,
+        },
+        evidence: Ref::read(&r.get::<_, String>(10)?),
+        at: r.get(11)?,
+    })
 }
 
 impl WorldStore for SqliteTeamStore {
@@ -417,27 +444,28 @@ impl WorldStore for SqliteTeamStore {
                     watch_out, evidence, at_ms FROM handovers WHERE task = ?1 ORDER BY id",
             )
             .map_err(backend)?;
-        stmt.query_map([task.0], |r| {
-            Ok(Handover {
-                id: r.get(0)?,
-                task: TaskId(r.get(1)?),
-                by: MemberId(r.get(2)?),
-                from: r.get::<_, Option<i64>>(3)?.map(MemberId),
-                to: r.get::<_, Option<i64>>(4)?.map(MemberId),
-                run: r.get::<_, Option<i64>>(5)?.map(RunId),
-                note: HandoverNote {
-                    done: r.get(6)?,
-                    not_done: r.get(7)?,
-                    next: r.get(8)?,
-                    watch_out: r.get(9)?,
-                },
-                evidence: Ref::read(&r.get::<_, String>(10)?),
-                at: r.get(11)?,
-            })
-        })
-        .map_err(backend)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(backend)
+        stmt.query_map([task.0], handover)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)
+    }
+
+    fn latest_handover(&self, task: TaskId, member: MemberId) -> Stored<Option<Handover>> {
+        let conn = self.conn()?;
+        let addressed = conn
+            .query_row(
+                LATEST_RECIPIENT_HANDOVER,
+                params![task.0, member.0],
+                handover,
+            )
+            .optional()
+            .map_err(backend)?;
+        if addressed.is_some() {
+            return Ok(addressed);
+        }
+        conn.query_row(LATEST_TASK_HANDOVER, [task.0], handover)
+            .optional()
+            .map_err(backend)
     }
 
     fn save_briefed(&self, b: &Briefed) -> Stored<()> {
@@ -796,6 +824,81 @@ mod tests {
                 .is_err()
         );
         assert!(conn.execute("DELETE FROM world_revisions", []).is_err());
+    }
+
+    #[test]
+    fn latest_handover_prefers_the_recipient_and_bounds_retained_history_reads() {
+        use rusqlite::StatementStatus;
+        let store = live_store();
+        let conn = store.conn().unwrap();
+        conn.execute_batch(
+            "INSERT INTO tasks(id,goal,title,description,status,priority,depth)
+            VALUES(1,1,'Fixture','','doing','normal',0);
+            INSERT INTO handovers(id,task,by_member,to_member,done,not_done,next,watch_out,at_ms)
+            VALUES(1,1,1,2,'Original','Pending','Check','Care',0);",
+        )
+        .unwrap();
+        let mut samples = Vec::new();
+        for size in [1_000, 100_000] {
+            let previous = if size == 1_000 { 1 } else { 1_001 };
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(?1+1) UNION ALL SELECT id+1 FROM n WHERE id<?2+1)
+                INSERT INTO handovers(id,task,by_member,to_member,done,not_done,next,watch_out,at_ms)
+                SELECT id,1,1,1,'Fixture','Pending','Check','Care',0 FROM n", params![previous,size]).unwrap();
+            let mut sample = Vec::new();
+            for (sql, parameters) in [
+                (LATEST_RECIPIENT_HANDOVER, vec![1, 2]),
+                (LATEST_RECIPIENT_HANDOVER, vec![1, 3]),
+                (LATEST_TASK_HANDOVER, vec![1]),
+            ] {
+                let mut query = conn.prepare(sql).unwrap();
+                let _ = query
+                    .query_row(rusqlite::params_from_iter(parameters), handover)
+                    .optional()
+                    .unwrap();
+                sample.push(query.get_status(StatementStatus::VmStep));
+            }
+            samples.push(sample);
+        }
+        assert_eq!(samples[0], samples[1]);
+        assert!(samples[1].iter().all(|steps| *steps < 100));
+        drop(conn);
+        assert_eq!(
+            store
+                .latest_handover(TaskId(1), MemberId(2))
+                .unwrap()
+                .unwrap()
+                .id,
+            1
+        );
+        assert_eq!(
+            store
+                .latest_handover(TaskId(1), MemberId(3))
+                .unwrap()
+                .unwrap()
+                .id,
+            100_001
+        );
+        assert!(
+            store
+                .latest_handover(TaskId(2), MemberId(2))
+                .unwrap()
+                .is_none()
+        );
+        let conn = store.conn().unwrap();
+        conn.execute_batch("DROP INDEX handovers_for_member;")
+            .unwrap();
+        let mut query = conn.prepare(LATEST_RECIPIENT_HANDOVER).unwrap();
+        assert!(
+            query
+                .query_row([1, 3], handover)
+                .optional()
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            query.get_status(StatementStatus::VmStep) > 100_000,
+            "negative control must scan the task's retained notes"
+        );
     }
 
     #[test]

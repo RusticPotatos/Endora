@@ -60,7 +60,7 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
             "endora_sandbox".to_owned(),
             format!("{listener}/team-relay/local/v1"),
             format!("{listener}/team-relay/v1"),
-            format!("{listener}/team-gateway/mcp"),
+            format!("{listener}/team-gateway/v2/mcp"),
         )
     } else {
         (
@@ -68,7 +68,7 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
             "endora_team".to_owned(),
             "http://node:8788/team-relay/local/v1".to_owned(),
             "http://node:8788/team-relay/v1".to_owned(),
-            "http://hq:8790/v1/team/mcp".to_owned(),
+            "http://hq:8790/v2/team/mcp".to_owned(),
         )
     };
     let workbench = match or("WORKBENCH", if pi { "1" } else { "0" }).as_str() {
@@ -84,6 +84,8 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
         "http://node:8788/team-relay/check/".to_owned()
     };
     let check_done = hq.check_done_prefix();
+    let hq_mcp = or("WORKER_HQ_MCP", &hq_mcp);
+    endora_protocol::team::canonical_endpoint(&hq_mcp).map_err(str::to_owned)?;
     Ok(Config {
         hq,
         socket: or("DOCKER_SOCKET", "/var/run/docker.sock"),
@@ -92,7 +94,7 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
             network: or("TEAM_NETWORK", &network),
             model_url: or("WORKER_MODEL_URL", &model_url),
             cloud_url: or("WORKER_CLOUD_URL", &cloud_url),
-            hq_mcp: or("WORKER_HQ_MCP", &hq_mcp),
+            hq_mcp,
             capacity,
             workbench,
             check_bundle,
@@ -137,6 +139,17 @@ mod tests {
     use super::config;
 
     #[test]
+    fn stale_worker_endpoint_overrides_require_an_explicit_upgrade() {
+        for endpoint in [
+            "http://hq:8790/v1/team/mcp",
+            "http://node:8788/team-gateway/mcp",
+        ] {
+            let result = config(|name| (name == "WORKER_HQ_MCP").then(|| endpoint.to_owned()));
+            assert!(result.err().unwrap().contains("v2"));
+        }
+    }
+
+    #[test]
     fn the_runner_is_set_up_from_its_environment_with_the_composes_defaults() {
         let defaults = config(|_| None).unwrap();
         assert_eq!(defaults.hq.url(), "http://hq:8790");
@@ -147,7 +160,7 @@ mod tests {
             defaults.work.model_url,
             "http://node:8788/team-relay/local/v1"
         );
-        assert_eq!(defaults.work.hq_mcp, "http://hq:8790/v1/team/mcp");
+        assert_eq!(defaults.work.hq_mcp, "http://hq:8790/v2/team/mcp");
         assert_eq!(
             defaults.work.cloud_url, "http://node:8788/team-relay/v1",
             "the Anthropic relay, on the same team listener"
@@ -190,7 +203,10 @@ mod tests {
         assert!(pi.work.workbench);
         assert_eq!(pi.work.image, "endora-workbench:latest");
         assert_eq!(pi.work.network, "endora_sandbox");
-        assert_eq!(pi.work.hq_mcp, "http://192.168.1.10:8788/team-gateway/mcp");
+        assert_eq!(
+            pi.work.hq_mcp,
+            "http://192.168.1.10:8788/team-gateway/v2/mcp"
+        );
         assert_eq!(
             pi.work.model_url,
             "http://192.168.1.10:8788/team-relay/local/v1"

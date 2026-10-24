@@ -28,7 +28,7 @@ mod turn;
 use turn::{Api, EFFORTS, Setup, Stopped, Taken};
 
 /// HQ's team protocol, on the compose network.
-const HQ_MCP: &str = "http://hq:8790/v1/team/mcp";
+const HQ_MCP: &str = "http://hq:8790/v2/team/mcp";
 /// The node's relay to the local model, on the compose network.
 const MODEL_URL: &str = "http://node:8788/team-relay/local/v1";
 /// The node's contracts, on the compose network.
@@ -116,9 +116,11 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
     if claude_code && (workbench.is_none() || api != Api::Anthropic) {
         return Err("Claude Code takes a turn only in the workbench, on a Claude model".to_owned());
     }
+    let mcp = given("ENDORA_HQ_MCP").unwrap_or_else(|| HQ_MCP.to_owned());
+    endora_protocol::team::canonical_endpoint(&mcp).map_err(str::to_owned)?;
     Ok(Setup {
         token,
-        mcp: given("ENDORA_HQ_MCP").unwrap_or_else(|| HQ_MCP.to_owned()),
+        mcp,
         model_url,
         contracts,
         model,
@@ -210,10 +212,24 @@ mod tests {
     }
 
     #[test]
+    fn stale_team_endpoint_overrides_are_refused_before_starting_a_turn() {
+        for endpoint in [
+            "http://hq:8790/v1/team/mcp",
+            "http://node:8788/team-gateway/mcp",
+        ] {
+            let result = setup(env(&[
+                ("ENDORA_RUN_TOKEN", "fixture-token"),
+                ("ENDORA_HQ_MCP", endpoint),
+            ]));
+            assert!(result.err().unwrap().contains("v2"));
+        }
+    }
+
+    #[test]
     fn a_token_is_all_it_needs_the_rest_is_the_compose_networks() {
         let setup = setup(env(&[("ENDORA_RUN_TOKEN", "a-turns-token")])).unwrap();
         assert_eq!(setup.token, "a-turns-token");
-        assert_eq!(setup.mcp, "http://hq:8790/v1/team/mcp");
+        assert_eq!(setup.mcp, "http://hq:8790/v2/team/mcp");
         assert_eq!(setup.model_url, "http://node:8788/team-relay/local/v1");
         assert_eq!(setup.contracts, "http://node:8788/team-relay/contracts");
         assert_eq!(setup.model, "local");
@@ -275,13 +291,13 @@ mod tests {
     fn what_it_is_given_is_what_it_uses() {
         let setup = setup(env(&[
             ("ENDORA_RUN_TOKEN", "a-turns-token"),
-            ("ENDORA_HQ_MCP", "http://192.168.1.10:8790/v1/team/mcp"),
+            ("ENDORA_HQ_MCP", "http://192.168.1.10:8790/v2/team/mcp"),
             ("ENDORA_MODEL_URL", "http://192.168.1.10:8787/team-relay/v1"),
             ("ENDORA_MODEL", "claude-haiku-5-5"),
             ("ENDORA_MOST_ROUNDS", "4"),
         ]))
         .unwrap();
-        assert_eq!(setup.mcp, "http://192.168.1.10:8790/v1/team/mcp");
+        assert_eq!(setup.mcp, "http://192.168.1.10:8790/v2/team/mcp");
         assert_eq!(setup.model_url, "http://192.168.1.10:8787/team-relay/v1");
         assert_eq!(setup.model, "claude-haiku-5-5");
         assert_eq!(setup.api, Api::Anthropic, "Claude speaks Anthropic's API");

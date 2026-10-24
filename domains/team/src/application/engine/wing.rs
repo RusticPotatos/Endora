@@ -24,6 +24,20 @@ pub const DOCUMENT_MOST: usize = 72 * 1024;
 /// How much of a document a turn reads at a time.
 pub const DOCUMENT_PART: usize = 16_000;
 
+fn document_part(document: &Document, part: usize) -> String {
+    let chars: Vec<char> = document.text.chars().collect();
+    let parts = chars.len().div_ceil(DOCUMENT_PART).max(1);
+    let part = part.clamp(1, parts);
+    let from = (part - 1) * DOCUMENT_PART;
+    let text: String = chars[from..(from + DOCUMENT_PART).min(chars.len())]
+        .iter()
+        .collect();
+    format!(
+        "Document d{} on task #{}: {} (part {part} of {parts})\n{text}",
+        document.id, document.task, document.title
+    )
+}
+
 /// The wing's first task, for its lead.
 pub const WING_FIRST_TASK: &str =
     "Plan the clean-up: read the fork's docs and propose the first three branches";
@@ -1119,10 +1133,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .find(|g| g.title.trim().eq_ignore_ascii_case(WING_GOAL) && g.status != GoalStatus::Dropped)
         {
             Some(goal) => goal.id,
-            None => self.set_goal(
+            None => self.set_generated_goal(
                 WING_GOAL,
                 "The wing cleans up the lab's ansible-nas fork, one reviewed branch at a time; the owner merges.",
-                Author::Owner,
             )?,
         };
         if self.store.goal_note(goal)?.trim().is_empty() {
@@ -1231,6 +1244,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(document) = self.store.document(id)? else {
             return Err(EngineError::Refused(Refusal::NotADocument));
         };
+        if self.check_assistance_source(run, crate::domain::assistance::SourceRef::Document(id))? {
+            self.inherit_input_from(run, document.run)?;
+            return Ok(document_part(&document, part));
+        }
         let mut reach = match turn.task {
             Some(task) => self.work_of(task)?,
             None => Vec::new(),
@@ -1247,17 +1264,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !member.role.leads() && !reach.contains(&document.task) {
             return Err(EngineError::Refused(Refusal::NotADocument));
         }
-        let chars: Vec<char> = document.text.chars().collect();
-        let parts = chars.len().div_ceil(DOCUMENT_PART).max(1);
-        let part = part.clamp(1, parts);
-        let from = (part - 1) * DOCUMENT_PART;
-        let text: String = chars[from..(from + DOCUMENT_PART).min(chars.len())]
-            .iter()
-            .collect();
-        Ok(format!(
-            "Document d{} on task #{}: {} (part {part} of {parts})\n{text}",
-            document.id, document.task, document.title
-        ))
+        self.inherit_input_from(run, document.run)?;
+        Ok(document_part(&document, part))
     }
 
     /// A task's documents and branches, for its briefing: a line each, or nothing.

@@ -121,6 +121,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .into_iter()
             .find(|n| n.id == note)
             .ok_or(EngineError::Refused(Refusal::NoSuchNote(note)))?;
+        if !found.from_owner {
+            self.inherit_input_from(run, found.written_in_run)?;
+        }
         let reason = super::one_line(reason, 300);
         if reason.is_empty() {
             return Err(EngineError::Refused(Refusal::ForgetNeedsReason));
@@ -144,6 +147,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let turn = self.running(run)?;
         let notes = self.store.notes(turn.member)?;
+        self.inherit_notebook_inputs(run, &notes)?;
         if notes.is_empty() {
             return Ok("Your notebook is empty.".to_owned());
         }
@@ -281,9 +285,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// What a briefing says of a member's notebook: its notes, newest first and capped (the
     /// CEO's only counted); and the ask to tidy them, when it is due (empty otherwise).
-    pub(super) fn notebook_said(&self, member: &Member) -> Done<(String, String)> {
+    pub(super) fn notebook_said(&self, member: &Member, run: RunId) -> Done<(String, String)> {
         let now = self.clock.now();
         let notes = self.store.notes(member.id)?;
+        self.inherit_notebook_inputs(run, &notes)?;
         let said = notebook::briefing(&notes, now, member.role == Role::Ceo);
         let read = |key: String| -> Done<Option<Millis>> {
             Ok(self

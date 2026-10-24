@@ -1122,7 +1122,7 @@ mod tests {
             network: "endora_team".to_owned(),
             model_url: "http://node:8788/team-relay/local/v1".to_owned(),
             cloud_url: "http://node:8788/team-relay/v1".to_owned(),
-            hq_mcp: "http://hq:8790/v1/team/mcp".to_owned(),
+            hq_mcp: "http://hq:8790/v2/team/mcp".to_owned(),
             capacity,
             workbench: false,
             check_bundle: "http://node:8788/team-relay/check/".to_owned(),
@@ -1167,7 +1167,7 @@ mod tests {
                 "Entrypoint": ["endora-worker"],
                 "Env": [
                     format!("ENDORA_RUN_TOKEN={}", token(12)),
-                    "ENDORA_HQ_MCP=http://hq:8790/v1/team/mcp",
+                    "ENDORA_HQ_MCP=http://hq:8790/v2/team/mcp",
                     "ENDORA_MODEL_URL=http://node:8788/team-relay/local/v1",
                 ],
                 "Labels": { "endora.run": "12", "endora.lease": "1012" },
@@ -1202,7 +1202,7 @@ mod tests {
             network: "endora_sandbox".to_owned(),
             model_url: format!("{gateway}/team-relay/local/v1"),
             cloud_url: format!("{gateway}/team-relay/v1"),
-            hq_mcp: format!("{gateway}/team-gateway/mcp"),
+            hq_mcp: format!("{gateway}/team-gateway/v2/mcp"),
             capacity: 1,
             workbench: true,
             check_bundle: format!("{gateway}/team-relay/check/"),
@@ -1253,7 +1253,7 @@ mod tests {
             network: "endora_sandbox".to_owned(),
             model_url: format!("{gateway}/team-relay/local/v1"),
             cloud_url: format!("{gateway}/team-relay/v1"),
-            hq_mcp: format!("{gateway}/team-gateway/mcp"),
+            hq_mcp: format!("{gateway}/team-gateway/v2/mcp"),
             capacity: 1,
             workbench: true,
             check_bundle: format!("{gateway}/team-relay/check/"),
@@ -1272,7 +1272,7 @@ mod tests {
                 "Entrypoint": ["endora-worker"],
                 "Env": [
                     format!("ENDORA_RUN_TOKEN={}", token(12)),
-                    "ENDORA_HQ_MCP=http://192.168.1.10:8788/team-gateway/mcp",
+                    "ENDORA_HQ_MCP=http://192.168.1.10:8788/team-gateway/v2/mcp",
                     "ENDORA_MODEL_URL=http://192.168.1.10:8788/team-relay/local/v1",
                     "ENDORA_WORKBENCH=1",
                 ],
@@ -1309,7 +1309,7 @@ mod tests {
             network: "endora_sandbox".to_owned(),
             model_url: format!("{gateway}/team-relay/local/v1"),
             cloud_url: format!("{gateway}/team-relay/v1"),
-            hq_mcp: format!("{gateway}/team-gateway/mcp"),
+            hq_mcp: format!("{gateway}/team-gateway/v2/mcp"),
             capacity: 4,
             workbench,
             check_bundle: format!("{gateway}/team-relay/check/"),
@@ -1823,7 +1823,7 @@ mod tests {
             specs[0]["Env"],
             json!([
                 format!("ENDORA_RUN_TOKEN={}", token(21)),
-                "ENDORA_HQ_MCP=http://hq:8790/v1/team/mcp",
+                "ENDORA_HQ_MCP=http://hq:8790/v2/team/mcp",
                 "ENDORA_MODEL_URL=http://node:8788/team-relay/v1",
                 "ENDORA_MODEL=claude-sonnet-5-5",
                 "ENDORA_EFFORT=medium",
@@ -1833,7 +1833,7 @@ mod tests {
             specs[1]["Env"],
             json!([
                 format!("ENDORA_RUN_TOKEN={}", token(22)),
-                "ENDORA_HQ_MCP=http://hq:8790/v1/team/mcp",
+                "ENDORA_HQ_MCP=http://hq:8790/v2/team/mcp",
                 "ENDORA_MODEL_URL=http://node:8788/team-relay/local/v1",
             ])
         );
@@ -1855,7 +1855,7 @@ mod tests {
             docker.specs()[0]["Env"],
             json!([
                 format!("ENDORA_RUN_TOKEN={}", token(23)),
-                "ENDORA_HQ_MCP=http://hq:8790/v1/team/mcp",
+                "ENDORA_HQ_MCP=http://hq:8790/v2/team/mcp",
                 "ENDORA_MODEL_URL=http://node:8788/team-relay/local/v1",
             ])
         );

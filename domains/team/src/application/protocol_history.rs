@@ -1,13 +1,10 @@
-//! The team protocol's tools for asking the past (ADR 0129): `ask_record`, which searches what
-//! the team said and wakes no one; `consult`, a question to a member that takes one short turn of
-//! theirs; and `answer_consult`, with which a consulted member answers. The engine's rules decide
-//! every call.
+//! Explicit historical search and canonical colleague assistance (ADRs 0129/0138).
+//! Historical testimony never substitutes automatically for a live peer answer.
 
 use serde_json::{Value, json};
 
 use super::engine::Engine;
 use super::ports::{Clock, Run, TeamStore, WorkerAdapter};
-use crate::domain::consult;
 use crate::domain::record;
 use crate::domain::{Member, TaskId};
 
@@ -19,9 +16,7 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
     })
 }
 
-/// The history's tools every member is offered (the CEO's consult is held to leads by the
-/// engine, not by what it is offered), but not the consulted member's answer, which is its own
-/// turn's ([`answer_consult_tool`]).
+/// Explicit historical search and the canonical colleague-assistance adapter.
 #[must_use]
 pub fn tools() -> Vec<Value> {
     vec![
@@ -38,28 +33,17 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "consult",
-            "Ask another member a question directly: they take one short turn, from what they know and the record, and their answer is posted in your task's thread as \"<name> answers (consulted): …\", which wakes you. At most two consults in a turn and six in a day, and the answer is paid from your share; the CEO consults leads only. A member who is paused or on furlough is never woken: the record answers for them. Try ask_record first. The owner is asked with ask_owner, not this.",
+            "Ask a colleague through an owner-authorized conversation and bounded read-only assistance. Select the conversation when more than one scope matches the pair. The result stays in that conversation; there is no task-thread answer or automatic record fallback. Sources must already be granted. At most two new requests per turn and six per day. Use ask_owner for owner decisions.",
             json!({
                 "member": { "type": "string", "description": "the member's name" },
                 "question": { "type": "string", "maxLength": record::QUESTION_MOST },
-                "task": { "type": "integer", "description": "the task the question is about (what they wrote on it is read to them); the answer goes in your own task's thread, or this one when your turn is about none" },
+                "conversation": { "type": "integer", "minimum":1, "description": "An existing owner-authorized conversation with this colleague; required when more than one matches." },
+                "key": { "type": "string", "minLength":8, "maxLength":64, "description":"Optional stable retry key for assistance; otherwise derived from this turn and question." },
+                "evidence": { "type":"array", "maxItems":5, "items":{"type":"string"}, "description":"Original document/receipt locators already granted to the selected conversation." },
             }),
             &["member", "question"],
         ),
     ]
-}
-
-/// The tool a consulted member answers with. Offered in a consulted turn and in no other (ADR
-/// 0131, amended): a tool only a consulted member can use is not one more for every other turn
-/// to choose among.
-#[must_use]
-pub fn answer_consult_tool() -> Value {
-    tool(
-        "answer_consult",
-        "Answer the colleague who consulted you (your turn says so): in a few sentences, from what you know and the record; say so if you do not know. It is posted in their thread and wakes them. Then stop.",
-        json!({ "answer": { "type": "string", "maxLength": consult::ANSWER_MOST } }),
-        &["answer"],
-    )
 }
 
 fn text<'a>(args: &'a Value, key: &str) -> &'a str {
@@ -85,18 +69,46 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 args["project"].as_i64(),
             )
             .map_err(said),
-        "consult" => engine
-            .consult_in(
-                run.id,
-                text(args, "member"),
-                text(args, "question"),
-                args["task"].as_i64().map(TaskId),
-            )
-            .map_err(said),
-        "answer_consult" => engine
-            .answer_consult_in(run.id, text(args, "answer"))
-            .map(|()| "Your answer is posted and your colleague is woken. Stop here.".to_owned())
-            .map_err(said),
+        "consult" => (|| {
+            if args.to_string().len() > crate::domain::conversation::ARGUMENT_BYTES {
+                return Err("consult arguments exceed 8 KiB".to_owned());
+            }
+            let object = args
+                .as_object()
+                .ok_or("consult arguments must be an object")?;
+            if object.keys().any(|key| {
+                !["member", "question", "conversation", "key", "evidence"].contains(&key.as_str())
+            }) {
+                return Err(
+                    "identity and authority come from the live turn, not extra fields".to_owned(),
+                );
+            }
+            let conversation = args
+                .get("conversation")
+                .map(|value| {
+                    value
+                        .as_i64()
+                        .filter(|id| *id > 0)
+                        .ok_or("positive conversation ID required".to_owned())
+                })
+                .transpose()?;
+            let key = args
+                .get("key")
+                .map(|value| value.as_str().ok_or("retry key must be text".to_owned()))
+                .transpose()?;
+            let evidence = super::protocol_conversations::assistance_sources(args)?;
+            engine
+                .consult_peer_in(
+                    run.id,
+                    text(args, "member"),
+                    text(args, "question"),
+                    conversation,
+                    key,
+                    &evidence,
+                )
+                .map_err(said)
+        })(),
+        "answer_consult" => Err("answer_consult is retired; use assigned answer_assistance".into()),
         _ => return None,
     })
 }

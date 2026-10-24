@@ -52,19 +52,22 @@ fn answer(
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "endora-hq", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Call my_turn first. You are one member of a team: use only these tools, and end your turn when your part is done.",
+                "instructions": "Endora team protocol v2. Call my_turn first. Peer consultation uses authorized conversations and answer_assistance; no task-thread or record-fallback consultation.",
             })
         }
         "ping" => json!({}),
         // The role's tools, and the one tool of the special turn this is (a quiz, a consult).
-        "tools/list" => json!({ "tools": protocol::tools_in(hq, run, member) }),
+        "tools/list" => {
+            json!({ "tools": protocol::tools_in_v2(hq, run, member) })
+        }
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
             let args = params
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let (text, failed) = match protocol::call(hq, run, member, name, &args) {
+            let called = protocol::call_v2(hq, run, member, name, &args);
+            let (text, failed) = match called {
                 Ok(text) => (text, false),
                 Err(text) => (text, true),
             };
@@ -83,6 +86,19 @@ pub async fn mcp(
     headers: HeaderMap,
     Json(msg): Json<Value>,
 ) -> Response {
+    mcp_for(state, headers, msg, false).await
+}
+
+/// The versioned canonical conversation contract, using the same turn-token door.
+pub async fn mcp_v2(
+    Extract(state): Extract<State>,
+    headers: HeaderMap,
+    Json(msg): Json<Value>,
+) -> Response {
+    mcp_for(state, headers, msg, true).await
+}
+
+async fn mcp_for(state: State, headers: HeaderMap, msg: Value, canonical: bool) -> Response {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -95,6 +111,9 @@ pub async fn mcp(
         let Ok(Some((run, member))) = hq.turn_of(&token) else {
             return Err(StatusCode::UNAUTHORIZED);
         };
+        if !canonical {
+            return Err(StatusCode::GONE);
+        }
         let Value::Array(batch) = msg else {
             return Ok(answer(hq.as_ref(), &run, &member, &msg));
         };
@@ -113,6 +132,11 @@ pub async fn mcp(
     .await;
     match answered {
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Err(StatusCode::GONE)) => (
+            StatusCode::GONE,
+            Json(json!({ "error": "team protocol v1 is retired; configure /v2/team/mcp" })),
+        )
+            .into_response(),
         Ok(Err(status)) => (
             status,
             Json(json!({ "error": "no running turn has that token" })),

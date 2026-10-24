@@ -1151,10 +1151,18 @@ fn an_empty_list_gives_nothing_of_the_nodes_and_no_list_changes_nothing() {
     let (run, member) = hq.turn_of(&context.token).unwrap().unwrap();
     assert_eq!(hq.lab_tools_of(run.id).unwrap(), None);
     assert!(hq.may_use_a_shell(run.id).unwrap());
+    let role_tools = tools(member.role);
+    let expected: Vec<String> = role_tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|tool| tool["name"] != "consult")
+        .map(|tool| tool["name"].as_str().unwrap().to_owned())
+        .collect();
     assert_eq!(
-        offered_by_hq(&hq, &context).len(),
-        tools(member.role).as_array().unwrap().len(),
-        "as its role gives"
+        offered_by_hq(&hq, &context),
+        expected,
+        "role tools remain available; disabled peer help is omitted"
     );
     assert_eq!(
         hq.set_project_tools(ProjectId(99), None),

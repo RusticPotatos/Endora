@@ -23,7 +23,7 @@ Feature: Only the CEO reaches the board
   Scenario: The CEO is not woken for being named
     Given Ada has the task "Plan the week"
     When Ada posts "@Mara have a look at this"
-    Then Mara is not woken: not_for_the_ceo
+    Then Mara has never been woken
 
   Scenario: Opus is the CEO's alone
     When the owner sets Ada's brain to "claude-opus-5-5"

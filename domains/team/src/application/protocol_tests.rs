@@ -66,6 +66,54 @@ fn turn(hq: &Hq<'_>, token: &str) -> (Run, Member) {
 }
 
 #[test]
+fn asking_up_the_chain_is_for_decisions_and_a_colleagues_help_is_consult() {
+    // ADR 0138 keeps management escalation for decisions and drops routing ordinary peer
+    // help through it: the tool says so, and names the canonical way to ask a colleague.
+    let ask = tools(Role::Developer)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "ask_owner")
+        .unwrap()["description"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(ask.contains("decision"), "{ask}");
+    assert!(ask.contains("consult"), "{ask}");
+    assert!(!ask.contains("Ask a question"), "{ask}");
+}
+
+#[test]
+fn my_turn_keeps_the_latest_twelve_posts_in_both_protocol_versions() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, setup, context) = started(&clock);
+    let (run, member) = turn(&hq, &context.token);
+    for n in 0..13 {
+        hq.post(Author::Owner, setup.task, &format!("Fixture post {n:03}"))
+            .unwrap();
+    }
+    for canonical in [false, true] {
+        let reply = if canonical {
+            super::protocol::call_v2(&hq, &run, &member, "my_turn", &json!({}))
+        } else {
+            call(&hq, &run, &member, "my_turn", &json!({}))
+        }
+        .unwrap();
+        let (_, thread) = reply.split_once("The thread, newest last:\n").unwrap();
+        assert!(!thread.contains("Fixture post 000"));
+        let positions: Vec<_> = (1..13)
+            .map(|n| thread.find(&format!("Fixture post {n:03}")).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+    assert_eq!(
+        hq.store().thread(setup.task).unwrap().len(),
+        13,
+        "bounded worker context must preserve all owner-visible history"
+    );
+}
+
+#[test]
 fn a_turns_token_opens_only_that_turn_and_only_while_it_runs() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
     let (hq, s, context) = started(&clock);
@@ -214,9 +262,10 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     // A huddle on stuck work asks every member's view (ADR 0120), and every member shapes the
     // office (ADR 0119), and may play chess (ADR 0121); every member reads the world and tells stories (ADR 0122),
     // and proposes to a page it does not keep and reports what its map lacks (ADR 0126); and
-    // every member asks the record and consults (ADR 0129); and a developer asks for its kept
-    // branch to be checked again (ADR 0115). The answers to a quiz and to a consult are the
-    // tools of those turns alone (ADR 0131, amended): two fewer than every turn was offered.
+    // every member asks the record (ADR 0129) and asks a colleague through consult, which is
+    // canonical assistance (ADR 0138); and a developer asks for its kept branch to be checked
+    // again (ADR 0115). A quiz's answer is that turn's tool alone (ADR 0131, amended), and
+    // answer_consult is retired (ADR 0138).
     assert_eq!(names.len(), 23, "{names:?}");
     assert!(names.contains(&"recheck".to_owned()));
     for tool in ["ask_record", "consult"] {
@@ -350,7 +399,16 @@ fn seeing_a_question_wakes_the_member_who_asked_not_the_tasks_owner() {
         &json!({ "task": s.task.0, "text": "@Grace can you look at the list?" }),
     )
     .unwrap();
-    // Her wake waits for his turn on the task to end. She is the tester, whose work is the
+    assert!(
+        !hq.store()
+            .wakes()
+            .unwrap()
+            .iter()
+            .any(|wake| wake.member != s.dev)
+    );
+    hq.post(Author::Owner, s.task, "@Grace please inspect the list")
+        .unwrap();
+    // The owner's explicit request waits for his turn to end. She is the tester, whose work is the
     // Mac's (ADR 0131), and the node says it is free.
     hq.tell_mac(true, "ready");
     hq.runner().finish(context.run, true);

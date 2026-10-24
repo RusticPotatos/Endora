@@ -311,6 +311,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_docs(public_docs::PUBLIC_DOCS),
     );
+    // Before seeding work, publishing HTTP or starting ticks: no v1 peer work
+    // may execute in this process. Failure aborts startup; the next startup
+    // repeats the bounded cleanup and settles only still-live legacy turns.
+    hq.retire_legacy_peer_work()?;
     let goal = if demo_mode {
         Some(api::demo_goal(&hq)?)
     } else {

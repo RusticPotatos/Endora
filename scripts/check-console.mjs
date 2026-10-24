@@ -68,6 +68,7 @@ const element = () => ({
 
 const stubs = {
   console,
+  performance,
   setTimeout,
   clearTimeout,
   setInterval,
@@ -3069,6 +3070,123 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (claim.map((f) => f.auto).join(",") !== "username,new-password" || claim[0].value !== "owner") fail("sign-in: claiming saves the password against no username: " + JSON.stringify(claim));
   runInContext(`[SIGNIN_EXISTS, JUST_ENROLLED] = __keep;`, context);
   console.log("sign-in: a password manager sees a username, a password and a one-time code");
+}
+
+{
+  const fixture = {members:[{id:1,name:"Member 1",role:"lead"},{id:2,name:"Member 2",role:"developer"}],
+    projects:[{id:1,title:"Fixture",status:"active"}]};
+  const loaded = {enabled:true,conversations:[{id:1,project:1,participants:[1,2],messages:2}],has_more:false};
+  const fail = (message) => { throw new Error(message); };
+  runInContext(`HQ_CHAT.directory = ${JSON.stringify(loaded)}; HQ_CHAT.page = {conversation:{id:1},messages:[{id:1,member:1,text:'<img src=x onerror=bad()>',evidence:['r12'],run:7}],has_more:true,after:1}; HQ_CHAT.id = 1;`,context);
+  const html=runInContext(`hqConversations(${JSON.stringify(fixture)})`,context);
+  for (const wanted of ["Conversations","kept until you delete", "&lt;img", "Save this page", "Next page", "hq:conversations:delete:1", "Operation history"]) {
+    if (!html.includes(wanted)) fail("conversations: missing escaped history/control: "+wanted);
+  }
+  if (html.includes('<img src=x')) fail("conversations: message text became markup");
+  // Work is used from a phone: every conversation control is a fingertip's size, as the task history's are.
+  if (/<button class="hq-btn" data-act="hq:conversations:/.test(html)) fail("conversations: a control is smaller than a fingertip on a phone");
+  runInContext(`var conversationKeepApi = api, conversationKeepRender = render, conversationKeepConfirm = confirm, conversationCalls = [];
+    render = () => {}; confirm = () => true;
+    api = async (method,path,body) => { conversationCalls.push([method,path,body]);
+      if (path.includes("/operations")) return {operations:[{id:2,member:1,run:7,operation:"read",reason:"accepted",at:42}],has_more:false,after:2};
+      if (path.includes("/1?")) return {messages:[{id:2,member:2,text:"Next fixture",run:8,evidence:[]}],has_more:false,after:2};
+      return {enabled:false,conversations:[],has_more:false}; };`,context);
+  await runInContext('hqConversationAct("next","1")',context);
+  if (runInContext('HQ_CHAT.page.messages.length !== 1 || HQ_CHAT.page.messages[0].id !== 2 || HQ_CHAT.after !== 1',context)) fail("conversations: paging accumulated old messages or lost its cursor");
+  await runInContext('hqConversationAct("operations","first")',context);
+  if (!runInContext(`hqConversations(${JSON.stringify(fixture)})`,context).includes("it does not mean an agent acted")) fail("conversations: a read outcome was presented as completed work");
+  await runInContext('hqConversationAct("delete","1")',context);
+  if (runInContext('HQ_CHAT.page !== null || HQ_CHAT.operations !== null',context)) fail("conversations: deleted data stayed in the view");
+  const calls = runInContext('conversationCalls.map(c => c[0]+" "+c[1])',context);
+  if (JSON.stringify(calls) !== JSON.stringify(["GET /v1/hq/conversations/1?after=1","GET /v1/hq/conversations/operations?after=0","POST /v1/hq/conversations/1/delete","GET /v1/hq/conversations?after=0"])) fail("conversations: controls asked unexpected routes: "+JSON.stringify(calls));
+  runInContext("api = conversationKeepApi; render = conversationKeepRender; confirm = conversationKeepConfirm; HQ_CHAT.directory = null; HQ_CHAT.page = null; HQ_CHAT.operations = null; HQ_CHAT.id = null;",context);
+  console.log("conversations: bounded history is escaped, retained and inspectable in Work");
+}
+
+{
+  // HQ redraws every few seconds: the authorize form must come back with the owner's picks, and
+  // must not start with the same member twice.
+  const fixture = {members:[{id:1,name:"Member 1",role:"lead"},{id:2,name:"Member 2",role:"developer"},{id:3,name:"Member 3",role:"researcher"}],
+    projects:[{id:1,title:"First",status:"active"},{id:2,title:"Second",status:"active"}]};
+  const fail = (message) => { throw new Error(message); };
+  const chosen = (html, field) => (html.match(new RegExp(`id="hq-conversation-${field}"[^>]*>.*?<option value="(\\d+)" selected`, "s")) || [])[1];
+  runInContext(`HQ_CHAT.directory = {enabled:true,conversations:[],has_more:false}; HQ_CHAT.draft = null;`, context);
+  let html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
+  if (chosen(html, "a") === chosen(html, "b")) fail("conversations: the form starts with the same member twice");
+  if (/<details open><summary>Authorize/.test(html)) fail("conversations: the untouched form opened itself");
+  for (const [field, value] of [["project", 2], ["a", 2], ["b", 3]]) await runInContext(`hqConversationAct("pick-${field}","${value}")`, context);
+  html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
+  if (chosen(html, "project") !== "2" || chosen(html, "a") !== "2" || chosen(html, "b") !== "3") fail("conversations: a redraw lost the authorize form's picks");
+  if (!/<details open><summary>Authorize/.test(html)) fail("conversations: a redraw closed the authorize form mid-pick");
+  if (!html.includes('data-change="hq:conversations:pick-b"')) fail("conversations: a member pick is not remembered");
+  runInContext(`HQ_CHAT.directory = null; HQ_CHAT.draft = null;`, context);
+  console.log("conversations: the authorize form keeps its picks across a redraw");
+}
+
+{
+  const fixture={members:[{id:1,name:"Member 1",role:"developer"},{id:2,name:"Member 2",role:"researcher"}],projects:[]};
+  const assistance={conversation:1,requests:[{id:8,project:1,requester:1,expert:2,status:"answered",objective:"<img src=x onerror=bad()>",answer:"<b>Untrusted answer</b>",evidence:["d12"],answer_evidence:["d12"],notified:false,deadline_at:42},{id:9,project:1,requester:1,expert:2,status:"processing",objective:"Synthetic question",evidence:[],deadline_at:42}],grants:[{source:"d12",expires_at:42}],has_more:true,after:9};
+  assistance.requests[1].reason="<em>worker unavailable</em>";
+  assistance.requests[0].finding={run:12,text:"<strong>Requester conclusion</strong>",evidence:["<d12>"],at:42};
+  assistance.requests[1].retry_at=60000;
+  assistance.requests[1].run_status="retry_waiting";
+  assistance.requests[0].retry_at=60000;
+  assistance.requests[0].run_status="stopped";
+  runInContext(`HQ_CHAT.id=1; HQ_CHAT.page={messages:[]}; HQ_CHAT.assistance=${JSON.stringify(assistance)};`,context);
+  const html=runInContext(`hqConversations(${JSON.stringify(fixture)})`,context);
+  for(const required of ["&lt;img","&lt;b&gt;Untrusted answer","&lt;em&gt;worker unavailable","next attempt","Answer sources: d12","Waiting to notify requester","hq:conversations:cancel-request:9","hq:conversations:revoke-source:d12","Save this request page","Requester finding: &lt;strong&gt;Requester conclusion","Attributed claim", "replay:run:12", "result run 12","&lt;d12&gt;","No retained requester finding recorded."]) {
+    if(!html.includes(required)) throw new Error("assistance: missing escaped request/evidence/control: "+required);
+  }
+  if(html.includes("<img src=x") || html.includes("<b>Untrusted answer") || html.includes("<em>worker unavailable") || html.includes("<strong>Requester conclusion") || html.includes("<d12>")) throw new Error("assistance: peer testimony, requester finding or a failure cause became markup");
+  if((html.match(/next attempt/g)||[]).length!==1) throw new Error("assistance: a terminal result advertises a stale worker retry");
+  runInContext(`var assistanceKeepApi=api, assistanceKeepRender=render, assistanceCalls=[];
+    render=()=>{}; api=async(method,path,body)=>{assistanceCalls.push([method,path,body]);return {requests:[{id:10}],grants:[],has_more:false,after:10};};`,context);
+  await runInContext('hqConversationAct("assistance-next","1")',context);
+  if(runInContext('HQ_CHAT.assistance.requests.length!==1 || HQ_CHAT.assistance.requests[0].id!==10',context)) throw new Error("assistance: paging accumulated prior requests");
+  await runInContext('hqConversationAct("revoke-source","d12")',context);
+  await runInContext('hqConversationAct("cancel-request","9")',context);
+  const calls=runInContext('assistanceCalls.map(c=>c[0]+" "+c[1])',context);
+  const expected=["GET /v1/hq/conversations/1/assistance?after=9","POST /v1/hq/conversations/1/sources/revoke","GET /v1/hq/conversations/1/assistance?after=0","POST /v1/hq/conversations/1/assistance/9/cancel","GET /v1/hq/conversations/1/assistance?after=0"];
+  if(JSON.stringify(calls)!==JSON.stringify(expected)) throw new Error("assistance: controls asked unexpected routes: "+JSON.stringify(calls));
+  runInContext('api=assistanceKeepApi;render=assistanceKeepRender;HQ_CHAT.page=null;HQ_CHAT.assistance=null;HQ_CHAT.id=null;',context);
+  console.log("assistance: original evidence and peer testimony stay escaped, pages bounded, and owner cancel/revoke controls use fixed routes");
+}
+
+{
+  const first = {records:[
+    {id:"legacy-consult:1",legacy_id:1,requester:1,requester_run:8,expert:2,expert_run:9,question:"<img src=x onerror=bad()>",outcome:"answered",reason:"<em>old reason</em>",answer_post:3,answer:{author:"Member 2",text:"<b>retained answer</b>",unsupported:true,evidence:["task 7"]}},
+    {id:"legacy-consult:2",legacy_id:2,requester:1,requester_run:8,expert:2,question:"Missing association",outcome:"answered",answer:null,project:null}
+  ],after:9,has_more:true};
+  runInContext(`var pastKeepApi=api,pastKeepRender=render,pastKeepSnap=HQ.snap; var pastReply=${JSON.stringify(first)}; HQ.snap={members:[{id:1,name:"Member 1"},{id:2,name:"Member 2"}]}; HQ_PAST.task=7; HQ_PAST.page=pastReply; HQ_PAST.after=0; HQ_PAST.previous=[]; HQ_PAST.error="";`,context);
+  const html=runInContext('hqPastQuestions(7)',context);
+  for (const text of ["&lt;img", "&lt;b&gt;retained answer", "&lt;em&gt;old reason", "Saved answer unavailable", "hq:past-questions:7:next", "Save page", "replay:run:8"]) {
+    if (!html.includes(text)) throw new Error("past questions: missing escaped history or control: "+text);
+  }
+  if (html.includes('<img src=x') || html.includes('<b>retained answer')) throw new Error("past questions: history became markup");
+  runInContext(`var pastCalls=[]; render=()=>{}; api=async(method,path)=>{pastCalls.push(method+" "+path); return {...pastReply,records:[{...pastReply.records[0],id:"legacy-consult:12",legacy_id:12,question:"Only this page"}],after:12,has_more:false};};`,context);
+  await runInContext('hqPastQuestionsAct("7","next")',context);
+  if (runInContext('HQ_PAST.page.records.length!==1 || HQ_PAST.page.records[0].legacy_id!==12 || HQ_PAST.after!==9 || HQ_PAST.previous[0]!==0',context)) throw new Error("past questions: paging accumulated records or lost the original cursor");
+  if (JSON.stringify(runInContext('pastCalls',context))!==JSON.stringify(["GET /v1/hq/tasks/7/consultations?after=9"])) throw new Error("past questions: unexpected history route");
+  runInContext('api=async()=>{throw new Error("<img>failed history read");};',context);
+  await runInContext('hqPastQuestionsAct("7","previous")',context);
+  if (!runInContext('hqPastQuestions(7)',context).includes("&lt;img&gt;failed history read")) throw new Error("past questions: error was hidden or became markup");
+  if (runInContext('HQ_PAST.after!==9 || HQ_PAST.previous.length!==1',context)) throw new Error("past questions: a failed page changed navigation state");
+  runInContext('HQ_PAST.page.has_more=true;api=async(method,path)=>({...pastReply,records:[pastReply.records[0]],after:Number(path.split("after=")[1])+1,has_more:true});',context);
+  for (let page=0;page<70;page++) await runInContext('hqPastQuestionsAct("7","next")',context);
+  if (runInContext('HQ_PAST.previous.length>64 || HQ_PAST.page.records.length!==1',context)) throw new Error("past questions: page navigation grew retained history in memory");
+  runInContext('api=pastKeepApi;render=pastKeepRender;HQ.snap=pastKeepSnap;HQ_PAST.task=null;HQ_PAST.page=null;HQ_PAST.previous=[];HQ_PAST.error="";',context);
+  console.log("past questions: retained answers are escaped, unavailable links stay explicit, and paging replaces the current page");
+}
+
+{
+  runInContext(`var clockKeep={fetch,soundTicket,soundReconnect,listening:SOUND.listening,mode:SOUND.mode,session:LIVE.session};
+    var clockTicket=0,clockReconnect=0;fetch=async()=>({json:async()=>({build:"dev"})});
+    soundTicket=()=>{clockTicket++;};soundReconnect=()=>{clockReconnect++;};SOUND.listening=true;SOUND.mode="live";LIVE.session={lastAt:performance.now()};`,context);
+  await runInContext('soundKeepUp()',context);
+  runInContext('LIVE.session.lastAt=performance.now()-6000;',context);
+  await runInContext('soundKeepUp()',context);
+  if (runInContext('clockTicket!==1 || clockReconnect!==1',context)) throw new Error("sound keep-up: fresh and stale live streams did not use the browser clock");
+  runInContext('fetch=clockKeep.fetch;soundTicket=clockKeep.soundTicket;soundReconnect=clockKeep.soundReconnect;SOUND.listening=clockKeep.listening;SOUND.mode=clockKeep.mode;LIVE.session=clockKeep.session;',context);
 }
 
 console.log(`console check: ${named.length} screens render`);

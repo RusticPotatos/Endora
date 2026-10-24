@@ -87,6 +87,73 @@ the base principles every project shares. What follows is Endora's own.
   reason about. When something is going to be verified live, spend the minute
   first.
 
+## Use time and model usage carefully
+
+### Standing authorization for the collaboration replacement
+
+The owner authorized continuous execution of
+[ADR 0138](docs/adr/0138-one-conversation-and-assistance-lifecycle.md) on
+`codex/agent-collaboration`, including commits, normal pushes to that branch,
+and deployments/cutover/enablement/rollback on the existing local home Endora
+system through its established NAS/Ansible workflow. Do not ask for another
+"continue", phase approval, branch push approval or routine deployment approval.
+This instruction records the owner's explicit authorization, not an inference
+from the environment being local.
+
+- **Advance on evidence.** For each step, define its exit criteria, implement,
+  run the appropriate checks and record the result. When those criteria pass,
+  proceed directly to the next ready step in the
+  [checkpoint](docs/proposals/agent-collaboration-foundation-checkpoint-2026-10-22.md#remaining-foundation-work-in-order).
+  A bounded work item is a unit of execution, not a reason to end the session.
+- **Resolve failures without routine permission requests.** Preserve failed
+  trials, diagnose offline, fix and revalidate. Respect experiment limits and
+  the three-attempt rule; a new evidence-backed approach within this authorized
+  scope does not need another owner continuation. Never relabel a failure as a
+  pass to advance. Continue independent ready work when another step is blocked.
+- **Deploy when ready.** Standing consent satisfies the human authorization
+  gate. Candidate checks, privacy review of outgoing diffs, history-preservation
+  proof, backups, migration rehearsal, drain, live checks and rollback readiness
+  remain required. Record the deployment decision and evidence yourself; a red
+  release check blocks deployment until corrected, not until the owner says yes.
+- **Keep the owner informed without making them operate the workflow.** Send
+  concise progress and material failure updates. Do not end an otherwise
+  unblocked phase with a request or offer to continue. At an unavoidable session
+  interruption, preserve the exact next action and reuse this authorization.
+- **Ask only for a decision or input the evidence cannot supply.** Examples are
+  an unavailable credential/account, new paid spending outside existing limits,
+  an external service or unrelated-system change, or permanent loss of retained
+  history. Routine migrations with verified preservation and rollback are in
+  scope. Existing zero-paid-call pilot limits and per-run caps still apply;
+  standing consent is not permission to bypass them or automatic tool rejection.
+
+`CLAUDE.md` links to this file and receives the same instructions. This standing
+authorization supersedes earlier per-phase approval wording for this work only.
+
+### Execution efficiency
+
+- **Work one bounded problem at a time.** State the acceptance criteria, use the
+  existing checkpoint and inspect only the relevant code and evidence. Recheck
+  repository state; reopen wider research only when new evidence requires it.
+- **Match reasoning to the task.** The owner's Codex default is GPT-6.1 Sol at
+  Medium when available. Routine edits can use lighter settings; escalate for
+  unresolved complexity, then return to the default. Respect the selected model;
+  do not silently change models, providers or account settings. Other assistants
+  should use their equivalent balanced setting rather than assume these names.
+- **Test narrowly while iterating.** Reproduce the behavior with a focused failing
+  test, fix it, then run the required handoff gate once for the final implementation.
+  Repeat checks when changes, failures or new evidence invalidate their result.
+- **Prove the experiment before spending a live run.** Inspect the actual rendered
+  briefing, wake purpose, advertised tools and guard decisions together. Replay
+  captured valid calls offline and show that invalid calls fail. Freeze scope and
+  limits; preserve failed results rather than retrying until a model succeeds.
+- **Keep communication and checkpoints compact.** Report outcomes, material
+  uncertainty and the next action. Reuse the existing research and checkpoint
+  documents; update changed facts rather than creating repeated summaries. At a
+  stopping point, record the commit, checks, blocker and exact next step.
+- **Stop unproductive loops.** Follow the shared three-attempt limit: report the
+  evidence and change the approach offline before starting another live attempt.
+  Cost savings never waive privacy, authorization, TDD or release requirements.
+
 ## Before handoff
 
 Run from the workspace root and make sure they pass:
@@ -100,6 +167,12 @@ node scripts/check-nothing-personal.mjs
 sh scripts/check-collection-parity.sh
 git diff --check
 ```
+
+For prose-only follow-ups, an observed passing gate for the unchanged executable
+code, dependencies and configuration may be reused. Run fresh whitespace,
+personal-value and relevant document/link checks, and name the earlier gate and
+what was reused. Otherwise run the full gate above; never infer a pass or reuse
+results after a behavioral change.
 
 When the handheld terminal changed, also, from `clients/terminal`:
 

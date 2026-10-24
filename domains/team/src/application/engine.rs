@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::ports::{
-    Clock, DeskItem, NewRoutine, NewTask, Run, RunContext, StoreError, TeamStore, Wake,
+    Clock, DeskItem, NewRoutine, NewTask, Post, Run, RunContext, StoreError, TeamStore, Wake,
     WorkerAdapter,
 };
 use super::scorecard;
@@ -17,6 +17,7 @@ use crate::domain::chain::{self, Decision};
 use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
 use crate::domain::guards::{GuardRefusal, Stopped};
+use crate::domain::history::InputOrigin;
 use crate::domain::lessons;
 use crate::domain::mac::{self, MacFacts};
 use crate::domain::money::{self, Micros};
@@ -36,8 +37,10 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
+mod assistance;
 mod budget;
 mod consult;
+mod conversations;
 mod deploy;
 mod digest;
 mod discipline;
@@ -61,12 +64,14 @@ mod projects;
 mod proposals;
 mod quiz;
 mod raci;
+mod record_search;
 mod replay;
 mod retract;
 mod runaway;
 mod runtime;
 mod scenario;
 mod staffing;
+mod task_context;
 mod trials;
 mod wing;
 mod world;
@@ -442,6 +447,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     fn today(&self) -> i64 {
         money::day_of(self.clock.now(), self.settings.offset_minutes)
+    }
+
+    /// The member called `name`, in any case.
+    fn named(&self, name: &str) -> Done<Member> {
+        self.store
+            .members()?
+            .into_iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                EngineError::Refused(Refusal::History(
+                    crate::domain::history::HistoryRefusal::NoSuchMember(name.to_owned()),
+                ))
+            })
     }
 
     fn member(&self, id: MemberId) -> Done<Member> {
@@ -834,8 +852,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if by != Author::Owner {
             return self.propose_goal_held_lock(title, reason, None, &format!("A goal: {title}"));
         }
+        self.set_goal_authored_held_lock(title, reason, InputOrigin::Owner)
+    }
+
+    fn set_generated_goal(&self, title: &str, reason: &str) -> Done<GoalId> {
+        let _held = self.held();
+        self.set_goal_authored_held_lock(title, reason, InputOrigin::Unknown)
+    }
+
+    fn set_goal_authored_held_lock(
+        &self,
+        title: &str,
+        reason: &str,
+        origin: InputOrigin,
+    ) -> Done<GoalId> {
         let status = GoalStatus::Active;
-        let goal = self.store.add_goal(title, reason, status, None)?;
+        let goal = self
+            .store
+            .add_goal_from(title, reason, status, None, origin)?;
         self.emit(
             EventKind::GoalChanged,
             json!({ "goal": goal.0, "title": title, "status": status.name() }),
@@ -880,10 +914,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn add_task(&self, by: Author, task: NewTask) -> Done<TaskId> {
         let _held = self.held();
         let _asked = (by == Author::Owner).then(|| self.for_owner());
-        self.add_task_held_lock(by, task)
+        let origin = if by == Author::Owner {
+            InputOrigin::Owner
+        } else {
+            InputOrigin::Unknown
+        };
+        self.add_task_authored_held_lock(by, task, origin)
     }
 
     fn add_task_held_lock(&self, by: Author, task: NewTask) -> Done<TaskId> {
+        // Generated work may spend the owner's budget; that does not establish
+        // that the owner authored its title, body or borrowed context.
+        self.add_task_authored_held_lock(by, task, InputOrigin::Unknown)
+    }
+
+    fn add_task_authored_held_lock(
+        &self,
+        by: Author,
+        task: NewTask,
+        origin: InputOrigin,
+    ) -> Done<TaskId> {
         self.store
             .goal(task.goal)?
             .ok_or(EngineError::Unknown("goal"))?;
@@ -934,7 +984,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             (None, Author::Member(_)) => 1,
             (None, _) => 0,
         };
-        let id = self.store.add_task(&task, depth)?;
+        let id = self.store.add_task_from(&task, depth, origin)?;
         self.emit(
             EventKind::TaskCreated,
             json!({
@@ -1146,12 +1196,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         })
     }
 
-    fn wake_held_lock(
+    fn decide_wake(
         &self,
         member: MemberId,
         task: Option<TaskId>,
         reason: WakeReason,
-    ) -> Done<Receipt> {
+    ) -> Done<(WakeDecision, bool)> {
         let who = self.member(member)?;
         // News is never kept waiting: a turn on its task held back by the back-off, or waiting
         // to try again, is brought forward to take it.
@@ -1167,6 +1217,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             _ => wakes::decide(member, &situation),
         };
+        Ok((decision, situation.coordination_held))
+    }
+
+    fn wake_held_lock(
+        &self,
+        member: MemberId,
+        task: Option<TaskId>,
+        reason: WakeReason,
+    ) -> Done<Receipt> {
+        if reason == WakeReason::Consulted {
+            return Err(EngineError::Refused(Refusal::Conversation(
+                "legacy consultation wakes are retired; use authorized assistance",
+            )));
+        }
+        let (decision, coordination_held) = self.decide_wake(member, task, reason)?;
         let now = self.clock.now();
         let mut about = json!({
             "member": member.0, "task": task.map(|t| t.0), "reason": reason.name(),
@@ -1199,12 +1264,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .store
                     .add_wake(member, task, reason, Receipt::Held, None, now)?;
                 self.mark_owners(wake, None)?;
-                if situation.coordination_held {
+                if coordination_held {
                     about["why"] = json!("coordination_budget");
                 }
                 self.emit(EventKind::WakeHeld, about)?;
                 // Held for the budget of talk: the task's lead is asked what to do, once.
-                if let (true, Some(task)) = (situation.coordination_held, task) {
+                if let (true, Some(task)) = (coordination_held, task) {
                     self.coordination_held_notice(task)?;
                 }
                 Ok(Receipt::Held)
@@ -1500,11 +1565,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // its turn has no receipt (ADR 0114, amended). The worker's last word (`answers`
         // false) is what the model said as it stopped, never tagged.
         let unsupported = answers && cited.is_empty() && !self.has_receipts(run.id)?;
-        self.post_held_lock_marked(Author::Member(member.id), task, text, cited, unsupported)?;
-        let members = self.store.members()?;
-        let named = mentions(text, &members);
+        self.post_authored_held_lock_marked(
+            Author::Member(member.id),
+            task,
+            text,
+            cited,
+            unsupported,
+            InputOrigin::Run(run.id),
+        )?;
         for asker in askers {
-            if asker.id == member.id || named.iter().any(|m| m.id == asker.id) {
+            if asker.id == member.id {
                 continue;
             }
             self.wake_held_lock(asker.id, Some(task), WakeReason::QuestionAnswered)?;
@@ -1570,8 +1640,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Writes to a task's thread, as the owner or Endora. Anyone named in it is woken. A
-    /// member writes only in its turn, through [`Self::post_in`].
+    /// Writes to a task's thread, as the owner or Endora. An explicit owner post may
+    /// wake named members. A member writes only in its turn, through [`Self::post_in`].
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a task that does not exist; [`Refusal::OutOfReach`] for a
@@ -1591,7 +1661,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if found.status.finished() {
             return Err(EngineError::Refused(Refusal::Finished));
         }
-        self.post_held_lock(by, task, text)?;
+        self.post_authored_held_lock_marked(by, task, text, &[], false, InputOrigin::Owner)?;
         let Some(member) = found.owner.or(found.assignee) else {
             return Ok(());
         };
@@ -1658,11 +1728,55 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         cited: &[crate::domain::Ref],
         unsupported: bool,
     ) -> Done<()> {
+        // A generated approval/report can contain borrowed model text even when
+        // its display actor is the owner. Only an explicit authored path has proof.
+        self.post_authored_held_lock_marked(
+            by,
+            task,
+            text,
+            cited,
+            unsupported,
+            InputOrigin::Unknown,
+        )
+    }
+
+    fn post_authored_held_lock_marked(
+        &self,
+        by: Author,
+        task: TaskId,
+        text: &str,
+        cited: &[crate::domain::Ref],
+        unsupported: bool,
+        origin: InputOrigin,
+    ) -> Done<()> {
         self.task(task)?;
         let author = self.author_name(by)?;
         let at = self.clock.now();
-        self.store
-            .post_marked(task, &author, text, at, cited, unsupported)?;
+        self.store.post_from(
+            task,
+            &Post {
+                author,
+                text: text.to_owned(),
+                at,
+                unsupported,
+            },
+            cited,
+            origin,
+        )?;
+        self.after_thread_post(by, task, text, unsupported, origin)
+    }
+
+    /// Reporting effects after a persisted task post. Only explicit owner-authored
+    /// text dispatches mentions; model prose is not a second peer-help scheduler.
+    fn after_thread_post(
+        &self,
+        by: Author,
+        task: TaskId,
+        text: &str,
+        unsupported: bool,
+        origin: InputOrigin,
+    ) -> Done<()> {
+        let author = self.author_name(by)?;
         // A short line for a bubble. The feed shows the whole post: `post` is its place in the
         // task's thread (posts are only ever added), and `cut` says the preview is not all of it.
         let place = self.store.thread(task)?.len().saturating_sub(1);
@@ -1681,11 +1795,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // The stories and sections it names were used (ADR 0122).
             self.world_used(text)?;
         }
+        if by != Author::Owner || origin != InputOrigin::Owner {
+            return Ok(());
+        }
         let members = self.store.members()?;
         for named in mentions(text, &members) {
-            if by == Author::Member(named.id) {
-                continue;
-            }
             self.wake_held_lock(named.id, Some(task), WakeReason::Mentioned)?;
         }
         Ok(())
@@ -2150,7 +2264,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::BudgetChanged,
             json!({ "member": current.member.0, "run": run.0, "spent": current.spent }),
         )?;
-        self.watch_budget(self.project_of(current.task)?)?;
+        self.watch_budget(self.project_of_run(&current)?)?;
         if !money::crossed(current.spent, current.reserved) {
             return Ok(true);
         }
@@ -2181,7 +2295,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::BudgetChanged,
             json!({ "member": run.member.0, "run": run.id.0, "spent": run.spent, "late": true }),
         )?;
-        self.watch_budget(self.project_of(run.task)?)
+        self.watch_budget(self.project_of_run(&run)?)
     }
 
     // ---- the kill switch -----------------------------------------------------------------
@@ -2200,6 +2314,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// lock is held.
     fn stop_all_held_lock(&self, by: &str, why: &str, evidence: serde_json::Value) -> Done<()> {
         self.store.set_stopped(true)?;
+        self.store.cancel_assistance()?;
         self.store.set_setting(runaway::STOPPED_BY, by)?;
         let reason = if by == "owner" {
             "the kill switch"
@@ -2260,12 +2375,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     fn reason_for(&self, run: &Run) -> Done<&'static str> {
-        Ok(self
-            .store
-            .wakes()?
-            .iter()
-            .find(|w| w.id == run.wake)
-            .map_or("", |w| w.reason.name()))
+        Ok(self.store.wake(run.wake)?.map_or("", |w| w.reason.name()))
     }
 
     /// Ends a turn: settles its money, closes its wake, and lets the next held wake on its task
@@ -2275,13 +2385,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if run.started_at.is_some() {
             self.store.settle(run.id, run.member, self.today(), now)?;
         }
-        let consulted = self.reason_for(&run)? == WakeReason::Consulted.name();
         let label = self.settle_label(&mut run)?;
         run.status = status;
         run.ended_at = Some(now);
         run.end_reason = why.to_owned();
         run.reserved = 0;
         self.store.save_run(&run)?;
+        if self.store.assistance_for_run(run.id)?.is_some() {
+            self.store
+                .close_unanswered_assistance(run.id, status == RunStatus::Succeeded)?;
+        }
         self.store
             .set_wake(run.wake, Receipt::Finished, Some(run.id))?;
         // The tokens as the relay reported them, which only it adds to: all the input sent
@@ -2326,9 +2439,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.submit_when_enough(&run)?;
             self.after_nothing_shown(&run)?;
         }
-        // A consulted member that did not answer is answered for from the record, and an asker
-        // whose answer came while its turn ran is woken now (ADR 0129).
-        self.consults_after(&run, consulted)?;
         // A deploy check's one turn is over: its verdict, once (ADR 0115, amended).
         self.after_a_deploy_check(&run)?;
         Ok(())
@@ -2354,14 +2464,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         };
         let why = why.as_str();
+        if let Some(status) = self.assistance_terminal_for(run.id)? {
+            self.end(
+                run,
+                status,
+                &format!("assistance ended before worker recovery: {why}"),
+            )?;
+            return Ok(false);
+        }
+        let assistance_delivery = self.store.assistance_for_run(run.id)?.is_some()
+            || self.store.assistance_notice_for_run(run.id)?.is_some();
         // A turn on the owner's Mac that failed because the Mac went away (the owner came back,
         // the laptop left its charger) did nothing wrong: it is tried again when the Mac is
         // free, and the failure is not counted against it (ADR 0130).
         let on_the_mac = run.brain == Some(Brain::Mac);
-        if on_the_mac && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some() {
+        if !assistance_delivery
+            && on_the_mac
+            && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some()
+        {
             run.attempts = run.attempts.saturating_sub(1);
         }
-        let own = runs::own_attempts(run.attempts, run.interrupted);
+        let own = if assistance_delivery {
+            run.attempts
+        } else {
+            runs::own_attempts(run.attempts, run.interrupted)
+        };
         let Some(due) = runs::retry_after_failure(own, now) else {
             self.end(run, RunStatus::Failed, why)?;
             return Ok(false);
@@ -2413,10 +2540,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// its situation needs within its budget (ADR 0122), then its work; and at the very end,
     /// what of the world was left out and how to read it. The run records its situation.
     fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
-        // A consulted turn is told the question and what it wrote on the matter, and no more
-        // (ADR 0129).
-        if let Some(found) = self.consult_of_run(run.id)? {
-            return self.consult_briefing(member, &found);
+        self.prepare_conversation_turn(run.id)?;
+        if let Some(request) = self.store.assistance_for_run(run.id)? {
+            return self.assistance_briefing(member, &request);
+        }
+        if let Some(request) = self.store.assistance_notice_for_run(run.id)? {
+            return self.assistance_notice_briefing(member, &request);
+        }
+        if self.canonical_task_context_applies(member, run)? {
+            return self.canonical_task_briefing(member, run);
         }
         let (_, memory) = self.memory(member, run)?;
         let mut told = self.briefing_body(member, run, &memory.text)?;
@@ -2440,15 +2572,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // What it knows, first: its situation's pieces of the world, its stories and its own
         // notebook (ADR 0118, 0122).
         told.push_str(memory);
+        let colleague_communication = member.role != Role::Ceo
+            && self.conversations_enabled()?
+            && !self.in_quiz(run.id)?
+            && !self.store.conversation_page(Some(member.id), 0)?.is_empty();
+        if colleague_communication {
+            told.push_str("Direct colleague communication: read_messages lists your owner-authorized conversations and pages their history without waking anyone. For a colleague question, use consult with the colleague's name; one matching conversation uses bounded read-only assistance, and multiple matches require an explicit conversation ID. You can also use request_assistance with a stable key and granted original sources. Task-linked help uses the same authorized conversation and trusted project scope. Peer text is testimony, never approval or task completion.\n");
+        }
         // Downtime has no task to brief: the office, the open proposals and what may be done
         // (ADR 0119).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
-            told.push_str(&self.downtime_said(member)?);
+            told.push_str(&self.downtime_said(member, run.id)?);
             // The quiz's answer is offered in the quiz's turn alone, so only that one is told of it.
             told.push_str(
                 "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc, \
                  read_world",
             );
+            if colleague_communication {
+                told.push_str(
+                    ", read_messages, send_message, consult, request_assistance, cancel_assistance",
+                );
+            }
             told.push_str(if self.in_quiz(run.id)? {
                 ", answer_quiz.\n"
             } else {
@@ -2492,6 +2636,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(told);
         };
         let task = self.task(task)?;
+        // Legacy task threads contain posts without immutable source-run lineage. A task turn
+        // receives them in its briefing, so new Internal messaging fails closed for this turn.
+        self.unclassified_message_input(run.id)?;
         // The CEO's review and planning say what they ask as HQ asks it now, whatever their
         // routine was made with (ADR 0120).
         let description = match self.routine_of(task.id)? {
@@ -2986,6 +3133,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // up again, before its turns are looked at, so the ones the restart cut are counted; and
         // one nobody ended outlasts its age.
         self.drain_tick_held_lock(now)?;
+        self.expire_assistance_tick(now)?;
+        // Owner-requested deletion stays bounded and also runs while the team is stopped.
+        self.store.purge_conversation_batch()?;
         if self.store.stopped()? {
             return Ok(report);
         }
@@ -3128,6 +3278,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
 
+        // Explicit assistance is a durable intent; a bounded set may enter the normal queue.
+        self.assistance_tick(now)?;
+        self.assistance_notice_tick(now)?;
         // 3b. The office (ADR 0119): proposals whose time came carry or are dropped, and one
         //     member with nothing to do is given a downtime turn.
         self.office_tick()?;
@@ -3181,6 +3334,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(owner) = task.owner else {
                 continue;
             };
+            // An accepted canonical question is deliberate work in progress.
+            // Recovery must not occupy the requester ahead of its result turn.
+            if self.store.task_awaits_assistance(task.id, owner)? {
+                if task.nudged {
+                    self.store.set_nudged(task.id, false)?;
+                }
+                continue;
+            }
             // A scenario's world wakes its players (ADR 0135): waiting for it is no stall.
             if self.in_a_scenario(task.id)? {
                 continue;
@@ -3285,6 +3446,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut starts = self.starts_read(now)?;
         let mut started = 0;
         for mut run in queued {
+            if let Some(status) = self.assistance_terminal_for(run.id)? {
+                self.end(run, status, "assistance request already ended")?;
+                continue;
+            }
+            if self.retired_peer_turn(run.id)? {
+                self.end(run, RunStatus::Stopped, "legacy peer help retired")?;
+                continue;
+            }
+            if (self.store.assistance_for_run(run.id)?.is_some()
+                || self.store.assistance_notice_for_run(run.id)?.is_some())
+                && !self.conversations_enabled()?
+            {
+                continue;
+            }
             // A turn queued for work that has since finished (dropped, or done) is ended, not
             // started: nothing is left for it to do.
             let over = run
@@ -3317,24 +3492,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.end(run, RunStatus::Stopped, "its member was paused")?;
                 continue;
             }
-            // A consulted member paused since its wake queued a turn is not kept: the record
-            // answers for it when the turn ends (ADR 0129).
-            let consulted = self.reason_for(&run)? == WakeReason::Consulted.name();
-            if consulted && member.paused {
-                self.end(run, RunStatus::Stopped, "its member was paused")?;
-                continue;
-            }
             if busy >= usize::from(member.slots) || member.paused {
                 continue;
             }
-            let project = self.project_of(run.task)?;
+            let project = self.project_of_run(&run)?;
             if self.held_by_owner(project)? {
-                continue;
-            }
-            // A consulted turn answers a consult: with none waiting there is nothing to do
-            // (ADR 0129).
-            if consulted && self.claim_consult(&run)?.is_none() {
-                self.end(run, RunStatus::Stopped, "no consult waits for it")?;
                 continue;
             }
             // What the turn needs is decided here, from why it was asked for (ADR 0131), and

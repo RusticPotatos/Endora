@@ -121,11 +121,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The node's tools a turn may use, when HQ narrows them: a deploy check's turn has the
     /// lab's reads alone ([`deploy::LAB_READS`]), and a turn on the work of a project that lists
     /// its tools has that list (the Holodeck plan's phase 4; the node uses the names that are
-    /// its own). `None` for every other turn, which has what its role and brain give it.
+    /// its own). Explicit assistance and its result verification receive an empty list.
+    /// `None` for other turns, which have what their role and brain give them.
     ///
     /// # Errors
     /// A store failure.
     pub fn lab_tools_of(&self, run: RunId) -> Done<Option<Vec<String>>> {
+        if self.in_assistance_flow(run)? {
+            return Ok(Some(Vec::new()));
+        }
         if self.in_deploy_check(run)? {
             return Ok(Some(
                 deploy::LAB_READS.iter().map(|t| (*t).to_owned()).collect(),
@@ -135,13 +139,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Whether a turn may be given a shell where the runner has one: not a deploy check's,
-    /// which reads the lab through the node and nothing else, nor one on a project's work whose
-    /// list does not name the shell.
+    /// which reads the lab through the node and nothing else, nor an explicit assistance or
+    /// verification turn, nor one on a project's work whose list does not name the shell.
     ///
     /// # Errors
     /// A store failure.
     pub fn may_use_a_shell(&self, run: RunId) -> Done<bool> {
-        if self.in_deploy_check(run)? {
+        if self.in_assistance_flow(run)? || self.in_deploy_check(run)? {
             return Ok(false);
         }
         Ok(self
