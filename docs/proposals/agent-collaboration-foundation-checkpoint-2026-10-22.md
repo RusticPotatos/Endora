@@ -272,6 +272,16 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
    refused to a turn on Claude as a second check, each inheriting the mark.
    `send_message` stays closed to Confidential turns. Two smaller lineage gaps remain
    open (a goal's not-now strategy and huddle documents have no recorded writer).
+   **Later the same evening:** `consult` joined the local turn's always-loaded core
+   (`fe6c7c86`; behind `find_tools` no turn used it). The owner's activity no longer
+   holds the Mac (ADR 0130 amended, `eec83bb0`; production's stored 10-minute wait set
+   to 0): with nearly all work on the Mac, the team had stopped whenever the owner used
+   it. The lineage gaps are closed (`ed98f50b`): a goal's not-now records its writer,
+   and task documents are read by their recorded run. A colleague now answers on a tier
+   at least the asker's (`55b99a7e`): a new `ConsultedUp` wake, judged on the expert's
+   Claude, when the asking turn is on Claude and read nothing Confidential. HQ is four
+   tabs (Now, Team, Work, Manage) with one-line rows throughout. C1 (a real
+   work-triggered help request) is still open.
 
 **C. Prove it and decide** (observation, then owner decisions)
 
