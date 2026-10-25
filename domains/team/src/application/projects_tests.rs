@@ -1217,3 +1217,44 @@ fn an_empty_list_gives_nothing_of_the_nodes_and_no_list_changes_nothing() {
         Err(EngineError::Unknown("project"))
     );
 }
+
+/// Live, #676 and #677 asked for the ansible-nas fork's secrets with no project, so their
+/// members had none of its tools, and the owner had no way to put them in it.
+#[test]
+fn the_owner_moves_a_task_into_an_active_project_and_its_member_takes_it_up_there() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let fork = hq
+        .add_project(t.goal, "ansible-nas clean-up", "", t.lead, None)
+        .unwrap();
+    let task = task_in(&hq, t.goal, None, t.dev, "List the secret defaults").unwrap();
+    hq.store()
+        .set_task_status(task, TaskStatus::Blocked)
+        .unwrap();
+    hq.move_task_to_project(task, fork).unwrap();
+    let moved = hq.store().task(task).unwrap().unwrap();
+    assert_eq!(moved.project, Some(fork));
+    assert_eq!(moved.status, TaskStatus::Todo, "blocked work starts again");
+    assert!(
+        hq.store()
+            .thread(task)
+            .unwrap()
+            .iter()
+            .any(|p| p.text.contains("ansible-nas clean-up")),
+        "the thread says where it went"
+    );
+    assert_eq!(
+        (last_wake(&hq).0, last_wake(&hq).1),
+        (t.dev, Some(task)),
+        "its member takes it up there"
+    );
+    // Not into a project that is not active, nor finished work.
+    let paused = hq
+        .add_project(t.goal, "Maybe later", "", t.lead, None)
+        .unwrap();
+    hq.change_project(paused, "pause").unwrap();
+    assert!(hq.move_task_to_project(task, paused).is_err());
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    assert!(hq.move_task_to_project(task, fork).is_err());
+}

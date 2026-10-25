@@ -83,6 +83,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/desk/{id}", post(decide))
         // The owner's reply on a task, and a goal's notes for the team.
         .route("/v1/tasks/{id}/post", post(reply))
+        .route("/v1/tasks/{id}/project", post(task_project))
         .route("/v1/goals/{id}/note", post(goal_note))
         // A goal's strategy, the owner's edit of the CEO's (ADR 0120).
         .route("/v1/goals/{id}/strategy", post(goal_strategy))
@@ -578,6 +579,22 @@ async fn reply(
         Ok(()) => Json(json!({ "posted": true })).into_response(),
         Err(failed) => failed.into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct TaskProject {
+    project: i64,
+}
+
+/// The owner puts an open task into an active project (ADR 0139).
+async fn task_project(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<TaskProject>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.move_task_to_project(TaskId(id), ProjectId(req.project))).await?;
+    Ok(Json(json!({ "task": id, "project": req.project })))
 }
 
 #[derive(Deserialize)]

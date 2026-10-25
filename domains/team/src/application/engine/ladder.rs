@@ -41,6 +41,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(Rung::from_name(rung).map(|r| (r, at.parse().unwrap_or(0))))
     }
 
+    /// Takes `task` off the ladder: its next stuck finding starts at the first rung.
+    pub(super) fn off_the_ladder(&self, task: TaskId) -> Done<()> {
+        self.store
+            .set_setting(&format!("{LADDER_KEY}{}", task.0), "")?;
+        Ok(())
+    }
+
     fn set_rung(&self, task: TaskId, rung: Rung) -> Done<()> {
         self.store.set_setting(
             &format!("{LADDER_KEY}{}", task.0),

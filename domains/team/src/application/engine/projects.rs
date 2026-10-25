@@ -995,6 +995,51 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(Some(id))
     }
 
+    /// The owner puts an open task into an active project: its lead, tools and money are then
+    /// the task's. It starts again there: off the ladder, blocked work back to todo, and its
+    /// member woken. Live, #676 and #677 asked for the ansible-nas fork's secrets with no
+    /// project, so their members had none of the fork's tools.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a task or project there is not; [`Refusal::NotAProjectStep`]
+    /// for a project that is not active or a task that is finished.
+    pub fn move_task_to_project(&self, task: TaskId, to: ProjectId) -> Done<()> {
+        let _held = self.held();
+        let found = self.task(task)?;
+        let project = self.project(to)?;
+        if project.status != ProjectStatus::Active || found.status.finished() {
+            return Err(EngineError::Refused(Refusal::NotAProjectStep {
+                from: project.status.name(),
+                asked: "move a task in".to_owned(),
+            }));
+        }
+        self.store.set_task_project(task, Some(to))?;
+        self.off_the_ladder(task)?;
+        if found.status == crate::domain::TaskStatus::Blocked {
+            self.store
+                .set_task_status(task, crate::domain::TaskStatus::Todo)?;
+            self.emit_status(&found, crate::domain::TaskStatus::Todo)?;
+        }
+        let members = self.store.members()?;
+        let lead = members
+            .iter()
+            .find(|m| m.id == project.lead)
+            .map_or("nobody", |m| m.name.as_str());
+        self.post_held_lock(
+            Author::Owner,
+            task,
+            &format!(
+                "Moved into the project {}, led by {lead}: its tools and budget are this \
+                 task's now. Take it up again from here.",
+                project.title
+            ),
+        )?;
+        if let Some(member) = found.owner.or(found.assignee) {
+            self.wake_held_lock(member, Some(task), WakeReason::Assigned)?;
+        }
+        Ok(())
+    }
+
     // ---- what members and the screen are told ----------------------------------------------
 
     /// A project in one line: `#3 Home lab upkeep (active, led by Ada): $1.20 of $10.00 this

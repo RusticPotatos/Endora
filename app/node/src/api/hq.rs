@@ -308,6 +308,31 @@ pub(super) async fn hq_reply(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqTaskProject {
+    project: i64,
+}
+
+/// The owner puts an open task into an active project, whose lead, tools and money it then
+/// has (ADR 0139).
+pub(super) async fn hq_task_project(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqTaskProject>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/tasks/{id}/project"),
+        Some(json!({ "project": req.project })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you moved task {id} into project {}", req.project),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqNote {
     #[serde(default)]
     note: String,
@@ -1643,6 +1668,44 @@ mod tests {
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_owner_moving_a_task_into_a_project_passes_through_and_is_recorded() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            let body = json!({ "task": 676, "project": 2 });
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_task_project(
+            State(state.clone()),
+            Path(676),
+            Json(HqTaskProject { project: 2 }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.0["project"], 2);
+        let sent: Vec<(String, serde_json::Value)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), serde_json::from_str(b).unwrap()))
+            .collect();
+        assert_eq!(
+            sent,
+            [("/v1/tasks/676/project".to_owned(), json!({ "project": 2 }))]
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a == "HQ: you moved task 676 into project 2"),
+            "{audit:?}"
+        );
     }
 
     #[tokio::test]

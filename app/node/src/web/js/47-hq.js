@@ -2245,12 +2245,26 @@ function hqSelected() {
   return `<div class="hq-sel">${hqKey(t.id)} · ${esc(t.title)}</div><dl class="hq-kv">
     <dt>Status</dt><dd>${esc(String(t.status).replace("_", " "))}${t.gate === true ? " · gate passed" : t.gate === false ? " · gate failed" : ""}</dd>
     <dt>Owner</dt><dd>${t.owner ? esc(hqName(t.owner)) : "nobody"}</dd>
+    <dt>Project</dt><dd>${hqTaskProject(t)}</dd>
     <dt>Lock</dt><dd>${runner ? "held by R" + runner.id : "free"}</dd>
     <dt>Blocked by</dt><dd>${(t.waits_on || []).length ? t.waits_on.map(hqKey).join(", ") : "nothing"}</dd>
     <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${hqEvidence(t)}${hqDocuments(t)}${hqTurns((r) => r.task === t.id, "task-" + t.id)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}${hqTaskHelp(t.id)}
     ${replayTaskLink(t.id)}${hqPastQuestions(t.id)}
     <textarea id="hq-reply-${t.id}" rows="2" placeholder="Reply in the thread: whoever has it reads it now" aria-label="Your reply"></textarea>
     <div class="hq-row"><button class="hq-btn ok" data-act="hq:reply:${t.id}:send">Send</button></div>`;
+}
+
+// A task's project, and for open work a way to move it into another active one (ADR 0139):
+// its lead, tools and money are then the task's.
+function hqTaskProject(t) {
+  const projects = (HQ.snap && HQ.snap.projects) || [];
+  const now = projects.find((p) => p.id === t.project);
+  const name = now ? esc(now.title) : "none";
+  if (["done", "dropped"].includes(t.status)) return name;
+  const into = projects.filter((p) => p.status === "active" && p.id !== t.project);
+  if (!into.length) return name;
+  const options = into.map((p) => `<option value="${p.id}">${esc(p.title)}</option>`).join("");
+  return `${name} <select id="hq-move-${t.id}" aria-label="Move into project">${options}</select> <button class="hq-btn" data-act="hq:move:${t.id}:go">Move</button>`;
 }
 
 // The verbs this screen uses. Returns true when it handled one.
@@ -2348,6 +2362,13 @@ async function hqDispatch(verb, noun, id, arg) {
     delete HQ.deskNote[id];
     try { await api("POST", `/v1/hq/desk/${id}`, { decision: arg, answer }); flash(answer ? "Answered." : "Decided.", "ok"); }
     catch (e) { HQ.deskNote[id] = "Couldn't decide: " + e.message; flash(HQ.deskNote[id], "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner moves an open task into an active project.
+  if (noun === "move") {
+    const project = Number(val(`hq-move-${id}`)); if (!project) return true;
+    try { await api("POST", `/v1/hq/tasks/${id}/project`, { project }); flash("Moved.", "ok"); }
+    catch (e) { flash("Couldn't move it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // The owner's reply on a task: whoever has it is woken to read it.

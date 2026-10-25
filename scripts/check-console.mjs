@@ -1071,6 +1071,11 @@ if (failures.length) {
   if (!office.includes("&lt;img src=y onerror=alert(3)&gt;")) fail("hq: an approval's argument is not shown as text");
   // The owner replies on the task they are looking at, and writes each active goal's notes.
   if (!office.includes('id="hq-reply-7"') || !office.includes('data-act="hq:reply:7:send"')) fail("hq: the task looked at has no reply box");
+  // ADR 0139: the owner moves open work into an active project, never a paused or proposed one.
+  if (!office.includes('id="hq-move-7"') || !office.includes('data-act="hq:move:7:go"')) fail("hq: open work cannot be moved into a project");
+  if (!office.includes('<option value="2">&lt;s&gt;Backups&lt;/s&gt;</option>')) fail("hq: an active project is not offered to move into, as text");
+  const moveTo = (office.match(/id="hq-move-7"[^>]*>([\s\S]*?)<\/select>/) || [])[1] || "";
+  if (moveTo.includes('value="1"') || moveTo.includes('value="3"')) fail("hq: a paused or proposed project is offered to move into");
   if (!office.includes('id="hq-note-1"') || !office.includes('data-act="hq:note:1:save"')) fail("hq: a goal's notes cannot be written");
   if (office.includes("<img src=z") || !office.includes("&lt;/textarea&gt;&lt;img src=z")) fail("hq: a goal's notes became markup");
   // Each goal's strategy (ADR 0120): shown, editable by the owner, and its words stay text.
