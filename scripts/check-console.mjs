@@ -2426,7 +2426,12 @@ if (failures.length) {
       wires: [{ source: 6, speaker: 5, level: 80 }] };
     SOUND.listening = true; SOUND.mode = null; SOUND.liveBlocked = false;
     SOUND.ticket = { url: "/v1/sound/listen/5?ticket=aa", live: "/v1/sound/live/5?ticket=aa", at: Date.now() };`);
-  const wait = () => new Promise((r) => setTimeout(r, 5));
+  // A switch in progress defers the next one; on a loaded machine 5 ms is not always enough for
+  // it to finish, so wait until none is in progress (at most a second).
+  const wait = async () => {
+    await new Promise((r) => setTimeout(r, 5));
+    for (let i = 0; i < 200 && ev("SOUND.switching"); i++) await new Promise((r) => setTimeout(r, 5));
+  };
   // Tapped with the door wired: live, with the MP3's element given a moment of silence to unlock.
   ev(`soundPlay(SOUND.ticket)`); await wait();
   if (ev("SOUND.mode") !== "live" || ev("opened.join()") !== "/v1/sound/live/5?ticket=aa" || !ev("audioSrc[0]").startsWith("data:audio/wav")) fail("live: a door wired to this speaker did not play live");
