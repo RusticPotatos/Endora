@@ -320,6 +320,7 @@ of an existing record and take the next number.
 | [0136](0136-endora-is-hq.md) | Endora is HQ | - |
 | [0137](0137-addressed-conversations-and-bounded-assistance.md) | Addressed conversations and bounded assistance | - |
 | [0138](0138-one-conversation-and-assistance-lifecycle.md) | One conversation and assistance lifecycle | Accepted target |
+| [0139](0139-one-team-escalate-by-tier.md) | One team, escalate by tier | - |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
