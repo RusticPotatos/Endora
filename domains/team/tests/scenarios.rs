@@ -2185,6 +2185,17 @@ fn sits(w: &mut Office, title: String) {
     panic!("{title} never climbed the ladder");
 }
 
+#[then(expr = "{word} takes {string} a model tier up")]
+fn takes_a_tier_up(w: &mut Office, name: String, title: String) {
+    let (member, task) = (w.member(&name), w.task(&title));
+    let wake = w.last_wake();
+    assert_eq!(
+        (wake.member, wake.task, wake.reason),
+        (member, Some(task), WakeReason::Escalated),
+        "{wake:?}"
+    );
+}
+
 #[then(expr = "{word} is asked to decide {string}")]
 fn asked_to_decide(w: &mut Office, name: String, title: String) {
     let (member, task) = (w.member(&name), w.task(&title));
