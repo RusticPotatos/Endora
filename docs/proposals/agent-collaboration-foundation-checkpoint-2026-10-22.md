@@ -164,6 +164,13 @@ tight, non-overlapping descriptions.
    worker-provided `find_tools` that brings in matching definitions.
 3. Trim the longest HQ tool descriptions and check integrations for overlap.
 4. Keep a turn's tool set stable so the Mac's slot reuses its prompt prefix.
+Progress, 2026-10-25: steps 1 and 2 released (`8adb32c8`, NAS and Pi). A project
+list may name `team` to keep members' own HQ tools and narrow only the node's;
+ansible-nas clean-up lists `team, shell, repo_checkout, repo_submit`. Local turns
+past 12 tools start with their core and the worker's `find_tools` (office and
+chess stay reachable, as ADRs 0119 and 0121 decided). Rae's next #674 turn read a
+7,381-token first prompt (was about 25,900) in 113 seconds, and its first call
+completed in about two and a half minutes instead of timing out at ten.
 Sources: anthropic.com/engineering (advanced-tool-use, writing-tools-for-agents,
 effective-context-engineering-for-ai-agents); developers.openai.com function-calling guide.
 
