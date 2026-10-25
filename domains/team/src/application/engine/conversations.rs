@@ -34,6 +34,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.has_active_conversation(run.member, project)?)
     }
 
+    /// Whether this turn is offered the colleague tools (`consult`, `request_assistance`,
+    /// `send_message`): the one rule both the tool list and the briefing follow, read after
+    /// the briefing has recorded what it showed the turn.
+    /// # Errors
+    /// A store failure.
+    pub(crate) fn may_ask_colleagues(
+        &self,
+        member: &crate::domain::Member,
+        run: &crate::application::ports::Run,
+    ) -> Done<bool> {
+        Ok(member.role != crate::domain::Role::Ceo
+            && self.conversation_turn_ready(run.id)?
+            && !self.store.run_read_confidential(run.id)?
+            && self.has_communication_scope(run)?)
+    }
+
     fn conversation_revision(&self) -> Done<Option<i64>> {
         let stored = self.store.setting("conversations_enabled")?;
         Ok(stored

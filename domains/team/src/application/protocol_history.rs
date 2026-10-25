@@ -22,7 +22,7 @@ pub fn tools() -> Vec<Value> {
     vec![
         tool(
             "ask_record",
-            "Search what the team said, for why something was decided or what was found: posts and last words, handover notes, world pages and their timelines, stories, notebooks and the conversations of turns, from the last 90 days. At most five excerpts, newest first, each with what to cite. It wakes no one and costs nothing, so ask it before you consult anyone. What comes back is testimony: cite it for what was said, never as a reading of the lab now.",
+            "Search what the team said, for why something was decided or what was found: posts and last words, handover notes, world pages and their timelines, stories, notebooks and the conversations of turns, from the last 90 days. At most five excerpts, newest first, each with what to cite. It wakes no one and costs nothing. It finds what was said before; a colleague can answer what the record cannot. What comes back is testimony: cite it for what was said, never as a reading of the lab now.",
             json!({
                 "question": { "type": "string", "maxLength": record::QUESTION_MOST, "description": "what you want to know, with its distinctive words (names, things, what was decided)" },
                 "member": { "type": "string", "description": "only what this member said or wrote" },

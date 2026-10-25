@@ -896,10 +896,7 @@ pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     }
     let mut tools = tools_for_turn(engine, run, member);
     if let Some(list) = tools.as_array_mut() {
-        let can_send = member.role != Role::Ceo
-            && engine.conversation_turn_ready(run.id).unwrap_or(false)
-            && !engine.store().run_read_confidential(run.id).unwrap_or(true)
-            && engine.has_communication_scope(run).unwrap_or(false);
+        let can_send = engine.may_ask_colleagues(member, run).unwrap_or(false);
         list.retain(|tool| {
             tool["name"] != "answer_consult"
                 && (can_send

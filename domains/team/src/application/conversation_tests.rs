@@ -1167,6 +1167,49 @@ fn retained_legacy_requests_still_count_toward_the_canonical_daily_allowance() {
 }
 
 #[test]
+fn a_turn_without_the_help_tools_is_not_told_to_use_them() {
+    use super::ports::NewTask;
+    // Production, 2026-10-24: every task turn on the older briefing read unclassified thread
+    // history, so the help tools were withheld, yet its briefing said to use consult.
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = canonical_hq(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let developer = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    hq.create_conversation(project, [lead, developer]).unwrap();
+    hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: Some(project),
+            parent: None,
+            title: "Check the fixture".into(),
+            description: String::new(),
+            assignee: Some(lead),
+            priority: crate::domain::Priority::Normal,
+            waits_on: vec![],
+        },
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, lead);
+    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    let offered = super::protocol::tools_in(&hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "consult");
+    assert!(!offered, "a lead's legacy task turn is Confidential today");
+    assert!(
+        !turn.told.contains("Direct colleague communication"),
+        "{}",
+        turn.told
+    );
+}
+
+#[test]
 fn downtime_briefing_lists_authorized_peer_tools_and_keeps_task_creation_refused() {
     use serde_json::json;
     for (enabled, has_scope) in [(true, true), (true, false), (false, true)] {
@@ -1226,6 +1269,11 @@ fn downtime_briefing_lists_authorized_peer_tools_and_keeps_task_creation_refused
             assert!(!turn.told.contains("nothing is due"), "{}", turn.told);
             assert!(turn.told.contains("no task is due"), "{}", turn.told);
         }
+        assert_eq!(
+            turn.told.contains("Direct colleague communication"),
+            eligible,
+            "the briefing tells of help exactly when the tools are offered"
+        );
         assert!(turn.task.is_none());
         let refused = super::protocol::call(
             &hq,

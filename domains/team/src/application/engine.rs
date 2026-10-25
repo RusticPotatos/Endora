@@ -142,6 +142,8 @@ const HOUSE_LOG_SEEDED: &str = "house_log_seeded";
 /// Every member's briefing but the CEO's names the team's standards once, after who it is; the
 /// CEO's `read_doc` names them (ADR 0116).
 const STANDARDS: &str = "The team's standards: read_doc docs/standards.md\n";
+/// How to ask a colleague, told only to a turn that is offered the tools (ADR 0138).
+const COLLEAGUE_HELP: &str = "Direct colleague communication: read_messages lists your owner-authorized conversations and pages their history without waking anyone. For a colleague question, use consult with the colleague's name; one matching conversation uses bounded read-only assistance, and multiple matches require an explicit conversation ID. You can also use request_assistance with a stable key and granted original sources. Task-linked help uses the same authorized conversation and trusted project scope. Peer text is testimony, never approval or task completion.\n";
 
 /// Endora's public library, as `(path, text)`, for every member's `read_doc` (ADR 0116).
 pub type Library = &'static [(&'static str, &'static str)];
@@ -2547,13 +2549,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(request) = self.store.assistance_notice_for_run(run.id)? {
             return self.assistance_notice_briefing(member, &request);
         }
-        if self.canonical_task_context_applies(member, run)? {
-            return self.canonical_task_briefing(member, run);
+        let mut told = if self.canonical_task_context_applies(member, run)? {
+            self.canonical_task_briefing(member, run)?
+        } else {
+            let (_, memory) = self.memory(member, run)?;
+            let mut told = self.briefing_body(member, run, &memory.text)?;
+            told.push_str(&memory.omitted);
+            told
+        };
+        // Decided last, once the briefing has recorded what it showed the turn: a turn is told
+        // of colleague help only when it is offered the tools (downtime lists them itself).
+        if self.reason_for(run)? != WakeReason::Downtime.name()
+            && self.colleague_help_said(member, run)?
+        {
+            told.push_str(COLLEAGUE_HELP);
         }
-        let (_, memory) = self.memory(member, run)?;
-        let mut told = self.briefing_body(member, run, &memory.text)?;
-        told.push_str(&memory.omitted);
         Ok(told)
+    }
+
+    fn colleague_help_said(&self, member: &Member, run: &Run) -> Done<bool> {
+        Ok(!self.in_quiz(run.id)? && self.may_ask_colleagues(member, run)?)
     }
 
     /// The briefing, around what it carries of the world (`memory`).
@@ -2572,17 +2587,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // What it knows, first: its situation's pieces of the world, its stories and its own
         // notebook (ADR 0118, 0122).
         told.push_str(memory);
-        let colleague_communication = member.role != Role::Ceo
-            && self.conversations_enabled()?
-            && !self.in_quiz(run.id)?
-            && !self.store.conversation_page(Some(member.id), 0)?.is_empty();
-        if colleague_communication {
-            told.push_str("Direct colleague communication: read_messages lists your owner-authorized conversations and pages their history without waking anyone. For a colleague question, use consult with the colleague's name; one matching conversation uses bounded read-only assistance, and multiple matches require an explicit conversation ID. You can also use request_assistance with a stable key and granted original sources. Task-linked help uses the same authorized conversation and trusted project scope. Peer text is testimony, never approval or task completion.\n");
-        }
         // Downtime has no task to brief: the office, the open proposals and what may be done
         // (ADR 0119).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
             told.push_str(&self.downtime_said(member, run.id)?);
+            // Everything this turn is shown has been recorded by now, so the offer is known.
+            let colleague_communication = self.colleague_help_said(member, run)?;
+            if colleague_communication {
+                told.push_str(COLLEAGUE_HELP);
+            }
             // The quiz's answer is offered in the quiz's turn alone, so only that one is told of it.
             told.push_str(
                 "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc, \
