@@ -818,9 +818,11 @@ if (failures.length) {
   // The guards (ADR 0124): a finding on the desk takes the owner's verdict; the Guards card
   // shows each guard's precision and each project's talk, and its words stay text.
   for (const act of ["hq:decide:28:real", "hq:decide:28:false_positive", "hq:decide:28:not_enough", "hq:decide:28:resolved",
-    "hq:verdict:3:false_positive", "hq:fixed:3:yes", "hq:fixed:3:no", "hq:verdict:4:real"]) {
+    "hq:rejudge:3:open", "hq:fixed:3:yes", "hq:fixed:3:no", "hq:verdict:4:real"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the guards do not offer ${act}`);
   }
+  // Only the choices still open: a judged finding offers to change its verdict, not all four.
+  if (office.includes('data-act="hq:verdict:3:false_positive"')) fail("hq: a judged finding still offers every verdict");
   if (office.includes('data-act="hq:fixed:4:yes"')) fail("hq: a finding nobody judged asks whether its fix worked");
   // How often the CEO stepped into a member's work (ADR 0124), on the roster.
   if (!office.includes("the CEO stepped in 2 times this week")) fail("hq: the roster does not count the CEO's rescues");
@@ -892,13 +894,14 @@ if (failures.length) {
   // count is what needs the owner's word, and an empty digest shows no card.
   {
     const deskTab = office.split('id="hq-panel-desk"')[1].split('role="tabpanel"')[0];
-    const yours = deskTab.split("<h2>Your desk")[1];
-    const digest = deskTab.split("<h2>While you were away")[1].split("<h2>Your desk")[0];
+    const yours = deskTab.split("<h2>Your desk")[1].split("<h2>Looking at")[0];
+    const digest = deskTab.split("<h2>While you were away")[1];
     for (const said of ['<h2>While you were away <span class="hq-count">3</span></h2>', "Nothing here needs you before the team can go on",
       "flagged 2 times", "hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry", "hq:decide:12:drop"]) {
       if (!deskTab.includes(said)) fail(`hq: the digest does not say ${said}`);
     }
-    if (deskTab.indexOf("While you were away") > deskTab.indexOf("Looking at")) fail("hq: the digest is not at the top of the Desk tab");
+    // What needs the owner comes first; what can wait follows (the owner, 2026-10-25).
+    if (deskTab.indexOf("<h2>Your desk") > deskTab.indexOf("While you were away")) fail("hq: the desk is not above the digest");
     const order = ["hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
     if (order.some((at) => at < 0) || order[0] > order[1] || order[1] > order[2]) fail(`hq: the digest is not newest first: ${order}`);
     if (!yours.startsWith(` <span class="hq-count">15</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
@@ -926,14 +929,14 @@ if (failures.length) {
       s.stopped = true; s.stopped_by = ${JSON.stringify(by)}; if (${JSON.stringify(desk)}) s.desk = s.desk.concat([${JSON.stringify(wire)}]);
       const html = viewHQ(); [s.stopped, s.stopped_by, s.desk] = kept; return html; })()`, context);
     const wired = stoppedBy("tripwire", true);
-    const yours = wired.split('id="hq-panel-desk"')[1].split('role="tabpanel"')[0].split("<h2>Your desk")[1];
+    const yours = wired.split('id="hq-panel-desk"')[1].split('role="tabpanel"')[0].split("<h2>Your desk")[1].split("<h2>Looking at")[0];
     for (const said of ['<div class="hq-need tripwire">', 'data-act="hq:decide:29:resume">Resume the team</button>', 'data-act="hq:decide:29:seen">Seen</button>',
       '<p class="hq-help">The team started far more turns in ten minutes than real work does', "Turns started, by member: &lt;b&gt;Ada&lt;/b&gt; 22, Bo 18."]) {
       if (!yours.includes(said)) fail(`hq: the tripwire's card on the desk does not say ${said}`);
     }
     if (yours.includes("<b>Ada</b> 22")) fail("hq: a tripwire card's words became markup");
     if (!wired.includes('<span class="hq-tag" role="status">Stopped by the runaway tripwire</span>') || !wired.includes('data-act="hq:resume">Resume</button>')) fail("hq: the header does not say the tripwire stopped the team, with a way to resume");
-    if (wired.split("<h2>While you were away")[1].split("<h2>Your desk")[0].includes("tripwire")) fail("hq: the tripwire's card is in the digest, which does not interrupt");
+    if (wired.split("<h2>While you were away")[1].split('role="tabpanel"')[0].includes("hq-need tripwire")) fail("hq: the tripwire's card is in the digest, which does not interrupt");
     const owners = stoppedBy("owner", false);
     if (owners.includes("Stopped by the runaway tripwire") || !owners.includes('data-act="hq:resume">Resume</button>')) fail("hq: the owner's own kill switch is called the tripwire");
     if (office.includes("Stopped by the runaway tripwire")) fail("hq: a running team is said to be stopped by the tripwire");

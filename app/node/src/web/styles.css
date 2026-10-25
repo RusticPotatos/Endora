@@ -455,6 +455,13 @@
     .hq-side { grid-template-columns: minmax(0, 1fr); }
     .hq-bar .hq-row { width: 100%; }
     .hq-bar .hq-row .hq-btn { flex: 1 1 0; }
+    /* The office is the Office tab's on a phone: every other tab starts with its content. */
+    .hq:not([data-tab="office"]) .hq-stage { display: none; }
+    .hq[data-tab="office"] .hq-stage-toggle { display: none; }
+  }
+  /* A finger needs 44 px (Apple's HIG; WCAG 2.5.5): every button on a touch screen. */
+  @media (pointer: coarse) {
+    .hq .hq-btn { min-height: 44px; }
   }
 
   /* ---- The agenda (ADR 0103): the Now line and what is pinned above the chat ------------- */

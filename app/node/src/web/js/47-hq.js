@@ -19,7 +19,8 @@ const HQ = {
   lastWord: {},        // task id → the member who last wrote in its thread
   roster: {},          // member id → its controls are open on the Team card
   notebooks: {},       // member id → its notes, read when its panel is opened (ADR 0118)
-  deskNote: {},        // desk item id → why the owner's last decision on it was refused
+  deskNote: {},
+  rejudge: {},         // finding id → the owner asked to change its verdict        // desk item id → why the owner's last decision on it was refused
   logShown: 60,        // how many lines of the activity log are on screen
   tab: null,           // the screen's tab: desk, team, work, knowledge or office (read from storage)
   stageOpen: null,     // the office canvas opened on a phone (null: not read from storage yet)
@@ -1456,9 +1457,19 @@ function hqNeed(s, d) {
 function hqDigest(s) {
   const items = s.digest || [];
   if (!items.length) return "";
+  // The same notice said again (the Mac still busy an hour later) is one card, counted: the
+  // newest is acted on, and its repeats go with it when HQ clears them.
+  const seen = new Map();
+  for (const d of items) {
+    const key = `${d.kind}|${d.task}|${d.text}`;
+    if (seen.has(key)) seen.get(key).times += 1;
+    else seen.set(key, { d, times: 1 });
+  }
+  const cards = [...seen.values()].map(({ d, times }) => times > 1
+    ? hqNeed(s, d).replace("</p>", ` <span class="hq-count">×${times}</span></p>`) : hqNeed(s, d));
   return `<section class="hq-card hq-digest" aria-live="polite"><h2>While you were away <span class="hq-count">${items.length}</span></h2>
     <p class="hq-note">Nothing here needs you before the team can go on. Each is yours to act on when you like, and acting on one takes it out of this list.</p>
-    <div class="hq-needs">${items.map((d) => hqNeed(s, d)).join("")}</div></section>`;
+    <div class="hq-needs">${cards.join("")}</div></section>`;
 }
 
 // Older activity loads when the owner scrolls down near the end of the log: one page per
@@ -1507,8 +1518,9 @@ function viewHQ() {
   const wing = s.wing || {};
   const wingLine = wing.goal ? `<p class="hq-note">The engineering wing (goal "${esc(wing.goal)}") seats ${wing.most_leads || 1} lead on Claude Sonnet and at most ${wing.most_developers || 5} developers on Claude Haiku or the house's model when its lead asks to hire: ${wing.developers || 0} of ${wing.most_developers || 5} developer seats are taken. Your own hiring here is not limited.</p>` : "";
   const team = hqRoster(s);
-  const open = hqStageOpen();
-  return `<div class="hq">
+  // On a phone the office is the Office tab's: every other tab starts with its own content.
+  const open = hqStageOpen() || hqTab() === "office";
+  return `<div class="hq" data-tab="${esc(hqTab())}">
     <div class="hq-bar">
       <h1>Endora HQ</h1>
       ${s.demo ? `<span class="hq-demo">Demo · scripted team</span>` : ""}
@@ -1532,10 +1544,10 @@ function viewHQ() {
         ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
       </div>
       ${hqPanel("desk", `
-        ${hqDigest(s)}
-        <section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
+        <section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>
+        ${hqDigest(s)}
         ${hqSweep()}`)}
       ${hqPanel("activity", `
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
@@ -2035,8 +2047,14 @@ function hqGuards(s) {
   const ceremony = (g.ceremony || []).map((c) => `<li${c.over ? ` class="hq-refused"` : ""}>${esc(c.title)}: ${(c.windows || []).map((w) => esc(w.said) + (w.spent ? ` (${hqDollars(w.spent)} spent)` : "")).join(" · ")}${c.over ? " · talking more than working" : ""}${c.cannot_tell ? " · cannot tell whether it is talking more than working: some turns have no label" : ""}</li>`).join("");
   const finding = (f) => {
     const said = f.verdict ? `Judged ${esc(verdicts[f.verdict] || f.verdict)}${f.judged_by ? ` by ${esc(f.judged_by)}` : ""}${f.fix_worked == null ? "" : f.fix_worked ? ", and its fix worked" : ", and its fix did not work"}.` : "Not judged yet.";
-    const judge = Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("");
-    const fixed = f.verdict ? `<button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:yes">Fix worked</button><button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:no">Fix didn't work</button>` : "";
+    // Only the choices still open (the owner, 2026-10-25: 115 buttons on one card): a verdict
+    // for a finding not judged, or one the owner asked to change; a fix's outcome for a real
+    // finding whose fix is not judged yet.
+    const choosing = !f.verdict || HQ.rejudge[f.id];
+    const judge = choosing
+      ? Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("")
+      : `<button class="hq-btn" data-act="hq:rejudge:${Number(f.id)}:open">Change verdict</button>`;
+    const fixed = f.verdict === "real" && f.fix_worked == null ? `<button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:yes">Fix worked</button><button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:no">Fix didn't work</button>` : "";
     // One finding is kept for a task and a guard (ADR 0132): seen again, it says when; opened
     // again, how often.
     const again = f.seen_at > f.opened_at ? ` · seen again ${hqClock(f.seen_at)}` : "";
@@ -2331,10 +2349,11 @@ async function hqDispatch(verb, noun, id, arg) {
     const verdict = noun === "verdict" ? arg : f.verdict;
     if (!verdict) { flash("Say whether it was real first.", "warn"); return true; }
     const body = noun === "fixed" ? { verdict, fix_worked: arg === "yes" } : { verdict };
-    try { await api("POST", `/v1/hq/guards/findings/${Number(id)}/verdict`, body); flash("Judged.", "ok"); }
+    try { await api("POST", `/v1/hq/guards/findings/${Number(id)}/verdict`, body); flash("Judged.", "ok"); delete HQ.rejudge[id]; }
     catch (e) { flash("Couldn't judge it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
+  if (noun === "rejudge") { HQ.rejudge[id] = true; render(); return true; }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
   if (noun === "logmore") { HQ.logOpen[id] = !HQ.logOpen[id]; render(); return true; }
   if (noun === "logolder") {
