@@ -65,7 +65,8 @@ pub const fn kind_of(reason: WakeReason, role: Role) -> TurnKind {
         | W::Directed
         | W::Decide
         | W::Huddle
-        | W::Guard => TurnKind::Judgment,
+        | W::Guard
+        | W::Escalated => TurnKind::Judgment,
         // Doing, reading, checking, drafting and picking work up again.
         W::Assigned
         | W::Mentioned
@@ -300,7 +301,7 @@ mod tests {
     /// not the tester, how far down its work may go (a judgment turn never goes down at all,
     /// so its column says what its work would be). A reason added to the enum fails
     /// `every_reason_is_classified` until it is in this table.
-    const TABLE: [(WakeReason, TurnKind, Allowed); 25] = [
+    const TABLE: [(WakeReason, TurnKind, Allowed); 26] = [
         (W::Assigned, TurnKind::Work, Allowed::Either),
         (W::Mentioned, TurnKind::Work, Allowed::Either),
         (W::WaitFinished, TurnKind::Work, Allowed::Either),
@@ -326,6 +327,7 @@ mod tests {
         (W::Guard, TurnKind::Judgment, Allowed::Either),
         (W::WaitDropped, TurnKind::Work, Allowed::Either),
         (W::Consulted, TurnKind::Work, Allowed::Local),
+        (W::Escalated, TurnKind::Judgment, Allowed::Either),
     ];
 
     #[test]

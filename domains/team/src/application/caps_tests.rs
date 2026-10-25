@@ -371,3 +371,84 @@ fn the_guards_card_says_the_caps_beside_the_budget_of_talk() {
     assert_eq!(said["runaway_turns"], 40, "{said}");
     assert_eq!(said["runaway_window_ms"], 10 * MINUTE, "{said}");
 }
+
+/// ADR 0139: stuck on the house's model, a member takes the problem up a model tier, not up the
+/// org chart: its turn ends, and the same member is woken on its own Claude, with why posted in
+/// the thread. Judgment turns cannot escalate further this way, and a task escalates twice a day
+/// at most, after which it is a decision for whoever holds that authority.
+#[test]
+fn a_stuck_work_turn_escalates_to_the_same_member_on_its_claude_twice_a_day_at_most() {
+    use serde_json::json;
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, linus, task) = team(&clock, false);
+    let escalate = |t: &super::ports::RunContext| {
+        let (run, member) = hq.turn_of(&t.token).unwrap().unwrap();
+        super::protocol::call(
+            &hq,
+            &run,
+            &member,
+            "escalate",
+            &json!({ "why": "The backup script fails the same way after three fixes." }),
+        )
+    };
+    for round in 0..2 {
+        hq.wake(linus, Some(task), WakeReason::Mentioned).unwrap();
+        let work = super::guards_tests::turn(&hq, linus);
+        let ran = hq.store().run(work.run).unwrap().unwrap();
+        assert_ne!(
+            ran.brain,
+            Some(Brain::Haiku),
+            "round {round}: work starts on the house"
+        );
+        let said = escalate(&work).unwrap();
+        assert!(said.contains("Claude"), "{said}");
+        let ended = hq.store().run(work.run).unwrap().unwrap();
+        assert_ne!(ended.status, RunStatus::Running, "the stuck turn ends");
+        hq.tick().unwrap();
+        let up = hq
+            .store()
+            .runs()
+            .unwrap()
+            .into_iter()
+            .rfind(|r| r.member == linus && r.task == Some(task) && r.id != work.run)
+            .unwrap();
+        assert_eq!(
+            up.brain,
+            Some(Brain::Haiku),
+            "round {round}: the same member, on its Claude"
+        );
+        let told = hq
+            .runner()
+            .started()
+            .into_iter()
+            .rfind(|c| c.run == up.id)
+            .unwrap()
+            .told;
+        assert!(
+            told.contains("up a model tier"),
+            "the escalated turn is told why: {told}"
+        );
+        assert!(
+            hq.store()
+                .thread(task)
+                .unwrap()
+                .iter()
+                .any(|p| p.text.contains("fails the same way")),
+            "why is in the thread"
+        );
+        // A judgment turn is already on Claude: it does not escalate this way.
+        let judgment = hq
+            .runner()
+            .started()
+            .into_iter()
+            .rfind(|c| c.run == up.id)
+            .unwrap();
+        assert!(escalate(&judgment).is_err());
+        hq.runner().finish(up.id, true);
+        hq.tick().unwrap();
+    }
+    hq.wake(linus, Some(task), WakeReason::Mentioned).unwrap();
+    let third = super::guards_tests::turn(&hq, linus);
+    let refused = escalate(&third).unwrap_err();
+    assert!(refused.contains("twice"), "{refused}");
+}

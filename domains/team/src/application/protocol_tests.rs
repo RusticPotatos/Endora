@@ -265,8 +265,10 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     // every member asks the record (ADR 0129) and asks a colleague through consult, which is
     // canonical assistance (ADR 0138); and a developer asks for its kept branch to be checked
     // again (ADR 0115). A quiz's answer is that turn's tool alone (ADR 0131, amended), and
-    // answer_consult is retired (ADR 0138).
-    assert_eq!(names.len(), 23, "{names:?}");
+    // answer_consult is retired (ADR 0138). A stuck member takes its problem a model tier up
+    // with escalate (ADR 0139).
+    assert_eq!(names.len(), 24, "{names:?}");
+    assert!(names.contains(&"escalate".to_owned()));
     assert!(names.contains(&"recheck".to_owned()));
     for tool in ["ask_record", "consult"] {
         assert!(names.contains(&tool.to_owned()), "{tool}");
@@ -303,8 +305,8 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
     // With the office (ADR 0119), a huddle's view (ADR 0120), chess (ADR 0121) and the world
-    // (ADR 0122).
-    assert_eq!(reviewers.len(), 22, "{reviewers:?}");
+    // (ADR 0122), and escalate (ADR 0139).
+    assert_eq!(reviewers.len(), 23, "{reviewers:?}");
     assert!(
         !reviewers.contains(&"create_task".to_owned()),
         "the tester passes or sends back, and never makes work"

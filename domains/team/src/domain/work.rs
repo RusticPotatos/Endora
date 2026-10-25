@@ -443,6 +443,8 @@ pub enum Refusal {
     History(super::history::HistoryRefusal),
     /// A deterministic conversation refusal (ADR 0137).
     Conversation(&'static str),
+    /// Why a turn cannot take its problem a model tier up (ADR 0139).
+    Escalation(&'static str),
     /// Not in Endora's public library.
     NotADoc,
     /// A decision for the board says what is to be decided, what the CEO recommends, and why.
@@ -758,7 +760,7 @@ impl fmt::Display for Refusal {
             Self::World(refused) => refused.fmt(f),
             Self::Guard(refused) => refused.fmt(f),
             Self::History(refused) => refused.fmt(f),
-            Self::Conversation(reason) => f.write_str(reason),
+            Self::Conversation(reason) | Self::Escalation(reason) => f.write_str(reason),
             Self::NotADoc => f.write_str(
                 "read_doc reads Endora's public library only: docs/standards.md, or a path like docs/adr/0111-the-ceo-and-the-chain-of-command.md, docs/plans/endora-hq.md or docs/drafts/ansible-nas-AGENTS.md",
             ),

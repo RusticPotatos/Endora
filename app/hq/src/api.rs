@@ -2056,8 +2056,10 @@ mod tests {
         // keeps (ADR 0126). It asks the record; peer help is absent while disabled.
         // The quiz's answer belongs only to its own turn (ADR 0131, amended). And it
         // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
-        // for work in its area (ADR 0133).
-        assert_eq!(names.len(), 37, "{names:?}");
+        // for work in its area (ADR 0133). On a work turn, it may take a stuck problem a model
+        // tier up (ADR 0139).
+        assert_eq!(names.len(), 38, "{names:?}");
+        assert!(names.contains(&"escalate"));
         assert!(!names.contains(&"consult") && !names.contains(&"answer_consult"));
         assert!(names.contains(&"recheck"));
         assert!(names.contains(&"judge_finding"));

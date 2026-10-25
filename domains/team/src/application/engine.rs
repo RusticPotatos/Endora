@@ -2800,6 +2800,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                  with ask_owner.\n"
             });
         }
+        // ADR 0139: this member's own turn on the house's model was stuck and took the problem a
+        // model tier up; its last word in the thread says why.
+        if self.reason_for(run)? == WakeReason::Escalated.name() {
+            told.push_str(
+                "You took this task up a model tier: your last turn, on the house's model, was \
+                 stuck, and why is your latest post in its thread. Now on your Claude, work out what \
+                 it could not: fix the approach, then carry the task on as usual. A decision that \
+                 is not yours still goes to whoever holds it, with ask_owner.\n",
+            );
+        }
         if self.reason_for(run)? == WakeReason::ReviewRequested.name() {
             // The newest of a draft for the owner and a move to review says which this is.
             let members = self.store.members()?;
@@ -3908,6 +3918,68 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// A member's question, up the chain: posted in the task's thread for the one above, the
     /// asker's turn ended, and the one above woken to answer there. One question a member
     /// about a task waits for its answer at a time.
+    /// A member's turn on the house's model is stuck: it takes the problem a model tier up, not
+    /// up the org chart (ADR 0139). Its turn ends, why goes in the thread as its own words, and
+    /// the same member is woken on its Claude. Twice a task a day at most: after that the
+    /// problem is a decision for whoever holds it.
+    ///
+    /// # Errors
+    /// [`Refusal::Escalation`] for a turn already on Claude, a turn about no task, an empty
+    /// reason, or a task that has escalated twice today; a stopped or unknown turn.
+    pub fn escalate_in(&self, run: RunId, why: &str) -> Done<String> {
+        const MOST_A_DAY: u32 = 2;
+        let _held = self.held();
+        let turn = self.running(run)?;
+        let member = self.member(turn.member)?;
+        let reason = self.store.wake(turn.wake)?.map(|w| w.reason);
+        if reason.is_some_and(|r| {
+            crate::domain::turns::kind_of(r, member.role)
+                == crate::domain::turns::TurnKind::Judgment
+        }) {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "this turn already thinks with Claude: a decision goes to whoever holds it, with ask_owner",
+            )));
+        }
+        let Some(task) = turn.task else {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "escalate takes a task's problem up: this turn is about no task",
+            )));
+        };
+        let why = one_line(why, 600);
+        if why.is_empty() {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "say why you are stuck: what you tried and what keeps failing",
+            )));
+        }
+        let key = format!("escalated:{}:{}", task.0, self.today());
+        let done: u32 = self
+            .store
+            .setting(&key)?
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        if done >= MOST_A_DAY {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "this task has escalated twice today: put the decision to whoever holds it, with ask_owner",
+            )));
+        }
+        self.store.set_setting(&key, &(done + 1).to_string())?;
+        self.post_own_held_lock(
+            member.id,
+            task,
+            &format!("Escalating to my Claude: {why}"),
+            &[],
+        )?;
+        let id = turn.id;
+        self.end_blocked(turn, RunStatus::Succeeded, "escalated to its Claude")?;
+        self.wake_held_lock(member.id, Some(task), WakeReason::Escalated)?;
+        self.runner.stop(id, self.settings.grace);
+        Ok(
+            "Escalated: you take this up again on your Claude in your next turn, with why in the \
+            thread. This turn ends."
+                .to_owned(),
+        )
+    }
+
     fn up_the_chain(
         &self,
         run: Run,

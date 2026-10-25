@@ -494,6 +494,12 @@ pub fn tools(role: Role) -> Value {
             &["title", "description"]
         ),
         tool(
+            "escalate",
+            "Stuck on this task on the house's model (errors recurring, an approach not converging, results that do not fit)? Take it up a model tier: your turn ends and you take it up again on your Claude, with why in the thread. Twice a task a day at most; a decision still goes to whoever holds it, with ask_owner.",
+            json!({ "why": { "type": "string", "description": "what you tried and what keeps failing" } }),
+            &["why"]
+        ),
+        tool(
             "ask_owner",
             "Put a decision your task needs, or a proposal, up the chain: to the lead (on a project's task, that project's lead), or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). The lead's to the CEO, and a tester's passing on the CEO's decision, cite evidence. Asking ends your turn: you are woken when they answer. For a colleague's knowledge or help, use consult instead.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
@@ -659,6 +665,19 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
         return json!([]);
     }
     list.extend(super::protocol_conversations::tools(engine, run));
+    // A judgment turn already thinks with Claude: escalating is for a work turn (ADR 0139).
+    let judgment = engine
+        .store()
+        .wake(run.wake)
+        .ok()
+        .flatten()
+        .is_none_or(|w| {
+            crate::domain::turns::kind_of(w.reason, member.role)
+                == crate::domain::turns::TurnKind::Judgment
+        });
+    if judgment {
+        list.retain(|t| t["name"] != "escalate");
+    }
     // A scenario's turn acts in its world with its tool (the Holodeck plan's phases 5 and 6).
     if let Ok(Some(kind)) = engine.scenario_kind_of_run(run.id) {
         list.push(super::scenario_tool::tool(kind));
@@ -1603,6 +1622,10 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 "The request is on the owner's desk (item {}): they bring a member back or hire, and you hear in this thread. Go on with your turn.",
                 item.0
             ))
+        }
+        "escalate" => {
+            let why = text_arg(args, "why")?;
+            engine.escalate_in(run.id, why).map_err(|e| said(&e))
         }
         "ask_owner" => {
             let text = text_arg(args, "text")?;
