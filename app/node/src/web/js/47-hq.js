@@ -2163,7 +2163,9 @@ function hqMacCard(s) {
   const running = hq.running ? " A turn is running on it." : "";
   return `<section class="hq-card" aria-live="polite"><h2>The Mac <span class="hq-tag">${hqMacWord(m)}</span></h2>
     <p class="hq-who">${esc(hqMacWhy(m.why))}.${esc(waiting)}${esc(running)}</p>
-    <p class="hq-note">${esc(facts)}heard ${esc(heard)}. A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes) || 10} min; one at a time.</p>
+    <p class="hq-note">${esc(facts)}heard ${esc(heard)}. ${Number(m.idle_minutes) > 0
+      ? `A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes)} min`
+      : "A turn runs on it whenever it is plugged in, whether or not you are using it"}; one at a time. Mac busy holds it.</p>
     <div class="hq-row"><button class="hq-btn ${m.busy ? "stop" : "ok"}" aria-pressed="${m.busy ? "true" : "false"}"
       data-act="hq:mac:busy:${m.busy ? "off" : "on"}">Mac busy: ${m.busy ? "on" : "off"}</button>
       <button class="hq-link" data-act="go:models">Set up in AI</button></div></section>`;
@@ -2182,7 +2184,7 @@ function hqMacSetup() {
         <input id="hq-mac-url" value="${esc(m.url || "")}" placeholder="http://192.168.1.10:8080/v1" aria-label="The Mac's model address" />
         <input id="hq-mac-model" value="${esc(m.model || "")}" placeholder="Model name" aria-label="The model's name" />
         <input id="hq-mac-key" type="password" autocomplete="off" placeholder="${m.has_key ? "Key kept; type to replace it" : "Key (the server's --api-key)"}" aria-label="The server's key" />
-        <label>idle for <input id="hq-mac-idle" type="number" min="1" max="1440" value="${Number(m.idle_minutes) || 10}" aria-label="Minutes the owner must be idle" /> min</label>
+        <label>wait until I am idle for <input id="hq-mac-idle" type="number" min="0" max="1440" value="${Number(m.idle_minutes) || 0}" aria-label="Minutes the owner must be idle (0: no wait)" /> min (0: no wait)</label>
         <button class="primary" data-act="hq:mac:save:go">Save</button></div>
       <div class="row" style="margin-top:8px;"><button class="ghost" data-act="hq:mac:token:make">${m.has_token ? "Make a new token for the helper" : "Make a token for the helper"}</button></div>${token}
       <p class="sub" style="margin-top:8px;">Teams on the Mac brain wait for the Mac and never fall back to another model.</p></div>`;
@@ -2194,7 +2196,7 @@ async function hqMacAct(what, arg) {
     try { await api("POST", "/v1/mac/settings", { busy: arg === "on" }); flash(arg === "on" ? "Mac busy is on: the model will unload." : "Mac busy is off.", "ok"); }
     catch (e) { flash("Couldn't change it: " + e.message, "err"); }
   } else if (what === "save") {
-    const body = { model: val("hq-mac-model"), idle_minutes: Number(val("hq-mac-idle")) || 10 };
+    const body = { model: val("hq-mac-model"), idle_minutes: Math.max(0, Number(val("hq-mac-idle")) || 0) };
     const url = val("hq-mac-url");
     if (url) body.url = url;
     const key = val("hq-mac-key");

@@ -199,3 +199,11 @@ in memory.
 - The first `ready` after a node restart takes up to a heartbeat (30 s) and a tell (20 s).
 - `llama-server`'s `--api-key-file` and `/health` are relied on; an old build lacking them will not
   start the server, and the helper's log says so.
+
+## Amendment (2026-10-25): the owner at the Mac does not hold it
+
+The owner's word: being at the Mac should not hold its model. Every team turn on the Mac waited
+for the owner to have been idle ten minutes, and with nearly all of the team's work on the Mac,
+the whole team stopped whenever the owner used it. The idle wait now defaults to none (0) and may
+be set from 0 to a day; a wait the owner sets still holds as before. On battery and "Mac busy"
+still hold the Mac, and one turn runs on it at a time.

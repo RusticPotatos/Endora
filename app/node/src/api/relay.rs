@@ -2126,8 +2126,12 @@ pub(super) mod tests {
         let (hq_url, _) = hq_with_a_mac_member();
         let (installed, to_installed) = local_model();
         let (mac, to_mac) = local_model();
-        // The owner came back: seconds idle, not ten minutes.
+        // The owner asked for ten idle minutes, and came back: seconds idle.
         let state = node_with_a_mac(&hq_url, &installed, &mac, 4);
+        state
+            .config
+            .set_setting("mac-brain", "idle_minutes", "10")
+            .unwrap();
         let res = super::super::team_relay(state.clone())
             .oneshot(ask_local("mac-turn", a_call("claude-sonnet-5-5")))
             .await

@@ -1354,6 +1354,10 @@ if (failures.length) {
       'data-act="hq:mac:busy:on"', "Mac busy: off", 'aria-pressed="false"', 'data-act="go:models">Set up in AI']) {
       if (!card.includes(want)) fail(`mac: the card does not show ${want}`);
     }
+    // No wait for the owner to be idle (0, the default since 2026-10-25) is said plainly.
+    runInContext("HQ.mac.idle_minutes = 0;", context);
+    if (!runInContext("hqMacCard(HQ.snap)", context).includes("whenever it is plugged in, whether or not you are using it")) fail("mac: the card does not say it runs whether or not the owner is using it");
+    runInContext("HQ.mac.idle_minutes = 10;", context);
     // The setup is not on HQ: it is on the AI screen, where every model lives (where-things-go.md).
     for (const setup of ['id="hq-mac-url"', 'id="hq-mac-model"', 'id="hq-mac-key"', 'id="hq-mac-idle"', 'data-act="hq:mac:save:go"', 'data-act="hq:mac:token:make"', "Set up the Mac"]) {
       if (card.includes(setup) || runInContext("viewHQ()", context).includes(setup)) fail(`mac: the HQ screen still has the setup (${setup})`);

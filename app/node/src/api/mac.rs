@@ -20,8 +20,9 @@ const ID: &str = "mac-brain";
 const HEARD_WITHIN_MS: i64 = 90_000;
 
 /// How long the owner must have been idle before a team turn may run on the Mac, if the owner
-/// has not said: ten minutes.
-const DEFAULT_IDLE_MINUTES: u64 = 10;
+/// has not said: no wait (the owner, 2026-10-25: their being at the Mac should not hold its
+/// model). The owner may still ask for one, or switch "Mac busy" on.
+const DEFAULT_IDLE_MINUTES: u64 = 0;
 
 /// The longest idle time the owner may ask for: a day.
 const MOST_IDLE_MINUTES: u64 = 24 * 60;
@@ -147,7 +148,7 @@ impl Settings {
                     found.idle_minutes = value
                         .parse()
                         .ok()
-                        .filter(|m| (1..=MOST_IDLE_MINUTES).contains(m))
+                        .filter(|m| (0..=MOST_IDLE_MINUTES).contains(m))
                         .unwrap_or(DEFAULT_IDLE_MINUTES);
                 }
                 "token" => found.token = value,
@@ -374,11 +375,8 @@ pub(super) async fn change(
             return Err(refused("the Mac's address must be on your own network"));
         }
     }
-    if req
-        .idle_minutes
-        .is_some_and(|m| !(1..=MOST_IDLE_MINUTES).contains(&m))
-    {
-        return Err(refused("the idle time is between 1 minute and a day"));
+    if req.idle_minutes.is_some_and(|m| m > MOST_IDLE_MINUTES) {
+        return Err(refused("the idle time is at most a day (0: no wait)"));
     }
     if req
         .model
@@ -626,8 +624,8 @@ mod tests {
         assert_eq!(start["why"], "not heard from");
         assert_eq!(start["ready"], false);
         assert_eq!(
-            start["idle_minutes"], 10,
-            "ten minutes unless the owner says"
+            start["idle_minutes"], 0,
+            "no wait for the owner to be idle unless they ask for one"
         );
         let beat = json!({ "plugged": true, "idle_s": 601, "model_up": true }).to_string();
         let made = json_body(
@@ -726,7 +724,8 @@ mod tests {
                 .unwrap();
             assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{url}");
         }
-        for bad in [r#"{"idle_minutes":0}"#, r#"{"idle_minutes":2000}"#] {
+        // No wait at all (0) is the default and may be chosen; more than a day may not.
+        for bad in [r#"{"idle_minutes":2000}"#] {
             let res = router
                 .clone()
                 .oneshot(post("/v1/mac/settings", bad))
@@ -792,8 +791,13 @@ mod tests {
             (ok.url.as_str(), ok.model.as_str(), ok.key.as_str()),
             ("http://192.168.1.10:8080/v1", "mac", "k")
         );
+        // The owner at the Mac does not hold it unless they ask for a wait (the owner,
+        // 2026-10-25): by default it is free with them at the keyboard.
         state.mac.hear(beat(true, 3, true, now));
+        assert!(target(&state, now).is_ok(), "{}", err(&state));
+        set(&state.config, "idle_minutes", "10").unwrap();
         assert!(err(&state).contains("owner active"));
+        set(&state.config, "idle_minutes", "0").unwrap();
         state.mac.hear(beat(false, 3_000, true, now));
         assert!(err(&state).contains("on battery"));
         state.mac.hear(beat(true, 3_000, true, now));
