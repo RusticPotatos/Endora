@@ -292,6 +292,19 @@ fn only_the_last_five_conversations_of_a_member_on_a_task_are_kept() {
         assert!(!runs.contains(&context.run), "turn {n} is a new one");
         hq.record_transcript(&context.token, "worker", &format!("turn {n} talk"))
             .unwrap();
+        // Each turn acts: turns that show nothing would go a model tier up (ADR 0139).
+        hq.record_receipt(
+            &context.token,
+            &super::engine::Called {
+                tool: "restart_container".to_owned(),
+                args: format!("{{\"name\":\"sonarr{n}\"}}"),
+                excerpt: "restarted".to_owned(),
+                ok: true,
+                act: true,
+                confidential: false,
+            },
+        )
+        .unwrap();
         runs.push(context.run);
         end(&hq, &context);
     }

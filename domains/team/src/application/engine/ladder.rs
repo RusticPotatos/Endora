@@ -114,9 +114,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 && r.label == Some(Label::Advanced)
         });
         let Some(next) = ladder::climb(at.map(|(r, _)| r), moved) else {
+            // No rung is left: an undecided lead's work is not handed to the CEO (ADR 0139).
+            self.stuck_on_the_desk(task, why)?;
             return Ok(true);
         };
         match next {
+            Rung::Tier => {
+                if !self.tier_up(task, why)? {
+                    self.ask_the_lead(task, &lead, why)?;
+                }
+            }
             Rung::Lead => self.ask_the_lead(task, &lead, why)?,
             Rung::Huddle => self.call_huddle(task, &lead, why)?,
             Rung::Ceo => self.to_the_ceo(task, &lead, "the lead did not decide it")?,
@@ -125,7 +132,43 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(true)
     }
 
-    /// The first rung: the area's lead decides.
+    /// The first rung (ADR 0139): the member on the task takes it a model tier up, on its
+    /// Claude, before anyone else is asked. Whether it could: not for work in review, when
+    /// nobody at work is on it, its work already thinks with Claude, or the task has escalated
+    /// twice today.
+    fn tier_up(&self, task: &Task, why: &str) -> Done<bool> {
+        // Work in review waits on its tester, not on the member who made it.
+        if task.status == TaskStatus::InReview {
+            return Ok(false);
+        }
+        let Some(member) = task.owner.or(task.assignee) else {
+            return Ok(false);
+        };
+        let member = self.member(member)?;
+        let on_the_house = crate::domain::turns::kind_of(WakeReason::Assigned, member.role)
+            == crate::domain::turns::TurnKind::Work;
+        if !member.at_work() || !on_the_house || !self.take_a_tier_up(task.id)? {
+            return Ok(false);
+        }
+        self.set_rung(task.id, Rung::Tier)?;
+        self.post_held_lock(
+            Author::Endora,
+            task.id,
+            &format!(
+                "Stuck: {why}. {} takes it a model tier up, on its Claude, before anyone else \
+                 is asked.",
+                member.name
+            ),
+        )?;
+        self.emit(
+            EventKind::StuckClimbed,
+            json!({ "task": task.id.0, "rung": Rung::Tier.name(), "to": member.id.0, "why": why }),
+        )?;
+        self.wake_held_lock(member.id, Some(task.id), WakeReason::Escalated)?;
+        Ok(true)
+    }
+
+    /// The lead's rung: the area's lead decides.
     fn ask_the_lead(&self, task: &Task, lead: &Member, why: &str) -> Done<()> {
         self.set_rung(task.id, Rung::Lead)?;
         self.post_held_lock(
@@ -300,14 +343,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(mut huddle) = self.huddle(task)? else {
             return Err(EngineError::Refused(Refusal::NotInTheHuddle));
         };
+        // Any member may give a view while the huddle lasts (ADR 0139); those it asked are
+        // the ones it waits for.
         let me = turn.member.0;
-        let asked = huddle["members"]
-            .as_array()
-            .is_some_and(|m| m.iter().any(|x| x.as_i64() == Some(me)));
         let gave = huddle["views"]
             .as_array()
             .is_some_and(|v| v.iter().any(|x| x["member"].as_i64() == Some(me)));
-        if !asked || gave || huddle["deciding"] == true {
+        if gave || huddle["deciding"] == true || huddle["lead"].as_i64() == Some(me) {
             return Err(EngineError::Refused(Refusal::NotInTheHuddle));
         }
         let view = ladder::view(view).map_err(EngineError::Refused)?;

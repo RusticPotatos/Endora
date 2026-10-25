@@ -940,7 +940,8 @@ fn talk_against_work_on_the_outcomes_is_the_ceremony_guards_own_count() {
 fn a_member_woken_for_nothing_again_and_again_is_parked_not_woken() {
     let clock = Hands(AtomicI64::new(NOON));
     // No lead: nobody above Linus takes the work up after his third turn of nothing (ADR
-    // 0114's hand-up), so he is the one woken again.
+    // 0114's hand-up), so he is the one woken again: once a model tier up (ADR 0139), which
+    // shows nothing either.
     let (hq, dev, task) = team(&clock, false);
     for _ in 0..3 {
         hq.wake(dev, Some(task), WakeReason::Mentioned).unwrap();
@@ -948,6 +949,9 @@ fn a_member_woken_for_nothing_again_and_again_is_parked_not_woken() {
         hq.runner().finish(t.run, true);
         hq.tick().unwrap();
     }
+    let tier = turn(&hq, dev);
+    hq.runner().finish(tier.run, true);
+    hq.tick().unwrap();
     assert_eq!(
         hq.wake(dev, Some(task), WakeReason::AssignmentRecovery)
             .unwrap(),

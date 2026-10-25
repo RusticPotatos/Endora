@@ -368,7 +368,9 @@ function hqTell(e, live, older) {
     // Roles as an enforced RACI (ADR 0120): strategy, the leads' reports and the ladder.
     "goal.strategy": ["you", `Goal ${d.goal}'s strategy was written by ${d.by === "owner" ? "you" : d.by}`],
     "area.reported": ["run", `${hqName(d.lead)} reported on their area`],
-    "stuck.climbed": ["warn", `${key} is stuck: it goes to ${d.to ? hqName(d.to) : "the owner"} (${d.rung})`],
+    "stuck.climbed": ["warn", d.rung === "tier"
+      ? `${key} is stuck: ${hqName(d.to)} takes it a model tier up`
+      : `${key} is stuck: it goes to ${d.to ? hqName(d.to) : "the owner"} (${d.rung})`],
     "huddle.called": ["wake", `Huddle on ${key}: ${(d.members || []).map(hqName).join(", ")}`],
     "huddle.decided": ["done", `${hqName(d.lead)} decided ${key}: ${String(d.decision || "").replace(/_/g, " ")}`],
   }[e.kind];

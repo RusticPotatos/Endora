@@ -1,12 +1,15 @@
 //! The escalation ladder (ADR 0120, the owner's amendment of 2026-10-18): stuck work climbs
 //! one rung at a time, each rung once, instead of landing on the owner's desk.
 //!
-//! 1. **The lead**: the lead of the task's area is woken to decide.
-//! 2. **A huddle**: the lead and up to [`HUDDLE_MOST`] members who touched the task in the last
-//!    [`TOUCHED_WITHIN_MS`] each take one short turn to give their view; then the lead decides.
-//! 3. **The CEO**: only when the lead's decision says it needs the CEO (money, a new goal,
-//!    another area), or the lead did not decide.
-//! 4. **The board**: only a board matter (the lead says so), through the CEO when there is one.
+//! 1. **A model tier up** (ADR 0139): the member on it is woken on its Claude, when its work
+//!    runs on the house's model and the task has not escalated twice today.
+//! 2. **The lead**: the lead of the task's area is woken to decide.
+//! 3. **A huddle**: the lead and up to [`HUDDLE_MOST`] members who touched the task in the last
+//!    [`TOUCHED_WITHIN_MS`] each take one short turn to give their view (any member at work may
+//!    add one); then the lead decides.
+//! 4. **The CEO**: only when the lead's decision says it needs the CEO (money, a new goal,
+//!    another area). A lead who did not decide is not handed to the CEO.
+//! 5. **The board**: only a board matter (the lead says so), through the CEO when there is one.
 //!
 //! Live, task #666 went in circles for hours and then sat on the owner's desk as "stuck".
 
@@ -26,6 +29,8 @@ pub const VIEW_SENTENCES: usize = 3;
 /// Where a stuck task is on the ladder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rung {
+    /// Its member was woken to take it a model tier up (ADR 0139).
+    Tier,
     /// Its area's lead was asked to decide.
     Lead,
     /// A huddle was called.
@@ -41,6 +46,7 @@ impl Rung {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Tier => "tier",
             Self::Lead => "lead",
             Self::Huddle => "huddle",
             Self::Ceo => "ceo",
@@ -51,23 +57,30 @@ impl Rung {
     /// The rung with this [`name`](Self::name), if there is one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Lead, Self::Huddle, Self::Ceo, Self::Decided]
-            .into_iter()
-            .find(|r| r.name() == name)
+        [
+            Self::Tier,
+            Self::Lead,
+            Self::Huddle,
+            Self::Ceo,
+            Self::Decided,
+        ]
+        .into_iter()
+        .find(|r| r.name() == name)
     }
 }
 
 /// The rung a task climbs to when it is found stuck, from where it is (`None`: not on the
-/// ladder) and whether its work moved since. Work that moved, or a decision that was carried
-/// out and stuck again, starts again at the lead. After the CEO there is no rung left: nothing
-/// more happens, and the owner's desk is never the next step (`None`).
+/// ladder) and whether its work moved since (ADR 0139). Work that moved, or a decision that was
+/// carried out and stuck again, starts again with a model tier up. After a huddle, or the CEO
+/// a lead asked for, there is no rung left (`None`): an undecided lead's work is not handed to
+/// the CEO.
 #[must_use]
 pub const fn climb(at: Option<Rung>, moved_since: bool) -> Option<Rung> {
     match (at, moved_since) {
-        (None | Some(Rung::Decided), _) | (Some(_), true) => Some(Rung::Lead),
+        (None | Some(Rung::Decided), _) | (Some(_), true) => Some(Rung::Tier),
+        (Some(Rung::Tier), false) => Some(Rung::Lead),
         (Some(Rung::Lead), false) => Some(Rung::Huddle),
-        (Some(Rung::Huddle), false) => Some(Rung::Ceo),
-        (Some(Rung::Ceo), false) => None,
+        (Some(Rung::Huddle | Rung::Ceo), false) => None,
     }
 }
 
@@ -168,10 +181,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stuck_work_climbs_one_rung_at_a_time_and_never_past_the_ceo() {
-        assert_eq!(climb(None, false), Some(Rung::Lead));
+    fn stuck_work_tries_a_model_tier_up_first_and_an_undecided_lead_does_not_climb_to_the_ceo() {
+        // ADR 0139: a tier up before any person; the lead, a huddle, then nothing more.
+        assert_eq!(climb(None, false), Some(Rung::Tier));
+        assert_eq!(climb(Some(Rung::Tier), false), Some(Rung::Lead));
         assert_eq!(climb(Some(Rung::Lead), false), Some(Rung::Huddle));
-        assert_eq!(climb(Some(Rung::Huddle), false), Some(Rung::Ceo));
+        assert_eq!(
+            climb(Some(Rung::Huddle), false),
+            None,
+            "an undecided lead is not handed to the CEO"
+        );
         assert_eq!(
             climb(Some(Rung::Ceo), false),
             None,
@@ -179,11 +198,17 @@ mod tests {
         );
         assert_eq!(
             climb(Some(Rung::Huddle), true),
-            Some(Rung::Lead),
+            Some(Rung::Tier),
             "work that moved starts again"
         );
-        assert_eq!(climb(Some(Rung::Decided), false), Some(Rung::Lead));
-        for rung in [Rung::Lead, Rung::Huddle, Rung::Ceo, Rung::Decided] {
+        assert_eq!(climb(Some(Rung::Decided), false), Some(Rung::Tier));
+        for rung in [
+            Rung::Tier,
+            Rung::Lead,
+            Rung::Huddle,
+            Rung::Ceo,
+            Rung::Decided,
+        ] {
             assert_eq!(Rung::from_name(rung.name()), Some(rung));
         }
     }

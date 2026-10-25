@@ -537,7 +537,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "huddle_view",
-            "Give your view on stuck work, when a huddle asks you (your turn says so): three sentences at most, on evidence from HQ's record. One short turn: give it and stop; the area's lead then decides.",
+            "Give your view on stuck work while its huddle lasts (a huddle asks you in your turn, and anyone may add one): three sentences at most, on evidence from HQ's record. Give it and stop; the area's lead then decides.",
             json!({ "task": task, "view": { "type": "string", "maxLength": crate::domain::ladder::VIEW_MOST }, "evidence": ids("What your view rests on: at least one.") }),
             &["task", "view", "evidence"]
         ),

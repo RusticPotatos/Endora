@@ -147,7 +147,13 @@ fn still_stranded_after_its_recovery_it_climbs_the_ladder_one_rung_at_a_time_and
             .map(|w| w.reason)
             .collect()
     };
-    // The first rung: its area's lead decides.
+    // The first rung: its member a model tier up (ADR 0139).
+    later(&clock, STRANDED_AFTER_MS + 1);
+    hq.tick().unwrap();
+    assert_eq!(reasons(dev).last(), Some(&WakeReason::Escalated));
+    assert!(reasons(lead).is_empty());
+    finish_all();
+    // Then its area's lead decides.
     later(&clock, STRANDED_AFTER_MS + 1);
     hq.tick().unwrap();
     assert_eq!(reasons(lead), [WakeReason::Decide]);

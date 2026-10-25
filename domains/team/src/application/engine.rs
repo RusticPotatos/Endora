@@ -2806,10 +2806,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // model tier up; its last word in the thread says why.
         if self.reason_for(run)? == WakeReason::Escalated.name() {
             told.push_str(
-                "You took this task up a model tier: your last turn, on the house's model, was \
-                 stuck, and why is your latest post in its thread. Now on your Claude, work out what \
-                 it could not: fix the approach, then carry the task on as usual. A decision that \
-                 is not yours still goes to whoever holds it, with ask_owner.\n",
+                "This task went up a model tier: your work on the house's model was stuck, and \
+                 why is in its thread. Now on your Claude, work out what it could not: fix the \
+                 approach, then carry the task on as usual. A decision that is not yours still \
+                 goes to whoever holds it, with ask_owner.\n",
             );
         }
         if self.reason_for(run)? == WakeReason::ReviewRequested.name() {
@@ -3930,6 +3930,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }))
     }
 
+    /// Counts one escalation of `task` a model tier up, if it has not escalated twice today
+    /// (ADR 0139: a problem cannot bounce between tiers). Whether it may. Never in a scenario:
+    /// the Holodeck measures the model a player plays on.
+    pub(super) fn take_a_tier_up(&self, task: TaskId) -> Done<bool> {
+        const MOST_A_DAY: u32 = 2;
+        if self.in_a_scenario(task)? {
+            return Ok(false);
+        }
+        let key = format!("escalated:{}:{}", task.0, self.today());
+        let done: u32 = self
+            .store
+            .setting(&key)?
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        if done >= MOST_A_DAY {
+            return Ok(false);
+        }
+        self.store.set_setting(&key, &(done + 1).to_string())?;
+        Ok(true)
+    }
+
     /// A member's turn on the house's model is stuck: it takes the problem a model tier up, not
     /// up the org chart (ADR 0139). Its turn ends, why goes in the thread as its own words, and
     /// the same member is woken on its Claude. Twice a task a day at most: after that the
@@ -3939,7 +3960,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`Refusal::Escalation`] for a turn already on Claude, a turn about no task, an empty
     /// reason, or a task that has escalated twice today; a stopped or unknown turn.
     pub fn escalate_in(&self, run: RunId, why: &str) -> Done<String> {
-        const MOST_A_DAY: u32 = 2;
         let _held = self.held();
         let turn = self.running(run)?;
         let member = self.member(turn.member)?;
@@ -3959,18 +3979,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "say why you are stuck: what you tried and what keeps failing",
             )));
         }
-        let key = format!("escalated:{}:{}", task.0, self.today());
-        let done: u32 = self
-            .store
-            .setting(&key)?
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(0);
-        if done >= MOST_A_DAY {
+        if self.in_a_scenario(task)? {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "a scenario measures the model you play on: play it on this one",
+            )));
+        }
+        if !self.take_a_tier_up(task)? {
             return Err(EngineError::Refused(Refusal::Escalation(
                 "this task has escalated twice today: put the decision to whoever holds it, with ask_owner",
             )));
         }
-        self.store.set_setting(&key, &(done + 1).to_string())?;
         self.post_own_held_lock(
             member.id,
             task,

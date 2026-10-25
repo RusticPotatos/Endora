@@ -85,8 +85,9 @@ fn the_sixty_first_turn_of_a_day_on_the_house_waits_for_tomorrow_and_starts_when
     let (hq, linus, task) = team(&clock, false);
     // Sixty turns, two minutes apart: five in ten minutes, nowhere near a runaway, and each on
     // the house's own models, which cost nothing and so are bounded by nothing else.
+    // Turns that act: one that shows nothing would be taken a model tier up (ADR 0139).
     for _ in 0..60 {
-        one_turn(&hq, linus, task, false);
+        one_turn(&hq, linus, task, true);
         later(&clock, 2 * MINUTE);
     }
     assert_eq!(started_by(&hq, linus), 60);
@@ -148,8 +149,9 @@ fn one_members_day_is_its_own_and_judgment_is_not_a_turn_on_the_house() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, linus, task) = team(&clock, false);
     let dee = hq.hire("Dee", Role::Developer, 40, 2, 4).unwrap();
+    // Turns that act: one that shows nothing would be taken a model tier up (ADR 0139).
     for _ in 0..60 {
-        one_turn(&hq, linus, task, false);
+        one_turn(&hq, linus, task, true);
         later(&clock, 2 * MINUTE);
     }
     // Dee has taken none: her turn starts as ever.

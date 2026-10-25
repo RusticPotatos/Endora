@@ -1053,8 +1053,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// After a member's turn on its task that showed nothing: a nudge for its next turn (the
-    /// briefing says it) for the first two, then, once, the task goes to whom the member reports
-    /// to, with a post saying so.
+    /// briefing says it) for the first two, then, once, the same member a model tier up (ADR
+    /// 0139). When its work already thinks with Claude or the task has escalated twice today,
+    /// a task in a lead's area is the ladder's; any other goes to whom the member reports to,
+    /// with a post saying so.
     pub(super) fn after_nothing_shown(&self, run: &Run) -> Done<()> {
         let Some(task_id) = run.task else {
             return Ok(());
@@ -1079,8 +1081,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.store.setting(&key)?.is_some() {
             return Ok(());
         }
-        let members = self.store.members()?;
         let member = self.member(run.member)?;
+        // A model tier up before a person (ADR 0139): the same member, on its Claude.
+        if self.on_work_turn(run, &member)? && self.take_a_tier_up(task_id)? {
+            self.store.set_setting(&key, "1")?;
+            self.post_held_lock(
+                Author::Endora,
+                task_id,
+                &format!(
+                    "{} took {count} turns on this that showed nothing (talk only or empty), \
+                     after {} nudges: {} takes it a model tier up, on its Claude.",
+                    member.name,
+                    evidence::MOST_NUDGES,
+                    member.name
+                ),
+            )?;
+            self.wake_held_lock(member.id, Some(task_id), WakeReason::Escalated)?;
+            return Ok(());
+        }
+        // In a lead's area the ladder takes it from here, as a decision for the lead; work is
+        // not handed up to a manager (ADR 0139).
+        if self.area_lead(&task)?.is_some() {
+            return Ok(());
+        }
+        let members = self.store.members()?;
         let Some(manager) = chain::manager(&member, &members)
             .and_then(|id| members.iter().find(|m| m.id == id).cloned())
             .filter(|m| m.id != member.id)
