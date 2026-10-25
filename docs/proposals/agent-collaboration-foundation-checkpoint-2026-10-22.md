@@ -148,6 +148,25 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
    project, and give the idle developer and researcher work, so authorized pairs
    have reasons to talk.
 
+**L. Make local-model turns small enough to finish** (owner chose free local models,
+2026-10-25). Rae's #674 turn is about 25.9k tokens before acting: about 17k node
+contracts (inferred), 4.7k HQ tools (23 for a developer; a lead's 38 are about
+8.3k), 2.5k briefing and 1.5k worker instructions. The Mac writes about 3 tokens/s
+at that size; the NAS GPU (12 GB) is slower at a 32k context. Anthropic and OpenAI
+both advise a small up-front tool set (OpenAI: "fewer than 20 functions available
+at the start of a turn"), deferring the rest behind tool search (Anthropic: worth
+it past about 10k tokens of definitions, keeping three to five tools loaded), and
+tight, non-overlapping descriptions.
+1. Per-project tool lists (existing `set_project_tools`, node `only`): ansible-nas
+   clean-up gets `shell, repo_checkout, repo_submit`; re-run #674 and measure. Add a
+   Work control for the list.
+2. For local brains on projects without a list: a small always-loaded core plus a
+   worker-provided `find_tools` that brings in matching definitions.
+3. Trim the longest HQ tool descriptions and check integrations for overlap.
+4. Keep a turn's tool set stable so the Mac's slot reuses its prompt prefix.
+Sources: anthropic.com/engineering (advanced-tool-use, writing-tools-for-agents,
+effective-context-engineering-for-ai-agents); developers.openai.com function-calling guide.
+
 **C. Prove it and decide** (observation, then owner decisions)
 
 1. Observe the first production request triggered by real work; verify its
