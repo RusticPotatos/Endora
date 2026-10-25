@@ -1350,7 +1350,7 @@ if (failures.length) {
       has_key: true, has_token: true, idle_minutes: 10, plugged: true, idle_s: 42, model_up: true, heard_s_ago: 12 };
       HQ.snap.mac = { ready: false, why: "owner active", running: 0, waiting: 2 }; HQ.macToken = "";`, context);
     const card = runInContext("hqMacCard(HQ.snap)", context);
-    for (const want of ["<h2>The Mac", ">away<", "You are using it", "2 turns wait for it", "plugged in · idle 0 min · model up", "heard 12 s ago",
+    for (const want of ["<h2>The Mac", ">in use<", "You are using it", "2 turns wait for it", "plugged in · idle 0 min · model up", "heard 12 s ago",
       'data-act="hq:mac:busy:on"', "Mac busy: off", 'aria-pressed="false"', 'data-act="go:models">Set up in AI']) {
       if (!card.includes(want)) fail(`mac: the card does not show ${want}`);
     }
@@ -1779,7 +1779,13 @@ if (failures.length) {
     if (!tabs.includes("Pool $0.00 spent · $1.93 left")) fail("hq: no chip for today's pool");
     if (/>Mac (free|away|busy)</.test(tabs)) fail("hq: a Mac chip when the node cannot say about the Mac");
     runInContext('HQ.mac = { ready: false, why: "on battery", busy: false };', context);
-    if (!shown().includes('title="On battery: the model is unloaded">Mac away</span>')) fail("hq: the Mac chip does not say the Mac is away and why");
+    if (!shown().includes('title="On battery: the model is unloaded">Mac on battery</span>')) fail("hq: the Mac chip does not say the Mac is on battery and why");
+    // Plugged in and only waiting for the owner to be idle is "in use", not "away".
+    runInContext('HQ.mac = { ready: false, why: "owner active", busy: false };', context);
+    if (!shown().includes(">Mac in use</span>") || shown().includes(">Mac away</span>")) fail("hq: the Mac chip calls a Mac in use away");
+    runInContext('HQ.mac = { ready: false, why: "not heard from", busy: false };', context);
+    if (!shown().includes(">Mac away</span>")) fail("hq: a Mac not heard from is not away");
+    runInContext('HQ.mac = { ready: false, why: "on battery", busy: false };', context);
     runInContext('HQ.mac.busy = true;', context);
     if (!shown().includes(">Mac busy</span>")) fail("hq: the Mac chip does not say it is busy");
     if (!panelOf(shown(), "team").includes('data-act="hq:mac:busy:off"')) fail("hq: the Mac busy switch is not on the Team tab");

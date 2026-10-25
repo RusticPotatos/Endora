@@ -1411,7 +1411,7 @@ function hqChips(s) {
   if (pool.waiting > 0) chips.push(`<span class="hq-chip" title="They start when the day turns, you top up the pool, or you give the member an allowance">${pool.waiting} ${pool.waiting === 1 ? "turn waits" : "turns wait"} for budget</span>`);
   // A member's day of turns on the house's own models is capped (ADR 0133): the rest wait.
   if (pool.capped > 0) chips.push(`<span class="hq-chip" title="A member takes at most a day's turns on the house's own models; the rest start when the day turns">${pool.capped} ${pool.capped === 1 ? "turn waits" : "turns wait"} for tomorrow</span>`);
-  if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${HQ.mac.busy ? "busy" : HQ.mac.ready ? "free" : "away"}</span>`);
+  if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${hqMacWord(HQ.mac)}</span>`);
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
   if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} landed this week</span>`);
@@ -2140,8 +2140,16 @@ async function hqLoadMac() {
 
 // What the node's few words mean to the owner.
 function hqMacWhy(why) {
-  return { ready: "Free: the team may use it", "owner active": "You are using it", "on battery": "On battery: the model is unloaded",
+  return { ready: "Free: the team may use it", "owner active": "You are using it: the team waits until you have been idle a while", "on battery": "On battery: the model is unloaded",
     busy: "Mac busy is on: the model is unloaded", "model loading": "Plugged in; the model is loading", "not heard from": "Not heard from lately" }[why] || String(why || "");
+}
+
+// The Mac's state in a word or two, by its reason (the owner, 2026-10-25: "Mac away" when it was
+// plugged in and only waiting for them to be idle read as broken).
+function hqMacWord(m) {
+  if (m.busy) return "busy";
+  if (m.ready) return "free";
+  return { "owner active": "in use", "on battery": "on battery", "model loading": "loading", "not heard from": "away" }[m.why] || "away";
 }
 
 // On HQ: the Mac's state and the busy switch. Setting it up is under Settings.
@@ -2153,7 +2161,7 @@ function hqMacCard(s) {
   const facts = m.plugged == null ? "" : `${m.plugged ? "plugged in" : "on battery"} · idle ${Math.floor((m.idle_s || 0) / 60)} min · model ${m.model_up ? "up" : "down"} · `;
   const waiting = hq.waiting ? ` ${hq.waiting} ${hq.waiting === 1 ? "turn waits" : "turns wait"} for it.` : "";
   const running = hq.running ? " A turn is running on it." : "";
-  return `<section class="hq-card" aria-live="polite"><h2>The Mac <span class="hq-tag">${m.ready ? "free" : "away"}</span></h2>
+  return `<section class="hq-card" aria-live="polite"><h2>The Mac <span class="hq-tag">${hqMacWord(m)}</span></h2>
     <p class="hq-who">${esc(hqMacWhy(m.why))}.${esc(waiting)}${esc(running)}</p>
     <p class="hq-note">${esc(facts)}heard ${esc(heard)}. A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes) || 10} min; one at a time.</p>
     <div class="hq-row"><button class="hq-btn ${m.busy ? "stop" : "ok"}" aria-pressed="${m.busy ? "true" : "false"}"
