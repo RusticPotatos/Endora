@@ -117,6 +117,9 @@ fn tools() -> Value {
         { "name": "set_status", "description": "Move your task on, with a reason.",
           "inputSchema": { "type": "object", "properties": { "task": task, "status": { "type": "string" },
                            "reason": { "type": "string" } }, "required": ["task", "status", "reason"] } },
+        { "name": "consult", "description": "Ask a colleague.",
+          "inputSchema": { "type": "object", "properties": { "member": { "type": "string" },
+                           "question": { "type": "string" } }, "required": ["member", "question"] } },
     ])
 }
 
@@ -435,7 +438,7 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
     let first = &to_model[0];
     assert_eq!(first.path, "/team-relay/local/v1/chat/completions");
     assert_eq!(first.body["model"], "local");
-    assert_eq!(first.body["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(first.body["tools"].as_array().unwrap().len(), 5);
     assert_eq!(
         first.body["tools"][1],
         json!({ "type": "function", "function": {
@@ -1006,6 +1009,7 @@ fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
             "claim",
             "post",
             "set_status",
+            "consult",
             "homelab_status",
             "restart_container"
         ]
@@ -1093,7 +1097,7 @@ fn a_401_from_the_node_ends_the_turn_and_a_node_without_contracts_leaves_hqs_too
             .as_array()
             .unwrap()
             .len(),
-        4
+        5
     );
     assert_eq!(
         methods(&to_hq).last().map(String::as_str),
@@ -2016,6 +2020,7 @@ fn the_bridge_serves_hqs_tools_and_the_nodes_and_a_question_ends_the_turn() {
             "claim",
             "post",
             "set_status",
+            "consult",
             "homelab_status",
             "container_logs",
             "restart_container"
@@ -2191,6 +2196,9 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
         "post",
         "set_status",
         "homelab_status",
+        // Asking a colleague is offered up front (ADR 0139-0140): the briefing names it, and a
+        // tool behind a search was never used in production.
+        "consult",
         "find_tools",
     ] {
         assert!(first.iter().any(|n| n == core), "{core} missing: {first:?}");

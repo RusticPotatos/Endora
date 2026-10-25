@@ -317,15 +317,19 @@ pub(crate) const FIND_TOOLS: &str = "find_tools";
 /// Past this many tools a local turn starts with its core and finds the rest.
 const DEFER_PAST: usize = 12;
 
-/// A local turn's core, always offered: its turn, its task, its way up a model tier and its word
-/// up, its notes, the workbench's shell and the lab's container tools the instructions name.
-const ALWAYS: [&str; 11] = [
+/// A local turn's core, always offered: its turn, its task, its way up a model tier, its word up
+/// and to a colleague, its notes, the workbench's shell and the lab's container tools the
+/// instructions name.
+const ALWAYS: [&str; 12] = [
     "my_turn",
     "claim",
     "post",
     "set_status",
     "escalate",
     "ask_owner",
+    // Asking a colleague (ADR 0139-0140): the briefing names it, and behind a search it was
+    // never used in production.
+    "consult",
     "note",
     SHELL,
     "homelab_status",
