@@ -17,6 +17,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = run;
     }
 
+    /// The turn whose call the engine is taking now, if any.
+    pub(super) fn acting_run(&self) -> Option<RunId> {
+        *self
+            .acting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// An event's data, naming the turn whose call emitted it unless it names a run already.
     /// The first time any does, the store keeps when ([`TAGGED_FROM`]): a turn queued since
     /// has every event of its own named.

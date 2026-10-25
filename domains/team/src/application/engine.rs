@@ -1720,6 +1720,51 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.post_held_lock_marked(by, task, text, &[], false)
     }
 
+    /// A post HQ writes for a member in that member's own turn, of the member's own words with
+    /// names, ids and fixed wording around them: its source is that turn (ADR 0138). Anywhere
+    /// else (no turn acting, or another member's) it stays Unknown, as every post did before.
+    /// Only for text with nothing borrowed from another run, the owner or outside.
+    fn post_own_held_lock(
+        &self,
+        member: MemberId,
+        task: TaskId,
+        text: &str,
+        cited: &[crate::domain::Ref],
+    ) -> Done<()> {
+        let origin = match self.acting_run() {
+            Some(run)
+                if self
+                    .store
+                    .run(run)?
+                    .is_some_and(|turn| turn.member == member) =>
+            {
+                InputOrigin::Run(run)
+            }
+            _ => InputOrigin::Unknown,
+        };
+        self.post_authored_held_lock_marked(
+            Author::Member(member),
+            task,
+            text,
+            cited,
+            false,
+            origin,
+        )
+    }
+
+    /// HQ's own words in a thread: a template filled only with ids, names, statuses and tool
+    /// names, never text from a run, the owner or outside, so it carries no tier (ADR 0138).
+    fn post_system_held_lock(&self, task: TaskId, text: &str) -> Done<()> {
+        self.post_authored_held_lock_marked(
+            Author::Endora,
+            task,
+            text,
+            &[],
+            false,
+            InputOrigin::System,
+        )
+    }
+
     /// Writes to a thread; a member's post marks its turn as one that posted (talk, unless it
     /// did more), never as one that moved its task forward (ADR 0114).
     fn post_held_lock_marked(
@@ -1867,7 +1912,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.member(holder)?.name
             ));
         }
-        self.post_held_lock(Author::Member(member), task, &said)?;
+        self.post_own_held_lock(member, task, &said, &[])?;
         if to == TaskStatus::Todo {
             self.store.release(task)?;
             self.emit(
@@ -2032,11 +2077,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.mark_progress(reviewer.id, task)?;
         if !approve {
             self.store.set_task_status(task, TaskStatus::Doing)?;
-            self.post_held_lock(
-                Author::Member(reviewer.id),
-                task,
-                &format!("Sent back: {notes}"),
-            )?;
+            self.post_own_held_lock(reviewer.id, task, &format!("Sent back: {notes}"), &[])?;
             self.emit_status(&current, TaskStatus::Doing)?;
             self.emit_sent_back(task, reviewer.id, "tester", reason)?;
             if let Some(owner) = worker {
@@ -2050,20 +2091,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if gated {
             // Gated work keeps the gate's rule: done only once the gate has passed.
             self.approve_held_lock(reviewer.id, task)?;
-            self.post_held_lock(
-                Author::Member(reviewer.id),
-                task,
-                &format!("Approved: {notes}"),
-            )?;
+            self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
             return Ok(());
         }
         review::may_approve(false, false, worker, reviewer.id).map_err(EngineError::Refused)?;
         self.store.set_task_status(task, TaskStatus::Done)?;
-        self.post_held_lock(
-            Author::Member(reviewer.id),
-            task,
-            &format!("Approved: {notes}"),
-        )?;
+        self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
         self.emit_status(&current, TaskStatus::Done)?;
         self.after_finishing(&current)
     }
@@ -3894,11 +3927,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if waiting {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
-        self.post_held_lock(
-            Author::Member(member.id),
-            task.id,
-            &chain::question(&above.name, text),
-        )?;
+        self.post_own_held_lock(member.id, task.id, &chain::question(&above.name, text), &[])?;
         let id = run.id;
         self.end_blocked(
             run,
@@ -3957,11 +3986,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store.set_task_status(task.id, TaskStatus::InReview)?;
             self.emit_status(task, TaskStatus::InReview)?;
         }
-        self.post_held_lock(
-            Author::Member(member.id),
-            task.id,
-            &format!("{}{text}", review::DRAFT),
-        )?;
+        self.post_own_held_lock(member.id, task.id, &format!("{}{text}", review::DRAFT), &[])?;
         let id = run.id;
         self.end_blocked(
             run,

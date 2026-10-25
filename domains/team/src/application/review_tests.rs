@@ -502,6 +502,30 @@ fn the_tester_passes_on_her_own_readings_and_then_the_lead_accepts_it_as_done() 
         hq.store().thread(t.task).unwrap().pop().unwrap().text,
         format!("Tested and passed: The queue is clear.\nEvidence: r{mine} (homelab_status)")
     );
+    // ADR 0138 A2a: posts HQ writes for a member in that member's own turn carry the turn as
+    // their source, and HQ's own templates carry `system`, so a reader is not locked by them.
+    {
+        use crate::application::history_ports::HistoryStore;
+        use crate::domain::history::InputOrigin;
+        let posts = hq.store().latest_authored_posts(t.task, 50).unwrap();
+        let passed = posts
+            .iter()
+            .find(|p| p.post.text.starts_with("Tested and passed"))
+            .unwrap();
+        assert_eq!(passed.origin, InputOrigin::Run(review.run));
+        for cited in posts
+            .iter()
+            .filter(|p| p.post.text.starts_with("Evidence cited"))
+        {
+            assert_eq!(cited.origin, InputOrigin::System, "{}", cited.post.text);
+        }
+        assert!(
+            posts
+                .iter()
+                .any(|p| p.post.text.starts_with("Evidence cited")),
+            "the submission cited its evidence"
+        );
+    }
 
     let lead = leads_turn(&hq, ada, &review);
     assert!(

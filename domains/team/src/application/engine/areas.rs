@@ -234,10 +234,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let report = AreaReport::new(lead.id, parts, Some(turn.id), Some(task), self.clock.now())
             .map_err(EngineError::Refused)?;
         let id = self.store.add_area_report(&report)?;
-        self.post_held_lock(
-            Author::Member(lead.id),
+        self.post_own_held_lock(
+            lead.id,
             task,
             &format!("Area report:\n{}", report.said().trim_end()),
+            &[],
         )?;
         self.store.set_task_status(task, TaskStatus::Done)?;
         self.emit_status(&current, TaskStatus::Done)?;

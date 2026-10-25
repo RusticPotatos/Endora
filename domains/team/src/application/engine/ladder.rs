@@ -322,12 +322,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             done.push(json!(me));
         }
         self.keep_huddle(task, &huddle)?;
-        self.post_held_lock_marked(
-            Author::Member(member.id),
+        self.post_own_held_lock(
+            member.id,
             task,
             &format!("My view for the huddle: {view}"),
             cited,
-            false,
         )?;
         self.huddle_heard(task)
     }
@@ -471,7 +470,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             decision.name().replace('_', " ")
         );
         self.write_huddle(&current, huddle.as_ref(), &said, turn.id)?;
-        self.post_held_lock(Author::Member(lead.id), task, &said)?;
+        self.post_own_held_lock(lead.id, task, &said, &[])?;
         self.store
             .set_setting(&format!("{HUDDLE_KEY}{}", task.0), "")?;
         self.set_rung(task, Rung::Decided)?;
