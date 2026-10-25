@@ -1210,7 +1210,7 @@ fn a_turn_without_the_help_tools_is_not_told_to_use_them() {
         .any(|tool| tool["name"] == "consult");
     assert!(!offered, "a lead's legacy task turn is Confidential today");
     assert!(
-        !turn.told.contains("Direct colleague communication"),
+        !turn.told.contains("Colleagues: you may ask anyone"),
         "{}",
         turn.told
     );
@@ -1277,7 +1277,7 @@ fn downtime_briefing_lists_authorized_peer_tools_and_keeps_task_creation_refused
             assert!(turn.told.contains("no task is due"), "{}", turn.told);
         }
         assert_eq!(
-            turn.told.contains("Direct colleague communication"),
+            turn.told.contains("Colleagues: you may ask anyone"),
             eligible,
             "the briefing tells of help exactly when the tools are offered"
         );

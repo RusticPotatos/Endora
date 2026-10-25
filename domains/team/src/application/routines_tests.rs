@@ -707,3 +707,99 @@ fn turns_that_only_reclaim_and_leave_a_last_word_move_nothing() {
     );
     assert_eq!(waiting.retry_at, Some(clock.at() + 2 * MINUTE_MS));
 }
+
+/// ADR 0138 A2b: a task a routine fires carries the routine's origin for its body and
+/// criteria, so a turn on routine work is not locked out of help for lack of lineage; an
+/// alarm's words come from outside and keep it unknown.
+#[test]
+fn a_routines_task_carries_the_routines_origin_and_an_alarms_stays_unknown() {
+    use super::history_ports::HistoryStore;
+    use crate::domain::history::{InputOrigin, InputRef};
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, t) = office(&clock);
+    let origin = |task: TaskId| {
+        (
+            hq.store().input_origin(InputRef::TaskBody(task)).unwrap(),
+            hq.store()
+                .input_origin(InputRef::TaskCriteria(task))
+                .unwrap(),
+        )
+    };
+    let owners = check_the_lab(&hq, &t, false);
+    let Fired::Created(task) = hq.fire_routine(owners).unwrap() else {
+        panic!("a task")
+    };
+    assert_eq!(origin(task), (InputOrigin::Owner, InputOrigin::Owner));
+    let hqs = hq
+        .add_routine(
+            Author::Endora,
+            NewRoutine {
+                title: "Weekly patterns".to_owned(),
+                description: "Read the week's alarms.".to_owned(),
+                goal: t.goal,
+                project: None,
+                assignee: t.dev,
+                every_ms: 24 * HOUR_MS,
+                on_lab_trouble: true,
+            },
+        )
+        .unwrap();
+    let Fired::Created(task) = hq.fire_routine(hqs).unwrap() else {
+        panic!("a task")
+    };
+    assert_eq!(origin(task), (InputOrigin::System, InputOrigin::System));
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    let Some((_, Fired::Created(alarmed))) = hq.alarm("deluge exited at 12:01").unwrap() else {
+        panic!("an alarm's task")
+    };
+    assert_eq!(
+        origin(alarmed),
+        (InputOrigin::Unknown, InputOrigin::Unknown)
+    );
+}
+
+/// Routines from before their origin was kept: HQ's own templates are vouched for by their exact
+/// words, and anything else stays unknown.
+#[test]
+fn routines_made_before_origins_are_vouched_for_only_when_their_words_are_hqs_templates() {
+    use super::history_ports::HistoryStore;
+    use crate::domain::history::{InputOrigin, InputRef};
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, t) = office(&clock);
+    let made = |title: &str, words: &str| {
+        let id = hq
+            .add_routine(
+                Author::Endora,
+                NewRoutine {
+                    title: title.to_owned(),
+                    description: words.to_owned(),
+                    goal: t.goal,
+                    project: None,
+                    assignee: t.lead,
+                    every_ms: 24 * HOUR_MS,
+                    on_lab_trouble: false,
+                },
+            )
+            .unwrap();
+        // As a routine from before the origin was kept.
+        hq.store()
+            .set_setting(&format!("routine_origin:{}", id.0), "")
+            .unwrap();
+        id
+    };
+    let template = made("Check the home lab", "Look at the lab.");
+    let edited = made("Check the home lab", "Look at the lab, and the router.");
+    assert_eq!(
+        hq.vouch_template_routines(&[("Check the home lab", "Look at the lab.")])
+            .unwrap(),
+        1
+    );
+    let body = |id: RoutineId| {
+        let Fired::Created(task) = hq.fire_routine(id).unwrap() else {
+            panic!("a task")
+        };
+        hq.store().input_origin(InputRef::TaskBody(task)).unwrap()
+    };
+    assert_eq!(body(template), InputOrigin::System);
+    assert_eq!(body(edited), InputOrigin::Unknown);
+}
