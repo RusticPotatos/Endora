@@ -20,7 +20,7 @@ const HQ = {
   roster: {},          // member id → its controls are open on the Team card
   notebooks: {},       // member id → its notes, read when its panel is opened (ADR 0118)
   deskNote: {},        // desk item id → why the owner's last decision on it was refused
-  logShown: 10,        // how many lines of the activity log are on screen
+  logShown: 60,        // how many lines of the activity log are on screen
   tab: null,           // the screen's tab: desk, team, work, knowledge or office (read from storage)
   stageOpen: null,     // the office canvas opened on a phone (null: not read from storage yet)
   working: false,      // the "Give work" form is open
@@ -1231,7 +1231,8 @@ function hqFonts() {
 // find stuff"): what needs the owner first, then the team, the work, what the team knows, and
 // the office itself. Every tab is drawn and the others are hidden, so a live update never
 // loses what is typed on a tab that is not showing.
-const HQ_TABS = [["desk", "Desk"], ["team", "Team"], ["work", "Work"], ["knowledge", "Knowledge"], ["office", "Office"]];
+// Activity first: the screen the owner glances at most, live (2026-10-25).
+const HQ_TABS = [["activity", "Activity"], ["desk", "Desk"], ["team", "Team"], ["work", "Work"], ["knowledge", "Knowledge"], ["office", "Office"]];
 
 // A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
 // screen works the same without it.
@@ -1245,14 +1246,15 @@ function hqStored(key, value) {
 
 function hqTab() {
   if (HQ.tab) return HQ.tab;
-  const kept = hqStored("tab");
-  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "desk";
+  // Kept under a new name, so every screen opens once on Activity, now first.
+  const kept = hqStored("tab.v2");
+  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "activity";
   return HQ.tab;
 }
 
 function hqSetTab(id) {
   if (!HQ_TABS.some(([t]) => t === id)) return;
-  HQ.tab = id; hqStored("tab", id);
+  HQ.tab = id; hqStored("tab.v2", id);
 }
 
 // The office canvas on a phone: a thin strip until the owner opens it (and it stays as chosen).
@@ -1450,6 +1452,24 @@ function hqDigest(s) {
     <div class="hq-needs">${items.map((d) => hqNeed(s, d)).join("")}</div></section>`;
 }
 
+// Older activity loads as the end of the log comes into view, so reading back needs no button.
+// The marker is redrawn with the page, so each new one is watched; nothing is asked while a
+// load is under way or HQ has said there is nothing older.
+let HQ_LOG_WATCH = null;
+function hqWatchLogEnd() {
+  const end = document.getElementById("hq-log-end");
+  if (!end || end.dataset.watched || typeof IntersectionObserver !== "function") return;
+  end.dataset.watched = "1";
+  if (HQ_LOG_WATCH) HQ_LOG_WATCH.disconnect();
+  HQ_LOG_WATCH = new IntersectionObserver((seen) => {
+    const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
+    if (seen.some((e) => e.isIntersecting) && olderLeft && !HQ.logBusy && hqTab() === "activity") {
+      dispatch("hq:logolder:0:more");
+    }
+  }, { rootMargin: "400px 0px" });
+  HQ_LOG_WATCH.observe(end);
+}
+
 function viewHQ() {
   if (HQ.error) return `<div class="hq"><h1>Endora HQ</h1><section class="hq-card"><p class="hq-empty">${esc(HQ.error)}</p></section></div>`;
   const s = HQ.snap;
@@ -1458,14 +1478,15 @@ function viewHQ() {
     hqFonts(); hqLoop();
     const cv = document.getElementById("hq-office");
     if (cv && !cv.dataset.tapped) { cv.dataset.tapped = "1"; cv.addEventListener("click", hqTap); }
+    hqWatchLogEnd();
   }, 0);
   const pool = s.pool || {}, c = s.counts || {};
   const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Waiting", c.held || 0],
     ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
   const desk = (s.desk || []).map((d) => hqNeed(s, d)).join("");
-  // The latest thirty, newest first, and "Show older" for the rest: first what is kept here,
-  // then what HQ still has.
+  // The latest sixty, newest first, live; older lines load as the end comes into view, and
+  // "Show older" stays for keyboards: first what is kept here, then what HQ still has.
   const log = HQ.log.slice(0, HQ.logShown).map(hqLogLine).join("");
   const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
   const older = olderLeft ? `<div class="hq-row"><button class="hq-btn" data-act="hq:logolder:0:more"${HQ.logBusy ? " disabled" : ""}>${HQ.logBusy ? "Loading…" : "Show older"}</button></div>` : "";
@@ -1502,6 +1523,8 @@ function viewHQ() {
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
         ${hqSweep()}`)}
+      ${hqPanel("activity", `
+        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
       ${hqPanel("team", `
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
         ${hqMacCard(s)}
@@ -1515,7 +1538,6 @@ function viewHQ() {
         ${hqHolodeck(s)}
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
-        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
         ${hqGuards(s)}
         ${hqRoutines(s)}`)}
       ${hqPanel("knowledge", `

@@ -710,7 +710,8 @@ if (failures.length) {
     hqTell({ id: 62, at: 0, kind: "stopped", data: { by: "owner", why: "trying it" } }, false);`, context);
   // The activity log shows ten lines at first (the Work tab is not the place for a wall of
   // them); this block reads all of them.
-  if (runInContext("HQ.logShown", context) !== 10) fail("hq: the activity log does not start at ten lines");
+  // Activity is the screen the owner watches most (2026-10-25): it opens on sixty lines.
+  if (runInContext("HQ.logShown", context) !== 60) fail("hq: the activity log does not start at sixty lines");
   runInContext("HQ.logShown = 30;", context);
   const office = runInContext("viewHQ()", context);
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · in 19000 / out 100 · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
@@ -1667,23 +1668,25 @@ if (failures.length) {
     runInContext("HQ.selected = null; HQ.tab = null; HQ.working = false; HQ.workDraft = {}; HQ.stageOpen = null;", context);
     const shown = () => runInContext("viewHQ()", context);
     const tabs = shown();
-    for (const id of ["desk", "team", "work", "knowledge", "office"]) {
+    for (const id of ["activity", "desk", "team", "work", "knowledge", "office"]) {
       if (!tabs.includes(`role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}"`)) fail(`hq: no ${id} tab`);
       if (!tabs.includes(`role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"`)) fail(`hq: no ${id} panel`);
     }
     if (!tabs.includes('role="tablist"')) fail("hq: the tabs are not a tablist");
     const selected = (html) => [...html.matchAll(/id="hq-tab-(\w+)"[^>]*aria-selected="true"/g)].map((m) => m[1]);
     const hiddenPanels = (html) => [...html.matchAll(/id="hq-panel-(\w+)"[^>]*? hidden>/g)].map((m) => m[1]).sort().join(",");
-    if (selected(tabs).join() !== "desk") fail(`hq: the default tab is ${selected(tabs)}, not desk`);
-    if (hiddenPanels(tabs) !== "knowledge,office,team,work") fail(`hq: with Desk showing, these panels are hidden: ${hiddenPanels(tabs)}`);
+    if (selected(tabs).join() !== "activity") fail(`hq: the default tab is ${selected(tabs)}, not activity`);
+    if (!/role="tablist"[^>]*><button role="tab" class="hq-tab" id="hq-tab-activity"/.test(tabs)) fail("hq: Activity is not the first tab");
+    if (hiddenPanels(tabs) !== "desk,knowledge,office,team,work") fail(`hq: with Activity showing, these panels are hidden: ${hiddenPanels(tabs)}`);
     // What is on which tab.
     const panelOf = (html, id) => html.split(`id="hq-panel-${id}"`)[1].split('role="tabpanel"')[0];
-    const where = { desk: ["Looking at", "Your desk", "hq:decide:11:approve"], team: ["<h2>Team</h2>", "How the team is doing", "hq:hire:new:add"],
-      work: ["<h2>Projects</h2>", "Set the team a goal", "<h2>Activity</h2>", "<h2>Guards</h2>", "<h2>Routines</h2>"],
+    const where = { activity: ["<h2>Activity</h2>", 'id="hq-log-end"'], desk: ["Looking at", "Your desk", "hq:decide:11:approve"], team: ["<h2>Team</h2>", "How the team is doing", "hq:hire:new:add"],
+      work: ["<h2>Projects</h2>", "Set the team a goal", "<h2>Guards</h2>", "<h2>Routines</h2>"],
       knowledge: ["<h2>World</h2>", "<h2>House log</h2>", "Goals: strategy and notes"], office: ["<h2>Office", "What the team may do on the home lab"] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
     }
+    if (panelOf(tabs, "work").includes("<h2>Activity</h2>")) fail("hq: Activity is still buried in Work");
     // Badges: the desk's items, and the guards' open findings (one open, one cleared).
     const badge = (html, id) => (html.match(new RegExp(`id="hq-tab-${id}"[^>]*>[^<]*<span class="hq-badge"[^>]*>(\\d+)</span>`)) || [])[1];
     const deskCount = runInContext("HQ.snap.desk.length", context);
@@ -1706,14 +1709,17 @@ if (failures.length) {
     const realStore = context.localStorage;
     context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem() {} };
     await runInContext('dispatch("hq:tab:knowledge:go")', context);
-    if (selected(shown()).join() !== "knowledge" || kept["endora.hq.tab"] !== "knowledge") fail("hq: choosing a tab does not show and remember it");
-    if (hiddenPanels(shown()) !== "desk,office,team,work") fail("hq: the other panels stay showing");
+    if (selected(shown()).join() !== "knowledge" || kept["endora.hq.tab.v2"] !== "knowledge") fail("hq: choosing a tab does not show and remember it");
+    if (hiddenPanels(shown()) !== "activity,desk,office,team,work") fail("hq: the other panels stay showing");
     await runInContext('dispatch("hq:tab:bogus:go")', context);
     if (selected(shown()).join() !== "knowledge") fail("hq: a tab that does not exist was chosen");
     runInContext("HQ.tab = null;", context);
     if (selected(shown()).join() !== "knowledge") fail("hq: the remembered tab is not restored");
-    kept["endora.hq.tab"] = "nonsense"; runInContext("HQ.tab = null;", context);
-    if (selected(shown()).join() !== "desk") fail("hq: a bad remembered tab does not fall back to Desk");
+    kept["endora.hq.tab.v2"] = "nonsense"; runInContext("HQ.tab = null;", context);
+    if (selected(shown()).join() !== "activity") fail("hq: a bad remembered tab does not fall back to Activity");
+    // A tab remembered under the old name is not restored: every screen opens once on Activity.
+    delete kept["endora.hq.tab.v2"]; kept["endora.hq.tab"] = "work"; runInContext("HQ.tab = null;", context);
+    if (selected(shown()).join() !== "activity") fail("hq: a tab kept before Activity came first still opens instead");
     context.localStorage = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); }, removeItem() {} };
     runInContext("HQ.tab = null;", context);
     await runInContext('dispatch("hq:tab:work:go")', context);
@@ -1724,7 +1730,7 @@ if (failures.length) {
     if (selected(shown()).join() !== "desk") fail("hq: looking at a member does not show the Desk");
     // Arrow keys move between tabs (Home and End to the ends), wrapping round.
     runInContext("HQ.tab = 'desk';", context);
-    for (const [key, then] of [["ArrowRight", "team"], ["ArrowLeft", "desk"], ["ArrowLeft", "office"], ["Home", "desk"], ["End", "office"]]) {
+    for (const [key, then] of [["ArrowRight", "team"], ["ArrowLeft", "desk"], ["ArrowLeft", "activity"], ["ArrowLeft", "office"], ["Home", "activity"], ["End", "office"]]) {
       runInContext(`hqTabKey({ key: ${JSON.stringify(key)}, target: { closest: () => ({}) }, preventDefault() {} })`, context);
       if (runInContext("HQ.tab", context) !== then) fail(`hq: ${key} goes to ${runInContext("HQ.tab", context)}, not ${then}`);
     }
