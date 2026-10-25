@@ -1269,6 +1269,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A task's documents and branches, for its briefing: a line each, or nothing.
+    /// Carries each task document's writer's mark to a turn shown their titles (ADR 0138 A2c):
+    /// a document no turn wrote fails closed.
+    pub(super) fn documents_reached(&self, run: RunId, task: TaskId) -> Done<()> {
+        for document in self.store.documents_of(task)? {
+            self.inherit_input_from(run, document.run)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn documents_said(&self, task: TaskId) -> Done<String> {
         let documents = self.store.documents_of(task)?;
         let branches: Vec<Branch> = self

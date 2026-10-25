@@ -758,6 +758,10 @@ fn canonical_task_briefings_preserve_unknown_constraints_and_fail_closed() {
                     },
                 )
                 .unwrap();
+                // As one written before its writer was kept.
+                hq.store()
+                    .set_setting(&format!("not_now_origin:{}", goal.0), "")
+                    .unwrap();
             }
             _ => {}
         }
@@ -2761,6 +2765,9 @@ fn the_older_task_briefing_is_classified_by_section_and_fails_closed_on_what_it_
         "confidential post",
         "note",
         "strategy",
+        "owner's strategy",
+        "document, clean run",
+        "document, no run",
         "old unknown post, not shown",
         "old unknown post, a question reads it",
     ] {
@@ -2826,7 +2833,7 @@ fn the_older_task_briefing_is_classified_by_section_and_fails_closed_on_what_it_
                 hq.tick().unwrap();
             }
             "note" => hq.set_goal_note(goal, "Unclassified input").unwrap(),
-            "strategy" => {
+            "strategy" | "owner's strategy" => {
                 hq.set_strategy(
                     goal,
                     &crate::domain::areas::StrategyEdit {
@@ -2835,6 +2842,29 @@ fn the_older_task_briefing_is_classified_by_section_and_fails_closed_on_what_it_
                     },
                 )
                 .unwrap();
+                if case == "strategy" {
+                    // As one written before its writer was kept.
+                    hq.store()
+                        .set_setting(&format!("not_now_origin:{}", goal.0), "")
+                        .unwrap();
+                }
+            }
+            "document, clean run" | "document, no run" => {
+                hq.wake(source, None, WakeReason::Downtime).unwrap();
+                hq.tick().unwrap();
+                let source_run = turn_of(&hq, source).run;
+                hq.store()
+                    .add_document(&crate::domain::wing::Document {
+                        id: 0,
+                        task,
+                        run: (case == "document, clean run").then_some(source_run),
+                        title: "Fixture notes".into(),
+                        text: "Fixture document".into(),
+                        at: NOON,
+                    })
+                    .unwrap();
+                hq.runner().finish(source_run, true);
+                hq.tick().unwrap();
             }
             _ => {}
         }
@@ -2856,7 +2886,13 @@ fn the_older_task_briefing_is_classified_by_section_and_fails_closed_on_what_it_
         );
         assert_eq!(
             hq.store().run_read_confidential(turn.run).unwrap(),
-            !matches!(case, "clean" | "old unknown post, not shown"),
+            !matches!(
+                case,
+                "clean"
+                    | "old unknown post, not shown"
+                    | "owner's strategy"
+                    | "document, clean run"
+            ),
             "{case}: {}",
             turn.told
         );

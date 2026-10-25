@@ -2749,7 +2749,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // premise each turn works in is bounded in its own words (ADR 0124).
         let not_now = self.strategy_of(task.goal)?.not_now;
         if !not_now.trim().is_empty() {
-            self.unclassified_message_input(run.id)?;
+            self.not_now_reached(run.id, task.goal)?;
             told.push_str(&format!(
                 "Not now, for this goal: {}. Work outside the goal's bets waits.\n",
                 one_line(&not_now, 600)
@@ -2783,7 +2783,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str(&serves);
         let documents = self.documents_said(task.id)?;
         if !documents.is_empty() {
-            self.unclassified_message_input(run.id)?;
+            self.documents_reached(run.id, task.id)?;
         }
         told.push_str(&documents);
         if !task.waits_on.is_empty() {
