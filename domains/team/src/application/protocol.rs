@@ -676,11 +676,13 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .flatten()
                 .unwrap_or_default()
         };
-        list.retain(|t| {
-            t["name"].as_str().is_some_and(|n| {
-                crate::domain::deploy::HQ_TOOLS.contains(&n) || given.iter().any(|g| g == n)
-            })
-        });
+        if !given.iter().any(|g| g == crate::domain::projects::TEAM) {
+            list.retain(|t| {
+                t["name"].as_str().is_some_and(|n| {
+                    crate::domain::deploy::HQ_TOOLS.contains(&n) || given.iter().any(|g| g == n)
+                })
+            });
+        }
     }
     all
 }

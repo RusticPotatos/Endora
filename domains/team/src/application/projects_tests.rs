@@ -1120,6 +1120,54 @@ fn a_projects_tools_are_all_its_turns_are_given_besides_their_own_four() {
     .expect("its own four stay");
 }
 
+// A project's list may keep its members' own HQ tools (`team`) and narrow only what the node
+// offers: real work keeps its workflow (review, accept, ask_owner) while a slow local model is
+// spared every contract it will not use (2026-10-25: about 17k of a 26k-token turn).
+#[test]
+fn a_list_naming_the_team_narrows_the_node_and_keeps_each_members_own_tools() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let cleanup = hq
+        .add_project(t.goal, "Fork clean-up", "", t.lead, None)
+        .unwrap();
+    let list = vec![
+        crate::domain::projects::TEAM.to_owned(),
+        "shell".to_owned(),
+        "repo_checkout".to_owned(),
+        "repo_submit".to_owned(),
+    ];
+    hq.set_project_tools(cleanup, Some(list.clone())).unwrap();
+    let work = task_in(&hq, t.goal, Some(cleanup), t.lead, "Lint the roles").unwrap();
+    let context = turn(&hq, t.lead);
+    let (run, _) = hq.turn_of(&context.token).unwrap().unwrap();
+    assert_eq!(run.task, Some(work));
+
+    let offered = offered_by_hq(&hq, &context);
+    for own in ["create_task", "ask_owner", "post", "set_status"] {
+        assert!(offered.iter().any(|t| t == own), "{own} kept: {offered:?}");
+    }
+    assert_eq!(
+        hq.lab_tools_of(run.id).unwrap(),
+        Some(list),
+        "the node offers its listed contracts alone"
+    );
+    assert!(hq.may_use_a_shell(run.id).unwrap(), "the shell, as listed");
+    use_tool(&hq, &context, "claim", &json!({ "task": work.0 })).unwrap();
+    assert!(
+        hq.project_refuses(run.id, "create_task").unwrap().is_none(),
+        "a member's own tool is not refused"
+    );
+    // The node refuses what the list leaves out (its `only`): no restart_container.
+    assert!(
+        !hq.lab_tools_of(run.id)
+            .unwrap()
+            .unwrap()
+            .iter()
+            .any(|t| t == "restart_container")
+    );
+}
+
 // A scenario (Phase 5) gets no lab, bridge or repo tool: an empty list leaves the turn its own
 // four, nothing from the node, and no shell. With no list, a project's turns are as before.
 #[test]

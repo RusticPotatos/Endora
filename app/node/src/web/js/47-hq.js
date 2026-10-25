@@ -1845,13 +1845,14 @@ function hqProjects(s) {
       p.status === "active" ? btn("pause", "Pause", "") : "",
       p.status === "paused" ? btn("resume", "Resume", "ok") : "",
       open || p.status === "proposed" ? btn("cap", p.cap ? "Change the cap" : "Set a cap", "") : "",
+      open ? btn("tools", "Tools", "") : "",
       ["proposed", "dropped", "done"].includes(p.status) ? btn("reopen", p.status === "proposed" ? "Start it" : "Reopen", "ok") : "",
       open || p.status === "proposed" ? btn("drop", "Drop", "no") : "",
     ].join("");
   };
   const row = (p) => `<li><b>${esc(p.title)}</b>
       <span>${esc(hqName(p.lead))} leads · ${esc(status(p))}${p.open_tasks ? ` · ${p.open_tasks} open` : ""}${p.asked_cap ? ` · asks ${hqDollars(p.asked_cap)} a month` : ""}</span>
-      ${money(p)}${p.reason ? `<span>${esc(p.reason)}</span>` : ""}${(p.evidence || []).length ? `<span>Evidence: ${esc(p.evidence.join(", "))}</span>` : ""}
+      ${money(p)}${p.tools ? `<span>Tools: ${esc(p.tools.join(", ") || "none of the node's")}</span>` : ""}${p.reason ? `<span>${esc(p.reason)}</span>` : ""}${(p.evidence || []).length ? `<span>Evidence: ${esc(p.evidence.join(", "))}</span>` : ""}
       <div class="hq-row">${acts(p)}</div></li>`;
   const groups = goals.map((g) => {
     const mine = projects.filter((p) => p.goal === g.id);
@@ -2450,6 +2451,13 @@ async function hqDispatch(verb, noun, id, arg) {
         const said = prompt(`A monthly cap for ${p.title}, in dollars (empty: no cap):`, p.cap ? (p.cap / 1e6).toFixed(2) : "");
         if (said === null) return true;
         await api("POST", `/v1/hq/projects/${id}/cap`, { cap: said.trim() || null }); flash("Cap set.", "ok");
+      } else if (arg === "tools") {
+        // What its work is given, commas between: "team" keeps each member's own HQ tools and
+        // narrows only the node's; empty takes the list away, giving its work everything.
+        const said = prompt(`The tools ${p.title}'s work is given, commas between (team keeps the members' own; empty: everything):`, (p.tools || []).join(", "));
+        if (said === null) return true;
+        const tools = said.split(",").map((t) => t.trim()).filter(Boolean);
+        await api("POST", `/v1/hq/projects/${id}/tools`, { tools: tools.length ? tools : null }); flash(tools.length ? "Tools set." : "Its work is given everything again.", "ok");
       } else if (arg === "work") {
         const title = (prompt(`What should ${hqName(p.lead)} do in ${p.title}?`) || "").trim(); if (!title) return true;
         // The team starts from what done means (ADR 0124), here as in the Give work form: one line

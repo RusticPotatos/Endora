@@ -372,6 +372,11 @@ pub fn tools_read(kept: Option<&str>) -> Option<Vec<String>> {
 /// names it.
 pub const SHELL: &str = "shell";
 
+/// In a project's list, keeps each member's own HQ tools: the list then narrows only what the
+/// node offers (its contracts and bridged tools), so real work keeps its workflow while a slow
+/// local model is spared the rest. Without it a list gives HQ's four alone, as a scenario needs.
+pub const TEAM: &str = "team";
+
 #[cfg(test)]
 mod tests {
     use super::*;

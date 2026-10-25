@@ -1214,7 +1214,7 @@ if (failures.length) {
   // Projects (ADR 0113): grouped by goal, each with its lead, status and money against its cap
   // (amber from 80%, red once spent); the owner's buttons offer only what each status takes;
   // whatever a member wrote stays text.
-  for (const act of ["hq:project:1:resume", "hq:project:1:cap", "hq:project:1:drop", "hq:project:2:work", "hq:project:2:pause",
+  for (const act of ["hq:project:1:resume", "hq:project:1:cap", "hq:project:1:drop", "hq:project:2:work", "hq:project:2:pause", "hq:project:2:tools",
     "hq:project:2:cap", "hq:project:2:drop", "hq:project:3:reopen", "hq:project:3:drop", "hq:project:new:add",
     "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait", "hq:reports:1:set", "hq:reports:2:set"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the projects card or the desk does not offer ${act}`);
@@ -1819,6 +1819,20 @@ if (failures.length) {
       const handed = handedOut();
       const body = handed.length === before + 1 ? JSON.parse(handed[handed.length - 1][2]) : {};
       if (body.project !== 2 || JSON.stringify(body.criteria) !== JSON.stringify(["live: the last backup is under a day old"])) fail(`hq: a project's work does not carry what done means: ${JSON.stringify(handed.slice(before))}`);
+      delete context.prompt;
+    }
+    // A project's tools (2026-10-25): the owner names them in a line, commas between; empty
+    // takes the list away, so its work is given everything again.
+    {
+      const toolsSent = () => sent.filter(([path]) => path === "/v1/hq/projects/2/tools").map(([, , body]) => JSON.parse(body));
+      context.prompt = () => " team, shell ,repo_submit,, ";
+      await runInContext('dispatch("hq:project:2:tools")', context);
+      context.prompt = () => "";
+      await runInContext('dispatch("hq:project:2:tools")', context);
+      context.prompt = () => null;
+      await runInContext('dispatch("hq:project:2:tools")', context);
+      const bodies = toolsSent();
+      if (JSON.stringify(bodies) !== JSON.stringify([{ tools: ["team", "shell", "repo_submit"] }, { tools: null }])) fail(`hq: a project's tools were not sent as named: ${JSON.stringify(bodies)}`);
       delete context.prompt;
     }
     context.fetch = realFetch;

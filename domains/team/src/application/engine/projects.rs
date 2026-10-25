@@ -551,7 +551,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some((project, tools)) = self.project_tools_of_run(run)? else {
             return Ok(None);
         };
-        if crate::domain::deploy::HQ_TOOLS.contains(&tool) || tools.iter().any(|t| t == tool) {
+        // HQ's own tools only come here; with `team` listed, the member keeps them all.
+        if crate::domain::deploy::HQ_TOOLS.contains(&tool)
+            || tools
+                .iter()
+                .any(|t| t == tool || t == crate::domain::projects::TEAM)
+        {
             return Ok(None);
         }
         Ok(Some(format!(
@@ -1089,6 +1094,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     Level::Spent => "spent",
                 }),
                 "created_by": p.created_by, "proposer": p.proposer.map(|m| m.0),
+                "tools": self.project_tools(p.id)?,
                 "evidence": p.evidence.iter().map(|e| e.said()).collect::<Vec<_>>(),
                 "open_tasks": tasks.iter()
                     .filter(|t| t.project == Some(p.id) && !t.status.finished()).count(),
