@@ -1271,7 +1271,11 @@ function hqFonts() {
 // Activity first: the screen the owner glances at most, live (2026-10-25).
 // Manage holds every owner setting, shown rather than folded (2026-10-25).
 // Health holds the guards and the scorecard: how the team is doing, apart from the work itself.
-const HQ_TABS = [["activity", "Activity"], ["desk", "Desk"], ["team", "Team"], ["work", "Work"], ["health", "Health"], ["knowledge", "Knowledge"], ["office", "Office"], ["manage", "Manage"]];
+// Four places, each for what the owner goes there to do (the owner, 2026-10-25: eight tabs were
+// too many): what needs them and what is going on; the team; the work; and what they set up.
+const HQ_TABS = [["now", "Now"], ["team", "Team"], ["work", "Work"], ["manage", "Manage"]];
+// Where each of the old eight now lives, for links and choices kept from before.
+const HQ_TAB_MOVED = { activity: "now", desk: "now", office: "team", knowledge: "team", health: "work" };
 
 // A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
 // screen works the same without it.
@@ -1285,15 +1289,16 @@ function hqStored(key, value) {
 
 function hqTab() {
   if (HQ.tab) return HQ.tab;
-  // Kept under a new name, so every screen opens once on Activity, now first.
-  const kept = hqStored("tab.v2");
-  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "activity";
+  // Kept under a new name, so every screen opens once on Now.
+  const kept = hqStored("tab.v3");
+  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "now";
   return HQ.tab;
 }
 
 function hqSetTab(id) {
+  id = HQ_TAB_MOVED[id] || id;
   if (!HQ_TABS.some(([t]) => t === id)) return;
-  HQ.tab = id; hqStored("tab.v2", id);
+  HQ.tab = id; hqStored("tab.v3", id);
 }
 
 // What each kind of desk item's choices do, in one plain line under it (the owner: "didn't know
@@ -1410,14 +1415,14 @@ function hqChips(s) {
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
   if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} landed this week</span>`);
-  chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:desk:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
+  chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:now:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
 
 // The tab strip, and the badge on the tabs that count something.
 function hqTabs(s) {
   const guards = (s.guards && s.guards.findings || []).filter((f) => !f.cleared_at).length;
-  const badge = { desk: (s.desk || []).length, health: guards };
+  const badge = { now: (s.desk || []).length, work: guards };
   const here = hqTab();
   return `<div class="hq-tabs" role="tablist" aria-label="HQ sections">${HQ_TABS.map(([id, label]) =>
     `<button role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}" aria-selected="${id === here ? "true" : "false"}" tabindex="${id === here ? 0 : -1}" data-act="hq:tab:${id}:go">${label}${badge[id] ? ` <span class="hq-badge" aria-label="${badge[id]} waiting">${badge[id]}</span>` : ""}</button>`).join("")}</div>`;
@@ -1512,7 +1517,7 @@ function hqListenForLogEnd() {
   if (HQ_LOG_SCROLL.listening || typeof window === "undefined" || !window.addEventListener) return;
   HQ_LOG_SCROLL.listening = true;
   window.addEventListener("scroll", () => {
-    if (NAV.v !== "hq" || hqTab() !== "activity") return;
+    if (NAV.v !== "hq" || hqTab() !== "now") return;
     const end = document.getElementById("hq-log-end");
     const near = !!end && end.getBoundingClientRect().top < window.innerHeight + 300;
     if (hqLogScrolled(window.scrollY, near, Date.now())) dispatch("hq:logolder:0:more");
@@ -1564,31 +1569,27 @@ function viewHQ() {
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
         ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
       </div>
-      ${hqPanel("desk", `
+      ${hqPanel("now", `
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
-        <section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>
+        ${HQ.selected ? `<section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>` : ""}
         ${hqDigest(s)}
-        ${hqSweep()}`)}
-      ${hqPanel("activity", `
+        ${hqSweep()}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
       ${hqPanel("team", `
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}</section>
-        ${hqMacCard(s)}`)}
+        ${hqMacCard(s)}
+        ${hqOffice(s)}
+        ${hqWorldCard(s)}
+        ${hqHouse(s)}`)}
       ${hqPanel("work", `
         <section class="hq-card"><h2>Find a task</h2>
           <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
           <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
         ${hqConversations(s)}
-        ${hqHolodeck(s)}`)}
-      ${hqPanel("health", `
+        ${hqHolodeck(s)}
         ${hqGuards(s)}
         ${hqScorecard(s)}`)}
-      ${hqPanel("knowledge", `
-        ${hqWorldCard(s)}
-        ${hqHouse(s)}`)}
-      ${hqPanel("office", `
-        ${hqOffice(s)}`)}
       ${hqPanel("manage", `
         ${hqContracts(s.contracts)}
         ${hqProjects(s)}

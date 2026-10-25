@@ -449,13 +449,13 @@
   @media (max-width: 767px) {
     .hq-main { gap: 10px; }
     .hq-tabs { order: -2; gap: 0; justify-content: space-between; }
-    .hq .hq-tab { padding: 8px 6px; font-size: 10.5px; letter-spacing: 0; }
+    .hq .hq-tab { flex: 1 1 0; padding: 8px 6px; font-size: 12px; letter-spacing: 0; }
     .hq-badge { padding: 0 4px; margin-left: 2px; }
     /* The office plays on every tab (the owner, 2026-10-25); its counters and legend are the
        Office tab's, so the other tabs keep only the animation above their content. */
     .hq-stage { order: -1; padding: 4px; }
-    .hq:not([data-tab="office"]) .hq-stats, .hq:not([data-tab="office"]) .hq-legend,
-    .hq:not([data-tab="office"]) .hq-stage .hq-note { display: none; }
+    .hq:not([data-tab="team"]) .hq-stats, .hq:not([data-tab="team"]) .hq-legend,
+    .hq:not([data-tab="team"]) .hq-stage .hq-note { display: none; }
     .hq-side { grid-template-columns: minmax(0, 1fr); }
     .hq-bar .hq-row { width: 100%; }
     .hq-bar .hq-row .hq-btn { flex: 1 1 0; }
