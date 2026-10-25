@@ -31,6 +31,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             },
             None => None,
         };
+        // One team (ADR 0139): a task of an active project may ask any colleague, the pair's
+        // conversation made when first asked.
+        if let Some(project) = project {
+            if self
+                .project(project)
+                .is_ok_and(|p| p.status == ProjectStatus::Active)
+            {
+                return Ok(true);
+            }
+        }
         Ok(self.store.has_active_conversation(run.member, project)?)
     }
 

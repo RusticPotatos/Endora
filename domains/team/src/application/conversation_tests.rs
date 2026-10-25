@@ -612,12 +612,19 @@ fn canonical_task_help_refuses_missing_mismatched_or_unclassified_scope() {
         );
         assert!(hq.store().consults().unwrap().is_empty());
         let tools = super::protocol::tools_in_v2(&hq, &run, &member);
-        assert!(
-            tools.as_array().unwrap().iter().all(|tool| !matches!(
+        let offered = tools.as_array().unwrap().iter().any(|tool| {
+            matches!(
                 tool["name"].as_str(),
                 Some("consult" | "request_assistance")
-            )),
-            "{invalid}: do not advertise assistance that cannot use this scope"
+            )
+        });
+        // ADR 0139: a task of an active project may ask any colleague, so the
+        // tools stay offered; only the named conversation of another project
+        // is refused.
+        assert_eq!(
+            offered,
+            invalid == "mismatch",
+            "{invalid}: advertise assistance only where a scope can be used"
         );
     }
 }
@@ -2623,5 +2630,102 @@ fn an_expert_turn_ending_without_an_answer_has_a_visible_outcome() {
     assert_eq!(
         hq.assistance_requests_page(conversation, 0).unwrap()["requests"][0]["status"],
         "declined"
+    );
+}
+
+/// ADR 0139: one team. A member on a project's task asks any colleague with consult, and no
+/// owner-made pair is needed: the pair's conversation is made on that project when first asked.
+/// A task with no project still has nothing to charge, and the CEO is not asked this way.
+#[test]
+fn any_member_asks_any_colleague_from_a_projects_task_without_an_owner_made_pair() {
+    use super::ports::NewTask;
+    use serde_json::{Value, json};
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = canonical_hq(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let requester = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let _expert = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let _ceo = hq.hire("Member 4", Role::Ceo, 35, 1, 0).unwrap();
+    let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    assert!(
+        hq.conversation_directory(None, 0).unwrap()["conversations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let task = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Inspect fixture".into(),
+                description: String::new(),
+                assignee: Some(requester),
+                priority: crate::domain::Priority::Normal,
+                waits_on: vec![],
+            },
+        )
+        .unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, requester);
+    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    super::protocol::call(&hq, &run, &member, "claim", &json!({"task": task.0})).unwrap();
+    assert!(
+        super::protocol::tools_in(&hq, &run, &member)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "consult"),
+        "a project's task may ask a colleague before any conversation exists"
+    );
+    // The CEO is not asked as a peer: its word is a decision, through ask_owner.
+    assert!(
+        hq.consult_peer_in(
+            run.id,
+            "Member 4",
+            "Is the fixture healthy?",
+            None,
+            None,
+            &[]
+        )
+        .is_err()
+    );
+    let asked: Value = serde_json::from_str(
+        &hq.consult_peer_in(
+            run.id,
+            "Member 3",
+            "What does the fixture show?",
+            None,
+            None,
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let made = asked["conversation"].as_i64().unwrap();
+    let directory = hq.conversation_directory(None, 0).unwrap();
+    let rows = directory["conversations"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{directory}");
+    assert_eq!(rows[0]["id"], made);
+    assert_eq!(rows[0]["project"], project.0);
+    // Asked again (refused while the first is open), no second conversation is made.
+    let _ = hq.consult_peer_in(
+        run.id,
+        "Member 3",
+        "And the second fixture?",
+        None,
+        Some("second_q"),
+        &[],
+    );
+    assert_eq!(
+        hq.conversation_directory(None, 0).unwrap()["conversations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
 }

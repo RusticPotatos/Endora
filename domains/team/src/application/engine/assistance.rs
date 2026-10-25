@@ -649,24 +649,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !self.conversations_enabled()? {
             return Err(refused("peer messaging and assistance are disabled"));
         }
-        let scope = match conversation {
-            Some(id) => {
-                self.store
-                    .conversation(id)?
-                    .ok_or(EngineError::Refused(Refusal::Conversation(
-                        "conversation unavailable",
-                    )))?
-            }
-            None => {
-                let scopes = self.store.conversation_pair(turn.member, expert.id)?;
-                if scopes.len() != 1 {
-                    return Err(EngineError::Refused(Refusal::Conversation(
-                        "select an owner-authorized conversation with read_messages; no unique conversation exists for this pair",
-                    )));
-                }
-                scopes.into_iter().next().expect("one scope")
-            }
-        };
+        let scope =
+            match conversation {
+                Some(id) => self.store.conversation(id)?.ok_or(EngineError::Refused(
+                    Refusal::Conversation("conversation unavailable"),
+                ))?,
+                None => self.pair_conversation(&turn, &expert)?,
+            };
         if !scope.participants.contains(&turn.member)
             || !scope.participants.contains(&expert.id)
             || turn.member == expert.id
@@ -693,6 +682,50 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(serde_json::json!({"request":id,"conversation":scope.id,"state":request.status,
             "scheduled":matches!(request.status.as_str(),"queued"|"processing"),
             "reply":"The assigned expert answers with answer_assistance; the result returns in this conversation. End your turn when finished."}).to_string())
+    }
+
+    /// The conversation a colleague is asked in (ADR 0139: one team). From a task of an active
+    /// project, the pair's conversation on that project, made when first asked; otherwise the
+    /// pair's one existing conversation. The CEO is asked for decisions, not as a peer.
+    fn pair_conversation(
+        &self,
+        turn: &crate::application::ports::Run,
+        expert: &crate::domain::Member,
+    ) -> Done<crate::domain::conversation::Conversation> {
+        let scopes = self.store.conversation_pair(turn.member, expert.id)?;
+        let project = match turn.task {
+            Some(task) => self.task(task)?.project.filter(|p| {
+                self.project(*p)
+                    .is_ok_and(|p| p.status == ProjectStatus::Active)
+            }),
+            None => None,
+        };
+        if let Some(project) = project {
+            if let Some(found) = scopes.iter().find(|s| s.project == project) {
+                return Ok(found.clone());
+            }
+            if expert.role == crate::domain::Role::Ceo
+                || !expert.at_work()
+                || expert.id == turn.member
+            {
+                return Err(EngineError::Refused(Refusal::Conversation(
+                    "ask a colleague at work; the CEO's word is a decision, asked with ask_owner",
+                )));
+            }
+            let id =
+                self.store
+                    .add_conversation(project, [turn.member, expert.id], self.clock.now())?;
+            return self
+                .store
+                .conversation(id)?
+                .ok_or(EngineError::Unknown("conversation"));
+        }
+        if scopes.len() != 1 {
+            return Err(EngineError::Refused(Refusal::Conversation(
+                "ask from a project's task, or name the conversation: no unique conversation exists for this pair",
+            )));
+        }
+        Ok(scopes.into_iter().next().expect("one scope"))
     }
 
     /// Whether trusted task context can use this conversation's project at cutover.
