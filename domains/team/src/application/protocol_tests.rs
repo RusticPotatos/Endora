@@ -921,3 +921,29 @@ fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() 
         assert!(why.contains("is not evidence"), "{refused}: {why}");
     }
 }
+
+#[test]
+#[ignore = "a measurement, run by hand"]
+fn measure_tool_descriptions() {
+    for role in [
+        Role::Developer,
+        Role::Lead,
+        Role::Reviewer,
+        Role::Researcher,
+    ] {
+        let all = tools(role);
+        let mut sizes: Vec<(usize, String)> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t.to_string().len(), t["name"].as_str().unwrap().to_owned()))
+            .collect();
+        sizes.sort_by(|a, b| b.cmp(a));
+        let total: usize = sizes.iter().map(|s| s.0).sum();
+        println!(
+            "{role:?}: {} tools, {total} chars; top: {:?}",
+            sizes.len(),
+            &sizes[..8]
+        );
+    }
+}

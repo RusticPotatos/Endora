@@ -477,13 +477,13 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "post",
-            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mentions in your post schedule no peer work; use authorized bounded assistance for peer help. Actual management replies still return authority decisions to their requester. A finding cites its evidence; a post that cites none in a turn with no receipts is marked unsupported.",
+            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. A mention hands no work to anyone: ask a colleague with consult. A finding cites its evidence; a post with none, in a turn with no receipts, is marked unsupported.",
             json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What the post rests on, if anything."), "handover": drain_handover_schema() }),
             &["task", "text"]
         ),
         tool(
             "set_status",
-            "Move your task on (todo, doing, in_review, blocked), with a reason. Submitting it (in_review) cites evidence for each of its criteria, and a live criterion a reading from this turn; the tester then re-checks it and its lead accepts it. Done is set only that way, except a routine's check: close that as done, with its evidence, once you have looked. Done met its criteria unless you say why otherwise: superseded (name the successor task) or not_needed.",
+            "Move your task on (todo, doing, in_review, blocked), with a reason. in_review cites evidence for each criterion (a live one: a reading from this turn); the tester re-checks and the lead accepts, which is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. For done, why: met_criteria, or superseded (name the successor) or not_needed.",
             json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on, which superseded needs" } }),
             &["task", "status", "reason"]
         ),
@@ -501,7 +501,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "ask_owner",
-            "Put a decision your task needs, or a proposal, up the chain: to the lead (on a project's task, that project's lead), or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). The lead's to the CEO, and a tester's passing on the CEO's decision, cite evidence. Asking ends your turn: you are woken when they answer. Only for a decision: for help, ask any colleague with consult, or take a hard problem a model tier up with escalate.",
+            "A decision your task needs, or a proposal, up the chain in the task's thread: to your lead (a project's task: its lead), a lead's to the CEO, citing evidence (the owner's desk only when there is no CEO); a tester passing on the CEO's decision cites evidence too. Asking ends your turn; you are woken with the answer. Decisions only: for help, consult any colleague, or escalate a hard problem a model tier up.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),
@@ -513,7 +513,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "note",
-            "Add a note to YOUR notebook (nobody else's): something you learned that you or your next turn will need again, at most 300 characters, resting on evidence from HQ's record (at least one receipt, task or event; each is checked). Your notes are in your briefing, newest first. Keep them honest: a note you cannot back is a hunch.",
+            "Note in YOUR notebook something you learned and will need again: at most 300 characters, on evidence from HQ's record (a receipt, task or event; each is checked). Your notes come back in your briefings, newest first.",
             json!({ "text": { "type": "string", "maxLength": crate::domain::notebook::NOTE_MOST }, "evidence": ids("What the note rests on: at least one.") }),
             &["text", "evidence"]
         ),
