@@ -86,7 +86,9 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
    Unknown origin, as do routine-fired task bodies and criteria. Slices, each
    test-first and released on its own:
    a. A `system` origin for HQ text that embeds no borrowed words (input_origins
-      CHECK change, recorded here), and re-tag post sites: a member's own words
+      CHECK change, recorded here). Older builds fail on an unknown origin value,
+      so release the reader (table rebuild accepting `system`) one release before
+      anything writes it, keeping image-only rollback safe. Then re-tag post sites: a member's own words
       as its run, owner desk words as owner, pure templates as system; posts that
       quote borrowed text (alarms, "Evidence cited", recovered text) stay Unknown.
    b. Routine-fired tasks carry the routine's origin for body and criteria.
@@ -116,8 +118,10 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
 1. Rae's Claude Code shell. **Already fixed, so decision D1 is not needed:** after
    18 October the worker allows Claude Code's whole `Bash` in the sandbox, the
    container being the boundary (ADR 0117), and a test cites task 674's failure.
-   The Pi runs that worker. What remains is telling Kit and Rae, so #674, #675
-   and #671 are retried (an owner reply in their threads).
+   The Pi runs that worker. The owner replied in #674 on 2026-10-25; Rae's turn
+   (run 2217) then failed before acting: one model call to the Mac brain took
+   over the worker's 10-minute limit. Retrying; if it repeats, the Mac brain's
+   capacity for Rae's turns is the next blocker.
 2. Check c1's exit 127. **Tools verified, 2026-10-24:** the Pi's current workbench,
    with the runner's in-memory `/work`, runs `ansible-lint` 6.14.6,
    `ansible-playbook` 2.15.13 and `yamllint` 1.30.0 from `/opt/venv/bin` on the
