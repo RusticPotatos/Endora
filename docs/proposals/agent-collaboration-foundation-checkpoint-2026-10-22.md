@@ -110,6 +110,22 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
       runs; the timeline read returns its run; legacy rows without one fail closed.
    e. The CEO's taskless sections are classified explicitly, since its marks are
       inherited by everything it writes.
+   **Progress, 2026-10-25.** b. `e6208f05` (live): a routine records its words'
+      origin (owner or HQ template) and its fired task's body and criteria carry
+      it; alarm-fired tasks stay Unknown; pre-existing routines are vouched for
+      only when their title and words exactly match an HQ template. c. `a43105c8`:
+      the older briefing classifies body, criteria, parents, goal, served
+      criterion, area-picture titles and thread posts by recorded origin (the
+      whole thread where a question or review reads it), and fails closed on goal
+      notes, not-now, documents, check-backs, member-proposed project titles, alarm
+      patterns, check results, directions, ladder text and cited receipts.
+      d. `b2945c8d`: memory pieces by their writers' runs (house sections, stories,
+      the house timeline's shown lines via a new reader); everything else fails
+      closed. A lead's clean task turn is now offered help (test updated from the
+      old blanket expectation). e. Decided: the CEO's context stays fail-closed as
+      one explicit section, because it reads desk text, goals' notes and lessons,
+      and the lab's trouble, none with lineage; the CEO asks for decisions, not
+      help, so nothing it needs is withheld. Released with c-d in `3dcd768b`.
    Tests: a lead's routine Home lab turn with only owner, system and Internal
    inputs is offered help; a thread post from a Confidential run, an Unknown
    pre-cutover post, an unattributed briefed house section and a Confidential
@@ -120,6 +136,13 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
    Confidential receipt.
 4. Give unscoped recurring work a trusted project where the owner names one
    (decision D2), so its turns have help scope and budgets.
+   **Progress, 2026-10-25.** The owner can now move an open task into an active
+   project (`5baab417`, live in `e6208f05`). Used on the stalled unscoped work, on
+   the evidence of each task's subject: #676 and #677 (the ansible-nas fork's
+   secret defaults) into ansible-nas clean-up, which gives them its shell and repo
+   tools; #673 (gluetun) and #678 (house page) into Home lab upkeep. Ada and Cy
+   took #676 and #677 up within a minute. Recurring routines' project (D2) is
+   unchanged.
 
 **B. Unstick the team's real work** (engineering and operations)
 
@@ -222,6 +245,15 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
 2. Holodeck re-run: archive the earlier round's scenario results (kept and
    labelled) and queue every scenario again, so the agents re-attempt the whole
    set and rounds can be compared. Deleting old results needs its own owner yes.
+   **Progress, 2026-10-25.** `dee12c81`: the owner's re-run labels every finished
+   scenario with the round's name (nothing deleted) and queues each distinct setup
+   to start again one at a time, so it does not crowd out real work. Scenarios
+   never go a model tier up (ADR 0139), since the Holodeck measures the player's
+   model. Slimming: the always-loaded tools' descriptions are trimmed
+   (`afba2b5a`); the rest of their size is schema, already deferred for local
+   turns, and the set changes within a turn only when `find_tools` appends.
+   UI: Work's conversation, scenario and trial lists are one-line rows, and
+   Knowledge no longer scrolls sideways at phone width (`3dcd768b`).
 
 **C. Prove it and decide** (observation, then owner decisions)
 
