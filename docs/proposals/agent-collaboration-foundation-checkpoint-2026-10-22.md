@@ -74,7 +74,10 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
 1. Brief only what is offered: the colleague paragraph appears only on turns
    that actually have the help tools; reword `ask_record`'s "before you consult
    anyone" so it does not compete. Red test: a Confidential turn's briefing omits
-   it.
+   it. **Done, `285bd8f5`:** one rule, `may_ask_colleagues`, decides the tool list
+   and the briefing after the briefing records its inputs; full gate passed
+   (2,360 tests) and it is deployed. Production confirmation is the next task
+   turn's briefing.
 2. Give every task turn the classified task context (all roles, all wake reasons)
    so a turn is Confidential only for an actual unclassified or Confidential
    input, not for being on the older briefing path. Post-cutover posts and task
@@ -88,13 +91,15 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
 
 **B. Unstick the team's real work** (engineering and operations)
 
-1. Rae's Claude Code shell: the workbench's managed settings deny every Bash
-   command in don't-ask mode because they allow none. Propose a scoped allow list
-   for git and the lab's checks within ADR 0117's sandbox (decision D1), test it in
-   the workbench, redeploy the Pi.
-2. Check c1's exit 127: on 18 October `ansible-core`, `ansible-lint` and
-   `yamllint` were missing where checks run. Verify the current workbench's
-   `/opt/venv` tools are on the check's path, then re-run c2 for #671.
+1. Rae's Claude Code shell. **Already fixed, so decision D1 is not needed:** after
+   18 October the worker allows Claude Code's whole `Bash` in the sandbox, the
+   container being the boundary (ADR 0117), and a test cites task 674's failure.
+   The Pi runs that worker. What remains is telling Kit and Rae, so #674, #675
+   and #671 are retried (an owner reply in their threads).
+2. Check c1's exit 127. **Tools verified, 2026-10-24:** the Pi's current workbench,
+   with the runner's in-memory `/work`, runs `ansible-lint` 6.14.6,
+   `ansible-playbook` 2.15.13 and `yamllint` 1.30.0 from `/opt/venv/bin` on the
+   path. The c2 re-run follows Rae's re-submission (step 1).
 3. Escalations left undecided since 18 October (#672, #675, #677, #678 "to Mara:
    the lead did not decide it"): find why the CEO's ladder does not decide them,
    fix it, and clear or decide the backlog on evidence.
@@ -117,8 +122,7 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
 and A4, then C. Each step: red test or reproduction, fix, full gate, release with
 rollback tag and snapshots, production check, record.
 
-**Owner decisions.** D1 the workbench Bash allow list (accepting a sandbox
-risk); D2 which project owns unscoped recurring work; D3 the comparison budget;
+**Owner decisions.** D1 is settled by the existing ADR 0117 decision; D2 which project owns unscoped recurring work; D3 the comparison budget;
 D4 adoption. A Confidential turn sending only source locators, with no free
 text, would be a data-tier change and needs its own ADR before it is proposed.
 
