@@ -175,11 +175,15 @@ Sources: anthropic.com/engineering (advanced-tool-use, writing-tools-for-agents,
 effective-context-engineering-for-ai-agents); developers.openai.com function-calling guide.
 
 **O. Owner decisions, 2026-10-25.**
-1. Open conversation: members working on the same project may message and ask
-   each other for help without the owner authorizing each pair. Amend ADR 0138
-   (the explicit pair was the pilot's caution); keep the Confidential guard,
-   project charging, per-turn and per-day limits and the CEO-directs-leads rule;
-   the owner can switch messaging off or block a pair in Manage. After A2.
+1. One team, open conversation (the owner, citing Conway's law: everyone is on
+   the same team). Any member may message or ask any other, without the owner
+   authorizing pairs or a shared project; help is charged to the asker's task's
+   project, or the team pool when it has none. Escalation when stuck goes up model
+   tiers (the house's model, then Claude, as ADR 0131's work and judgment turns
+   already do), not through a manager relay; the CEO-directs-leads rule stays for
+   authority only. Keep the Confidential guard and the per-turn and per-day
+   limits; Manage switches messaging off or blocks a pair. Amend ADR 0138; after
+   A2. Then check that a stuck local member actually reaches its Claude tier.
 2. Holodeck re-run: archive the earlier round's scenario results (kept and
    labelled) and queue every scenario again, so the agents re-attempt the whole
    set and rounds can be compared. Deleting old results needs its own owner yes.
