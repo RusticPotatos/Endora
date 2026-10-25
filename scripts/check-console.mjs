@@ -1036,6 +1036,23 @@ if (failures.length) {
     if (asked.length !== 1 || asked[0] !== "/v1/hq/events?before=61&limit=50") fail(`hq: "Show older" asked for ${asked}`);
     if (runInContext("HQ.log.length", context) !== 42 || runInContext("HQ.oldest", context) !== 59) fail("hq: older events were not added after the newer ones");
     runInContext("HQ.log = []; HQ.logShown = 30; HQ.oldest = 0; HQ.logDone = false;", context);
+    // Reading back loads one page per scroll down near the end, never because a redraw put the
+    // end in view (2026-10-25: an observer kept loading until the whole history was on screen).
+    {
+      runInContext(`HQ_LOG_SCROLL.y = 0; HQ_LOG_SCROLL.at = 0; HQ.logBusy = false;
+        HQ.log = []; HQ.logShown = 30; HQ.oldest = 0; HQ.logDone = false;
+        for (let i = 140; i > 100; i--) hqTell({ id: i, at: 0, kind: "resumed", data: {} }, false);`, context);
+      const decide = (y, near, now) => runInContext(`hqLogScrolled(${y}, ${near}, ${now})`, context);
+      if (decide(0, true, 10000)) fail("hq: a log at rest loaded older lines with no scroll");
+      if (!decide(400, true, 10000)) fail("hq: scrolling down to the end of the log did not load older lines");
+      if (decide(450, true, 10500)) fail("hq: older lines loaded again within the cooldown");
+      if (decide(450, true, 20000)) fail("hq: older lines loaded with no new scroll (a redraw, not the owner)");
+      if (decide(300, true, 30000)) fail("hq: scrolling up loaded older lines");
+      if (decide(900, false, 40000)) fail("hq: older lines loaded far from the end");
+      if (!decide(950, true, 50000)) fail("hq: a later scroll down to the end did not load the next page");
+      if (runInContext("typeof IntersectionObserver === 'function' && typeof HQ_LOG_WATCH !== 'undefined'", context)) fail("hq: the end of the log is still watched for visibility");
+      runInContext("HQ.log = []; HQ.logShown = 60; HQ.oldest = 0; HQ.logDone = false; HQ_LOG_SCROLL.y = 0; HQ_LOG_SCROLL.at = 0;", context);
+    }
   }
   // The bridge's approval (ADR 0108): the tool, its arguments in plain words, the why, and
   // Approve / Decline; none of what the member wrote becomes markup.
@@ -1668,7 +1685,7 @@ if (failures.length) {
     runInContext("HQ.selected = null; HQ.tab = null; HQ.working = false; HQ.workDraft = {}; HQ.stageOpen = null;", context);
     const shown = () => runInContext("viewHQ()", context);
     const tabs = shown();
-    for (const id of ["activity", "desk", "team", "work", "knowledge", "office"]) {
+    for (const id of ["activity", "desk", "team", "work", "knowledge", "office", "manage"]) {
       if (!tabs.includes(`role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}"`)) fail(`hq: no ${id} tab`);
       if (!tabs.includes(`role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"`)) fail(`hq: no ${id} panel`);
     }
@@ -1677,16 +1694,22 @@ if (failures.length) {
     const hiddenPanels = (html) => [...html.matchAll(/id="hq-panel-(\w+)"[^>]*? hidden>/g)].map((m) => m[1]).sort().join(",");
     if (selected(tabs).join() !== "activity") fail(`hq: the default tab is ${selected(tabs)}, not activity`);
     if (!/role="tablist"[^>]*><button role="tab" class="hq-tab" id="hq-tab-activity"/.test(tabs)) fail("hq: Activity is not the first tab");
-    if (hiddenPanels(tabs) !== "desk,knowledge,office,team,work") fail(`hq: with Activity showing, these panels are hidden: ${hiddenPanels(tabs)}`);
+    if (hiddenPanels(tabs) !== "desk,knowledge,manage,office,team,work") fail(`hq: with Activity showing, these panels are hidden: ${hiddenPanels(tabs)}`);
     // What is on which tab.
     const panelOf = (html, id) => html.split(`id="hq-panel-${id}"`)[1].split('role="tabpanel"')[0];
-    const where = { activity: ["<h2>Activity</h2>", 'id="hq-log-end"'], desk: ["Looking at", "Your desk", "hq:decide:11:approve"], team: ["<h2>Team</h2>", "How the team is doing", "hq:hire:new:add"],
-      work: ["<h2>Projects</h2>", "Set the team a goal", "<h2>Guards</h2>", "<h2>Routines</h2>"],
-      knowledge: ["<h2>World</h2>", "<h2>House log</h2>", "Goals: strategy and notes"], office: ["<h2>Office", "What the team may do on the home lab"] };
+    // Every owner setting is on Manage, shown, not folded (the owner, 2026-10-25: "finding hidden
+    // settings from unexpanding items").
+    const where = { activity: ["<h2>Activity</h2>", 'id="hq-log-end"'], desk: ["Looking at", "Your desk", "hq:decide:11:approve"], team: ["<h2>Team</h2>", "How the team is doing"],
+      work: ["<h2>Find a task</h2>", "<h2>Guards</h2>"],
+      knowledge: ["<h2>World</h2>", "<h2>House log</h2>"], office: ["<h2>Office"],
+      manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Routines</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Strategy and notes for the team", "<h2>Hire</h2>", "hq:hire:new:add"] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
     }
     if (panelOf(tabs, "work").includes("<h2>Activity</h2>")) fail("hq: Activity is still buried in Work");
+    for (const [id, folded] of [["manage", "<details"], ["work", "<h2>Projects</h2>"], ["office", "What the team may do"], ["knowledge", "Goals: strategy"], ["team", "hq:hire:new:add"]]) {
+      if (panelOf(tabs, id).includes(folded)) fail(`hq: "${folded}" is still on the ${id} tab`);
+    }
     // Badges: the desk's items, and the guards' open findings (one open, one cleared).
     const badge = (html, id) => (html.match(new RegExp(`id="hq-tab-${id}"[^>]*>[^<]*<span class="hq-badge"[^>]*>(\\d+)</span>`)) || [])[1];
     const deskCount = runInContext("HQ.snap.desk.length", context);
@@ -1710,7 +1733,7 @@ if (failures.length) {
     context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem() {} };
     await runInContext('dispatch("hq:tab:knowledge:go")', context);
     if (selected(shown()).join() !== "knowledge" || kept["endora.hq.tab.v2"] !== "knowledge") fail("hq: choosing a tab does not show and remember it");
-    if (hiddenPanels(shown()) !== "activity,desk,office,team,work") fail("hq: the other panels stay showing");
+    if (hiddenPanels(shown()) !== "activity,desk,manage,office,team,work") fail("hq: the other panels stay showing");
     await runInContext('dispatch("hq:tab:bogus:go")', context);
     if (selected(shown()).join() !== "knowledge") fail("hq: a tab that does not exist was chosen");
     runInContext("HQ.tab = null;", context);
@@ -1730,12 +1753,12 @@ if (failures.length) {
     if (selected(shown()).join() !== "desk") fail("hq: looking at a member does not show the Desk");
     // Arrow keys move between tabs (Home and End to the ends), wrapping round.
     runInContext("HQ.tab = 'desk';", context);
-    for (const [key, then] of [["ArrowRight", "team"], ["ArrowLeft", "desk"], ["ArrowLeft", "activity"], ["ArrowLeft", "office"], ["Home", "activity"], ["End", "office"]]) {
+    for (const [key, then] of [["ArrowRight", "team"], ["ArrowLeft", "desk"], ["ArrowLeft", "activity"], ["ArrowLeft", "manage"], ["Home", "activity"], ["End", "manage"]]) {
       runInContext(`hqTabKey({ key: ${JSON.stringify(key)}, target: { closest: () => ({}) }, preventDefault() {} })`, context);
       if (runInContext("HQ.tab", context) !== then) fail(`hq: ${key} goes to ${runInContext("HQ.tab", context)}, not ${then}`);
     }
     runInContext("hqTabKey({ key: 'ArrowRight', target: { closest: () => null }, preventDefault() {} })", context);
-    if (runInContext("HQ.tab", context) !== "office") fail("hq: arrow keys outside the tabs move them");
+    if (runInContext("HQ.tab", context) !== "manage") fail("hq: arrow keys outside the tabs move them");
     runInContext("HQ.tab = null;", context);
   }
   // Every kind of desk item says in a line what its choices do.

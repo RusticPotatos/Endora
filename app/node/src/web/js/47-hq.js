@@ -1232,7 +1232,8 @@ function hqFonts() {
 // the office itself. Every tab is drawn and the others are hidden, so a live update never
 // loses what is typed on a tab that is not showing.
 // Activity first: the screen the owner glances at most, live (2026-10-25).
-const HQ_TABS = [["activity", "Activity"], ["desk", "Desk"], ["team", "Team"], ["work", "Work"], ["knowledge", "Knowledge"], ["office", "Office"]];
+// Manage holds every owner setting, shown rather than folded (2026-10-25).
+const HQ_TABS = [["activity", "Activity"], ["desk", "Desk"], ["team", "Team"], ["work", "Work"], ["knowledge", "Knowledge"], ["office", "Office"], ["manage", "Manage"]];
 
 // A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
 // screen works the same without it.
@@ -1452,22 +1453,27 @@ function hqDigest(s) {
     <div class="hq-needs">${items.map((d) => hqNeed(s, d)).join("")}</div></section>`;
 }
 
-// Older activity loads as the end of the log comes into view, so reading back needs no button.
-// The marker is redrawn with the page, so each new one is watched; nothing is asked while a
-// load is under way or HQ has said there is nothing older.
-let HQ_LOG_WATCH = null;
-function hqWatchLogEnd() {
-  const end = document.getElementById("hq-log-end");
-  if (!end || end.dataset.watched || typeof IntersectionObserver !== "function") return;
-  end.dataset.watched = "1";
-  if (HQ_LOG_WATCH) HQ_LOG_WATCH.disconnect();
-  HQ_LOG_WATCH = new IntersectionObserver((seen) => {
-    const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
-    if (seen.some((e) => e.isIntersecting) && olderLeft && !HQ.logBusy && hqTab() === "activity") {
-      dispatch("hq:logolder:0:more");
-    }
-  }, { rootMargin: "400px 0px" });
-  HQ_LOG_WATCH.observe(end);
+// Older activity loads when the owner scrolls down near the end of the log: one page per
+// scroll, at most one every one and a half seconds. A redraw never moves the page, so it can
+// never load more on its own (an observer of the end did, until all history was on screen).
+const HQ_LOG_SCROLL = { y: 0, at: 0, listening: false };
+function hqLogScrolled(y, nearEnd, now) {
+  const down = y > HQ_LOG_SCROLL.y;
+  HQ_LOG_SCROLL.y = y;
+  const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
+  if (!down || !nearEnd || !olderLeft || HQ.logBusy || now - HQ_LOG_SCROLL.at < 1500) return false;
+  HQ_LOG_SCROLL.at = now;
+  return true;
+}
+function hqListenForLogEnd() {
+  if (HQ_LOG_SCROLL.listening || typeof window === "undefined" || !window.addEventListener) return;
+  HQ_LOG_SCROLL.listening = true;
+  window.addEventListener("scroll", () => {
+    if (NAV.v !== "hq" || hqTab() !== "activity") return;
+    const end = document.getElementById("hq-log-end");
+    const near = !!end && end.getBoundingClientRect().top < window.innerHeight + 300;
+    if (hqLogScrolled(window.scrollY, near, Date.now())) dispatch("hq:logolder:0:more");
+  }, { passive: true });
 }
 
 function viewHQ() {
@@ -1478,14 +1484,14 @@ function viewHQ() {
     hqFonts(); hqLoop();
     const cv = document.getElementById("hq-office");
     if (cv && !cv.dataset.tapped) { cv.dataset.tapped = "1"; cv.addEventListener("click", hqTap); }
-    hqWatchLogEnd();
+    hqListenForLogEnd();
   }, 0);
   const pool = s.pool || {}, c = s.counts || {};
   const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Waiting", c.held || 0],
     ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
   const desk = (s.desk || []).map((d) => hqNeed(s, d)).join("");
-  // The latest sixty, newest first, live; older lines load as the end comes into view, and
+  // The latest sixty, newest first, live; older lines load as the owner scrolls to the end, and
   // "Show older" stays for keyboards: first what is kept here, then what HQ still has.
   const log = HQ.log.slice(0, HQ.logShown).map(hqLogLine).join("");
   const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
@@ -1526,27 +1532,27 @@ function viewHQ() {
       ${hqPanel("activity", `
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
       ${hqPanel("team", `
-        <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
+        <section class="hq-card"><h2>Team</h2>${team}${wingLine}</section>
         ${hqMacCard(s)}
         ${hqScorecard(s)}`)}
       ${hqPanel("work", `
         <section class="hq-card"><h2>Find a task</h2>
           <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
           <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
-        ${hqProjects(s)}
         ${hqConversations(s)}
         ${hqHolodeck(s)}
-        <details class="hq-card"><summary>Set the team a goal</summary>
-          <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
-        ${hqGuards(s)}
-        ${hqRoutines(s)}`)}
+        ${hqGuards(s)}`)}
       ${hqPanel("knowledge", `
         ${hqWorldCard(s)}
-        ${hqHouse(s)}
-        ${hqNotes(s)}`)}
+        ${hqHouse(s)}`)}
       ${hqPanel("office", `
-        ${hqOffice(s)}
-        ${hqContracts(s.contracts)}`)}
+        ${hqOffice(s)}`)}
+      ${hqPanel("manage", `
+        ${hqContracts(s.contracts)}
+        ${hqProjects(s)}
+        ${hqRoutines(s)}
+        ${hqNotes(s)}
+        ${hqHireForm(s)}`)}
     </div>
     <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
@@ -1782,13 +1788,13 @@ function hqHireForm(s) {
   const judges = [["", "Claude Haiku (Sonnet for the CEO)"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus (the CEO's alone)"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
   const to = `<option value="">by role</option>` + (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(hqRole(m.role))})</option>`).join("");
-  return `<details><summary>Hire</summary><div class="hq-row" style="margin-top:8px;">
+  return `<section class="hq-card"><h2>Hire</h2><div class="hq-row">
       <input id="hq-hire-name" placeholder="Name" aria-label="The new member's name" />
       <select id="hq-hire-role" aria-label="Role">${roles}</select>
       <label>works with <select id="hq-hire-work" aria-label="What the member works with">${works}</select></label>
       <label>judges with <select id="hq-hire-judgment" aria-label="The Claude the member judges with">${judges}</select></label>
       <label>reports to <select id="hq-hire-to" aria-label="Whom the member reports to">${to}</select></label>
-      <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div></details>`;
+      <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div></section>`;
 }
 
 // A task's documents and branches (ADR 0115): a submitted branch's diff and stat, a check's
@@ -1885,12 +1891,12 @@ function hqProjects(s) {
     .map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
   return `<section class="hq-card"><h2>Projects</h2>
     <ul class="hq-team">${groups || `<li class="hq-empty">No goal yet: set the team a goal first.</li>`}</ul>
-    <details><summary>New project</summary><div class="hq-row" style="margin-top:8px;">
+    <h3>New project</h3><div class="hq-row">
       <select id="hq-project-goal" aria-label="The goal it serves">${goalOpts}</select>
       <input id="hq-project-title" placeholder="e.g. Media stack upkeep" aria-label="What it is" />
       <select id="hq-project-lead" aria-label="Who leads it">${leadOpts}</select>
       <label>cap $<input id="hq-project-cap" inputmode="decimal" placeholder="none" style="width:5em" aria-label="Monthly cap in dollars, or none" /> a month</label>
-      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div></details></section>`;
+      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div></section>`;
 }
 
 // A span of time in the owner's words: 40 s, 14 min, 2.5 h, 3 d.
@@ -2148,11 +2154,11 @@ function hqContracts(c) {
   if (!c) return "";
   const btn = (key, on, label) => `<button class="hq-btn ${on ? "ok" : "no"}" aria-pressed="${on ? "true" : "false"}"
     data-act="hq:contracts:${key}:${on ? "off" : "on"}">${label}: ${on ? "on" : "off"}</button>`;
-  return `<details class="hq-card"><summary>What the team may do on the home lab</summary>
+  return `<section class="hq-card"><h2>What the team may do on the home lab</h2>
     <p class="hq-note">Look at the home lab and its logs (secrets replaced), and restart a container: one an hour each, three in all.
       You are told of every restart. Endora's other skills are the team's too, as each skill's own setting says:
       on runs (three an hour, and you are told), ask puts it on your desk for approval, off is never offered.</p>
-    <div class="hq-row">${btn("all", c.all, "Contracts")}${c.all ? btn("restart_container", c.restart_container, "Restarts") : ""}</div></details>`;
+    <div class="hq-row">${btn("all", c.all, "Contracts")}${c.all ? btn("restart_container", c.restart_container, "Restarts") : ""}</div></section>`;
 }
 
 // Each active goal's notes from the owner: standing facts every member working towards it reads
@@ -2164,26 +2170,27 @@ const HQ_STRATEGY_PARTS = [["purpose", "Purpose: the goal of the goal"], ["succe
 
 function hqStrategy(g) {
   const st = g.strategy || {};
-  const written = HQ_STRATEGY_PARTS.filter(([k]) => st[k]);
-  const shown = written.length
-    ? `<dl class="hq-kv">${written.map(([k, label]) => `<dt>${esc(label)}</dt><dd>${esc(st[k])}</dd>`).join("")}</dl>
-       <p class="hq-note">Written by ${esc(st.by || "nobody")}${st.updated_at ? ` · ${esc(new Date(st.updated_at).toLocaleString())}` : ""}</p>`
-    : `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`;
+  const written = HQ_STRATEGY_PARTS.some(([k]) => st[k]);
   const fields = HQ_STRATEGY_PARTS.map(([k, label]) => `<label>${esc(label)}
       <textarea id="hq-strategy-${g.id}-${k}" rows="2" maxlength="800">${esc(st[k] || "")}</textarea></label>`).join("");
-  return `${shown}<details><summary>Edit the strategy</summary>${fields}
-      <div class="hq-row"><button class="hq-btn ok" data-act="hq:strategy:${g.id}:save">Save the strategy</button></div></details>`;
+  // The fields show what is written and edit it in place: nothing is folded away.
+  const by = written
+    ? `<p class="hq-note">Written by ${esc(st.by || "nobody")}${st.updated_at ? ` · ${esc(new Date(st.updated_at).toLocaleString())}` : ""}</p>`
+    : `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`;
+  return `${by}${fields}
+      <div class="hq-row"><button class="hq-btn ok" data-act="hq:strategy:${g.id}:save">Save the strategy</button></div>`;
 }
 
 function hqNotes(s) {
   const goals = (s.goals || []).filter((g) => g.status === "active");
-  if (!goals.length) return "";
+  const set = `<div class="hq-row"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" aria-label="A new goal for the team" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div>`;
+  if (!goals.length) return `<section class="hq-card"><h2>Goals</h2>${set}</section>`;
   const rows = goals.map((g) => `<li><b>${esc(g.title)}</b>
       ${hqStrategy(g)}
       <textarea id="hq-note-${g.id}" rows="3" maxlength="2000" aria-label="Notes for the team on ${esc(g.title)}"
         placeholder="What every member working on this should know">${esc(g.note || "")}</textarea>
       <div class="hq-row"><button class="hq-btn ok" data-act="hq:note:${g.id}:save">Save notes</button></div></li>`).join("");
-  return `<details class="hq-card"><summary>Goals: strategy and notes for the team</summary><ul class="hq-team">${rows}</ul></details>`;
+  return `<section class="hq-card"><h2>Goals</h2>${set}<p class="hq-note">Strategy and notes for the team: every member working on a goal reads them near the top of its briefing.</p><ul class="hq-team">${rows}</ul></section>`;
 }
 
 // Routines (ADR 0107): work that comes round again, each a task for one member. Each shows
@@ -2198,11 +2205,11 @@ function hqRoutines(s) {
   const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
   return `<section class="hq-card"><h2>Routines</h2>
     <ul class="hq-team">${rows || `<li class="hq-empty">None yet: the team works only on what it is handed.</li>`}</ul>
-    <details><summary>Add a routine</summary><div class="hq-row" style="margin-top:8px;">
+    <h3>Add a routine</h3><div class="hq-row">
       <input id="hq-routine-title" placeholder="e.g. Check the home lab" aria-label="What it does" />
       <label>every <input id="hq-routine-hours" type="number" min="1" max="720" value="6" style="width:4em" aria-label="Every how many hours" /> hours</label>
       <select id="hq-routine-who" aria-label="Who does it">${who}</select>
-      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div></details></section>`;
+      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div></section>`;
 }
 
 // What was tapped, in detail: a member's turn and budget, or a task and its chain of why.
