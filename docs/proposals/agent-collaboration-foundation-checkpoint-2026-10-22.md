@@ -184,6 +184,23 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
    authority only. Keep the Confidential guard and the per-turn and per-day
    limits; Manage switches messaging off or blocks a pair. Amend ADR 0138; after
    A2. Then check that a stuck local member actually reaches its Claude tier.
+   Evidence (2026-10-25): Anthropic routes "easy/common questions to smaller,
+   cost-efficient models" and its advisor tool lets a cheaper executor consult a
+   stronger model "when stuck"; OpenAI mixes models by task and escalates to a
+   human on "exceeding failure thresholds" or "high-risk actions". Both caution
+   against free-form multi-agent chat (Anthropic: agents are "not yet great at
+   coordinating and delegating to other agents in real time"; OpenAI: "maximize a
+   single agent's capabilities first"), so open permission keeps bounded asks.
+   Audit: about 40% in place (assistance lifecycle, charging, work/judgment split,
+   budgets). Refactor, in order: (a) an escalate step, the same member re-taking a
+   stuck problem on the next tier (local, Haiku, Sonnet) as a judgment turn,
+   capped per task and paid from the existing pool; (b) split ask_owner into help
+   (peer or tier) and decisions (authority holder); (c) team-wide conversations
+   with the project from the asker's task; (d) the stuck ladder: tier step before
+   the lead, open huddles, no CEO hop for an undecided lead, a tier retry instead
+   of handed_up; (e) colleague answers not forced onto the local model; (f) a new
+   ADR, "One team, escalate by tier", amending 0111, 0113, 0120, 0130, 0131, 0137
+   and 0138.
 2. Holodeck re-run: archive the earlier round's scenario results (kept and
    labelled) and queue every scenario again, so the agents re-attempt the whole
    set and rounds can be compared. Deleting old results needs its own owner yes.
