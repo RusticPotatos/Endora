@@ -57,7 +57,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         );
         if let Some(above) = self.asked_of(member, Some(&task))? {
             told.push_str(&format!(
-                "Your questions (ask_owner) go to {}, the {}, in the task's thread, and they answer there: the owner's desk is the CEO's to use. Use this route for authority decisions; ordinary peer help uses authorized conversations.\n",
+                "Your questions (ask_owner) go to {}, the {}, in the task's thread, and they answer there: the owner's desk is the CEO's to use. Use this route for decisions only: for help, ask any colleague with consult, or take a hard problem a model tier up with escalate.\n",
                 above.name, if above.role == Role::Ceo { "CEO" } else { above.role.name() }
             ));
         }

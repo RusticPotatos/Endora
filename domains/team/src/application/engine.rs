@@ -2665,7 +2665,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(above) = self.asked_of(member, on.as_ref())? {
             told.push_str(&format!(
                 "Your questions (ask_owner) go to {}, the {}, in the task's thread, and they \
-                 answer there: the owner's desk is the CEO's to use.\n",
+                 answer there: the owner's desk is the CEO's to use. They are for decisions \
+                 only: for help, ask any colleague with consult, or take a hard problem a model \
+                 tier up with escalate.\n",
                 above.name,
                 if above.role == Role::Ceo {
                     "CEO"
@@ -3915,9 +3917,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(Some(lead.unwrap_or(above)))
     }
 
-    /// A member's question, up the chain: posted in the task's thread for the one above, the
-    /// asker's turn ended, and the one above woken to answer there. One question a member
-    /// about a task waits for its answer at a time.
+    /// Whether a turn is work, on the house's model, rather than judgment on Claude (ADR 0131).
+    fn on_work_turn(
+        &self,
+        turn: &crate::application::ports::Run,
+        member: &crate::domain::Member,
+    ) -> Done<bool> {
+        let reason = self.store.wake(turn.wake)?.map(|w| w.reason);
+        Ok(!reason.is_some_and(|r| {
+            crate::domain::turns::kind_of(r, member.role)
+                == crate::domain::turns::TurnKind::Judgment
+        }))
+    }
+
     /// A member's turn on the house's model is stuck: it takes the problem a model tier up, not
     /// up the org chart (ADR 0139). Its turn ends, why goes in the thread as its own words, and
     /// the same member is woken on its Claude. Twice a task a day at most: after that the
@@ -3931,11 +3943,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let turn = self.running(run)?;
         let member = self.member(turn.member)?;
-        let reason = self.store.wake(turn.wake)?.map(|w| w.reason);
-        if reason.is_some_and(|r| {
-            crate::domain::turns::kind_of(r, member.role)
-                == crate::domain::turns::TurnKind::Judgment
-        }) {
+        if !self.on_work_turn(&turn, &member)? {
             return Err(EngineError::Refused(Refusal::Escalation(
                 "this turn already thinks with Claude: a decision goes to whoever holds it, with ask_owner",
             )));
@@ -3980,6 +3988,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
+    /// A member's question, up the chain: posted in the task's thread for the one above, the
+    /// asker's turn ended, and the one above woken to answer there. One question a member
+    /// about a task waits for its answer at a time.
     fn up_the_chain(
         &self,
         run: Run,

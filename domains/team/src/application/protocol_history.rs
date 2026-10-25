@@ -33,11 +33,11 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "consult",
-            "Ask a colleague through an owner-authorized conversation and bounded read-only assistance. Select the conversation when more than one scope matches the pair. The result stays in that conversation; there is no task-thread answer or automatic record fallback. Sources must already be granted. At most two new requests per turn and six per day. Use ask_owner for owner decisions.",
+            "Ask any colleague: one bounded question with read-only assistance. From a project's task the conversation is found or made for you; name one only when more than one matches the pair. The result stays in that conversation; there is no task-thread answer or automatic record fallback. Sources must already be granted. At most two new requests per turn and six per day. Use ask_owner for owner decisions.",
             json!({
                 "member": { "type": "string", "description": "the member's name" },
                 "question": { "type": "string", "maxLength": record::QUESTION_MOST },
-                "conversation": { "type": "integer", "minimum":1, "description": "An existing owner-authorized conversation with this colleague; required when more than one matches." },
+                "conversation": { "type": "integer", "minimum":1, "description": "A conversation with this colleague; name one only when more than one matches." },
                 "key": { "type": "string", "minLength":8, "maxLength":64, "description":"Optional stable retry key for assistance; otherwise derived from this turn and question." },
                 "evidence": { "type":"array", "maxItems":5, "items":{"type":"string"}, "description":"Original document/receipt locators already granted to the selected conversation." },
             }),

@@ -501,7 +501,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "ask_owner",
-            "Put a decision your task needs, or a proposal, up the chain: to the lead (on a project's task, that project's lead), or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). The lead's to the CEO, and a tester's passing on the CEO's decision, cite evidence. Asking ends your turn: you are woken when they answer. For a colleague's knowledge or help, use consult instead.",
+            "Put a decision your task needs, or a proposal, up the chain: to the lead (on a project's task, that project's lead), or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). The lead's to the CEO, and a tester's passing on the CEO's decision, cite evidence. Asking ends your turn: you are woken when they answer. Only for a decision: for help, ask any colleague with consult, or take a hard problem a model tier up with escalate.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),
@@ -928,12 +928,12 @@ pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
         });
         for tool in list.iter_mut().filter(|tool| tool["name"] == "consult") {
             tool["description"] = json!(
-                "Ask a colleague through one owner-authorized conversation and bounded read-only assistance. No task-thread answer or automatic record fallback is created. A paused peer waits within the request deadline. Use read_messages to discover the scope and cite only granted original sources."
+                "Ask any colleague one bounded question with read-only assistance; from a project's task the conversation is found or made for you. No task-thread answer or automatic record fallback is created. A paused peer waits within the request deadline. Use read_messages to discover the scope and cite only granted original sources."
             );
             if let Some(properties) = tool["inputSchema"]["properties"].as_object_mut() {
                 properties.remove("task");
                 properties["conversation"]["description"] = json!(
-                    "Owner-authorized conversation; select explicitly when more than one scope matches this pair."
+                    "A conversation with this colleague; name one only when more than one matches this pair."
                 );
                 properties["key"]["description"] = json!(
                     "Optional stable retry key; otherwise derived from this turn and question."
@@ -1044,7 +1044,7 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // the briefing, while the drain notice below remains the final instruction.
     let answer = if tool == "my_turn" {
         answer.map(|mut text| {
-            text.push_str("\nEndora team protocol v2: peer help uses authorized conversations and answer_assistance. Any task-thread consultation or record-fallback guidance in the saved turn belongs to v1 and does not apply to this endpoint. Task-linked help requires classified input and the task's trusted project to match its authorized conversation. Task reporting, acceptance and owner-decision authority are unchanged.\n");
+            text.push_str("\nEndora team protocol v2: any colleague can be asked (consult), a hard problem goes a model tier up (escalate), and ask_owner is for decisions only. Any task-thread consultation or record-fallback guidance in the saved turn belongs to v1 and does not apply to this endpoint. Task-linked help requires classified input; a named conversation must be on the task's project. Task reporting, acceptance and owner-decision authority are unchanged.\n");
             text
         })
     } else {

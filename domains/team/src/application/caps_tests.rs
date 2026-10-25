@@ -452,3 +452,32 @@ fn a_stuck_work_turn_escalates_to_the_same_member_on_its_claude_twice_a_day_at_m
     let refused = escalate(&third).unwrap_err();
     assert!(refused.contains("twice"), "{refused}");
 }
+
+#[test]
+fn help_goes_to_a_colleague_or_a_tier_and_only_a_decision_goes_up_the_chain() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, linus, task) = team(&clock, false);
+    hq.wake(linus, Some(task), WakeReason::Mentioned).unwrap();
+    let work = super::guards_tests::turn(&hq, linus);
+    let (run, member) = hq.turn_of(&work.token).unwrap().unwrap();
+    let tools = super::protocol::tools_in(&hq, &run, &member);
+    let said = |name: &str| {
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .map(|t| t["description"].as_str().unwrap().to_owned())
+            .unwrap_or_default()
+    };
+    let ask = said("ask_owner");
+    assert!(
+        ask.contains("decision") && ask.contains("consult") && ask.contains("escalate"),
+        "{ask}"
+    );
+    assert!(
+        !work.told.contains("authorized conversations"),
+        "no owner-made pairs: {}",
+        work.told
+    );
+}
