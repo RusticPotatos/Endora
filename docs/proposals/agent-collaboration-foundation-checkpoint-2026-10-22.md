@@ -78,10 +78,32 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
    and the briefing after the briefing records its inputs; full gate passed
    (2,360 tests) and it is deployed. Production confirmation is the next task
    turn's briefing.
-2. Give every task turn the classified task context (all roles, all wake reasons)
-   so a turn is Confidential only for an actual unclassified or Confidential
-   input, not for being on the older briefing path. Post-cutover posts and task
-   bodies already carry origins; keep pre-cutover threads fail-closed.
+2. Classify the older briefing's inputs one by one instead of locking the whole
+   turn, keeping its role sections (leads' area picture and team, testers'
+   review, the CEO's context, memory). An inventory (2026-10-24) found two more
+   blanket locks: `memory()` marks every lead and CEO turn because the house page
+   and stories are always briefed, and 64 `post_held_lock` sites store posts with
+   Unknown origin, as do routine-fired task bodies and criteria. Slices, each
+   test-first and released on its own:
+   a. A `system` origin for HQ text that embeds no borrowed words (input_origins
+      CHECK change, recorded here), and re-tag post sites: a member's own words
+      as its run, owner desk words as owner, pure templates as system; posts that
+      quote borrowed text (alarms, "Evidence cited", recovered text) stay Unknown.
+   b. Routine-fired tasks carry the routine's origin for body and criteria.
+   c. The task briefing classifies each section with existing lineage (body,
+      criteria, parents, goal, serves, handover, documents, area-picture titles,
+      thread posts read with their origins in one snapshot) and fails closed only
+      for goal notes, not-now, check-backs, huddle views, desk text, strategies
+      and project text. Receipt excerpts shown in review mark the turn when
+      Confidential (today only the blanket covers them).
+   d. `memory()` classifies only the pieces actually briefed, by their recorded
+      runs; the timeline read returns its run; legacy rows without one fail closed.
+   e. The CEO's taskless sections are classified explicitly, since its marks are
+      inherited by everything it writes.
+   Tests: a lead's routine Home lab turn with only owner, system and Internal
+   inputs is offered help; a thread post from a Confidential run, an Unknown
+   pre-cutover post, an unattributed briefed house section and a Confidential
+   receipt excerpt each still lock the turn; a dropped piece does not.
 3. Measure before and after: replay recent production briefings offline and
    report the share of task turns that would be offered help, by role and wake.
    Exit: a non-zero, explained share on routine Home lab work that read no
