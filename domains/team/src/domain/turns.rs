@@ -97,8 +97,9 @@ pub const fn kind_of(reason: WakeReason, role: Role) -> TurnKind {
 #[must_use]
 pub const fn allowed_for(reason: WakeReason, role: Role, in_the_wing: bool) -> Allowed {
     match reason {
-        // The office and a consult are not quality work.
-        WakeReason::Downtime | WakeReason::Consulted => Allowed::Local,
+        // The office is not quality work. A colleague's answer is (ADR 0139): it goes where
+        // the colleague's own work does.
+        WakeReason::Downtime => Allowed::Local,
         // Reading what a check found in a submitted branch, and mending what a reviewer sent
         // back, are code work whoever does them.
         WakeReason::CheckDone | WakeReason::SentBack => Allowed::Mac,
@@ -326,7 +327,8 @@ mod tests {
         (W::Huddle, TurnKind::Judgment, Allowed::Either),
         (W::Guard, TurnKind::Judgment, Allowed::Either),
         (W::WaitDropped, TurnKind::Work, Allowed::Either),
-        (W::Consulted, TurnKind::Work, Allowed::Local),
+        // ADR 0139: a colleague's answer is not forced onto the house's model.
+        (W::Consulted, TurnKind::Work, Allowed::Either),
         (W::Escalated, TurnKind::Judgment, Allowed::Either),
     ];
 
