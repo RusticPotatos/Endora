@@ -240,15 +240,20 @@ function hqMapWatch(w) {
     else night = `Skipped: ${esc(last.why)}.`;
   }
   const failing = (quiz.pages || []).filter((pg) => pg.flagged).map((pg) => `<li><code>world:${esc(pg.slug)}</code> (${esc(pg.title)}) failed three nights running; its steward is told.</li>`).join("");
-  return `<h3>Proposals to pages</h3>
-    <ul class="hq-team hq-world">${openRows || `<li class="hq-empty">None waiting.</li>`}</ul>
+  // Only what has something in it gets a heading (the owner, 2026-10-25: too long to read);
+  // the rest is one line saying there is nothing.
+  const none = [];
+  if (!openRows) none.push("no proposals to pages");
+  if (!gapRows) none.push("no gaps");
+  if (!roadRows) none.push("no broken roads");
+  return `${openRows ? `<h3>Proposals to pages</h3><ul class="hq-team hq-world">${openRows}</ul>` : ""}
     ${decidedRows ? `<h4>Decided lately</h4><ul>${decidedRows}</ul>` : ""}
-    <h3>Gaps</h3><p class="hq-note">Something a member looked for on its map and did not find. It goes to its lead, not your desk.</p>
-    <ul class="hq-team hq-world">${gapRows || `<li class="hq-empty">None open.</li>`}</ul>
-    <h3>Broken roads</h3><p class="hq-note">An address a page cites that leads nowhere, found by HQ.</p>
-    <ul class="hq-team hq-world">${roadRows || `<li class="hq-empty">None.</li>`}</ul>
-    <h3>Last night's map check</h3><p class="hq-note">A free member is asked, in a turn on the house's model that costs nothing, a few questions made from its own map; HQ scores them by code.</p>
-    <p>${night}</p>${failing ? `<ul class="hq-team hq-world">${failing}</ul>` : ""}`;
+    ${gapRows ? `<h3>Gaps</h3><p class="hq-note">Something a member looked for on its map and did not find. It goes to its lead, not your desk.</p>
+    <ul class="hq-team hq-world">${gapRows}</ul>` : ""}
+    ${roadRows ? `<h3>Broken roads</h3><p class="hq-note">An address a page cites that leads nowhere, found by HQ.</p>
+    <ul class="hq-team hq-world">${roadRows}</ul>` : ""}
+    ${none.length ? `<p class="hq-empty">Nothing waiting: ${none.join(", ")}.</p>` : ""}
+    <p><b>Last night's map check:</b> ${night}</p>${failing ? `<ul class="hq-team hq-world">${failing}</ul>` : ""}`;
 }
 
 // The owner's word on a proposal to a page: written as theirs, or declined, saying why.
@@ -284,11 +289,9 @@ function hqWorldCard(s) {
       <small> ${esc(p.whose || p.scope || "")} · told by ${esc(p.author || "")}${p.why ? ` · ${esc(p.why)}` : ""}</small>
       <div class="hq-row">${hqWorldActs("story", i, p)}</div></li>`).join("");
   return `<section class="hq-card"><h2>World</h2>
-    <p class="hq-note">What the team knows, by stage. Only you make something canon; an insight not confirmed in time reads as unconfirmed.</p>
+    ${hqClamp("worldintro", "What the team knows, by stage: field note, then observation, then insight, then canon (settled truth only you can set). Unconfirmed is an insight nobody confirmed in time. Edit rewrites a section; Make canon settles it; Not true takes it out and the team may not write it again.", "hq-note")}
     <div class="hq-row"><button class="hq-btn tall ok" aria-expanded="${hqWorldDoc().md || hqWorldDoc().open ? "true" : "false"}" data-act="hq:world:paste:show">Paste Markdown</button>
       <button class="hq-btn tall" data-act="hq:world:export:md">Download the world (Markdown)</button></div>
-    <p class="hq-note hq-legend-line"><b>Stages:</b> field note, then observation, then insight, then canon (settled truth only you can set). <b>Unconfirmed</b> = an insight nobody confirmed in time.
-      <b>Edit</b> rewrites a section; <b>Make canon</b> settles it; <b>Not true</b> takes it out and the team may not write it again.</p>
     ${hqWorldPaste()}
     ${open ? hqWorldPageBody(w, open, sections, sectionRow) : hqWorldPageList(w)}
     <div class="hq-row"><button class="hq-btn tall" aria-expanded="${HQ_WORLD_VIEW.writing ? "true" : "false"}" data-act="hq:world:writing:toggle">Write a section</button></div>
@@ -301,8 +304,7 @@ function hqWorldCard(s) {
       <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:world:write:section">Write the section</button>
         <button class="hq-btn tall" data-act="hq:world:write:timeline">Add to the timeline</button></div>` : ""}
     ${hqMapWatch(w)}
-    <h3>Stories</h3>
-    <ul class="hq-team hq-world">${stories || `<li class="hq-empty">No stories yet.</li>`}</ul>
+    ${stories ? `<h3>Stories</h3><ul class="hq-team hq-world">${stories}</ul>` : `<p class="hq-empty">No stories yet.</p>`}
     ${hqWorldEditor()}</section>`;
 }
 

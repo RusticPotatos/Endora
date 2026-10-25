@@ -1793,19 +1793,20 @@ function hqGames(s) {
   const g = s.games;
   if (!g) return "";
   // A match of pool or ping-pong plays again, step by step, a tap away (ADR 0121).
-  const recent = (g.recent || []).map((r) => `<li>${esc(r.text)}${r.game === "pool" || r.game === "ping_pong"
-    ? ` <button class="hq-btn" data-act="hq:holo:replay:${Number(r.id)}">Replay</button>` : ""}</li>`).join("");
+  const recentList = hqMore("results", (g.recent || []).map((r) => `<li>${esc(r.text)}${r.game === "pool" || r.game === "ping_pong"
+    ? ` <button class="hq-btn" data-act="hq:holo:replay:${Number(r.id)}">Replay</button>` : ""}</li>`), 3);
+  const recent = recentList.shown;
   const replay = HQ.holo && HQ.holo.what === "replay" ? hqHoloDetail() : "";
   const playing = (((g.chess || {}).games) || []).filter((c) => c.status === "in_progress")
     .map((c) => `<li>${esc(c.white)} against ${esc(c.black)}: ${esc(c.to_move)} to move, ${(c.moves || []).length} moves
       <button class="hq-btn" data-act="hq:pick:chess:0">Look at the board</button></li>`).join("");
   return `<h3>Games</h3>
     <p class="hq-note">Ping-pong and pool are played by the office on its own, for nothing; chess is played by the members, a move in each downtime turn.</p>
-    <details open><summary>Ping-pong</summary>${hqLeaderboard(g.ping_pong, false)}</details>
-    <details open><summary>Pool</summary>${hqLeaderboard(g.pool, false)}</details>
-    <details open><summary>Chess</summary>${hqLeaderboard(g.chess, true)}</details>
+    <details><summary>Ping-pong</summary>${hqLeaderboard(g.ping_pong, false)}</details>
+    <details><summary>Pool</summary>${hqLeaderboard(g.pool, false)}</details>
+    <details><summary>Chess</summary>${hqLeaderboard(g.chess, true)}</details>
     ${playing ? `<p class="hq-who">Playing now</p><ul class="hq-team">${playing}</ul>` : ""}
-    ${recent ? `<p class="hq-who">Latest results</p><ul class="hq-team">${recent}</ul>` : `<p class="hq-empty">No results yet.</p>`}
+    ${recent ? `<p class="hq-who">Latest results</p><ul class="hq-team">${recent}</ul>${recentList.more}` : `<p class="hq-empty">No results yet.</p>`}
     ${replay}`;
 }
 
@@ -2070,7 +2071,10 @@ function hqGuards(s) {
     const mode = p.mode ? `<p class="hq-note">${on ? "On: it holds talk on a task over its budget, and asks the task's lead to decide it."
       : "In shadow: it records what it would have held, and holds nothing, until you switch it on."}
       <button class="hq-btn${on ? " ok" : ""}" aria-pressed="${on ? "true" : "false"}" data-act="hq:guardmode:${esc(p.guard)}:${on ? "shadow" : "on"}">${on ? "Put it back in shadow" : "Switch it on"}</button></p>` : "";
-    return `<li><b>${esc(p.plainly)}</b>${p.mode ? ` <span class="hq-tag">${on ? "on" : "shadow"}</span>` : ""}: ${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}${mode}</li>`;
+    // One line each (the owner, 2026-10-25); tapped, its counts in full and its switch.
+    const line = `${p.mode ? `${on ? "on" : "shadow"} · ` : ""}${Number(p.fired)} found · ${Number(p.open)} open`;
+    return hqOpenRow(`guard${String(p.guard).replace(/[^\w-]/g, "")}`, esc(p.plainly), line,
+      `<span>${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}</span>${mode}`);
   }).join("");
   // What each window's turns spent is said beside it (ADR 0133).
   const ceremony = (g.ceremony || []).map((c) => `<li${c.over ? ` class="hq-refused"` : ""}>${esc(c.title)}: ${(c.windows || []).map((w) => esc(w.said) + (w.spent ? ` (${hqDollars(w.spent)} spent)` : "")).join(" · ")}${c.over ? " · talking more than working" : ""}${c.cannot_tell ? " · cannot tell whether it is talking more than working: some turns have no label" : ""}</li>`).join("");
@@ -2088,8 +2092,10 @@ function hqGuards(s) {
     // again, how often.
     const again = f.seen_at > f.opened_at ? ` · seen again ${hqClock(f.seen_at)}` : "";
     const times = f.episodes > 1 ? ` · found ${Number(f.episodes)} times` : "";
-    return `<li><p><b>${esc(f.plainly)}</b> (finding ${Number(f.id)}${f.task ? ` · ${hqKeyLink(f.task)}` : ""}${f.cleared_at ? " · cleared" : " · open"}${again}${times})</p>${hqClamp(`finding${Number(f.id)}`, f.evidence)}
-      <p class="hq-note">The rule: ${esc(f.rule)}. ${said}</p><div class="hq-row">${judge}${fixed}</div></li>`;
+    const line = `${f.task ? `${hqKey(f.task)} · ` : ""}${f.cleared_at ? "cleared" : "open"} · ${f.verdict ? esc(verdicts[f.verdict] || f.verdict) : "not judged"}`;
+    return hqOpenRow(`finding${Number(f.id)}`, esc(f.plainly), line,
+      `<p>Finding ${Number(f.id)}${f.task ? ` · ${hqKeyLink(f.task)}` : ""}${again}${times}</p>${hqClamp(`finding${Number(f.id)}`, f.evidence)}
+      <p class="hq-note">The rule: ${esc(f.rule)}. ${said}</p><div class="hq-row">${judge}${fixed}</div>`);
   };
   // What waits on the owner first: open findings not judged yet, then the rest.
   const waiting = (f) => (!f.cleared_at && !f.verdict ? 0 : 1);
@@ -2099,10 +2105,9 @@ function hqGuards(s) {
   const t = g.thresholds || {};
   return `<section class="hq-card"><h2>Guards</h2>
     <ul class="hq-team">${lines}</ul>
-    ${ceremony ? `<details open><summary>Talk against work, each project and each piece of work over the line</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
+    ${ceremony ? `<details><summary>Talk against work, each project and each piece of work over the line</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
     <h3>Findings</h3><ul class="hq-team hq-findings">${findings || `<li class="hq-empty">No findings.</li>`}</ul>${listed.more}
-    <p class="hq-note">Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn${t.coordination_budget == null ? "" : ` · a budget of ${Number(t.coordination_budget)} turns of talk a day on a task`}.</p>
-    ${t.free_turns_a_day == null ? "" : `<p class="hq-note">Caps, always on: ${Number(t.free_turns_a_day)} turns a day for a member on the house's own models · the team is stopped when ${Number(t.runaway_turns)} turns start in ${Math.round(Number(t.runaway_window_ms) / 60000)} minutes.</p>`}</section>`;
+    ${hqClamp("thresholds", `Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn${t.coordination_budget == null ? "" : ` · a budget of ${Number(t.coordination_budget)} turns of talk a day on a task`}.${t.free_turns_a_day == null ? "" : ` Caps, always on: ${Number(t.free_turns_a_day)} turns a day for a member on the house's own models · the team is stopped when ${Number(t.runaway_turns)} turns start in ${Math.round(Number(t.runaway_window_ms) / 60000)} minutes.`}`, "hq-note")}</section>`;
 }
 
 // The house log (ADR 0111): the CEO's own document of the house, which it and the lead read

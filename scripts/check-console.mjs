@@ -725,7 +725,15 @@ if (failures.length) {
     if (!shut.includes("$0.46 of $0.50")) fail("hq: a shut project row does not say its money");
     if (!shut.includes('data-act="hq:more:goal1:toggle"') || shut.includes('data-act="hq:more:edit1:toggle"')) fail("hq: a goal is not a row to open");
   }
-  runInContext("HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true, goal1: true, goal2: true, goal3: true };", context);
+  {
+    // Guards and findings are one line each until tapped, too (the owner, 2026-10-25).
+    const shut = runInContext("viewHQ()", context);
+    if (!shut.includes('data-act="hq:more:finding3:toggle"') || shut.includes('data-act="hq:rejudge:3:open"')) fail("hq: a finding is not a row to open");
+    if (!/data-act="hq:more:guard[\w-]+:toggle"/.test(shut)) fail("hq: a guard is not a row to open");
+  }
+  runInContext(`HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true, goal1: true, goal2: true, goal3: true };
+    for (const p of (HQ.snap.guards || {}).precision || []) HQ.more["guard" + String(p.guard).replace(/[^\\w-]/g, "")] = true;
+    for (const f of (HQ.snap.guards || {}).findings || []) HQ.more["finding" + f.id] = true;`, context);
   const office = runInContext("viewHQ()", context);
   runInContext("HQ.more = {};", context);
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · in 19000 / out 100 · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
@@ -842,8 +850,8 @@ if (failures.length) {
   if (office.split("how often the CEO stepped in this week: HQ cannot tell").length - 1 !== 1) fail("hq: the roster does not say it cannot tell the CEO's rescues, once, for the one it cannot tell");
   // The same ask from another task is put with a card (ADR 0124), and the card says so.
   if (!office.includes('question · <button class="hq-link" data-act="hq:pick:task:7">EL-7</button> · also on <button class="hq-link" data-act="hq:pick:task:9">EL-9</button>: one answer reaches each')) fail("hq: a card does not say which other tasks share its ask, as links that open them");
-  for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b>: 3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2",
-    "<b>Stuck work</b>: 0 found · 0 open · not judged yet", "&lt;u&gt;Upkeep&lt;/u&gt;: 14 coordination turns, 1 product change in 24 h · talking more than working",
+  for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b> <small>3 found · 1 open</small>", "<span>3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2</span>",
+    "<b>Stuck work</b> <small>0 found · 0 open</small>", "<span>0 found · 0 open · not judged yet</span>", "&lt;u&gt;Upkeep&lt;/u&gt;: 14 coordination turns, 1 product change in 24 h · talking more than working",
     "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep",
     // A window HQ cannot tell the ceremony of says so, and is not marked as talking more.
     "Backups: 11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read · cannot tell whether it is talking more than working: some turns have no label"]) {
@@ -855,12 +863,12 @@ if (failures.length) {
   // turns spent is said beside them, for work outside any project too, and the caps are told
   // beside the thresholds, but only when HQ serves them.
   {
-    for (const said of ['<b>Coordination over budget</b> <span class="hq-tag">shadow</span>: 1 found · 1 open · not judged yet',
+    for (const said of ['<b>Coordination over budget</b> <small>shadow · 1 found · 1 open</small>', "<span>1 found · 1 open · not judged yet</span>",
       "In shadow: it records what it would have held, and holds nothing, until you switch it on.",
       'aria-pressed="false" data-act="hq:guardmode:coordination:on">Switch it on</button>',
       "#12 &lt;i&gt;Plan the backups&lt;/i&gt;: 21 coordination turns, 0 product changes in 24 h ($1.23 spent) · talking more than working",
       "a budget of 20 turns of talk a day on a task",
-      "Caps, always on: 60 turns a day for a member on the house's own models · the team is stopped when 40 turns start in 10 minutes."]) {
+      "Caps, always on: 60 turns a day for a member on the house&#39;s own models · the team is stopped when 40 turns start in 10 minutes."]) {
       if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
     }
     if (office.includes("hq:guardmode:ceremony") || office.includes("hq:guardmode:stuck")) fail("hq: a guard that only records is offered a switch");
@@ -869,9 +877,10 @@ if (failures.length) {
     // The same card with the guard switched on, with no mode served, and with no caps served.
     const guardsWith = (change) => runInContext(`(() => { const g = HQ.snap.guards, kept = JSON.stringify([g.precision[2], g.thresholds]);
       ${change}
-      const html = hqGuards(HQ.snap); [g.precision[2], g.thresholds] = JSON.parse(kept); return html; })()`, context);
+      const was = HQ.more; HQ.more = {}; for (const p of g.precision) HQ.more["guard" + String(p.guard).replace(/[^\\w-]/g, "")] = true;
+      const html = hqGuards(HQ.snap); HQ.more = was; [g.precision[2], g.thresholds] = JSON.parse(kept); return html; })()`, context);
     const on = guardsWith('g.precision[2].mode = "on";');
-    for (const said of ['<b>Coordination over budget</b> <span class="hq-tag">on</span>',
+    for (const said of ['<b>Coordination over budget</b> <small>on · 1 found · 1 open</small>',
       "On: it holds talk on a task over its budget, and asks the task's lead to decide it.",
       'aria-pressed="true" data-act="hq:guardmode:coordination:shadow">Put it back in shadow</button>']) {
       if (!on.includes(said)) fail(`hq: a guard switched on does not say ${said}`);
@@ -898,8 +907,8 @@ if (failures.length) {
   }
   // A finding seen again says when, and a finding opened again says how often (ADR 0132); one
   // seen once, and found once, says neither.
-  if (!/finding 3 · [^)]*open · seen again \d\d:\d\d · found 3 times\)/.test(office)) fail("hq: a finding seen again does not say when and how often");
-  if (/finding 4 · [^)]*(seen again|found \d+ times)/.test(office)) fail("hq: a finding seen once claims to have been seen again");
+  if (!/<p>Finding 3 [^\n]*· seen again \d\d:\d\d · found 3 times<\/p>/.test(office)) fail("hq: a finding seen again does not say when and how often");
+  if (/<p>Finding 4 [^\n]*(seen again|found \d+ times)/.test(office)) fail("hq: a finding seen once claims to have been seen again");
   // "While you were away" (ADR 0132): stuck work, a finding and a notice are one card at the top
   // of the Desk tab, newest first, with a count and the choices each always had; the desk's own
   // count is what needs the owner's word, and an empty digest shows no card.
@@ -1676,7 +1685,9 @@ if (failures.length) {
         recent: [1, 2, 3, 4, 5].map((n) => ({ id: n, game: "pool", text: "Result " + n + " <u>x</u>", at: 100 - n })) };
         HQ.selected = null;`, context);
       const card = runInContext("hqOffice(HQ.snap)", context);
-      for (const want of ["<h3>Games</h3>", "Ping-pong", "Pool", "Chess", "W2", "L2", "Result 5", 'data-act="hq:pick:chess:0"', "&lt;i&gt;Dee&lt;/i&gt;", "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) {
+      // The latest three results show, the rest a tap away (the owner, 2026-10-25).
+      if (card.includes("Result 4") || !card.includes('data-act="hq:more:results:toggle"')) fail("hq: the Games section shows more than three results, or no way to the rest");
+      for (const want of ["<h3>Games</h3>", "Ping-pong", "Pool", "Chess", "W2", "L2", "Result 3", 'data-act="hq:pick:chess:0"', "&lt;i&gt;Dee&lt;/i&gt;", "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) {
         if (!card.includes(want)) fail(`hq: the Office card's Games section lacks ${want}`);
       }
       if (["<i>Dee</i>", "<b>Bo</b>", "<u>x</u>"].some((raw) => card.includes(raw))) fail("hq: a name or result in the Games section is not escaped");
@@ -1926,7 +1937,7 @@ if (failures.length) {
     const world = runInContext("viewHQ()", context).split('id="hq-panel-team"')[1].split('role="tabpanel"')[0];
     const top = world.split("<h3>Pages</h3>")[0];
     if (!top.includes('data-act="hq:world:paste:show">Paste Markdown</button>')) fail("hq: Paste Markdown is not a button at the top of the World card");
-    for (const said of ["field note", "observation", "insight", "canon", "Unconfirmed", "<b>Edit</b>", "<b>Make canon</b>", "<b>Not true</b>"]) {
+    for (const said of ["field note", "observation", "insight", "canon", "Unconfirmed", "Edit rewrites", "Make canon settles", "Not true takes it out"]) {
       if (!top.includes(said)) fail(`hq: the World legend does not say ${said}`);
     }
     await runInContext('dispatch("hq:world:paste:show")', context);
