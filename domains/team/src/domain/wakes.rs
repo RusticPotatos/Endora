@@ -71,6 +71,9 @@ pub enum WakeReason {
     /// The member's own turn on the house's model was stuck and took the problem a model tier
     /// up (ADR 0139): the same member, on its Claude, with why in the task's thread.
     Escalated,
+    /// A colleague consults this member from a turn on Claude (ADR 0139: an answer on a tier
+    /// at least the asker's): as [`Self::Consulted`], but judged, on the member's Claude.
+    ConsultedUp,
 }
 
 impl WakeReason {
@@ -104,6 +107,7 @@ impl WakeReason {
             Self::WaitDropped => "wait_dropped",
             Self::Consulted => "consulted",
             Self::Escalated => "escalated",
+            Self::ConsultedUp => "consulted_up",
         }
     }
 
@@ -151,7 +155,8 @@ impl WakeReason {
             | Self::Guard
             | Self::WaitDropped
             | Self::Consulted
-            | Self::Escalated => false,
+            | Self::Escalated
+            | Self::ConsultedUp => false,
         }
     }
 
@@ -203,7 +208,7 @@ impl WakeReason {
     /// be added here too, and classified in [`super::turns`], whose table test fails until it
     /// is.
     #[must_use]
-    pub const fn all() -> [Self; 26] {
+    pub const fn all() -> [Self; 27] {
         [
             Self::Assigned,
             Self::Mentioned,
@@ -231,6 +236,7 @@ impl WakeReason {
             Self::WaitDropped,
             Self::Consulted,
             Self::Escalated,
+            Self::ConsultedUp,
         ]
     }
 

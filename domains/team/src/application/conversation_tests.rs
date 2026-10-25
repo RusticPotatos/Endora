@@ -3073,3 +3073,78 @@ fn a_confidential_turn_asks_a_colleague_who_answers_on_the_houses_models() {
             .is_err()
     );
 }
+
+/// ADR 0139: a colleague's answer runs on a tier at least the asker's. Asked from a turn on
+/// Claude that read nothing Confidential, the colleague answers on its Claude; asked from a
+/// turn on the house's models, on its own work brain; a Confidential ask stays on the house's
+/// models whatever the asker's tier (ADR 0140).
+#[test]
+fn a_colleague_answers_on_a_tier_at_least_the_askers() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use serde_json::json;
+    for (case, reason, confidential) in [
+        ("claude asker", WakeReason::Escalated, false),
+        ("house asker", WakeReason::Assigned, false),
+        ("confidential claude asker", WakeReason::Escalated, true),
+    ] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = canonical_hq(&clock);
+        let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let asker = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+        let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+        hq.set_conversations_enabled(true).unwrap();
+        let task = hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: Some(project),
+                    parent: None,
+                    title: "Fixture task".into(),
+                    description: String::new(),
+                    assignee: Some(asker),
+                    priority: crate::domain::Priority::Normal,
+                    waits_on: vec![],
+                },
+            )
+            .unwrap();
+        if reason != WakeReason::Assigned {
+            hq.wake(asker, Some(task), reason).unwrap();
+        }
+        hq.tick().unwrap();
+        let turn = turn_of(&hq, asker);
+        let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+        if confidential {
+            hq.store().mark_confidential_input(run.id).unwrap();
+        }
+        super::protocol::call(
+            &hq,
+            &run,
+            &member,
+            "consult",
+            &json!({"member":"Member 3","question":"Which check is decisive?"}),
+        )
+        .unwrap();
+        hq.tick().unwrap();
+        let expert = hq
+            .store()
+            .runs()
+            .unwrap()
+            .into_iter()
+            .rfind(|r| r.member != asker && r.member != lead)
+            .unwrap();
+        let on_claude = expert.brain.is_some_and(crate::domain::Brain::cloud);
+        let asker_run = hq.store().run(run.id).unwrap().unwrap();
+        let wake = hq.store().wake(expert.wake).unwrap().map(|w| w.reason);
+        assert_eq!(
+            on_claude,
+            case == "claude asker",
+            "{case}: expert {:?} woken {wake:?}; asker {:?}",
+            expert.brain,
+            asker_run.brain
+        );
+    }
+}

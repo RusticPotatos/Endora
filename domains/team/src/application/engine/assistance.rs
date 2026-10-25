@@ -524,7 +524,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 continue;
             }
             // Queued once: the moment the question reaches the colleague is the feed's "asked".
-            if let Some(run) = self.store.queue_assistance(pending.id, now)? {
+            // A colleague's answer is on a tier at least the asker's (ADR 0139), unless the
+            // ask is Confidential, which stays on the house's models (ADR 0140).
+            let up = self.on_claude(pending.requester_run)?
+                && !self.store.run_read_confidential(pending.requester_run)?;
+            if let Some(run) = self.store.queue_assistance(pending.id, now, up)? {
                 self.emit_help(EventKind::HelpAsked, &pending, run)?;
             }
         }
