@@ -2681,12 +2681,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         if member.role == Role::Lead {
-            // Project titles and reasons have no recorded authorship: fail closed.
-            let led = self.projects_led(member)?;
-            if !led.is_empty() {
+            // A project with no proposer was made by the owner's route or by HQ; a member's
+            // proposal has no recorded run, so its title fails closed (ADR 0138 A2c).
+            let proposed =
+                self.store.projects()?.iter().any(|p| {
+                    p.lead == member.id && p.status.holds_its_cap() && p.proposer.is_some()
+                });
+            if proposed {
                 self.unclassified_message_input(run.id)?;
             }
-            told.push_str(&led);
+            told.push_str(&self.projects_led(member)?);
         }
         let Some(task) = run.task else {
             told.push_str("This turn is about no task: look over the team's work.\n");

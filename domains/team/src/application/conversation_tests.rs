@@ -1208,9 +1208,12 @@ fn a_turn_without_the_help_tools_is_not_told_to_use_them() {
         .unwrap()
         .iter()
         .any(|tool| tool["name"] == "consult");
-    assert!(!offered, "a lead's legacy task turn is Confidential today");
-    assert!(
-        !turn.told.contains("Colleagues: you may ask anyone"),
+    // ADR 0138 A2c-d: a lead's task turn showing only the owner's and HQ's words is no longer
+    // locked whole, and its briefing tells of help exactly when the tools are offered.
+    assert!(offered, "a lead's clean task turn is offered help");
+    assert_eq!(
+        turn.told.contains("Colleagues: you may ask anyone"),
+        offered,
         "{}",
         turn.told
     );
@@ -2840,6 +2843,117 @@ fn the_older_task_briefing_is_classified_by_section_and_fails_closed_on_what_it_
         assert_eq!(
             hq.store().run_read_confidential(turn.run).unwrap(),
             !matches!(case, "clean" | "old unknown post, not shown"),
+            "{case}: {}",
+            turn.told
+        );
+    }
+}
+
+/// ADR 0138 A2d: the house page a lead is briefed is classified by the turns that wrote it: a
+/// section or timeline line from a clean turn leaves the lead free to ask; one from a
+/// Confidential turn, or with no recorded turn, locks it.
+#[test]
+fn a_leads_house_page_is_classified_by_the_turns_that_wrote_it() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use super::world_ports::WorldStore;
+    use crate::domain::world::{HOUSE, Section, Stage};
+    use crate::domain::world_migration::TimelineLine;
+    for case in [
+        "clean section",
+        "confidential section",
+        "section, no run",
+        "line, no run",
+    ] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = canonical_hq(&clock);
+        let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+        let source = hq.hire("Member 2", Role::Researcher, 30, 2, 0).unwrap();
+        let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
+        let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+        hq.set_conversations_enabled(true).unwrap();
+        hq.wake(source, None, WakeReason::Downtime).unwrap();
+        hq.tick().unwrap();
+        let source_run = turn_of(&hq, source).run;
+        if case == "confidential section" {
+            hq.store().mark_confidential_input(source_run).unwrap();
+        }
+        hq.runner().finish(source_run, true);
+        hq.tick().unwrap();
+        hq.store()
+            .save_section(
+                &Section {
+                    id: 0,
+                    page: HOUSE.slug.into(),
+                    anchor: "nas".into(),
+                    heading: "The NAS".into(),
+                    headline: "The NAS holds the media.".into(),
+                    body: String::new(),
+                    stage: Stage::Canon,
+                    warrant: "read".into(),
+                    evidence: Vec::new(),
+                    verified_at: Some(NOON),
+                    verified_by: "Member 2".into(),
+                    superseded_by: None,
+                    why: String::new(),
+                    written_by: "Member 2".into(),
+                    written_in_run: (case != "section, no run").then_some(source_run),
+                    revision: 1,
+                    updated_at: NOON,
+                    last_used_at: NOON,
+                },
+                "fixture",
+            )
+            .unwrap();
+        if case == "line, no run" {
+            // A line on its timeline since the lead's last turn, which no turn wrote.
+            hq.wake(lead, None, WakeReason::Downtime).unwrap();
+            hq.tick().unwrap();
+            let before = turn_of(&hq, lead).run;
+            hq.runner().finish(before, true);
+            hq.tick().unwrap();
+            clock
+                .0
+                .fetch_add(60_000, std::sync::atomic::Ordering::SeqCst);
+            hq.store()
+                .add_timeline(
+                    &TimelineLine {
+                        page: HOUSE.slug.into(),
+                        at: NOON + 30_000,
+                        by: "HQ".into(),
+                        line: "The router was replaced.".into(),
+                    },
+                    None,
+                )
+                .unwrap();
+        }
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Check the fixture".into(),
+                description: String::new(),
+                assignee: Some(lead),
+                priority: crate::domain::Priority::Normal,
+                waits_on: vec![],
+            },
+        )
+        .unwrap();
+        hq.tick().unwrap();
+        let turn = turn_of(&hq, lead);
+        assert!(turn.told.contains("The NAS holds the media."), "{case}");
+        if case == "line, no run" {
+            assert!(
+                turn.told.contains("The router was replaced."),
+                "{}",
+                turn.told
+            );
+        }
+        assert_eq!(
+            hq.store().run_read_confidential(turn.run).unwrap(),
+            case != "clean section",
             "{case}: {}",
             turn.told
         );

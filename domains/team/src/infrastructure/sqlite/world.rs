@@ -325,6 +325,30 @@ impl WorldStore for SqliteTeamStore {
         .map_err(backend)
     }
 
+    fn timeline_with_runs(&self, page: &str) -> Stored<Vec<(TimelineLine, Option<RunId>)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT page, at_ms, by, line, run FROM world_timeline WHERE page = ?1
+                 ORDER BY at_ms, id",
+            )
+            .map_err(backend)?;
+        stmt.query_map([page], |r| {
+            Ok((
+                TimelineLine {
+                    page: r.get(0)?,
+                    at: r.get(1)?,
+                    by: r.get(2)?,
+                    line: r.get(3)?,
+                },
+                r.get::<_, Option<i64>>(4)?.map(RunId),
+            ))
+        })
+        .map_err(backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(backend)
+    }
+
     fn add_timeline(&self, line: &TimelineLine, run: Option<RunId>) -> Stored<i64> {
         let conn = self.conn()?;
         conn.execute(
