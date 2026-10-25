@@ -713,6 +713,9 @@ if (failures.length) {
   // Activity is the screen the owner watches most (2026-10-25): it opens on sixty lines.
   if (runInContext("HQ.logShown", context) !== 60) fail("hq: the activity log does not start at sixty lines");
   runInContext("HQ.logShown = 30;", context);
+  // The world's sections and their buttons are read with the house page open (Knowledge lists
+  // its pages first since 2026-10-25).
+  runInContext('HQ_WORLD_VIEW.page = "house";', context);
   const office = runInContext("viewHQ()", context);
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · in 19000 / out 100 · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
     "R7 Bo retry waiting: the turn was over: exit 3: worker: the turn is over: HQ answered 401 (&lt;token&gt;)",
@@ -1196,22 +1199,35 @@ if (failures.length) {
   if (office.includes("<img src=h") || !office.includes("&lt;/textarea&gt;&lt;img src=h")) fail("hq: the house log became markup");
   // The World card (ADR 0122): pages by stage, the owner's canon acts, the stories, the export.
   for (const said of ["<h2>World</h2>", 'data-act="hq:world:section:promote-0"', 'data-act="hq:world:section:demote-1"',
-    'data-act="hq:world:story:promote-0"', 'data-act="hq:world:export:md"', "unconfirmed since 17 Sep", "to retell", "How the lab is built"]) {
+    'data-act="hq:world:story:promote-0"', 'data-act="hq:world:export:md"', "unconfirmed since 17 Sep", "to retell"]) {
     if (!office.includes(said)) fail(`hq: the World card does not show ${said}`);
+  }
+  {
+    // The page list names every page, the ones from the record too.
+    runInContext("HQ_WORLD_VIEW.page = null;", context);
+    const listed = runInContext("viewHQ()", context);
+    for (const said of ["How the lab is built", 'data-act="hq:world:page:lab"', 'data-act="hq:world:page:area/2"', "from the record"]) {
+      if (!listed.includes(said)) fail(`hq: the page list does not show ${said}`);
+    }
+    runInContext('HQ_WORLD_VIEW.page = "house";', context);
   }
   if (office.indexOf("Disk") > office.indexOf("&lt;b&gt;Backups")) fail("hq: canon is not shown first in the World card");
   for (const hostile of ["<img src=t", "<img src=w", "<img src=y", "<b>Backups</b>"]) {
     if (office.includes(hostile)) fail(`hq: the World card let markup through: ${hostile}`);
   }
   // The team's map (ADR 0126): the pages with their stewards and quiz scores, the owner's word on
-  // a proposal, the gaps, the broken roads and last night's quiz; every word a member's.
+  // a proposal, the gaps, the broken roads and last night's quiz; every word a member's. Read on
+  // the page list with the owner's form open, and on an open page.
+  runInContext("HQ_WORLD_VIEW.page = null; HQ_WORLD_VIEW.writing = true;", context);
+  const mapViews = runInContext("viewHQ()", context) + office;
+  runInContext('HQ_WORLD_VIEW.page = "house"; HQ_WORLD_VIEW.writing = false;', context);
   for (const said of ['data-act="hq:world:proposal:accept-4"', 'data-act="hq:world:proposal:decline-4"', "Rae got 4 of 6",
     "failed three nights running", "the desk notice", "world:area/2#restores", "quiz 0/3, failing", 'value="area/2"',
     "kept by Ada", "Proposals to pages", "Broken roads", "Last night's map check"]) {
-    if (!office.includes(said)) fail(`hq: the World card's map does not show ${said}`);
+    if (!mapViews.includes(said)) fail(`hq: the World card's map does not show ${said}`);
   }
   for (const hostile of ["<img src=m1", "<img src=m2", "<img src=m3", "<img src=m4", "<img src=m5"]) {
-    if (office.includes(hostile)) fail(`hq: the map on the World card let markup through: ${hostile}`);
+    if (mapViews.includes(hostile)) fail(`hq: the map on the World card let markup through: ${hostile}`);
   }
   // Once moved into the world, the old house log is read-only, and still escaped.
   runInContext("HQ.snap.world.migrated = true;", context);
@@ -1685,7 +1701,7 @@ if (failures.length) {
     runInContext("HQ.selected = null; HQ.tab = null; HQ.working = false; HQ.workDraft = {}; HQ.stageOpen = null;", context);
     const shown = () => runInContext("viewHQ()", context);
     const tabs = shown();
-    for (const id of ["activity", "desk", "team", "work", "knowledge", "office", "manage"]) {
+    for (const id of ["activity", "desk", "team", "work", "health", "knowledge", "office", "manage"]) {
       if (!tabs.includes(`role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}"`)) fail(`hq: no ${id} tab`);
       if (!tabs.includes(`role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"`)) fail(`hq: no ${id} panel`);
     }
@@ -1694,27 +1710,27 @@ if (failures.length) {
     const hiddenPanels = (html) => [...html.matchAll(/id="hq-panel-(\w+)"[^>]*? hidden>/g)].map((m) => m[1]).sort().join(",");
     if (selected(tabs).join() !== "activity") fail(`hq: the default tab is ${selected(tabs)}, not activity`);
     if (!/role="tablist"[^>]*><button role="tab" class="hq-tab" id="hq-tab-activity"/.test(tabs)) fail("hq: Activity is not the first tab");
-    if (hiddenPanels(tabs) !== "desk,knowledge,manage,office,team,work") fail(`hq: with Activity showing, these panels are hidden: ${hiddenPanels(tabs)}`);
+    if (hiddenPanels(tabs) !== "desk,health,knowledge,manage,office,team,work") fail(`hq: with Activity showing, these panels are hidden: ${hiddenPanels(tabs)}`);
     // What is on which tab.
     const panelOf = (html, id) => html.split(`id="hq-panel-${id}"`)[1].split('role="tabpanel"')[0];
     // Every owner setting is on Manage, shown, not folded (the owner, 2026-10-25: "finding hidden
     // settings from unexpanding items").
-    const where = { activity: ["<h2>Activity</h2>", 'id="hq-log-end"'], desk: ["Looking at", "Your desk", "hq:decide:11:approve"], team: ["<h2>Team</h2>", "How the team is doing"],
-      work: ["<h2>Find a task</h2>", "<h2>Guards</h2>"],
+    const where = { activity: ["<h2>Activity</h2>", 'id="hq-log-end"'], desk: ["Looking at", "Your desk", "hq:decide:11:approve"], team: ["<h2>Team</h2>"],
+      work: ["<h2>Find a task</h2>", "<h2>Conversations</h2>"], health: ["<h2>Guards</h2>", "How the team is doing"],
       knowledge: ["<h2>World</h2>", "<h2>House log</h2>"], office: ["<h2>Office"],
       manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Routines</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Strategy and notes for the team", "<h2>Hire</h2>", "hq:hire:new:add"] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
     }
     if (panelOf(tabs, "work").includes("<h2>Activity</h2>")) fail("hq: Activity is still buried in Work");
-    for (const [id, folded] of [["manage", "<details"], ["work", "<h2>Projects</h2>"], ["office", "What the team may do"], ["knowledge", "Goals: strategy"], ["team", "hq:hire:new:add"]]) {
+    for (const [id, folded] of [["manage", "<details"], ["work", "<h2>Projects</h2>"], ["work", "<h2>Guards</h2>"], ["team", "How the team is doing"], ["office", "What the team may do"], ["knowledge", "Goals: strategy"], ["team", "hq:hire:new:add"]]) {
       if (panelOf(tabs, id).includes(folded)) fail(`hq: "${folded}" is still on the ${id} tab`);
     }
     // Badges: the desk's items, and the guards' open findings (one open, one cleared).
     const badge = (html, id) => (html.match(new RegExp(`id="hq-tab-${id}"[^>]*>[^<]*<span class="hq-badge"[^>]*>(\\d+)</span>`)) || [])[1];
     const deskCount = runInContext("HQ.snap.desk.length", context);
     if (Number(badge(tabs, "desk")) !== deskCount) fail(`hq: the Desk badge is ${badge(tabs, "desk")}, not ${deskCount}`);
-    if (badge(tabs, "work") !== "1") fail(`hq: the Work badge is ${badge(tabs, "work")}, not the one open finding`);
+    if (badge(tabs, "health") !== "1") fail(`hq: the Health badge is ${badge(tabs, "health")}, not the one open finding`);
     if (badge(tabs, "team") !== undefined) fail("hq: a tab with nothing to count has a badge");
     // The waiting chip jumps to the Desk; the pool chip reads the snapshot; no Mac block, no Mac chip.
     if (!tabs.includes(`data-act="hq:tab:desk:go">${deskCount} waiting on you</button>`)) fail("hq: no \"waiting on you\" chip to the Desk");
@@ -1733,7 +1749,7 @@ if (failures.length) {
     context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem() {} };
     await runInContext('dispatch("hq:tab:knowledge:go")', context);
     if (selected(shown()).join() !== "knowledge" || kept["endora.hq.tab.v2"] !== "knowledge") fail("hq: choosing a tab does not show and remember it");
-    if (hiddenPanels(shown()) !== "activity,desk,manage,office,team,work") fail("hq: the other panels stay showing");
+    if (hiddenPanels(shown()) !== "activity,desk,health,manage,office,team,work") fail("hq: the other panels stay showing");
     await runInContext('dispatch("hq:tab:bogus:go")', context);
     if (selected(shown()).join() !== "knowledge") fail("hq: a tab that does not exist was chosen");
     runInContext("HQ.tab = null;", context);
@@ -1872,16 +1888,34 @@ if (failures.length) {
   // buttons on sections are explained in a line.
   {
     const world = runInContext("viewHQ()", context).split('id="hq-panel-knowledge"')[1].split('role="tabpanel"')[0];
-    const top = world.split("<h3>The house page</h3>")[0];
+    const top = world.split("<h3>Pages</h3>")[0];
     if (!top.includes('data-act="hq:world:paste:show">Paste Markdown</button>')) fail("hq: Paste Markdown is not a button at the top of the World card");
     for (const said of ["field note", "observation", "insight", "canon", "Unconfirmed", "<b>Edit</b>", "<b>Make canon</b>", "<b>Not true</b>"]) {
       if (!top.includes(said)) fail(`hq: the World legend does not say ${said}`);
     }
     await runInContext('dispatch("hq:world:paste:show")', context);
-    if (!runInContext("viewHQ()", context).includes("<details open><summary>The paste box</summary>")) fail("hq: the Paste Markdown button does not open the paste box");
+    if (!runInContext("viewHQ()", context).includes('id="hq-paste-box"')) fail("hq: the Paste Markdown button does not open the paste box");
     await runInContext('dispatch("hq:world:paste:show")', context);
-    if (runInContext("viewHQ()", context).includes("<details open><summary>The paste box")) fail("hq: the Paste Markdown button does not close the paste box again");
+    if (runInContext("viewHQ()", context).includes('id="hq-paste-box"')) fail("hq: the Paste Markdown button does not close the paste box again");
     runInContext("HQ.worldDoc = null;", context);
+    // Knowledge is a list of pages, each opened on its own, with nothing folded (the owner,
+    // 2026-10-25): the page list, a page with its sections and a way back, and the owner's form.
+    const knowledge = () => runInContext("viewHQ()", context).split('id="hq-panel-knowledge"')[1].split('role="tabpanel"')[0];
+    runInContext("HQ_WORLD_VIEW.page = null; HQ_WORLD_VIEW.writing = false;", context);
+    const list = knowledge();
+    if (list.includes("<details")) fail("hq: the Knowledge tab still folds things away");
+    if (!list.includes('data-act="hq:world:page:house"')) fail("hq: the page list does not offer the house page");
+    if (list.includes('id="hq-w-page"')) fail("hq: the owner's form shows before it is asked for");
+    await runInContext('dispatch("hq:world:page:house")', context);
+    const house = knowledge();
+    if (!house.includes("<h3>The house page</h3>") || !house.includes("Its timeline") || !house.includes('data-act="hq:world:page:all"')) fail("hq: opening the house page does not show its sections, its timeline and a way back");
+    if (house.includes("<details")) fail("hq: an open page still folds things away");
+    await runInContext('dispatch("hq:world:page:all")', context);
+    if (knowledge().includes("<h3>The house page</h3>")) fail("hq: All pages does not go back to the list");
+    await runInContext('dispatch("hq:world:writing:toggle")', context);
+    if (!knowledge().includes('id="hq-w-page"')) fail("hq: Write a section does not open the owner's form");
+    await runInContext('dispatch("hq:world:writing:toggle")', context);
+    runInContext("HQ_WORLD_VIEW.page = null; HQ_WORLD_VIEW.writing = false;", context);
   }
   // On a phone the office canvas is a thin strip until the owner opens it, and that is remembered.
   {
@@ -2926,6 +2960,9 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
         body: "Nightly.", stage: "insight", said: "insight", revision: 2, written_by: "Mara", warrant: "", why: "" },
       { page: "house", anchor: "disk", address: "world:house#disk", heading: "Disk", headline: "16 GB", body: "", stage: "canon",
         said: "canon", revision: 3, written_by: "the owner", warrant: "", why: "" }] } };`, context);
+  // A section's editor opens from its page, and the paste box from its button (Knowledge lists
+  // its pages first and folds nothing since 2026-10-25).
+  runInContext('HQ_WORLD_VIEW.page = "house"; hqWorldDoc().open = true;', context);
   let card = runInContext("hqWorldCard(HQ.snap)", context);
   for (const need of ['data-act="hq:world:edit:open-0"', 'data-act="hq:world:edit:open-1"', 'data-act="hq:world:section:promote-0"',
       'data-act="hq:world:section:demote-1"', 'id="hq-wd-md"', 'data-act="hq:world:paste:preview"', 'autocapitalize="off"']) {

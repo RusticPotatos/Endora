@@ -1233,7 +1233,8 @@ function hqFonts() {
 // loses what is typed on a tab that is not showing.
 // Activity first: the screen the owner glances at most, live (2026-10-25).
 // Manage holds every owner setting, shown rather than folded (2026-10-25).
-const HQ_TABS = [["activity", "Activity"], ["desk", "Desk"], ["team", "Team"], ["work", "Work"], ["knowledge", "Knowledge"], ["office", "Office"], ["manage", "Manage"]];
+// Health holds the guards and the scorecard: how the team is doing, apart from the work itself.
+const HQ_TABS = [["activity", "Activity"], ["desk", "Desk"], ["team", "Team"], ["work", "Work"], ["health", "Health"], ["knowledge", "Knowledge"], ["office", "Office"], ["manage", "Manage"]];
 
 // A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
 // screen works the same without it.
@@ -1385,7 +1386,7 @@ function hqChips(s) {
 // The tab strip, and the badge on the tabs that count something.
 function hqTabs(s) {
   const guards = (s.guards && s.guards.findings || []).filter((f) => !f.cleared_at).length;
-  const badge = { desk: (s.desk || []).length, work: guards };
+  const badge = { desk: (s.desk || []).length, health: guards };
   const here = hqTab();
   return `<div class="hq-tabs" role="tablist" aria-label="HQ sections">${HQ_TABS.map(([id, label]) =>
     `<button role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}" aria-selected="${id === here ? "true" : "false"}" tabindex="${id === here ? 0 : -1}" data-act="hq:tab:${id}:go">${label}${badge[id] ? ` <span class="hq-badge" aria-label="${badge[id]} waiting">${badge[id]}</span>` : ""}</button>`).join("")}</div>`;
@@ -1533,15 +1534,16 @@ function viewHQ() {
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
       ${hqPanel("team", `
         <section class="hq-card"><h2>Team</h2>${team}${wingLine}</section>
-        ${hqMacCard(s)}
-        ${hqScorecard(s)}`)}
+        ${hqMacCard(s)}`)}
       ${hqPanel("work", `
         <section class="hq-card"><h2>Find a task</h2>
           <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
           <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
         ${hqConversations(s)}
-        ${hqHolodeck(s)}
-        ${hqGuards(s)}`)}
+        ${hqHolodeck(s)}`)}
+      ${hqPanel("health", `
+        ${hqGuards(s)}
+        ${hqScorecard(s)}`)}
       ${hqPanel("knowledge", `
         ${hqWorldCard(s)}
         ${hqHouse(s)}`)}
