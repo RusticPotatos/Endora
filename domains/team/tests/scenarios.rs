@@ -2580,10 +2580,29 @@ fn ping_pong_board(w: &mut Office) {
     );
 }
 
-#[then("nobody was woken and no turn was run")]
+#[then("no match woke anyone or ran a turn")]
 fn nobody_woken(w: &mut Office) {
-    assert!(w.hq.wakes().expect("the store answers").is_empty());
-    assert!(w.hq.store().runs().expect("the store answers").is_empty());
+    // The only wake is chess's: white's move in the game HQ set free members (ADR 0121).
+    let players: Vec<_> =
+        w.hq.store()
+            .chess_games()
+            .expect("the store answers")
+            .iter()
+            .flat_map(|g| [g.white, g.black])
+            .collect();
+    assert!(
+        w.hq.wakes()
+            .expect("the store answers")
+            .iter()
+            .all(|wake| wake.reason == WakeReason::Downtime && players.contains(&wake.member))
+    );
+    assert!(
+        w.hq.store()
+            .runs()
+            .expect("the store answers")
+            .iter()
+            .all(|run| players.contains(&run.member))
+    );
 }
 
 #[when(regex = r"^(\w+) challenges (\w+) to chess$")]
