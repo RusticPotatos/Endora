@@ -90,8 +90,13 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
       so release the reader (table rebuild accepting `system`) one release before
       anything writes it, keeping image-only rollback safe. **Reader released,
       `435b97d0`:** rehearsed on a private production copy, then deployed; the
-      production table was rebuilt keeping all 23 proofs and its 7 guards. Next,
-      the writers. Then re-tag post sites: a member's own words
+      production table was rebuilt keeping all 23 proofs and its 7 guards.
+      **Writers released, `dbe38226`:** 14 kinds of post HQ writes for a member in
+      that member's own turn (status moves, verdicts, questions up, drafts,
+      handovers, area reports, huddle views and decisions) record that turn;
+      "Evidence cited" and the evidence-met submission record `system`; a CEO
+      direction and project decisions (quoting others' text) and alarms stay
+      Unknown. Re-tagging rule for the rest: a member's own words
       as its run, owner desk words as owner, pure templates as system; posts that
       quote borrowed text (alarms, "Evidence cited", recovered text) stay Unknown.
    b. Routine-fired tasks carry the routine's origin for body and criteria.
@@ -127,8 +132,11 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
    while the Mac was out of memory (about 70 MB free, swap nearly full), reading at
    47–108 tokens/s and writing at 2–10. The retry hit the 30-minute turn limit; the
    next was interrupted by the `435b97d0` release drain and is queued again. Freeing
-   memory for the Mac brain (no prompt cache, then a shorter context if needed) is
-   the owner's call; moving Rae's work to a paid model would cost money.
+   memory for the Mac brain is done (prompt cache off, ChatGPT quit: free memory
+   about 1.2 GB, swap 3.3 GB), but Rae's next turn (run 2245) timed out the same
+   way: at her 25–31k-token context the Mac writes about 3 tokens/s, so a turn
+   cannot fit its limits. Moving Rae's work brain to a paid model, or slimming her
+   prompt and raising the call limit, is the owner's decision.
 2. Check c1's exit 127. **Tools verified, 2026-10-24:** the Pi's current workbench,
    with the runner's in-memory `/work`, runs `ansible-lint` 6.14.6,
    `ansible-playbook` 2.15.13 and `yamllint` 1.30.0 from `/opt/venv/bin` on the
