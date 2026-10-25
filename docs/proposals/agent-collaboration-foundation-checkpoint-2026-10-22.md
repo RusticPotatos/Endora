@@ -174,6 +174,16 @@ completed in about two and a half minutes instead of timing out at ten.
 Sources: anthropic.com/engineering (advanced-tool-use, writing-tools-for-agents,
 effective-context-engineering-for-ai-agents); developers.openai.com function-calling guide.
 
+**O. Owner decisions, 2026-10-25.**
+1. Open conversation: members working on the same project may message and ask
+   each other for help without the owner authorizing each pair. Amend ADR 0138
+   (the explicit pair was the pilot's caution); keep the Confidential guard,
+   project charging, per-turn and per-day limits and the CEO-directs-leads rule;
+   the owner can switch messaging off or block a pair in Manage. After A2.
+2. Holodeck re-run: archive the earlier round's scenario results (kept and
+   labelled) and queue every scenario again, so the agents re-attempt the whole
+   set and rounds can be compared. Deleting old results needs its own owner yes.
+
 **C. Prove it and decide** (observation, then owner decisions)
 
 1. Observe the first production request triggered by real work; verify its
