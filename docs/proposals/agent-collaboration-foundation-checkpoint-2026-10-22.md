@@ -254,6 +254,15 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
    turns, and the set changes within a turn only when `find_tools` appends.
    UI: Work's conversation, scenario and trial lists are one-line rows, and
    Knowledge no longer scrolls sideways at phone width (`3dcd768b`).
+   **Re-run started, 2026-10-25 ~17:15Z** on `46bb5f89` (NAS and Pi; the Pi's first
+   attempt lost SSH after loading the image and was retried cleanly): 15 earlier
+   scenarios labelled "round of 2026-10-25" and kept; 12 distinct setups queued,
+   the first (a lighthouse, task 792) playing. **Production evidence, same day:**
+   the new ladder's first tier rung fired on #677 ("Cy takes it a model tier up");
+   Cy's turn on Claude found the real blocker (a researcher has no repo_checkout)
+   and asked Kit, the lead, for access: a decision, by the right route. #678 was
+   done (Ada, passed by Dee, accepted by Kit); #673 was submitted and fairly sent
+   back. No peer `consult` has happened yet (C1 still open).
 
 **C. Prove it and decide** (observation, then owner decisions)
 
