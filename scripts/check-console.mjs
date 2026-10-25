@@ -1706,7 +1706,7 @@ if (failures.length) {
   if (cards.length !== 2 || cards[0] !== 7 || cards[1] !== 9) fail(`hq: a dropped goal's tasks are still on the board: ${cards}`);
   // The screen's tabs (the owner: "it's all been expanded over time, hard to find stuff").
   {
-    runInContext("HQ.selected = null; HQ.tab = null; HQ.working = false; HQ.workDraft = {}; HQ.stageOpen = null;", context);
+    runInContext("HQ.selected = null; HQ.tab = null; HQ.working = false; HQ.workDraft = {};", context);
     const shown = () => runInContext("viewHQ()", context);
     const tabs = shown();
     for (const id of ["activity", "desk", "team", "work", "health", "knowledge", "office", "manage"]) {
@@ -1925,31 +1925,37 @@ if (failures.length) {
     await runInContext('dispatch("hq:world:writing:toggle")', context);
     runInContext("HQ_WORLD_VIEW.page = null; HQ_WORLD_VIEW.writing = false;", context);
   }
-  // On a phone the office canvas is a thin strip until the owner opens it, and that is remembered.
+  // Long sections show their first few, and long words three lines (the owner, 2026-10-25:
+  // too long to read); "Show all" and "Read all" open them in place, and text stays text.
+  {
+    const list = runInContext(`hqMore("checkmore", ["<li>1</li>","<li>2</li>","<li>3</li>","<li>4</li>"], 3)`, context);
+    if (list.shown.includes("<li>4</li>") || !list.more.includes("Show all 4") || !list.more.includes('data-act="hq:more:checkmore:toggle"')) fail("hq: a long list does not show its first few with Show all");
+    await runInContext('dispatch("hq:more:checkmore:toggle")', context);
+    const all = runInContext(`hqMore("checkmore", ["<li>1</li>","<li>2</li>","<li>3</li>","<li>4</li>"], 3)`, context);
+    if (!all.shown.includes("<li>4</li>") || !all.more.includes("Show fewer")) fail("hq: Show all does not open the whole list");
+    const short = runInContext(`hqMore("checkshort", ["<li>1</li>"], 3)`, context);
+    if (short.more) fail("hq: a short list offers Show all");
+    const long = runInContext(`hqClamp("check", "<b>x</b> " + "word ".repeat(80))`, context);
+    if (!long.includes('class="hq-clamp"') || !long.includes("Read all") || long.includes("<b>x</b>")) fail("hq: long words are not clamped, or became markup");
+    if (runInContext(`hqClamp("check2", "a short line")`, context).includes("Read all")) fail("hq: a short line offers Read all");
+    runInContext("HQ.more = {};", context);
+  }
+  // The office plays on every tab (the owner, 2026-10-25), with nothing to open or close; on a
+  // phone its counters and legend are the Office tab's.
   {
     const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
     const phone = css.split("@media (max-width: 767px)").map((part) => part.split("\n  }\n")[0]).slice(1).join("\n");
-    if (!/\.hq-stage:not\(\.open\) \.hq-canvas-wrap \{ height: 120px; \}/.test(phone)) fail("hq: the office is not a 120px strip on a phone");
-    if (!/\.hq-stage-toggle \{ display: inline-block/.test(phone)) fail("hq: the office toggle is not shown on a phone");
     if (!/\.hq-tabs \{ order: -2;/.test(phone)) fail("hq: the tabs do not sit first on a phone");
-    if (!/\.hq-stage-toggle \{ display: none; \}/.test(css)) fail("hq: the office toggle shows on a desktop");
-    const kept = {};
-    const realStore = context.localStorage;
-    context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem() {} };
-    runInContext("HQ.stageOpen = null;", context);
-    const closed = runInContext("viewHQ()", context);
-    if (!closed.includes('<div class="hq-stage">') || !closed.includes('aria-expanded="false" aria-controls="hq-office" data-act="hq:stage:toggle:go">Show the office</button>')) fail("hq: the office does not start as a strip with \"Show the office\"");
-    await runInContext('dispatch("hq:stage:toggle:go")', context);
-    const opened = runInContext("viewHQ()", context);
-    if (!opened.includes('<div class="hq-stage open">') || !opened.includes("Hide the office") || kept["endora.hq.office"] !== "open") fail("hq: opening the office is not shown and remembered");
-    runInContext("HQ.stageOpen = null;", context);
-    if (!runInContext("viewHQ()", context).includes('<div class="hq-stage open">')) fail("hq: the open office is not restored");
-    await runInContext('dispatch("hq:stage:toggle:go")', context);
-    if (kept["endora.hq.office"] !== "closed") fail("hq: closing the office is not remembered");
-    context.localStorage = realStore;
-    runInContext("HQ.stageOpen = null;", context);
+    if (/\.hq-stage \{[^}]*display: none/.test(phone) || /canvas-wrap \{ height: 120px/.test(phone)) fail("hq: the office is hidden or cut to a strip on a phone");
+    if (!/:not\(\[data-tab="office"\]\) \.hq-stats/.test(phone)) fail("hq: the office's counters are not the Office tab's on a phone");
+    for (const tab of ["desk", "work", "health", "manage"]) {
+      runInContext(`hqSetTab(${JSON.stringify(tab)})`, context);
+      const html = runInContext("viewHQ()", context);
+      if (!html.includes('<canvas id="hq-office"') || html.includes("hq:stage:toggle")) fail(`hq: the office does not play on ${tab}, or can be hidden`);
+    }
+    runInContext("HQ.tab = null;", context);
   }
-  console.log("hq: tabs switch and are remembered, the desk explains every choice, work goes to the lead picked, and a phone gets a strip");
+  console.log("hq: tabs switch and are remembered, the desk explains every choice, work goes to the lead picked, and the office plays on every tab");
   runInContext("HQ.snap.stopped = true;", context);
   if (!runInContext("viewHQ()", context).includes('data-act="hq:resume"')) fail("hq: a stopped team cannot be resumed");
   runInContext('HQ.snap = null; HQ.error = "HQ is not set up on this node yet."; HQ.selected = null;', context);

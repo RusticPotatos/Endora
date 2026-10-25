@@ -14,7 +14,8 @@ function hqHolodeck(s) {
   const scenarios = (h && h.scenarios) || [], trials = (h && h.trials) || [];
   if (!scenarios.length && !trials.length) return "";
   const scen = scenarios.map((x) => hqLine(`hq:holo:open:${Number(x.task)}`, `${esc(hqHoloKind(x.kind))}: ${esc(x.title)}`,
-    `${esc(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}${x.round ? ` · ${esc(x.round)}` : ""}`)).join("");
+    `${esc(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}${x.round ? ` · ${esc(x.round)}` : ""}`));
+  const scenList = hqMore("scenarios", scen, 5);
   const queued = Number((h && h.queued) || 0);
   const again = queued
     ? `<p class="hq-note">${queued} scenario${queued === 1 ? "" : "s"} queued to run again, one at a time.</p>`
@@ -24,7 +25,7 @@ function hqHolodeck(s) {
   return `<section class="hq-card"><h2>Holodeck</h2>
     <p class="hq-note">Scenarios the team plays in worlds that close themselves, and trials that compare who plays them. Nothing here touches the house.</p>
     ${again}
-    ${scen ? `<p class="hq-who">Scenarios</p><ul class="hq-lines">${scen}</ul>` : ""}
+    ${scen.length ? `<p class="hq-who">Scenarios</p><ul class="hq-lines">${scenList.shown}</ul>${scenList.more}` : ""}
     ${tried ? `<p class="hq-who">Trials</p><ul class="hq-lines">${tried}</ul>` : ""}
     ${open}</section>`;
 }

@@ -178,9 +178,10 @@ function hqWorldPageList(w) {
     const count = Number(pg.sections) || 0;
     const what = pg.derived ? "from the record" : `kept by ${esc(pg.steward)} · ${count} section${count === 1 ? "" : "s"}${proposed}`;
     return `<li><button class="hq-link" data-act="hq:world:page:${esc(pg.slug)}">${esc(pg.title)}</button>${score} <small>${esc(pg.address || "")} · ${what}</small></li>`;
-  }).join("");
+  });
+  const listed = hqMore("pages", rows, 6);
   return `<h3>Pages</h3><p class="hq-note">One for the house and every area, project, goal and role. Its steward writes it; anyone else proposes. Open one to read and edit it.</p>
-    <ul class="hq-team hq-world">${rows}</ul>`;
+    <ul class="hq-team hq-world">${listed.shown}</ul>${listed.more}`;
 }
 
 // One page of the world, open on its own, with the way back to the list.
