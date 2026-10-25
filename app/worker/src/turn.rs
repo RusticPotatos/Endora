@@ -177,6 +177,19 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     }
     // A lesson is a story since ADR 0122: told with tell_story.
     let lessons = offered.iter().any(|t| t["name"] == "tell_story");
+    // A local model reads every definition on every call, slowly: past a dozen tools, it starts
+    // with its core and finds the rest (Anthropic's and OpenAI's advice, 2026-10-25). Claude
+    // keeps them all, cached.
+    let mut deferred = if setup.api == Api::OpenAi && offered.len() > DEFER_PAST {
+        let (now, later): (Vec<Value>, Vec<Value>) = offered
+            .into_iter()
+            .partition(|t| t["name"].as_str().is_some_and(|n| ALWAYS.contains(&n)));
+        offered = now;
+        offered.push(find_tools_tool());
+        later
+    } else {
+        Vec::new()
+    };
     let (briefing, refused) = hq.call("my_turn", &json!({}))?;
     if refused {
         return Err(Stopped::Failed(format!("HQ refused my_turn: {briefing}")));
@@ -201,7 +214,14 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         );
     }
     let model = Model::new(setup);
-    let told = instructions(task.is_some(), &on_the_node, lessons, shell.is_some());
+    let mut told = instructions(task.is_some(), &on_the_node, lessons, shell.is_some());
+    if !deferred.is_empty() {
+        told.push_str(&format!(
+            "\n\nMore tools are yours than are listed ({} more): call {FIND_TOOLS} with what you \
+             want to do, and the matching ones are yours from your next step.",
+            deferred.len()
+        ));
+    }
     let mut talk = Talk::new(setup.api, told, briefing, &offered);
     talk.effort.clone_from(&setup.effort);
     // One loop whichever API the relay speaks: the rounds limit, the repeat guard, the line
@@ -227,6 +247,12 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             }
             let mut replies = Vec::new();
             for call in &said.calls {
+                if call.name == FIND_TOOLS {
+                    let (found, reply) = find(&mut deferred, &call.arguments);
+                    talk.offer(&found);
+                    replies.push((call.id.clone(), reply));
+                    continue;
+                }
                 let reply = match (&shell, setup.workbench.as_deref()) {
                     (Some(shell), _) if call.name == SHELL => in_the_shell(shell, &mut did, call),
                     (_, Some(dir)) if is_repo_tool(&call.name) => in_the_repo(
@@ -284,6 +310,98 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
 
 /// The node's container tools, in the order the instructions name them.
 const LAB_TOOLS: [&str; 3] = ["homelab_status", "container_logs", "restart_container"];
+
+/// The worker's own tool for the rest of a local turn's tools.
+pub(crate) const FIND_TOOLS: &str = "find_tools";
+
+/// Past this many tools a local turn starts with its core and finds the rest.
+const DEFER_PAST: usize = 12;
+
+/// A local turn's core, always offered: its turn, its task, its word up, its notes, the
+/// workbench's shell and the lab's container tools the instructions name.
+const ALWAYS: [&str; 10] = [
+    "my_turn",
+    "claim",
+    "post",
+    "set_status",
+    "ask_owner",
+    "note",
+    SHELL,
+    "homelab_status",
+    "container_logs",
+    "restart_container",
+];
+
+/// How many tools one search brings in.
+const FOUND_AT_MOST: usize = 5;
+
+fn find_tools_tool() -> Value {
+    json!({ "name": FIND_TOOLS,
+        "description": "Some of your tools are not listed until you need them. Say in a few words what you want to do (read a container's log, tell a story, propose a project): the best matches are added for your next step, and this says which.",
+        "inputSchema": { "type": "object", "properties": {
+            "query": { "type": "string", "description": "what you want to do, in a few words" } },
+            "required": ["query"] } })
+}
+
+/// The deferred tools that best match `arguments`' query, taken out of `deferred`, and what
+/// the model is told: the ones added, or every name left when nothing matched.
+fn find(deferred: &mut Vec<Value>, given: &Value) -> (Vec<Value>, Reply) {
+    let parsed = arguments(given).unwrap_or_else(|_| json!({}));
+    let query = parsed["query"].as_str().unwrap_or("").to_lowercase();
+    let words: Vec<&str> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .collect();
+    let score = |tool: &Value| -> usize {
+        let name = tool["name"].as_str().unwrap_or("").to_lowercase();
+        let about = tool["description"].as_str().unwrap_or("").to_lowercase();
+        words
+            .iter()
+            .map(|w| 3 * usize::from(name.contains(w)) + usize::from(about.contains(w)))
+            .sum()
+    };
+    let mut ranked: Vec<(usize, usize)> = deferred
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (score(t), i))
+        .filter(|(points, _)| *points > 0)
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut picked: Vec<usize> = ranked.iter().take(FOUND_AT_MOST).map(|(_, i)| *i).collect();
+    picked.sort_unstable_by(|a, b| b.cmp(a));
+    let mut found: Vec<Value> = picked.into_iter().map(|i| deferred.remove(i)).collect();
+    found.reverse();
+    let line = |t: &Value| {
+        let about = t["description"].as_str().unwrap_or("");
+        let first = about.split_inclusive(". ").next().unwrap_or(about).trim();
+        format!("{}: {first}", t["name"].as_str().unwrap_or(""))
+    };
+    let text = if found.is_empty() {
+        let left: Vec<&str> = deferred.iter().filter_map(|t| t["name"].as_str()).collect();
+        format!(
+            "Nothing matched. The tools not yet yours: {}. Ask again with words from one of these.",
+            if left.is_empty() {
+                "none".to_owned()
+            } else {
+                left.join(", ")
+            }
+        )
+    } else {
+        format!(
+            "Added for your next step:\n{}",
+            found.iter().map(line).collect::<Vec<_>>().join("\n")
+        )
+    };
+    (
+        found,
+        Reply {
+            text,
+            refused: false,
+            asked: false,
+            moved_on: false,
+        },
+    )
+}
 
 /// How to take a good turn: the worker's own instructions, written for Endora. `posted` says
 /// whether its last word goes in the task's thread for it; `on_the_node`, the tools the node
@@ -756,6 +874,17 @@ impl Talk {
                 effort: None,
             },
         }
+    }
+
+    /// Tools found mid-turn, offered from the next call on.
+    fn offer(&mut self, more: &[Value]) {
+        if more.is_empty() {
+            return;
+        }
+        self.tools.extend(match self.api {
+            Api::OpenAi => functions(more),
+            Api::Anthropic => anthropic_tools(more),
+        });
     }
 
     /// The body of one round's call for `model`. Claude's asks Anthropic to cache the whole

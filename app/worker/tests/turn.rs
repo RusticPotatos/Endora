@@ -2126,3 +2126,105 @@ fn the_hook_posts_claude_codes_own_tools_to_the_node_and_never_blocks_the_turn()
     assert_eq!(out.status.code(), Some(0));
     assert!(!said(&out).contains(TOKEN));
 }
+
+/// Twelve of the node's contracts, more than a local model should read every call.
+fn many_contracts() -> Value {
+    let named = [
+        ("homelab_status", "Read the home lab's state."),
+        ("container_logs", "Read a container's log."),
+        ("restart_container", "Restart one container."),
+        (
+            "sonarr_queue",
+            "Read Sonarr's download queue and stuck imports.",
+        ),
+        ("radarr_queue", "Read Radarr's download queue."),
+        ("plex_sessions", "Read who is watching on Plex."),
+        ("pihole_summary", "Read Pi-hole's blocking summary."),
+        ("unifi_clients", "Read the network's clients from UniFi."),
+        ("nas_status", "Read the NAS's load, memory and disks."),
+        ("ha_lights", "Turn Home Assistant lights on or off."),
+        ("ha_climate", "Set the thermostat in Home Assistant."),
+        ("web_search", "Search the web."),
+    ];
+    Value::Array(
+        named
+            .iter()
+            .map(|(name, what)| {
+                json!({ "name": name, "kind": "read", "description": what,
+                        "inputSchema": { "type": "object", "properties": {} } })
+            })
+            .collect(),
+    )
+}
+
+/// Anthropic and OpenAI both advise a small first set and deferring the rest behind a search
+/// (2026-10-25): a local turn offered many tools starts with its core and find_tools, and a
+/// tool it finds is offered from its next call, so a slow model reads a short prompt.
+#[test]
+fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node(many_contracts(), None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[("c1", "find_tools", r#"{"query":"sonarr queue"}"#)]),
+        ),
+        (200, calls(&[("c2", "sonarr_queue", "{}")])),
+        (200, says("Read the queue.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let to_model = to_model.lock().unwrap().clone();
+    let names = |i: usize| -> Vec<String> {
+        to_model[i].body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let first = names(0);
+    for core in [
+        "my_turn",
+        "claim",
+        "post",
+        "set_status",
+        "homelab_status",
+        "find_tools",
+    ] {
+        assert!(first.iter().any(|n| n == core), "{core} missing: {first:?}");
+    }
+    for later in ["sonarr_queue", "ha_lights", "web_search", "plex_sessions"] {
+        assert!(
+            !first.iter().any(|n| n == later),
+            "{later} offered up front: {first:?}"
+        );
+    }
+    assert!(
+        first.len() <= 10,
+        "the first call offers {} tools",
+        first.len()
+    );
+    let second = names(1);
+    assert!(second.iter().any(|n| n == "sonarr_queue"), "{second:?}");
+    assert!(!second.iter().any(|n| n == "ha_lights"), "{second:?}");
+    let found = to_model[1].body["messages"].to_string();
+    assert!(
+        found.contains("sonarr_queue"),
+        "the model is told what was added: {found}"
+    );
+}
+
+/// A turn with few tools is offered all of them, as before: deferring would only cost a call.
+#[test]
+fn a_local_turn_with_few_tools_is_offered_them_all() {
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node(contracts(), None);
+    let (model_url, to_model) = model(vec![(200, says("Done."))]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let tools = to_model.lock().unwrap()[0].body["tools"].to_string();
+    assert!(!tools.contains("find_tools"), "{tools}");
+    assert!(tools.contains("restart_container"), "{tools}");
+}
