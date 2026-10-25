@@ -716,7 +716,17 @@ if (failures.length) {
   // The world's sections and their buttons are read with the house page open (Knowledge lists
   // its pages first since 2026-10-25).
   runInContext('HQ_WORLD_VIEW.page = "house";', context);
+  // Manage's projects and routines are one line each until tapped (the owner, 2026-10-25): shut,
+  // a row says who, how it stands and its money, with no buttons; open, its buttons as before.
+  {
+    const shut = runInContext("viewHQ()", context);
+    if (!shut.includes('data-act="hq:more:proj2:toggle"') || !shut.includes('data-act="hq:more:routine3:toggle"')) fail("hq: a project or routine is not a row to open");
+    if (shut.includes('data-act="hq:project:2:pause"') || shut.includes('data-act="hq:routine:3:fire"')) fail("hq: a shut row still shows its buttons");
+    if (!shut.includes("$0.46 of $0.50")) fail("hq: a shut project row does not say its money");
+  }
+  runInContext("HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true };", context);
   const office = runInContext("viewHQ()", context);
+  runInContext("HQ.more = {};", context);
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · in 19000 / out 100 · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
     "R7 Bo retry waiting: the turn was over: exit 3: worker: the turn is over: HQ answered 401 (&lt;token&gt;)",
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min",

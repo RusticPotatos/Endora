@@ -210,6 +210,14 @@ function hqClamp(key, text, cls = "") {
     <button class="hq-link hq-read" aria-expanded="${open}" data-act="hq:more:clamp${key}:toggle">${open ? "Show less" : "Read all"}</button>`;
 }
 
+// A row that is one line until tapped, then shows `body` (its details and buttons) under it
+// (the owner, 2026-10-25: Manage's projects and routines). `title` and `meta` are escaped
+// markup; `key` has no colon.
+function hqOpenRow(key, title, meta, body) {
+  const open = !!HQ.more[key];
+  return `<li class="hq-open-row${open ? " open" : ""}"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${meta}</small></button>${open ? `<div class="hq-row-body">${body}</div>` : ""}</li>`;
+}
+
 // One row of a list on one line: what it is and a little about it, and the whole row opens it
 // (the owner, 2026-10-25: a button under every row made lists too long on a phone). `title`
 // and `meta` are markup the caller has escaped.
@@ -1912,10 +1920,13 @@ function hqProjects(s) {
       open || p.status === "proposed" ? btn("drop", "Drop", "no") : "",
     ].join("");
   };
-  const row = (p) => `<li><b>${esc(p.title)}</b>
-      <span>${esc(hqName(p.lead))} leads · ${esc(status(p))}${p.open_tasks ? ` · ${p.open_tasks} open` : ""}${p.asked_cap ? ` · asks ${hqDollars(p.asked_cap)} a month` : ""}</span>
-      ${money(p)}${p.tools ? `<span>Tools: ${esc(p.tools.join(", ") || "none of the node's")}</span>` : ""}${p.reason ? `<span>${esc(p.reason)}</span>` : ""}${(p.evidence || []).length ? `<span>Evidence: ${esc(p.evidence.join(", "))}</span>` : ""}
-      <div class="hq-row">${acts(p)}</div></li>`;
+  // One line each, the money in a few words; tapped, the whole of it and its buttons.
+  const spent = (p) => p.cap ? `${hqDollars(p.spent)} of ${hqDollars(p.cap)}` : `${hqDollars(p.spent)}, no cap`;
+  const row = (p) => hqOpenRow(`proj${p.id}`, esc(p.title),
+    `${esc(hqName(p.lead))} · ${esc(status(p))}${p.open_tasks ? ` · ${p.open_tasks} open` : ""} · ${spent(p)}`,
+    `<span>${esc(hqName(p.lead))} leads · ${esc(status(p))}${p.open_tasks ? ` · ${p.open_tasks} open` : ""}${p.asked_cap ? ` · asks ${hqDollars(p.asked_cap)} a month` : ""}</span>
+      ${money(p)}${p.tools ? `<span>Tools: ${esc(p.tools.join(", ") || "none of the node's")}</span>` : ""}${p.reason ? hqClamp(`reason${p.id}`, p.reason) : ""}${(p.evidence || []).length ? `<span>Evidence: ${esc(p.evidence.join(", "))}</span>` : ""}
+      <div class="hq-row">${acts(p)}</div>`);
   // Live projects first; finished ones (done, dropped) wait behind "Show all".
   const finished = (p) => ["done", "dropped"].includes(p.status) ? 1 : 0;
   const groups = goals.map((g) => {
@@ -2260,10 +2271,11 @@ function hqNotes(s) {
 // other way and runs now. A small form adds one under the team's first active goal.
 function hqRoutines(s) {
   const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
-  const routines = (s.routines || []).map((r) => `<li><b>${esc(r.title)}</b>
-      <span>${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.last_fired_at ? "last ran " + esc(when(r.last_fired_at)) : "not run yet"}${r.last_task_open ? ` · ${hqKeyLink(r.last_task)} open` : ""}${r.on_lab_trouble ? " · takes home-lab alarms" : ""}${r.project ? ` · in ${esc(hqProjectTitle(r.project))}` : ""}</span>
+  const routines = (s.routines || []).map((r) => hqOpenRow(`routine${r.id}`, esc(r.title),
+    `${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.enabled ? "on" : "off"}`,
+    `<span>${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.last_fired_at ? "last ran " + esc(when(r.last_fired_at)) : "not run yet"}${r.last_task_open ? ` · ${hqKeyLink(r.last_task)} open` : ""}${r.on_lab_trouble ? " · takes home-lab alarms" : ""}${r.project ? ` · in ${esc(hqProjectTitle(r.project))}` : ""}</span>
       <div class="hq-row"><button class="hq-btn ${r.enabled ? "ok" : "no"}" aria-pressed="${r.enabled ? "true" : "false"}" data-act="hq:routine:${r.id}:${r.enabled ? "off" : "on"}">${r.enabled ? "On" : "Off"}</button>
-        <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div></li>`);
+        <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div>`));
   const listed = hqMore("routines", routines, 5);
   const rows = listed.shown;
   const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");

@@ -263,6 +263,9 @@
   .hq .hq-line b { flex: none; max-width: 60%; overflow-wrap: anywhere; }
   .hq .hq-line small { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
   .hq .hq-line::after { content: "›"; flex: none; opacity: .6; }
+  .hq .hq-open-row { list-style: none; }
+  .hq .hq-open-row.open > .hq-line::after { content: "⌄"; }
+  .hq .hq-row-body { display: grid; gap: 4px; padding: 6px 2px 10px; }
   .hq .hq-btn:disabled { opacity: .45; cursor: default; }
   .hq textarea.hq-doc { width: 100%; box-sizing: border-box; min-height: 52vh; font: 16px/1.45 var(--hq-mono); padding: 10px; }
   .hq .hq-changes li, .hq .hq-world li { overflow-wrap: anywhere; }
