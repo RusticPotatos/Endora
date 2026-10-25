@@ -130,7 +130,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         origin: crate::domain::history::InputOrigin,
     ) -> Done<()> {
         match origin {
-            crate::domain::history::InputOrigin::Owner => Ok(()),
+            // HQ's own words borrow nothing, so like the owner's they carry no tier.
+            crate::domain::history::InputOrigin::Owner
+            | crate::domain::history::InputOrigin::System => Ok(()),
             crate::domain::history::InputOrigin::Run(source) => {
                 self.inherit_input_from(run, Some(source))
             }

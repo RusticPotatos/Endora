@@ -10,9 +10,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 pub(super) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS input_origins (
  kind TEXT NOT NULL CHECK(kind IN ('goal','task_body','task_criteria','post')),
- resource INTEGER NOT NULL, origin TEXT NOT NULL CHECK(origin IN ('owner','run')),
+ resource INTEGER NOT NULL, origin TEXT NOT NULL CHECK(origin IN ('owner','run','system')),
  source_run INTEGER REFERENCES runs(id) ON DELETE CASCADE,
- CHECK((origin='owner' AND source_run IS NULL) OR (origin='run' AND source_run IS NOT NULL)),
+ CHECK((origin IN ('owner','system') AND source_run IS NULL) OR (origin='run' AND source_run IS NOT NULL)),
  PRIMARY KEY(kind,resource)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS input_origins_by_run ON input_origins(source_run);
@@ -32,6 +32,49 @@ CREATE TRIGGER IF NOT EXISTS post_input_deleted AFTER DELETE ON posts
  BEGIN DELETE FROM input_origins WHERE kind='post' AND resource=OLD.id; END;
 ";
 
+/// The triggers and index that name `input_origins`, dropped while it is rebuilt: SQLite will
+/// not rename a table into place while a trigger still names the one it replaces.
+const REBUILT_WITH_THE_TABLE: &str = "
+DROP TRIGGER IF EXISTS goal_input_changed; DROP TRIGGER IF EXISTS task_body_input_changed;
+DROP TRIGGER IF EXISTS task_criteria_input_changed; DROP TRIGGER IF EXISTS post_input_changed;
+DROP TRIGGER IF EXISTS goal_input_deleted; DROP TRIGGER IF EXISTS task_input_deleted;
+DROP TRIGGER IF EXISTS post_input_deleted; DROP INDEX IF EXISTS input_origins_by_run;";
+
+/// A store made before HQ's own origin (`system`) refuses it in a CHECK, which SQLite cannot
+/// alter: rebuild the table once, keeping every proof, then make its triggers and index again.
+/// Run after [`SCHEMA`]. An older build cannot read a `system` row, so nothing writes one until
+/// a later release: image-only rollback stays safe while this reader is the newest.
+pub(super) fn accept_system_origin(conn: &Connection) -> Stored<()> {
+    let table: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='input_origins'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(backend)?;
+    if table.contains("'system'") {
+        return Ok(());
+    }
+    let fresh = SCHEMA
+        .split_once(';')
+        .map(|(table, _)| table.replace("input_origins (", "input_origins_with_system ("))
+        .ok_or_else(|| backend(rusqlite::Error::InvalidQuery))?;
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;{REBUILT_WITH_THE_TABLE}
+         {fresh};
+         INSERT INTO input_origins_with_system(kind,resource,origin,source_run)
+           SELECT kind,resource,origin,source_run FROM input_origins;
+         DROP TABLE input_origins;
+         ALTER TABLE input_origins_with_system RENAME TO input_origins;
+         {SCHEMA}
+         COMMIT;"
+    ))
+    .map_err(|e| {
+        let _ = conn.execute_batch("ROLLBACK;");
+        backend(e)
+    })
+}
+
 fn key(input: InputRef) -> (&'static str, i64) {
     match input {
         InputRef::Goal(id) => ("goal", id.0),
@@ -48,6 +91,7 @@ pub(super) fn record(conn: &Connection, input: InputRef, origin: InputOrigin) ->
         InputOrigin::Unknown => return Ok(()),
         InputOrigin::Owner => ("owner", None),
         InputOrigin::Run(run) => ("run", Some(run.0)),
+        InputOrigin::System => ("system", None),
     };
     conn.execute(
         "INSERT INTO input_origins(kind,resource,origin,source_run) VALUES(?1,?2,?3,?4)",
@@ -77,6 +121,7 @@ pub(super) fn origin_at(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Res
     ) {
         (None, None) => Ok(InputOrigin::Unknown),
         (Some(kind), None) if kind == "owner" => Ok(InputOrigin::Owner),
+        (Some(kind), None) if kind == "system" => Ok(InputOrigin::System),
         (Some(kind), Some(run)) if kind == "run" && run > 0 => Ok(InputOrigin::Run(RunId(run))),
         _ => Err(rusqlite::Error::FromSqlConversionFailure(
             column,
@@ -655,6 +700,127 @@ mod tests {
         assert_eq!(
             store.thread(task).unwrap()[0].text,
             "Member-supplied finding"
+        );
+    }
+
+    /// The table as releases before HQ's own (`system`) origin made it.
+    const OWNER_OR_RUN_ONLY: &str = "CREATE TABLE input_origins (
+ kind TEXT NOT NULL CHECK(kind IN ('goal','task_body','task_criteria','post')),
+ resource INTEGER NOT NULL, origin TEXT NOT NULL CHECK(origin IN ('owner','run')),
+ source_run INTEGER REFERENCES runs(id) ON DELETE CASCADE,
+ CHECK((origin='owner' AND source_run IS NULL) OR (origin='run' AND source_run IS NOT NULL)),
+ PRIMARY KEY(kind,resource)
+) STRICT, WITHOUT ROWID;";
+
+    #[test]
+    fn an_owner_or_run_only_store_reopens_able_to_read_hqs_own_origin_and_keeps_its_proofs() {
+        let folder = TempDir::new();
+        let path = folder.0.join("hq.db");
+        let old =
+            SqliteTeamStore::before_the_world(rusqlite::Connection::open(&path).unwrap()).unwrap();
+        old.execute_batch(OWNER_OR_RUN_ONLY).unwrap();
+        old.execute_batch("INSERT INTO members(id,name,role,share_percent,slots) VALUES(1,'Member 1','developer',40,2);
+            INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(1,1,'assigned','queued',0);
+            INSERT INTO runs(id,member,wake,status,queued_at) VALUES(1,1,1,'succeeded',0);
+            INSERT INTO goals(id,title,reason,status) VALUES(1,'Fixture','','active');
+            INSERT INTO tasks(id,goal,title,description,status,priority,depth) VALUES(1,1,'Fixture task','','todo','normal',0);
+            INSERT INTO posts(id,task,author,text,at_ms) VALUES(1,1,'owner','Owner fixture',0),(2,1,'Member 1','Run fixture',0),(3,1,'hq','HQ fixture',0);
+            INSERT INTO input_origins(kind,resource,origin,source_run) VALUES('goal',1,'owner',NULL),('post',1,'owner',NULL),('post',2,'run',1);").unwrap();
+        assert!(
+            old.execute("INSERT INTO input_origins(kind,resource,origin,source_run) VALUES('post',3,'system',NULL)", [])
+                .is_err(),
+            "the older table refuses HQ's own origin"
+        );
+        drop(old);
+        let store = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            store
+                .input_origin(InputRef::Goal(crate::domain::GoalId(1)))
+                .unwrap(),
+            InputOrigin::Owner
+        );
+        assert_eq!(
+            store.input_origin(InputRef::Post(1)).unwrap(),
+            InputOrigin::Owner
+        );
+        assert_eq!(
+            store.input_origin(InputRef::Post(2)).unwrap(),
+            InputOrigin::Run(RunId(1))
+        );
+        assert_eq!(
+            store.input_origin(InputRef::Post(3)).unwrap(),
+            InputOrigin::Unknown
+        );
+        let conn = store.conn().unwrap();
+        conn.execute("INSERT INTO input_origins(kind,resource,origin,source_run) VALUES('post',3,'system',NULL)", [])
+            .unwrap();
+        assert!(
+            conn.execute("INSERT INTO input_origins(kind,resource,origin,source_run) VALUES('task_body',1,'system',1)", [])
+                .is_err(),
+            "HQ's own words name no source run"
+        );
+        // The proofs' guards survive the rebuild: an edited post loses its origin.
+        conn.execute("UPDATE posts SET text='Edited' WHERE id=2", [])
+            .unwrap();
+        let index: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='input_origins_by_run'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(index, 1);
+        drop(conn);
+        assert_eq!(
+            store.input_origin(InputRef::Post(3)).unwrap(),
+            InputOrigin::System
+        );
+        assert_eq!(
+            store.input_origin(InputRef::Post(2)).unwrap(),
+            InputOrigin::Unknown
+        );
+        drop(store);
+        // Reopening again changes nothing.
+        let reopened = SqliteTeamStore::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            reopened.input_origin(InputRef::Post(3)).unwrap(),
+            InputOrigin::System
+        );
+        assert_eq!(
+            reopened.input_origin(InputRef::Post(1)).unwrap(),
+            InputOrigin::Owner
+        );
+    }
+
+    /// A release rehearsal, run by hand against a private copy of a real HQ database:
+    /// `ENDORA_REHEARSE_HQ=/path/copy.db cargo test -p endora-team --lib -- --ignored rehearse`.
+    /// It opens the copy with this build twice and checks every origin proof is kept.
+    #[test]
+    #[ignore = "needs ENDORA_REHEARSE_HQ, a private copy of a real HQ database"]
+    fn rehearse_the_system_origin_rebuild_on_a_real_copy() {
+        let path = std::env::var("ENDORA_REHEARSE_HQ").expect("ENDORA_REHEARSE_HQ");
+        let proofs = |conn: &rusqlite::Connection| -> Vec<(String, i64, String, Option<i64>)> {
+            let mut stmt = conn
+                .prepare("SELECT kind,resource,origin,source_run FROM input_origins ORDER BY kind,resource")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let before = proofs(&rusqlite::Connection::open(&path).unwrap());
+        for _ in 0..2 {
+            let store = SqliteTeamStore::open(&path).unwrap();
+            let conn = store.conn().unwrap();
+            assert_eq!(proofs(&conn), before, "every origin proof is kept");
+            let ok: String = conn
+                .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(ok, "ok");
+            let triggers: i64 = conn
+                .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND sql LIKE '%input_origins%'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(triggers, 7, "every proof guard is back");
+        }
+        eprintln!(
+            "rehearsal: {} origin proofs kept across two opens",
+            before.len()
         );
     }
 

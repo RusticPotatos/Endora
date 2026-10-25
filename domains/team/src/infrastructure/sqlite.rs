@@ -393,6 +393,7 @@ impl SqliteTeamStore {
         // is made if this SQLite has FTS5; searching works without it.
         conn.execute_batch(history::SCHEMA).map_err(backend)?;
         conn.execute_batch(input_lineage::SCHEMA).map_err(backend)?;
+        input_lineage::accept_system_origin(&conn)?;
         let _ = conn.execute_batch(history::FULL_TEXT);
         conn.execute_batch(conversations::SCHEMA).map_err(backend)?;
         conn.execute_batch(assistance::SCHEMA).map_err(backend)?;
