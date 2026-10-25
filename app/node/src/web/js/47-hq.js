@@ -187,6 +187,11 @@ function hqName(id) { const m = hqMember(id); return m ? m.name : "someone"; }
 
 // A task's key, as the office writes it: EL-7.
 function hqKey(id) { return id ? "EL-" + id : ""; }
+
+// One row of a list on one line: what it is and a little about it, and the whole row opens it
+// (the owner, 2026-10-25: a button under every row made lists too long on a phone). `title`
+// and `meta` are markup the caller has escaped.
+function hqLine(act, title, meta) { return `<li><button class="hq-line" data-act="${act}"><b>${title}</b> <small>${meta}</small></button></li>`; }
 // A task's number as a link that opens it under "Looking at", wherever the number is shown.
 function hqKeyLink(id) {
   return id ? `<button class="hq-link" data-act="hq:pick:task:${Number(id)}">${hqKey(id)}</button>` : "";

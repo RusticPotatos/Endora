@@ -3042,6 +3042,8 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
       trials: [{ name: "bo-vs-dee", kind: "lighthouse", runs: 4 }] } });`, context);
   const card = html("hqHolodeck(HQ.snap)");
   if (!card.includes("Holodeck") || !card.includes('data-act="hq:holo:open:708"') || !card.includes('data-act="hq:holo:trial:bo-vs-dee"')) fail("holodeck: the card does not list and open the scenarios and trials: " + card);
+  // One-line rows: the whole row opens it, no button beneath (the owner, 2026-10-25).
+  if (!card.includes('<button class="hq-line" data-act="hq:holo:open:708">') || card.includes(">Open</button>")) fail("holodeck: a scenario is not a one-line row: " + card);
   if (card.includes("<b>lighthouse</b>")) fail("holodeck: a title is not escaped");
   const shown = (data) => { runInContext(`HQ.holo = ${JSON.stringify(data)};`, context); return html("hqHoloDetail()"); };
   const chess = shown({ what: "scenario", data: { task: 708, kind: "chess", end: "black_won", result: "black_won", reason: "checkmate", moves: "1. f3 e5 2. g4 Qh4#",

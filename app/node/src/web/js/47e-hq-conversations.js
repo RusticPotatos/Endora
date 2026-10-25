@@ -31,8 +31,8 @@ function hqConversations(s) {
     // The latest activity first; one with nothing said yet goes last, newest authorized first.
     const latest = [...(d.conversations || [])].sort((x, y) => (y.latest || 0) - (x.latest || 0) || (y.at || 0) - (x.at || 0));
     const when = (c) => c.latest ? `last ${esc(new Date(c.latest).toLocaleString())}` : "nothing said yet";
-    body = `<p class="hq-note">Who the agents may talk to, and what they said. Conversations are kept until you delete them.</p>
-      <ul class="hq-thread">${latest.map((c) => `<li><b>${c.participants.map(name).join(" ↔ ")}</b> <small>${Number(c.messages)} messages · ${when(c)}</small> ${button("open", c.id, HQ_CHAT.id === c.id && HQ_CHAT.page ? "Refresh" : "Open")}</li>`).join("") || `<li class="hq-empty">${d.enabled ? "No conversation is authorized yet: Manage authorizes one." : "Messaging is off: Manage turns it on."}</li>`}</ul>
+    body = `<p class="hq-note">What the agents said to each other. Anyone may ask anyone; a conversation starts when one does, and is kept until you delete it.</p>
+      <ul class="hq-lines">${latest.map((c) => hqLine(`hq:conversations:open:${c.id}`, c.participants.map(name).join(" ↔ "), `${Number(c.messages)} messages · ${when(c)}`)).join("") || `<li class="hq-empty">${d.enabled ? "Nobody has asked anyone yet." : "Messaging is off: Manage turns it on."}</li>`}</ul>
       <div class="hq-row">${d.has_more ? button("load", d.after, "Next conversations") : ""}${button("manage", "toggle", HQ_CHAT.manage ? "Done managing" : "Manage")}</div>`;
     if (HQ_CHAT.manage) {
       body += `<section class="hq-card"><h3>Manage</h3><p class="hq-note">Information messaging is ${d.enabled ? "enabled" : "disabled"}. Sending information creates no task or agent wake.</p>

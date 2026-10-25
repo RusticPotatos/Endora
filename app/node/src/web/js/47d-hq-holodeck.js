@@ -13,16 +13,14 @@ function hqHolodeck(s) {
   const h = s && s.holodeck;
   const scenarios = (h && h.scenarios) || [], trials = (h && h.trials) || [];
   if (!scenarios.length && !trials.length) return "";
-  const scen = scenarios.map((x) => `<li>${esc(hqHoloKind(x.kind))}: ${esc(x.title)}
-      <small>${esc(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}</small>
-      <button class="hq-btn" data-act="hq:holo:open:${Number(x.task)}">Open</button></li>`).join("");
-  const tried = trials.map((t) => `<li>${esc(t.name)} <small>${esc(hqHoloKind(t.kind))}, ${Number(t.runs)} runs</small>
-      <button class="hq-btn" data-act="hq:holo:trial:${esc(t.name)}">Compare</button></li>`).join("");
+  const scen = scenarios.map((x) => hqLine(`hq:holo:open:${Number(x.task)}`, `${esc(hqHoloKind(x.kind))}: ${esc(x.title)}`,
+    `${esc(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}`)).join("");
+  const tried = trials.map((t) => hqLine(`hq:holo:trial:${esc(t.name)}`, esc(t.name), `${esc(hqHoloKind(t.kind))}, ${Number(t.runs)} runs · compare`)).join("");
   const open = HQ.holo && HQ.holo.what !== "replay" ? hqHoloDetail() : "";
   return `<section class="hq-card"><h2>Holodeck</h2>
     <p class="hq-note">Scenarios the team plays in worlds that close themselves, and trials that compare who plays them. Nothing here touches the house.</p>
-    ${scen ? `<p class="hq-who">Scenarios</p><ul class="hq-team">${scen}</ul>` : ""}
-    ${tried ? `<p class="hq-who">Trials</p><ul class="hq-team">${tried}</ul>` : ""}
+    ${scen ? `<p class="hq-who">Scenarios</p><ul class="hq-lines">${scen}</ul>` : ""}
+    ${tried ? `<p class="hq-who">Trials</p><ul class="hq-lines">${tried}</ul>` : ""}
     ${open}</section>`;
 }
 
