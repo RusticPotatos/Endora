@@ -201,6 +201,24 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
    of handed_up; (e) colleague answers not forced onto the local model; (f) a new
    ADR, "One team, escalate by tier", amending 0111, 0113, 0120, 0130, 0131, 0137
    and 0138.
+   **Progress, 2026-10-25.** (f) [ADR 0139](../adr/0139-one-team-escalate-by-tier.md)
+   accepted (92deff9d). (a) `escalate` live in 2be0fed5 (NAS and Pi, no turn cut).
+   (c) a consult from an active project's task finds or makes the pair's
+   conversation on that project (5654a704). (b) live in 85abc47b as a split by
+   tool: `consult` for any colleague, `escalate` for a tier up, `ask_owner` for a
+   decision, in the tool text, briefings and v2 notes. A text-format rule was
+   tried and dropped: 31 existing flows showed decisions asked as plain questions
+   ("Steel or titanium?", "May I restart it?"), so text cannot tell help from a
+   decision. (d) 56456617: the first rung wakes the member on its Claude (not for
+   work in review, work already on Claude, past the two-a-day cap, or in a
+   scenario, since the Holodeck measures the player's model); three turns of
+   nothing go a tier up instead of to a manager, and in a lead's area the ladder
+   then takes it; any member may add a huddle view; an undecided lead after the
+   huddle stops at the owner's digest, not the CEO. (e) 24655463: the expert's
+   answer turn follows the colleague's role instead of the house's model. Not
+   done: an answer on a tier above the colleague's own work when the asker is on
+   Claude (no judgment consult reason exists; it waits on evidence that work-tier
+   answers fall short).
 2. Holodeck re-run: archive the earlier round's scenario results (kept and
    labelled) and queue every scenario again, so the agents re-attempt the whole
    set and rounds can be compared. Deleting old results needs its own owner yes.
