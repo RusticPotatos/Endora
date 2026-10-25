@@ -218,6 +218,15 @@ function hqOpenRow(key, title, meta, body) {
   return `<li class="hq-open-row${open ? " open" : ""}"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${meta}</small></button>${open ? `<div class="hq-row-body">${body}</div>` : ""}</li>`;
 }
 
+// A table of numbers by day and by week, as one-line rows (the owner, 2026-10-25: too long to
+// read on a phone): the measure and the first words of its first window; tapped, both in full.
+// `rows` is [label, first, second]; every word is escaped here.
+function hqScoreRows(key, rows, first, second) {
+  const head = (text) => esc(String(text).split(" · ")[0]);
+  return `<ul class="hq-lines">${rows.map(([label, a, b], i) => hqOpenRow(`${key}${i}`, esc(label), head(a),
+    `<span>${first}: ${esc(a)}</span>${b == null ? "" : `<span>${second}: ${esc(b)}</span>`}`)).join("")}</ul>`;
+}
+
 // One row of a list on one line: what it is and a little about it, and the whole row opens it
 // (the owner, 2026-10-25: a button under every row made lists too long on a phone). `title`
 // and `meta` are markup the caller has escaped.
@@ -1641,12 +1650,14 @@ function hqRosterLine(m, members) {
   const waits = hqWaitingFor(m);
   const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today of ${hqDollars(m.per_day)}`;
   const open = !!HQ.roster[m.id];
+  const rescues = m.rescues === null ? "How often the CEO stepped in this week: HQ cannot tell, the record has lost part of it."
+    : m.rescues ? `The CEO stepped in ${Number(m.rescues)} ${m.rescues === 1 ? "time" : "times"} this week.` : "";
   const controls = open ? `<div class="hq-controls">
-      <p class="hq-who">${hqMemberMoney(m)}</p>${hqBrains(m)}${hqReports(m, members)}
+      <p class="hq-who"><span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${rescues ? `<p class="hq-who">${rescues}</p>` : ""}${hqBrains(m)}${hqReports(m, members)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div>${hqNotebook(m)}</div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
-      <span>${esc(hqRole(m.role))} · <span class="hq-tag">${esc(hqBrainsTag(m))}</span> · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : waits ? esc(waits) : "between turns") + " · "}${money}${m.rescues === null ? " · how often the CEO stepped in this week: HQ cannot tell, the record has lost part of it" : m.rescues ? ` · the CEO stepped in ${Number(m.rescues)} ${m.rescues === 1 ? "time" : "times"} this week` : ""}</span></button>${controls}</li>`;
+      <span>${esc(hqRole(m.role))} · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : waits ? esc(waits) : "between turns") + " · "}${money}</span></button>${controls}</li>`;
 }
 
 // A member's notebook (ADR 0118), in its panel: each note as text (a member wrote it, so it is
@@ -1977,8 +1988,8 @@ function hqOutcomes(o) {
     const m = w.memory, c = m.consults;
     return `${m.reinvented} reinvented · ${m.record_asked} asks of the record · ${c.asked} consults (${c.answered} answered, ${c.from_record} from the record)`;
   };
-  const rows = [["Landed", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
-    .map(([k, f]) => `<tr><th>${k}</th><td>${esc(f(o.day))}</td><td>${esc(f(o.week))}</td></tr>`).join("");
+  const rows = hqScoreRows("outcome", [["Landed", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
+    .map(([k, f]) => [k, f(o.day), f(o.week)]), "1 day", "7 days");
   const w = o.waiting || {};
   // Turns that wait for the day to turn (ADR 0133) are said when there are any, so a calm team's
   // line stays short, and a day of turns alone is never "nothing waits".
@@ -1986,7 +1997,7 @@ function hqOutcomes(o) {
     ? `${w.budget || 0} waiting for budget · ${w.mac || 0} for the Mac${w.cap ? ` · ${w.cap} for tomorrow` : ""} · the oldest has waited ${hqSpan(w.oldest_ms)}`
     : "nothing waits for budget or the Mac";
   return `<h3>Outcomes</h3>
-    <table class="hq-score"><thead><tr><th></th><th>1 day</th><th>7 days</th></tr></thead><tbody>${rows}</tbody></table>
+    ${rows}
     <p class="hq-note">${esc(waits)}</p>`;
 }
 
@@ -2012,8 +2023,8 @@ function hqScorecard(s) {
   };
   // HQ keeps the tokens, not the brains' prices, so the share is shown and not the dollars.
   const cache = (w) => (w.cache.share == null ? "no paid input" : `${w.cache.share}% of paid input read from cache`);
-  const rows = [["Turns", turns], ["Sent back", review], ["Per done task", done], ["Waste", dropped], ["Alarms", alarms], ["Desk", desk], ["Cache", cache]]
-    .map(([k, f]) => `<tr><th>${k}</th><td>${esc(f(card.today))}</td><td>${esc(f(card.week))}</td></tr>`).join("");
+  const measures = [["Turns", turns], ["Sent back", review], ["Per done task", done], ["Waste", dropped], ["Alarms", alarms], ["Desk", desk], ["Cache", cache]]
+    .map(([k, f]) => [k, f(card.today), f(card.week)]);
   const members = (w) => (w.turns.members || []).map((m) => `<li>${esc(hqName(m.member))}: ${m.turns} turns · ${m.nothing} showed nothing${m.unlabelled ? ` · ${m.unlabelled} unlabelled` : ""} · ${hqDollars(m.spent)}</li>`).join("")
     || `<li class="hq-empty">No turns.</li>`;
   const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
@@ -2040,11 +2051,12 @@ function hqScorecard(s) {
   const areas = (card.areas || []).map(area).join("");
   // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
   const pl = card.pool;
-  const poolRow = pl ? `<tr><th>Pool</th><td>${esc(`pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`)}</td><td></td></tr>` : "";
+  if (pl) measures.push(["Pool", `pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`, null]);
   const topUp = pl ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button></div>` : "";
   return `<section class="hq-card"><h2>How the team is doing</h2>
     ${hqOutcomes(card.outcomes)}
-    <table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${rows}${poolRow}</tbody></table>
+    <h3>The team's turns</h3>
+    ${hqScoreRows("measure", measures, "Today", "7 days")}
     ${topUp}
     ${areas ? `<details><summary>Each area</summary>${areas}</details>` : ""}
     ${teams ? `<details><summary>Seats</summary><ul class="hq-team">${teams}</ul></details>` : ""}

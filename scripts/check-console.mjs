@@ -733,7 +733,9 @@ if (failures.length) {
   }
   runInContext(`HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true, goal1: true, goal2: true, goal3: true };
     for (const p of (HQ.snap.guards || {}).precision || []) HQ.more["guard" + String(p.guard).replace(/[^\\w-]/g, "")] = true;
-    for (const f of (HQ.snap.guards || {}).findings || []) HQ.more["finding" + f.id] = true;`, context);
+    for (const f of (HQ.snap.guards || {}).findings || []) HQ.more["finding" + f.id] = true;
+    for (let i = 0; i < 8; i++) { HQ.more["measure" + i] = true; HQ.more["outcome" + i] = true; }
+    for (const m of HQ.snap.members || []) HQ.roster[m.id] = true;`, context);
   const office = runInContext("viewHQ()", context);
   runInContext("HQ.more = {};", context);
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · in 19000 / out 100 · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
@@ -760,7 +762,7 @@ if (failures.length) {
   if (!office.includes('data-act="hq:work"')) fail("hq: the team cannot be given work");
   // How the team is doing: each number as the engine computed it, the empty week said plainly,
   // the record's start told, and a member's name never markup.
-  for (const said of ["<h2>How the team is doing</h2>", "<th>Today</th><th>7 days</th>",
+  for (const said of ["<h2>How the team is doing</h2>", "<b>Turns</b> <small>4</small>", "<span>Today: 4 · 1 showed nothing",
     "4 · 1 showed nothing (25%) · 1 unlabelled", "1 of 2 submitted (50%)", "$0.42 each · 2 done", "$0.30 on 1 dropped",
     "3 · 2 tasks · closed in 14 min · 1 open", "5 · 2 approvals, 1 questions, 1 stuck, 1 notices · 2 waiting", "75% of paid input read from cache",
     "0 · 0 showed nothing", "0 of 0 submitted", "none done", "none dropped", "no paid input",
@@ -772,7 +774,8 @@ if (failures.length) {
   // Outcomes (ADR 0132) head the card: what the work came to over a day and a week, with a week
   // that landed nothing said plainly ("none landed", never $0), and the number landed in the top
   // bar. The activity table stays below them.
-  for (const said of ["<h3>Outcomes</h3>", "<th>1 day</th><th>7 days</th>",
+  // Each is a one-line row with its day's headline; opened, the day and the week in full.
+  for (const said of ["<h3>Outcomes</h3>", "<b>Landed</b> <small>1 landed</small>", "<span>1 day: 1 landed",
     "1 landed · 2 submitted · 2 checks passed", "0 landed · 6 submitted · 5 checks passed",
     "$0.88 each", "none landed", "12 : 1 turns · 40 posts : 6 acts", "not measured yet",
     "3 interrupts (3 a day) · 4 in the digest", "19 interrupts (2.7 a day) · 22 in the digest",
@@ -844,10 +847,10 @@ if (failures.length) {
   if (office.includes('data-act="hq:verdict:3:false_positive"')) fail("hq: a judged finding still offers every verdict");
   if (office.includes('data-act="hq:fixed:4:yes"')) fail("hq: a finding nobody judged asks whether its fix worked");
   // How often the CEO stepped into a member's work (ADR 0124), on the roster.
-  if (!office.includes("the CEO stepped in 2 times this week")) fail("hq: the roster does not count the CEO's rescues");
+  if (!office.includes("The CEO stepped in 2 times this week")) fail("hq: the roster does not count the CEO's rescues");
   // HQ that cannot tell (the pruned feed lost part of the week) says so, and never says nought.
   // (Once, for the one member whose count is null: a snapshot that says nothing of it says nothing.)
-  if (office.split("how often the CEO stepped in this week: HQ cannot tell").length - 1 !== 1) fail("hq: the roster does not say it cannot tell the CEO's rescues, once, for the one it cannot tell");
+  if (office.split("How often the CEO stepped in this week: HQ cannot tell").length - 1 !== 1) fail("hq: the roster does not say it cannot tell the CEO's rescues, once, for the one it cannot tell");
   // The same ask from another task is put with a card (ADR 0124), and the card says so.
   if (!office.includes('question · <button class="hq-link" data-act="hq:pick:task:7">EL-7</button> · also on <button class="hq-link" data-act="hq:pick:task:9">EL-9</button>: one answer reaches each')) fail("hq: a card does not say which other tasks share its ask, as links that open them");
   for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b> <small>3 found · 1 open</small>", "<span>3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2</span>",
@@ -1321,10 +1324,14 @@ if (failures.length) {
     const roster = runInContext("HQ.roster = {}; hqRoster(HQ.snap)", context);
     const at = (said) => roster.indexOf(said);
     for (const said of ["<h3>Board: you</h3>", "<h3>Ops · Ada</h3>", "<h3>Engineering · Kit</h3>", "<b>Mara</b>", "<b>&lt;i&gt;Dee&lt;/i&gt;</b>",
-      'Tester · <span class="hq-tag">Local</span> · between turns · costs nothing', 'lead · <span class="hq-tag">Sonnet</span> · between turns · $0.00 today of $0.58',
-      'developer · <span class="hq-tag">Haiku</span> · on #9 · $0.00 today of $0.00', 'CEO · <span class="hq-tag">Opus</span>']) {
+      // One line each: role, what it is doing and its money; its brains are in the opened line.
+      "Tester · between turns · costs nothing", "lead · between turns · $0.00 today of $0.58",
+      "developer · on #9 · $0.00 today of $0.00", "CEO · "]) {
       if (at(said) < 0) fail(`hq: the roster does not show ${said}`);
     }
+    if (roster.includes('<span class="hq-tag">Sonnet</span>')) fail("hq: a member's brains are on its shut line");
+    const openedLine = runInContext("HQ.roster = { 6: true }; const html = hqRoster(HQ.snap); HQ.roster = {}; html", context);
+    if (!openedLine.includes('<span class="hq-tag">Sonnet</span>')) fail("hq: a member's brains are not in its opened line");
     if (roster.includes("<i>Dee</i>")) fail("hq: a member's name became markup on the roster");
     if (!(at("Board: you") < at("<b>Mara</b>") && at("<b>Mara</b>") < at("<b>Cy</b>") && at("<b>Cy</b>") < at("Ops · Ada"))) fail("hq: the CEO and those with no lead are not under the board");
     if (!(at("Ops · Ada") < at("<b>Ada</b>") && at("<b>Ada</b>") < at("<b>Bo</b>") && at("<b>Bo</b>") < at("Engineering · Kit"))) fail("hq: Ada's team is not Ada, then Bo");
@@ -1392,7 +1399,8 @@ if (failures.length) {
     if (runInContext('hqBrainTag("mac")', context) !== "Mac") fail("mac: the roster does not tag the Mac brain");
     if (!runInContext('hqMemberMoney({ brain: "mac" })', context).includes("costs nothing")) fail("mac: a Mac member is said to cost money");
     if (!runInContext("hqHireForm(HQ.snap)", context).includes('<option value="mac">Mac</option>')) fail("mac: the hire form does not offer the Mac");
-    if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes('<span class="hq-tag">Mac</span> · between turns · costs nothing')) fail("mac: a Mac member's roster line is wrong");
+    if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes("developer · between turns · costs nothing")) fail("mac: a Mac member's roster line is wrong");
+    if (!runInContext('HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; line', context).includes('<span class="hq-tag">Mac</span>')) fail("mac: a Mac member's opened line does not say Mac");
     // Two brains per member (ADR 0131): the roster line says both, the controls set each, and a
     // turn that waits says what for; the top bar counts the turns waiting for budget.
     {
