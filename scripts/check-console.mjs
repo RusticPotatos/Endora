@@ -1079,12 +1079,20 @@ if (failures.length) {
   if (!office.includes('<option value="2">&lt;s&gt;Backups&lt;/s&gt;</option>')) fail("hq: an active project is not offered to move into, as text");
   const moveTo = (office.match(/id="hq-move-7"[^>]*>([\s\S]*?)<\/select>/) || [])[1] || "";
   if (moveTo.includes('value="1"') || moveTo.includes('value="3"')) fail("hq: a paused or proposed project is offered to move into");
-  if (!office.includes('id="hq-note-1"') || !office.includes('data-act="hq:note:1:save"')) fail("hq: a goal's notes cannot be written");
+  // Each goal's strategy (ADR 0120) and notes: shown as they read, with Edit to change them in
+  // place, and their words stay text either way.
+  if (!office.includes('data-act="hq:more:edit1:toggle"')) fail("hq: a goal cannot be edited");
   if (office.includes("<img src=z") || !office.includes("&lt;/textarea&gt;&lt;img src=z")) fail("hq: a goal's notes became markup");
-  // Each goal's strategy (ADR 0120): shown, editable by the owner, and its words stay text.
-  if (!office.includes('id="hq-strategy-1-purpose"') || !office.includes('data-act="hq:strategy:1:save"')) fail("hq: a goal's strategy cannot be written");
   if (office.includes("<img src=s") || !office.includes("&lt;/textarea&gt;&lt;img src=s")) fail("hq: a goal's strategy became markup");
   if (!office.includes("No strategy yet")) fail("hq: a goal with no strategy does not say so");
+  {
+    runInContext('HQ.more.edit1 = true;', context);
+    const editing = runInContext("viewHQ()", context);
+    if (!editing.includes('id="hq-note-1"') || !editing.includes('data-act="hq:note:1:save"')) fail("hq: a goal's notes cannot be written");
+    if (!editing.includes('id="hq-strategy-1-purpose"') || !editing.includes('data-act="hq:strategy:1:save"')) fail("hq: a goal's strategy cannot be written");
+    if (editing.includes("<img src=z") || editing.includes("<img src=s")) fail("hq: a goal's words became markup while edited");
+    runInContext('HQ.more = {};', context);
+  }
   // Each area's measures and its lead's latest report, the report's words text.
   for (const said of ["Ada's area", "2 alarms · 1 outages over 10 min · closed in 16 min · 1 repeats within 24 h", "pin gluetun"]) {
     if (!office.includes(said)) fail(`hq: the scorecard's areas do not say ${said}`);
