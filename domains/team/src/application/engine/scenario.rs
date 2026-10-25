@@ -55,6 +55,15 @@ fn idle_key(world: TaskId) -> String {
     format!("scenario_idle:{}", world.0)
 }
 
+/// Where an earlier round's label is kept, by its world's task (the owner's re-run).
+fn round_key(world: TaskId) -> String {
+    format!("scenario_round:{}", world.0)
+}
+
+/// The scenarios queued to run again, oldest first: `kind:seed:project:plan:players`, `;`
+/// between them.
+const RERUN_QUEUE: &str = "holodeck_rerun";
+
 /// Which world a scenario is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -268,6 +277,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// that does not list the scenario tool alone; what adding the task refuses.
     pub fn start_scenario(&self, project: ProjectId, member: MemberId, seed: u64) -> Done<TaskId> {
         let _held = self.held();
+        self.start_scenario_held_lock(project, member, seed)
+    }
+
+    /// [`Self::start_scenario`] taken under the engine's lock, as the owner's asking.
+    fn start_scenario_held_lock(
+        &self,
+        project: ProjectId,
+        member: MemberId,
+        seed: u64,
+    ) -> Done<TaskId> {
         let _asked = self.for_owner();
         let found = self.holds_scenarios(project)?;
         let task = self.add_task_held_lock(
@@ -317,6 +336,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         plan_first: bool,
     ) -> Done<TaskId> {
         let _held = self.held();
+        self.start_station_with_held_lock(project, crew, seed, plan_first)
+    }
+
+    /// [`Self::start_station_with`] taken under the engine's lock, as the owner's asking.
+    fn start_station_with_held_lock(
+        &self,
+        project: ProjectId,
+        crew: [MemberId; 3],
+        seed: u64,
+        plan_first: bool,
+    ) -> Done<TaskId> {
         let _asked = self.for_owner();
         let found = self.holds_scenarios(project)?;
         let [captain, science, engineer] = crew;
@@ -395,6 +425,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         seed: u64,
     ) -> Done<TaskId> {
         let _held = self.held();
+        self.start_chess_held_lock(project, players, seed)
+    }
+
+    /// [`Self::start_chess`] taken under the engine's lock, as the owner's asking.
+    fn start_chess_held_lock(
+        &self,
+        project: ProjectId,
+        players: [MemberId; 2],
+        seed: u64,
+    ) -> Done<TaskId> {
         let _asked = self.for_owner();
         let found = self.holds_scenarios(project)?;
         let [white, black] = players;
@@ -534,6 +574,141 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// and the ladder leave it alone.
     pub(super) fn in_a_scenario(&self, task: TaskId) -> Done<bool> {
         Ok(self.store.setting(&key(task))?.is_some())
+    }
+
+    /// The owner runs the Holodeck again (2026-10-25: so the team re-attempts the whole
+    /// testing set). Every finished scenario not yet in a round is labelled `round`, and kept;
+    /// each distinct setup among them (its world, seed, players and plan) is queued to start
+    /// again, oldest first, one at a time (see [`Self::holodeck_rerun_tick`]). Returns how many
+    /// are queued.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for an empty label; [`Refusal::Scenario`] while a re-run is
+    /// queued or a scenario is still running; a store failure.
+    pub fn rerun_holodeck(&self, round: &str) -> Done<usize> {
+        let _held = self.held();
+        let _asked = self.for_owner();
+        let round = super::one_line(round, 60);
+        if round.is_empty() {
+            return Err(EngineError::Unknown("round label"));
+        }
+        if !self.rerun_queue()?.is_empty() {
+            return Err(refused(
+                "the Holodeck is already running its scenarios again",
+            ));
+        }
+        let mut tasks = self.store.tasks()?;
+        tasks.sort_by_key(|t| t.id);
+        let mut archived = Vec::new();
+        let mut setups: Vec<String> = Vec::new();
+        for task in tasks.iter().filter(|t| t.parent.is_none()) {
+            let Some(place) = self.place_of(task.id)?.filter(|p| p.world == task.id) else {
+                continue;
+            };
+            if !task.status.finished() {
+                return Err(refused("a scenario is still running: let it end first"));
+            }
+            if self.store.setting(&round_key(task.id))?.is_some() {
+                continue;
+            }
+            let holder = |id: TaskId| -> Done<i64> {
+                Ok(self
+                    .task(id)?
+                    .assignee
+                    .ok_or(EngineError::Unknown("a scenario's player"))?
+                    .0)
+            };
+            let mut players = vec![holder(task.id)?];
+            for part in &place.parts {
+                players.push(holder(*part)?);
+            }
+            let setup = format!(
+                "{}:{}:{}:{}:{}",
+                place.kind.name(),
+                place.seed,
+                task.project.map_or(0, |p| p.0),
+                u8::from(place.plan_first),
+                players
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            if !setups.contains(&setup) {
+                setups.push(setup);
+            }
+            archived.push(task.id);
+        }
+        for task in archived {
+            self.store.set_setting(&round_key(task), &round)?;
+        }
+        self.store.set_setting(RERUN_QUEUE, &setups.join(";"))?;
+        Ok(setups.len())
+    }
+
+    /// The scenarios waiting to run again, in order.
+    fn rerun_queue(&self) -> Done<Vec<String>> {
+        Ok(self
+            .store
+            .setting(RERUN_QUEUE)?
+            .map(|kept| {
+                kept.split(';')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// How many scenarios wait to run again, for the screen.
+    pub(super) fn rerun_queued(&self) -> Done<usize> {
+        Ok(self.rerun_queue()?.len())
+    }
+
+    /// On the tick: when no scenario is running, the next one queued to run again starts. A
+    /// setup that no longer starts (a player let go, a project changed) is passed over.
+    pub(super) fn holodeck_rerun_tick(&self) -> Done<()> {
+        let mut queue = self.rerun_queue()?;
+        if queue.is_empty() {
+            return Ok(());
+        }
+        for task in self.store.tasks()? {
+            if task.parent.is_none()
+                && !task.status.finished()
+                && self.place_of(task.id)?.is_some_and(|p| p.world == task.id)
+            {
+                return Ok(());
+            }
+        }
+        let next = queue.remove(0);
+        self.store.set_setting(RERUN_QUEUE, &queue.join(";"))?;
+        let words: Vec<&str> = next.split(':').collect();
+        let [kind, seed, project, plan, players] = words.as_slice() else {
+            return Ok(());
+        };
+        let (Ok(seed), Ok(project)) = (seed.parse::<u64>(), project.parse::<i64>()) else {
+            return Ok(());
+        };
+        let project = ProjectId(project);
+        let players: Vec<MemberId> = players
+            .split(',')
+            .filter_map(|p| p.parse().ok().map(MemberId))
+            .collect();
+        let started = match (*kind, players.as_slice()) {
+            (scenario::LIGHTHOUSE, [member]) => {
+                self.start_scenario_held_lock(project, *member, seed)
+            }
+            (station::SILENT_STATION, [a, b, c]) => {
+                self.start_station_with_held_lock(project, [*a, *b, *c], seed, *plan == "1")
+            }
+            (chess_match::CHESS, [white, black]) => {
+                self.start_chess_held_lock(project, [*white, *black], seed)
+            }
+            _ => return Ok(()),
+        };
+        // A setup that no longer starts is passed over; the next tick takes the one after.
+        let _ = started;
+        Ok(())
     }
 
     /// What the tick does for the scenarios: a world that has ended with its tasks still open
@@ -882,7 +1057,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 json!({ "task": task.id.0, "kind": place.kind.name(), "title": task.title,
                                 "status": task.status.name(),
                                 "end": now.end().map(|(name, _)| name),
-                                "elapsed": now.elapsed() }),
+                                "elapsed": now.elapsed(),
+                                "round": self.store.setting(&round_key(task.id))? }),
             );
         }
         Ok(listed)

@@ -308,6 +308,32 @@ pub(super) async fn hq_reply(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqRerun {
+    round: String,
+}
+
+/// The owner runs the Holodeck's scenarios again, one at a time; the earlier round is kept.
+pub(super) async fn hq_rerun_holodeck(
+    State(state): State<AppState>,
+    Json(req): Json<HqRerun>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/scenarios/rerun".to_owned(),
+        Some(json!({ "round": req.round })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!(
+            "you ran the Holodeck again: {} scenarios queued, the earlier round kept as \"{}\"",
+            answer.0["queued"], req.round
+        ),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqTaskProject {
     project: i64,
 }
@@ -1668,6 +1694,47 @@ mod tests {
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_owners_holodeck_rerun_passes_through_and_is_recorded() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            let body = json!({ "queued": 9, "round": "round 1" });
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_rerun_holodeck(
+            State(state.clone()),
+            Json(HqRerun {
+                round: "round 1".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.0["queued"], 9);
+        let sent: Vec<(String, serde_json::Value)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), serde_json::from_str(b).unwrap()))
+            .collect();
+        assert_eq!(
+            sent,
+            [(
+                "/v1/scenarios/rerun".to_owned(),
+                json!({ "round": "round 1" })
+            )]
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit.iter().any(|a| a
+                == "HQ: you ran the Holodeck again: 9 scenarios queued, the earlier round kept as \"round 1\""),
+            "{audit:?}"
+        );
     }
 
     #[tokio::test]

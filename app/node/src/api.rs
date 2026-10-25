@@ -434,6 +434,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/projects/{id}/cap", post(hq_project_cap))
         .route("/v1/hq/projects/{id}/tools", post(hq_project_tools))
         .route("/v1/hq/scenarios", post(hq_start_scenario))
+        .route("/v1/hq/scenarios/rerun", post(hq_rerun_holodeck))
         .route("/v1/hq/scenarios/{task}", get(hq_scenario))
         .route("/v1/hq/trials", post(hq_start_trial))
         .route("/v1/hq/trials/{name}", get(hq_trial))

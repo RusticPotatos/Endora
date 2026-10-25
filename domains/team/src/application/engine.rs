@@ -3420,6 +3420,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.games_tick(now)?;
         // Scenarios (ADR 0135): a world that has ended with its tasks open is closed.
         self.close_ended_scenarios()?;
+        // The owner's re-run of the Holodeck: the next scenario starts once none is running.
+        self.holodeck_rerun_tick()?;
         // 3c. A wake held for a task with no turn live on it has nothing to wait behind (ADR
         //     0133): it is asked again, and goes once the task's budget of talk is in hand.
         self.release_held_talk()?;

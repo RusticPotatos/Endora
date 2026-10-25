@@ -129,6 +129,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}/tools", post(project_tools))
         // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
         .route("/v1/scenarios", post(start_scenario))
+        .route("/v1/scenarios/rerun", post(rerun_holodeck))
         .route("/v1/scenarios/{task}", get(scenario_shown))
         // Trials (phase 7): one scenario under two conditions or more, compared.
         .route("/v1/trials", post(start_trial))
@@ -579,6 +580,22 @@ async fn reply(
         Ok(()) => Json(json!({ "posted": true })).into_response(),
         Err(failed) => failed.into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct Rerun {
+    round: String,
+}
+
+/// The owner runs every scenario again, one at a time, the earlier round kept and labelled.
+async fn rerun_holodeck(
+    Extract(state): Extract<State>,
+    Json(req): Json<Rerun>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let round = req.round.clone();
+    let queued = blocking(move || hq.rerun_holodeck(&round)).await?;
+    Ok(Json(json!({ "queued": queued, "round": req.round })))
 }
 
 #[derive(Deserialize)]
