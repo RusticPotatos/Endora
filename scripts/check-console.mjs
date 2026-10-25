@@ -723,8 +723,9 @@ if (failures.length) {
     if (!shut.includes('data-act="hq:more:proj2:toggle"') || !shut.includes('data-act="hq:more:routine3:toggle"')) fail("hq: a project or routine is not a row to open");
     if (shut.includes('data-act="hq:project:2:pause"') || shut.includes('data-act="hq:routine:3:fire"')) fail("hq: a shut row still shows its buttons");
     if (!shut.includes("$0.46 of $0.50")) fail("hq: a shut project row does not say its money");
+    if (!shut.includes('data-act="hq:more:goal1:toggle"') || shut.includes('data-act="hq:more:edit1:toggle"')) fail("hq: a goal is not a row to open");
   }
-  runInContext("HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true };", context);
+  runInContext("HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true, goal1: true, goal2: true, goal3: true };", context);
   const office = runInContext("viewHQ()", context);
   runInContext("HQ.more = {};", context);
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · in 19000 / out 100 · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
@@ -1096,7 +1097,7 @@ if (failures.length) {
   if (office.includes("<img src=s") || !office.includes("&lt;/textarea&gt;&lt;img src=s")) fail("hq: a goal's strategy became markup");
   if (!office.includes("No strategy yet")) fail("hq: a goal with no strategy does not say so");
   {
-    runInContext('HQ.more.edit1 = true;', context);
+    runInContext('HQ.more = { goal1: true, edit1: true };', context);
     const editing = runInContext("viewHQ()", context);
     if (!editing.includes('id="hq-note-1"') || !editing.includes('data-act="hq:note:1:save"')) fail("hq: a goal's notes cannot be written");
     if (!editing.includes('id="hq-strategy-1-purpose"') || !editing.includes('data-act="hq:strategy:1:save"')) fail("hq: a goal's strategy cannot be written");

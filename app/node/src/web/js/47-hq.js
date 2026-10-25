@@ -2246,23 +2246,25 @@ function hqNotes(s) {
   if (!goals.length) return `<section class="hq-card"><h2>Goals</h2>${set}</section>`;
   // Each goal's strategy and notes are shown as they read, with Edit to change them in place
   // (the owner's direction: every setting visible as a value, and short enough to read).
+  // Each goal is one line until tapped (the owner, 2026-10-25); open, it shows its strategy
+  // and notes as they read, with Edit to change them in place.
   const goalRows = goals.map((g) => {
     const editing = !!HQ.more[`edit${g.id}`];
-    const edit = `<button class="hq-btn" aria-expanded="${editing}" data-act="hq:more:edit${g.id}:toggle">${editing ? "Done" : "Edit"}</button>`;
-    if (editing) {
-      return `<li><b>${esc(g.title)}</b> ${edit}
-      ${hqStrategy(g)}
+    const edit = `<div class="hq-row"><button class="hq-btn" aria-expanded="${editing}" data-act="hq:more:edit${g.id}:toggle">${editing ? "Done" : "Edit"}</button></div>`;
+    const st = g.strategy || {};
+    const written = HQ_STRATEGY_PARTS.filter(([k]) => st[k]);
+    const meta = `${written.length ? `strategy${st.by ? ` by ${esc(st.by)}` : ""}` : "no strategy yet"} · ${g.note ? "notes" : "no notes"}`;
+    const body = editing
+      ? `${edit}${hqStrategy(g)}
       <textarea id="hq-note-${g.id}" rows="3" maxlength="2000" aria-label="Notes for the team on ${esc(g.title)}"
         placeholder="What every member working on this should know">${esc(g.note || "")}</textarea>
-      <div class="hq-row"><button class="hq-btn ok" data-act="hq:note:${g.id}:save">Save notes</button></div></li>`;
-    }
-    const st = g.strategy || {};
-    const parts = HQ_STRATEGY_PARTS.filter(([k]) => st[k]).map(([k, label]) => `<p class="hq-who">${esc(label)}</p>${hqClamp(`st${g.id}${k}`, st[k])}`).join("");
-    return `<li><b>${esc(g.title)}</b> ${edit}
-      ${parts || `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`}
-      <p class="hq-who">Notes for the team</p>${g.note ? hqClamp(`note${g.id}`, g.note) : `<p class="hq-empty">None.</p>`}</li>`;
+      <div class="hq-row"><button class="hq-btn ok" data-act="hq:note:${g.id}:save">Save notes</button></div>`
+      : `${edit}${written.map(([k, label]) => `<p class="hq-who">${esc(label)}</p>${hqClamp(`st${g.id}${k}`, st[k])}`).join("")
+        || `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`}
+      <p class="hq-who">Notes for the team</p>${g.note ? hqClamp(`note${g.id}`, g.note) : `<p class="hq-empty">None.</p>`}`;
+    return hqOpenRow(`goal${g.id}`, esc(g.title), meta, body);
   });
-  const listed = hqMore("goals", goalRows, 2);
+  const listed = hqMore("goals", goalRows, 5);
   return `<section class="hq-card"><h2>Goals</h2>${set}<p class="hq-note">Strategy and notes for the team: every member working on a goal reads them near the top of its briefing.</p><ul class="hq-team">${listed.shown}</ul>${listed.more}</section>`;
 }
 
