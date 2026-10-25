@@ -263,6 +263,15 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
    and asked Kit, the lead, for access: a decision, by the right route. #678 was
    done (Ada, passed by Dee, accepted by Kit); #673 was submitted and fairly sent
    back. No peer `consult` has happened yet (C1 still open).
+   **Why none had (2026-10-25 evening):** replays of every turn after `3dcd768b` showed
+   none offered `consult`. Real work reads the lab (`container_logs`, `home_assistant`,
+   lab status), whose results are Confidential, and ADR 0138 withheld help from any
+   Confidential turn. The owner's decision, [ADR 0140](../adr/0140-confidential-asks-stay-on-the-house.md):
+   a Confidential turn may ask, and the colleague answers on the house's models; work
+   turns always are (ADR 0131), and the colleague's and the asker's result turns are
+   refused to a turn on Claude as a second check, each inheriting the mark.
+   `send_message` stays closed to Confidential turns. Two smaller lineage gaps remain
+   open (a goal's not-now strategy and huddle documents have no recorded writer).
 
 **C. Prove it and decide** (observation, then owner decisions)
 

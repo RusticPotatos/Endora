@@ -535,7 +535,7 @@ fn claimed_task_waits_for_its_canonical_result_before_recovery() {
 }
 
 #[test]
-fn canonical_task_help_refuses_missing_mismatched_or_unclassified_scope() {
+fn canonical_task_help_refuses_a_missing_or_mismatched_scope_and_allows_confidential_asks() {
     use super::history_ports::HistoryStore;
     use super::ports::NewTask;
     use serde_json::json;
@@ -595,21 +595,36 @@ fn canonical_task_help_refuses_missing_mismatched_or_unclassified_scope() {
             "claim cannot clear or invent private inputs: {invalid}"
         );
         let args = json!({"member":"Member 3","conversation":conversation,"key":"task_refusal_01","question":"What is the observed outcome?"});
-        assert!(
-            super::protocol::call_v2(&hq, &run, &member, "consult", &args).is_err(),
-            "{invalid}"
-        );
-        let direct = json!({"conversation":conversation,"key":"task_refusal_01","objective":"What is the observed outcome?"});
-        assert!(
-            super::protocol::call_v2(&hq, &run, &member, "request_assistance", &direct).is_err(),
-            "{invalid}"
-        );
-        assert!(
-            hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        // ADR 0140: unknown or Confidential input no longer stops an ask; its colleague answers
+        // on the house's models. A missing or mismatched scope still does.
+        if matches!(invalid, "unknown" | "confidential") {
+            super::protocol::call_v2(&hq, &run, &member, "consult", &args).unwrap();
+            assert_eq!(
+                hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1,
+                "{invalid}"
+            );
+        } else {
+            assert!(
+                super::protocol::call_v2(&hq, &run, &member, "consult", &args).is_err(),
+                "{invalid}"
+            );
+            let direct = json!({"conversation":conversation,"key":"task_refusal_01","objective":"What is the observed outcome?"});
+            assert!(
+                super::protocol::call_v2(&hq, &run, &member, "request_assistance", &direct)
+                    .is_err(),
+                "{invalid}"
+            );
+            assert!(
+                hq.assistance_requests_page(conversation, 0).unwrap()["requests"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
         assert!(hq.store().consults().unwrap().is_empty());
         let tools = super::protocol::tools_in_v2(&hq, &run, &member);
         let offered = tools.as_array().unwrap().iter().any(|tool| {
@@ -618,12 +633,11 @@ fn canonical_task_help_refuses_missing_mismatched_or_unclassified_scope() {
                 Some("consult" | "request_assistance")
             )
         });
-        // ADR 0139: a task of an active project may ask any colleague, so the
-        // tools stay offered; only the named conversation of another project
-        // is refused.
+        // ADR 0139-0140: a task of an active project may ask any colleague, whatever it read, so
+        // the tools stay offered; only a task with no project has no scope.
         assert_eq!(
             offered,
-            invalid == "mismatch",
+            invalid != "missing",
             "{invalid}: advertise assistance only where a scope can be used"
         );
     }
@@ -2958,4 +2972,68 @@ fn a_leads_house_page_is_classified_by_the_turns_that_wrote_it() {
             turn.told
         );
     }
+}
+
+/// ADR 0140: a turn that read Confidential lab data may ask a colleague, as long as both work
+/// on the house's own models (work always does: ADR 0131): the colleague's turn and the asker's
+/// result turn carry the mark.
+#[test]
+fn a_confidential_turn_asks_a_colleague_who_answers_on_the_houses_models() {
+    use super::history_ports::HistoryStore;
+    use serde_json::json;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let lead = hq.hire("Member 1", Role::Lead, 25, 2, 0).unwrap();
+    let a = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+    let b = hq.hire("Member 3", Role::Researcher, 30, 2, 0).unwrap();
+    let goal = hq.set_goal("Synthetic lab", "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, "Fixture", "", lead, None).unwrap();
+    hq.set_conversations_enabled(true).unwrap();
+    hq.create_conversation(project, [a, b]).unwrap();
+    hq.wake(a, None, WakeReason::Downtime).unwrap();
+    hq.tick().unwrap();
+    let turn = turn_of(&hq, a);
+    let (run, member) = hq.turn_of(&turn.token).unwrap().unwrap();
+    // It read the lab: Confidential.
+    hq.store().mark_confidential_input(run.id).unwrap();
+    let offered = super::protocol::tools_in(&hq, &run, &member);
+    assert!(
+        offered
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "consult"),
+        "a Confidential turn is offered help: {offered}"
+    );
+    super::protocol::call(
+        &hq,
+        &run,
+        &member,
+        "consult",
+        &json!({"member":"Member 3","question":"Why does gluetun stop?"}),
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let expert = turn_of(&hq, b);
+    assert!(expert.told.contains("Why does gluetun stop?"));
+    assert!(
+        hq.store().run_read_confidential(expert.run).unwrap(),
+        "the colleague's turn carries the mark"
+    );
+    hq.answer_assistance_in(expert.run, "Its health check restarts it.", &[])
+        .unwrap();
+    hq.runner().finish(turn.run, true);
+    hq.runner().finish(expert.run, true);
+    hq.tick().unwrap();
+    let result = turn_of(&hq, a);
+    assert!(result.told.contains("health check"), "{}", result.told);
+    assert!(
+        hq.store().run_read_confidential(result.run).unwrap(),
+        "the asker's result turn carries the mark"
+    );
+    // Sending information stays closed to a Confidential turn.
+    assert!(
+        hq.send_message_in(result.run, 1, "fixture_send_1", "x", &[])
+            .is_err()
+    );
 }

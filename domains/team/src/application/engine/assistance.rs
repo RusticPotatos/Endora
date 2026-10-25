@@ -351,9 +351,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if request.status != "processing" || request.deadline_at <= self.clock.now() {
             return Err(refused("assistance request is no longer active"));
         }
-        if self.store.run_read_confidential(run)? {
+        // A Confidential answer stays on the house's models (ADR 0140).
+        if self.store.run_read_confidential(run)? && self.on_claude(run)? {
             return Err(refused(
-                "the information pilot cannot answer from a Confidential turn",
+                "a Confidential answer is given only on the house's models",
             ));
         }
         if evidence.len() > assistance::SOURCES_MOST
@@ -575,6 +576,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.assistance_charging_project(run.id)?)
     }
 
+    /// Whether a turn thinks with Claude rather than the house's models.
+    pub(super) fn on_claude(&self, run: RunId) -> Done<bool> {
+        Ok(self
+            .store
+            .run(run)?
+            .and_then(|r| r.brain)
+            .is_some_and(crate::domain::Brain::cloud))
+    }
+
+    /// Before a colleague's turn reads a question, or the asker's result turn reads the
+    /// answer (ADR 0140): what either read carries its mark, and nothing Confidential reaches a
+    /// turn on Claude.
+    pub(super) fn assistance_reached(&self, run: RunId, sources: &[RunId]) -> Done<()> {
+        for source in sources {
+            self.inherit_input_from(run, Some(*source))?;
+        }
+        if self.store.run_read_confidential(run)? && self.on_claude(run)? {
+            return Err(refused(
+                "a Confidential ask is read only on the house's models",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn assistance_briefing(
         &self,
         member: &crate::domain::Member,
@@ -779,11 +804,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 return Err(refused("original evidence grant unavailable"));
             }
         }
-        if self.store.run_read_confidential(run)? {
-            return Err(refused(
-                "the information pilot cannot request from a Confidential turn",
-            ));
-        }
+        // A Confidential ask is allowed (ADR 0140): its colleague's turn and the asker's result
+        // turn are work, on the house's models, and each is refused to a turn on Claude.
         if objective.chars().count() > assistance::OBJECTIVE_MOST {
             return Err(refused("an assistance objective permits 400 characters"));
         }

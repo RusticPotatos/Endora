@@ -54,9 +54,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         member: &crate::domain::Member,
         run: &crate::application::ports::Run,
     ) -> Done<bool> {
+        // A Confidential turn may ask too: its colleague answers on the house's models
+        // (ADR 0140), which every turn of work is on.
         Ok(member.role != crate::domain::Role::Ceo
             && self.conversation_turn_ready(run.id)?
-            && !self.store.run_read_confidential(run.id)?
             && self.has_communication_scope(run)?)
     }
 

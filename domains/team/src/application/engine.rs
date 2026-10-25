@@ -2579,9 +2579,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
         self.prepare_conversation_turn(run.id)?;
         if let Some(request) = self.store.assistance_for_run(run.id)? {
+            self.assistance_reached(run.id, &[request.requester_run])?;
             return self.assistance_briefing(member, &request);
         }
         if let Some(request) = self.store.assistance_notice_for_run(run.id)? {
+            let mut sources = vec![request.requester_run];
+            sources.extend(request.expert_run);
+            self.assistance_reached(run.id, &sources)?;
             return self.assistance_notice_briefing(member, &request);
         }
         let mut told = if self.canonical_task_context_applies(member, run)? {
