@@ -2729,3 +2729,119 @@ fn any_member_asks_any_colleague_from_a_projects_task_without_an_owner_made_pair
         1
     );
 }
+
+/// ADR 0138 A2c: the older task briefing (every turn the classified one does not serve) is
+/// classified section by section instead of locked whole: owner and HQ inputs leave the turn
+/// free to ask, and each unknown or Confidential input it shows still locks it.
+#[test]
+fn the_older_task_briefing_is_classified_by_section_and_fails_closed_on_what_it_cannot_trace() {
+    use super::history_ports::HistoryStore;
+    use super::ports::NewTask;
+    use crate::domain::Criterion;
+    for case in [
+        "clean",
+        "unknown post",
+        "confidential post",
+        "note",
+        "strategy",
+        "old unknown post, not shown",
+        "old unknown post, a question reads it",
+    ] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = canonical_hq(&clock);
+        let source = hq.hire("Member 1", Role::Researcher, 30, 2, 0).unwrap();
+        let member = hq.hire("Member 2", Role::Developer, 40, 2, 0).unwrap();
+        hq.set_conversations_enabled(true).unwrap();
+        let goal = hq.set_goal("Fixture goal", "", Author::Owner).unwrap();
+        let task = hq
+            .add_task_with(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: None,
+                    parent: None,
+                    title: "Fixture task".into(),
+                    description: "Fixture body".into(),
+                    assignee: Some(member),
+                    priority: crate::domain::Priority::Normal,
+                    waits_on: vec![],
+                },
+                &[Criterion::new("Fixture criterion", false)],
+            )
+            .unwrap();
+        if case.starts_with("old unknown post") {
+            hq.store()
+                .post(task, "owner", "Unclassified older input", NOON)
+                .unwrap();
+        }
+        hq.tick().unwrap();
+        let first = turn_of(&hq, member);
+        hq.runner().finish(first.run, true);
+        hq.tick().unwrap();
+        clock
+            .0
+            .fetch_add(60_000, std::sync::atomic::Ordering::SeqCst);
+        match case {
+            "unknown post" => {
+                hq.store()
+                    .post(task, "owner", "Unclassified input", NOON + 60_000)
+                    .unwrap();
+            }
+            "confidential post" => {
+                hq.wake(source, None, WakeReason::Downtime).unwrap();
+                hq.tick().unwrap();
+                let source_run = turn_of(&hq, source).run;
+                hq.store().mark_confidential_input(source_run).unwrap();
+                hq.store()
+                    .post_from(
+                        task,
+                        &super::ports::Post {
+                            author: "Member 1".into(),
+                            text: "Confidential-derived input".into(),
+                            at: NOON + 60_000,
+                            unsupported: false,
+                        },
+                        &[],
+                        crate::domain::history::InputOrigin::Run(source_run),
+                    )
+                    .unwrap();
+                hq.runner().finish(source_run, true);
+                hq.tick().unwrap();
+            }
+            "note" => hq.set_goal_note(goal, "Unclassified input").unwrap(),
+            "strategy" => {
+                hq.set_strategy(
+                    goal,
+                    &crate::domain::areas::StrategyEdit {
+                        not_now: Some("Unclassified input".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+            _ => {}
+        }
+        // A mention or a question: not the classified briefing's reasons, so the older one
+        // serves them.
+        let reason = if case.ends_with("a question reads it") {
+            WakeReason::QuestionAsked
+        } else {
+            WakeReason::Mentioned
+        };
+        hq.wake(member, Some(task), reason).unwrap();
+        hq.tick().unwrap();
+        let turn = turn_of(&hq, member);
+        assert_ne!(turn.run, first.run);
+        assert!(turn.told.contains("Fixture body"), "{case}");
+        assert!(
+            turn.told.contains("Your tools at HQ"),
+            "the older briefing: {case}"
+        );
+        assert_eq!(
+            hq.store().run_read_confidential(turn.run).unwrap(),
+            !matches!(case, "clean" | "old unknown post, not shown"),
+            "{case}: {}",
+            turn.told
+        );
+    }
+}

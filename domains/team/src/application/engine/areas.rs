@@ -441,6 +441,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(String::new());
         };
         if kind == "patterns" {
+            // Built from alarms' words, which come from outside: fails closed (ADR 0138 A2c).
+            self.unclassified_message_input(run.id)?;
             return self.area_patterns(&area);
         }
         let tasks = self.store.tasks()?;
@@ -453,6 +455,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str("- none\n");
         }
         for t in open.iter().take(15) {
+            // Each title shown carries its task's recorded origin (ADR 0138 A2c).
+            let origin = self
+                .store
+                .task_inputs(t.id)?
+                .map_or(crate::domain::history::InputOrigin::Unknown, |i| {
+                    i.body_origin
+                });
+            self.inherit_authored_input(run.id, origin)?;
             told.push_str(&format!("- #{} {} ({})\n", t.id, t.title, t.status.name()));
         }
         let since = self.clock.now() - DAY_MS;

@@ -2654,6 +2654,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(STANDARDS);
         }
         if member.role == Role::Ceo {
+            // The CEO's context reads across the house without lineage yet (ADR 0138 A2e).
+            self.unclassified_message_input(run.id)?;
             told.push_str(&self.ceo_context(member, run)?);
         }
         if member.role == Role::Reviewer {
@@ -2679,16 +2681,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         if member.role == Role::Lead {
-            told.push_str(&self.projects_led(member)?);
+            // Project titles and reasons have no recorded authorship: fail closed.
+            let led = self.projects_led(member)?;
+            if !led.is_empty() {
+                self.unclassified_message_input(run.id)?;
+            }
+            told.push_str(&led);
         }
         let Some(task) = run.task else {
             told.push_str("This turn is about no task: look over the team's work.\n");
             return Ok(told);
         };
-        let task = self.task(task)?;
-        // Legacy task threads contain posts without immutable source-run lineage. A task turn
-        // receives them in its briefing, so new Internal messaging fails closed for this turn.
-        self.unclassified_message_input(run.id)?;
+        // Each section is classified by the lineage of what it shows, and what has none fails
+        // closed (ADR 0138 A2c): the task's body and criteria, its parents and goal, and the
+        // thread's posts by their recorded origins.
+        let input = self
+            .store
+            .task_inputs(task)?
+            .ok_or(EngineError::Unknown("task"))?;
+        self.inherit_authored_input(run.id, input.body_origin)?;
+        if !input.task.criteria.is_empty() {
+            self.inherit_authored_input(run.id, input.criteria_origin)?;
+        }
+        let task = input.task;
         // The CEO's review and planning say what they ask as HQ asks it now, whatever their
         // routine was made with (ADR 0120).
         let description = match self.routine_of(task.id)? {
@@ -2719,12 +2734,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str(&self.enough_said_for(member.id, run)?);
         let note = self.goal_note_briefed(task.goal)?;
         if !note.is_empty() {
+            self.unclassified_message_input(run.id)?;
             told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
         }
         // What the goal chose not to do now (ADR 0120's strategy), in every briefing on it: the
         // premise each turn works in is bounded in its own words (ADR 0124).
         let not_now = self.strategy_of(task.goal)?.not_now;
         if !not_now.trim().is_empty() {
+            self.unclassified_message_input(run.id)?;
             told.push_str(&format!(
                 "Not now, for this goal: {}. Work outside the goal's bets waits.\n",
                 one_line(&not_now, 600)
@@ -2735,17 +2752,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let mut why = vec![task.title.clone()];
         let mut parent = task.parent;
+        let mut first_parent = None;
         while let Some(id) = parent {
-            let up = self.task(id)?;
-            why.push(up.title.clone());
-            parent = up.parent;
+            let up = self
+                .store
+                .task_inputs(id)?
+                .ok_or(EngineError::Unknown("parent task"))?;
+            self.inherit_authored_input(run.id, up.body_origin)?;
+            why.push(up.task.title.clone());
+            parent = up.task.parent;
+            first_parent.get_or_insert(up);
         }
-        if let Some(goal) = self.store.goal(task.goal)? {
-            why.push(format!("goal: {}", goal.title));
+        if let Some(goal) = self.store.goal_input(task.goal)? {
+            self.inherit_authored_input(run.id, goal.origin)?;
+            why.push(format!("goal: {}", goal.goal.title));
         }
         told.push_str(&format!("Why it exists: {}\n", why.join(" ← ")));
-        told.push_str(&self.serves_said(&task)?);
-        told.push_str(&self.documents_said(task.id)?);
+        let serves = self.serves_said(&task)?;
+        if let (false, Some(above)) = (serves.is_empty(), &first_parent) {
+            self.inherit_authored_input(run.id, above.criteria_origin)?;
+        }
+        told.push_str(&serves);
+        let documents = self.documents_said(task.id)?;
+        if !documents.is_empty() {
+            self.unclassified_message_input(run.id)?;
+        }
+        told.push_str(&documents);
         if !task.waits_on.is_empty() {
             let waits: Vec<String> = task.waits_on.iter().map(|t| format!("#{t}")).collect();
             told.push_str(&format!("It waits on: {}\n", waits.join(", ")));
@@ -2764,19 +2796,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 && c.status == CheckBackStatus::Fired
                 && c.done_at.is_some_and(|at| at > since)
         }) {
+            self.unclassified_message_input(run.id)?;
             told.push_str(&format!(
                 "You said you would check back: {}\n",
                 came_back.why
             ));
         }
         let members = self.store.members()?;
-        let new: Vec<String> = self
-            .store
-            .thread(task.id)?
-            .into_iter()
-            .filter(|p| p.at > since)
-            .map(|p| Self::post_line(&members, &p.author, &p.text, p.unsupported))
-            .collect();
+        // The thread with each post's recorded origin, read together.
+        let thread = self.all_authored_posts(task.id)?;
+        let mut new = Vec::new();
+        for input in thread.iter().filter(|p| p.post.at > since) {
+            self.inherit_authored_input(run.id, input.origin)?;
+            let p = &input.post;
+            new.push(Self::post_line(&members, &p.author, &p.text, p.unsupported));
+        }
         if new.is_empty() {
             told.push_str("Nothing new in the thread since your last turn.\n");
         } else {
@@ -2786,10 +2820,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         if self.reason_for(run)? == WakeReason::QuestionAsked.name() {
-            let thread = self.store.thread(task.id)?;
+            // The unanswered questions are read from the whole thread.
+            for input in &thread {
+                self.inherit_authored_input(run.id, input.origin)?;
+            }
             let posts: Vec<(&str, &str)> = thread
                 .iter()
-                .map(|p| (p.author.as_str(), p.text.as_str()))
+                .map(|p| (p.post.author.as_str(), p.post.text.as_str()))
                 .collect();
             for (asker, question) in chain::unanswered(&posts, &member.name) {
                 told.push_str(&format!("{asker} asks you: {}\n", record::clean(&question)));
@@ -2815,8 +2852,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             );
         }
         if self.reason_for(run)? == WakeReason::ReviewRequested.name() {
-            // The newest of a draft for the owner and a move to review says which this is.
+            // The newest of a draft for the owner and a move to review says which this is, read
+            // from the whole thread; the receipts a draft cites have no lineage here yet.
+            for input in &thread {
+                self.inherit_authored_input(run.id, input.origin)?;
+            }
             let members = self.store.members()?;
+            let mut receipts_cited = false;
             let asked = self.store.thread(task.id)?.into_iter().rev().find_map(|p| {
                 if let Some(draft) = p.text.strip_prefix(review::DRAFT) {
                     let the_ceos = members
@@ -2832,6 +2874,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     let cited = self
                         .draft_receipts(draft, member.brain.cloud())
                         .unwrap_or_default();
+                    if !cited.trim().is_empty() {
+                        receipts_cited = true;
+                    }
                     return Some(format!(
                         "{} wrote this draft for the owner: {draft}\n{}\n{cited}",
                         p.author,
@@ -2846,15 +2891,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     )
                 })
             });
+            if receipts_cited {
+                self.unclassified_message_input(run.id)?;
+            }
             if let Some(asked) = asked {
                 told.push_str(&format!("{}\n", asked.trim_end()));
             }
         }
-        told.push_str(&self.checking_said(member, run, &task)?);
+        // Checks' results, a CEO's direction and the ladder's views and decisions have no
+        // lineage yet: shown, they fail closed.
+        let mut untraced = self.checking_said(member, run, &task)?;
         if self.reason_for(run)? == WakeReason::Directed.name() {
-            told.push_str(&self.direction_said(member, task.id)?);
+            untraced.push_str(&self.direction_said(member, task.id)?);
         }
-        told.push_str(&self.ladder_said(member, run, &task)?);
+        untraced.push_str(&self.ladder_said(member, run, &task)?);
+        if !untraced.is_empty() {
+            self.unclassified_message_input(run.id)?;
+        }
+        told.push_str(&untraced);
         if member.role == Role::Ceo {
             if let Some(lead) = self.area_lead(&task)? {
                 told.push_str(&format!(
@@ -4992,6 +5046,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(vouched)
+    }
+
+    /// A task's whole thread, each post with its recorded origin, in pages read with their
+    /// origins.
+    fn all_authored_posts(
+        &self,
+        task: TaskId,
+    ) -> Done<Vec<crate::application::history_ports::PostInput>> {
+        const PAGE: usize = 50;
+        let mut all = Vec::new();
+        let mut after = 0;
+        loop {
+            let page = self.store.authored_posts(task, after, PAGE)?;
+            let full = page.len() == PAGE;
+            if let Some(last) = page.last() {
+                after = last.id;
+            }
+            all.extend(page);
+            if !full {
+                return Ok(all);
+            }
+        }
     }
 
     /// Who wrote a routine's words, as recorded when it was made: unknown for one made before
