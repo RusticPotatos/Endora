@@ -88,7 +88,10 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
    a. A `system` origin for HQ text that embeds no borrowed words (input_origins
       CHECK change, recorded here). Older builds fail on an unknown origin value,
       so release the reader (table rebuild accepting `system`) one release before
-      anything writes it, keeping image-only rollback safe. Then re-tag post sites: a member's own words
+      anything writes it, keeping image-only rollback safe. **Reader released,
+      `435b97d0`:** rehearsed on a private production copy, then deployed; the
+      production table was rebuilt keeping all 23 proofs and its 7 guards. Next,
+      the writers. Then re-tag post sites: a member's own words
       as its run, owner desk words as owner, pure templates as system; posts that
       quote borrowed text (alarms, "Evidence cited", recovered text) stay Unknown.
    b. Routine-fired tasks carry the routine's origin for body and criteria.
@@ -120,8 +123,12 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
    container being the boundary (ADR 0117), and a test cites task 674's failure.
    The Pi runs that worker. The owner replied in #674 on 2026-10-25; Rae's turn
    (run 2217) then failed before acting: one model call to the Mac brain took
-   over the worker's 10-minute limit. Retrying; if it repeats, the Mac brain's
-   capacity for Rae's turns is the next blocker.
+   over the worker's 10-minute limit. Diagnosis: a ~25.9k-token prompt read cold
+   while the Mac was out of memory (about 70 MB free, swap nearly full), reading at
+   47–108 tokens/s and writing at 2–10. The retry hit the 30-minute turn limit; the
+   next was interrupted by the `435b97d0` release drain and is queued again. Freeing
+   memory for the Mac brain (no prompt cache, then a shorter context if needed) is
+   the owner's call; moving Rae's work to a paid model would cost money.
 2. Check c1's exit 127. **Tools verified, 2026-10-24:** the Pi's current workbench,
    with the runner's in-memory `/work`, runs `ansible-lint` 6.14.6,
    `ansible-playbook` 2.15.13 and `yamllint` 1.30.0 from `/opt/venv/bin` on the
