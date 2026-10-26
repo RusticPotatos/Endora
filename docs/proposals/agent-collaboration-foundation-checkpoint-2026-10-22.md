@@ -352,6 +352,13 @@ release, production check, record:
 6. C4 per D3; then D4 recorded in ADR 0138.
 7. Merge to develop after a privacy scan; record in the checkpoint and memory.
 
+**Loop progress.** 1. A3 done (above). 2. D2 done: `set_routine_project` and its routes
+(`4fd13066`, `f96fd8e7`, live); routines 4 and 5 (Ada) moved to Home lab upkeep, 6 and 7 (Kit) to
+ansible-nas clean-up; the CEO's 2 and 3 stay unscoped. 3. C3 done: at 375 px Work has no
+sideways scroll and is 4.5 screens; one-line rows' details were 10.4 px, now 12 px and muted
+(a console check holds it), and the Holodeck card shows three scenarios before Show all
+(`f96fd8e7`, live; that release's drain cut one turn).
+
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
 2. Observe a real failure outcome (expired, declined or cancelled) displayed.
