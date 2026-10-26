@@ -166,6 +166,10 @@ from a seed, ADR 0121) spends none.
   their turns on it run on the side's brain alone (a Claude as judgment, paid from the league's
   project; the Mac waiting for the Mac; the house's model on the NAS). So a game measures the
   model, not the member's role or its own brains.
+- **Seated by what a role may think with.** The relay lets a role think only with its own
+  Claudes (0111), so a side is played only by a member whose role may use its brain (Sonnet is
+  never a researcher's). Opus is the CEO's alone and the CEO does not play, so the league
+  refuses it.
 - **One game at a time, when nothing else is**: the next game starts only when no world is being
   played, no scenario waits to run again and two members are free (no turn, no open task, no
   routine due). The pair that has played least goes next, so every pair meets before any meets

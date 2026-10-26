@@ -11,7 +11,7 @@ use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::games::{self, Rng};
 use crate::domain::league::{self, Played};
-use crate::domain::{Brain, MemberId, Millis, ProjectId, Refusal, TaskId};
+use crate::domain::{Brain, MemberId, Millis, ProjectId, Refusal, Role, TaskId};
 
 /// Where the league is kept: its project and its brains, by name.
 const LEAGUE: &str = "league";
@@ -21,6 +21,19 @@ const GAMES: &str = "league_games";
 /// Where the brain a league game's side is pinned to is kept, by the side's task.
 fn side_key(task: TaskId) -> String {
     format!("league_side:{}", task.0)
+}
+
+/// Whether a member who plays (any role but the CEO's) may think with `brain`.
+fn may_play(brain: Brain) -> bool {
+    !brain.cloud()
+        || [
+            Role::Lead,
+            Role::Developer,
+            Role::Reviewer,
+            Role::Researcher,
+        ]
+        .into_iter()
+        .any(|r| brain.allowed_for(r))
 }
 
 fn refused(why: impl Into<String>) -> EngineError {
@@ -49,6 +62,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         if named.len() < 2 {
             return Err(refused("a league is two brains or more"));
+        }
+        // The relay lets a role think only with its own Claudes (ADR 0111), and the CEO never
+        // sits at the board: a brain only the CEO may think with has nobody to play it.
+        if let Some(only_the_ceo) = named.iter().find(|b| !may_play(**b)) {
+            return Err(refused(format!(
+                "{} is the CEO's alone (ADR 0111), and the CEO does not play",
+                only_the_ceo.label()
+            )));
         }
         let found = self.holds_scenarios(project)?;
         if named.iter().any(|b| b.cloud()) && found.cap.is_none() {
@@ -150,9 +171,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some((white, black)) = league::next(&brains, &played) else {
             return Ok(());
         };
-        let free: Vec<MemberId> = self.free_to_play(now)?.iter().map(|m| m.id).collect();
+        let free = self.free_to_play(now)?;
+        let ids: Vec<MemberId> = free.iter().map(|m| m.id).collect();
         let mut pick = Rng::new(games::seed(now, MemberId(0), MemberId(0), kept.len()));
-        let Some((a, b)) = games::pick_two(&free, &mut pick) else {
+        let Some(picked) = games::pick_two(&ids, &mut pick) else {
+            return Ok(());
+        };
+        // Each side is played by a member whose role may think with its brain: the two picked
+        // if they fit, either way round, or else the first two free members who do.
+        let fits = |w: MemberId, b: MemberId| {
+            let role = |id: MemberId| free.iter().find(|m| m.id == id).map(|m| m.role);
+            w != b
+                && role(w).is_some_and(|r| white.allowed_for(r) || !white.cloud())
+                && role(b).is_some_and(|r| black.allowed_for(r) || !black.cloud())
+        };
+        let seated = [picked, (picked.1, picked.0)]
+            .into_iter()
+            .chain(ids.iter().flat_map(|w| ids.iter().map(move |b| (*w, *b))))
+            .find(|(w, b)| fits(*w, *b));
+        let Some((a, b)) = seated else {
             return Ok(());
         };
         let seed = u64::try_from(kept.len()).unwrap_or(0) + 1;
