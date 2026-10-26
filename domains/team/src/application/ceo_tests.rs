@@ -210,6 +210,15 @@ fn a_question_goes_up_the_chain_to_a_decision_on_the_boards_desk_and_back_down()
     // The CEO decides it is the board's: a decision, checked by the reviewer first.
     let ceo = turn(&hq, t.ceo);
     assert!(ceo.told.contains("Ada asks you:"), "{}", ceo.told);
+    // #796: told to "ask the owner yourself", the lead asked the CEO again, three times.
+    assert!(
+        ceo.told.contains("Only you reach the board")
+            && ceo
+                .told
+                .contains("never tell the one who asked to ask the owner"),
+        "{}",
+        ceo.told
+    );
     let said = use_tool(
         &hq,
         &ceo,
@@ -338,6 +347,58 @@ fn a_question_goes_up_the_chain_to_a_decision_on_the_boards_desk_and_back_down()
     assert_eq!(
         (to, on, why),
         (t.dev, Some(task), WakeReason::QuestionAnswered)
+    );
+}
+
+/// Production, #796 (25-26 Oct): the tester sent back the CEO's decision for the board, and
+/// the send-back woke the task's member, the lead, who cannot write the CEO's decision: she
+/// asked the CEO again, who told her again to ask the owner, and the owner was never asked.
+///
+/// Given the CEO's decision for the board, drafted on a task its lead holds,
+/// when the tester sends it back,
+/// then the CEO is woken to redo it, and not the lead.
+#[test]
+fn a_ceos_draft_sent_back_by_the_tester_goes_back_to_the_ceo() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, true);
+    let reviewer = t.reviewer.unwrap();
+    let task = task_for(&hq, t.goal, t.lead, "Is the 2-hourly timer still needed?");
+    let lead = turn(&hq, t.lead);
+    hq.store().claim(task, t.lead).unwrap();
+    use_tool(
+        &hq,
+        &lead,
+        "ask_owner",
+        &json!({ "text": "May we run 48 hours with the timer off?",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    let ceo = turn(&hq, t.ceo);
+    use_tool(
+        &hq,
+        &ceo,
+        "ask_owner",
+        &json!({ "decision": "Run 48 hours with the timer off?",
+                 "recommendation": "Yes, with a rollback on any stall.",
+                 "why": "Nobody knows whether the VPN still stalls without it.",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    let check = turn(&hq, reviewer);
+    use_tool(
+        &hq,
+        &check,
+        "review",
+        &json!({ "task": task.0, "verdict": "send_back",
+                 "notes": "Name the stall measures before asking." }),
+    )
+    .unwrap();
+    let (to, on, why, _) = last_wake(&hq);
+    assert_eq!(
+        (to, on, why),
+        (t.ceo, Some(task), WakeReason::SentBack),
+        "the CEO wrote it, so the CEO redoes it"
     );
 }
 

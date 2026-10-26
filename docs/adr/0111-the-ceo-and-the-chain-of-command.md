@@ -166,3 +166,12 @@ in the audit log; names stay unique, since members are named in threads by them)
   reads nothing at run time.
 - **The pool split among every member.** Rejected by the owner: a local member costs nothing,
   and its share would sit unused while the paid ran out.
+
+## Amendment, 2026-10-26: a CEO's draft comes back to the CEO
+
+Live, #796 went round for a day without reaching the board. The lead's question went up to the
+CEO, who told the lead to "ask the owner yourself"; the lead's `ask_owner` goes to the CEO, so
+it came straight back. When the CEO did draft the decision, the tester sent it back and the
+send-back woke the task's member, the lead, who cannot redo the CEO's decision. Now a CEO's
+draft sent back by the tester wakes the CEO, and the CEO's briefing on a question says that only
+the CEO reaches the board and never to tell the one who asked to ask the owner.

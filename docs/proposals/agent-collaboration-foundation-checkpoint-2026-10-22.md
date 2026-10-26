@@ -411,6 +411,49 @@ every one, so further slimming waits. The failures had two causes, both fixed:
   still keeps one, told apart by start time since the count can go down (`3780efbc`, live; its
   drain cut Dee's league move on #840, which is tried again).
 
+**Loop plan, 2026-10-26 evening.** Each step test-first where it changes code, full gate,
+release only with no turn running, production check, record here and in memory. Ask the owner
+only for money beyond existing caps, deletion, outside actions or safety-blocked steps.
+1. Prove the two fixes live: no token-limit failure across the next league games, and a
+   retried turn's transcript holding both attempts.
+2. #796 talks more than it works (17 coordination turns to 1 product change in 24 h, a
+   Talk-about-work finding the owner marked real; Ada over her day's budget): find why from its
+   runs and transcripts, fix the cause.
+3. "Work has waited for the Mac for over 3 h" (Ada, Rae, Dee): measure the Mac queue's waits
+   and decide on evidence whether waiting work may go to a house model that is free.
+4. The league: every pair met (three left), the table and spend checked, no stall.
+5. C1 and C4 by observation; when five requests are answered, run C4 per D3 and settle D4
+   in ADR 0138.
+6. Merge to develop after a privacy scan; stop. Steps that only observe and find nothing new
+   are recorded and passed.
+
+**Loop progress.** 2. #796 went round for a day without reaching the board (the 3780efbc
+snapshot's runs, wakes and thread): Ada's `ask_owner` goes to Mara, who told her three times to
+"ask the owner yourself"; when Mara did draft it (run 2381), Dee sent it back and the send-back
+woke Ada, the task's holder, who cannot redo the CEO's decision. Every desk card was #673's or
+the fork's; none was #796's, though the team believed one waited. Fixed in `74eef5ae` (ADR 0111
+amended): a CEO's draft sent back wakes the CEO, and the CEO's briefing says only it reaches the
+board. Live after the owner's yes (posted in #796 at 21:55): Ada found the team cannot flip
+the owner's setting and asked Mara; Mara, without bouncing it back, directed Bo to prepare the
+ansible-nas change for the owner to run, with the variable, run command and revert (22:17).
+3. Mac waits (started minus queued, 3 days): Mac 28.5 min mean against local 1.2 and Claude
+under 1, but by day 13.9 (23 Oct), 0.1 (24th), 136.9 (25th, before ADR 0130's amendment), 8.0
+(26th; since 14:00 at most 26 min). The "waited over 3 h" notice was the 25th's backlog.
+Decided: no rerouting; the Mac's model is the stronger (ADR 0131) and its queue is healthy now.
+1. (partly) Live since a1b02bb9/3780efbc: 27 turns, none at the reply bound; run 2848 (Dee's
+league move on #840, cut by a drain) keeps both attempts under the "tried again" line. The
+reply bound needs more house turns to show (the old rate was 8 in 441).
+4. (in progress) Game 840 drawn (Mac and Haiku); game 844, Mac against Sonnet, playing; two
+pairs left; $0.23 of $10.
+1. Done. By 00:30 on 27 Oct, 90 turns since a1b02bb9 (46 on house models, including the Mac's
+league games 840 and 844 to their ends): none at the reply bound, none failed.
+4. (in progress) Games 840 and 844 drawn (the Mac draws both Claudes); game 849, Haiku against
+Sonnet, the last first meeting, playing; $0.51 of $10.
+Also live: a deploy card links its branch to the fork's compare page (`7a3294a3`, the owner's
+ask). In ansible-nas, every scheduled job on the NAS moved to nas_maintenance with its reason
+and a lint rule (branch `feat/nas-scheduled-jobs`, 9c35b8b, for the owner to merge); the gluetun
+timer is still on until the owner sets `gluetun_periodic_restart_enabled: false`.
+
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
 2. Observe a real failure outcome (expired, declined or cancelled) displayed.

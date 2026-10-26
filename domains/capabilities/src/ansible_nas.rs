@@ -99,6 +99,19 @@ impl Fork {
         format!("https://github.com/{}.git", self.repo)
     }
 
+    /// Where `branch` opens on GitHub against the base the team works from, ready to become a
+    /// pull request: `None` for a name that is not a plain branch.
+    #[must_use]
+    pub fn compare_url(&self, branch: &str) -> Option<String> {
+        if !plain_branch(branch) {
+            return None;
+        }
+        Some(match &self.reference {
+            Some(base) => format!("https://github.com/{}/compare/{base}...{branch}", self.repo),
+            None => format!("https://github.com/{}/compare/{branch}", self.repo),
+        })
+    }
+
     /// Where git pushes to the fork with a deploy key: `git@github.com:owner/name.git`.
     #[must_use]
     pub fn ssh_url(&self) -> String {
@@ -755,6 +768,30 @@ mod tests {
         assert_eq!(
             Fork::of("owner/ansible-nas", "").unwrap().ssh_url(),
             "git@github.com:owner/ansible-nas.git"
+        );
+        // A team branch on the owner's desk opens on GitHub, ready to become a pull request
+        // against the base the team works from (owner, 2026-10-26).
+        assert_eq!(
+            Fork::of("owner/ansible-nas", "develop")
+                .unwrap()
+                .compare_url("hq/task-672-role-readmes"),
+            Some(
+                "https://github.com/owner/ansible-nas/compare/develop...hq/task-672-role-readmes"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            Fork::of("owner/ansible-nas", "")
+                .unwrap()
+                .compare_url("hq/task-1-x"),
+            Some("https://github.com/owner/ansible-nas/compare/hq/task-1-x".to_owned()),
+            "unset: against the fork's own default"
+        );
+        assert_eq!(
+            Fork::of("owner/ansible-nas", "develop")
+                .unwrap()
+                .compare_url("../x?y"),
+            None
         );
         assert_eq!(Fork::of("owner", ""), None, "owner/name");
         assert_eq!(Fork::of("owner/ansible-nas/../x", ""), None);

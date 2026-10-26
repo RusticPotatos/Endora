@@ -590,6 +590,18 @@ pub(crate) struct LabKnowledge {
 }
 
 impl LabKnowledge {
+    /// Where a team branch named in `text` opens on GitHub, against the base the team works
+    /// from: the first `hq/task-` name in it, on the configured fork; `None` without either.
+    pub(crate) fn branch_url(&self, text: &str) -> Option<String> {
+        let start = text.find("hq/task-")?;
+        let branch: String = text[start..]
+            .chars()
+            .take_while(|c| !c.is_whitespace() && *c != ',' && *c != ':')
+            .collect();
+        let branch = branch.trim_end_matches('.');
+        self.docs.fork()?.compare_url(branch)
+    }
+
     /// The docs and the retired list as given; no mirror until a fork and a data folder are.
     pub(crate) fn new(docs: Docs, retired: Vec<(String, String)>) -> Self {
         Self {
