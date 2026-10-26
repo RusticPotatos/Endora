@@ -286,6 +286,14 @@ impl HistoryStore for SqliteTeamStore {
         Ok(())
     }
 
+    fn replace_transcript(&self, t: &Transcript) -> Stored<()> {
+        // A delete and an insert, not an update: the search index follows those two.
+        self.conn()?
+            .execute("DELETE FROM transcripts WHERE run = ?1", [t.run.0])
+            .map_err(backend)?;
+        self.add_transcript(t)
+    }
+
     fn transcript(&self, run: RunId) -> Stored<Option<Transcript>> {
         let conn = self.conn()?;
         let mut stmt = conn

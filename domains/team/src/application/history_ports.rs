@@ -157,6 +157,13 @@ pub trait HistoryStore {
     /// [`super::ports::StoreError`] if the store fails, or the turn already has one.
     fn add_transcript(&self, transcript: &Transcript) -> Stored<()>;
 
+    /// Puts `transcript` in place of the one its turn has: a turn tried again keeps each
+    /// attempt's conversation in one.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn replace_transcript(&self, transcript: &Transcript) -> Stored<()>;
+
     /// A turn's conversation, if HQ kept it and still has it.
     ///
     /// # Errors

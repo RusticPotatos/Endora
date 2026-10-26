@@ -122,14 +122,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if text.trim().is_empty() {
             return Ok(None);
         }
-        if self.store.transcript(run.id)?.is_some() {
+        // One conversation an attempt: a turn tried again keeps each attempt's, the later after
+        // a line that says so (production lost every retry's, 23-26 Oct). An attempt is told
+        // apart by when it started, as its count does not only go up (ADR 0130).
+        let earlier = self.store.transcript(run.id)?;
+        if earlier
+            .as_ref()
+            .is_some_and(|kept| kept.at >= run.started_at.unwrap_or(Millis::MIN))
+        {
             return Err(EngineError::Refused(Refusal::History(
                 HistoryRefusal::TranscriptKept,
             )));
         }
         let member = self.member(run.member)?;
         let confidential = self.store.run_read_confidential(run.id)?;
-        let (body, cut) = history::cap(text, history::TRANSCRIPT_MOST);
+        let whole = earlier.as_ref().map_or_else(
+            || text.to_owned(),
+            |kept| {
+                format!(
+                    "{}\n\n--- tried again: a later attempt of this turn ---\n{text}",
+                    kept.body
+                )
+            },
+        );
+        let (body, cut) = history::cap(&whole, history::TRANSCRIPT_MOST);
+        let cut = cut || earlier.as_ref().is_some_and(|kept| kept.cut);
         let now = self.clock.now();
         let kept = Transcript {
             run: run.id,
@@ -148,7 +165,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             at: now,
             kept_until: now + history::KEPT_DAYS * history::DAY_MS,
         };
-        self.store.add_transcript(&kept)?;
+        if earlier.is_some() {
+            self.store.replace_transcript(&kept)?;
+        } else {
+            self.store.add_transcript(&kept)?;
+        }
         Ok(Some(TranscriptKept {
             est_tokens: kept.est_tokens,
             cut,
