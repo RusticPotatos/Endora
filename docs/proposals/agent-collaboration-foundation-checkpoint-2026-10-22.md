@@ -358,6 +358,11 @@ ansible-nas clean-up; the CEO's 2 and 3 stay unscoped. 3. C3 done: at 375 px Wor
 sideways scroll and is 4.5 screens; one-line rows' details were 10.4 px, now 12 px and muted
 (a console check holds it), and the Holodeck card shows three scenarios before Show all
 (`f96fd8e7`, live; that release's drain cut one turn).
+4. C1, in progress: requests #2 and #3 (Cy to Dee on #677) were declined: Dee's local answer
+turn had `answer_assistance` behind `find_tools`, and the question named `r877` without passing
+it. Fixed in `470e1649` (live; ADR 0138 amended): the answering tools are always loaded, and a
+consult naming unpassed sources is refused with the `evidence` to pass. Waiting for the next
+real request.
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
