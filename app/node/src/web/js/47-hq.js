@@ -1479,6 +1479,7 @@ function hqNeed(s, d) {
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval, d.serves) : ""}
       ${d.kind === "decision" ? hqDecision(d.decision) : ""}
+      ${d.kind === "deploy" && /^https:\/\/github\.com\//.test(String(d.branch_url || "")) ? `<p><a href="${esc(d.branch_url)}" target="_blank" rel="noopener noreferrer">Open the pull request on GitHub</a></p>` : ""}
       ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
       ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
       ${d.kind === "project_cap" || d.kind === "project_budget" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="${d.kind === "project_cap" ? "Dollars a month (empty: as asked)" : "The new cap, in dollars a month"}" aria-label="The cap, in dollars a month" />` : ""}

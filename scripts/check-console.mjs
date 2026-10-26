@@ -607,6 +607,10 @@ if (failures.length) {
              { id: 26, kind: "recall", task: 9, member: 6, text: "Recall member 8 to report to member 6.\\nZed is on furlough; Kit asks: four branches wait\\nEvidence: task 9" },
              // A member at twice its share (ADR 0113): an allowance for today, or wait.
              { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." },
+             // A branch on the fork to merge (owner, 2026-10-26): it opens on GitHub from its card;
+             // an address that is not GitHub's is never a link.
+             { id: 40, kind: "deploy", task: 9, text: "hq/task-9-docs is on your fork.", branch_url: "https://github.com/owner/ansible-nas/compare/develop...hq/task-9-docs" },
+             { id: 41, kind: "deploy", task: 9, text: "hq/task-9-evil is on your fork.", branch_url: "javascript:alert(1)" },
              ],
       // While you were away (ADR 0132): stuck work, a guard's finding (ADR 0124: the owner's
       // verdict on it) and a notice. None needs a decision, so none is on the desk; each keeps the
@@ -939,7 +943,7 @@ if (failures.length) {
     if (deskTab.indexOf("<h2>Your desk") > deskTab.indexOf("While you were away")) fail("hq: the desk is not above the digest");
     const order = ["hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
     if (order.some((at) => at < 0) || order[0] > order[1] || order[1] > order[2]) fail(`hq: the digest is not newest first: ${order}`);
-    if (!yours.startsWith(` <span class="hq-count">15</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
+    if (!yours.startsWith(` <span class="hq-count">17</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
     for (const act of ["hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry"]) {
       if (yours.includes(act)) fail(`hq: ${act} is on the desk as well as in the digest`);
     }
@@ -1141,6 +1145,8 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk or the team card does not offer ${act}`);
   }
   if (office.includes("hq:decide:24:approve")) fail("hq: a push the node cannot make was offered Approve");
+  if (!office.includes('href="https://github.com/owner/ansible-nas/compare/develop...hq/task-9-docs"') || !office.includes("Open the pull request on GitHub")) fail("hq: a branch to merge does not open on GitHub from its card");
+  if (office.includes("javascript:alert")) fail("hq: a card's link is not GitHub's");
   if (office.includes("hq:bundle:9:task-9-tidy")) fail("hq: a push the node can make offers a download instead");
   if (office.includes("<b>with nobody free</b>")) fail("hq: a lead's hire request became markup");
   for (const id of ["hq-hire-name", "hq-hire-role", "hq-hire-work", "hq-hire-judgment", "hq-hire-to"]) {

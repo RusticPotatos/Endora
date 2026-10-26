@@ -72,6 +72,13 @@ pub(super) async fn hq_snapshot(State(state): State<AppState>) -> Answer {
     let mut desk = answer.0["desk"].take();
     let desk = tokio::task::spawn_blocking(move || {
         for item in desk.as_array_mut().into_iter().flatten() {
+            // A branch to merge opens on GitHub from its card, ready to become a pull request.
+            if item["kind"] == "deploy" {
+                if let Some(url) = item["text"].as_str().and_then(|t| looked.lab.branch_url(t)) {
+                    item["branch_url"] = json!(url);
+                }
+                continue;
+            }
             if item["kind"] != "approval" {
                 continue;
             }
@@ -1013,6 +1020,31 @@ pub(super) async fn hq_note_delete(
 mod tests {
     use super::super::relay::tests::{fake, node};
     use super::*;
+
+    #[test]
+    fn a_deploy_cards_branch_opens_on_the_fork_against_its_base() {
+        // Never fetched: a branch's address is made from the fork's name alone.
+        let docs = endora_capabilities::ansible_nas::Docs::new(
+            endora_capabilities::ansible_nas::Fork::of("owner/ansible-nas", "develop"),
+            Box::new(endora_capabilities::ansible_nas::Web),
+        );
+        let lab = super::super::contracts::LabKnowledge::new(docs, Vec::new());
+        assert_eq!(
+            lab.branch_url("hq/task-672-role-readmes is on your fork. Once you have merged it"),
+            Some(
+                "https://github.com/owner/ansible-nas/compare/develop...hq/task-672-role-readmes"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            lab.branch_url("Push hq/task-671-lint-clean."),
+            Some(
+                "https://github.com/owner/ansible-nas/compare/develop...hq/task-671-lint-clean"
+                    .to_owned()
+            )
+        );
+        assert_eq!(lab.branch_url("no branch named here"), None);
+    }
 
     #[tokio::test]
     async fn retained_task_history_uses_a_fixed_read_route_and_preserves_the_page() {
