@@ -411,6 +411,22 @@ every one, so further slimming waits. The failures had two causes, both fixed:
   still keeps one, told apart by start time since the count can go down (`3780efbc`, live; its
   drain cut Dee's league move on #840, which is tried again).
 
+**Loop plan, 2026-10-26 evening.** Each step test-first where it changes code, full gate,
+release only with no turn running, production check, record here and in memory. Ask the owner
+only for money beyond existing caps, deletion, outside actions or safety-blocked steps.
+1. Prove the two fixes live: no token-limit failure across the next league games, and a
+   retried turn's transcript holding both attempts.
+2. #796 talks more than it works (17 coordination turns to 1 product change in 24 h, a
+   Talk-about-work finding the owner marked real; Ada over her day's budget): find why from its
+   runs and transcripts, fix the cause.
+3. "Work has waited for the Mac for over 3 h" (Ada, Rae, Dee): measure the Mac queue's waits
+   and decide on evidence whether waiting work may go to a house model that is free.
+4. The league: every pair met (three left), the table and spend checked, no stall.
+5. C1 and C4 by observation; when five requests are answered, run C4 per D3 and settle D4
+   in ADR 0138.
+6. Merge to develop after a privacy scan; stop. Steps that only observe and find nothing new
+   are recorded and passed.
+
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
 2. Observe a real failure outcome (expired, declined or cancelled) displayed.
