@@ -45,6 +45,11 @@ const NAMES_AT_MOST: usize = 12;
 /// still pay for; a round's answer is a few sentences and tool calls, far less than this.
 const MOST_A_REPLY: u32 = 4096;
 
+/// The most a house model may say in one round: it costs nothing, and a reasoning model
+/// thinking over a chess move overran the cloud's limit (8 of 441 house turns, 23-26 Oct, each
+/// writing it in under six minutes, so twice that stays inside [`LONGEST_CALL`]).
+const MOST_A_HOUSE_REPLY: u32 = 8192;
+
 /// The workbench's shell, as the model names it.
 pub(crate) const SHELL: &str = "shell";
 
@@ -906,7 +911,7 @@ impl Talk {
     /// every round so far, which never change once sent. Only what is new is written.
     fn body(&self, model: &str) -> Value {
         if self.api == Api::OpenAi {
-            return json!({ "model": model, "max_tokens": MOST_A_REPLY,
+            return json!({ "model": model, "max_tokens": MOST_A_HOUSE_REPLY,
                            "messages": self.messages, "tools": self.tools });
         }
         let mut body = json!({
