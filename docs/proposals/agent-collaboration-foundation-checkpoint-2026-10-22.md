@@ -400,6 +400,17 @@ Mac's local model sometimes reasoning past the 4096-token reply limit (the turn 
 Real work waits on the owner's desk: 338 (gluetun host commands, #673), 339/1249/1251/1253
 (merge on the fork and run the playbook), 346 (push #671).
 
+**Buildout, 2026-10-26 evening.** Three days of turns (from the a7852df7 snapshot): 652 of 683
+succeeded; since the slimming release local turns succeed 260 of 266, the Mac 124 of 129, Claude
+every one, so further slimming waits. The failures had two causes, both fixed:
+- House models overran the cloud's 4096-token reply bound thinking over chess (8 turns, tasks
+  810, 835, 840, each under six minutes): they now get 8192, still explicit (`a1b02bb9`, live).
+- Every attempt after a turn's first lost its conversation (HQ: "already kept", the node's
+  409, on all 11 failed turns), so no failed turn's last words could be read. A later attempt's
+  conversation now follows the earlier under a marked line, within the same cap; one attempt
+  still keeps one, told apart by start time since the count can go down (`3780efbc`, live; its
+  drain cut Dee's league move on #840, which is tried again).
+
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
 2. Observe a real failure outcome (expired, declined or cancelled) displayed.

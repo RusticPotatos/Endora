@@ -177,6 +177,51 @@ fn a_running_turns_conversation_is_kept_with_its_member_task_brain_and_thirty_da
     assert!(hq.record_transcript("nope", "worker", "x").is_err());
 }
 
+/// Production, 23-26 Oct: a turn that failed was tried again under the same run, and every
+/// attempt after the first lost its conversation ("already kept", the node's 409), though the
+/// last attempt is the one that says why the turn failed.
+///
+/// Given a turn whose conversation was kept and which then failed,
+/// when it is tried again and its new attempt tells its conversation,
+/// then both are kept, the later under a line that says it was tried again; and that attempt
+/// still keeps only one.
+#[test]
+fn a_turn_tried_again_keeps_each_attempts_conversation() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    task_for(&hq, t.goal, t.linus, "Cap sonarr's memory");
+    hq.tick().unwrap();
+    let first = turn_of(&hq, t.linus);
+    hq.record_transcript(&first.token, "worker", "First try: the reply ran out.")
+        .unwrap()
+        .expect("kept");
+    hq.runner().finish(first.run, false);
+    hq.tick().unwrap();
+    clock.0.fetch_add(61_000, Ordering::SeqCst);
+    hq.tick().unwrap();
+    let second = turn_of(&hq, t.linus);
+    assert_eq!(second.run, first.run, "the same run, tried again");
+    hq.record_transcript(&second.token, "worker", "Second try: it ran out again.")
+        .unwrap()
+        .expect("kept beside the first");
+    let found = hq.store().transcript(first.run).unwrap().unwrap();
+    assert!(
+        found.body.contains("First try") && found.body.contains("Second try"),
+        "{}",
+        found.body
+    );
+    assert!(found.body.contains("tried again"), "{}", found.body);
+    assert!(
+        found.body.find("First try") < found.body.find("Second try"),
+        "in the order they ran"
+    );
+    let again = hq
+        .record_transcript(&second.token, "worker", "more")
+        .unwrap_err();
+    assert!(again.to_string().contains("already kept"), "{again}");
+}
+
 #[test]
 fn a_conversation_over_a_megabyte_keeps_its_head_and_tail_and_says_it_was_cut() {
     let clock = Hands(AtomicI64::new(NOON));

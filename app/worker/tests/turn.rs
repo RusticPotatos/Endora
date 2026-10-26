@@ -215,7 +215,7 @@ fn says(text: &str) -> Value {
 }
 
 #[test]
-fn local_model_replies_have_the_same_token_bound_as_messages_replies() {
+fn local_model_replies_are_explicitly_token_bounded() {
     let (hq_url, _) = hq(None);
     let (model_url, to_model) = model(vec![(200, says("The bounded turn finished."))]);
     let out = worker(&usual(&hq_url, &model_url));
@@ -223,8 +223,8 @@ fn local_model_replies_have_the_same_token_bound_as_messages_replies() {
     let sent = to_model.lock().unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(
-        sent[0].body["max_tokens"], 4096,
-        "local completion must be explicitly bounded"
+        sent[0].body["max_tokens"], 8192,
+        "local completion must be explicitly bounded (house models get twice the cloud's)"
     );
 }
 
@@ -1581,6 +1581,9 @@ fn the_local_relay_is_sent_no_effort_and_no_cache_mark() {
     let mut fields: Vec<&String> = body.as_object().unwrap().keys().collect();
     fields.sort();
     assert_eq!(fields, ["max_tokens", "messages", "model", "tools"]);
+    // A house model costs nothing to let think: chess turns on the local brains reached the
+    // cloud's 4096 and failed (8 of 441 house turns, 23-26 Oct), so they get twice that.
+    assert_eq!(body["max_tokens"], 8192);
 }
 
 #[test]
