@@ -370,6 +370,10 @@ task 830, Local (white, Rae) against the Mac (black, Dee); replays show every wh
 half-moves. A Claude side's payment from the league's cap is checked when Haiku first plays.
 Overnight the NAS stalled in a swap storm (about 03:50-04:10; load 467, swap 3.2 of 4 GiB, Plex
 Transcoder the largest process) and recovered on its own; Endora rode it out.
+Then game 830 stalled at 57 half-moves: Dee's black turn waited "for tomorrow" at the day's
+60 free turns, spent on the night's Holodeck match and this game. Fixed in `95657412` (live,
+ADR 0133 amended): a scenario's turns are bounded by its world, not its player's day, and the
+tripwire still counts them. Dee's turn started at once after the release.
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
