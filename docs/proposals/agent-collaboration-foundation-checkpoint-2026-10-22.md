@@ -134,6 +134,17 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
    report the share of task turns that would be offered help, by role and wake.
    Exit: a non-zero, explained share on routine Home lab work that read no
    Confidential receipt.
+   **Measured, 2026-10-25 night**, from production replays of runs 2300-2400 (about
+   17:00-22:20 EDT, 101 turns): a turn is counted as offered help when its briefing has
+   the colleague paragraph, which one rule gates with the tools (A1). **64 of 67 task
+   turns of members other than the CEO were offered help (96%)**, against 0 of 14 before
+   A1. By wake: every review_requested (14), question_answered (11), assignment_recovery
+   (5), sent_back (6), acceptance_asked (3), escalated (2) and check_back (2). The three
+   not offered: runs 2313 and 2314 (leads' assigned turns at 18:00 that read Confidential
+   lab data, before ADR 0141), and run 2334 (a Holodeck chess side, which gets the scenario
+   tool alone). Not offered by design: the CEO (0 of 12; A2e) and a colleague's answer
+   turns (0 of 3; an answer does not ask again). Downtime: 18 of 19 (Zed's run 2367 read
+   an open office proposal's free text, which has no lineage and fails closed).
 4. Give unscoped recurring work a trusted project where the owner names one
    (decision D2), so its turns have help scope and budgets.
    **Progress, 2026-10-25.** The owner can now move an open task into an active
