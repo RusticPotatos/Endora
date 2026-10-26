@@ -289,6 +289,16 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
    queue past the deadline, a real failure outcome shown in Work (C2). Fixed in
    `898a809f`: a colleague's answer takes whichever house model is free. An answered
    request in production is still to be observed; C3–C5 remain the owner's.
+   **Holodeck, chess and the model league, 2026-10-25 ~21:00–22:10 EDT:** Confidential
+   is open to Claude (ADR 0141). The Holodeck re-run was started over on today's engine
+   (`c87780e0`; 12 setups queued, the stuck match #801 dropped and kept). `chess` joined
+   the local core (`6f3cb2f1`), and a downtime turn whose move is due is about the move
+   alone (`24cefe89`; the house model, offered the office too, left it alone every turn).
+   The owner's model league (`35016dfb`, `5e9c5d66` seating fix; ADR 0135 amended): project 5
+   "Model league", capped at $10 a month, brains Local, Mac, Claude Haiku and Claude
+   Sonnet (Opus is the CEO's alone and the CEO does not play), 6 pairs, Elo; its first
+   game waits for the re-run queue. Next: see the office game's first move, and the
+   league's first game.
 
 **C. Prove it and decide** (observation, then owner decisions)
 
