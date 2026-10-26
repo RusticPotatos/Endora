@@ -168,6 +168,15 @@ says who stopped the team. The ceremony finding's "narrow its criteria" is now s
 can do. No mechanism is duplicated: a held talk wake is the held wake of 0131, and the question to
 the lead is the Guard wake and `decide_stuck` the stuck work already uses.
 
+## Amendment (2026-10-26): a scenario is bounded by its world
+
+The day's cap of free turns stalled the model league: Dee, black in its first game, had played
+the night's Holodeck match too and waited "for tomorrow" mid-game, which also kept Dee from any
+real work on the house that day. A scenario's turns are bounded by its own world (a match's
+move limit, three re-wakes before it is abandoned), so they no longer count against their
+player's day, nor wait on it. The tripwire still counts them: a runaway is a runaway in any
+world.
+
 ## Consequences
 
 - **In shadow, a returning owner reads what the guard would have done**, a finding on the Guards
