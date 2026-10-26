@@ -23,6 +23,7 @@ pub mod guards;
 pub mod history;
 pub mod house;
 pub mod ladder;
+pub mod league;
 pub mod lessons;
 pub mod mac;
 pub mod map;

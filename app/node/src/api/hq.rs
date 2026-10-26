@@ -338,6 +338,34 @@ pub(super) async fn hq_rerun_holodeck(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqLeague {
+    project: i64,
+    brains: Vec<String>,
+}
+
+/// The owner starts the model league: the brains play chess against each other.
+pub(super) async fn hq_start_league(
+    State(state): State<AppState>,
+    Json(req): Json<HqLeague>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/league".to_owned(),
+        Some(json!({ "project": req.project, "brains": req.brains })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!(
+            "you started the model league: {} play chess in project {}",
+            req.brains.join(", "),
+            req.project
+        ),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqTaskProject {
     project: i64,
 }

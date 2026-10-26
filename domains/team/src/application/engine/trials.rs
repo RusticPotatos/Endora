@@ -196,7 +196,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         Ok(
             json!({ "scenarios": self.scenarios_listed(20)?, "trials": trials,
-                   "queued": self.rerun_queued()? }),
+                   "queued": self.rerun_queued()?, "league": self.league_shown()? }),
         )
     }
 

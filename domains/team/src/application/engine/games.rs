@@ -123,7 +123,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The members who are free to play: at work, not the CEO, with no turn running or
     /// queued, no open task and no routine due.
-    fn free_to_play(&self, now: Millis) -> Done<Vec<Member>> {
+    pub(super) fn free_to_play(&self, now: Millis) -> Done<Vec<Member>> {
         let tasks = self.store.tasks()?;
         let runs = self.store.runs()?;
         let routines = self.store.routines()?;

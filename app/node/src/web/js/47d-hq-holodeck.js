@@ -23,12 +23,29 @@ function hqHolodeck(s) {
     : `<div class="hq-row"><button class="hq-btn tall" data-act="hq:holo:rerun:all">Run every scenario again</button></div>`;
   const tried = trials.map((t) => hqLine(`hq:holo:trial:${esc(t.name)}`, esc(t.name), `${esc(hqHoloKind(t.kind))}, ${Number(t.runs)} runs · compare`)).join("");
   const open = HQ.holo && HQ.holo.what !== "replay" ? hqHoloDetail() : "";
+  const league = hqLeague(h && h.league);
   return `<section class="hq-card"><h2>Holodeck</h2>
     <p class="hq-note">Scenarios the team plays in worlds that close themselves, and trials that compare who plays them. Nothing here touches the house.</p>
     ${again}
     ${scen.length ? `<p class="hq-who">Scenarios</p><ul class="hq-lines">${scenList.shown}</ul>${scenList.more}` : ""}
     ${tried ? `<p class="hq-who">Trials</p><ul class="hq-lines">${tried}</ul>` : ""}
+    ${league}
     ${open}</section>`;
+}
+
+// The model league (ADR 0135, amended 2026-10-25): the brains ranked by their chess, one line
+// each, and its games, latest first, each opening its board.
+function hqLeague(l) {
+  if (!l || !(l.table || []).length) return "";
+  const label = (name) => { const row = (l.table || []).find((r) => r.brain === name); return esc(row ? row.label : name); };
+  const rows = l.table.map((r, i) => `<li>${i + 1}. ${esc(r.label)} <small>${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
+  const games = (l.games || []).slice().reverse().map((g) => hqLine(`hq:holo:open:${Number(g.task)}`,
+    `${label(g.white)} against ${label(g.black)}`, esc(g.end || "playing")));
+  const list = hqMore("league", games, 3);
+  const left = Number(l.pairs_left || 0);
+  return `<p class="hq-who">Model league</p><ul class="hq-lines">${rows}</ul>
+    <p class="hq-note">${left ? `${left} pair${left === 1 ? "" : "s"} still to meet; then the rematches, colours swapped.` : "Every pair has met; the rematches go on, colours swapped."}</p>
+    ${games.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : ""}`;
 }
 
 // Whatever is open: a scenario, a trial or a replayed match, with a way to close it.

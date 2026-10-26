@@ -256,7 +256,7 @@ impl World {
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Refuses a project that does not give its work the scenario tool alone.
-    fn holds_scenarios(&self, project: ProjectId) -> Done<crate::domain::Project> {
+    pub(super) fn holds_scenarios(&self, project: ProjectId) -> Done<crate::domain::Project> {
         let found = self.project(project)?;
         if self.project_tools(project)?.as_deref() != Some(&[TOOL.to_owned()][..]) {
             return Err(refused(format!(
@@ -429,7 +429,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// [`Self::start_chess`] taken under the engine's lock, as the owner's asking.
-    fn start_chess_held_lock(
+    pub(super) fn start_chess_held_lock(
         &self,
         project: ProjectId,
         players: [MemberId; 2],
@@ -693,7 +693,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The scenarios waiting to run again, in order.
-    fn rerun_queue(&self) -> Done<Vec<String>> {
+    pub(super) fn rerun_queue(&self) -> Done<Vec<String>> {
         Ok(self
             .store
             .setting(RERUN_QUEUE)?
@@ -711,20 +711,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.rerun_queue()?.len())
     }
 
-    /// On the tick: when no scenario is running, the next one queued to run again starts. A
-    /// setup that no longer starts (a player let go, a project changed) is passed over.
-    pub(super) fn holodeck_rerun_tick(&self) -> Done<()> {
-        let mut queue = self.rerun_queue()?;
-        if queue.is_empty() {
-            return Ok(());
-        }
+    /// Whether a scenario's world is being played: one at a time, for the re-run and the league.
+    pub(super) fn a_world_is_live(&self) -> Done<bool> {
         for task in self.store.tasks()? {
             if task.parent.is_none()
                 && !task.status.finished()
                 && self.place_of(task.id)?.is_some_and(|p| p.world == task.id)
             {
-                return Ok(());
+                return Ok(true);
             }
+        }
+        Ok(false)
+    }
+
+    /// On the tick: when no scenario is running, the next one queued to run again starts. A
+    /// setup that no longer starts (a player let go, a project changed) is passed over.
+    pub(super) fn holodeck_rerun_tick(&self) -> Done<()> {
+        let mut queue = self.rerun_queue()?;
+        if queue.is_empty() || self.a_world_is_live()? {
+            return Ok(());
         }
         let next = queue.remove(0);
         self.store.set_setting(RERUN_QUEUE, &queue.join(";"))?;

@@ -128,6 +128,23 @@ pub struct Need {
 }
 
 impl Need {
+    /// What a side of a league game needs (ADR 0135, amended 2026-10-25): its pinned brain and
+    /// no other. A Claude is judgment, paid for; the Mac waits for the Mac; the house's model
+    /// is the NAS's.
+    #[must_use]
+    pub const fn pinned(brain: Brain) -> Self {
+        let (kind, allowed) = match brain {
+            Brain::Mac => (TurnKind::Work, Allowed::Mac),
+            Brain::Local => (TurnKind::Work, Allowed::Local),
+            Brain::Sonnet | Brain::Haiku | Brain::Opus => (TurnKind::Judgment, Allowed::Either),
+        };
+        Self {
+            kind,
+            allowed,
+            emergency: false,
+        }
+    }
+
     /// What a turn needs because of one wake. `a_review` is whether the turn's task is one of
     /// the leads' standing reviews (their daily report on their area, their weekly patterns):
     /// routines that are handed over as any task is, and are judgment whatever woke them.

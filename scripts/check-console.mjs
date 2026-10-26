@@ -3118,6 +3118,13 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (!card.includes('<button class="hq-line" data-act="hq:holo:open:708">') || card.includes(">Open</button>")) fail("holodeck: a scenario is not a one-line row: " + card);
   if (!card.includes('data-act="hq:holo:rerun:all"')) fail("holodeck: the owner cannot run every scenario again");
   if (card.includes("<b>lighthouse</b>")) fail("holodeck: a title is not escaped");
+  // The model league (ADR 0135, amended 2026-10-25): the brains ranked, one line each, and its games open.
+  runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: Object.assign({}, HQ.snap.holodeck, { league: {
+      table: [{ brain: "local", label: "Local", rating: 1216, won: 1, drawn: 0, lost: 0 }, { brain: "claude-haiku-5-5", label: "<b>Haiku</b>", rating: 1184, won: 0, drawn: 0, lost: 1 }],
+      games: [{ task: 812, white: "claude-haiku-5-5", black: "local", end: "black_won" }], pairs_left: 2 } }) });`, context);
+  const league = html("hqHolodeck(HQ.snap)");
+  if (!league.includes("Model league") || !/1\. Local[\s\S]*1216[\s\S]*1 won/.test(league) || !league.includes("2 pairs still to meet")) fail("holodeck: the league table is not shown: " + league);
+  if (!league.includes('data-act="hq:holo:open:812"') || league.includes("<b>Haiku</b>")) fail("holodeck: a league game does not open, or a label is not escaped: " + league);
   const shown = (data) => { runInContext(`HQ.holo = ${JSON.stringify(data)};`, context); return html("hqHoloDetail()"); };
   const chess = shown({ what: "scenario", data: { task: 708, kind: "chess", end: "black_won", result: "black_won", reason: "checkmate", moves: "1. f3 e5 2. g4 Qh4#",
     fen: "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3", rows: ["rnb.kbnr", "pppp.ppp", "........", "....p...", "......Pq", ".....P..", "PPPPP..P", "RNBQKBNR"],

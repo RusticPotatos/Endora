@@ -1395,3 +1395,73 @@ fn the_holodeck_re_run_starts_over_with_every_scenario_and_keeps_what_ran() {
         "one starts again"
     );
 }
+
+// The model league (ADR 0135, amended 2026-10-25): the owner wants the models compared at a
+// game of skill, every one against every other, in a table. Each side of a league game is
+// pinned to one brain whoever sits at the board; a Claude side is paid from the league's
+// project, which must be capped; the next pair goes when nothing else is being played; and the
+// table is rated from the results.
+#[test]
+fn the_model_league_pins_each_side_to_its_brain_and_rates_the_results() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (_, project) = crew(&hq);
+    let brains = ["claude-haiku-5-5", "local"];
+    assert!(
+        hq.start_league(project, &brains).is_err(),
+        "Claude plays only from a capped project"
+    );
+    assert!(hq.start_league(project, &["local"]).is_err(), "two brains");
+    assert!(hq.start_league(project, &["local", "gpt"]).is_err());
+    hq.set_project_cap(project, Some(5_000_000)).unwrap();
+    hq.start_league(project, &brains).unwrap();
+
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    let game = TaskId(league["games"][0]["task"].as_i64().expect("a game started"));
+    assert_eq!(league["games"][0]["white"], "claude-haiku-5-5", "{league}");
+    assert_eq!(league["games"][0]["black"], "local");
+    let part = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.parent == Some(game))
+        .unwrap();
+    let white = hq.store().task(game).unwrap().unwrap().assignee.unwrap();
+    let black = part.assignee.unwrap();
+    let [w, b] = <[RunContext; 2]>::try_from(turns(&hq, &[white, black]))
+        .ok()
+        .unwrap();
+    let ran = |c: &RunContext| hq.store().run(c.run).unwrap().unwrap();
+    assert_eq!(ran(&w).brain, Some(crate::domain::Brain::Haiku));
+    assert!(ran(&w).reserved > 0, "Claude's side is paid for");
+    assert_eq!(ran(&b).brain, Some(crate::domain::Brain::Local));
+
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.snapshot().unwrap()["holodeck"]["league"]["games"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "one game at a time"
+    );
+    for (side, san) in [(&w, "f3"), (&b, "e5"), (&w, "g4"), (&b, "Qh4")] {
+        play(&hq, side, san).unwrap();
+    }
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(league["table"][0]["brain"], "local", "{league}");
+    assert_eq!(league["table"][0]["rating"], 1216);
+    assert_eq!(league["table"][0]["won"], 1);
+    assert_eq!(league["table"][1]["rating"], 1184);
+    assert_eq!(league["pairs_left"], 0);
+    assert_eq!(league["games"][0]["end"], "black_won");
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(
+        league["games"][1]["white"], "local",
+        "the rematch swaps: {league}"
+    );
+}

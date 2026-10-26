@@ -130,6 +130,7 @@ pub fn app(state: State) -> Router {
         // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
         .route("/v1/scenarios", post(start_scenario))
         .route("/v1/scenarios/rerun", post(rerun_holodeck))
+        .route("/v1/league", post(start_league))
         .route("/v1/scenarios/{task}", get(scenario_shown))
         // Trials (phase 7): one scenario under two conditions or more, compared.
         .route("/v1/trials", post(start_trial))
@@ -607,6 +608,28 @@ async fn rerun_holodeck(
     })
     .await?;
     Ok(Json(json!({ "queued": queued, "round": req.round })))
+}
+
+#[derive(Deserialize)]
+struct League {
+    project: i64,
+    brains: Vec<String>,
+}
+
+/// The owner starts the model league: the brains play chess against each other in a project
+/// that holds scenarios (ADR 0135, amended 2026-10-25).
+async fn start_league(
+    Extract(state): Extract<State>,
+    Json(req): Json<League>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let brains = req.brains.clone();
+    blocking(move || {
+        let named: Vec<&str> = brains.iter().map(String::as_str).collect();
+        hq.start_league(ProjectId(req.project), &named)
+    })
+    .await?;
+    Ok(Json(json!({ "started": true, "brains": req.brains })))
 }
 
 #[derive(Deserialize)]
