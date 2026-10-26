@@ -428,6 +428,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/routines", post(hq_add_routine))
         .route("/v1/hq/routines/{id}", post(hq_switch_routine))
         .route("/v1/hq/routines/{id}/fire", post(hq_fire_routine))
+        .route("/v1/hq/routines/{id}/project", post(hq_routine_project))
         // The owner's projects, and whom members report to (ADR 0113).
         .route("/v1/hq/projects", post(hq_add_project))
         .route("/v1/hq/projects/{id}", post(hq_change_project))

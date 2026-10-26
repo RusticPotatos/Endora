@@ -239,6 +239,11 @@ the same pool, so its cap bounds its part rather than adding to the total. The s
 written around. Shares, top-ups (at most three times a pool day) and the per-turn limits scale
 with it unchanged.
 
+The owner can also move a routine into a project under its goal, or out of one
+(`POST /v1/routines/{id}/project`, through the node's `/v1/hq/routines/{id}/project`): what it
+fires from then on is the project's. A lead's standing reviews go to the lead's area project;
+the CEO's stay unscoped, paid from the pool.
+
 ## Consequences
 
 - Money has a second axis: what a piece of work may cost in a month, beside what a member may

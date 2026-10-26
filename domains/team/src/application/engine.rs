@@ -4854,6 +4854,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
+    /// The owner moves a routine into a project under its goal, or out of one (`None`). What
+    /// it fires from then on is the project's, with its help scope, tools and budget (D2,
+    /// 2026-10-25: a lead's standing reviews belong to the lead's area project).
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a routine or project that does not exist; what
+    /// `projects::may_hold` refuses for a project under another goal or not active.
+    pub fn set_routine_project(&self, id: RoutineId, project: Option<ProjectId>) -> Done<()> {
+        let _held = self.held();
+        let mut routine = self.routine(id)?;
+        if let Some(project) = project {
+            let found = self.project(project)?;
+            crate::domain::projects::may_hold(found.goal, found.status, routine.goal)
+                .map_err(EngineError::Refused)?;
+        }
+        routine.project = project;
+        self.store.save_routine(&routine)?;
+        self.emit(
+            EventKind::RoutineChanged,
+            json!({ "routine": id.0, "title": routine.title, "project": project.map(|p| p.0) }),
+        )
+    }
+
     /// The owner runs a routine now, whatever its rhythm. Its next time is unchanged.
     ///
     /// # Errors

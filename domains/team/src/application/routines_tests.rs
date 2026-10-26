@@ -803,3 +803,31 @@ fn routines_made_before_origins_are_vouched_for_only_when_their_words_are_hqs_te
     assert_eq!(body(template), InputOrigin::System);
     assert_eq!(body(edited), InputOrigin::Unknown);
 }
+
+// D2 (2026-10-25): a lead's standing reviews belong to the lead's area project, so their turns
+// have help scope and the project's budget. The owner moves a routine into a project under its
+// goal, or out of one; a project under another goal is refused, and what it fires next is the
+// project's.
+#[test]
+fn the_owner_moves_a_routine_into_a_project_under_its_goal() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, t) = office(&clock);
+    let id = check_the_lab(&hq, &t, false);
+    let upkeep = hq
+        .add_project(t.goal, "Home lab upkeep", "", t.lead, None)
+        .unwrap();
+    let other = hq.set_goal("Improve the lab", "", Author::Owner).unwrap();
+    let elsewhere = hq.add_project(other, "Clean-up", "", t.lead, None).unwrap();
+    assert!(hq.set_routine_project(id, Some(elsewhere)).is_err());
+    assert_eq!(routine(&hq, id).project, None, "a refusal changes nothing");
+    hq.set_routine_project(id, Some(upkeep)).unwrap();
+    assert_eq!(routine(&hq, id).project, Some(upkeep));
+    let Fired::Created(task) = hq.fire_routine(id).unwrap() else {
+        panic!("it hands out a task");
+    };
+    let fired = hq.store().task(task).unwrap().unwrap();
+    assert_eq!(fired.project, Some(upkeep), "its task is the project's");
+    hq.set_routine_project(id, None).unwrap();
+    assert_eq!(routine(&hq, id).project, None);
+    assert!(kinds(&hq).iter().any(|k| k == "routine.changed"));
+}

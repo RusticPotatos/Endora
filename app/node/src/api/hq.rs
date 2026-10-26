@@ -642,6 +642,34 @@ pub(super) async fn hq_switch_routine(
     Ok(answer)
 }
 
+#[derive(Deserialize)]
+pub(super) struct HqRoutineProject {
+    #[serde(default)]
+    project: Option<i64>,
+}
+
+/// The owner moves a routine into a project, or out of one (D2).
+pub(super) async fn hq_routine_project(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqRoutineProject>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/routines/{id}/project"),
+        Some(json!({ "project": req.project })),
+    )
+    .await?;
+    record(
+        &state,
+        &match req.project {
+            Some(project) => format!("you moved routine {id} into project {project}"),
+            None => format!("you took routine {id} out of its project"),
+        },
+    );
+    Ok(answer)
+}
+
 /// The owner runs a routine now.
 pub(super) async fn hq_fire_routine(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
     let answer = ask(&state, format!("/v1/routines/{id}/fire"), Some(json!({}))).await?;

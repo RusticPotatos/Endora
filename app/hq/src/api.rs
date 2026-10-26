@@ -143,6 +143,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/routines", post(add_routine))
         .route("/v1/routines/{id}", post(switch_routine))
         .route("/v1/routines/{id}/fire", post(fire_routine))
+        .route("/v1/routines/{id}/project", post(routine_project))
         .route("/v1/alarms", post(alarm))
         .route("/v1/alarms/recovered", post(recovered))
         // The home lab's containers, as the node sees them: what a question to the owner is
@@ -1195,6 +1196,23 @@ async fn switch_routine(
     let hq = state.hq.clone();
     blocking(move || hq.switch_routine(RoutineId(id), req.enabled)).await?;
     Ok(Json(json!({ "routine": id, "enabled": req.enabled })))
+}
+
+#[derive(Deserialize)]
+struct RoutineProject {
+    #[serde(default)]
+    project: Option<i64>,
+}
+
+/// The owner moves a routine into a project under its goal, or out of one (D2).
+async fn routine_project(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<RoutineProject>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_routine_project(RoutineId(id), req.project.map(ProjectId))).await?;
+    Ok(Json(json!({ "routine": id, "project": req.project })))
 }
 
 /// What a firing did, as the node reads it.
