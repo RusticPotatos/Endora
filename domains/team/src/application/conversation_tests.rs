@@ -1683,8 +1683,8 @@ fn taskless_messages_keep_identity_and_create_no_work() {
     assert!(hq.store().call_receipts_of(turn.run).unwrap().is_empty());
     assert!(
         hq.send_message_in(turn.run, conversation, "history_key_1", &history, &[])
-            .is_err(),
-        "reading Confidential history must prevent relabeling it as Internal messaging"
+            .is_ok(),
+        "ADR 0141: a turn that read Confidential history may send it"
     );
     let kept = hq
         .record_transcript(&turn.token, "worker", &history)
@@ -1708,19 +1708,21 @@ fn taskless_messages_keep_identity_and_create_no_work() {
             turn.run,
             conversation,
             "message_key_2",
-            "Must not escape",
+            "May be sent now",
             &[]
         )
-        .is_err()
+        .is_ok(),
+        "ADR 0141: a turn that read a Confidential result may send"
     );
     hq.set_conversations_enabled(false).unwrap();
     assert!(hq.read_messages_in(turn.run, conversation, 0).is_err());
+    // The first message, and the two a Confidential turn may now send (ADR 0141).
     assert_eq!(
         hq.conversation_messages(conversation, 0).unwrap()["messages"]
             .as_array()
             .unwrap()
             .len(),
-        1
+        3
     );
 }
 
@@ -1935,22 +1937,17 @@ fn notebook_input_cannot_launder_confidential_history_in_a_fresh_turn() {
             "Confidential notebook fixture",
             &[]
         )
-        .is_err()
+        .is_ok(),
+        "ADR 0141: a turn that read Confidential history may send it"
     );
     end(&hq, &clean);
     hq.wake(peer, None, WakeReason::Downtime).unwrap();
     hq.tick().unwrap();
     let briefed = turn_of(&hq, peer);
     assert!(briefed.told.contains("Confidential notebook fixture"));
+    // ADR 0141: the turn may send, and the notebook's mark still travels to it.
     assert!(
-        hq.send_message_in(
-            briefed.run,
-            conversation,
-            "notebook_key_2",
-            "Confidential notebook fixture",
-            &[]
-        )
-        .is_err(),
+        super::history_ports::HistoryStore::run_read_confidential(hq.store(), briefed.run).unwrap(),
         "automatic notebook context must also propagate its tier"
     );
 }
@@ -3014,7 +3011,7 @@ fn a_leads_house_page_is_classified_by_the_turns_that_wrote_it() {
 /// on the house's own models (work always does: ADR 0131): the colleague's turn and the asker's
 /// result turn carry the mark.
 #[test]
-fn a_confidential_turn_asks_a_colleague_who_answers_on_the_houses_models() {
+fn a_confidential_turn_asks_a_colleague_and_the_mark_travels() {
     use super::history_ports::HistoryStore;
     use serde_json::json;
     let clock = Hands(AtomicI64::new(NOON));
@@ -3067,10 +3064,10 @@ fn a_confidential_turn_asks_a_colleague_who_answers_on_the_houses_models() {
         hq.store().run_read_confidential(result.run).unwrap(),
         "the asker's result turn carries the mark"
     );
-    // Sending information stays closed to a Confidential turn.
+    // Sending information is open to a Confidential turn too (ADR 0141).
     assert!(
         hq.send_message_in(result.run, 1, "fixture_send_1", "x", &[])
-            .is_err()
+            .is_ok()
     );
 }
 
@@ -3139,9 +3136,10 @@ fn a_colleague_answers_on_a_tier_at_least_the_askers() {
         let on_claude = expert.brain.is_some_and(crate::domain::Brain::cloud);
         let asker_run = hq.store().run(run.id).unwrap().unwrap();
         let wake = hq.store().wake(expert.wake).unwrap().map(|w| w.reason);
+        // ADR 0141: a Confidential ask goes up a tier like any other.
         assert_eq!(
             on_claude,
-            case == "claude asker",
+            case != "house asker",
             "{case}: expert {:?} woken {wake:?}; asker {:?}",
             expert.brain,
             asker_run.brain

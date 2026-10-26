@@ -564,19 +564,18 @@ mod tests {
     }
 
     #[test]
-    fn a_cloud_member_is_never_given_a_passage_from_a_turn_that_read_confidential_data() {
+    fn a_cloud_member_is_given_confidential_passages_and_never_restricted_ones() {
+        // ADR 0141: Confidential is open to Claude; Restricted stays home.
         let words = said("router password");
         let mut secret = passage("turn R3", 5, "the router password rotated");
-        secret.tier = Tier::Confidential;
+        secret.tier = Tier::Restricted;
+        let mut private = passage("turn R4", 5, "the router password was changed today");
+        private.tier = Tier::Confidential;
         let open = passage("post 9", 4, "the router password policy is in the wiki");
-        let for_cloud = choose(vec![secret.clone(), open.clone()], &words, true);
-        assert_eq!(
-            for_cloud
-                .iter()
-                .map(|e| e.locator.as_str())
-                .collect::<Vec<_>>(),
-            ["post 9"]
-        );
+        let for_cloud = choose(vec![secret.clone(), private, open.clone()], &words, true);
+        let mut found: Vec<&str> = for_cloud.iter().map(|e| e.locator.as_str()).collect();
+        found.sort_unstable();
+        assert_eq!(found, ["post 9", "turn R4"]);
         let at_home = choose(vec![secret, open], &words, false);
         assert_eq!(at_home.len(), 2, "the house's own model may be given both");
     }

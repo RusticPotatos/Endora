@@ -1253,7 +1253,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// What was cited on a task at `stage`'s latest, per criterion, each receipt with its
-    /// excerpt (left out of a Confidential one for a reader on a cloud model).
+    /// excerpt, whatever the reader thinks on (ADR 0141).
     pub(super) fn cited_said(&self, task: &Task, stage: &str, cloud: bool) -> Done<String> {
         let cited = self.store.cited(task.id)?;
         let Some(last) = cited.iter().rev().find(|c| c.stage == stage) else {

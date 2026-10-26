@@ -2487,7 +2487,7 @@ async function hqDispatch(verb, noun, id, arg) {
   if (noun === "brain") {
     const m = hqMember(Number(id)), b = ((m && m.brains) || []).find((x) => x.name === arg);
     if (!m || !b || m.brain === arg) return true;
-    if (arg !== "local" && arg !== "mac" && !confirm(`${m.name} will think with ${b.label}: each turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results stay home, but for what you allowed the lead). Go ahead?`)) return true;
+    if (arg !== "local" && arg !== "mac" && !confirm(`${m.name} will think with ${b.label}: each turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results included; Restricted ones stay home). Go ahead?`)) return true;
     try { await api("POST", `/v1/hq/members/${id}/brain`, { brain: arg }); flash(`${m.name} thinks with ${b.label}.`, "ok"); }
     catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
@@ -2504,7 +2504,7 @@ async function hqDispatch(verb, noun, id, arg) {
   if (noun === "judge") {
     const m = hqMember(Number(id)), b = ((m && m.judgment_brains) || []).find((x) => x.name === arg);
     if (!m || !b || m.judgment_brain === arg) return true;
-    if (!confirm(`${m.name} will judge with ${b.label}: each decision turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results stay home, but for what you allowed the lead). Go ahead?`)) return true;
+    if (!confirm(`${m.name} will judge with ${b.label}: each decision turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results included; Restricted ones stay home). Go ahead?`)) return true;
     try { await api("POST", `/v1/hq/members/${id}/judgment-brain`, { judgment_brain: arg }); flash(`${m.name} judges with ${b.label}.`, "ok"); }
     catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;

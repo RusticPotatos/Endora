@@ -444,25 +444,13 @@ pub fn offered(tools: Vec<Bridged>, asker: Asker<'_>) -> Vec<Bridged> {
         .collect()
 }
 
-/// The Confidential results a lead's turn on a cloud model may be given, by the owner's
-/// decision of 2026-10-17 (ADR 0109): a container's scrubbed log, and the download queues with
-/// why each item is stuck. Every other Confidential result stays with turns on the house's
-/// own model, and no other role's cloud turn is given any.
-pub const CLOUD_LEAD_MAY_SEE: [&str; 3] = ["container_logs", "sonarr_queue", "radarr_queue"];
-
-/// Whether a turn may be given what the tool `id` of `tier` returns, for a member in `role`:
-/// Restricted never (it is not offered at all); Confidential to a turn on a local model, and
-/// to a lead's or the CEO's turn on a cloud model only what [`CLOUD_LEAD_MAY_SEE`] names; the
-/// rest to all. The owner's word of 2026-10-18 (ADR 0120): reading is open to the CEO, whose
-/// system it is, as to the lead; it loses acts on the lab, not sight of it.
+/// Whether a turn may be given what a tool of `tier` returns: anything but Restricted, to any
+/// role on any model (ADR 0141, the owner's decision of 2026-10-25: Confidential is open to
+/// Claude). Restricted is never offered at all. `id`, `role` and `on_a_cloud_model` no longer
+/// decide it, and are kept so a later rule can again.
 #[must_use]
-pub fn may_see(tier: Tier, id: &str, role: &str, on_a_cloud_model: bool) -> bool {
-    match tier {
-        Tier::Restricted => false,
-        Tier::Confidential if !on_a_cloud_model => true,
-        Tier::Confidential => matches!(role, "lead" | "ceo") && CLOUD_LEAD_MAY_SEE.contains(&id),
-        _ => true,
-    }
+pub fn may_see(tier: Tier, _id: &str, _role: &str, _on_a_cloud_model: bool) -> bool {
+    tier != Tier::Restricted
 }
 
 /// What the bridge adds to every act's arguments, which are the bridge's and not the tool's: the
@@ -925,42 +913,27 @@ mod tests {
     }
 
     #[test]
-    fn confidential_is_given_to_a_local_turn_and_to_the_cloud_lead_only_as_the_owner_allowed() {
-        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
-            assert!(may_see(Tier::Confidential, "home_assistant", role, false));
-            assert!(may_see(Tier::Confidential, "container_logs", role, false));
-            assert!(may_see(Tier::Internal, "homelab_status", role, true));
-            assert!(!may_see(Tier::Restricted, "location", role, false));
-            assert!(
-                !may_see(Tier::Confidential, "home_assistant", role, true),
-                "{role}: every other Confidential result stays home"
-            );
-        }
-        // The owner's decision of 2026-10-17 (ADR 0109): the lead's cloud turns may read the
-        // scrubbed logs and the download queues, and nothing else Confidential; and of
-        // 2026-10-18 (ADR 0120): so may the CEO's, whose system it is.
-        for allowed in CLOUD_LEAD_MAY_SEE {
-            for role in ["lead", "ceo"] {
+    fn confidential_is_given_to_every_turn_on_any_model_and_restricted_to_none() {
+        // ADR 0141: Confidential is open to Claude; Restricted stays home.
+        for role in ["ceo", "lead", "developer", "reviewer", "researcher", ""] {
+            for cloud in [false, true] {
+                for id in ["home_assistant", "container_logs", "mail", "network-pihole"] {
+                    assert!(
+                        may_see(Tier::Confidential, id, role, cloud),
+                        "{id} to {role}"
+                    );
+                }
+                assert!(may_see(Tier::Internal, "homelab_status", role, cloud));
                 assert!(
-                    may_see(Tier::Confidential, allowed, role, true),
-                    "{allowed} to {role}"
+                    !may_see(Tier::Restricted, "location", role, cloud),
+                    "Restricted stays home: {role}"
                 );
-            }
-            for role in ["developer", "reviewer", "researcher", ""] {
                 assert!(
-                    !may_see(Tier::Confidential, allowed, role, true),
-                    "{allowed} to a cloud {role}"
+                    !may_see(Tier::Restricted, "container_logs", role, cloud),
+                    "Restricted stays home whatever its name"
                 );
             }
         }
-        assert_eq!(
-            CLOUD_LEAD_MAY_SEE,
-            ["container_logs", "sonarr_queue", "radarr_queue"]
-        );
-        assert!(
-            !may_see(Tier::Restricted, "container_logs", "lead", true),
-            "Restricted stays home whatever its name"
-        );
     }
 
     #[test]
@@ -1035,12 +1008,13 @@ mod tests {
         // what asks included, and a reviewer only what reads. Nothing changed for it.
         assert_eq!(ids("developer", Thinks::OnTheMac).len(), tools.len());
         assert_eq!(ids("reviewer", Thinks::OnTheMac), trusted_reads);
-        // On Claude the tier keeps what is Confidential at home, as it always did.
-        assert_eq!(ids("developer", Thinks::OnClaude), ["weather"]);
+        // On Claude a turn is offered what its role allows, as on the Mac: Confidential is open
+        // to Claude (ADR 0141).
         assert_eq!(
-            ids("lead", Thinks::OnClaude),
-            ["weather", "sonarr_queue", "radarr_queue"]
+            ids("developer", Thinks::OnClaude),
+            ids("developer", Thinks::OnTheMac)
         );
+        assert_eq!(ids("reviewer", Thinks::OnClaude), trusted_reads);
     }
 
     /// What can end on the owner's desk is what asks, and what asks once a turn has read a

@@ -133,14 +133,12 @@ fn kept_from_the_bridge(name: &str, why: &str) -> String {
     )
 }
 
-/// Why a cloud turn is refused a Confidential tool, as the model reads it, and what to do
-/// instead: a member thinking on the house's own model may take the step, so the lead hands it
-/// on rather than leaving it undone.
+/// Why a turn is refused a tool whose results it may not see, as the model reads it: since ADR
+/// 0141 only Restricted ones, which never reach any turn.
 pub(super) fn confidential(name: &str) -> String {
     format!(
-        "{name} gives back Confidential results, which stay with turns on the house's own \
-         model: hand this step to a member who thinks on the house's model (create_task), \
-         rather than leaving it undone"
+        "{name} gives back Restricted results, which never leave the house: no turn is given \
+         them, so leave this step to the owner"
     )
 }
 
@@ -756,7 +754,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_reviewer_reads_only_and_a_cloud_turn_sees_nothing_confidential() {
+    async fn a_reviewer_reads_only_and_a_cloud_turn_sees_confidential_too() {
         let (hq_url, _) = hq("reviewer", false);
         let (sonarr_url, _) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
@@ -777,59 +775,33 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
 
-        // A turn on a cloud model (as HQ will say one is): Confidential stays home.
+        // A turn on a cloud model (as HQ will say one is): Confidential is open to it too
+        // (ADR 0141).
         let (hq_url, _) = hq("developer", true);
         let state = bridged(&hq_url, &sonarr_url);
         let listed = tools(&state).await;
         assert!(
-            !listed.iter().any(|(n, _)| n == "sonarr_queue"),
+            listed.iter().any(|(n, _)| n == "sonarr_queue"),
             "{listed:?}"
         );
-        assert!(
-            listed.iter().any(|(n, _)| n == "weather"),
-            "Public still is"
-        );
+        assert!(listed.iter().any(|(n, _)| n == "weather"), "{listed:?}");
         let (status, said) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
-        assert!(
-            said["error"].as_str().unwrap().contains("Confidential"),
-            "{said}"
-        );
-        let turn = Turn {
-            run: 7,
-            member: "Linus".to_owned(),
-            role: "developer".to_owned(),
-            left: 0,
-            task: None,
-            token: "good".to_owned(),
-            cloud: true,
-            brain: "claude-haiku-5-5".to_owned(),
-            claude_code: false,
-            wing: None,
-            only: None,
-        };
-        let tool = catalog(&state)
-            .into_iter()
-            .find(|b| b.id == "sonarr_queue")
-            .unwrap();
-        let refused = call(&state, &turn, &tool, &json!({})).err().unwrap();
-        assert_eq!(
-            refused.0,
-            StatusCode::FORBIDDEN,
-            "the check point itself refuses"
-        );
+        assert_eq!(status, StatusCode::OK, "{said}");
     }
 
     #[test]
-    fn a_cloud_turns_refusal_says_to_hand_the_step_on() {
-        let said = super::confidential("sonarr_retry_import");
-        assert!(said.contains("hand this step"), "{said}");
-        assert!(said.contains("create_task"), "{said}");
+    fn a_refusal_for_what_no_turn_may_see_says_it_never_leaves_the_house() {
+        // Since ADR 0141 only Restricted results are refused this way.
+        let said = super::confidential("location");
+        assert!(
+            said.contains("Restricted") && said.contains("never leave the house"),
+            "{said}"
+        );
     }
 
     #[tokio::test]
-    async fn the_cloud_lead_reads_the_download_queues_and_nothing_else_confidential() {
-        // The owner's decision of 2026-10-17 (ADR 0109).
+    async fn a_cloud_turn_reads_the_download_queues_and_acts_as_its_role_may() {
+        // ADR 0141: Confidential is open to Claude; what a role may do is unchanged.
         let (sonarr_url, _) = sonarr();
         let (hq_url, _) = hq("lead", true);
         let state = bridged(&hq_url, &sonarr_url);
@@ -839,48 +811,33 @@ mod tests {
             "{listed:?}"
         );
         assert!(
-            !listed.iter().any(|(n, _)| n == "sonarr_retry_import"),
-            "a Confidential act is not among what the owner allowed: {listed:?}"
+            listed.iter().any(|(n, _)| n == "sonarr_retry_import"),
+            "a lead acts on the queue on Claude as at home: {listed:?}"
         );
         let (status, said) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
         assert_eq!(status, StatusCode::OK, "{said}");
-        let (status, said) = send(
-            &state,
-            "POST",
-            "/team-relay/contracts/sonarr_retry_import",
-            r#"{"why":"stuck"}"#,
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
-        assert!(
-            said["error"].as_str().unwrap().contains("Confidential"),
-            "{said}"
-        );
 
         let (hq_url, _) = hq("reviewer", true);
         let state = bridged(&hq_url, &sonarr_url);
         assert!(
-            !tools(&state).await.iter().any(|(n, _)| n == "sonarr_queue"),
-            "a cloud reviewer reads no queue"
+            tools(&state).await.iter().any(|(n, _)| n == "sonarr_queue"),
+            "a cloud reviewer reads the queue"
         );
         let (status, _) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(status, StatusCode::OK);
 
-        // The CEO on Claude reads the queue as the cloud lead does, and acts on nothing
-        // (ADR 0120, the owner's word of 2026-10-18).
+        // The CEO on Claude reads the queue, and acts on nothing (ADR 0120).
         let (hq_url, _) = hq("ceo", true);
         let state = bridged(&hq_url, &sonarr_url);
         let listed = tools(&state).await;
         assert!(
             listed.iter().any(|(n, _)| n == "sonarr_queue"),
-            "the CEO reads the queue: {listed:?}"
+            "{listed:?}"
         );
         assert!(
             !listed.iter().any(|(n, _)| n == "sonarr_retry_import"),
             "and is offered no act: {listed:?}"
         );
-        let (status, said) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
-        assert_eq!(status, StatusCode::OK, "{said}");
     }
 
     #[tokio::test]

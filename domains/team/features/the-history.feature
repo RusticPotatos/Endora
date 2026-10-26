@@ -59,7 +59,8 @@ Feature: The team's history
     And the answer says "testimony"
     And nobody was woken by the question
 
-  Scenario: A turn on Claude never sees what a turn on the house's own models said after reading Confidential data
+  # ADR 0141 (the owner, 2026-10-25): Confidential is open to Claude; only Restricted stays home.
+  Scenario: A turn on Claude sees what a turn on the house's own models said after reading Confidential data
     Given Zed has the task "Check the router"
     When Zed's turn starts
     And Zed reads the lab and sees something Confidential
@@ -71,7 +72,7 @@ Feature: The team's history
     And Ada has the task "Plan the week"
     When Rae's turn starts
     And Rae asks the record "Was the router password rotated?"
-    Then the answer holds nothing
+    Then the answer says "password was rotated today"
     When Ada's turn starts
     And Ada asks the record "Was the router password rotated?"
     Then the answer says "password was rotated today"
