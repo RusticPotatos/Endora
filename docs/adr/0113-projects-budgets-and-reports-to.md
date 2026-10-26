@@ -230,6 +230,15 @@ project, which reads and acts only through its own tool. The list is kept as a s
 (`project_tools:<id>`), so nothing in the store's tables changes. Not built yet: a field for it
 on the owner's screen.
 
+## Amendment (2026-10-25): the pool is $95 a month
+
+The owner raised the team's pool from $70 to $95 a month, about $3.17 a day: $10 of it is the
+model league's cap (ADR 0135, amended), and the rest the agents'. The league's project draws on
+the same pool, so its cap bounds its part rather than adding to the total. The service sets it
+(`app/hq`); the engine's own default stays $70, the figure its tests and the scripted demo are
+written around. Shares, top-ups (at most three times a pool day) and the per-turn limits scale
+with it unchanged.
+
 ## Consequences
 
 - Money has a second axis: what a piece of work may cost in a month, beside what a member may

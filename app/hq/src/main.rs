@@ -17,6 +17,7 @@ pub(crate) mod public_docs {
 }
 
 use endora_team::application::engine::{Engine, Settings};
+use endora_team::domain::money;
 use endora_team::infrastructure::{RemoteRunner, Runner, SimulatedRunner, SqliteTeamStore, demo};
 
 /// The engine HQ runs: its store, its runner (the simulated one for the demo, else the remote
@@ -300,6 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The caps on a runaway (ADR 0133) are on for a real team from the start. The scripted
         // demo takes a turn as fast as its tick lets it, costs nothing, and is exempt.
         scripted: demo_mode,
+        pool_per_month: THE_HOUSES_POOL,
         ..Settings::default()
     };
     let hq: Arc<Hq> = Arc::new(
@@ -500,9 +502,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// The team's pool a month (ADR 0113): the owner raised it from $70 to $95 on 2026-10-25, $10
+/// of it the model league's cap (ADR 0135) and the rest the agents'. The engine's own default
+/// stays $70, the figure its tests and the scripted demo are written around.
+const THE_HOUSES_POOL: money::Micros = 95 * money::DOLLAR;
+
 #[cfg(test)]
 mod tests {
-    use super::{owners_offset, the_runner_token, the_token};
+    use super::{THE_HOUSES_POOL, money, owners_offset, the_runner_token, the_token};
+
+    /// The owner, 2026-10-25: the team's pool is $95 a month, $10 of it the model league's cap
+    /// and the rest the agents' (ADR 0113, amended).
+    #[test]
+    fn the_houses_pool_is_the_owners_95_dollars_a_month() {
+        assert_eq!(THE_HOUSES_POOL, 95 * money::DOLLAR);
+        assert_eq!(money::pool_a_day(THE_HOUSES_POOL), 3_166_666);
+    }
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let pairs: Vec<(String, String)> = pairs
