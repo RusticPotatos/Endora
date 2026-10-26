@@ -400,6 +400,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
+    /// What a downtime turn is told when its member's move in chess is due: the move alone.
+    /// Live, the house's model, offered the office as well, left it alone turn after turn and
+    /// never moved (2026-10-25). `None` when no move of the member's is due.
+    pub(super) fn chess_move_said(&self, member: &Member) -> Done<Option<String>> {
+        let Some(game) = self
+            .chess_game_of(member.id)?
+            .filter(|g| g.to_move() == member.id)
+        else {
+            return Ok(None);
+        };
+        let names = self.names()?;
+        let opponent = game
+            .opponent(member.id)
+            .and_then(|o| names.get(&o))
+            .cloned()
+            .unwrap_or_default();
+        Ok(Some(format!(
+            "Chess: Your move against {opponent} in chess (game {}). This turn is for your move: \
+             look with chess (action board), play one legal move (action move, san), then stop.\n",
+            game.id
+        )))
+    }
+
     /// What a downtime briefing says about chess: whose move it is in the member's game, or
     /// that it may challenge someone. Short.
     pub(super) fn chess_briefed(&self, member: &Member) -> Done<String> {
