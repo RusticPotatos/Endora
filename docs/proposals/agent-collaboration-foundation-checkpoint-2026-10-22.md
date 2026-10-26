@@ -377,6 +377,14 @@ tripwire still counts them. Dee's turn started at once after the release.
 Game 830 ended drawn at the move limit (Local and Mac 1200, a draw each). Game 835, Local
 against Claude Haiku, started at once; by 12:15 the Model league project had spent $0.014 of its
 $10 cap, so a Claude side is paid from the league's capped project as designed.
+6. C4 and D4, 2026-10-26 13:15: the matched comparison has too little to compare. Since the
+cutover there have been three requests (one expired, two declined), each from a cause now fixed,
+and none since the fixes; real work is light (two open tasks). D4 is recorded in ADR 0138's
+status as a provisional adoption, final when C4 is not worse. **Left open, by observation
+only:** C1 (the first answered request, end to end) and C4 (compare once at least five requests
+are answered; offline, no new money, $5 cap if a Claude tier is used, per D3). The league
+meanwhile: Haiku beat Local in game 835; game 837, Local against Sonnet, is playing.
+7. Merged to develop after a privacy scan (below).
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.

@@ -9,6 +9,12 @@ support the new direction. This supersedes ADR 0137's requirement to preserve bo
 execution contracts as the final state. It does not claim replacement has shipped
 or authorize destructive history deletion, paid experiments or deployment.
 
+**Adopted provisionally, 2026-10-26** (D4, decided on the evidence at the owner's request):
+the replacement is live and the old paths are retired. It becomes final when the matched
+comparison (C4) is not worse than the retained consult and manager-relay baseline. That
+comparison waits for answered requests: the first three were one expired and two declined, each
+from a cause now fixed (see the 2026-10-25 amendment).
+
 ## Context
 
 [ADR 0137](0137-addressed-conversations-and-bounded-assistance.md) introduced
