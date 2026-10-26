@@ -3137,14 +3137,24 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   const league = html("hqHolodeck(HQ.snap)");
   if (!league.includes("Model league") || !/1\. Local[\s\S]*1216[\s\S]*1 won/.test(league) || !league.includes("2 pairs still to meet")) fail("holodeck: the league table is not shown: " + league);
   if (!league.includes('data-act="hq:holo:open:812"') || league.includes("<b>Haiku</b>")) fail("holodeck: a league game does not open, or a label is not escaped: " + league);
+  // Which side each brain played, and who won, in words rather than "black_won" (owner, 2026-10-26).
+  const gameLine = league.replace(/<[^>]+>/g, "");
+  if (!gameLine.includes("White: &lt;b&gt;Haiku&lt;/b&gt;") || !gameLine.includes("Black: Local") || !gameLine.includes("Local won") || gameLine.includes("black_won")) fail("holodeck: a league game does not say who played which colour and who won: " + league);
   const shown = (data) => { runInContext(`HQ.holo = ${JSON.stringify(data)};`, context); return html("hqHoloDetail()"); };
   const chess = shown({ what: "scenario", data: { task: 708, kind: "chess", end: "black_won", result: "black_won", reason: "checkmate", moves: "1. f3 e5 2. g4 Qh4#",
     fen: "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3", rows: ["rnb.kbnr", "pppp.ppp", "........", "....p...", "......Pq", ".....P..", "PPPPP..P", "RNBQKBNR"],
     sides: { white: "Bo", black: "<i>Dee</i>" }, by_role: [{ role: "black", by: "<i>Dee</i>", accepted: 2, refused: 0 }, { role: "white", by: "Bo", accepted: 2, refused: 2 }],
     log: [{ action: "move e5", ok: false, said: "e5 is not a legal move", by: "Bo", role: "white" }, { action: "move f3", ok: true, said: "white played f3.", by: "Bo", role: "white" }] } });
-  if (!chess.includes("hq-chess") || !chess.includes("1. f3 e5 2. g4 Qh4#") || !chess.includes("black_won")) fail("holodeck: a match does not show its board, moves and result: " + chess);
+  if (!chess.includes("hq-chess") || !chess.includes("1. f3 e5 2. g4 Qh4#") || !chess.includes("black won")) fail("holodeck: a match does not show its board, moves and result: " + chess);
   if (!/white[^<]*Bo[^<]*2 legal, 2 illegal/.test(chess.replace(/<[^>]+>/g, ""))) fail("holodeck: a match does not show each side's illegal moves: " + chess);
   if (chess.includes("<i>Dee</i>")) fail("holodeck: a member's name is not escaped");
+  // Each side named beside the board with its colour, the board between them as it is drawn.
+  const text = chess.replace(/<[^>]+>/g, " ");
+  if (!/Black[^A-Za-z]*&lt;i&gt;Dee[\s\S]*hq-chess/.test(chess.replace(/<(?!div class="hq-chess)[^>]+>/g, " ")) || !/hq-chess[\s\S]*White[^A-Za-z]*Bo/.test(chess)) fail("holodeck: the board does not name black above it and white below it: " + chess);
+  if (!text.includes("Black (&lt;i&gt;Dee&lt;/i&gt;) won")) fail("holodeck: a match's result does not say who won: " + chess);
+  if (chess.includes("black_won")) fail("holodeck: a match's heading shows the stored result name: " + chess);
+  // The steps fill the card's width: the activity log's time column is not for them (narrow phones).
+  if (!chess.includes('class="hq-log hq-steps"')) fail("holodeck: the steps are laid out in the activity log's narrow columns: " + chess);
   const station = shown({ what: "scenario", data: { task: 709, kind: "silent_station", end: "success", score: 75, anomaly: "magnetic field",
     state: { life_support: 5, ship_energy: 35, station_power: 20, hazard: 1, crew_safe: true, power_routed: false, probe_out: true, contact: true },
     brief: "plan_first", plan: "Science scans; I call. <b>now</b>", log: [] } });

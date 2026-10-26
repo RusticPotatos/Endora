@@ -460,13 +460,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Whether stuck work is moving again: finished, out of blocked, or with a turn on it (one
-    /// that waits for budget or the Mac is one: it starts when it can, ADR 0131).
+    /// Whether stuck work is moving again: finished, out of blocked or review, or with a turn on
+    /// it (one that waits for budget or the Mac is one: it starts when it can, ADR 0131). Work in
+    /// review is found stuck there and never blocked (task 670), so review is not moving.
     fn unstuck(&self, task: TaskId) -> Done<bool> {
         let Some(found) = self.store.task(task)? else {
             return Ok(true);
         };
-        if found.status != TaskStatus::Blocked {
+        if !matches!(found.status, TaskStatus::Blocked | TaskStatus::InReview) {
             return Ok(true);
         }
         let facts = self.task_facts(&found)?;

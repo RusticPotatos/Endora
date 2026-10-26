@@ -386,6 +386,20 @@ are answered; offline, no new money, $5 cap if a Claude tier is used, per D3). T
 meanwhile: Haiku beat Local in game 835; game 837, Local against Sonnet, is playing.
 7. Merged to develop after a privacy scan (below).
 
+**Check, 2026-10-26 afternoon.** The owner's phone showed a league board with no way to tell
+the sides apart, and its step list a word a line (it sat in the activity log's 44 px time
+column). Fixed in `ffe0596a` and `ffa149a7` (live as `a7852df7`): black's member
+and brain above the board, white's below, league lines read "White: … · Black: …", results say
+who won ("Black (Zed) won, checkmate"), and the steps fill the width (301 px at 375). The same
+look found #673's stuck card raised and cleared every minute: the ladder puts in-review work on
+the desk (never blocked, task 670) and the guards' tick took it off for not being blocked.
+Fixed in `a7852df7` (review counts as not moving); no flapping since the release. Still open:
+C1 and C4 (no request since the fixes; 5 conversations, all empty); league table Haiku 1216,
+Sonnet 1215, Mac 1200, Local 1169, $0.14 of $10; game 840 (Mac against Haiku) is slowed by the
+Mac's local model sometimes reasoning past the 4096-token reply limit (the turn retries).
+Real work waits on the owner's desk: 338 (gluetun host commands, #673), 339/1249/1251/1253
+(merge on the fork and run the playbook), 346 (push #671).
+
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
 2. Observe a real failure outcome (expired, declined or cancelled) displayed.
