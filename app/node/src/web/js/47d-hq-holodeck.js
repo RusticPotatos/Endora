@@ -8,6 +8,9 @@ const HQ_HOLO_UNITS = { lighthouse: "minutes", silent_station: "ticks", chess: "
 
 function hqHoloKind(kind) { return HQ_HOLO_KINDS[kind] || String(kind || ""); }
 
+// How a world ended, in words: "black won", not the stored "black_won".
+function hqHoloEnd(end) { return esc(String(end || "").replace(/_/g, " ")); }
+
 // A chess result in words, given each side as already-escaped text: who won, or a draw.
 function hqChessEnd(end, white, black) {
   if (end === "white_won") return `${white} won`;
@@ -31,7 +34,7 @@ function hqHolodeck(s) {
   const scenarios = (h && h.scenarios) || [], trials = (h && h.trials) || [];
   if (!scenarios.length && !trials.length) return "";
   const scen = scenarios.map((x) => hqLine(`hq:holo:open:${Number(x.task)}`, `${esc(hqHoloKind(x.kind))}: ${esc(x.title)}`,
-    `${esc(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}${x.round ? ` · ${esc(x.round)}` : ""}`));
+    `${hqHoloEnd(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}${x.round ? ` · ${esc(x.round)}` : ""}`));
   const scenList = hqMore("scenarios", scen, 3);
   const queued = Number((h && h.queued) || 0);
   const again = queued
@@ -77,7 +80,7 @@ function hqHoloDetail() {
 
 // A scenario step by step: where it stands, and every action tried, refused ones too.
 function hqScenarioView(d) {
-  const head = `<div class="hq-sel">${esc(hqHoloKind(d.kind))} · task ${Number(d.task)}${d.end ? ` · ${esc(d.end)}` : ""}</div>`;
+  const head = `<div class="hq-sel">${esc(hqHoloKind(d.kind))} · task ${Number(d.task)}${d.end ? ` · ${hqHoloEnd(d.end)}` : ""}</div>`;
   let body = "";
   if (d.kind === "chess") {
     const sides = d.sides || {};
