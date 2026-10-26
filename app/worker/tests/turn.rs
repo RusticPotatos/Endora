@@ -117,6 +117,9 @@ fn tools() -> Value {
         { "name": "set_status", "description": "Move your task on, with a reason.",
           "inputSchema": { "type": "object", "properties": { "task": task, "status": { "type": "string" },
                            "reason": { "type": "string" } }, "required": ["task", "status", "reason"] } },
+        { "name": "consult", "description": "Ask a colleague.",
+          "inputSchema": { "type": "object", "properties": { "member": { "type": "string" },
+                           "question": { "type": "string" } }, "required": ["member", "question"] } },
     ])
 }
 
@@ -435,7 +438,7 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
     let first = &to_model[0];
     assert_eq!(first.path, "/team-relay/local/v1/chat/completions");
     assert_eq!(first.body["model"], "local");
-    assert_eq!(first.body["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(first.body["tools"].as_array().unwrap().len(), 5);
     assert_eq!(
         first.body["tools"][1],
         json!({ "type": "function", "function": {
@@ -1006,6 +1009,7 @@ fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
             "claim",
             "post",
             "set_status",
+            "consult",
             "homelab_status",
             "restart_container"
         ]
@@ -1093,7 +1097,7 @@ fn a_401_from_the_node_ends_the_turn_and_a_node_without_contracts_leaves_hqs_too
             .as_array()
             .unwrap()
             .len(),
-        4
+        5
     );
     assert_eq!(
         methods(&to_hq).last().map(String::as_str),
@@ -2016,6 +2020,7 @@ fn the_bridge_serves_hqs_tools_and_the_nodes_and_a_question_ends_the_turn() {
             "claim",
             "post",
             "set_status",
+            "consult",
             "homelab_status",
             "container_logs",
             "restart_container"
@@ -2125,4 +2130,109 @@ fn the_hook_posts_claude_codes_own_tools_to_the_node_and_never_blocks_the_turn()
     let out = hook(&gone, &bash);
     assert_eq!(out.status.code(), Some(0));
     assert!(!said(&out).contains(TOKEN));
+}
+
+/// Twelve of the node's contracts, more than a local model should read every call.
+fn many_contracts() -> Value {
+    let named = [
+        ("homelab_status", "Read the home lab's state."),
+        ("container_logs", "Read a container's log."),
+        ("restart_container", "Restart one container."),
+        (
+            "sonarr_queue",
+            "Read Sonarr's download queue and stuck imports.",
+        ),
+        ("radarr_queue", "Read Radarr's download queue."),
+        ("plex_sessions", "Read who is watching on Plex."),
+        ("pihole_summary", "Read Pi-hole's blocking summary."),
+        ("unifi_clients", "Read the network's clients from UniFi."),
+        ("nas_status", "Read the NAS's load, memory and disks."),
+        ("ha_lights", "Turn Home Assistant lights on or off."),
+        ("ha_climate", "Set the thermostat in Home Assistant."),
+        ("web_search", "Search the web."),
+    ];
+    Value::Array(
+        named
+            .iter()
+            .map(|(name, what)| {
+                json!({ "name": name, "kind": "read", "description": what,
+                        "inputSchema": { "type": "object", "properties": {} } })
+            })
+            .collect(),
+    )
+}
+
+/// Anthropic and OpenAI both advise a small first set and deferring the rest behind a search
+/// (2026-10-25): a local turn offered many tools starts with its core and find_tools, and a
+/// tool it finds is offered from its next call, so a slow model reads a short prompt.
+#[test]
+fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node(many_contracts(), None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[("c1", "find_tools", r#"{"query":"sonarr queue"}"#)]),
+        ),
+        (200, calls(&[("c2", "sonarr_queue", "{}")])),
+        (200, says("Read the queue.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let to_model = to_model.lock().unwrap().clone();
+    let names = |i: usize| -> Vec<String> {
+        to_model[i].body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let first = names(0);
+    for core in [
+        "my_turn",
+        "claim",
+        "post",
+        "set_status",
+        "homelab_status",
+        // Asking a colleague is offered up front (ADR 0139-0140): the briefing names it, and a
+        // tool behind a search was never used in production.
+        "consult",
+        "find_tools",
+    ] {
+        assert!(first.iter().any(|n| n == core), "{core} missing: {first:?}");
+    }
+    for later in ["sonarr_queue", "ha_lights", "web_search", "plex_sessions"] {
+        assert!(
+            !first.iter().any(|n| n == later),
+            "{later} offered up front: {first:?}"
+        );
+    }
+    assert!(
+        first.len() <= 10,
+        "the first call offers {} tools",
+        first.len()
+    );
+    let second = names(1);
+    assert!(second.iter().any(|n| n == "sonarr_queue"), "{second:?}");
+    assert!(!second.iter().any(|n| n == "ha_lights"), "{second:?}");
+    let found = to_model[1].body["messages"].to_string();
+    assert!(
+        found.contains("sonarr_queue"),
+        "the model is told what was added: {found}"
+    );
+}
+
+/// A turn with few tools is offered all of them, as before: deferring would only cost a call.
+#[test]
+fn a_local_turn_with_few_tools_is_offered_them_all() {
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node(contracts(), None);
+    let (model_url, to_model) = model(vec![(200, says("Done."))]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let tools = to_model.lock().unwrap()[0].body["tools"].to_string();
+    assert!(!tools.contains("find_tools"), "{tools}");
+    assert!(tools.contains("restart_container"), "{tools}");
 }

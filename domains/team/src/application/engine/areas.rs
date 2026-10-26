@@ -54,6 +54,9 @@ const PATTERNS_KEY: &str = "area_patterns_routine:";
 /// How far back an area's patterns look.
 const PATTERNS_LOOK_BACK_MS: Millis = 30 * DAY_MS;
 
+/// Where HQ keeps who wrote a goal's "not now": `owner` or `run:<id>`.
+const NOT_NOW_ORIGIN: &str = "not_now_origin:";
+
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- strategy -------------------------------------------------------------------------
 
@@ -70,13 +73,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .unwrap_or_else(|| Strategy::empty(goal)))
     }
 
-    fn write_strategy(&self, goal: GoalId, edit: &StrategyEdit, by: &str) -> Done<Strategy> {
+    fn write_strategy(
+        &self,
+        goal: GoalId,
+        edit: &StrategyEdit,
+        by: &str,
+        origin: &str,
+    ) -> Done<Strategy> {
         self.store.goal(goal)?.ok_or(EngineError::Unknown("goal"))?;
         let written = self
             .strategy_of(goal)?
             .edited(edit, by, self.clock.now())
             .map_err(EngineError::Refused)?;
         self.store.save_strategy(&written)?;
+        // Who wrote "not now", which every briefing on the goal shows (ADR 0138 A2c): `owner`,
+        // or `run:<id>` for the CEO's turn.
+        if edit.not_now.is_some() {
+            self.store
+                .set_setting(&format!("{NOT_NOW_ORIGIN}{}", goal.0), origin)?;
+        }
         self.emit(EventKind::StrategySet, json!({ "goal": goal.0, "by": by }))?;
         Ok(written)
     }
@@ -97,7 +112,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let (turn, ceo) = self.the_ceos_turn(run)?;
         self.judge_decision(cited, turn.id)?;
-        let written = self.write_strategy(goal, edit, &ceo.name)?;
+        let written = self.write_strategy(goal, edit, &ceo.name, &format!("run:{}", turn.id.0))?;
         if let Some(task) = turn.task {
             self.mark_progress(ceo.id, task)?;
         }
@@ -110,7 +125,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// As [`Self::set_strategy_in`], but for the turn and the evidence.
     pub fn set_strategy(&self, goal: GoalId, edit: &StrategyEdit) -> Done<Strategy> {
         let _held = self.held();
-        self.write_strategy(goal, edit, "owner")
+        self.write_strategy(goal, edit, "owner", "owner")
+    }
+
+    /// Carries the mark of whoever wrote a goal's "not now" to a turn shown it: none for the
+    /// owner's, the writing run's for the CEO's, and unknown, failing closed, for one written
+    /// before its writer was kept.
+    pub(super) fn not_now_reached(&self, run: RunId, goal: GoalId) -> Done<()> {
+        let kept = self
+            .store
+            .setting(&format!("{NOT_NOW_ORIGIN}{}", goal.0))?
+            .unwrap_or_default();
+        if kept == "owner" {
+            return Ok(());
+        }
+        let source = kept
+            .strip_prefix("run:")
+            .and_then(|n| n.parse().ok())
+            .map(RunId);
+        self.inherit_input_from(run, source)
     }
 
     // ---- the leads' routines and reports ------------------------------------------------
@@ -234,10 +267,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let report = AreaReport::new(lead.id, parts, Some(turn.id), Some(task), self.clock.now())
             .map_err(EngineError::Refused)?;
         let id = self.store.add_area_report(&report)?;
-        self.post_held_lock(
-            Author::Member(lead.id),
+        self.post_own_held_lock(
+            lead.id,
             task,
             &format!("Area report:\n{}", report.said().trim_end()),
+            &[],
         )?;
         self.store.set_task_status(task, TaskStatus::Done)?;
         self.emit_status(&current, TaskStatus::Done)?;
@@ -440,6 +474,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(String::new());
         };
         if kind == "patterns" {
+            // Built from alarms' words, which come from outside: fails closed (ADR 0138 A2c).
+            self.unclassified_message_input(run.id)?;
             return self.area_patterns(&area);
         }
         let tasks = self.store.tasks()?;
@@ -452,6 +488,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str("- none\n");
         }
         for t in open.iter().take(15) {
+            // Each title shown carries its task's recorded origin (ADR 0138 A2c).
+            let origin = self
+                .store
+                .task_inputs(t.id)?
+                .map_or(crate::domain::history::InputOrigin::Unknown, |i| {
+                    i.body_origin
+                });
+            self.inherit_authored_input(run.id, origin)?;
             told.push_str(&format!("- #{} {} ({})\n", t.id, t.title, t.status.name()));
         }
         let since = self.clock.now() - DAY_MS;

@@ -6,7 +6,7 @@
 //! re-reading what they had already shown. Neither is a model's to judge: the counts, the
 //! criteria and the evidence rule are HQ's record.
 
-use super::{Author, Done, Engine, EngineError};
+use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::evidence::{self, Judged, Label, Ref};
 use crate::domain::guards::{self, GuardRefusal, THRESHOLDS};
@@ -288,8 +288,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         };
         let name = self.member(run.member)?.name;
-        self.post_held_lock(
-            Author::Endora,
+        self.post_system_held_lock(
             task,
             &format!(
                 "{name}'s evidence met this task's criteria, and {count} turns since only \
@@ -304,7 +303,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )?;
         self.keep_cited(task, run, super::evidence::SUBMITTED, &cited)?;
         let said = self.evidence_said(&cited.concat())?;
-        self.post_held_lock(Author::Endora, task, &format!("Evidence cited: {said}"))
+        self.post_system_held_lock(task, &format!("Evidence cited: {said}"))
     }
 }
 

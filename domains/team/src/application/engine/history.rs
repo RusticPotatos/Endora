@@ -78,6 +78,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     history::InputOrigin::Owner => serde_json::json!({"kind":"owner"}),
                     history::InputOrigin::Run(run) => serde_json::json!({"kind":"run","run":run.0}),
                     history::InputOrigin::Unknown => serde_json::json!({"kind":"unknown"}),
+                    history::InputOrigin::System => serde_json::json!({"kind":"system"}),
                 };
                 serde_json::json!({"id":answer.id,"author":answer.post.author,"text":answer.post.text,
                     "at":answer.post.at,"unsupported":answer.post.unsupported,"origin":origin,

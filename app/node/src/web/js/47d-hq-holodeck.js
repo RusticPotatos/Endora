@@ -13,16 +13,20 @@ function hqHolodeck(s) {
   const h = s && s.holodeck;
   const scenarios = (h && h.scenarios) || [], trials = (h && h.trials) || [];
   if (!scenarios.length && !trials.length) return "";
-  const scen = scenarios.map((x) => `<li>${esc(hqHoloKind(x.kind))}: ${esc(x.title)}
-      <small>${esc(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}</small>
-      <button class="hq-btn" data-act="hq:holo:open:${Number(x.task)}">Open</button></li>`).join("");
-  const tried = trials.map((t) => `<li>${esc(t.name)} <small>${esc(hqHoloKind(t.kind))}, ${Number(t.runs)} runs</small>
-      <button class="hq-btn" data-act="hq:holo:trial:${esc(t.name)}">Compare</button></li>`).join("");
+  const scen = scenarios.map((x) => hqLine(`hq:holo:open:${Number(x.task)}`, `${esc(hqHoloKind(x.kind))}: ${esc(x.title)}`,
+    `${esc(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}${x.round ? ` · ${esc(x.round)}` : ""}`));
+  const scenList = hqMore("scenarios", scen, 5);
+  const queued = Number((h && h.queued) || 0);
+  const again = queued
+    ? `<p class="hq-note">${queued} scenario${queued === 1 ? "" : "s"} queued to run again, one at a time.</p>`
+    : `<div class="hq-row"><button class="hq-btn tall" data-act="hq:holo:rerun:all">Run every scenario again</button></div>`;
+  const tried = trials.map((t) => hqLine(`hq:holo:trial:${esc(t.name)}`, esc(t.name), `${esc(hqHoloKind(t.kind))}, ${Number(t.runs)} runs · compare`)).join("");
   const open = HQ.holo && HQ.holo.what !== "replay" ? hqHoloDetail() : "";
   return `<section class="hq-card"><h2>Holodeck</h2>
     <p class="hq-note">Scenarios the team plays in worlds that close themselves, and trials that compare who plays them. Nothing here touches the house.</p>
-    ${scen ? `<p class="hq-who">Scenarios</p><ul class="hq-team">${scen}</ul>` : ""}
-    ${tried ? `<p class="hq-who">Trials</p><ul class="hq-team">${tried}</ul>` : ""}
+    ${again}
+    ${scen.length ? `<p class="hq-who">Scenarios</p><ul class="hq-lines">${scenList.shown}</ul>${scenList.more}` : ""}
+    ${tried ? `<p class="hq-who">Trials</p><ul class="hq-lines">${tried}</ul>` : ""}
     ${open}</section>`;
 }
 
@@ -90,6 +94,14 @@ function hqReplayView(d) {
 // The taps: open a scenario, compare a trial, replay a match, close what is open.
 async function hqHoloAct(what, arg) {
   if (what === "close") { HQ.holo = null; render(); return true; }
+  // Every scenario again, one at a time: the earlier round is kept, labelled with today.
+  if (what === "rerun") {
+    const round = "round of " + new Date().toISOString().slice(0, 10);
+    if (!confirm(`Run every scenario again, one at a time? The earlier results are kept, as "${round}".`)) return true;
+    try { const r = await api("POST", "/v1/hq/scenarios/rerun", { round }); flash(`${Number(r.queued)} queued to run again.`, "ok"); }
+    catch (e) { flash("Couldn't run them again: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
   const path = what === "open" ? `/v1/hq/scenarios/${Number(arg)}`
     : what === "trial" ? `/v1/hq/trials/${encodeURIComponent(String(arg || ""))}`
     : what === "replay" ? `/v1/hq/games/${Number(arg)}/replay` : "";

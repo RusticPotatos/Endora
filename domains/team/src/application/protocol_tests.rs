@@ -265,8 +265,10 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     // every member asks the record (ADR 0129) and asks a colleague through consult, which is
     // canonical assistance (ADR 0138); and a developer asks for its kept branch to be checked
     // again (ADR 0115). A quiz's answer is that turn's tool alone (ADR 0131, amended), and
-    // answer_consult is retired (ADR 0138).
-    assert_eq!(names.len(), 23, "{names:?}");
+    // answer_consult is retired (ADR 0138). A stuck member takes its problem a model tier up
+    // with escalate (ADR 0139).
+    assert_eq!(names.len(), 24, "{names:?}");
+    assert!(names.contains(&"escalate".to_owned()));
     assert!(names.contains(&"recheck".to_owned()));
     for tool in ["ask_record", "consult"] {
         assert!(names.contains(&tool.to_owned()), "{tool}");
@@ -303,8 +305,8 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
     // With the office (ADR 0119), a huddle's view (ADR 0120), chess (ADR 0121) and the world
-    // (ADR 0122).
-    assert_eq!(reviewers.len(), 22, "{reviewers:?}");
+    // (ADR 0122), and escalate (ADR 0139).
+    assert_eq!(reviewers.len(), 23, "{reviewers:?}");
     assert!(
         !reviewers.contains(&"create_task".to_owned()),
         "the tester passes or sends back, and never makes work"
@@ -917,5 +919,31 @@ fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() 
     ] {
         let why = cite(refused.clone()).unwrap_err();
         assert!(why.contains("is not evidence"), "{refused}: {why}");
+    }
+}
+
+#[test]
+#[ignore = "a measurement, run by hand"]
+fn measure_tool_descriptions() {
+    for role in [
+        Role::Developer,
+        Role::Lead,
+        Role::Reviewer,
+        Role::Researcher,
+    ] {
+        let all = tools(role);
+        let mut sizes: Vec<(usize, String)> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t.to_string().len(), t["name"].as_str().unwrap().to_owned()))
+            .collect();
+        sizes.sort_by(|a, b| b.cmp(a));
+        let total: usize = sizes.iter().map(|s| s.0).sum();
+        println!(
+            "{role:?}: {} tools, {total} chars; top: {:?}",
+            sizes.len(),
+            &sizes[..8]
+        );
     }
 }

@@ -81,7 +81,7 @@ Feature: The open office
     And every ping-pong match was first to 11, two clear
     And the activity feed says " at ping-pong"
     And the ping-pong leaderboard names the players
-    And nobody was woken and no turn was run
+    And no match woke anyone or ran a turn
 
   Scenario: Chess is played by the rules
     Given downtime is on

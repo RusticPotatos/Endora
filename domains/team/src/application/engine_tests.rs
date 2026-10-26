@@ -597,7 +597,18 @@ fn doing_without_a_turn_gets_one_nudge_then_climbs_to_its_lead_never_the_desk() 
     hq.tick().unwrap();
     let after = hq.store().task(task).unwrap().unwrap();
     assert_eq!(after.status, TaskStatus::Blocked);
-    // Stuck work climbs the ladder (ADR 0120): its area's lead decides, and the desk is empty.
+    // Stuck work climbs the ladder (ADR 0120): first its member a model tier up (ADR 0139)...
+    assert!(hq.store().desk().unwrap().is_empty());
+    let asked = hq.wakes().unwrap().pop().unwrap();
+    assert_eq!(
+        (asked.member, asked.task, asked.reason),
+        (t.dev, Some(task), WakeReason::Escalated)
+    );
+    // ...and when that turn did not move it either, its area's lead decides; the desk is empty.
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    clock.forward(super::engine::STRANDED_AFTER_MS + 1);
+    hq.tick().unwrap();
     assert!(hq.store().desk().unwrap().is_empty());
     let asked = hq.wakes().unwrap().pop().unwrap();
     assert_eq!(

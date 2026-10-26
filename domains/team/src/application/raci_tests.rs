@@ -524,10 +524,11 @@ fn a_leads_stalled_task_stays_in_its_area_and_never_goes_up_to_the_ceo() {
         "{:?}",
         wakes_of(&hq, o.ceo)
     );
+    // ADR 0139: Ada takes it a model tier up herself.
     assert!(
         thread(&hq, task)
             .iter()
-            .any(|p| p.contains("It stays in Ada's area: the CEO directs")),
+            .any(|p| p.contains("Ada takes it a model tier up")),
         "{:?}",
         thread(&hq, task)
     );

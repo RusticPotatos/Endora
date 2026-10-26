@@ -351,9 +351,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if request.status != "processing" || request.deadline_at <= self.clock.now() {
             return Err(refused("assistance request is no longer active"));
         }
-        if self.store.run_read_confidential(run)? {
+        // A Confidential answer stays on the house's models (ADR 0140).
+        if self.store.run_read_confidential(run)? && self.on_claude(run)? {
             return Err(refused(
-                "the information pilot cannot answer from a Confidential turn",
+                "a Confidential answer is given only on the house's models",
             ));
         }
         if evidence.len() > assistance::SOURCES_MOST
@@ -523,7 +524,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 continue;
             }
             // Queued once: the moment the question reaches the colleague is the feed's "asked".
-            if let Some(run) = self.store.queue_assistance(pending.id, now)? {
+            // A colleague's answer is on a tier at least the asker's (ADR 0139), unless the
+            // ask is Confidential, which stays on the house's models (ADR 0140).
+            let up = self.on_claude(pending.requester_run)?
+                && !self.store.run_read_confidential(pending.requester_run)?;
+            if let Some(run) = self.store.queue_assistance(pending.id, now, up)? {
                 self.emit_help(EventKind::HelpAsked, &pending, run)?;
             }
         }
@@ -573,6 +578,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return self.project_of(run.task);
         }
         Ok(self.store.assistance_charging_project(run.id)?)
+    }
+
+    /// Whether a turn thinks with Claude rather than the house's models.
+    pub(super) fn on_claude(&self, run: RunId) -> Done<bool> {
+        Ok(self
+            .store
+            .run(run)?
+            .and_then(|r| r.brain)
+            .is_some_and(crate::domain::Brain::cloud))
+    }
+
+    /// Before a colleague's turn reads a question, or the asker's result turn reads the
+    /// answer (ADR 0140): what either read carries its mark, and nothing Confidential reaches a
+    /// turn on Claude.
+    pub(super) fn assistance_reached(&self, run: RunId, sources: &[RunId]) -> Done<()> {
+        for source in sources {
+            self.inherit_input_from(run, Some(*source))?;
+        }
+        if self.store.run_read_confidential(run)? && self.on_claude(run)? {
+            return Err(refused(
+                "a Confidential ask is read only on the house's models",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn assistance_briefing(
@@ -649,24 +678,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !self.conversations_enabled()? {
             return Err(refused("peer messaging and assistance are disabled"));
         }
-        let scope = match conversation {
-            Some(id) => {
-                self.store
-                    .conversation(id)?
-                    .ok_or(EngineError::Refused(Refusal::Conversation(
-                        "conversation unavailable",
-                    )))?
-            }
-            None => {
-                let scopes = self.store.conversation_pair(turn.member, expert.id)?;
-                if scopes.len() != 1 {
-                    return Err(EngineError::Refused(Refusal::Conversation(
-                        "select an owner-authorized conversation with read_messages; no unique conversation exists for this pair",
-                    )));
-                }
-                scopes.into_iter().next().expect("one scope")
-            }
-        };
+        let scope =
+            match conversation {
+                Some(id) => self.store.conversation(id)?.ok_or(EngineError::Refused(
+                    Refusal::Conversation("conversation unavailable"),
+                ))?,
+                None => self.pair_conversation(&turn, &expert)?,
+            };
         if !scope.participants.contains(&turn.member)
             || !scope.participants.contains(&expert.id)
             || turn.member == expert.id
@@ -693,6 +711,50 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(serde_json::json!({"request":id,"conversation":scope.id,"state":request.status,
             "scheduled":matches!(request.status.as_str(),"queued"|"processing"),
             "reply":"The assigned expert answers with answer_assistance; the result returns in this conversation. End your turn when finished."}).to_string())
+    }
+
+    /// The conversation a colleague is asked in (ADR 0139: one team). From a task of an active
+    /// project, the pair's conversation on that project, made when first asked; otherwise the
+    /// pair's one existing conversation. The CEO is asked for decisions, not as a peer.
+    fn pair_conversation(
+        &self,
+        turn: &crate::application::ports::Run,
+        expert: &crate::domain::Member,
+    ) -> Done<crate::domain::conversation::Conversation> {
+        let scopes = self.store.conversation_pair(turn.member, expert.id)?;
+        let project = match turn.task {
+            Some(task) => self.task(task)?.project.filter(|p| {
+                self.project(*p)
+                    .is_ok_and(|p| p.status == ProjectStatus::Active)
+            }),
+            None => None,
+        };
+        if let Some(project) = project {
+            if let Some(found) = scopes.iter().find(|s| s.project == project) {
+                return Ok(found.clone());
+            }
+            if expert.role == crate::domain::Role::Ceo
+                || !expert.at_work()
+                || expert.id == turn.member
+            {
+                return Err(EngineError::Refused(Refusal::Conversation(
+                    "ask a colleague at work; the CEO's word is a decision, asked with ask_owner",
+                )));
+            }
+            let id =
+                self.store
+                    .add_conversation(project, [turn.member, expert.id], self.clock.now())?;
+            return self
+                .store
+                .conversation(id)?
+                .ok_or(EngineError::Unknown("conversation"));
+        }
+        if scopes.len() != 1 {
+            return Err(EngineError::Refused(Refusal::Conversation(
+                "ask from a project's task, or name the conversation: no unique conversation exists for this pair",
+            )));
+        }
+        Ok(scopes.into_iter().next().expect("one scope"))
     }
 
     /// Whether trusted task context can use this conversation's project at cutover.
@@ -746,11 +808,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 return Err(refused("original evidence grant unavailable"));
             }
         }
-        if self.store.run_read_confidential(run)? {
-            return Err(refused(
-                "the information pilot cannot request from a Confidential turn",
-            ));
-        }
+        // A Confidential ask is allowed (ADR 0140): its colleague's turn and the asker's result
+        // turn are work, on the house's models, and each is refused to a turn on Claude.
         if objective.chars().count() > assistance::OBJECTIVE_MOST {
             return Err(refused("an assistance objective permits 400 characters"));
         }

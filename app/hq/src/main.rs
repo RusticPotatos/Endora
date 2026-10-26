@@ -418,6 +418,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(made) => println!("hq: made {} of the leads' report routines", made.len()),
             Err(e) => eprintln!("hq: could not make the leads' report routines: {e}"),
         }
+        // Routines from before their origin was kept, whose words are exactly HQ's own: their
+        // tasks are HQ's words, not unknown ones (ADR 0138 A2b).
+        match hq.vouch_template_routines(&[
+            ("Check the home lab", LAB_CHECK),
+            ("Daily review", DAILY_REVIEW),
+        ]) {
+            Ok(0) => {}
+            Ok(n) => println!("hq: {n} routines are HQ's own words"),
+            Err(e) => eprintln!("hq: could not vouch for HQ's routines: {e}"),
+        }
         // The Claude Code pilot (ADR 0117), once: one wing developer on it, the other on the
         // worker, for the scorecard to compare.
         match hq.seed_claude_code_pilot() {

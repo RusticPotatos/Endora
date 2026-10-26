@@ -1,8 +1,7 @@
 // Information-only peer conversations (ADR 0137). Keep one bounded page in memory.
-// `draft` holds the authorize form's picks: HQ redraws every few seconds, and a redraw would
-// otherwise reset both members to the same first choice.
-// The list loads itself and stays fresh (`loadedAt`); the owner's switches wait under `manage`.
-const HQ_CHAT = { directory: null, page: null, assistance: null, operations: null, id: null, after: 0, busy: false, error: "", draft: null, manage: false, loadedAt: 0 };
+// Nothing to set up (ADR 0139): a conversation starts itself when one member asks another.
+// The list loads itself and stays fresh (`loadedAt`); the owner's off switch waits under `manage`.
+const HQ_CHAT = { directory: null, page: null, assistance: null, operations: null, id: null, after: 0, busy: false, error: "", manage: false, loadedAt: 0 };
 const HQ_CHAT_FRESH_MS = 30000;
 
 // A quiet background refresh of the first page: no busy state, and no redraw of its own; HQ's
@@ -19,32 +18,17 @@ function hqConversations(s) {
   const d = HQ_CHAT.directory;
   const name = (id) => esc(((s.members || []).find((m) => m.id === id) || {}).name || `Member ${id}`);
   const button = (what, id, label, disabled = false) => `<button class="hq-btn tall" data-act="hq:conversations:${what}:${id}"${disabled || HQ_CHAT.busy ? " disabled" : ""}>${label}</button>`;
-  const members = (s.members || []).filter((m) => m.role !== "ceo" && !m.paused && !m.furloughed);
-  const projects = (s.projects || []).filter((p) => p.status === "active");
-  const draft = HQ_CHAT.draft || {};
-  const picked = (list, id, fallback) => (list.some((x) => x.id === id) ? id : fallback && fallback.id);
-  const pick = { project: picked(projects, draft.project, projects[0]), a: picked(members, draft.a, members[0]), b: picked(members, draft.b, members[1]) };
-  const options = (list, id, label) => list.map((x) => `<option value="${Number(x.id)}"${x.id === id ? " selected" : ""}>${esc(label(x))}</option>`).join("");
-  const select = (field, list, label) => `<select id="hq-conversation-${field}" data-change="hq:conversations:pick-${field}">${options(list, pick[field], label)}</select>`;
   let body = '<p class="hq-note">Loading conversations…</p>';
   if (d) {
-    // The latest activity first; one with nothing said yet goes last, newest authorized first.
+    // The latest activity first; one with nothing said yet goes last, newest first.
     const latest = [...(d.conversations || [])].sort((x, y) => (y.latest || 0) - (x.latest || 0) || (y.at || 0) - (x.at || 0));
     const when = (c) => c.latest ? `last ${esc(new Date(c.latest).toLocaleString())}` : "nothing said yet";
-    body = `<p class="hq-note">Who the agents may talk to, and what they said. Conversations are kept until you delete them.</p>
-      <ul class="hq-thread">${latest.map((c) => `<li><b>${c.participants.map(name).join(" ↔ ")}</b> <small>${Number(c.messages)} messages · ${when(c)}</small> ${button("open", c.id, HQ_CHAT.id === c.id && HQ_CHAT.page ? "Refresh" : "Open")}</li>`).join("") || `<li class="hq-empty">${d.enabled ? "No conversation is authorized yet: Manage authorizes one." : "Messaging is off: Manage turns it on."}</li>`}</ul>
+    body = `<p class="hq-note">What the agents said to each other. Anyone may ask anyone; a conversation starts when one does, and is kept until you delete it.</p>
+      <ul class="hq-lines">${latest.map((c) => hqLine(`hq:conversations:open:${c.id}`, c.participants.map(name).join(" ↔ "), `${Number(c.messages)} messages · ${when(c)}`)).join("") || `<li class="hq-empty">${d.enabled ? "Nobody has asked anyone yet." : "Messaging is off: Manage turns it on."}</li>`}</ul>
       <div class="hq-row">${d.has_more ? button("load", d.after, "Next conversations") : ""}${button("manage", "toggle", HQ_CHAT.manage ? "Done managing" : "Manage")}</div>`;
     if (HQ_CHAT.manage) {
-      body += `<section class="hq-card"><h3>Manage</h3><p class="hq-note">Information messaging is ${d.enabled ? "enabled" : "disabled"}. Sending information creates no task or agent wake.</p>
-        <div class="hq-row">${button("enable", d.enabled ? "off" : "on", d.enabled ? "Disable messaging" : "Enable messaging")}${button("load", "first", "Refresh list")}${button("operations", "first", "Operation history")}</div>`;
-      if (d.enabled && members.length >= 2 && projects.length) {
-        body += `<p class="hq-note">Authorize a conversation: choose two members and the project. This permits information exchange, without granting task or tool authority.</p>
-          <div class="hq-row"><label>Project ${select("project", projects, (p) => p.title)}</label>
-          <label>First member ${select("a", members, (m) => m.name)}</label>
-          <label>Second member ${select("b", members, (m) => m.name)}</label>
-          ${button("create", "new", "Authorize")}</div>`;
-      }
-      body += "</section>";
+      body += `<section class="hq-card"><h3>Manage</h3><p class="hq-note">Messaging is ${d.enabled ? "on" : "off"}. There is nothing to set up: when one member asks another, their conversation starts itself. Turning it off stops every conversation and open request.</p>
+        <div class="hq-row">${button("enable", d.enabled ? "off" : "on", d.enabled ? "Turn messaging off" : "Turn messaging on")}${button("load", "first", "Refresh list")}${button("operations", "first", "Operation history")}</div></section>`;
     }
   }
   if (HQ_CHAT.page) {
@@ -89,9 +73,6 @@ function hqConversations(s) {
 
 async function hqConversationAct(what, id) {
   if (HQ_CHAT.busy) return true;
-  // A pick is kept for the next redraw; nothing is sent until Authorize.
-  const field = /^pick-(project|a|b)$/.exec(what);
-  if (field) { HQ_CHAT.draft = { ...HQ_CHAT.draft, [field[1]]: Number(id) }; return true; }
   if (what === "manage") { HQ_CHAT.manage = !HQ_CHAT.manage; render(); return true; }
   if (what === "delete" && !confirm("Delete this conversation and all its messages?")) return true;
   if (what === "save" || what === "save-assistance") {
@@ -105,13 +86,6 @@ async function hqConversationAct(what, id) {
   try {
     if (what === "enable") {
       await api("POST", "/v1/hq/conversations/enabled", { enabled: id === "on" });
-      HQ_CHAT.directory = await api("GET", "/v1/hq/conversations?after=0");
-    } else if (what === "create") {
-      const project = Number(val("hq-conversation-project"));
-      const participants = [Number(val("hq-conversation-a")), Number(val("hq-conversation-b"))];
-      if (participants[0] === participants[1]) throw new Error("Choose two different members.");
-      await api("POST", "/v1/hq/conversations", { project, participants });
-      HQ_CHAT.draft = null;
       HQ_CHAT.directory = await api("GET", "/v1/hq/conversations?after=0");
     } else if (what === "load") {
       HQ_CHAT.directory = await api("GET", `/v1/hq/conversations?after=${id === "first" ? 0 : Number(id)}`);

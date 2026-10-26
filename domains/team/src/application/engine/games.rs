@@ -35,6 +35,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn games_tick(&self, now: Millis) -> Done<()> {
         if self.settings.games {
             self.play_matches(now)?;
+            self.chess_set(now)?;
             self.chess_picked_up(now)?;
         }
         self.adjourn_chess(now)
@@ -44,6 +45,41 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// played: a turn on Claude costs money, and only looks at the board.
     fn on_the_houses_brains(&self, turn: &crate::application::ports::Run) -> bool {
         !turn.brain.is_some_and(crate::domain::Brain::cloud)
+    }
+
+    /// Two free members are set a game of chess when none is being played (the owner,
+    /// 2026-10-25: none had ever been played, since only a downtime turn could start one).
+    /// White is the one who has played chess least; the moves are then picked up as any game's.
+    fn chess_set(&self, now: Millis) -> Done<()> {
+        let games = self.store.chess_games()?;
+        if games.iter().any(Game::live) {
+            return Ok(());
+        }
+        let free: Vec<MemberId> = self.free_to_play(now)?.iter().map(|m| m.id).collect();
+        let played = |m: MemberId| {
+            games
+                .iter()
+                .filter(|g| g.white == m || g.black == m)
+                .count()
+        };
+        let mut pick = Rng::new(games::seed(now, MemberId(0), MemberId(0), games.len()));
+        let Some((a, b)) = games::pick_two(&free, &mut pick) else {
+            return Ok(());
+        };
+        let (white, black) = if played(b) < played(a) {
+            (b, a)
+        } else {
+            (a, b)
+        };
+        let id = self.store.add_chess_game(white, black, now)?;
+        let names = self.names()?;
+        let name = |id: MemberId| names.get(&id).cloned().unwrap_or_default();
+        self.emit(
+            EventKind::ChessStarted,
+            json!({ "game": id, "white": white.0, "black": black.0,
+                    "text": format!("{} and {} sit down to a game of chess", name(white), name(black)) }),
+        )?;
+        Ok(())
     }
 
     /// Games are picked up over time: the member whose move it is, at work, with no turn

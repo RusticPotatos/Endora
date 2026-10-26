@@ -870,7 +870,7 @@ fn the_back_off_holds_turns_that_only_talk_and_not_those_that_read() {
 }
 
 #[test]
-fn turns_that_show_nothing_are_nudged_twice_and_then_the_task_goes_up_once() {
+fn turns_that_show_nothing_are_nudged_twice_and_then_go_a_model_tier_up_once() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq, false, false);
@@ -897,19 +897,17 @@ fn turns_that_show_nothing_are_nudged_twice_and_then_the_task_goes_up_once() {
         [false, true, true],
         "a nudge after each of the first two"
     );
+    // ADR 0139: the third takes it a model tier up, the same member on its Claude; the work
+    // is not handed up to whom Linus reports to.
     let now = hq.store().task(task).unwrap().unwrap();
-    assert_eq!(
-        (now.assignee, now.owner, now.status),
-        (Some(t.lead), None, TaskStatus::Todo),
-        "the third goes up to whom Linus reports to"
-    );
+    assert_eq!(now.owner.or(now.assignee), Some(t.dev), "it stays Linus's");
     let said: Vec<String> = thread(&hq, task)
         .into_iter()
-        .filter(|p| p.contains("whom Linus reports to"))
+        .filter(|p| p.contains("a model tier up"))
         .collect();
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(said[0].starts_with("Linus took 3 turns on this that showed nothing"));
-    assert_eq!(last_wake(&hq), (t.lead, Some(task), WakeReason::Assigned));
+    assert_eq!(last_wake(&hq), (t.dev, Some(task), WakeReason::Escalated));
 }
 
 #[test]
@@ -1357,8 +1355,16 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
         hq.store().task(task).unwrap().unwrap().status,
         TaskStatus::Blocked
     );
-    // Stuck, it climbs to its area's lead, never the CEO (ADR 0120): Ada, above Linus,
-    // confirms the recovery herself, done on her own fresh reading.
+    // Stuck, Linus takes it a model tier up first (ADR 0139); when that does not move it, it
+    // climbs to its area's lead, never the CEO (ADR 0120): Ada, above Linus, confirms the
+    // recovery herself, done on her own fresh reading.
+    assert_eq!(last_wake(&hq), (t.dev, Some(task), WakeReason::Escalated));
+    let tier = turn(&hq, t.dev);
+    end(&hq, &clock, &tier);
+    clock
+        .0
+        .fetch_add(super::engine::STRANDED_AFTER_MS + 1, Ordering::SeqCst);
+    hq.tick().unwrap();
     assert_eq!(last_wake(&hq), (t.lead, Some(task), WakeReason::Decide));
     assert!(
         hq.store().wakes().unwrap().iter().all(|w| w.member != ceo),

@@ -25,6 +25,8 @@ pub enum InputOrigin {
     Owner,
     /// The authenticated run that supplied these bytes.
     Run(RunId),
+    /// HQ's own words: a template that embeds no text from a run, the owner or outside.
+    System,
 }
 
 /// Independently authored inputs: changing criteria cannot relabel a task body.

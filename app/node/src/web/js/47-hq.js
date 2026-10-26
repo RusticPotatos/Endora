@@ -19,10 +19,11 @@ const HQ = {
   lastWord: {},        // task id → the member who last wrote in its thread
   roster: {},          // member id → its controls are open on the Team card
   notebooks: {},       // member id → its notes, read when its panel is opened (ADR 0118)
-  deskNote: {},        // desk item id → why the owner's last decision on it was refused
-  logShown: 10,        // how many lines of the activity log are on screen
+  deskNote: {},
+  rejudge: {},         // finding id → the owner asked to change its verdict
+  more: {},            // list key → the owner asked to see all of it        // desk item id → why the owner's last decision on it was refused
+  logShown: 60,        // how many lines of the activity log are on screen
   tab: null,           // the screen's tab: desk, team, work, knowledge or office (read from storage)
-  stageOpen: null,     // the office canvas opened on a phone (null: not read from storage yet)
   working: false,      // the "Give work" form is open
   workDraft: {},       // what is typed in it, kept across live updates
   logOpen: {},         // event id → a long line opened to its whole
@@ -187,6 +188,49 @@ function hqName(id) { const m = hqMember(id); return m ? m.name : "someone"; }
 
 // A task's key, as the office writes it: EL-7.
 function hqKey(id) { return id ? "EL-" + id : ""; }
+
+// A long list shows its first few, with a way to see the rest (the owner, 2026-10-25: sections
+// too long to read). `key` keeps what the owner opened across HQ's redraws; it has no colon.
+function hqMore(key, items, n) {
+  if (items.length <= n) return { shown: items.join(""), more: "" };
+  const all = !!HQ.more[key];
+  return {
+    shown: (all ? items : items.slice(0, n)).join(""),
+    more: `<div class="hq-row"><button class="hq-btn hq-more" aria-expanded="${all}" data-act="hq:more:${key}:toggle">${all ? "Show fewer" : `Show all ${items.length}`}</button></div>`,
+  };
+}
+
+// Long words show three lines, with "Read all" to open them in place (the owner, 2026-10-25:
+// hard to read when they run so long). `text` is plain; it is escaped here.
+function hqClamp(key, text, cls = "") {
+  const long = String(text || "").length > 240;
+  if (!long) return `<p${cls ? ` class="${cls}"` : ""}>${esc(text)}</p>`;
+  const open = !!HQ.more[`clamp${key}`];
+  return `<p class="${cls ? cls + " " : ""}hq-clamp${open ? " open" : ""}">${esc(text)}</p>
+    <button class="hq-link hq-read" aria-expanded="${open}" data-act="hq:more:clamp${key}:toggle">${open ? "Show less" : "Read all"}</button>`;
+}
+
+// A row that is one line until tapped, then shows `body` (its details and buttons) under it
+// (the owner, 2026-10-25: Manage's projects and routines). `title` and `meta` are escaped
+// markup; `key` has no colon.
+function hqOpenRow(key, title, meta, body) {
+  const open = !!HQ.more[key];
+  return `<li class="hq-open-row${open ? " open" : ""}"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${meta}</small></button>${open ? `<div class="hq-row-body">${body}</div>` : ""}</li>`;
+}
+
+// A table of numbers by day and by week, as one-line rows (the owner, 2026-10-25: too long to
+// read on a phone): the measure and the first words of its first window; tapped, both in full.
+// `rows` is [label, first, second]; every word is escaped here.
+function hqScoreRows(key, rows, first, second) {
+  const head = (text) => esc(String(text).split(" · ")[0]);
+  return `<ul class="hq-lines">${rows.map(([label, a, b], i) => hqOpenRow(`${key}${i}`, esc(label), head(a),
+    `<span>${first}: ${esc(a)}</span>${b == null ? "" : `<span>${second}: ${esc(b)}</span>`}`)).join("")}</ul>`;
+}
+
+// One row of a list on one line: what it is and a little about it, and the whole row opens it
+// (the owner, 2026-10-25: a button under every row made lists too long on a phone). `title`
+// and `meta` are markup the caller has escaped.
+function hqLine(act, title, meta) { return `<li><button class="hq-line" data-act="${act}"><b>${title}</b> <small>${meta}</small></button></li>`; }
 // A task's number as a link that opens it under "Looking at", wherever the number is shown.
 function hqKeyLink(id) {
   return id ? `<button class="hq-link" data-act="hq:pick:task:${Number(id)}">${hqKey(id)}</button>` : "";
@@ -368,7 +412,9 @@ function hqTell(e, live, older) {
     // Roles as an enforced RACI (ADR 0120): strategy, the leads' reports and the ladder.
     "goal.strategy": ["you", `Goal ${d.goal}'s strategy was written by ${d.by === "owner" ? "you" : d.by}`],
     "area.reported": ["run", `${hqName(d.lead)} reported on their area`],
-    "stuck.climbed": ["warn", `${key} is stuck: it goes to ${d.to ? hqName(d.to) : "the owner"} (${d.rung})`],
+    "stuck.climbed": ["warn", d.rung === "tier"
+      ? `${key} is stuck: ${hqName(d.to)} takes it a model tier up`
+      : `${key} is stuck: it goes to ${d.to ? hqName(d.to) : "the owner"} (${d.rung})`],
     "huddle.called": ["wake", `Huddle on ${key}: ${(d.members || []).map(hqName).join(", ")}`],
     "huddle.decided": ["done", `${hqName(d.lead)} decided ${key}: ${String(d.decision || "").replace(/_/g, " ")}`],
   }[e.kind];
@@ -1231,7 +1277,14 @@ function hqFonts() {
 // find stuff"): what needs the owner first, then the team, the work, what the team knows, and
 // the office itself. Every tab is drawn and the others are hidden, so a live update never
 // loses what is typed on a tab that is not showing.
-const HQ_TABS = [["desk", "Desk"], ["team", "Team"], ["work", "Work"], ["knowledge", "Knowledge"], ["office", "Office"]];
+// Activity first: the screen the owner glances at most, live (2026-10-25).
+// Manage holds every owner setting, shown rather than folded (2026-10-25).
+// Health holds the guards and the scorecard: how the team is doing, apart from the work itself.
+// Four places, each for what the owner goes there to do (the owner, 2026-10-25: eight tabs were
+// too many): what needs them and what is going on; the team; the work; and what they set up.
+const HQ_TABS = [["now", "Now"], ["team", "Team"], ["work", "Work"], ["manage", "Manage"]];
+// Where each of the old eight now lives, for links and choices kept from before.
+const HQ_TAB_MOVED = { activity: "now", desk: "now", office: "team", knowledge: "team", health: "work" };
 
 // A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
 // screen works the same without it.
@@ -1245,20 +1298,16 @@ function hqStored(key, value) {
 
 function hqTab() {
   if (HQ.tab) return HQ.tab;
-  const kept = hqStored("tab");
-  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "desk";
+  // Kept under a new name, so every screen opens once on Now.
+  const kept = hqStored("tab.v3");
+  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "now";
   return HQ.tab;
 }
 
 function hqSetTab(id) {
+  id = HQ_TAB_MOVED[id] || id;
   if (!HQ_TABS.some(([t]) => t === id)) return;
-  HQ.tab = id; hqStored("tab", id);
-}
-
-// The office canvas on a phone: a thin strip until the owner opens it (and it stays as chosen).
-function hqStageOpen() {
-  if (HQ.stageOpen === null) HQ.stageOpen = hqStored("office") === "open";
-  return HQ.stageOpen;
+  HQ.tab = id; hqStored("tab.v3", id);
 }
 
 // What each kind of desk item's choices do, in one plain line under it (the owner: "didn't know
@@ -1371,18 +1420,18 @@ function hqChips(s) {
   if (pool.waiting > 0) chips.push(`<span class="hq-chip" title="They start when the day turns, you top up the pool, or you give the member an allowance">${pool.waiting} ${pool.waiting === 1 ? "turn waits" : "turns wait"} for budget</span>`);
   // A member's day of turns on the house's own models is capped (ADR 0133): the rest wait.
   if (pool.capped > 0) chips.push(`<span class="hq-chip" title="A member takes at most a day's turns on the house's own models; the rest start when the day turns">${pool.capped} ${pool.capped === 1 ? "turn waits" : "turns wait"} for tomorrow</span>`);
-  if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${HQ.mac.busy ? "busy" : HQ.mac.ready ? "free" : "away"}</span>`);
+  if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${hqMacWord(HQ.mac)}</span>`);
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
   if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} landed this week</span>`);
-  chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:desk:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
+  chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:now:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
 
 // The tab strip, and the badge on the tabs that count something.
 function hqTabs(s) {
   const guards = (s.guards && s.guards.findings || []).filter((f) => !f.cleared_at).length;
-  const badge = { desk: (s.desk || []).length, work: guards };
+  const badge = { now: (s.desk || []).length, work: guards };
   const here = hqTab();
   return `<div class="hq-tabs" role="tablist" aria-label="HQ sections">${HQ_TABS.map(([id, label]) =>
     `<button role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}" aria-selected="${id === here ? "true" : "false"}" tabindex="${id === here ? 0 : -1}" data-act="hq:tab:${id}:go">${label}${badge[id] ? ` <span class="hq-badge" aria-label="${badge[id]} waiting">${badge[id]}</span>` : ""}</button>`).join("")}</div>`;
@@ -1424,7 +1473,7 @@ function hqNeed(s, d) {
   const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
   const f = d.finding;
   const seen = f ? `${f.episodes > 1 ? ` · flagged ${Number(f.episodes)} times` : ""}${f.seen_at > d.at ? ` · last seen ${hqClock(f.seen_at)}` : ""}` : "";
-  return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(shown)}</p>
+  return `<div class="hq-need ${esc(d.kind)}">${hqClamp(`need${d.id}`, (s.demo ? "Demo: " : "") + shown)}
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${seen}${demoNote}</p>
       ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
@@ -1445,9 +1494,43 @@ function hqNeed(s, d) {
 function hqDigest(s) {
   const items = s.digest || [];
   if (!items.length) return "";
+  // The same notice said again (the Mac still busy an hour later) is one card, counted: the
+  // newest is acted on, and its repeats go with it when HQ clears them.
+  const seen = new Map();
+  for (const d of items) {
+    const key = `${d.kind}|${d.task}|${d.text}`;
+    if (seen.has(key)) seen.get(key).times += 1;
+    else seen.set(key, { d, times: 1 });
+  }
+  const cards = [...seen.values()].map(({ d, times }) => times > 1
+    ? hqNeed(s, d).replace("</p>", ` <span class="hq-count">×${times}</span></p>`) : hqNeed(s, d));
+  const list = hqMore("digest", cards, 3);
   return `<section class="hq-card hq-digest" aria-live="polite"><h2>While you were away <span class="hq-count">${items.length}</span></h2>
     <p class="hq-note">Nothing here needs you before the team can go on. Each is yours to act on when you like, and acting on one takes it out of this list.</p>
-    <div class="hq-needs">${items.map((d) => hqNeed(s, d)).join("")}</div></section>`;
+    <div class="hq-needs">${list.shown}</div>${list.more}</section>`;
+}
+
+// Older activity loads when the owner scrolls down near the end of the log: one page per
+// scroll, at most one every one and a half seconds. A redraw never moves the page, so it can
+// never load more on its own (an observer of the end did, until all history was on screen).
+const HQ_LOG_SCROLL = { y: 0, at: 0, listening: false };
+function hqLogScrolled(y, nearEnd, now) {
+  const down = y > HQ_LOG_SCROLL.y;
+  HQ_LOG_SCROLL.y = y;
+  const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
+  if (!down || !nearEnd || !olderLeft || HQ.logBusy || now - HQ_LOG_SCROLL.at < 1500) return false;
+  HQ_LOG_SCROLL.at = now;
+  return true;
+}
+function hqListenForLogEnd() {
+  if (HQ_LOG_SCROLL.listening || typeof window === "undefined" || !window.addEventListener) return;
+  HQ_LOG_SCROLL.listening = true;
+  window.addEventListener("scroll", () => {
+    if (NAV.v !== "hq" || hqTab() !== "now") return;
+    const end = document.getElementById("hq-log-end");
+    const near = !!end && end.getBoundingClientRect().top < window.innerHeight + 300;
+    if (hqLogScrolled(window.scrollY, near, Date.now())) dispatch("hq:logolder:0:more");
+  }, { passive: true });
 }
 
 function viewHQ() {
@@ -1458,22 +1541,22 @@ function viewHQ() {
     hqFonts(); hqLoop();
     const cv = document.getElementById("hq-office");
     if (cv && !cv.dataset.tapped) { cv.dataset.tapped = "1"; cv.addEventListener("click", hqTap); }
+    hqListenForLogEnd();
   }, 0);
   const pool = s.pool || {}, c = s.counts || {};
   const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Waiting", c.held || 0],
     ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
   const desk = (s.desk || []).map((d) => hqNeed(s, d)).join("");
-  // The latest thirty, newest first, and "Show older" for the rest: first what is kept here,
-  // then what HQ still has.
+  // The latest sixty, newest first, live; older lines load as the owner scrolls to the end, and
+  // "Show older" stays for keyboards: first what is kept here, then what HQ still has.
   const log = HQ.log.slice(0, HQ.logShown).map(hqLogLine).join("");
   const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
   const older = olderLeft ? `<div class="hq-row"><button class="hq-btn" data-act="hq:logolder:0:more"${HQ.logBusy ? " disabled" : ""}>${HQ.logBusy ? "Loading…" : "Show older"}</button></div>` : "";
   const wing = s.wing || {};
   const wingLine = wing.goal ? `<p class="hq-note">The engineering wing (goal "${esc(wing.goal)}") seats ${wing.most_leads || 1} lead on Claude Sonnet and at most ${wing.most_developers || 5} developers on Claude Haiku or the house's model when its lead asks to hire: ${wing.developers || 0} of ${wing.most_developers || 5} developer seats are taken. Your own hiring here is not limited.</p>` : "";
   const team = hqRoster(s);
-  const open = hqStageOpen();
-  return `<div class="hq">
+  return `<div class="hq" data-tab="${esc(hqTab())}">
     <div class="hq-bar">
       <h1>Endora HQ</h1>
       ${s.demo ? `<span class="hq-demo">Demo · scripted team</span>` : ""}
@@ -1488,43 +1571,40 @@ function viewHQ() {
     ${hqChips(s)}
     <div class="hq-main">
       ${hqTabs(s)}
-      <div class="hq-stage${open ? " open" : ""}">
-        <div class="hq-stage-bar"><button class="hq-btn hq-stage-toggle" aria-expanded="${open ? "true" : "false"}" aria-controls="hq-office" data-act="hq:stage:toggle:go">${open ? "Hide the office" : "Show the office"}</button></div>
+      <div class="hq-stage">
         <div class="hq-canvas-wrap"><canvas id="hq-office" width="${HQ_W}" height="${HQ_H}"
           aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the CEO's office with its door open, the meeting room, the kitchen and lounge, ping-pong, a pool table, a chess table, the server closet, the board room"></canvas></div>
         <div class="hq-stats">${stats}</div>
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
         ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
       </div>
-      ${hqPanel("desk", `
-        ${hqDigest(s)}
-        <section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>
+      ${hqPanel("now", `
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
-        ${hqSweep()}`)}
+        ${HQ.selected ? `<section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>` : ""}
+        ${hqDigest(s)}
+        ${hqSweep()}
+        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
       ${hqPanel("team", `
-        <section class="hq-card"><h2>Team</h2>${team}${wingLine}${hqHireForm(s)}</section>
+        <section class="hq-card"><h2>Team</h2>${team}${wingLine}</section>
         ${hqMacCard(s)}
-        ${hqScorecard(s)}`)}
+        ${hqOffice(s)}
+        ${hqWorldCard(s)}
+        ${hqHouse(s)}`)}
       ${hqPanel("work", `
         <section class="hq-card"><h2>Find a task</h2>
           <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
           <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
-        ${hqProjects(s)}
         ${hqConversations(s)}
         ${hqHolodeck(s)}
-        <details class="hq-card"><summary>Set the team a goal</summary>
-          <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
-        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}</section>
         ${hqGuards(s)}
-        ${hqRoutines(s)}`)}
-      ${hqPanel("knowledge", `
-        ${hqWorldCard(s)}
-        ${hqHouse(s)}
-        ${hqNotes(s)}`)}
-      ${hqPanel("office", `
-        ${hqOffice(s)}
-        ${hqContracts(s.contracts)}`)}
+        ${hqScorecard(s)}`)}
+      ${hqPanel("manage", `
+        ${hqContracts(s.contracts)}
+        ${hqProjects(s)}
+        ${hqRoutines(s)}
+        ${hqNotes(s)}
+        ${hqHireForm(s)}`)}
     </div>
     <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
@@ -1570,12 +1650,14 @@ function hqRosterLine(m, members) {
   const waits = hqWaitingFor(m);
   const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today of ${hqDollars(m.per_day)}`;
   const open = !!HQ.roster[m.id];
+  const rescues = m.rescues === null ? "How often the CEO stepped in this week: HQ cannot tell, the record has lost part of it."
+    : m.rescues ? `The CEO stepped in ${Number(m.rescues)} ${m.rescues === 1 ? "time" : "times"} this week.` : "";
   const controls = open ? `<div class="hq-controls">
-      <p class="hq-who">${hqMemberMoney(m)}</p>${hqBrains(m)}${hqReports(m, members)}
+      <p class="hq-who"><span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${rescues ? `<p class="hq-who">${rescues}</p>` : ""}${hqBrains(m)}${hqReports(m, members)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div>${hqNotebook(m)}</div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
-      <span>${esc(hqRole(m.role))} · <span class="hq-tag">${esc(hqBrainsTag(m))}</span> · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : waits ? esc(waits) : "between turns") + " · "}${money}${m.rescues === null ? " · how often the CEO stepped in this week: HQ cannot tell, the record has lost part of it" : m.rescues ? ` · the CEO stepped in ${Number(m.rescues)} ${m.rescues === 1 ? "time" : "times"} this week` : ""}</span></button>${controls}</li>`;
+      <span>${esc(hqRole(m.role))} · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : waits ? esc(waits) : "between turns") + " · "}${money}</span></button>${controls}</li>`;
 }
 
 // A member's notebook (ADR 0118), in its panel: each note as text (a member wrote it, so it is
@@ -1722,19 +1804,20 @@ function hqGames(s) {
   const g = s.games;
   if (!g) return "";
   // A match of pool or ping-pong plays again, step by step, a tap away (ADR 0121).
-  const recent = (g.recent || []).map((r) => `<li>${esc(r.text)}${r.game === "pool" || r.game === "ping_pong"
-    ? ` <button class="hq-btn" data-act="hq:holo:replay:${Number(r.id)}">Replay</button>` : ""}</li>`).join("");
+  const recentList = hqMore("results", (g.recent || []).map((r) => `<li>${esc(r.text)}${r.game === "pool" || r.game === "ping_pong"
+    ? ` <button class="hq-btn" data-act="hq:holo:replay:${Number(r.id)}">Replay</button>` : ""}</li>`), 3);
+  const recent = recentList.shown;
   const replay = HQ.holo && HQ.holo.what === "replay" ? hqHoloDetail() : "";
   const playing = (((g.chess || {}).games) || []).filter((c) => c.status === "in_progress")
     .map((c) => `<li>${esc(c.white)} against ${esc(c.black)}: ${esc(c.to_move)} to move, ${(c.moves || []).length} moves
       <button class="hq-btn" data-act="hq:pick:chess:0">Look at the board</button></li>`).join("");
   return `<h3>Games</h3>
     <p class="hq-note">Ping-pong and pool are played by the office on its own, for nothing; chess is played by the members, a move in each downtime turn.</p>
-    <details open><summary>Ping-pong</summary>${hqLeaderboard(g.ping_pong, false)}</details>
-    <details open><summary>Pool</summary>${hqLeaderboard(g.pool, false)}</details>
-    <details open><summary>Chess</summary>${hqLeaderboard(g.chess, true)}</details>
+    <details><summary>Ping-pong</summary>${hqLeaderboard(g.ping_pong, false)}</details>
+    <details><summary>Pool</summary>${hqLeaderboard(g.pool, false)}</details>
+    <details><summary>Chess</summary>${hqLeaderboard(g.chess, true)}</details>
     ${playing ? `<p class="hq-who">Playing now</p><ul class="hq-team">${playing}</ul>` : ""}
-    ${recent ? `<p class="hq-who">Latest results</p><ul class="hq-team">${recent}</ul>` : `<p class="hq-empty">No results yet.</p>`}
+    ${recent ? `<p class="hq-who">Latest results</p><ul class="hq-team">${recent}</ul>${recentList.more}` : `<p class="hq-empty">No results yet.</p>`}
     ${replay}`;
 }
 
@@ -1760,13 +1843,13 @@ function hqHireForm(s) {
   const judges = [["", "Claude Haiku (Sonnet for the CEO)"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus (the CEO's alone)"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
   const to = `<option value="">by role</option>` + (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(hqRole(m.role))})</option>`).join("");
-  return `<details><summary>Hire</summary><div class="hq-row" style="margin-top:8px;">
+  return `<section class="hq-card"><h2>Hire</h2><div class="hq-row">
       <input id="hq-hire-name" placeholder="Name" aria-label="The new member's name" />
       <select id="hq-hire-role" aria-label="Role">${roles}</select>
       <label>works with <select id="hq-hire-work" aria-label="What the member works with">${works}</select></label>
       <label>judges with <select id="hq-hire-judgment" aria-label="The Claude the member judges with">${judges}</select></label>
       <label>reports to <select id="hq-hire-to" aria-label="Whom the member reports to">${to}</select></label>
-      <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div></details>`;
+      <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div></section>`;
 }
 
 // A task's documents and branches (ADR 0115): a submitted branch's diff and stat, a check's
@@ -1845,29 +1928,37 @@ function hqProjects(s) {
       p.status === "active" ? btn("pause", "Pause", "") : "",
       p.status === "paused" ? btn("resume", "Resume", "ok") : "",
       open || p.status === "proposed" ? btn("cap", p.cap ? "Change the cap" : "Set a cap", "") : "",
+      open ? btn("tools", "Tools", "") : "",
       ["proposed", "dropped", "done"].includes(p.status) ? btn("reopen", p.status === "proposed" ? "Start it" : "Reopen", "ok") : "",
       open || p.status === "proposed" ? btn("drop", "Drop", "no") : "",
     ].join("");
   };
-  const row = (p) => `<li><b>${esc(p.title)}</b>
-      <span>${esc(hqName(p.lead))} leads · ${esc(status(p))}${p.open_tasks ? ` · ${p.open_tasks} open` : ""}${p.asked_cap ? ` · asks ${hqDollars(p.asked_cap)} a month` : ""}</span>
-      ${money(p)}${p.reason ? `<span>${esc(p.reason)}</span>` : ""}${(p.evidence || []).length ? `<span>Evidence: ${esc(p.evidence.join(", "))}</span>` : ""}
-      <div class="hq-row">${acts(p)}</div></li>`;
+  // One line each, the money in a few words; tapped, the whole of it and its buttons.
+  const spent = (p) => p.cap ? `${hqDollars(p.spent)} of ${hqDollars(p.cap)}` : `${hqDollars(p.spent)}, no cap`;
+  const row = (p) => hqOpenRow(`proj${p.id}`, esc(p.title),
+    `${esc(hqName(p.lead))} · ${esc(status(p))}${p.open_tasks ? ` · ${p.open_tasks} open` : ""} · ${spent(p)}`,
+    `<span>${esc(hqName(p.lead))} leads · ${esc(status(p))}${p.open_tasks ? ` · ${p.open_tasks} open` : ""}${p.asked_cap ? ` · asks ${hqDollars(p.asked_cap)} a month` : ""}</span>
+      ${money(p)}${p.tools ? `<span>Tools: ${esc(p.tools.join(", ") || "none of the node's")}</span>` : ""}${p.reason ? hqClamp(`reason${p.id}`, p.reason) : ""}${(p.evidence || []).length ? `<span>Evidence: ${esc(p.evidence.join(", "))}</span>` : ""}
+      <div class="hq-row">${acts(p)}</div>`);
+  // Live projects first; finished ones (done, dropped) wait behind "Show all".
+  const finished = (p) => ["done", "dropped"].includes(p.status) ? 1 : 0;
   const groups = goals.map((g) => {
-    const mine = projects.filter((p) => p.goal === g.id);
-    return `<li><b>${esc(g.title)}</b><ul class="hq-team hq-projects">${mine.map(row).join("") || `<li class="hq-empty">No project yet.</li>`}</ul></li>`;
+    const mine = projects.filter((p) => p.goal === g.id).sort((a, b) => finished(a) - finished(b));
+    const live = mine.filter((p) => !finished(p)).length;
+    const list = hqMore(`projects${g.id}`, mine.map(row), Math.max(live, 1));
+    return `<li><b>${esc(g.title)}</b><ul class="hq-team hq-projects">${list.shown || `<li class="hq-empty">No project yet.</li>`}</ul>${list.more}</li>`;
   }).join("");
   const goalOpts = (s.goals || []).filter((g) => g.status === "active").map((g) => `<option value="${g.id}">${esc(g.title)}</option>`).join("");
   const leadOpts = (s.members || []).filter((m) => m.role === "lead" || m.role === "ceo")
     .map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
   return `<section class="hq-card"><h2>Projects</h2>
     <ul class="hq-team">${groups || `<li class="hq-empty">No goal yet: set the team a goal first.</li>`}</ul>
-    <details><summary>New project</summary><div class="hq-row" style="margin-top:8px;">
+    <h3>New project</h3><div class="hq-row">
       <select id="hq-project-goal" aria-label="The goal it serves">${goalOpts}</select>
       <input id="hq-project-title" placeholder="e.g. Media stack upkeep" aria-label="What it is" />
       <select id="hq-project-lead" aria-label="Who leads it">${leadOpts}</select>
       <label>cap $<input id="hq-project-cap" inputmode="decimal" placeholder="none" style="width:5em" aria-label="Monthly cap in dollars, or none" /> a month</label>
-      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div></details></section>`;
+      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div></section>`;
 }
 
 // A span of time in the owner's words: 40 s, 14 min, 2.5 h, 3 d.
@@ -1897,8 +1988,8 @@ function hqOutcomes(o) {
     const m = w.memory, c = m.consults;
     return `${m.reinvented} reinvented · ${m.record_asked} asks of the record · ${c.asked} consults (${c.answered} answered, ${c.from_record} from the record)`;
   };
-  const rows = [["Landed", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
-    .map(([k, f]) => `<tr><th>${k}</th><td>${esc(f(o.day))}</td><td>${esc(f(o.week))}</td></tr>`).join("");
+  const rows = hqScoreRows("outcome", [["Landed", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
+    .map(([k, f]) => [k, f(o.day), f(o.week)]), "1 day", "7 days");
   const w = o.waiting || {};
   // Turns that wait for the day to turn (ADR 0133) are said when there are any, so a calm team's
   // line stays short, and a day of turns alone is never "nothing waits".
@@ -1906,7 +1997,7 @@ function hqOutcomes(o) {
     ? `${w.budget || 0} waiting for budget · ${w.mac || 0} for the Mac${w.cap ? ` · ${w.cap} for tomorrow` : ""} · the oldest has waited ${hqSpan(w.oldest_ms)}`
     : "nothing waits for budget or the Mac";
   return `<h3>Outcomes</h3>
-    <table class="hq-score"><thead><tr><th></th><th>1 day</th><th>7 days</th></tr></thead><tbody>${rows}</tbody></table>
+    ${rows}
     <p class="hq-note">${esc(waits)}</p>`;
 }
 
@@ -1932,8 +2023,8 @@ function hqScorecard(s) {
   };
   // HQ keeps the tokens, not the brains' prices, so the share is shown and not the dollars.
   const cache = (w) => (w.cache.share == null ? "no paid input" : `${w.cache.share}% of paid input read from cache`);
-  const rows = [["Turns", turns], ["Sent back", review], ["Per done task", done], ["Waste", dropped], ["Alarms", alarms], ["Desk", desk], ["Cache", cache]]
-    .map(([k, f]) => `<tr><th>${k}</th><td>${esc(f(card.today))}</td><td>${esc(f(card.week))}</td></tr>`).join("");
+  const measures = [["Turns", turns], ["Sent back", review], ["Per done task", done], ["Waste", dropped], ["Alarms", alarms], ["Desk", desk], ["Cache", cache]]
+    .map(([k, f]) => [k, f(card.today), f(card.week)]);
   const members = (w) => (w.turns.members || []).map((m) => `<li>${esc(hqName(m.member))}: ${m.turns} turns · ${m.nothing} showed nothing${m.unlabelled ? ` · ${m.unlabelled} unlabelled` : ""} · ${hqDollars(m.spent)}</li>`).join("")
     || `<li class="hq-empty">No turns.</li>`;
   const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
@@ -1960,13 +2051,14 @@ function hqScorecard(s) {
   const areas = (card.areas || []).map(area).join("");
   // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
   const pl = card.pool;
-  const poolRow = pl ? `<tr><th>Pool</th><td>${esc(`pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`)}</td><td></td></tr>` : "";
+  if (pl) measures.push(["Pool", `pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`, null]);
   const topUp = pl ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button></div>` : "";
   return `<section class="hq-card"><h2>How the team is doing</h2>
     ${hqOutcomes(card.outcomes)}
-    <table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${rows}${poolRow}</tbody></table>
+    <h3>The team's turns</h3>
+    ${hqScoreRows("measure", measures, "Today", "7 days")}
     ${topUp}
-    ${areas ? `<details open><summary>Each area</summary>${areas}</details>` : ""}
+    ${areas ? `<details><summary>Each area</summary>${areas}</details>` : ""}
     ${teams ? `<details><summary>Seats</summary><ul class="hq-team">${teams}</ul></details>` : ""}
     <details><summary>Per member</summary><div class="hq-score-members">
       <div><b>Today</b><ul class="hq-team">${members(card.today)}</ul></div>
@@ -1991,29 +2083,43 @@ function hqGuards(s) {
     const mode = p.mode ? `<p class="hq-note">${on ? "On: it holds talk on a task over its budget, and asks the task's lead to decide it."
       : "In shadow: it records what it would have held, and holds nothing, until you switch it on."}
       <button class="hq-btn${on ? " ok" : ""}" aria-pressed="${on ? "true" : "false"}" data-act="hq:guardmode:${esc(p.guard)}:${on ? "shadow" : "on"}">${on ? "Put it back in shadow" : "Switch it on"}</button></p>` : "";
-    return `<li><b>${esc(p.plainly)}</b>${p.mode ? ` <span class="hq-tag">${on ? "on" : "shadow"}</span>` : ""}: ${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}${mode}</li>`;
+    // One line each (the owner, 2026-10-25); tapped, its counts in full and its switch.
+    const line = `${p.mode ? `${on ? "on" : "shadow"} · ` : ""}${Number(p.fired)} found · ${Number(p.open)} open`;
+    return hqOpenRow(`guard${String(p.guard).replace(/[^\w-]/g, "")}`, esc(p.plainly), line,
+      `<span>${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}</span>${mode}`);
   }).join("");
   // What each window's turns spent is said beside it (ADR 0133).
   const ceremony = (g.ceremony || []).map((c) => `<li${c.over ? ` class="hq-refused"` : ""}>${esc(c.title)}: ${(c.windows || []).map((w) => esc(w.said) + (w.spent ? ` (${hqDollars(w.spent)} spent)` : "")).join(" · ")}${c.over ? " · talking more than working" : ""}${c.cannot_tell ? " · cannot tell whether it is talking more than working: some turns have no label" : ""}</li>`).join("");
   const finding = (f) => {
     const said = f.verdict ? `Judged ${esc(verdicts[f.verdict] || f.verdict)}${f.judged_by ? ` by ${esc(f.judged_by)}` : ""}${f.fix_worked == null ? "" : f.fix_worked ? ", and its fix worked" : ", and its fix did not work"}.` : "Not judged yet.";
-    const judge = Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("");
-    const fixed = f.verdict ? `<button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:yes">Fix worked</button><button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:no">Fix didn't work</button>` : "";
+    // Only the choices still open (the owner, 2026-10-25: 115 buttons on one card): a verdict
+    // for a finding not judged, or one the owner asked to change; a fix's outcome for a real
+    // finding whose fix is not judged yet.
+    const choosing = !f.verdict || HQ.rejudge[f.id];
+    const judge = choosing
+      ? Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("")
+      : `<button class="hq-btn" data-act="hq:rejudge:${Number(f.id)}:open">Change verdict</button>`;
+    const fixed = f.verdict === "real" && f.fix_worked == null ? `<button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:yes">Fix worked</button><button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:no">Fix didn't work</button>` : "";
     // One finding is kept for a task and a guard (ADR 0132): seen again, it says when; opened
     // again, how often.
     const again = f.seen_at > f.opened_at ? ` · seen again ${hqClock(f.seen_at)}` : "";
     const times = f.episodes > 1 ? ` · found ${Number(f.episodes)} times` : "";
-    return `<li><p><b>${esc(f.plainly)}</b> (finding ${Number(f.id)}${f.task ? ` · ${hqKeyLink(f.task)}` : ""}${f.cleared_at ? " · cleared" : " · open"}${again}${times}): ${esc(f.evidence)}</p>
-      <p class="hq-note">The rule: ${esc(f.rule)}. ${said}</p><div class="hq-row">${judge}${fixed}</div></li>`;
+    const line = `${f.task ? `${hqKey(f.task)} · ` : ""}${f.cleared_at ? "cleared" : "open"} · ${f.verdict ? esc(verdicts[f.verdict] || f.verdict) : "not judged"}`;
+    return hqOpenRow(`finding${Number(f.id)}`, esc(f.plainly), line,
+      `<p>Finding ${Number(f.id)}${f.task ? ` · ${hqKeyLink(f.task)}` : ""}${again}${times}</p>${hqClamp(`finding${Number(f.id)}`, f.evidence)}
+      <p class="hq-note">The rule: ${esc(f.rule)}. ${said}</p><div class="hq-row">${judge}${fixed}</div>`);
   };
-  const findings = (g.findings || []).map(finding).join("");
+  // What waits on the owner first: open findings not judged yet, then the rest.
+  const waiting = (f) => (!f.cleared_at && !f.verdict ? 0 : 1);
+  const sorted = [...(g.findings || [])].sort((a, b) => waiting(a) - waiting(b));
+  const listed = hqMore("findings", sorted.map(finding), 3);
+  const findings = listed.shown;
   const t = g.thresholds || {};
   return `<section class="hq-card"><h2>Guards</h2>
     <ul class="hq-team">${lines}</ul>
-    ${ceremony ? `<details open><summary>Talk against work, each project and each piece of work over the line</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
-    <details><summary>Findings</summary><ul class="hq-team hq-findings">${findings || `<li class="hq-empty">No findings.</li>`}</ul></details>
-    <p class="hq-note">Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn${t.coordination_budget == null ? "" : ` · a budget of ${Number(t.coordination_budget)} turns of talk a day on a task`}.</p>
-    ${t.free_turns_a_day == null ? "" : `<p class="hq-note">Caps, always on: ${Number(t.free_turns_a_day)} turns a day for a member on the house's own models · the team is stopped when ${Number(t.runaway_turns)} turns start in ${Math.round(Number(t.runaway_window_ms) / 60000)} minutes.</p>`}</section>`;
+    ${ceremony ? `<details><summary>Talk against work, each project and each piece of work over the line</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
+    <h3>Findings</h3><ul class="hq-team hq-findings">${findings || `<li class="hq-empty">No findings.</li>`}</ul>${listed.more}
+    ${hqClamp("thresholds", `Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn${t.coordination_budget == null ? "" : ` · a budget of ${Number(t.coordination_budget)} turns of talk a day on a task`}.${t.free_turns_a_day == null ? "" : ` Caps, always on: ${Number(t.free_turns_a_day)} turns a day for a member on the house's own models · the team is stopped when ${Number(t.runaway_turns)} turns start in ${Math.round(Number(t.runaway_window_ms) / 60000)} minutes.`}`, "hq-note")}</section>`;
 }
 
 // The house log (ADR 0111): the CEO's own document of the house, which it and the lead read
@@ -2046,8 +2152,16 @@ async function hqLoadMac() {
 
 // What the node's few words mean to the owner.
 function hqMacWhy(why) {
-  return { ready: "Free: the team may use it", "owner active": "You are using it", "on battery": "On battery: the model is unloaded",
+  return { ready: "Free: the team may use it", "owner active": "You are using it: the team waits until you have been idle a while", "on battery": "On battery: the model is unloaded",
     busy: "Mac busy is on: the model is unloaded", "model loading": "Plugged in; the model is loading", "not heard from": "Not heard from lately" }[why] || String(why || "");
+}
+
+// The Mac's state in a word or two, by its reason (the owner, 2026-10-25: "Mac away" when it was
+// plugged in and only waiting for them to be idle read as broken).
+function hqMacWord(m) {
+  if (m.busy) return "busy";
+  if (m.ready) return "free";
+  return { "owner active": "in use", "on battery": "on battery", "model loading": "loading", "not heard from": "away" }[m.why] || "away";
 }
 
 // On HQ: the Mac's state and the busy switch. Setting it up is under Settings.
@@ -2059,9 +2173,11 @@ function hqMacCard(s) {
   const facts = m.plugged == null ? "" : `${m.plugged ? "plugged in" : "on battery"} · idle ${Math.floor((m.idle_s || 0) / 60)} min · model ${m.model_up ? "up" : "down"} · `;
   const waiting = hq.waiting ? ` ${hq.waiting} ${hq.waiting === 1 ? "turn waits" : "turns wait"} for it.` : "";
   const running = hq.running ? " A turn is running on it." : "";
-  return `<section class="hq-card" aria-live="polite"><h2>The Mac <span class="hq-tag">${m.ready ? "free" : "away"}</span></h2>
+  return `<section class="hq-card" aria-live="polite"><h2>The Mac <span class="hq-tag">${hqMacWord(m)}</span></h2>
     <p class="hq-who">${esc(hqMacWhy(m.why))}.${esc(waiting)}${esc(running)}</p>
-    <p class="hq-note">${esc(facts)}heard ${esc(heard)}. A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes) || 10} min; one at a time.</p>
+    <p class="hq-note">${esc(facts)}heard ${esc(heard)}. ${Number(m.idle_minutes) > 0
+      ? `A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes)} min`
+      : "A turn runs on it whenever it is plugged in, whether or not you are using it"}; one at a time. Mac busy holds it.</p>
     <div class="hq-row"><button class="hq-btn ${m.busy ? "stop" : "ok"}" aria-pressed="${m.busy ? "true" : "false"}"
       data-act="hq:mac:busy:${m.busy ? "off" : "on"}">Mac busy: ${m.busy ? "on" : "off"}</button>
       <button class="hq-link" data-act="go:models">Set up in AI</button></div></section>`;
@@ -2080,7 +2196,7 @@ function hqMacSetup() {
         <input id="hq-mac-url" value="${esc(m.url || "")}" placeholder="http://192.168.1.10:8080/v1" aria-label="The Mac's model address" />
         <input id="hq-mac-model" value="${esc(m.model || "")}" placeholder="Model name" aria-label="The model's name" />
         <input id="hq-mac-key" type="password" autocomplete="off" placeholder="${m.has_key ? "Key kept; type to replace it" : "Key (the server's --api-key)"}" aria-label="The server's key" />
-        <label>idle for <input id="hq-mac-idle" type="number" min="1" max="1440" value="${Number(m.idle_minutes) || 10}" aria-label="Minutes the owner must be idle" /> min</label>
+        <label>wait until I am idle for <input id="hq-mac-idle" type="number" min="0" max="1440" value="${Number(m.idle_minutes) || 0}" aria-label="Minutes the owner must be idle (0: no wait)" /> min (0: no wait)</label>
         <button class="primary" data-act="hq:mac:save:go">Save</button></div>
       <div class="row" style="margin-top:8px;"><button class="ghost" data-act="hq:mac:token:make">${m.has_token ? "Make a new token for the helper" : "Make a token for the helper"}</button></div>${token}
       <p class="sub" style="margin-top:8px;">Teams on the Mac brain wait for the Mac and never fall back to another model.</p></div>`;
@@ -2092,7 +2208,7 @@ async function hqMacAct(what, arg) {
     try { await api("POST", "/v1/mac/settings", { busy: arg === "on" }); flash(arg === "on" ? "Mac busy is on: the model will unload." : "Mac busy is off.", "ok"); }
     catch (e) { flash("Couldn't change it: " + e.message, "err"); }
   } else if (what === "save") {
-    const body = { model: val("hq-mac-model"), idle_minutes: Number(val("hq-mac-idle")) || 10 };
+    const body = { model: val("hq-mac-model"), idle_minutes: Math.max(0, Number(val("hq-mac-idle")) || 0) };
     const url = val("hq-mac-url");
     if (url) body.url = url;
     const key = val("hq-mac-key");
@@ -2125,11 +2241,11 @@ function hqContracts(c) {
   if (!c) return "";
   const btn = (key, on, label) => `<button class="hq-btn ${on ? "ok" : "no"}" aria-pressed="${on ? "true" : "false"}"
     data-act="hq:contracts:${key}:${on ? "off" : "on"}">${label}: ${on ? "on" : "off"}</button>`;
-  return `<details class="hq-card"><summary>What the team may do on the home lab</summary>
+  return `<section class="hq-card"><h2>What the team may do on the home lab</h2>
     <p class="hq-note">Look at the home lab and its logs (secrets replaced), and restart a container: one an hour each, three in all.
       You are told of every restart. Endora's other skills are the team's too, as each skill's own setting says:
       on runs (three an hour, and you are told), ask puts it on your desk for approval, off is never offered.</p>
-    <div class="hq-row">${btn("all", c.all, "Contracts")}${c.all ? btn("restart_container", c.restart_container, "Restarts") : ""}</div></details>`;
+    <div class="hq-row">${btn("all", c.all, "Contracts")}${c.all ? btn("restart_container", c.restart_container, "Restarts") : ""}</div></section>`;
 }
 
 // Each active goal's notes from the owner: standing facts every member working towards it reads
@@ -2141,26 +2257,43 @@ const HQ_STRATEGY_PARTS = [["purpose", "Purpose: the goal of the goal"], ["succe
 
 function hqStrategy(g) {
   const st = g.strategy || {};
-  const written = HQ_STRATEGY_PARTS.filter(([k]) => st[k]);
-  const shown = written.length
-    ? `<dl class="hq-kv">${written.map(([k, label]) => `<dt>${esc(label)}</dt><dd>${esc(st[k])}</dd>`).join("")}</dl>
-       <p class="hq-note">Written by ${esc(st.by || "nobody")}${st.updated_at ? ` · ${esc(new Date(st.updated_at).toLocaleString())}` : ""}</p>`
-    : `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`;
+  const written = HQ_STRATEGY_PARTS.some(([k]) => st[k]);
   const fields = HQ_STRATEGY_PARTS.map(([k, label]) => `<label>${esc(label)}
       <textarea id="hq-strategy-${g.id}-${k}" rows="2" maxlength="800">${esc(st[k] || "")}</textarea></label>`).join("");
-  return `${shown}<details><summary>Edit the strategy</summary>${fields}
-      <div class="hq-row"><button class="hq-btn ok" data-act="hq:strategy:${g.id}:save">Save the strategy</button></div></details>`;
+  // The fields show what is written and edit it in place: nothing is folded away.
+  const by = written
+    ? `<p class="hq-note">Written by ${esc(st.by || "nobody")}${st.updated_at ? ` · ${esc(new Date(st.updated_at).toLocaleString())}` : ""}</p>`
+    : `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`;
+  return `${by}${fields}
+      <div class="hq-row"><button class="hq-btn ok" data-act="hq:strategy:${g.id}:save">Save the strategy</button></div>`;
 }
 
 function hqNotes(s) {
   const goals = (s.goals || []).filter((g) => g.status === "active");
-  if (!goals.length) return "";
-  const rows = goals.map((g) => `<li><b>${esc(g.title)}</b>
-      ${hqStrategy(g)}
+  const set = `<div class="hq-row"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" aria-label="A new goal for the team" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div>`;
+  if (!goals.length) return `<section class="hq-card"><h2>Goals</h2>${set}</section>`;
+  // Each goal's strategy and notes are shown as they read, with Edit to change them in place
+  // (the owner's direction: every setting visible as a value, and short enough to read).
+  // Each goal is one line until tapped (the owner, 2026-10-25); open, it shows its strategy
+  // and notes as they read, with Edit to change them in place.
+  const goalRows = goals.map((g) => {
+    const editing = !!HQ.more[`edit${g.id}`];
+    const edit = `<div class="hq-row"><button class="hq-btn" aria-expanded="${editing}" data-act="hq:more:edit${g.id}:toggle">${editing ? "Done" : "Edit"}</button></div>`;
+    const st = g.strategy || {};
+    const written = HQ_STRATEGY_PARTS.filter(([k]) => st[k]);
+    const meta = `${written.length ? `strategy${st.by ? ` by ${esc(st.by)}` : ""}` : "no strategy yet"} · ${g.note ? "notes" : "no notes"}`;
+    const body = editing
+      ? `${edit}${hqStrategy(g)}
       <textarea id="hq-note-${g.id}" rows="3" maxlength="2000" aria-label="Notes for the team on ${esc(g.title)}"
         placeholder="What every member working on this should know">${esc(g.note || "")}</textarea>
-      <div class="hq-row"><button class="hq-btn ok" data-act="hq:note:${g.id}:save">Save notes</button></div></li>`).join("");
-  return `<details class="hq-card"><summary>Goals: strategy and notes for the team</summary><ul class="hq-team">${rows}</ul></details>`;
+      <div class="hq-row"><button class="hq-btn ok" data-act="hq:note:${g.id}:save">Save notes</button></div>`
+      : `${edit}${written.map(([k, label]) => `<p class="hq-who">${esc(label)}</p>${hqClamp(`st${g.id}${k}`, st[k])}`).join("")
+        || `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`}
+      <p class="hq-who">Notes for the team</p>${g.note ? hqClamp(`note${g.id}`, g.note) : `<p class="hq-empty">None.</p>`}`;
+    return hqOpenRow(`goal${g.id}`, esc(g.title), meta, body);
+  });
+  const listed = hqMore("goals", goalRows, 5);
+  return `<section class="hq-card"><h2>Goals</h2>${set}<p class="hq-note">Strategy and notes for the team: every member working on a goal reads them near the top of its briefing.</p><ul class="hq-team">${listed.shown}</ul>${listed.more}</section>`;
 }
 
 // Routines (ADR 0107): work that comes round again, each a task for one member. Each shows
@@ -2168,18 +2301,21 @@ function hqNotes(s) {
 // other way and runs now. A small form adds one under the team's first active goal.
 function hqRoutines(s) {
   const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
-  const rows = (s.routines || []).map((r) => `<li><b>${esc(r.title)}</b>
-      <span>${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.last_fired_at ? "last ran " + esc(when(r.last_fired_at)) : "not run yet"}${r.last_task_open ? ` · ${hqKeyLink(r.last_task)} open` : ""}${r.on_lab_trouble ? " · takes home-lab alarms" : ""}${r.project ? ` · in ${esc(hqProjectTitle(r.project))}` : ""}</span>
+  const routines = (s.routines || []).map((r) => hqOpenRow(`routine${r.id}`, esc(r.title),
+    `${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.enabled ? "on" : "off"}`,
+    `<span>${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.last_fired_at ? "last ran " + esc(when(r.last_fired_at)) : "not run yet"}${r.last_task_open ? ` · ${hqKeyLink(r.last_task)} open` : ""}${r.on_lab_trouble ? " · takes home-lab alarms" : ""}${r.project ? ` · in ${esc(hqProjectTitle(r.project))}` : ""}</span>
       <div class="hq-row"><button class="hq-btn ${r.enabled ? "ok" : "no"}" aria-pressed="${r.enabled ? "true" : "false"}" data-act="hq:routine:${r.id}:${r.enabled ? "off" : "on"}">${r.enabled ? "On" : "Off"}</button>
-        <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div></li>`).join("");
+        <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div>`));
+  const listed = hqMore("routines", routines, 5);
+  const rows = listed.shown;
   const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
   return `<section class="hq-card"><h2>Routines</h2>
-    <ul class="hq-team">${rows || `<li class="hq-empty">None yet: the team works only on what it is handed.</li>`}</ul>
-    <details><summary>Add a routine</summary><div class="hq-row" style="margin-top:8px;">
+    <ul class="hq-team">${rows || `<li class="hq-empty">None yet: the team works only on what it is handed.</li>`}</ul>${listed.more}
+    <h3>Add a routine</h3><div class="hq-row">
       <input id="hq-routine-title" placeholder="e.g. Check the home lab" aria-label="What it does" />
       <label>every <input id="hq-routine-hours" type="number" min="1" max="720" value="6" style="width:4em" aria-label="Every how many hours" /> hours</label>
       <select id="hq-routine-who" aria-label="Who does it">${who}</select>
-      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div></details></section>`;
+      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div></section>`;
 }
 
 // What was tapped, in detail: a member's turn and budget, or a task and its chain of why.
@@ -2211,12 +2347,26 @@ function hqSelected() {
   return `<div class="hq-sel">${hqKey(t.id)} · ${esc(t.title)}</div><dl class="hq-kv">
     <dt>Status</dt><dd>${esc(String(t.status).replace("_", " "))}${t.gate === true ? " · gate passed" : t.gate === false ? " · gate failed" : ""}</dd>
     <dt>Owner</dt><dd>${t.owner ? esc(hqName(t.owner)) : "nobody"}</dd>
+    <dt>Project</dt><dd>${hqTaskProject(t)}</dd>
     <dt>Lock</dt><dd>${runner ? "held by R" + runner.id : "free"}</dd>
     <dt>Blocked by</dt><dd>${(t.waits_on || []).length ? t.waits_on.map(hqKey).join(", ") : "nothing"}</dd>
     <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${hqEvidence(t)}${hqDocuments(t)}${hqTurns((r) => r.task === t.id, "task-" + t.id)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}${hqTaskHelp(t.id)}
     ${replayTaskLink(t.id)}${hqPastQuestions(t.id)}
     <textarea id="hq-reply-${t.id}" rows="2" placeholder="Reply in the thread: whoever has it reads it now" aria-label="Your reply"></textarea>
     <div class="hq-row"><button class="hq-btn ok" data-act="hq:reply:${t.id}:send">Send</button></div>`;
+}
+
+// A task's project, and for open work a way to move it into another active one (ADR 0139):
+// its lead, tools and money are then the task's.
+function hqTaskProject(t) {
+  const projects = (HQ.snap && HQ.snap.projects) || [];
+  const now = projects.find((p) => p.id === t.project);
+  const name = now ? esc(now.title) : "none";
+  if (["done", "dropped"].includes(t.status)) return name;
+  const into = projects.filter((p) => p.status === "active" && p.id !== t.project);
+  if (!into.length) return name;
+  const options = into.map((p) => `<option value="${p.id}">${esc(p.title)}</option>`).join("");
+  return `${name} <select id="hq-move-${t.id}" aria-label="Move into project">${options}</select> <button class="hq-btn" data-act="hq:move:${t.id}:go">Move</button>`;
 }
 
 // The verbs this screen uses. Returns true when it handled one.
@@ -2278,10 +2428,12 @@ async function hqDispatch(verb, noun, id, arg) {
     const verdict = noun === "verdict" ? arg : f.verdict;
     if (!verdict) { flash("Say whether it was real first.", "warn"); return true; }
     const body = noun === "fixed" ? { verdict, fix_worked: arg === "yes" } : { verdict };
-    try { await api("POST", `/v1/hq/guards/findings/${Number(id)}/verdict`, body); flash("Judged.", "ok"); }
+    try { await api("POST", `/v1/hq/guards/findings/${Number(id)}/verdict`, body); flash("Judged.", "ok"); delete HQ.rejudge[id]; }
     catch (e) { flash("Couldn't judge it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
+  if (noun === "rejudge") { HQ.rejudge[id] = true; render(); return true; }
+  if (noun === "more") { HQ.more[id] = !HQ.more[id]; render(); return true; }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
   if (noun === "logmore") { HQ.logOpen[id] = !HQ.logOpen[id]; render(); return true; }
   if (noun === "logolder") {
@@ -2314,6 +2466,13 @@ async function hqDispatch(verb, noun, id, arg) {
     delete HQ.deskNote[id];
     try { await api("POST", `/v1/hq/desk/${id}`, { decision: arg, answer }); flash(answer ? "Answered." : "Decided.", "ok"); }
     catch (e) { HQ.deskNote[id] = "Couldn't decide: " + e.message; flash(HQ.deskNote[id], "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner moves an open task into an active project.
+  if (noun === "move") {
+    const project = Number(val(`hq-move-${id}`)); if (!project) return true;
+    try { await api("POST", `/v1/hq/tasks/${id}/project`, { project }); flash("Moved.", "ok"); }
+    catch (e) { flash("Couldn't move it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // The owner's reply on a task: whoever has it is woken to read it.
@@ -2450,6 +2609,13 @@ async function hqDispatch(verb, noun, id, arg) {
         const said = prompt(`A monthly cap for ${p.title}, in dollars (empty: no cap):`, p.cap ? (p.cap / 1e6).toFixed(2) : "");
         if (said === null) return true;
         await api("POST", `/v1/hq/projects/${id}/cap`, { cap: said.trim() || null }); flash("Cap set.", "ok");
+      } else if (arg === "tools") {
+        // What its work is given, commas between: "team" keeps each member's own HQ tools and
+        // narrows only the node's; empty takes the list away, giving its work everything.
+        const said = prompt(`The tools ${p.title}'s work is given, commas between (team keeps the members' own; empty: everything):`, (p.tools || []).join(", "));
+        if (said === null) return true;
+        const tools = said.split(",").map((t) => t.trim()).filter(Boolean);
+        await api("POST", `/v1/hq/projects/${id}/tools`, { tools: tools.length ? tools : null }); flash(tools.length ? "Tools set." : "Its work is given everything again.", "ok");
       } else if (arg === "work") {
         const title = (prompt(`What should ${hqName(p.lead)} do in ${p.title}?`) || "").trim(); if (!title) return true;
         // The team starts from what done means (ADR 0124), here as in the Give work form: one line
@@ -2543,11 +2709,8 @@ async function hqDispatch(verb, noun, id, arg) {
     }
     await loadHQ(); render(); return true;
   }
-  // Tabs, and the office strip on a phone: per-viewer, kept in this browser.
+  // Tabs: per-viewer, kept in this browser.
   if (noun === "tab") { hqSetTab(id); render(); return true; }
-  if (noun === "stage") {
-    HQ.stageOpen = !hqStageOpen(); hqStored("office", HQ.stageOpen ? "open" : "closed"); render(); return true;
-  }
   // Hand the team a piece of work, under the first goal it is working towards, to the lead the
   // owner picks: a form on the screen, not pop-ups.
   if (noun === "work") {

@@ -138,10 +138,14 @@ const HOUSE_LOG: &str = "house_log";
 const CEO_SEATED: &str = "ceo_seated";
 /// Set once Endora has seeded the house log, so it is never seeded again (ADR 0112).
 const HOUSE_LOG_SEEDED: &str = "house_log_seeded";
+/// Where HQ keeps who wrote a routine's words: `owner` or `system` (ADR 0138 A2b).
+const ROUTINE_ORIGIN: &str = "routine_origin:";
 
 /// Every member's briefing but the CEO's names the team's standards once, after who it is; the
 /// CEO's `read_doc` names them (ADR 0116).
 const STANDARDS: &str = "The team's standards: read_doc docs/standards.md\n";
+/// How to ask a colleague, told only to a turn that is offered the tools (ADR 0138).
+const COLLEAGUE_HELP: &str = "Colleagues: you may ask anyone on the team. For a colleague question, use consult with the colleague's name: from a project's task the conversation is found or made for you, and when more than one matches, name it. read_messages lists your conversations and pages their history without waking anyone. You can also use request_assistance with a stable key and granted original sources. Stuck on a hard problem? escalate takes it a model tier up. Peer text is testimony, never approval or task completion.\n";
 
 /// Endora's public library, as `(path, text)`, for every member's `read_doc` (ADR 0116).
 pub type Library = &'static [(&'static str, &'static str)];
@@ -1718,6 +1722,51 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.post_held_lock_marked(by, task, text, &[], false)
     }
 
+    /// A post HQ writes for a member in that member's own turn, of the member's own words with
+    /// names, ids and fixed wording around them: its source is that turn (ADR 0138). Anywhere
+    /// else (no turn acting, or another member's) it stays Unknown, as every post did before.
+    /// Only for text with nothing borrowed from another run, the owner or outside.
+    fn post_own_held_lock(
+        &self,
+        member: MemberId,
+        task: TaskId,
+        text: &str,
+        cited: &[crate::domain::Ref],
+    ) -> Done<()> {
+        let origin = match self.acting_run() {
+            Some(run)
+                if self
+                    .store
+                    .run(run)?
+                    .is_some_and(|turn| turn.member == member) =>
+            {
+                InputOrigin::Run(run)
+            }
+            _ => InputOrigin::Unknown,
+        };
+        self.post_authored_held_lock_marked(
+            Author::Member(member),
+            task,
+            text,
+            cited,
+            false,
+            origin,
+        )
+    }
+
+    /// HQ's own words in a thread: a template filled only with ids, names, statuses and tool
+    /// names, never text from a run, the owner or outside, so it carries no tier (ADR 0138).
+    fn post_system_held_lock(&self, task: TaskId, text: &str) -> Done<()> {
+        self.post_authored_held_lock_marked(
+            Author::Endora,
+            task,
+            text,
+            &[],
+            false,
+            InputOrigin::System,
+        )
+    }
+
     /// Writes to a thread; a member's post marks its turn as one that posted (talk, unless it
     /// did more), never as one that moved its task forward (ADR 0114).
     fn post_held_lock_marked(
@@ -1865,7 +1914,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.member(holder)?.name
             ));
         }
-        self.post_held_lock(Author::Member(member), task, &said)?;
+        self.post_own_held_lock(member, task, &said, &[])?;
         if to == TaskStatus::Todo {
             self.store.release(task)?;
             self.emit(
@@ -2030,11 +2079,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.mark_progress(reviewer.id, task)?;
         if !approve {
             self.store.set_task_status(task, TaskStatus::Doing)?;
-            self.post_held_lock(
-                Author::Member(reviewer.id),
-                task,
-                &format!("Sent back: {notes}"),
-            )?;
+            self.post_own_held_lock(reviewer.id, task, &format!("Sent back: {notes}"), &[])?;
             self.emit_status(&current, TaskStatus::Doing)?;
             self.emit_sent_back(task, reviewer.id, "tester", reason)?;
             if let Some(owner) = worker {
@@ -2048,20 +2093,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if gated {
             // Gated work keeps the gate's rule: done only once the gate has passed.
             self.approve_held_lock(reviewer.id, task)?;
-            self.post_held_lock(
-                Author::Member(reviewer.id),
-                task,
-                &format!("Approved: {notes}"),
-            )?;
+            self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
             return Ok(());
         }
         review::may_approve(false, false, worker, reviewer.id).map_err(EngineError::Refused)?;
         self.store.set_task_status(task, TaskStatus::Done)?;
-        self.post_held_lock(
-            Author::Member(reviewer.id),
-            task,
-            &format!("Approved: {notes}"),
-        )?;
+        self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
         self.emit_status(&current, TaskStatus::Done)?;
         self.after_finishing(&current)
     }
@@ -2542,18 +2579,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
         self.prepare_conversation_turn(run.id)?;
         if let Some(request) = self.store.assistance_for_run(run.id)? {
+            self.assistance_reached(run.id, &[request.requester_run])?;
             return self.assistance_briefing(member, &request);
         }
         if let Some(request) = self.store.assistance_notice_for_run(run.id)? {
+            let mut sources = vec![request.requester_run];
+            sources.extend(request.expert_run);
+            self.assistance_reached(run.id, &sources)?;
             return self.assistance_notice_briefing(member, &request);
         }
-        if self.canonical_task_context_applies(member, run)? {
-            return self.canonical_task_briefing(member, run);
+        let mut told = if self.canonical_task_context_applies(member, run)? {
+            self.canonical_task_briefing(member, run)?
+        } else {
+            let (_, memory) = self.memory(member, run)?;
+            let mut told = self.briefing_body(member, run, &memory.text)?;
+            told.push_str(&memory.omitted);
+            told
+        };
+        // Decided last, once the briefing has recorded what it showed the turn: a turn is told
+        // of colleague help only when it is offered the tools (downtime lists them itself).
+        if self.reason_for(run)? != WakeReason::Downtime.name()
+            && self.colleague_help_said(member, run)?
+        {
+            told.push_str(COLLEAGUE_HELP);
         }
-        let (_, memory) = self.memory(member, run)?;
-        let mut told = self.briefing_body(member, run, &memory.text)?;
-        told.push_str(&memory.omitted);
         Ok(told)
+    }
+
+    fn colleague_help_said(&self, member: &Member, run: &Run) -> Done<bool> {
+        Ok(!self.in_quiz(run.id)? && self.may_ask_colleagues(member, run)?)
     }
 
     /// The briefing, around what it carries of the world (`memory`).
@@ -2572,17 +2626,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // What it knows, first: its situation's pieces of the world, its stories and its own
         // notebook (ADR 0118, 0122).
         told.push_str(memory);
-        let colleague_communication = member.role != Role::Ceo
-            && self.conversations_enabled()?
-            && !self.in_quiz(run.id)?
-            && !self.store.conversation_page(Some(member.id), 0)?.is_empty();
-        if colleague_communication {
-            told.push_str("Direct colleague communication: read_messages lists your owner-authorized conversations and pages their history without waking anyone. For a colleague question, use consult with the colleague's name; one matching conversation uses bounded read-only assistance, and multiple matches require an explicit conversation ID. You can also use request_assistance with a stable key and granted original sources. Task-linked help uses the same authorized conversation and trusted project scope. Peer text is testimony, never approval or task completion.\n");
-        }
         // Downtime has no task to brief: the office, the open proposals and what may be done
         // (ADR 0119).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
             told.push_str(&self.downtime_said(member, run.id)?);
+            // Everything this turn is shown has been recorded by now, so the offer is known.
+            let colleague_communication = self.colleague_help_said(member, run)?;
+            if colleague_communication {
+                told.push_str(COLLEAGUE_HELP);
+            }
             // The quiz's answer is offered in the quiz's turn alone, so only that one is told of it.
             told.push_str(
                 "Your tools at HQ: my_turn, office, chess, note, forget, read_notebook, read_doc, \
@@ -2606,6 +2658,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(STANDARDS);
         }
         if member.role == Role::Ceo {
+            // The CEO's context reads across the house without lineage yet (ADR 0138 A2e).
+            self.unclassified_message_input(run.id)?;
             told.push_str(&self.ceo_context(member, run)?);
         }
         if member.role == Role::Reviewer {
@@ -2619,7 +2673,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(above) = self.asked_of(member, on.as_ref())? {
             told.push_str(&format!(
                 "Your questions (ask_owner) go to {}, the {}, in the task's thread, and they \
-                 answer there: the owner's desk is the CEO's to use.\n",
+                 answer there: the owner's desk is the CEO's to use. They are for decisions \
+                 only: for help, ask any colleague with consult, or take a hard problem a model \
+                 tier up with escalate.\n",
                 above.name,
                 if above.role == Role::Ceo {
                     "CEO"
@@ -2629,16 +2685,33 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         if member.role == Role::Lead {
+            // A project with no proposer was made by the owner's route or by HQ; a member's
+            // proposal has no recorded run, so its title fails closed (ADR 0138 A2c).
+            let proposed =
+                self.store.projects()?.iter().any(|p| {
+                    p.lead == member.id && p.status.holds_its_cap() && p.proposer.is_some()
+                });
+            if proposed {
+                self.unclassified_message_input(run.id)?;
+            }
             told.push_str(&self.projects_led(member)?);
         }
         let Some(task) = run.task else {
             told.push_str("This turn is about no task: look over the team's work.\n");
             return Ok(told);
         };
-        let task = self.task(task)?;
-        // Legacy task threads contain posts without immutable source-run lineage. A task turn
-        // receives them in its briefing, so new Internal messaging fails closed for this turn.
-        self.unclassified_message_input(run.id)?;
+        // Each section is classified by the lineage of what it shows, and what has none fails
+        // closed (ADR 0138 A2c): the task's body and criteria, its parents and goal, and the
+        // thread's posts by their recorded origins.
+        let input = self
+            .store
+            .task_inputs(task)?
+            .ok_or(EngineError::Unknown("task"))?;
+        self.inherit_authored_input(run.id, input.body_origin)?;
+        if !input.task.criteria.is_empty() {
+            self.inherit_authored_input(run.id, input.criteria_origin)?;
+        }
+        let task = input.task;
         // The CEO's review and planning say what they ask as HQ asks it now, whatever their
         // routine was made with (ADR 0120).
         let description = match self.routine_of(task.id)? {
@@ -2669,12 +2742,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str(&self.enough_said_for(member.id, run)?);
         let note = self.goal_note_briefed(task.goal)?;
         if !note.is_empty() {
+            self.unclassified_message_input(run.id)?;
             told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
         }
         // What the goal chose not to do now (ADR 0120's strategy), in every briefing on it: the
         // premise each turn works in is bounded in its own words (ADR 0124).
         let not_now = self.strategy_of(task.goal)?.not_now;
         if !not_now.trim().is_empty() {
+            self.not_now_reached(run.id, task.goal)?;
             told.push_str(&format!(
                 "Not now, for this goal: {}. Work outside the goal's bets waits.\n",
                 one_line(&not_now, 600)
@@ -2685,17 +2760,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let mut why = vec![task.title.clone()];
         let mut parent = task.parent;
+        let mut first_parent = None;
         while let Some(id) = parent {
-            let up = self.task(id)?;
-            why.push(up.title.clone());
-            parent = up.parent;
+            let up = self
+                .store
+                .task_inputs(id)?
+                .ok_or(EngineError::Unknown("parent task"))?;
+            self.inherit_authored_input(run.id, up.body_origin)?;
+            why.push(up.task.title.clone());
+            parent = up.task.parent;
+            first_parent.get_or_insert(up);
         }
-        if let Some(goal) = self.store.goal(task.goal)? {
-            why.push(format!("goal: {}", goal.title));
+        if let Some(goal) = self.store.goal_input(task.goal)? {
+            self.inherit_authored_input(run.id, goal.origin)?;
+            why.push(format!("goal: {}", goal.goal.title));
         }
         told.push_str(&format!("Why it exists: {}\n", why.join(" ← ")));
-        told.push_str(&self.serves_said(&task)?);
-        told.push_str(&self.documents_said(task.id)?);
+        let serves = self.serves_said(&task)?;
+        if let (false, Some(above)) = (serves.is_empty(), &first_parent) {
+            self.inherit_authored_input(run.id, above.criteria_origin)?;
+        }
+        told.push_str(&serves);
+        let documents = self.documents_said(task.id)?;
+        if !documents.is_empty() {
+            self.documents_reached(run.id, task.id)?;
+        }
+        told.push_str(&documents);
         if !task.waits_on.is_empty() {
             let waits: Vec<String> = task.waits_on.iter().map(|t| format!("#{t}")).collect();
             told.push_str(&format!("It waits on: {}\n", waits.join(", ")));
@@ -2714,19 +2804,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 && c.status == CheckBackStatus::Fired
                 && c.done_at.is_some_and(|at| at > since)
         }) {
+            self.unclassified_message_input(run.id)?;
             told.push_str(&format!(
                 "You said you would check back: {}\n",
                 came_back.why
             ));
         }
         let members = self.store.members()?;
-        let new: Vec<String> = self
-            .store
-            .thread(task.id)?
-            .into_iter()
-            .filter(|p| p.at > since)
-            .map(|p| Self::post_line(&members, &p.author, &p.text, p.unsupported))
-            .collect();
+        // The thread with each post's recorded origin, read together.
+        let thread = self.all_authored_posts(task.id)?;
+        let mut new = Vec::new();
+        for input in thread.iter().filter(|p| p.post.at > since) {
+            self.inherit_authored_input(run.id, input.origin)?;
+            let p = &input.post;
+            new.push(Self::post_line(&members, &p.author, &p.text, p.unsupported));
+        }
         if new.is_empty() {
             told.push_str("Nothing new in the thread since your last turn.\n");
         } else {
@@ -2736,10 +2828,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         if self.reason_for(run)? == WakeReason::QuestionAsked.name() {
-            let thread = self.store.thread(task.id)?;
+            // The unanswered questions are read from the whole thread.
+            for input in &thread {
+                self.inherit_authored_input(run.id, input.origin)?;
+            }
             let posts: Vec<(&str, &str)> = thread
                 .iter()
-                .map(|p| (p.author.as_str(), p.text.as_str()))
+                .map(|p| (p.post.author.as_str(), p.post.text.as_str()))
                 .collect();
             for (asker, question) in chain::unanswered(&posts, &member.name) {
                 told.push_str(&format!("{asker} asks you: {}\n", record::clean(&question)));
@@ -2754,9 +2849,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                  with ask_owner.\n"
             });
         }
+        // ADR 0139: this member's own turn on the house's model was stuck and took the problem a
+        // model tier up; its last word in the thread says why.
+        if self.reason_for(run)? == WakeReason::Escalated.name() {
+            told.push_str(
+                "This task went up a model tier: your work on the house's model was stuck, and \
+                 why is in its thread. Now on your Claude, work out what it could not: fix the \
+                 approach, then carry the task on as usual. A decision that is not yours still \
+                 goes to whoever holds it, with ask_owner.\n",
+            );
+        }
         if self.reason_for(run)? == WakeReason::ReviewRequested.name() {
-            // The newest of a draft for the owner and a move to review says which this is.
+            // The newest of a draft for the owner and a move to review says which this is, read
+            // from the whole thread; the receipts a draft cites have no lineage here yet.
+            for input in &thread {
+                self.inherit_authored_input(run.id, input.origin)?;
+            }
             let members = self.store.members()?;
+            let mut receipts_cited = false;
             let asked = self.store.thread(task.id)?.into_iter().rev().find_map(|p| {
                 if let Some(draft) = p.text.strip_prefix(review::DRAFT) {
                     let the_ceos = members
@@ -2772,6 +2882,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     let cited = self
                         .draft_receipts(draft, member.brain.cloud())
                         .unwrap_or_default();
+                    if !cited.trim().is_empty() {
+                        receipts_cited = true;
+                    }
                     return Some(format!(
                         "{} wrote this draft for the owner: {draft}\n{}\n{cited}",
                         p.author,
@@ -2786,15 +2899,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     )
                 })
             });
+            if receipts_cited {
+                self.unclassified_message_input(run.id)?;
+            }
             if let Some(asked) = asked {
                 told.push_str(&format!("{}\n", asked.trim_end()));
             }
         }
-        told.push_str(&self.checking_said(member, run, &task)?);
+        // Checks' results, a CEO's direction and the ladder's views and decisions have no
+        // lineage yet: shown, they fail closed.
+        let mut untraced = self.checking_said(member, run, &task)?;
         if self.reason_for(run)? == WakeReason::Directed.name() {
-            told.push_str(&self.direction_said(member, task.id)?);
+            untraced.push_str(&self.direction_said(member, task.id)?);
         }
-        told.push_str(&self.ladder_said(member, run, &task)?);
+        untraced.push_str(&self.ladder_said(member, run, &task)?);
+        if !untraced.is_empty() {
+            self.unclassified_message_input(run.id)?;
+        }
+        told.push_str(&untraced);
         if member.role == Role::Ceo {
             if let Some(lead) = self.area_lead(&task)? {
                 told.push_str(&format!(
@@ -3302,6 +3424,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.games_tick(now)?;
         // Scenarios (ADR 0135): a world that has ended with its tasks open is closed.
         self.close_ended_scenarios()?;
+        // The owner's re-run of the Holodeck: the next scenario starts once none is running.
+        self.holodeck_rerun_tick()?;
         // 3c. A wake held for a task with no turn live on it has nothing to wait behind (ADR
         //     0133): it is asked again, and goes once the task's budget of talk is in hand.
         self.release_held_talk()?;
@@ -3859,6 +3983,95 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(Some(lead.unwrap_or(above)))
     }
 
+    /// Whether a turn is work, on the house's model, rather than judgment on Claude (ADR 0131).
+    fn on_work_turn(
+        &self,
+        turn: &crate::application::ports::Run,
+        member: &crate::domain::Member,
+    ) -> Done<bool> {
+        let reason = self.store.wake(turn.wake)?.map(|w| w.reason);
+        Ok(!reason.is_some_and(|r| {
+            crate::domain::turns::kind_of(r, member.role)
+                == crate::domain::turns::TurnKind::Judgment
+        }))
+    }
+
+    /// Counts one escalation of `task` a model tier up, if it has not escalated twice today
+    /// (ADR 0139: a problem cannot bounce between tiers). Whether it may. Never in a scenario:
+    /// the Holodeck measures the model a player plays on.
+    pub(super) fn take_a_tier_up(&self, task: TaskId) -> Done<bool> {
+        const MOST_A_DAY: u32 = 2;
+        if self.in_a_scenario(task)? {
+            return Ok(false);
+        }
+        let key = format!("escalated:{}:{}", task.0, self.today());
+        let done: u32 = self
+            .store
+            .setting(&key)?
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        if done >= MOST_A_DAY {
+            return Ok(false);
+        }
+        self.store.set_setting(&key, &(done + 1).to_string())?;
+        Ok(true)
+    }
+
+    /// A member's turn on the house's model is stuck: it takes the problem a model tier up, not
+    /// up the org chart (ADR 0139). Its turn ends, why goes in the thread as its own words, and
+    /// the same member is woken on its Claude. Twice a task a day at most: after that the
+    /// problem is a decision for whoever holds it.
+    ///
+    /// # Errors
+    /// [`Refusal::Escalation`] for a turn already on Claude, a turn about no task, an empty
+    /// reason, or a task that has escalated twice today; a stopped or unknown turn.
+    pub fn escalate_in(&self, run: RunId, why: &str) -> Done<String> {
+        let _held = self.held();
+        let turn = self.running(run)?;
+        let member = self.member(turn.member)?;
+        if !self.on_work_turn(&turn, &member)? {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "this turn already thinks with Claude: a decision goes to whoever holds it, with ask_owner",
+            )));
+        }
+        let Some(task) = turn.task else {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "escalate takes a task's problem up: this turn is about no task",
+            )));
+        };
+        let why = one_line(why, 600);
+        if why.is_empty() {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "say why you are stuck: what you tried and what keeps failing",
+            )));
+        }
+        if self.in_a_scenario(task)? {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "a scenario measures the model you play on: play it on this one",
+            )));
+        }
+        if !self.take_a_tier_up(task)? {
+            return Err(EngineError::Refused(Refusal::Escalation(
+                "this task has escalated twice today: put the decision to whoever holds it, with ask_owner",
+            )));
+        }
+        self.post_own_held_lock(
+            member.id,
+            task,
+            &format!("Escalating to my Claude: {why}"),
+            &[],
+        )?;
+        let id = turn.id;
+        self.end_blocked(turn, RunStatus::Succeeded, "escalated to its Claude")?;
+        self.wake_held_lock(member.id, Some(task), WakeReason::Escalated)?;
+        self.runner.stop(id, self.settings.grace);
+        Ok(
+            "Escalated: you take this up again on your Claude in your next turn, with why in the \
+            thread. This turn ends."
+                .to_owned(),
+        )
+    }
+
     /// A member's question, up the chain: posted in the task's thread for the one above, the
     /// asker's turn ended, and the one above woken to answer there. One question a member
     /// about a task waits for its answer at a time.
@@ -3881,11 +4094,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if waiting {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
-        self.post_held_lock(
-            Author::Member(member.id),
-            task.id,
-            &chain::question(&above.name, text),
-        )?;
+        self.post_own_held_lock(member.id, task.id, &chain::question(&above.name, text), &[])?;
         let id = run.id;
         self.end_blocked(
             run,
@@ -3944,11 +4153,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store.set_task_status(task.id, TaskStatus::InReview)?;
             self.emit_status(task, TaskStatus::InReview)?;
         }
-        self.post_held_lock(
-            Author::Member(member.id),
-            task.id,
-            &format!("{}{text}", review::DRAFT),
-        )?;
+        self.post_own_held_lock(member.id, task.id, &format!("{}{text}", review::DRAFT), &[])?;
         let id = run.id;
         self.end_blocked(
             run,
@@ -4594,6 +4799,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let routine = NewRoutine { title, ..routine };
         let next = routines::next_due(self.clock.now(), routine.every_ms);
         let id = self.store.add_routine(&routine, next)?;
+        // Who wrote its words, for the tasks it fires (ADR 0138 A2b): the owner's, or HQ's own
+        // template. A member's stays unknown.
+        let origin = match by {
+            Author::Owner => Some("owner"),
+            Author::Endora => Some("system"),
+            Author::Member(_) => None,
+        };
+        if let Some(origin) = origin {
+            self.store
+                .set_setting(&format!("{ROUTINE_ORIGIN}{}", id.0), origin)?;
+        }
         self.emit(
             EventKind::RoutineChanged,
             json!({ "routine": id.0, "title": routine.title, "enabled": true,
@@ -4749,7 +4965,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             format!("{}\n\nWhy now: {why}", routine.description.trim())
         };
-        let task = self.add_task_held_lock(
+        // The routine's words and HQ's template carry the routine's origin; an alarm's words
+        // come from outside (ADR 0138 A2b).
+        let origin = match firing {
+            Firing::Alarm(_) => InputOrigin::Unknown,
+            _ => self.routine_origin(routine.id)?,
+        };
+        let task = self.add_task_authored_held_lock(
             Author::Endora,
             NewTask {
                 goal: routine.goal,
@@ -4761,6 +4983,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 priority,
                 waits_on: Vec::new(),
             },
+            origin,
         )?;
         // A lead's report or patterns turn is not work on the board (ADR 0120).
         let report = self.report_kind(routine.id, routine.assignee)?;
@@ -4775,7 +4998,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let criteria =
             routines::criteria_for(routine.on_lab_trouble, standing_review, &routine.title);
         if !criteria.is_empty() {
-            self.store.set_criteria(task, &criteria)?;
+            self.store.set_criteria_from(task, &criteria, origin)?;
         }
         // An alarm made the task: the member is woken for it as it is for an alarm passed into
         // an open task (ADR 0131). The wake joins the turn the task's making queued, and makes
@@ -4792,6 +5015,80 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "firing": firing.name(), "why": why }),
         )?;
         Ok(Fired::Created(task))
+    }
+
+    /// Routines made before their origin was recorded (ADR 0138 A2b) whose words are exactly
+    /// one of HQ's own templates (`title`, `description`): HQ's planning and leads' area
+    /// routines, and any the composition root names. They are recorded as HQ's; every other
+    /// stays unknown. Returns how many were.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn vouch_template_routines(&self, also: &[(&str, &str)]) -> Done<usize> {
+        let _held = self.held();
+        let ours = [
+            ("Planning", super::engine::planning::PLANNING),
+            (
+                crate::domain::areas::REPORT_ROUTINE,
+                super::engine::areas::REPORT_ASKS,
+            ),
+            (
+                crate::domain::areas::PATTERNS_ROUTINE,
+                super::engine::areas::PATTERNS_ASKS,
+            ),
+        ];
+        let mut vouched = 0;
+        for routine in self.store.routines()? {
+            let key = format!("{ROUTINE_ORIGIN}{}", routine.id.0);
+            if self
+                .store
+                .setting(&key)?
+                .is_some_and(|kept| !kept.is_empty())
+            {
+                continue;
+            }
+            let template = ours.iter().chain(also.iter()).any(|(title, words)| {
+                routine.title == *title && routine.description.trim() == words.trim()
+            });
+            if template {
+                self.store.set_setting(&key, "system")?;
+                vouched += 1;
+            }
+        }
+        Ok(vouched)
+    }
+
+    /// A task's whole thread, each post with its recorded origin, in pages read with their
+    /// origins.
+    fn all_authored_posts(
+        &self,
+        task: TaskId,
+    ) -> Done<Vec<crate::application::history_ports::PostInput>> {
+        const PAGE: usize = 50;
+        let mut all = Vec::new();
+        let mut after = 0;
+        loop {
+            let page = self.store.authored_posts(task, after, PAGE)?;
+            let full = page.len() == PAGE;
+            if let Some(last) = page.last() {
+                after = last.id;
+            }
+            all.extend(page);
+            if !full {
+                return Ok(all);
+            }
+        }
+    }
+
+    /// Who wrote a routine's words, as recorded when it was made: unknown for one made before
+    /// that was recorded, or by a member.
+    fn routine_origin(&self, id: RoutineId) -> Done<InputOrigin> {
+        let kept = self.store.setting(&format!("{ROUTINE_ORIGIN}{}", id.0))?;
+        Ok(match kept.as_deref() {
+            Some("owner") => InputOrigin::Owner,
+            Some("system") => InputOrigin::System,
+            _ => InputOrigin::Unknown,
+        })
     }
 
     /// Why a routine may not fire now, if it may not: the engine's rules, said in words.

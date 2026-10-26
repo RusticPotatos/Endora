@@ -31,7 +31,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             },
             None => None,
         };
+        // One team (ADR 0139): a task of an active project may ask any colleague, the pair's
+        // conversation made when first asked.
+        if let Some(project) = project {
+            if self
+                .project(project)
+                .is_ok_and(|p| p.status == ProjectStatus::Active)
+            {
+                return Ok(true);
+            }
+        }
         Ok(self.store.has_active_conversation(run.member, project)?)
+    }
+
+    /// Whether this turn is offered the colleague tools (`consult`, `request_assistance`,
+    /// `send_message`): the one rule both the tool list and the briefing follow, read after
+    /// the briefing has recorded what it showed the turn.
+    /// # Errors
+    /// A store failure.
+    pub(crate) fn may_ask_colleagues(
+        &self,
+        member: &crate::domain::Member,
+        run: &crate::application::ports::Run,
+    ) -> Done<bool> {
+        // A Confidential turn may ask too: its colleague answers on the house's models
+        // (ADR 0140), which every turn of work is on.
+        Ok(member.role != crate::domain::Role::Ceo
+            && self.conversation_turn_ready(run.id)?
+            && self.has_communication_scope(run)?)
     }
 
     fn conversation_revision(&self) -> Done<Option<i64>> {
@@ -114,7 +141,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         origin: crate::domain::history::InputOrigin,
     ) -> Done<()> {
         match origin {
-            crate::domain::history::InputOrigin::Owner => Ok(()),
+            // HQ's own words borrow nothing, so like the owner's they carry no tier.
+            crate::domain::history::InputOrigin::Owner
+            | crate::domain::history::InputOrigin::System => Ok(()),
             crate::domain::history::InputOrigin::Run(source) => {
                 self.inherit_input_from(run, Some(source))
             }

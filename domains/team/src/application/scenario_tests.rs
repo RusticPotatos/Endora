@@ -1256,3 +1256,86 @@ fn a_trial_compares_briefings_with_the_crew_and_seeds_fixed() {
         "the refused scan is kept first"
     );
 }
+
+/// The owner, 2026-10-25: reset the Holodeck so the team re-attempts the whole testing set. The
+/// earlier round is archived, kept and labelled, never deleted; each distinct scenario is queued
+/// again with its seed and players, and run one at a time so it does not crowd out real work.
+#[test]
+fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_round() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (crew, project) = crew(&hq);
+    let lit = hq.start_scenario(project, crew[0], 7).unwrap();
+    let mission = hq.start_station(project, crew, 2).unwrap();
+    let again = hq.start_station(project, crew, 2).unwrap();
+    let game = hq.start_chess(project, [crew[1], crew[2]], 3).unwrap();
+    for world in [lit, mission, again, game] {
+        hq.store()
+            .set_task_status(world, TaskStatus::Dropped)
+            .unwrap();
+    }
+    let before = hq.store().tasks().unwrap().len();
+    // Three distinct setups: the second mission is the first one's twin.
+    assert_eq!(hq.rerun_holodeck("round 1").unwrap(), 3);
+    assert!(
+        hq.rerun_holodeck("round 2").is_err(),
+        "one re-run at a time"
+    );
+    let listed = |hq: &Hq<'_>| hq.snapshot().unwrap()["holodeck"]["scenarios"].clone();
+    for world in [lit, mission, again, game] {
+        assert!(
+            listed(&hq)
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["task"] == world.0 && s["round"] == "round 1"),
+            "{world:?} is kept and labelled: {}",
+            listed(&hq)
+        );
+    }
+    let open = |hq: &Hq<'_>| -> Vec<crate::domain::Task> {
+        hq.store()
+            .tasks()
+            .unwrap()
+            .into_iter()
+            .skip(before)
+            .filter(|t| t.parent.is_none() && !t.status.finished())
+            .collect()
+    };
+    hq.tick().unwrap();
+    let first = open(&hq);
+    assert_eq!(first.len(), 1, "one at a time: {first:?}");
+    assert_eq!(
+        hq.scenario_of(first[0].id).unwrap(),
+        Some(7),
+        "the lighthouse first, its seed"
+    );
+    assert_eq!(first[0].assignee, Some(crew[0]));
+    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 2);
+    hq.tick().unwrap();
+    assert_eq!(open(&hq).len(), 1, "the next waits for this one to end");
+    hq.store()
+        .set_task_status(first[0].id, TaskStatus::Dropped)
+        .unwrap();
+    hq.tick().unwrap();
+    let second = open(&hq);
+    assert_eq!(second.len(), 1);
+    assert_eq!(
+        hq.scenario_of(second[0].id).unwrap(),
+        Some(2),
+        "then the mission"
+    );
+    assert_eq!(second[0].assignee, Some(crew[0]), "its captain");
+    hq.store()
+        .set_task_status(second[0].id, TaskStatus::Dropped)
+        .unwrap();
+    hq.tick().unwrap();
+    let third = open(&hq);
+    assert_eq!(
+        hq.scenario_of(third[0].id).unwrap(),
+        Some(3),
+        "then the match"
+    );
+    assert_eq!(third[0].assignee, Some(crew[1]), "white as before");
+    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 0);
+}

@@ -168,16 +168,18 @@ fn free_members_play_ping_pong_and_pool_and_it_costs_nothing() {
     players.dedup();
     assert_eq!(players.len(), 4);
     assert!(!players.contains(&t.ceo));
-    // No model was called: no wake, no turn, no spend.
+    // No model was called for a match: the one wake is chess's, white's first move.
+    let white = hq.store().chess_games().unwrap()[0].white;
+    let wakes = hq.store().wakes().unwrap();
     assert!(
-        hq.store().wakes().unwrap().is_empty(),
-        "a match wakes nobody"
+        wakes
+            .iter()
+            .all(|w| w.member == white && w.reason == WakeReason::Downtime),
+        "a match wakes nobody: {wakes:?}"
     );
-    assert!(hq.store().runs().unwrap().is_empty(), "a match is no turn");
-    assert!(hq.runner().started().is_empty());
-    assert_eq!(
-        hq.snapshot().unwrap()["scorecard"]["today"]["turns"]["total"],
-        0
+    assert!(
+        hq.store().runs().unwrap().iter().all(|r| r.member == white),
+        "a match is no turn"
     );
 }
 
@@ -401,8 +403,10 @@ fn the_snapshot_carries_the_leaderboards_the_last_five_results_and_the_chess_gam
         "newest first"
     );
     assert!(recent[0]["text"].as_str().unwrap().contains(" beat "));
-    let live = shown["chess"]["games"].as_array().unwrap();
-    assert_eq!(live.len(), 1);
+    // The game HQ set free members, and this one.
+    let all_live = shown["chess"]["games"].as_array().unwrap();
+    assert_eq!(all_live.len(), 2);
+    let live: Vec<&Value> = all_live.iter().filter(|g| g["id"] == chess_id).collect();
     assert_eq!(live[0]["id"], chess_id);
     assert_eq!(live[0]["white"], "Ada");
     assert_eq!(live[0]["black"], "Bo");
@@ -803,4 +807,63 @@ fn every_match_the_office_played_replays_step_by_step_as_kept() {
         assert!(again["players"][0].is_string() && again["winner"].is_string());
     }
     assert_eq!(hq.game_replay(99_999), Err(EngineError::Unknown("match")));
+}
+
+/// The owner, 2026-10-25: no game of chess had ever been played in the office, since only a
+/// downtime turn could start one and members with work never have downtime. Two free members
+/// are now set a game when none is being played, and its moves are picked up as before.
+#[test]
+fn two_free_members_are_set_a_game_of_chess_when_none_is_being_played() {
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock, false, true);
+    let t = team(&hq);
+    only(&hq, &t, [t.bo, t.cy]);
+    hq.tick().unwrap();
+    let games = hq.store().chess_games().unwrap();
+    assert_eq!(games.len(), 1, "one game");
+    let game = &games[0];
+    let players = [game.white, game.black];
+    assert!(
+        players.contains(&t.bo) && players.contains(&t.cy),
+        "{players:?}"
+    );
+    assert_eq!(events(&hq, "chess.started").len(), 1);
+    // White is given a turn for its move.
+    assert!(
+        hq.wakes()
+            .unwrap()
+            .iter()
+            .any(|w| w.member == game.white && w.reason == WakeReason::Downtime),
+        "white is woken to move"
+    );
+    // Not a second game while one is being played.
+    end_all(&hq);
+    clock.0.fetch_add(3 * 60 * 60 * 1000, Ordering::SeqCst);
+    hq.tick().unwrap();
+    assert_eq!(hq.store().chess_games().unwrap().len(), 1);
+}
+
+#[test]
+fn nobody_is_set_chess_who_holds_work_and_one_free_member_plays_nobody() {
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock, false, true);
+    let t = team(&hq);
+    only(&hq, &t, [t.bo, t.cy]);
+    let goal = hq.set_goal("Keep the lab", "", Author::Owner).unwrap();
+    hq.add_task(
+        Author::Owner,
+        crate::application::ports::NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: "Look at sonarr".into(),
+            description: String::new(),
+            assignee: Some(t.cy),
+            priority: crate::domain::Priority::Normal,
+            waits_on: vec![],
+        },
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    assert!(hq.store().chess_games().unwrap().is_empty());
 }

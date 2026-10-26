@@ -123,8 +123,17 @@ fn use_tool(hq: &Hq<'_>, context: &RunContext, tool: &str, args: &Value) -> Resu
 }
 
 /// A task handed to `to` that nobody comes back to: its recovery, then ten minutes on, the
-/// first rung.
+/// first rung, its member a model tier up (ADR 0139); and when that shows nothing either, the
+/// lead's rung.
 fn stuck(hq: &Hq<'_>, clock: &Hands) {
+    stuck_to_the_tier(hq, clock);
+    settle(hq);
+    later(clock, STRANDED_AFTER_MS + 1);
+    hq.tick().unwrap();
+}
+
+/// As [`stuck`], to the first rung only: the member woken on its Claude.
+fn stuck_to_the_tier(hq: &Hq<'_>, clock: &Hands) {
     settle(hq);
     later(clock, STRANDED_AFTER_MS + 1);
     settle(hq);
@@ -609,4 +618,44 @@ fn a_huddle_hears_at_most_four_who_touched_it_and_its_lead_decides_when_views_ar
     assert_eq!(wakes_of(&hq, w.kit, task).len(), before + 1);
     assert_eq!(wakes_of(&hq, w.kit, task).last(), Some(&WakeReason::Decide));
     assert!(desk(&hq).is_empty());
+}
+
+/// ADR 0139: anyone may add a view to a huddle, and a lead who still does not decide is not
+/// handed to the CEO; the work waits in the owner's digest, once.
+#[test]
+fn anyone_may_add_a_view_to_a_huddle_and_an_undecided_lead_is_not_handed_to_the_ceo() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let w = wing(&hq, true);
+    let task = task_for(&hq, &w, w.devs[0], "Fix the lint");
+    stuck(&hq, &clock);
+    assert_eq!(wakes_of(&hq, w.kit, task), [WakeReason::Decide]);
+    settle(&hq);
+    // Zed is at work on something else when the huddle is called, and not asked to it.
+    let other = task_for(&hq, &w, w.devs[1], "Tidy the inventory");
+    let zed = turn_on(&hq, w.devs[1], other);
+    later(&clock, STRANDED_AFTER_MS + 1);
+    hq.tick().unwrap();
+    assert!(wakes_of(&hq, w.devs[0], task).contains(&WakeReason::Huddle));
+    assert!(!wakes_of(&hq, w.devs[1], task).contains(&WakeReason::Huddle));
+    use_tool(
+        &hq,
+        &zed,
+        "huddle_view",
+        &json!({ "task": task.0, "view": "The lint config pins an old rule set.",
+                 "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
+    settle(&hq);
+    settle(&hq);
+    // The lead was asked again, on the views, and did not decide either.
+    later(&clock, STRANDED_AFTER_MS + 1);
+    hq.tick().unwrap();
+    let ceo = w.ceo.unwrap();
+    assert!(
+        wakes_of(&hq, ceo, task).is_empty(),
+        "{:?}",
+        wakes_of(&hq, ceo, task)
+    );
+    assert_eq!(desk(&hq), ["stuck"]);
 }

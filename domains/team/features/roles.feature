@@ -41,9 +41,12 @@ Feature: Roles as an enforced RACI
 
   # The owner's amendment of 18 October 2026: work kept going round a process, getting
   # stuck, then landing on the owner's desk. A lead decides; a huddle helps it decide.
+  # ADR 0139: before any person, the member takes it a model tier up.
   Scenario: Stuck work climbs the ladder, not straight to the board
     Given Linus is the developer
     And Linus has the task "Clear the stuck downloads"
+    When "Clear the stuck downloads" sits with nobody coming back to it
+    Then Linus takes "Clear the stuck downloads" a model tier up
     When "Clear the stuck downloads" sits with nobody coming back to it
     Then Ada is asked to decide "Clear the stuck downloads"
     And the owner's desk is empty

@@ -477,13 +477,13 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "post",
-            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mentions in your post schedule no peer work; use authorized bounded assistance for peer help. Actual management replies still return authority decisions to their requester. A finding cites its evidence; a post that cites none in a turn with no receipts is marked unsupported.",
+            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. A mention hands no work to anyone: ask a colleague with consult. A finding cites its evidence; a post with none, in a turn with no receipts, is marked unsupported.",
             json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What the post rests on, if anything."), "handover": drain_handover_schema() }),
             &["task", "text"]
         ),
         tool(
             "set_status",
-            "Move your task on (todo, doing, in_review, blocked), with a reason. Submitting it (in_review) cites evidence for each of its criteria, and a live criterion a reading from this turn; the tester then re-checks it and its lead accepts it. Done is set only that way, except a routine's check: close that as done, with its evidence, once you have looked. Done met its criteria unless you say why otherwise: superseded (name the successor task) or not_needed.",
+            "Move your task on (todo, doing, in_review, blocked), with a reason. in_review cites evidence for each criterion (a live one: a reading from this turn); the tester re-checks and the lead accepts, which is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. For done, why: met_criteria, or superseded (name the successor) or not_needed.",
             json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on, which superseded needs" } }),
             &["task", "status", "reason"]
         ),
@@ -494,8 +494,14 @@ pub fn tools(role: Role) -> Value {
             &["title", "description"]
         ),
         tool(
+            "escalate",
+            "Stuck on this task on the house's model (errors recurring, an approach not converging, results that do not fit)? Take it up a model tier: your turn ends and you take it up again on your Claude, with why in the thread. Twice a task a day at most; a decision still goes to whoever holds it, with ask_owner.",
+            json!({ "why": { "type": "string", "description": "what you tried and what keeps failing" } }),
+            &["why"]
+        ),
+        tool(
             "ask_owner",
-            "Put a decision your task needs, or a proposal, up the chain: to the lead (on a project's task, that project's lead), or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). The lead's to the CEO, and a tester's passing on the CEO's decision, cite evidence. Asking ends your turn: you are woken when they answer. For a colleague's knowledge or help, use consult instead.",
+            "A decision your task needs, or a proposal, up the chain in the task's thread: to your lead (a project's task: its lead), a lead's to the CEO, citing evidence (the owner's desk only when there is no CEO); a tester passing on the CEO's decision cites evidence too. Asking ends your turn; you are woken with the answer. Decisions only: for help, consult any colleague, or escalate a hard problem a model tier up.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),
@@ -507,7 +513,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "note",
-            "Add a note to YOUR notebook (nobody else's): something you learned that you or your next turn will need again, at most 300 characters, resting on evidence from HQ's record (at least one receipt, task or event; each is checked). Your notes are in your briefing, newest first. Keep them honest: a note you cannot back is a hunch.",
+            "Note in YOUR notebook something you learned and will need again: at most 300 characters, on evidence from HQ's record (a receipt, task or event; each is checked). Your notes come back in your briefings, newest first.",
             json!({ "text": { "type": "string", "maxLength": crate::domain::notebook::NOTE_MOST }, "evidence": ids("What the note rests on: at least one.") }),
             &["text", "evidence"]
         ),
@@ -531,7 +537,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "huddle_view",
-            "Give your view on stuck work, when a huddle asks you (your turn says so): three sentences at most, on evidence from HQ's record. One short turn: give it and stop; the area's lead then decides.",
+            "Give your view on stuck work while its huddle lasts (a huddle asks you in your turn, and anyone may add one): three sentences at most, on evidence from HQ's record. Give it and stop; the area's lead then decides.",
             json!({ "task": task, "view": { "type": "string", "maxLength": crate::domain::ladder::VIEW_MOST }, "evidence": ids("What your view rests on: at least one.") }),
             &["task", "view", "evidence"]
         ),
@@ -659,6 +665,19 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
         return json!([]);
     }
     list.extend(super::protocol_conversations::tools(engine, run));
+    // A judgment turn already thinks with Claude: escalating is for a work turn (ADR 0139).
+    let judgment = engine
+        .store()
+        .wake(run.wake)
+        .ok()
+        .flatten()
+        .is_none_or(|w| {
+            crate::domain::turns::kind_of(w.reason, member.role)
+                == crate::domain::turns::TurnKind::Judgment
+        });
+    if judgment {
+        list.retain(|t| t["name"] != "escalate");
+    }
     // A scenario's turn acts in its world with its tool (the Holodeck plan's phases 5 and 6).
     if let Ok(Some(kind)) = engine.scenario_kind_of_run(run.id) {
         list.push(super::scenario_tool::tool(kind));
@@ -676,11 +695,13 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .flatten()
                 .unwrap_or_default()
         };
-        list.retain(|t| {
-            t["name"].as_str().is_some_and(|n| {
-                crate::domain::deploy::HQ_TOOLS.contains(&n) || given.iter().any(|g| g == n)
-            })
-        });
+        if !given.iter().any(|g| g == crate::domain::projects::TEAM) {
+            list.retain(|t| {
+                t["name"].as_str().is_some_and(|n| {
+                    crate::domain::deploy::HQ_TOOLS.contains(&n) || given.iter().any(|g| g == n)
+                })
+            });
+        }
     }
     all
 }
@@ -896,10 +917,7 @@ pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     }
     let mut tools = tools_for_turn(engine, run, member);
     if let Some(list) = tools.as_array_mut() {
-        let can_send = member.role != Role::Ceo
-            && engine.conversation_turn_ready(run.id).unwrap_or(false)
-            && !engine.store().run_read_confidential(run.id).unwrap_or(true)
-            && engine.has_communication_scope(run).unwrap_or(false);
+        let can_send = engine.may_ask_colleagues(member, run).unwrap_or(false);
         list.retain(|tool| {
             tool["name"] != "answer_consult"
                 && (can_send
@@ -910,12 +928,12 @@ pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
         });
         for tool in list.iter_mut().filter(|tool| tool["name"] == "consult") {
             tool["description"] = json!(
-                "Ask a colleague through one owner-authorized conversation and bounded read-only assistance. No task-thread answer or automatic record fallback is created. A paused peer waits within the request deadline. Use read_messages to discover the scope and cite only granted original sources."
+                "Ask any colleague one bounded question with read-only assistance; from a project's task the conversation is found or made for you. No task-thread answer or automatic record fallback is created. A paused peer waits within the request deadline. Use read_messages to discover the scope and cite only granted original sources."
             );
             if let Some(properties) = tool["inputSchema"]["properties"].as_object_mut() {
                 properties.remove("task");
                 properties["conversation"]["description"] = json!(
-                    "Owner-authorized conversation; select explicitly when more than one scope matches this pair."
+                    "A conversation with this colleague; name one only when more than one matches this pair."
                 );
                 properties["key"]["description"] = json!(
                     "Optional stable retry key; otherwise derived from this turn and question."
@@ -1026,7 +1044,7 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // the briefing, while the drain notice below remains the final instruction.
     let answer = if tool == "my_turn" {
         answer.map(|mut text| {
-            text.push_str("\nEndora team protocol v2: peer help uses authorized conversations and answer_assistance. Any task-thread consultation or record-fallback guidance in the saved turn belongs to v1 and does not apply to this endpoint. Task-linked help requires classified input and the task's trusted project to match its authorized conversation. Task reporting, acceptance and owner-decision authority are unchanged.\n");
+            text.push_str("\nEndora team protocol v2: any colleague can be asked (consult), a hard problem goes a model tier up (escalate), and ask_owner is for decisions only. Any task-thread consultation or record-fallback guidance in the saved turn belongs to v1 and does not apply to this endpoint. Task-linked help requires classified input; a named conversation must be on the task's project. Task reporting, acceptance and owner-decision authority are unchanged.\n");
             text
         })
     } else {
@@ -1604,6 +1622,10 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 "The request is on the owner's desk (item {}): they bring a member back or hire, and you hear in this thread. Go on with your turn.",
                 item.0
             ))
+        }
+        "escalate" => {
+            let why = text_arg(args, "why")?;
+            engine.escalate_in(run.id, why).map_err(|e| said(&e))
         }
         "ask_owner" => {
             let text = text_arg(args, "text")?;

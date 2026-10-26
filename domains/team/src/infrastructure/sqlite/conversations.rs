@@ -637,7 +637,7 @@ impl ConversationStore for SqliteTeamStore {
             .map_err(backend)
     }
 
-    fn queue_assistance(&self, id: i64, now: Millis) -> Stored<Option<RunId>> {
+    fn queue_assistance(&self, id: i64, now: Millis, up: bool) -> Stored<Option<RunId>> {
         let mut conn = self.conn()?;
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -652,7 +652,11 @@ impl ConversationStore for SqliteTeamStore {
             &tx,
             MemberId(expert),
             None,
-            crate::domain::WakeReason::Consulted,
+            if up {
+                crate::domain::WakeReason::ConsultedUp
+            } else {
+                crate::domain::WakeReason::Consulted
+            },
             false,
             now,
         )?;
@@ -1892,7 +1896,7 @@ mod tests {
             at: 42,
         };
         let id = store.accept_assistance(&request).unwrap().unwrap();
-        let expert = store.queue_assistance(id, 43).unwrap().unwrap();
+        let expert = store.queue_assistance(id, 43, false).unwrap().unwrap();
         store
             .conn()
             .unwrap()
@@ -1907,7 +1911,7 @@ mod tests {
             "declined"
         );
         assert!(
-            store.queue_assistance(id, 46).unwrap().is_none(),
+            store.queue_assistance(id, 46, false).unwrap().is_none(),
             "reconciliation never reopens a terminal run"
         );
     }
@@ -1957,7 +1961,7 @@ mod tests {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                store.queue_assistance(id, 43).unwrap()
+                store.queue_assistance(id, 43, false).unwrap()
             })
         })
         .collect();
@@ -2041,7 +2045,7 @@ mod tests {
             at: 60,
         };
         let racing = store.accept_assistance(&intent).unwrap().unwrap();
-        let racing_run = store.queue_assistance(racing, 61).unwrap().unwrap();
+        let racing_run = store.queue_assistance(racing, 61, false).unwrap().unwrap();
         drop(store);
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let handles: Vec<_> = [true, false]

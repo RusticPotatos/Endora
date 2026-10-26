@@ -140,7 +140,9 @@ pub trait ConversationStore {
     /// Atomically associate exactly one queued expert turn with a still-due request.
     /// # Errors
     /// A store failure.
-    fn queue_assistance(&self, id: i64, now: Millis) -> Stored<Option<RunId>>;
+    /// `up`: the asker's turn was on Claude and read nothing Confidential, so the expert
+    /// answers on its Claude (ADR 0139).
+    fn queue_assistance(&self, id: i64, now: Millis, up: bool) -> Stored<Option<RunId>>;
     /// Read the authoritative request linked to an expert turn.
     /// # Errors
     /// A store failure.

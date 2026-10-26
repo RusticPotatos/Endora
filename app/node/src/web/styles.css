@@ -254,6 +254,18 @@
     border: 1px solid var(--hq-line); border-bottom-width: 3px; border-radius: 4px; padding: 6px 10px; cursor: pointer;
   }
   .hq .hq-btn.tall { min-height: 44px; min-width: 44px; padding: 8px 14px; }
+  .hq ul.hq-lines { list-style: none; padding: 0; margin: 0; }
+  .hq .hq-line {
+    display: flex; width: 100%; align-items: baseline; gap: 8px; min-height: 44px; padding: 8px 2px;
+    background: none; border: 0; border-bottom: 1px solid var(--hq-line); border-radius: 0; box-shadow: none;
+    color: var(--hq-fg); font: inherit; text-align: left; cursor: pointer;
+  }
+  .hq .hq-line b { flex: none; max-width: 60%; overflow-wrap: anywhere; }
+  .hq .hq-line small { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .hq .hq-line::after { content: "›"; flex: none; opacity: .6; }
+  .hq .hq-open-row { list-style: none; }
+  .hq .hq-open-row.open > .hq-line::after { content: "⌄"; }
+  .hq .hq-row-body { display: grid; gap: 4px; padding: 6px 2px 10px; }
   .hq .hq-btn:disabled { opacity: .45; cursor: default; }
   .hq textarea.hq-doc { width: 100%; box-sizing: border-box; min-height: 52vh; font: 16px/1.45 var(--hq-mono); padding: 10px; }
   .hq .hq-changes li, .hq .hq-world li { overflow-wrap: anywhere; }
@@ -277,7 +289,6 @@
   .hq-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
   .hq-stage, .hq-card { background: var(--hq-panel); border: 1px solid var(--hq-line); border-radius: 6px; min-width: 0; }
   .hq-stage { padding: 8px; order: -1; }
-  .hq-stage-toggle { display: none; }
   .hq-canvas-wrap { overflow: hidden; border-radius: 3px; }
   /* The tabs: Desk first, then the rest, one panel at a time. */
   .hq-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--hq-line); }
@@ -349,6 +360,9 @@
   .hq-gauge.warned i { background: var(--hq-amber); }
   .hq-gauge.spent i { background: var(--hq-red); }
   .hq-need p { margin: 0 0 6px; }
+  /* Long words show three lines until the owner opens them. */
+  .hq .hq-clamp:not(.open) { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .hq .hq-read { display: inline-block; margin: 0 0 6px; min-height: 32px; }
   .hq-who { color: var(--hq-muted); font-size: 12px; }
   .hq-who.hq-refused { color: var(--hq-red); font-size: 13px; }
   .hq-empty { color: var(--hq-muted); font-size: 12.5px; margin: 0; }
@@ -365,6 +379,10 @@
   .hq-log .k-bad { color: var(--hq-red); }
   .hq-log .k-you { color: var(--hq-violet); }
   .hq-team { display: grid; gap: 4px; }
+  /* A grid item keeps its widest word's width unless told not to: at phone width a page's
+     address line pushed the whole page sideways. */
+  .hq-team > li { min-width: 0; overflow-wrap: anywhere; }
+  .hq-team .hq-link { white-space: normal; text-align: left; overflow-wrap: anywhere; }
   .hq-team span { color: var(--hq-muted); }
   /* The Office card (ADR 0119): a proposal's words are the team's, and long. */
   .hq-office-card li { overflow-wrap: anywhere; }
@@ -431,17 +449,20 @@
   @media (max-width: 767px) {
     .hq-main { gap: 10px; }
     .hq-tabs { order: -2; gap: 0; justify-content: space-between; }
-    .hq .hq-tab { padding: 8px 6px; font-size: 10.5px; letter-spacing: 0; }
+    .hq .hq-tab { flex: 1 1 0; padding: 8px 6px; font-size: 12px; letter-spacing: 0; }
     .hq-badge { padding: 0 4px; margin-left: 2px; }
-    .hq-stage { order: -1; }
-    .hq-stage-toggle { display: inline-block; min-height: 44px; }
-    .hq-stage:not(.open) .hq-canvas-wrap { height: 120px; }
-    .hq-stage:not(.open) canvas { margin-top: -60px; }
-    .hq-stage:not(.open) .hq-stats, .hq-stage:not(.open) .hq-legend, .hq-stage:not(.open) .hq-note { display: none; }
-    .hq-stage-bar { margin-bottom: 6px; }
+    /* The office plays on every tab (the owner, 2026-10-25); its counters and legend are the
+       Office tab's, so the other tabs keep only the animation above their content. */
+    .hq-stage { order: -1; padding: 4px; }
+    .hq:not([data-tab="team"]) .hq-stats, .hq:not([data-tab="team"]) .hq-legend,
+    .hq:not([data-tab="team"]) .hq-stage .hq-note { display: none; }
     .hq-side { grid-template-columns: minmax(0, 1fr); }
     .hq-bar .hq-row { width: 100%; }
     .hq-bar .hq-row .hq-btn { flex: 1 1 0; }
+  }
+  /* A finger needs 44 px (Apple's HIG; WCAG 2.5.5): every button on a touch screen. */
+  @media (pointer: coarse) {
+    .hq .hq-btn { min-height: 44px; }
   }
 
   /* ---- The agenda (ADR 0103): the Now line and what is pinned above the chat ------------- */

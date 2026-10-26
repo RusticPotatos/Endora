@@ -48,6 +48,267 @@ conversations on Home lab upkeep (`161e27da` fixed the authorize form first).
 A work-triggered request observed in production, and device checks, remain
 outstanding.
 
+### Path to agentic operation, 2026-10-24
+
+A review of the reviewed plan, ADRs 0137 and 0138 and production found the
+replacement complete and live, but the team not yet agentic: no agent can ask for
+help, and its real work is stalled. This is the ordered plan to the plan's end
+state: real work leads an agent to ask a colleague, the asker checks the answer
+against originals and records a finding, the owner sees it, accounting holds, and
+the owner decides adoption on a matched comparison. It supersedes the "Next" lines
+below. Every step keeps the Confidential guard; none relaxes a data tier.
+
+**Evidence.** All 14 production turns after the first conversations were
+authorized were marked Confidential, which withholds `consult`,
+`request_assistance` and `send_message` (`protocol.rs` `tools_in`), while their
+briefing still told them to use `consult`. The older task briefing marks every
+task turn unclassified because legacy posts lack source lineage (`engine.rs`,
+`unclassified_message_input`); it serves leads, testers, the CEO and rework wakes.
+The classified task context serves only developers and researchers on five wake
+reasons, and fails closed on unclassified pre-cutover inputs. Tasks without a
+project have no help scope. Separately, all 8 open tasks were blocked, most since
+18 October; the paired developer and researcher had no turn after 05:00.
+
+**A. Make help reachable without weakening the guard** (engineering)
+
+1. Brief only what is offered: the colleague paragraph appears only on turns
+   that actually have the help tools; reword `ask_record`'s "before you consult
+   anyone" so it does not compete. Red test: a Confidential turn's briefing omits
+   it. **Done, `285bd8f5`:** one rule, `may_ask_colleagues`, decides the tool list
+   and the briefing after the briefing records its inputs; full gate passed
+   (2,360 tests) and it is deployed. Production confirmation is the next task
+   turn's briefing.
+2. Classify the older briefing's inputs one by one instead of locking the whole
+   turn, keeping its role sections (leads' area picture and team, testers'
+   review, the CEO's context, memory). An inventory (2026-10-24) found two more
+   blanket locks: `memory()` marks every lead and CEO turn because the house page
+   and stories are always briefed, and 64 `post_held_lock` sites store posts with
+   Unknown origin, as do routine-fired task bodies and criteria. Slices, each
+   test-first and released on its own:
+   a. A `system` origin for HQ text that embeds no borrowed words (input_origins
+      CHECK change, recorded here). Older builds fail on an unknown origin value,
+      so release the reader (table rebuild accepting `system`) one release before
+      anything writes it, keeping image-only rollback safe. **Reader released,
+      `435b97d0`:** rehearsed on a private production copy, then deployed; the
+      production table was rebuilt keeping all 23 proofs and its 7 guards.
+      **Writers released, `dbe38226`:** 14 kinds of post HQ writes for a member in
+      that member's own turn (status moves, verdicts, questions up, drafts,
+      handovers, area reports, huddle views and decisions) record that turn;
+      "Evidence cited" and the evidence-met submission record `system`; a CEO
+      direction and project decisions (quoting others' text) and alarms stay
+      Unknown. Re-tagging rule for the rest: a member's own words
+      as its run, owner desk words as owner, pure templates as system; posts that
+      quote borrowed text (alarms, "Evidence cited", recovered text) stay Unknown.
+   b. Routine-fired tasks carry the routine's origin for body and criteria.
+   c. The task briefing classifies each section with existing lineage (body,
+      criteria, parents, goal, serves, handover, documents, area-picture titles,
+      thread posts read with their origins in one snapshot) and fails closed only
+      for goal notes, not-now, check-backs, huddle views, desk text, strategies
+      and project text. Receipt excerpts shown in review mark the turn when
+      Confidential (today only the blanket covers them).
+   d. `memory()` classifies only the pieces actually briefed, by their recorded
+      runs; the timeline read returns its run; legacy rows without one fail closed.
+   e. The CEO's taskless sections are classified explicitly, since its marks are
+      inherited by everything it writes.
+   **Progress, 2026-10-25.** b. `e6208f05` (live): a routine records its words'
+      origin (owner or HQ template) and its fired task's body and criteria carry
+      it; alarm-fired tasks stay Unknown; pre-existing routines are vouched for
+      only when their title and words exactly match an HQ template. c. `a43105c8`:
+      the older briefing classifies body, criteria, parents, goal, served
+      criterion, area-picture titles and thread posts by recorded origin (the
+      whole thread where a question or review reads it), and fails closed on goal
+      notes, not-now, documents, check-backs, member-proposed project titles, alarm
+      patterns, check results, directions, ladder text and cited receipts.
+      d. `b2945c8d`: memory pieces by their writers' runs (house sections, stories,
+      the house timeline's shown lines via a new reader); everything else fails
+      closed. A lead's clean task turn is now offered help (test updated from the
+      old blanket expectation). e. Decided: the CEO's context stays fail-closed as
+      one explicit section, because it reads desk text, goals' notes and lessons,
+      and the lab's trouble, none with lineage; the CEO asks for decisions, not
+      help, so nothing it needs is withheld. Released with c-d in `3dcd768b`.
+   Tests: a lead's routine Home lab turn with only owner, system and Internal
+   inputs is offered help; a thread post from a Confidential run, an Unknown
+   pre-cutover post, an unattributed briefed house section and a Confidential
+   receipt excerpt each still lock the turn; a dropped piece does not.
+3. Measure before and after: replay recent production briefings offline and
+   report the share of task turns that would be offered help, by role and wake.
+   Exit: a non-zero, explained share on routine Home lab work that read no
+   Confidential receipt.
+4. Give unscoped recurring work a trusted project where the owner names one
+   (decision D2), so its turns have help scope and budgets.
+   **Progress, 2026-10-25.** The owner can now move an open task into an active
+   project (`5baab417`, live in `e6208f05`). Used on the stalled unscoped work, on
+   the evidence of each task's subject: #676 and #677 (the ansible-nas fork's
+   secret defaults) into ansible-nas clean-up, which gives them its shell and repo
+   tools; #673 (gluetun) and #678 (house page) into Home lab upkeep. Ada and Cy
+   took #676 and #677 up within a minute. Recurring routines' project (D2) is
+   unchanged.
+
+**B. Unstick the team's real work** (engineering and operations)
+
+1. Rae's Claude Code shell. **Already fixed, so decision D1 is not needed:** after
+   18 October the worker allows Claude Code's whole `Bash` in the sandbox, the
+   container being the boundary (ADR 0117), and a test cites task 674's failure.
+   The Pi runs that worker. The owner replied in #674 on 2026-10-25; Rae's turn
+   (run 2217) then failed before acting: one model call to the Mac brain took
+   over the worker's 10-minute limit. Diagnosis: a ~25.9k-token prompt read cold
+   while the Mac was out of memory (about 70 MB free, swap nearly full), reading at
+   47–108 tokens/s and writing at 2–10. The retry hit the 30-minute turn limit; the
+   next was interrupted by the `435b97d0` release drain and is queued again. Freeing
+   memory for the Mac brain is done (prompt cache off, ChatGPT quit: free memory
+   about 1.2 GB, swap 3.3 GB), but Rae's next turn (run 2245) timed out the same
+   way: at her 25–31k-token context the Mac writes about 3 tokens/s, so a turn
+   cannot fit its limits. Moving Rae's work brain to a paid model, or slimming her
+   prompt and raising the call limit, is the owner's decision.
+2. Check c1's exit 127. **Tools verified, 2026-10-24:** the Pi's current workbench,
+   with the runner's in-memory `/work`, runs `ansible-lint` 6.14.6,
+   `ansible-playbook` 2.15.13 and `yamllint` 1.30.0 from `/opt/venv/bin` on the
+   path. The c2 re-run follows Rae's re-submission (step 1).
+3. Escalations left undecided since 18 October (#672, #675, #677, #678 "to Mara:
+   the lead did not decide it"): find why the CEO's ladder does not decide them,
+   fix it, and clear or decide the backlog on evidence.
+4. Put the unscoped open tasks (#673 gluetun restarts, #676, #677, #678) in their
+   project, and give the idle developer and researcher work, so authorized pairs
+   have reasons to talk.
+
+**L. Make local-model turns small enough to finish** (owner chose free local models,
+2026-10-25). Rae's #674 turn is about 25.9k tokens before acting: about 17k node
+contracts (inferred), 4.7k HQ tools (23 for a developer; a lead's 38 are about
+8.3k), 2.5k briefing and 1.5k worker instructions. The Mac writes about 3 tokens/s
+at that size; the NAS GPU (12 GB) is slower at a 32k context. Anthropic and OpenAI
+both advise a small up-front tool set (OpenAI: "fewer than 20 functions available
+at the start of a turn"), deferring the rest behind tool search (Anthropic: worth
+it past about 10k tokens of definitions, keeping three to five tools loaded), and
+tight, non-overlapping descriptions.
+1. Per-project tool lists (existing `set_project_tools`, node `only`): ansible-nas
+   clean-up gets `shell, repo_checkout, repo_submit`; re-run #674 and measure. Add a
+   Work control for the list.
+2. For local brains on projects without a list: a small always-loaded core plus a
+   worker-provided `find_tools` that brings in matching definitions.
+3. Trim the longest HQ tool descriptions and check integrations for overlap.
+4. Keep a turn's tool set stable so the Mac's slot reuses its prompt prefix.
+Progress, 2026-10-25: steps 1 and 2 released (`8adb32c8`, NAS and Pi). A project
+list may name `team` to keep members' own HQ tools and narrow only the node's;
+ansible-nas clean-up lists `team, shell, repo_checkout, repo_submit`. Local turns
+past 12 tools start with their core and the worker's `find_tools` (office and
+chess stay reachable, as ADRs 0119 and 0121 decided). Rae's next #674 turn read a
+7,381-token first prompt (was about 25,900) in 113 seconds, and its first call
+completed in about two and a half minutes instead of timing out at ten.
+Sources: anthropic.com/engineering (advanced-tool-use, writing-tools-for-agents,
+effective-context-engineering-for-ai-agents); developers.openai.com function-calling guide.
+
+**O. Owner decisions, 2026-10-25.**
+1. One team, open conversation (the owner, citing Conway's law: everyone is on
+   the same team). Any member may message or ask any other, without the owner
+   authorizing pairs or a shared project; help is charged to the asker's task's
+   project, or the team pool when it has none. Escalation when stuck goes up model
+   tiers (the house's model, then Claude, as ADR 0131's work and judgment turns
+   already do), not through a manager relay; the CEO-directs-leads rule stays for
+   authority only. Keep the Confidential guard and the per-turn and per-day
+   limits; Manage switches messaging off or blocks a pair. Amend ADR 0138; after
+   A2. Then check that a stuck local member actually reaches its Claude tier.
+   Evidence (2026-10-25): Anthropic routes "easy/common questions to smaller,
+   cost-efficient models" and its advisor tool lets a cheaper executor consult a
+   stronger model "when stuck"; OpenAI mixes models by task and escalates to a
+   human on "exceeding failure thresholds" or "high-risk actions". Both caution
+   against free-form multi-agent chat (Anthropic: agents are "not yet great at
+   coordinating and delegating to other agents in real time"; OpenAI: "maximize a
+   single agent's capabilities first"), so open permission keeps bounded asks.
+   Audit: about 40% in place (assistance lifecycle, charging, work/judgment split,
+   budgets). Refactor, in order: (a) an escalate step, the same member re-taking a
+   stuck problem on the next tier (local, Haiku, Sonnet) as a judgment turn,
+   capped per task and paid from the existing pool; (b) split ask_owner into help
+   (peer or tier) and decisions (authority holder); (c) team-wide conversations
+   with the project from the asker's task; (d) the stuck ladder: tier step before
+   the lead, open huddles, no CEO hop for an undecided lead, a tier retry instead
+   of handed_up; (e) colleague answers not forced onto the local model; (f) a new
+   ADR, "One team, escalate by tier", amending 0111, 0113, 0120, 0130, 0131, 0137
+   and 0138.
+   **Progress, 2026-10-25.** (f) [ADR 0139](../adr/0139-one-team-escalate-by-tier.md)
+   accepted (92deff9d). (a) `escalate` live in 2be0fed5 (NAS and Pi, no turn cut).
+   (c) a consult from an active project's task finds or makes the pair's
+   conversation on that project (5654a704). (b) live in 85abc47b as a split by
+   tool: `consult` for any colleague, `escalate` for a tier up, `ask_owner` for a
+   decision, in the tool text, briefings and v2 notes. A text-format rule was
+   tried and dropped: 31 existing flows showed decisions asked as plain questions
+   ("Steel or titanium?", "May I restart it?"), so text cannot tell help from a
+   decision. (d) 56456617: the first rung wakes the member on its Claude (not for
+   work in review, work already on Claude, past the two-a-day cap, or in a
+   scenario, since the Holodeck measures the player's model); three turns of
+   nothing go a tier up instead of to a manager, and in a lead's area the ladder
+   then takes it; any member may add a huddle view; an undecided lead after the
+   huddle stops at the owner's digest, not the CEO. (e) 24655463: the expert's
+   answer turn follows the colleague's role instead of the house's model. Not
+   done: an answer on a tier above the colleague's own work when the asker is on
+   Claude (no judgment consult reason exists; it waits on evidence that work-tier
+   answers fall short).
+2. Holodeck re-run: archive the earlier round's scenario results (kept and
+   labelled) and queue every scenario again, so the agents re-attempt the whole
+   set and rounds can be compared. Deleting old results needs its own owner yes.
+   **Progress, 2026-10-25.** `dee12c81`: the owner's re-run labels every finished
+   scenario with the round's name (nothing deleted) and queues each distinct setup
+   to start again one at a time, so it does not crowd out real work. Scenarios
+   never go a model tier up (ADR 0139), since the Holodeck measures the player's
+   model. Slimming: the always-loaded tools' descriptions are trimmed
+   (`afba2b5a`); the rest of their size is schema, already deferred for local
+   turns, and the set changes within a turn only when `find_tools` appends.
+   UI: Work's conversation, scenario and trial lists are one-line rows, and
+   Knowledge no longer scrolls sideways at phone width (`3dcd768b`).
+   **Re-run started, 2026-10-25 ~17:15Z** on `46bb5f89` (NAS and Pi; the Pi's first
+   attempt lost SSH after loading the image and was retried cleanly): 15 earlier
+   scenarios labelled "round of 2026-10-25" and kept; 12 distinct setups queued,
+   the first (a lighthouse, task 792) playing. **Production evidence, same day:**
+   the new ladder's first tier rung fired on #677 ("Cy takes it a model tier up");
+   Cy's turn on Claude found the real blocker (a researcher has no repo_checkout)
+   and asked Kit, the lead, for access: a decision, by the right route. #678 was
+   done (Ada, passed by Dee, accepted by Kit); #673 was submitted and fairly sent
+   back. No peer `consult` has happened yet (C1 still open).
+   **Why none had (2026-10-25 evening):** replays of every turn after `3dcd768b` showed
+   none offered `consult`. Real work reads the lab (`container_logs`, `home_assistant`,
+   lab status), whose results are Confidential, and ADR 0138 withheld help from any
+   Confidential turn. The owner's decision, [ADR 0140](../adr/0140-confidential-asks-stay-on-the-house.md):
+   a Confidential turn may ask, and the colleague answers on the house's models; work
+   turns always are (ADR 0131), and the colleague's and the asker's result turns are
+   refused to a turn on Claude as a second check, each inheriting the mark.
+   `send_message` stays closed to Confidential turns. Two smaller lineage gaps remain
+   open (a goal's not-now strategy and huddle documents have no recorded writer).
+   **Later the same evening:** `consult` joined the local turn's always-loaded core
+   (`fe6c7c86`; behind `find_tools` no turn used it). The owner's activity no longer
+   holds the Mac (ADR 0130 amended, `eec83bb0`; production's stored 10-minute wait set
+   to 0): with nearly all work on the Mac, the team had stopped whenever the owner used
+   it. The lineage gaps are closed (`ed98f50b`): a goal's not-now records its writer,
+   and task documents are read by their recorded run. A colleague now answers on a tier
+   at least the asker's (`55b99a7e`): a new `ConsultedUp` wake, judged on the expert's
+   Claude, when the asking turn is on Claude and read nothing Confidential. HQ is four
+   tabs (Now, Team, Work, Manage) with one-line rows throughout.
+   **C1 and C2, 2026-10-25 ~20:15Z:** the first real work-triggered help request. Ada,
+   on #791 (the home-lab check, run 2335), asked Dee which receipts to cite in
+   `set_status`; the pair's conversation (#4, Home lab upkeep) was made on the spot
+   with no setup (ADR 0139), and the request (#1) showed in Work. It **expired**: Dee's
+   answer turn (run 2336), as a tester's, was pinned to the Mac and sat seventh in its
+   queue past the deadline, a real failure outcome shown in Work (C2). Fixed in
+   `898a809f`: a colleague's answer takes whichever house model is free. An answered
+   request in production is still to be observed; C3–C5 remain the owner's.
+
+**C. Prove it and decide** (observation, then owner decisions)
+
+1. Observe the first production request triggered by real work; verify its
+   answer, finding, task section, feed lines and accounting in Work.
+2. Observe a real failure outcome (expired, declined or cancelled) displayed.
+3. Physical phone check of Work (owner).
+4. Phase 6 matched comparison against the retained consult and manager-relay
+   baseline, within a frozen budget (decision D3).
+5. Record the owner's adopt, revise or disable decision (decision D4); ADR 0138
+   is complete only then.
+
+**Order.** A1 and B1–B2 first (independent and quick), then A2–A3, then B3–B4
+and A4, then C. Each step: red test or reproduction, fix, full gate, release with
+rollback tag and snapshots, production check, record.
+
+**Owner decisions.** D1 is settled by the existing ADR 0117 decision; D2 which project owns unscoped recurring work; D3 the comparison budget;
+D4 adoption. A Confidential turn sending only source locators, with no free
+text, would be a data-tier change and needs its own ADR before it is proposed.
+
 The requester-result finding is now retained with the canonical request and
 shown in the existing Work history/export payload, rather than depending on an
 expiring transcript. The repeated synthetic migration and initial actual browser
@@ -130,8 +391,7 @@ Production-backup rehearsal and the NAS/Pi cutover are done (see the
 [release record](agent-collaboration-deployment-2026-10-22.md#replacement-cutover-6e67eb6c-2026-10-24)).
 The [caller audit](agent-collaboration-caller-audit-2026-10-24.md) found no
 violation of items 1 and 2; its follow-ups are done.
-Next: observe the first work-triggered peer-help request in production (its
-answer and retained finding in Work), then a check on a physical phone. The full ADR 0138
+Next: the [path to agentic operation](#path-to-agentic-operation-2026-10-24). The full ADR 0138
 definition of done remains open until those pass.
 
 ### Legacy cancellation preparation

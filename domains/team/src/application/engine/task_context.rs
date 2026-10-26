@@ -57,7 +57,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         );
         if let Some(above) = self.asked_of(member, Some(&task))? {
             told.push_str(&format!(
-                "Your questions (ask_owner) go to {}, the {}, in the task's thread, and they answer there: the owner's desk is the CEO's to use. Use this route for authority decisions; ordinary peer help uses authorized conversations.\n",
+                "Your questions (ask_owner) go to {}, the {}, in the task's thread, and they answer there: the owner's desk is the CEO's to use. Use this route for decisions only: for help, ask any colleague with consult, or take a hard problem a model tier up with escalate.\n",
                 above.name, if above.role == Role::Ceo { "CEO" } else { above.role.name() }
             ));
         }
@@ -142,12 +142,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // and keep peer sharing closed rather than omit them to obtain a clean tier.
         let not_now = self.strategy_of(task.goal)?.not_now;
         if !not_now.is_empty() {
-            self.unclassified_message_input(run.id)?;
+            self.not_now_reached(run.id, task.goal)?;
             told.push_str(&format!("Not now, for this goal: {not_now}\n"));
         }
         let documents = self.documents_said(task.id)?;
         if !documents.is_empty() {
-            self.unclassified_message_input(run.id)?;
+            self.documents_reached(run.id, task.id)?;
             told.push_str(&documents);
         }
         if !task.waits_on.is_empty() {

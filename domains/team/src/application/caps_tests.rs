@@ -85,8 +85,9 @@ fn the_sixty_first_turn_of_a_day_on_the_house_waits_for_tomorrow_and_starts_when
     let (hq, linus, task) = team(&clock, false);
     // Sixty turns, two minutes apart: five in ten minutes, nowhere near a runaway, and each on
     // the house's own models, which cost nothing and so are bounded by nothing else.
+    // Turns that act: one that shows nothing would be taken a model tier up (ADR 0139).
     for _ in 0..60 {
-        one_turn(&hq, linus, task, false);
+        one_turn(&hq, linus, task, true);
         later(&clock, 2 * MINUTE);
     }
     assert_eq!(started_by(&hq, linus), 60);
@@ -148,8 +149,9 @@ fn one_members_day_is_its_own_and_judgment_is_not_a_turn_on_the_house() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, linus, task) = team(&clock, false);
     let dee = hq.hire("Dee", Role::Developer, 40, 2, 4).unwrap();
+    // Turns that act: one that shows nothing would be taken a model tier up (ADR 0139).
     for _ in 0..60 {
-        one_turn(&hq, linus, task, false);
+        one_turn(&hq, linus, task, true);
         later(&clock, 2 * MINUTE);
     }
     // Dee has taken none: her turn starts as ever.
@@ -370,4 +372,114 @@ fn the_guards_card_says_the_caps_beside_the_budget_of_talk() {
     assert_eq!(said["free_turns_a_day"], 60, "{said}");
     assert_eq!(said["runaway_turns"], 40, "{said}");
     assert_eq!(said["runaway_window_ms"], 10 * MINUTE, "{said}");
+}
+
+/// ADR 0139: stuck on the house's model, a member takes the problem up a model tier, not up the
+/// org chart: its turn ends, and the same member is woken on its own Claude, with why posted in
+/// the thread. Judgment turns cannot escalate further this way, and a task escalates twice a day
+/// at most, after which it is a decision for whoever holds that authority.
+#[test]
+fn a_stuck_work_turn_escalates_to_the_same_member_on_its_claude_twice_a_day_at_most() {
+    use serde_json::json;
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, linus, task) = team(&clock, false);
+    let escalate = |t: &super::ports::RunContext| {
+        let (run, member) = hq.turn_of(&t.token).unwrap().unwrap();
+        super::protocol::call(
+            &hq,
+            &run,
+            &member,
+            "escalate",
+            &json!({ "why": "The backup script fails the same way after three fixes." }),
+        )
+    };
+    for round in 0..2 {
+        hq.wake(linus, Some(task), WakeReason::Mentioned).unwrap();
+        let work = super::guards_tests::turn(&hq, linus);
+        let ran = hq.store().run(work.run).unwrap().unwrap();
+        assert_ne!(
+            ran.brain,
+            Some(Brain::Haiku),
+            "round {round}: work starts on the house"
+        );
+        let said = escalate(&work).unwrap();
+        assert!(said.contains("Claude"), "{said}");
+        let ended = hq.store().run(work.run).unwrap().unwrap();
+        assert_ne!(ended.status, RunStatus::Running, "the stuck turn ends");
+        hq.tick().unwrap();
+        let up = hq
+            .store()
+            .runs()
+            .unwrap()
+            .into_iter()
+            .rfind(|r| r.member == linus && r.task == Some(task) && r.id != work.run)
+            .unwrap();
+        assert_eq!(
+            up.brain,
+            Some(Brain::Haiku),
+            "round {round}: the same member, on its Claude"
+        );
+        let told = hq
+            .runner()
+            .started()
+            .into_iter()
+            .rfind(|c| c.run == up.id)
+            .unwrap()
+            .told;
+        assert!(
+            told.contains("up a model tier"),
+            "the escalated turn is told why: {told}"
+        );
+        assert!(
+            hq.store()
+                .thread(task)
+                .unwrap()
+                .iter()
+                .any(|p| p.text.contains("fails the same way")),
+            "why is in the thread"
+        );
+        // A judgment turn is already on Claude: it does not escalate this way.
+        let judgment = hq
+            .runner()
+            .started()
+            .into_iter()
+            .rfind(|c| c.run == up.id)
+            .unwrap();
+        assert!(escalate(&judgment).is_err());
+        hq.runner().finish(up.id, true);
+        hq.tick().unwrap();
+    }
+    hq.wake(linus, Some(task), WakeReason::Mentioned).unwrap();
+    let third = super::guards_tests::turn(&hq, linus);
+    let refused = escalate(&third).unwrap_err();
+    assert!(refused.contains("twice"), "{refused}");
+}
+
+#[test]
+fn help_goes_to_a_colleague_or_a_tier_and_only_a_decision_goes_up_the_chain() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, linus, task) = team(&clock, false);
+    hq.wake(linus, Some(task), WakeReason::Mentioned).unwrap();
+    let work = super::guards_tests::turn(&hq, linus);
+    let (run, member) = hq.turn_of(&work.token).unwrap().unwrap();
+    let tools = super::protocol::tools_in(&hq, &run, &member);
+    let said = |name: &str| {
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .map(|t| t["description"].as_str().unwrap().to_owned())
+            .unwrap_or_default()
+    };
+    let ask = said("ask_owner");
+    assert!(
+        ask.contains("decision") && ask.contains("consult") && ask.contains("escalate"),
+        "{ask}"
+    );
+    assert!(
+        !work.told.contains("authorized conversations"),
+        "no owner-made pairs: {}",
+        work.told
+    );
 }

@@ -386,6 +386,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/desk/{id}", post(hq_decide))
         // The owner's reply on a task, and a goal's notes for the team.
         .route("/v1/hq/tasks/{id}/post", post(hq_reply))
+        .route("/v1/hq/tasks/{id}/project", post(hq_task_project))
         .route("/v1/hq/goals/{id}/note", post(hq_goal_note))
         // A goal's strategy, the owner's edit of the CEO's (ADR 0120).
         .route("/v1/hq/goals/{id}/strategy", post(hq_goal_strategy))
@@ -433,6 +434,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/projects/{id}/cap", post(hq_project_cap))
         .route("/v1/hq/projects/{id}/tools", post(hq_project_tools))
         .route("/v1/hq/scenarios", post(hq_start_scenario))
+        .route("/v1/hq/scenarios/rerun", post(hq_rerun_holodeck))
         .route("/v1/hq/scenarios/{task}", get(hq_scenario))
         .route("/v1/hq/trials", post(hq_start_trial))
         .route("/v1/hq/trials/{name}", get(hq_trial))

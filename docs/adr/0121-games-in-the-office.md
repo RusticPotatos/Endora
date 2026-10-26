@@ -130,6 +130,14 @@ be just in downtime; games are picked up over time. Now:
   minutes. A game goes on over days; a week without a move still adjourns it as a draw.
 - The downtime briefing no longer says the member has no task: it says the turn is about none.
 
+## Amendment (2026-10-25): HQ sets free members a game
+
+Still no game of chess had been played: only a member's turn could start one, by a challenge,
+and none did. The owner's word: chess between free members is fine. When no game is being
+played, two members free to play (as ping-pong and pool define it: at work, not the CEO, no
+turn, no open task, no routine due) are set a game; white is the one who has played least. Its
+moves are picked up as above, by the members' own models. Members may still challenge.
+
 ## Deferred
 
 - Chess clocks, a draw offered or resigned: a game ends by the rules or by the week.

@@ -83,6 +83,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/desk/{id}", post(decide))
         // The owner's reply on a task, and a goal's notes for the team.
         .route("/v1/tasks/{id}/post", post(reply))
+        .route("/v1/tasks/{id}/project", post(task_project))
         .route("/v1/goals/{id}/note", post(goal_note))
         // A goal's strategy, the owner's edit of the CEO's (ADR 0120).
         .route("/v1/goals/{id}/strategy", post(goal_strategy))
@@ -128,6 +129,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}/tools", post(project_tools))
         // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
         .route("/v1/scenarios", post(start_scenario))
+        .route("/v1/scenarios/rerun", post(rerun_holodeck))
         .route("/v1/scenarios/{task}", get(scenario_shown))
         // Trials (phase 7): one scenario under two conditions or more, compared.
         .route("/v1/trials", post(start_trial))
@@ -578,6 +580,38 @@ async fn reply(
         Ok(()) => Json(json!({ "posted": true })).into_response(),
         Err(failed) => failed.into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct Rerun {
+    round: String,
+}
+
+/// The owner runs every scenario again, one at a time, the earlier round kept and labelled.
+async fn rerun_holodeck(
+    Extract(state): Extract<State>,
+    Json(req): Json<Rerun>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let round = req.round.clone();
+    let queued = blocking(move || hq.rerun_holodeck(&round)).await?;
+    Ok(Json(json!({ "queued": queued, "round": req.round })))
+}
+
+#[derive(Deserialize)]
+struct TaskProject {
+    project: i64,
+}
+
+/// The owner puts an open task into an active project (ADR 0139).
+async fn task_project(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<TaskProject>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.move_task_to_project(TaskId(id), ProjectId(req.project))).await?;
+    Ok(Json(json!({ "task": id, "project": req.project })))
 }
 
 #[derive(Deserialize)]
@@ -2056,8 +2090,10 @@ mod tests {
         // keeps (ADR 0126). It asks the record; peer help is absent while disabled.
         // The quiz's answer belongs only to its own turn (ADR 0131, amended). And it
         // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
-        // for work in its area (ADR 0133).
-        assert_eq!(names.len(), 37, "{names:?}");
+        // for work in its area (ADR 0133). On a work turn, it may take a stuck problem a model
+        // tier up (ADR 0139).
+        assert_eq!(names.len(), 38, "{names:?}");
+        assert!(names.contains(&"escalate"));
         assert!(!names.contains(&"consult") && !names.contains(&"answer_consult"));
         assert!(names.contains(&"recheck"));
         assert!(names.contains(&"judge_finding"));

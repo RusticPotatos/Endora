@@ -65,7 +65,9 @@ pub const fn kind_of(reason: WakeReason, role: Role) -> TurnKind {
         | W::Directed
         | W::Decide
         | W::Huddle
-        | W::Guard => TurnKind::Judgment,
+        | W::Guard
+        | W::Escalated
+        | W::ConsultedUp => TurnKind::Judgment,
         // Doing, reading, checking, drafting and picking work up again.
         W::Assigned
         | W::Mentioned
@@ -96,8 +98,11 @@ pub const fn kind_of(reason: WakeReason, role: Role) -> TurnKind {
 #[must_use]
 pub const fn allowed_for(reason: WakeReason, role: Role, in_the_wing: bool) -> Allowed {
     match reason {
-        // The office and a consult are not quality work.
-        WakeReason::Downtime | WakeReason::Consulted => Allowed::Local,
+        // The office is not quality work. A colleague's answer is (ADR 0139), but read-only and
+        // on a deadline: it takes whichever house model is free, never waiting for the Mac (the
+        // first one, production 2026-10-25, expired seventh in the Mac's queue).
+        WakeReason::Downtime => Allowed::Local,
+        WakeReason::Consulted | WakeReason::ConsultedUp => Allowed::Either,
         // Reading what a check found in a submitted branch, and mending what a reviewer sent
         // back, are code work whoever does them.
         WakeReason::CheckDone | WakeReason::SentBack => Allowed::Mac,
@@ -300,7 +305,7 @@ mod tests {
     /// not the tester, how far down its work may go (a judgment turn never goes down at all,
     /// so its column says what its work would be). A reason added to the enum fails
     /// `every_reason_is_classified` until it is in this table.
-    const TABLE: [(WakeReason, TurnKind, Allowed); 25] = [
+    const TABLE: [(WakeReason, TurnKind, Allowed); 27] = [
         (W::Assigned, TurnKind::Work, Allowed::Either),
         (W::Mentioned, TurnKind::Work, Allowed::Either),
         (W::WaitFinished, TurnKind::Work, Allowed::Either),
@@ -325,7 +330,10 @@ mod tests {
         (W::Huddle, TurnKind::Judgment, Allowed::Either),
         (W::Guard, TurnKind::Judgment, Allowed::Either),
         (W::WaitDropped, TurnKind::Work, Allowed::Either),
-        (W::Consulted, TurnKind::Work, Allowed::Local),
+        // ADR 0139: a colleague's answer is not forced onto the house's model.
+        (W::Consulted, TurnKind::Work, Allowed::Either),
+        (W::Escalated, TurnKind::Judgment, Allowed::Either),
+        (W::ConsultedUp, TurnKind::Judgment, Allowed::Either),
     ];
 
     #[test]
@@ -370,6 +378,12 @@ mod tests {
                 let allowed = allowed_for(reason, role, in_the_wing);
                 if base == Allowed::Local {
                     assert_eq!(allowed, Allowed::Local, "{reason:?}: not quality work");
+                    continue;
+                }
+                // A colleague's answer is read-only and on a deadline: whichever house model is
+                // free (the owner, 2026-10-25: the first one expired behind the Mac's queue).
+                if matches!(reason, W::Consulted | W::ConsultedUp) {
+                    assert_eq!(allowed, Allowed::Either, "{reason:?} for {role:?}");
                     continue;
                 }
                 assert_eq!(allowed, Allowed::Mac, "{reason:?} for {role:?}");

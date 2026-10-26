@@ -41,17 +41,19 @@ Settings.
 - A model, wherever it runs → **AI**. A secret → **Vault**. An outside service → **Connections**.
 - One thing, one home. If two screens need it, one owns it and the other shows a line and a link.
 - A new top-level menu entry needs a reason the existing ones cannot hold it, in its ADR.
-- Inside HQ, use its tabs: Desk (what waits on you, and at its top the digest of what happened
-  while you were away), Team (with how the team is doing: outcomes first), Work, Knowledge,
-  Office (games, last; a match's step-by-step replay is a tap on its result). The Holodeck's
-  scenarios and trials are work, so they are a card in Work, each opened step by step there.
-  Information conversations also live in Work: their owner switch, fixed participant/project
-  authorization, paged history and operation outcomes share one Conversations card (ADR 0137).
+- Inside HQ, use its four tabs (2026-10-25), and add no fifth without a reason none of them can
+  hold: **Now** (your desk, the digest of what happened while you were away, then the live
+  activity), **Team** (the people, the Mac, the office with its games, and what the team knows:
+  the world's pages and the house), **Work** (finding a task, conversations, the Holodeck, and
+  the team's health: guards and outcomes), **Manage** (every setting you own, each shown as it
+  stands). The office animation plays above every tab. The Holodeck's scenarios and trials are
+  work, so they are a card in Work, each opened step by step there. Information conversations
+  also live in Work: one Conversations card, with nothing to set up (ADR 0139).
   Explicit assistance requests, their results and project charges, source grants/revocation,
   and cancellation stay inside that conversation's Work view; they add no top-level screen.
   Something that needs your word goes on the desk; something you may want
-  to look at, but nothing waits on, goes in the digest. Fun and decoration go in Office, never
-  above the desk. A switch for a guard that is tried in shadow sits on that guard's line of the
+  to look at, but nothing waits on, goes in the digest. Fun and decoration go in the office, on
+  Team, never on Now above the desk. A switch for a guard that is tried in shadow sits on that guard's line of the
   Guards card, in Work, and not in Settings; a turn that waits for tomorrow shows in the top bar
   and in the outcomes, and is never a card. When HQ stops the team itself, that is a card on the
   desk, because it needs your word.

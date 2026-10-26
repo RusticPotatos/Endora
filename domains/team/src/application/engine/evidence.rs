@@ -534,8 +534,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store.set_task_status(task, TaskStatus::Todo)?;
             self.emit_status(&current, TaskStatus::Todo)?;
         }
-        self.post_held_lock(
-            Author::Member(by.id),
+        self.post_own_held_lock(
+            by.id,
             task,
             &format!(
                 "Handed from {} to {} by {}, above them: {why}",
@@ -543,6 +543,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 target.name,
                 by.name
             ),
+            &[],
         )?;
         self.mark_progress(by.id, task)?;
         self.keep_handover(&turn, task, holder, Some(target.id), handover)?;
@@ -683,7 +684,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.keep_cited(task, &turn, stage, cited)?;
             let said = self.evidence_said(&cited.concat())?;
             if !said.is_empty() {
-                self.post_held_lock(Author::Endora, task, &format!("Evidence cited: {said}"))?;
+                self.post_system_held_lock(task, &format!("Evidence cited: {said}"))?;
             }
         }
         Ok(())
@@ -723,13 +724,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.keep_cited(task.id, turn, ACCEPTED, cited)?;
         self.store.set_task_status(task.id, TaskStatus::Done)?;
         let said = self.evidence_said(&cited.concat())?;
-        self.post_held_lock(
-            Author::Member(turn.member),
+        self.post_own_held_lock(
+            turn.member,
             task.id,
             &format!(
                 "{} → done: {reason} (the project's lead decides its own work)\nEvidence: {said}",
                 task.status.name()
             ),
+            &[],
         )?;
         self.mark_progress(turn.member, task.id)?;
         self.emit_status(task, TaskStatus::Done)?;
@@ -894,10 +896,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &evidence::criteria_hash(&current.criteria),
         )?;
         let said = self.evidence_said(&cited.concat())?;
-        self.post_held_lock(
-            Author::Member(tester.id),
+        self.post_own_held_lock(
+            tester.id,
             task,
             &format!("Tested and passed: {notes}\nEvidence: {said}"),
+            &[],
         )?;
         self.mark_progress(tester.id, task)?;
         let lead = self.lead_for(&current)?.filter(|l| l.id != tester.id);
@@ -962,11 +965,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         if !accept {
             self.store.set_task_status(task, TaskStatus::Doing)?;
-            self.post_held_lock(
-                Author::Member(lead.id),
-                task,
-                &format!("{SENT_BACK}{notes}"),
-            )?;
+            self.post_own_held_lock(lead.id, task, &format!("{SENT_BACK}{notes}"), &[])?;
             self.emit_status(&current, TaskStatus::Doing)?;
             self.emit_sent_back(task, lead.id, "lead", reason)?;
             self.mark_progress(lead.id, task)?;
@@ -997,10 +996,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.waited_for(&current)?;
         self.keep_cited(task, &turn, ACCEPTED, cited)?;
         let said = self.evidence_said(&cited.concat())?;
-        self.post_held_lock(
-            Author::Member(lead.id),
+        self.post_own_held_lock(
+            lead.id,
             task,
             &format!("Accepted: {notes}\nEvidence: {said}"),
+            &[],
         )?;
         self.mark_progress(lead.id, task)?;
         self.close_checked(&current, lead.id)
@@ -1053,8 +1053,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// After a member's turn on its task that showed nothing: a nudge for its next turn (the
-    /// briefing says it) for the first two, then, once, the task goes to whom the member reports
-    /// to, with a post saying so.
+    /// briefing says it) for the first two, then, once, the same member a model tier up (ADR
+    /// 0139). When its work already thinks with Claude or the task has escalated twice today,
+    /// a task in a lead's area is the ladder's; any other goes to whom the member reports to,
+    /// with a post saying so.
     pub(super) fn after_nothing_shown(&self, run: &Run) -> Done<()> {
         let Some(task_id) = run.task else {
             return Ok(());
@@ -1079,8 +1081,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.store.setting(&key)?.is_some() {
             return Ok(());
         }
-        let members = self.store.members()?;
         let member = self.member(run.member)?;
+        // A model tier up before a person (ADR 0139): the same member, on its Claude.
+        if self.on_work_turn(run, &member)? && self.take_a_tier_up(task_id)? {
+            self.store.set_setting(&key, "1")?;
+            self.post_held_lock(
+                Author::Endora,
+                task_id,
+                &format!(
+                    "{} took {count} turns on this that showed nothing (talk only or empty), \
+                     after {} nudges: {} takes it a model tier up, on its Claude.",
+                    member.name,
+                    evidence::MOST_NUDGES,
+                    member.name
+                ),
+            )?;
+            self.wake_held_lock(member.id, Some(task_id), WakeReason::Escalated)?;
+            return Ok(());
+        }
+        // In a lead's area the ladder takes it from here, as a decision for the lead; work is
+        // not handed up to a manager (ADR 0139).
+        if self.area_lead(&task)?.is_some() {
+            return Ok(());
+        }
+        let members = self.store.members()?;
         let Some(manager) = chain::manager(&member, &members)
             .and_then(|id| members.iter().find(|m| m.id == id).cloned())
             .filter(|m| m.id != member.id)

@@ -85,13 +85,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn memory(&self, member: &Member, run: &Run) -> Done<(Situation, Composed)> {
         let situation = self.situation_of(member, run)?;
         let pieces = self.pieces(member, run, situation)?;
-        let unclassified: Vec<String> = pieces
+        let shown: Vec<String> = pieces
             .iter()
             .filter(|piece| {
                 !piece.text.trim().is_empty()
                     && !matches!(
                         piece.name.as_str(),
-                        "map" | "your notebook" | "tidy" | "furlough" | "world:lab"
+                        // HQ's own words, or classified where they are read.
+                        "map"
+                            | "your notebook"
+                            | "tidy"
+                            | "furlough"
+                            | "world:lab"
+                            | "world:house"
+                            | "stories"
                     )
             })
             .map(|piece| piece.name.clone())
@@ -100,11 +107,33 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             situations::budget(member.role, member.brain, situation),
             pieces,
         );
-        if unclassified
+        // Each piece briefed is classified by the turns that wrote it (ADR 0138 A2d): a house
+        // section, a story and the house's timeline lines by their recorded runs. What has none,
+        // and every other piece, fails closed.
+        let briefed: Vec<&String> = shown
             .iter()
-            .any(|name| composed.briefed.contains(name))
-        {
-            self.unclassified_message_input(run.id)?;
+            .filter(|name| composed.briefed.contains(name))
+            .collect();
+        if !briefed.is_empty() {
+            let sections = self.store.sections()?;
+            let stories = self.store.stories()?;
+            for name in briefed {
+                let wrote = if name.as_str() == "world:house timeline" {
+                    self.house_timeline_runs(member, run, &sections)?
+                } else if let Some(section) = sections.iter().find(|s| &s.address() == name) {
+                    vec![section.written_in_run]
+                } else if let Some(story) = stories.iter().find(|s| &s.address() == name) {
+                    vec![story.written_in_run]
+                } else {
+                    vec![None]
+                };
+                for by in wrote {
+                    match by {
+                        Some(source) => self.inherit_input_from(run.id, Some(source))?,
+                        None => self.unclassified_message_input(run.id)?,
+                    }
+                }
+            }
         }
         self.store.save_briefed(&Briefed {
             run: run.id,
@@ -236,6 +265,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         pieces.push(Piece::new("your notebook", notes, notes_weight));
         pieces.push(Piece::new("tidy", tidy, Weight::Recommended));
         Ok(pieces)
+    }
+
+    /// The turns that wrote the house's timeline lines a briefing shows (`None` for a line no
+    /// turn wrote): those since the member's last turn while the page has sections, else all of
+    /// them, which holds the newest lines shown.
+    fn house_timeline_runs(
+        &self,
+        member: &Member,
+        run: &Run,
+        sections: &[Section],
+    ) -> Done<Vec<Option<crate::domain::RunId>>> {
+        let current = sections
+            .iter()
+            .any(|s| s.page == HOUSE.slug && s.stage.current());
+        let last = self.last_turn_of(member, run)?;
+        Ok(self
+            .store
+            .timeline_with_runs(HOUSE.slug)?
+            .into_iter()
+            .filter(|(line, _)| !current || last.is_none_or(|last| line.at > last))
+            .map(|(_, by)| by)
+            .collect())
     }
 
     /// The house page's pieces for a member: the CEO and the leads its current sections (canon

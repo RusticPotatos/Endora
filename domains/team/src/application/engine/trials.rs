@@ -194,7 +194,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             trials.push(json!({ "name": name, "kind": kept["kind"],
                                 "runs": kept["runs"].as_array().map_or(0, Vec::len) }));
         }
-        Ok(json!({ "scenarios": self.scenarios_listed(20)?, "trials": trials }))
+        Ok(
+            json!({ "scenarios": self.scenarios_listed(20)?, "trials": trials,
+                   "queued": self.rerun_queued()? }),
+        )
     }
 
     /// A trial compared: its world, version and seeds; each condition summed from the record;

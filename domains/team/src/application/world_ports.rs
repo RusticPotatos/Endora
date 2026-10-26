@@ -44,6 +44,16 @@ pub trait WorldStore {
     /// [`super::ports::StoreError`] if the store fails.
     fn timeline(&self, page: &str) -> Stored<Vec<TimelineLine>>;
 
+    /// A page's timeline as [`Self::timeline`], each line with the turn that wrote it, if a
+    /// turn did (ADR 0138 A2d): what a briefing shows of it is classified by that turn.
+    ///
+    /// # Errors
+    /// [`super::ports::StoreError`] if the store fails.
+    fn timeline_with_runs(
+        &self,
+        page: &str,
+    ) -> Stored<Vec<(TimelineLine, Option<crate::domain::RunId>)>>;
+
     /// Adds a line to a page's timeline.
     ///
     /// # Errors
