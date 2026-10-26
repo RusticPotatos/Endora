@@ -122,6 +122,8 @@ fn tools() -> Value {
                            "question": { "type": "string" } }, "required": ["member", "question"] } },
         { "name": "chess", "description": "Your game of chess.",
           "inputSchema": { "type": "object", "properties": { "action": { "type": "string" } }, "required": ["action"] } },
+        { "name": "answer_assistance", "description": "Answer the request assigned to this turn.",
+          "inputSchema": { "type": "object", "properties": { "answer": { "type": "string" } }, "required": ["answer"] } },
     ])
 }
 
@@ -440,7 +442,7 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
     let first = &to_model[0];
     assert_eq!(first.path, "/team-relay/local/v1/chat/completions");
     assert_eq!(first.body["model"], "local");
-    assert_eq!(first.body["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(first.body["tools"].as_array().unwrap().len(), 7);
     assert_eq!(
         first.body["tools"][1],
         json!({ "type": "function", "function": {
@@ -1013,6 +1015,7 @@ fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
             "set_status",
             "consult",
             "chess",
+            "answer_assistance",
             "homelab_status",
             "restart_container"
         ]
@@ -1100,7 +1103,7 @@ fn a_401_from_the_node_ends_the_turn_and_a_node_without_contracts_leaves_hqs_too
             .as_array()
             .unwrap()
             .len(),
-        6
+        7
     );
     assert_eq!(
         methods(&to_hq).last().map(String::as_str),
@@ -2030,6 +2033,7 @@ fn the_bridge_serves_hqs_tools_and_the_nodes_and_a_question_ends_the_turn() {
             "set_status",
             "consult",
             "chess",
+            "answer_assistance",
             "homelab_status",
             "container_logs",
             "restart_container"
@@ -2210,6 +2214,9 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
         "consult",
         // So is the game a turn is woken to move in: behind a search, no move was ever made.
         "chess",
+        // And the tool a special turn answers with: behind a search, a colleague's answer
+        // turn never answered, and both live requests were declined (2026-10-25).
+        "answer_assistance",
         "find_tools",
     ] {
         assert!(first.iter().any(|n| n == core), "{core} missing: {first:?}");
@@ -2221,7 +2228,7 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
         );
     }
     assert!(
-        first.len() <= 10,
+        first.len() <= 11,
         "the first call offers {} tools",
         first.len()
     );

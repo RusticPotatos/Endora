@@ -145,6 +145,22 @@ database backup; it must not run both engines against the same work.
    workflow with backup, drain, versioned cutover, live checks and a recorded
    enablement/rollback decision. No obsolete engine remains active in production.
 
+## Amendment (2026-10-25): what the first live requests taught
+
+The first three production requests were not answered: #1 expired (a tester's answer turn
+pinned to the Mac, fixed by answering on any free house model), and #2 and #3, Cy asking Dee on
+#677, were declined. Two causes, both fixed:
+
+- **The answer tool was hidden.** A local turn with more than twelve tools starts with its core
+  and a tool search; an expert's turn has the node's read tools and the shell beside it, so
+  `answer_assistance` itself was behind the search and the model ended in plain text. The tool a
+  special turn answers with (`answer_assistance`, `read_assistance_source`,
+  `record_assistance_finding`, `answer_quiz`) is now always loaded.
+- **Sources named, not passed.** Cy's question named `r877` but passed no evidence, and prose
+  grants nothing, so Dee had nothing to read. A consult whose question names a receipt or
+  document while passing none is refused, in the asker's turn, with the exact `evidence` to
+  pass. Prose still grants nothing.
+
 ## Consequences
 
 This expands the remaining work beyond the earlier four validation gates: actual

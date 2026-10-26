@@ -2712,6 +2712,21 @@ fn any_member_asks_any_colleague_from_a_projects_task_without_an_owner_made_pair
         )
         .is_err()
     );
+    // A question that names a receipt but passes none: live, the colleague could read nothing,
+    // and both requests were declined (2026-10-25). Prose grants nothing, so the asker is told
+    // to pass the locator, in the same turn.
+    let named = hq
+        .consult_peer_in(
+            run.id,
+            "Member 3",
+            "From your r877 reading, which defaults are literal?",
+            None,
+            None,
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(named.contains(r#"evidence: ["r877"]"#), "{named}");
     let asked: Value = serde_json::from_str(
         &hq.consult_peer_in(
             run.id,
