@@ -48,10 +48,12 @@ Feature: The tools fit the turn
     Then "brave-search__brave_place_search" is among them
     And "weather" is among them
 
-  Scenario: A developer on Claude is offered what a cloud model may read
+  # ADR 0141 (the owner, 2026-10-25): Confidential is open to Claude, so a developer on Claude
+  # is offered what its role allows, as on the Mac; only Restricted stays home.
+  Scenario: A developer on Claude is offered them as its role allows
     When the team's tools are drawn up for a developer thinking on Claude
     Then "weather" is among them
-    But "brave-search__brave_place_search" is not among them
+    And "brave-search__brave_place_search" is among them
 
   # Seed: refusing every tool to the NAS's model, or none, fails one of the two Thens.
   Scenario: A developer on the NAS's model that names a tool that asks the owner anyway is refused
