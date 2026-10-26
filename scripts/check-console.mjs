@@ -490,6 +490,18 @@ if (failures.length) {
   }
 }
 
+// A one-line row's detail is readable on a phone (C3, 2026-10-25): left to <small>'s default it
+// was 10.4 px, the smallest text on the screen, on 35 rows of Work.
+{
+  const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
+  const rule = (css.match(/\n\s*\.hq ul\.hq-lines small \{[^}]*\}/) || [""])[0];
+  const px = Number((rule.match(/font-size:\s*(\d+)px/) || [])[1] || 0);
+  if (px < 12) {
+    console.error("styles: a one-line row's detail is smaller than 12 px on a phone");
+    process.exit(1);
+  }
+}
+
 // The clean slate (owner, 2026-10-16): no Inbox, no check-in or nightly review to switch on,
 // no durable goals to watch or stop, no beliefs listed kind by kind.
 {

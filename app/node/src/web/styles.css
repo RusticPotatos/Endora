@@ -262,6 +262,7 @@
   }
   .hq .hq-line b { flex: none; max-width: 60%; overflow-wrap: anywhere; }
   .hq .hq-line small { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .hq ul.hq-lines small { font-size: 12px; color: var(--hq-muted); }
   .hq .hq-line::after { content: "›"; flex: none; opacity: .6; }
   .hq .hq-open-row { list-style: none; }
   .hq .hq-open-row.open > .hq-line::after { content: "⌄"; }

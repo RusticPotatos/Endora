@@ -15,7 +15,7 @@ function hqHolodeck(s) {
   if (!scenarios.length && !trials.length) return "";
   const scen = scenarios.map((x) => hqLine(`hq:holo:open:${Number(x.task)}`, `${esc(hqHoloKind(x.kind))}: ${esc(x.title)}`,
     `${esc(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}${x.round ? ` · ${esc(x.round)}` : ""}`));
-  const scenList = hqMore("scenarios", scen, 5);
+  const scenList = hqMore("scenarios", scen, 3);
   const queued = Number((h && h.queued) || 0);
   const again = queued
     ? `<p class="hq-note">${queued} scenario${queued === 1 ? "" : "s"} queued to run again, one at a time.</p>
