@@ -18,7 +18,8 @@ function hqHolodeck(s) {
   const scenList = hqMore("scenarios", scen, 5);
   const queued = Number((h && h.queued) || 0);
   const again = queued
-    ? `<p class="hq-note">${queued} scenario${queued === 1 ? "" : "s"} queued to run again, one at a time.</p>`
+    ? `<p class="hq-note">${queued} scenario${queued === 1 ? "" : "s"} queued to run again, one at a time.</p>
+      <div class="hq-row"><button class="hq-btn tall" data-act="hq:holo:restart:all">Start over on today's engine</button></div>`
     : `<div class="hq-row"><button class="hq-btn tall" data-act="hq:holo:rerun:all">Run every scenario again</button></div>`;
   const tried = trials.map((t) => hqLine(`hq:holo:trial:${esc(t.name)}`, esc(t.name), `${esc(hqHoloKind(t.kind))}, ${Number(t.runs)} runs · compare`)).join("");
   const open = HQ.holo && HQ.holo.what !== "replay" ? hqHoloDetail() : "";
@@ -95,10 +96,13 @@ function hqReplayView(d) {
 async function hqHoloAct(what, arg) {
   if (what === "close") { HQ.holo = null; render(); return true; }
   // Every scenario again, one at a time: the earlier round is kept, labelled with today.
-  if (what === "rerun") {
-    const round = "round of " + new Date().toISOString().slice(0, 10);
-    if (!confirm(`Run every scenario again, one at a time? The earlier results are kept, as "${round}".`)) return true;
-    try { const r = await api("POST", "/v1/hq/scenarios/rerun", { round }); flash(`${Number(r.queued)} queued to run again.`, "ok"); }
+  if (what === "rerun" || what === "restart") {
+    const restart = what === "restart";
+    const round = "round of " + new Date().toISOString().slice(0, 16).replace("T", " ");
+    if (!confirm(restart
+      ? `Start the re-run over? The scenario being played is dropped (kept), and every scenario is queued again. Results so far are kept, as "${round}".`
+      : `Run every scenario again, one at a time? The earlier results are kept, as "${round}".`)) return true;
+    try { const r = await api("POST", "/v1/hq/scenarios/rerun", { round, restart }); flash(`${Number(r.queued)} queued to run again.`, "ok"); }
     catch (e) { flash("Couldn't run them again: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }

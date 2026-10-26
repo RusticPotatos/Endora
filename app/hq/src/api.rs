@@ -585,6 +585,9 @@ async fn reply(
 #[derive(Deserialize)]
 struct Rerun {
     round: String,
+    /// Start over: drop the scenario in play and queue every setup again.
+    #[serde(default)]
+    restart: bool,
 }
 
 /// The owner runs every scenario again, one at a time, the earlier round kept and labelled.
@@ -594,7 +597,15 @@ async fn rerun_holodeck(
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
     let round = req.round.clone();
-    let queued = blocking(move || hq.rerun_holodeck(&round)).await?;
+    let restart = req.restart;
+    let queued = blocking(move || {
+        if restart {
+            hq.restart_holodeck(&round)
+        } else {
+            hq.rerun_holodeck(&round)
+        }
+    })
+    .await?;
     Ok(Json(json!({ "queued": queued, "round": req.round })))
 }
 

@@ -1339,3 +1339,59 @@ fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_ro
     assert_eq!(third[0].assignee, Some(crew[1]), "white as before");
     assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 0);
 }
+
+/// The owner, 2026-10-25: have every scenario play out again on the new engine, while a re-run
+/// is still under way. Starting over drops the scenario in progress (kept, never deleted),
+/// labels what this round finished, and queues every distinct setup again, earlier rounds'
+/// included, one at a time as before.
+#[test]
+fn the_holodeck_re_run_starts_over_with_every_scenario_and_keeps_what_ran() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (crew, project) = crew(&hq);
+    let lit = hq.start_scenario(project, crew[0], 7).unwrap();
+    let mission = hq.start_station(project, crew, 2).unwrap();
+    for world in [lit, mission] {
+        hq.store()
+            .set_task_status(world, TaskStatus::Dropped)
+            .unwrap();
+    }
+    assert_eq!(hq.rerun_holodeck("round 1").unwrap(), 2);
+    hq.tick().unwrap();
+    // The lighthouse is being played again when the owner starts over.
+    let playing = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .rfind(|t| t.parent.is_none() && !t.status.finished())
+        .unwrap();
+    assert_eq!(hq.scenario_of(playing.id).unwrap(), Some(7));
+    assert!(
+        hq.rerun_holodeck("round 2").is_err(),
+        "a plain re-run still waits"
+    );
+    assert_eq!(
+        hq.restart_holodeck("round 2").unwrap(),
+        2,
+        "every setup, both rounds'"
+    );
+    let dropped = hq.store().task(playing.id).unwrap().unwrap();
+    assert_eq!(dropped.status, TaskStatus::Dropped, "kept, not deleted");
+    let listed = hq.snapshot().unwrap()["holodeck"]["scenarios"].clone();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["task"] == playing.id.0 && s["round"] == "round 2"),
+        "{listed}"
+    );
+    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 2);
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.snapshot().unwrap()["holodeck"]["queued"],
+        1,
+        "one starts again"
+    );
+}
