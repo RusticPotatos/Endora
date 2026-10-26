@@ -280,8 +280,15 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
    and task documents are read by their recorded run. A colleague now answers on a tier
    at least the asker's (`55b99a7e`): a new `ConsultedUp` wake, judged on the expert's
    Claude, when the asking turn is on Claude and read nothing Confidential. HQ is four
-   tabs (Now, Team, Work, Manage) with one-line rows throughout. C1 (a real
-   work-triggered help request) is still open.
+   tabs (Now, Team, Work, Manage) with one-line rows throughout.
+   **C1 and C2, 2026-10-25 ~20:15Z:** the first real work-triggered help request. Ada,
+   on #791 (the home-lab check, run 2335), asked Dee which receipts to cite in
+   `set_status`; the pair's conversation (#4, Home lab upkeep) was made on the spot
+   with no setup (ADR 0139), and the request (#1) showed in Work. It **expired**: Dee's
+   answer turn (run 2336), as a tester's, was pinned to the Mac and sat seventh in its
+   queue past the deadline, a real failure outcome shown in Work (C2). Fixed in
+   `898a809f`: a colleague's answer takes whichever house model is free. An answered
+   request in production is still to be observed; C3–C5 remain the owner's.
 
 **C. Prove it and decide** (observation, then owner decisions)
 
