@@ -374,6 +374,9 @@ Then game 830 stalled at 57 half-moves: Dee's black turn waited "for tomorrow" a
 60 free turns, spent on the night's Holodeck match and this game. Fixed in `95657412` (live,
 ADR 0133 amended): a scenario's turns are bounded by its world, not its player's day, and the
 tripwire still counts them. Dee's turn started at once after the release.
+Game 830 ended drawn at the move limit (Local and Mac 1200, a draw each). Game 835, Local
+against Claude Haiku, started at once; by 12:15 the Model league project had spent $0.014 of its
+$10 cap, so a Claude side is paid from the league's capped project as designed.
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
