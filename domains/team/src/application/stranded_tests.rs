@@ -317,6 +317,18 @@ fn work_in_review_with_no_verdict_stays_in_review_and_its_lead_is_woken() {
             .is_some_and(|o| o == dev),
         "and it is still its member's"
     );
+    // Production, 2026-10-26 (#673): the ladder put it on the desk as stuck, and the next tick
+    // took it off because it was not blocked, every minute. It goes on the desk once and
+    // stays there while nothing moves.
+    let stuck: Vec<_> = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == "stuck" && d.task == Some(task))
+        .collect();
+    assert_eq!(stuck.len(), 1, "on the desk once: {stuck:?}");
+    assert_eq!(stuck[0].status, "waiting", "and left there: {stuck:?}");
 }
 
 /// Found by checking HQ against the design it borrows (2026-10-17): a task waiting on one
