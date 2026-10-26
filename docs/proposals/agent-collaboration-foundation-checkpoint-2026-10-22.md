@@ -363,6 +363,13 @@ turn had `answer_assistance` behind `find_tools`, and the question named `r877` 
 it. Fixed in `470e1649` (live; ADR 0138 amended): the answering tools are always loaded, and a
 consult naming unpassed sources is refused with the `evidence` to pass. Waiting for the next
 real request.
+5. Done, 2026-10-26 07:10: the re-run queue drained (the Holodeck chess match #810 ended at
+the move limit; the last Silent Station, #827, succeeded) and the league's first game started,
+task 830, Local (white, Rae) against the Mac (black, Dee); replays show every white turn on
+`local` and every black turn on `mac`, whatever the players' own brains. Office chess had 31
+half-moves. A Claude side's payment from the league's cap is checked when Haiku first plays.
+Overnight the NAS stalled in a swap storm (about 03:50-04:10; load 467, swap 3.2 of 4 GiB, Plex
+Transcoder the largest process) and recovered on its own; Endora rode it out.
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
