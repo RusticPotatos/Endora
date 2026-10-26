@@ -445,7 +445,14 @@ league move on #840, cut by a drain) keeps both attempts under the "tried again"
 reply bound needs more house turns to show (the old rate was 8 in 441).
 4. (in progress) Game 840 drawn (Mac and Haiku); game 844, Mac against Sonnet, playing; two
 pairs left; $0.23 of $10.
-1. At 22:21, 58 turns since a1b02bb9 (30 on house models), none at the reply bound.
+1. Done. By 00:30 on 27 Oct, 90 turns since a1b02bb9 (46 on house models, including the Mac's
+league games 840 and 844 to their ends): none at the reply bound, none failed.
+4. (in progress) Games 840 and 844 drawn (the Mac draws both Claudes); game 849, Haiku against
+Sonnet, the last first meeting, playing; $0.51 of $10.
+Also live: a deploy card links its branch to the fork's compare page (`7a3294a3`, the owner's
+ask). In ansible-nas, every scheduled job on the NAS moved to nas_maintenance with its reason
+and a lint rule (branch `feat/nas-scheduled-jobs`, 9c35b8b, for the owner to merge); the gluetun
+timer is still on until the owner sets `gluetun_periodic_restart_enabled: false`.
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
