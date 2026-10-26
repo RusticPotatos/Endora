@@ -2078,12 +2078,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         // The tester's verdict is her deliverable, whichever way it goes (ADR 0114).
         self.mark_progress(reviewer.id, task)?;
+        // A CEO's decision for the board goes back to the CEO, who wrote it: the task's member
+        // cannot redo it (#796 woke its lead, who asked the CEO again, round and round).
+        let drafter = self.ceos_draft(&current)?.map(|(ceo, _)| ceo.id);
         if !approve {
             self.store.set_task_status(task, TaskStatus::Doing)?;
             self.post_own_held_lock(reviewer.id, task, &format!("Sent back: {notes}"), &[])?;
             self.emit_status(&current, TaskStatus::Doing)?;
             self.emit_sent_back(task, reviewer.id, "tester", reason)?;
-            if let Some(owner) = worker {
+            if let Some(owner) = drafter.or(worker) {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
             }
             // Bounced with nothing new between: a huddle, not another round (ADR 0124).
@@ -2843,7 +2846,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(if member.role == Role::Ceo {
                 "Answer in the thread with post: whoever asked is woken when you do. Give your \
                  decision or your direction there; the lead acts on it in its area. Only what the \
-                 board alone decides goes to them, as a decision with ask_owner.\n"
+                 board alone decides goes to them, as a decision with ask_owner. Only you reach \
+                 the board: a lead's ask_owner comes to you, so when the owner must decide, put \
+                 it to the board yourself, and never tell the one who asked to ask the owner.\n"
             } else {
                 "Answer in the thread with post: whoever asked is woken when you do. Decide it, \
                  hand the work on with create_task, or, if it is beyond you, ask up the chain \
