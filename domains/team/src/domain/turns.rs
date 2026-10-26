@@ -98,9 +98,11 @@ pub const fn kind_of(reason: WakeReason, role: Role) -> TurnKind {
 #[must_use]
 pub const fn allowed_for(reason: WakeReason, role: Role, in_the_wing: bool) -> Allowed {
     match reason {
-        // The office is not quality work. A colleague's answer is (ADR 0139): it goes where
-        // the colleague's own work does.
+        // The office is not quality work. A colleague's answer is (ADR 0139), but read-only and
+        // on a deadline: it takes whichever house model is free, never waiting for the Mac (the
+        // first one, production 2026-10-25, expired seventh in the Mac's queue).
         WakeReason::Downtime => Allowed::Local,
+        WakeReason::Consulted | WakeReason::ConsultedUp => Allowed::Either,
         // Reading what a check found in a submitted branch, and mending what a reviewer sent
         // back, are code work whoever does them.
         WakeReason::CheckDone | WakeReason::SentBack => Allowed::Mac,
@@ -376,6 +378,12 @@ mod tests {
                 let allowed = allowed_for(reason, role, in_the_wing);
                 if base == Allowed::Local {
                     assert_eq!(allowed, Allowed::Local, "{reason:?}: not quality work");
+                    continue;
+                }
+                // A colleague's answer is read-only and on a deadline: whichever house model is
+                // free (the owner, 2026-10-25: the first one expired behind the Mac's queue).
+                if matches!(reason, W::Consulted | W::ConsultedUp) {
+                    assert_eq!(allowed, Allowed::Either, "{reason:?} for {role:?}");
                     continue;
                 }
                 assert_eq!(allowed, Allowed::Mac, "{reason:?} for {role:?}");
