@@ -15,19 +15,37 @@ function hqHolodeck(s) {
   if (!scenarios.length && !trials.length) return "";
   const scen = scenarios.map((x) => hqLine(`hq:holo:open:${Number(x.task)}`, `${esc(hqHoloKind(x.kind))}: ${esc(x.title)}`,
     `${esc(x.end || x.status)}, ${Number(x.elapsed)} ${esc(HQ_HOLO_UNITS[x.kind] || "")}${x.round ? ` · ${esc(x.round)}` : ""}`));
-  const scenList = hqMore("scenarios", scen, 5);
+  const scenList = hqMore("scenarios", scen, 3);
   const queued = Number((h && h.queued) || 0);
   const again = queued
-    ? `<p class="hq-note">${queued} scenario${queued === 1 ? "" : "s"} queued to run again, one at a time.</p>`
+    ? `<p class="hq-note">${queued} scenario${queued === 1 ? "" : "s"} queued to run again, one at a time.</p>
+      <div class="hq-row"><button class="hq-btn tall" data-act="hq:holo:restart:all">Start over on today's engine</button></div>`
     : `<div class="hq-row"><button class="hq-btn tall" data-act="hq:holo:rerun:all">Run every scenario again</button></div>`;
   const tried = trials.map((t) => hqLine(`hq:holo:trial:${esc(t.name)}`, esc(t.name), `${esc(hqHoloKind(t.kind))}, ${Number(t.runs)} runs · compare`)).join("");
   const open = HQ.holo && HQ.holo.what !== "replay" ? hqHoloDetail() : "";
+  const league = hqLeague(h && h.league);
   return `<section class="hq-card"><h2>Holodeck</h2>
     <p class="hq-note">Scenarios the team plays in worlds that close themselves, and trials that compare who plays them. Nothing here touches the house.</p>
     ${again}
     ${scen.length ? `<p class="hq-who">Scenarios</p><ul class="hq-lines">${scenList.shown}</ul>${scenList.more}` : ""}
     ${tried ? `<p class="hq-who">Trials</p><ul class="hq-lines">${tried}</ul>` : ""}
+    ${league}
     ${open}</section>`;
+}
+
+// The model league (ADR 0135, amended 2026-10-25): the brains ranked by their chess, one line
+// each, and its games, latest first, each opening its board.
+function hqLeague(l) {
+  if (!l || !(l.table || []).length) return "";
+  const label = (name) => { const row = (l.table || []).find((r) => r.brain === name); return esc(row ? row.label : name); };
+  const rows = l.table.map((r, i) => `<li>${i + 1}. ${esc(r.label)} <small>${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
+  const games = (l.games || []).slice().reverse().map((g) => hqLine(`hq:holo:open:${Number(g.task)}`,
+    `${label(g.white)} against ${label(g.black)}`, esc(g.end || "playing")));
+  const list = hqMore("league", games, 3);
+  const left = Number(l.pairs_left || 0);
+  return `<p class="hq-who">Model league</p><ul class="hq-lines">${rows}</ul>
+    <p class="hq-note">${left ? `${left} pair${left === 1 ? "" : "s"} still to meet; then the rematches, colours swapped.` : "Every pair has met; the rematches go on, colours swapped."}</p>
+    ${games.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : ""}`;
 }
 
 // Whatever is open: a scenario, a trial or a replayed match, with a way to close it.
@@ -95,10 +113,13 @@ function hqReplayView(d) {
 async function hqHoloAct(what, arg) {
   if (what === "close") { HQ.holo = null; render(); return true; }
   // Every scenario again, one at a time: the earlier round is kept, labelled with today.
-  if (what === "rerun") {
-    const round = "round of " + new Date().toISOString().slice(0, 10);
-    if (!confirm(`Run every scenario again, one at a time? The earlier results are kept, as "${round}".`)) return true;
-    try { const r = await api("POST", "/v1/hq/scenarios/rerun", { round }); flash(`${Number(r.queued)} queued to run again.`, "ok"); }
+  if (what === "rerun" || what === "restart") {
+    const restart = what === "restart";
+    const round = "round of " + new Date().toISOString().slice(0, 16).replace("T", " ");
+    if (!confirm(restart
+      ? `Start the re-run over? The scenario being played is dropped (kept), and every scenario is queued again. Results so far are kept, as "${round}".`
+      : `Run every scenario again, one at a time? The earlier results are kept, as "${round}".`)) return true;
+    try { const r = await api("POST", "/v1/hq/scenarios/rerun", { round, restart }); flash(`${Number(r.queued)} queued to run again.`, "ok"); }
     catch (e) { flash("Couldn't run them again: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }

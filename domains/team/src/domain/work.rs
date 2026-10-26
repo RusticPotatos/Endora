@@ -662,6 +662,9 @@ pub enum Refusal {
     /// A scenario refuses an action, or its world is not a model's to close (the Holodeck
     /// plan's phase 5): the world's own words.
     Scenario(String),
+    /// A colleague's question names original sources (`r877`, `d12`) that it does not pass in
+    /// `evidence`: the words alone grant nothing, so the colleague could read none of them.
+    UnpassedSources(String),
     /// There is no such proposal for the office.
     NoSuchProposal(i64),
     /// The proposal is decided already.
@@ -872,7 +875,7 @@ impl fmt::Display for Refusal {
             }
             Self::Office(refused) => refused.fmt(f),
             Self::Chess(refused) => refused.fmt(f),
-            Self::Scenario(why) => f.write_str(why),
+            Self::Scenario(why) | Self::UnpassedSources(why) => f.write_str(why),
             Self::NoSuchProposal(id) => write!(f, "there is no proposal {id} for the office"),
             Self::ProposalClosed(id) => write!(f, "proposal {id} is closed: it is decided"),
             Self::AlreadyVoted => f.write_str(

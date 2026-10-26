@@ -151,6 +151,34 @@ to wait for it and do their part; the world refuses every action until a plan is
 plan is free, every member's look shows it, the crew is woken to it, and it is kept in the log
 (`plan <text>`), so the mission replays. Its mark is `silent_station_plan`.
 
+## Amendment (2026-10-25): the model league
+
+The owner wants the models compared at a game that tests skill, every one against every other,
+in a table that ranks them: "everyone should play each other at least once". Tokens may be
+spent on it when there is no work. A game that tests nothing (ping-pong and pool, played in code
+from a seed, ADR 0121) spends none.
+
+- **The owner starts it** (`POST /v1/league {project, brains}`, through the node's
+  `/v1/hq/league`): two brains or more by name, in a project that holds scenarios. A Claude
+  plays only from a **capped** project: the cap is what the league may spend in a month, and a
+  Claude side whose project has no cap left waits, as any judgment out of budget does.
+- **Each side is pinned to its brain**, whoever sits at the board: two free members play it, and
+  their turns on it run on the side's brain alone (a Claude as judgment, paid from the league's
+  project; the Mac waiting for the Mac; the house's model on the NAS). So a game measures the
+  model, not the member's role or its own brains.
+- **Seated by what a role may think with.** The relay lets a role think only with its own
+  Claudes (0111), so a side is played only by a member whose role may use its brain (Sonnet is
+  never a researcher's). Opus is the CEO's alone and the CEO does not play, so the league
+  refuses it.
+- **One game at a time, when nothing else is**: the next game starts only when no world is being
+  played, no scenario waits to run again and two members are free (no turn, no open task, no
+  routine due). The pair that has played least goes next, so every pair meets before any meets
+  twice; a rematch swaps the colours.
+- **The table is Elo**, from 1200 with K 32, summed from the finished games in the order played
+  (`domain/league.rs`): arithmetic over the record. A game abandoned with no result is not
+  rated. The Holodeck card lists the brains ranked, one line each, how many pairs have yet to
+  meet, and the games, each opening its board and log.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.

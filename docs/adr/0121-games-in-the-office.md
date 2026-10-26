@@ -138,6 +138,12 @@ played, two members free to play (as ping-pong and pool define it: at work, not 
 turn, no open task, no routine due) are set a game; white is the one who has played least. Its
 moves are picked up as above, by the members' own models. Members may still challenge.
 
+Then a game set was still not moved: the turns given for the move ran on the house's model,
+were offered the office's changes too and told that leaving the office alone is a good turn,
+and every one left it alone. **A downtime turn whose member's move is due is now about the move
+alone**: look at the board, play one legal move, stop. The office is offered again once the
+move is played.
+
 ## Deferred
 
 - Chess clocks, a draw offered or resigned: a game ends by the rules or by the week.

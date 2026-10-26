@@ -1339,3 +1339,154 @@ fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_ro
     assert_eq!(third[0].assignee, Some(crew[1]), "white as before");
     assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 0);
 }
+
+/// The owner, 2026-10-25: have every scenario play out again on the new engine, while a re-run
+/// is still under way. Starting over drops the scenario in progress (kept, never deleted),
+/// labels what this round finished, and queues every distinct setup again, earlier rounds'
+/// included, one at a time as before.
+#[test]
+fn the_holodeck_re_run_starts_over_with_every_scenario_and_keeps_what_ran() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (crew, project) = crew(&hq);
+    let lit = hq.start_scenario(project, crew[0], 7).unwrap();
+    let mission = hq.start_station(project, crew, 2).unwrap();
+    for world in [lit, mission] {
+        hq.store()
+            .set_task_status(world, TaskStatus::Dropped)
+            .unwrap();
+    }
+    assert_eq!(hq.rerun_holodeck("round 1").unwrap(), 2);
+    hq.tick().unwrap();
+    // The lighthouse is being played again when the owner starts over.
+    let playing = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .rfind(|t| t.parent.is_none() && !t.status.finished())
+        .unwrap();
+    assert_eq!(hq.scenario_of(playing.id).unwrap(), Some(7));
+    assert!(
+        hq.rerun_holodeck("round 2").is_err(),
+        "a plain re-run still waits"
+    );
+    assert_eq!(
+        hq.restart_holodeck("round 2").unwrap(),
+        2,
+        "every setup, both rounds'"
+    );
+    let dropped = hq.store().task(playing.id).unwrap().unwrap();
+    assert_eq!(dropped.status, TaskStatus::Dropped, "kept, not deleted");
+    let listed = hq.snapshot().unwrap()["holodeck"]["scenarios"].clone();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["task"] == playing.id.0 && s["round"] == "round 2"),
+        "{listed}"
+    );
+    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 2);
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.snapshot().unwrap()["holodeck"]["queued"],
+        1,
+        "one starts again"
+    );
+}
+
+// The model league (ADR 0135, amended 2026-10-25): the owner wants the models compared at a
+// game of skill, every one against every other, in a table. Each side of a league game is
+// pinned to one brain whoever sits at the board; a Claude side is paid from the league's
+// project, which must be capped; the next pair goes when nothing else is being played; and the
+// table is rated from the results.
+#[test]
+fn the_model_league_pins_each_side_to_its_brain_and_rates_the_results() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (_, project) = crew(&hq);
+    let brains = ["claude-haiku-5-5", "local"];
+    assert!(
+        hq.start_league(project, &brains).is_err(),
+        "Claude plays only from a capped project"
+    );
+    assert!(hq.start_league(project, &["local"]).is_err(), "two brains");
+    assert!(hq.start_league(project, &["local", "gpt"]).is_err());
+    hq.set_project_cap(project, Some(5_000_000)).unwrap();
+    hq.start_league(project, &brains).unwrap();
+
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    let game = TaskId(league["games"][0]["task"].as_i64().expect("a game started"));
+    assert_eq!(league["games"][0]["white"], "claude-haiku-5-5", "{league}");
+    assert_eq!(league["games"][0]["black"], "local");
+    let part = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.parent == Some(game))
+        .unwrap();
+    let white = hq.store().task(game).unwrap().unwrap().assignee.unwrap();
+    let black = part.assignee.unwrap();
+    let [w, b] = <[RunContext; 2]>::try_from(turns(&hq, &[white, black]))
+        .ok()
+        .unwrap();
+    let ran = |c: &RunContext| hq.store().run(c.run).unwrap().unwrap();
+    assert_eq!(ran(&w).brain, Some(crate::domain::Brain::Haiku));
+    assert!(ran(&w).reserved > 0, "Claude's side is paid for");
+    assert_eq!(ran(&b).brain, Some(crate::domain::Brain::Local));
+
+    hq.tick().unwrap();
+    assert_eq!(
+        hq.snapshot().unwrap()["holodeck"]["league"]["games"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "one game at a time"
+    );
+    for (side, san) in [(&w, "f3"), (&b, "e5"), (&w, "g4"), (&b, "Qh4")] {
+        play(&hq, side, san).unwrap();
+    }
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(league["table"][0]["brain"], "local", "{league}");
+    assert_eq!(league["table"][0]["rating"], 1216);
+    assert_eq!(league["table"][0]["won"], 1);
+    assert_eq!(league["table"][1]["rating"], 1184);
+    assert_eq!(league["pairs_left"], 0);
+    assert_eq!(league["games"][0]["end"], "black_won");
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(
+        league["games"][1]["white"], "local",
+        "the rematch swaps: {league}"
+    );
+}
+
+// The relay lets a role think only with its own Claudes (ADR 0111): Opus is the CEO's alone,
+// and the CEO never sits at the board, so the league refuses it; a Sonnet side never seats a
+// researcher, whose Claude is Haiku alone.
+#[test]
+fn a_league_side_is_played_only_by_a_member_who_may_think_with_its_brain() {
+    for start in 0..8 {
+        let clock = Hands(AtomicI64::new(OCT_17 + start * 7_919_000));
+        let hq = engine(&clock);
+        let (_, project) = holodeck(&hq);
+        let researcher = hq.hire("Cy", Role::Researcher, 15, 2, 0).unwrap();
+        hq.set_project_cap(project, Some(5_000_000)).unwrap();
+        assert!(
+            hq.start_league(project, &["claude-opus-5-5", "local"])
+                .is_err()
+        );
+        hq.start_league(project, &["claude-sonnet-5-5", "local"])
+            .unwrap();
+        hq.tick().unwrap();
+        let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+        let game = TaskId(league["games"][0]["task"].as_i64().expect("a game"));
+        let white = hq.store().task(game).unwrap().unwrap().assignee;
+        assert_ne!(white, Some(researcher), "Sonnet is never a researcher's");
+    }
+}

@@ -47,7 +47,8 @@ Settings.
   the world's pages and the house), **Work** (finding a task, conversations, the Holodeck, and
   the team's health: guards and outcomes), **Manage** (every setting you own, each shown as it
   stands). The office animation plays above every tab. The Holodeck's scenarios and trials are
-  work, so they are a card in Work, each opened step by step there. Information conversations
+  work, so they are a card in Work, each opened step by step there, with the model league's table
+  in the same card (ADR 0135). Information conversations
   also live in Work: one Conversations card, with nothing to set up (ADR 0139).
   Explicit assistance requests, their results and project charges, source grants/revocation,
   and cancellation stay inside that conversation's Work view; they add no top-level screen.

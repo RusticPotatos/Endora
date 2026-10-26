@@ -134,6 +134,17 @@ project have no help scope. Separately, all 8 open tasks were blocked, most sinc
    report the share of task turns that would be offered help, by role and wake.
    Exit: a non-zero, explained share on routine Home lab work that read no
    Confidential receipt.
+   **Measured, 2026-10-25 night**, from production replays of runs 2300-2400 (about
+   17:00-22:20 EDT, 101 turns): a turn is counted as offered help when its briefing has
+   the colleague paragraph, which one rule gates with the tools (A1). **64 of 67 task
+   turns of members other than the CEO were offered help (96%)**, against 0 of 14 before
+   A1. By wake: every review_requested (14), question_answered (11), assignment_recovery
+   (5), sent_back (6), acceptance_asked (3), escalated (2) and check_back (2). The three
+   not offered: runs 2313 and 2314 (leads' assigned turns at 18:00 that read Confidential
+   lab data, before ADR 0141), and run 2334 (a Holodeck chess side, which gets the scenario
+   tool alone). Not offered by design: the CEO (0 of 12; A2e) and a colleague's answer
+   turns (0 of 3; an answer does not ask again). Downtime: 18 of 19 (Zed's run 2367 read
+   an open office proposal's free text, which has no lineage and fails closed).
 4. Give unscoped recurring work a trusted project where the owner names one
    (decision D2), so its turns have help scope and budgets.
    **Progress, 2026-10-25.** The owner can now move an open task into an active
@@ -289,8 +300,91 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
    queue past the deadline, a real failure outcome shown in Work (C2). Fixed in
    `898a809f`: a colleague's answer takes whichever house model is free. An answered
    request in production is still to be observed; C3–C5 remain the owner's.
+   **Holodeck, chess and the model league, 2026-10-25 ~21:00–22:10 EDT:** Confidential
+   is open to Claude (ADR 0141). The Holodeck re-run was started over on today's engine
+   (`c87780e0`; 12 setups queued, the stuck match #801 dropped and kept). `chess` joined
+   the local core (`6f3cb2f1`), and a downtime turn whose move is due is about the move
+   alone (`24cefe89`; the house model, offered the office too, left it alone every turn).
+   The owner's model league (`35016dfb`, `5e9c5d66` seating fix; ADR 0135 amended): project 5
+   "Model league", capped at $10 a month, brains Local, Mac, Claude Haiku and Claude
+   Sonnet (Opus is the CEO's alone and the CEO does not play), 6 pairs, Elo; its first
+   game waits for the re-run queue. Next: see the office game's first move, and the
+   league's first game.
 
 **C. Prove it and decide** (observation, then owner decisions)
+
+**Open items decided, 2026-10-25 night** (the owner asked for them to be answered on the
+evidence; CLAUDE.md rule 5):
+- **B3, settled.** #672, #677 and #678 met their criteria and closed once the ladder was
+  fixed (ADR 0139). #676 shows a tier escalation working in production: three empty turns,
+  then "Ada takes it a model tier up", and Ada on Claude used #677's list and moved on.
+- **#677 repo access, moot.** Cy finished #677 without it.
+- **Rae's work brain stays the Mac** (free). Since slimming (L1-L2) her turns finish: #671
+  and #674 are in review and #675 is being done. Revisit only if a turn times out again.
+- **D2.** A lead's standing reviews ("State of my area", "Patterns") belong to the lead's
+  area project: Ada's to Home lab upkeep (1), Kit's to ansible-nas clean-up (2), giving their
+  turns help scope and the project's budget. The CEO's "Daily review" and "Planning" stay
+  unscoped and are paid from the pool, since the CEO's context stays fail-closed (A2e) and the
+  CEO asks for decisions, not help. This needs an owner route that sets a routine's project
+  (none exists).
+- **D3.** The comparison spends no new money: (i) offline, recorded production outcomes
+  since the cutover against the retained consult and manager-relay baseline; (ii) one
+  Holodeck trial on the house's models (free): Silent Station crews with and without
+  `consult`. A frozen cap of $5 from the pool applies if a Claude tier is used.
+- **D4.** Adopt provisionally: the replacement is live and the old paths are retired. Record
+  it as final in ADR 0138's status when C4's comparison is not worse; revise if it is.
+- **C3.** Checked at phone width (375 px) in the browser pane; a check on the physical phone
+  stays the owner's, and is optional.
+- **Left with the owner** (outside actions on the NAS, which only the owner runs): desk 338
+  (run two host commands so the team can name what stops gluetun) and desk 339 (merge
+  `hq/task-672-role-readmes` on the fork and run the playbook).
+
+**Loop plan, 2026-10-25 night**, each step test-first where it changes code, full gate,
+release, production check, record:
+1. A3: replay production briefings offline and report, by role and wake, the share of task
+   turns offered help.
+2. D2: an owner route that sets a routine's project; set Ada's and Kit's reviews.
+3. C3: Work at 375 px in the pane; fix what is hard to read or overflows.
+4. C1: an answered help request in production, end to end (answer, finding, task section,
+   feed, accounting); diagnose if none comes within a day of real work.
+5. The league's first game (pinned brains, Claude paid within its cap) and office chess
+   progressing.
+6. C4 per D3; then D4 recorded in ADR 0138.
+7. Merge to develop after a privacy scan; record in the checkpoint and memory.
+
+**Loop progress.** 1. A3 done (above). 2. D2 done: `set_routine_project` and its routes
+(`4fd13066`, `f96fd8e7`, live); routines 4 and 5 (Ada) moved to Home lab upkeep, 6 and 7 (Kit) to
+ansible-nas clean-up; the CEO's 2 and 3 stay unscoped. 3. C3 done: at 375 px Work has no
+sideways scroll and is 4.5 screens; one-line rows' details were 10.4 px, now 12 px and muted
+(a console check holds it), and the Holodeck card shows three scenarios before Show all
+(`f96fd8e7`, live; that release's drain cut one turn).
+4. C1, in progress: requests #2 and #3 (Cy to Dee on #677) were declined: Dee's local answer
+turn had `answer_assistance` behind `find_tools`, and the question named `r877` without passing
+it. Fixed in `470e1649` (live; ADR 0138 amended): the answering tools are always loaded, and a
+consult naming unpassed sources is refused with the `evidence` to pass. Waiting for the next
+real request.
+5. Done, 2026-10-26 07:10: the re-run queue drained (the Holodeck chess match #810 ended at
+the move limit; the last Silent Station, #827, succeeded) and the league's first game started,
+task 830, Local (white, Rae) against the Mac (black, Dee); replays show every white turn on
+`local` and every black turn on `mac`, whatever the players' own brains. Office chess had 31
+half-moves. A Claude side's payment from the league's cap is checked when Haiku first plays.
+Overnight the NAS stalled in a swap storm (about 03:50-04:10; load 467, swap 3.2 of 4 GiB, Plex
+Transcoder the largest process) and recovered on its own; Endora rode it out.
+Then game 830 stalled at 57 half-moves: Dee's black turn waited "for tomorrow" at the day's
+60 free turns, spent on the night's Holodeck match and this game. Fixed in `95657412` (live,
+ADR 0133 amended): a scenario's turns are bounded by its world, not its player's day, and the
+tripwire still counts them. Dee's turn started at once after the release.
+Game 830 ended drawn at the move limit (Local and Mac 1200, a draw each). Game 835, Local
+against Claude Haiku, started at once; by 12:15 the Model league project had spent $0.014 of its
+$10 cap, so a Claude side is paid from the league's capped project as designed.
+6. C4 and D4, 2026-10-26 13:15: the matched comparison has too little to compare. Since the
+cutover there have been three requests (one expired, two declined), each from a cause now fixed,
+and none since the fixes; real work is light (two open tasks). D4 is recorded in ADR 0138's
+status as a provisional adoption, final when C4 is not worse. **Left open, by observation
+only:** C1 (the first answered request, end to end) and C4 (compare once at least five requests
+are answered; offline, no new money, $5 cap if a Claude tier is used, per D3). The league
+meanwhile: Haiku beat Local in game 835; game 837, Local against Sonnet, is playing.
+7. Merged to develop after a privacy scan (below).
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.

@@ -67,10 +67,17 @@ impl Starts {
         caps::runaway(&self.recent, now, self.since)
     }
 
-    /// A turn of `member`'s just started on `brain`.
-    pub(super) fn started(&mut self, member: MemberId, brain: Brain, now: Millis) {
+    /// A turn of `member`'s just started on `brain`; `in_a_world` when it plays a scenario, which
+    /// its world bounds and the day's cap does not count.
+    pub(super) fn started(
+        &mut self,
+        member: MemberId,
+        brain: Brain,
+        now: Millis,
+        in_a_world: bool,
+    ) {
         self.recent.push((member, now));
-        if brain.house() {
+        if brain.house() && !in_a_world {
             *self.free_today.entry(member).or_insert(0) += 1;
         }
     }
@@ -97,6 +104,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             since,
             exempt: self.settings.scripted,
         };
+        // A scenario's turns are bounded by its world (its move limit, its re-wakes), not by its
+        // player's day: live, the league's black side waited for tomorrow mid-game (2026-10-26).
+        let mut worlds: HashMap<crate::domain::TaskId, bool> = HashMap::new();
         for run in self.store.runs()? {
             let Some(at) = run.started_at else {
                 continue;
@@ -104,7 +114,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if now - at < THRESHOLDS.runaway_window_ms {
                 starts.recent.push((run.member, at));
             }
-            if today.0 <= at && at < today.1 && run.brain.is_some_and(Brain::house) {
+            if !(today.0 <= at && at < today.1 && run.brain.is_some_and(Brain::house)) {
+                continue;
+            }
+            let in_a_world = match run.task {
+                Some(task) => match worlds.get(&task) {
+                    Some(known) => *known,
+                    None => {
+                        let known = self.in_a_scenario(task)?;
+                        worlds.insert(task, known);
+                        known
+                    }
+                },
+                None => false,
+            };
+            if !in_a_world {
                 *starts.free_today.entry(run.member).or_insert(0) += 1;
             }
         }

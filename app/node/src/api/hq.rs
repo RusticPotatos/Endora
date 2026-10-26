@@ -310,6 +310,8 @@ pub(super) async fn hq_reply(
 #[derive(Deserialize)]
 pub(super) struct HqRerun {
     round: String,
+    #[serde(default)]
+    restart: bool,
 }
 
 /// The owner runs the Holodeck's scenarios again, one at a time; the earlier round is kept.
@@ -320,14 +322,44 @@ pub(super) async fn hq_rerun_holodeck(
     let answer = ask(
         &state,
         "/v1/scenarios/rerun".to_owned(),
-        Some(json!({ "round": req.round })),
+        Some(json!({ "round": req.round, "restart": req.restart })),
     )
     .await?;
     record(
         &state,
         &format!(
-            "you ran the Holodeck again: {} scenarios queued, the earlier round kept as \"{}\"",
-            answer.0["queued"], req.round
+            "you ran the Holodeck again{}: {} scenarios queued, the earlier round kept as \"{}\"",
+            if req.restart { ", starting over" } else { "" },
+            answer.0["queued"],
+            req.round
+        ),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqLeague {
+    project: i64,
+    brains: Vec<String>,
+}
+
+/// The owner starts the model league: the brains play chess against each other.
+pub(super) async fn hq_start_league(
+    State(state): State<AppState>,
+    Json(req): Json<HqLeague>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/league".to_owned(),
+        Some(json!({ "project": req.project, "brains": req.brains })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!(
+            "you started the model league: {} play chess in project {}",
+            req.brains.join(", "),
+            req.project
         ),
     );
     Ok(answer)
@@ -607,6 +639,34 @@ pub(super) async fn hq_switch_routine(
     .await?;
     let now = if req.enabled { "on" } else { "off" };
     record(&state, &format!("you switched routine {id} {now}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqRoutineProject {
+    #[serde(default)]
+    project: Option<i64>,
+}
+
+/// The owner moves a routine into a project, or out of one (D2).
+pub(super) async fn hq_routine_project(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqRoutineProject>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/routines/{id}/project"),
+        Some(json!({ "project": req.project })),
+    )
+    .await?;
+    record(
+        &state,
+        &match req.project {
+            Some(project) => format!("you moved routine {id} into project {project}"),
+            None => format!("you took routine {id} out of its project"),
+        },
+    );
     Ok(answer)
 }
 
@@ -1707,6 +1767,7 @@ mod tests {
             State(state.clone()),
             Json(HqRerun {
                 round: "round 1".to_owned(),
+                restart: false,
             }),
         )
         .await
@@ -1722,7 +1783,7 @@ mod tests {
             sent,
             [(
                 "/v1/scenarios/rerun".to_owned(),
-                json!({ "round": "round 1" })
+                json!({ "round": "round 1", "restart": false })
             )]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)

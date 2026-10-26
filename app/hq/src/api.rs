@@ -130,6 +130,7 @@ pub fn app(state: State) -> Router {
         // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
         .route("/v1/scenarios", post(start_scenario))
         .route("/v1/scenarios/rerun", post(rerun_holodeck))
+        .route("/v1/league", post(start_league))
         .route("/v1/scenarios/{task}", get(scenario_shown))
         // Trials (phase 7): one scenario under two conditions or more, compared.
         .route("/v1/trials", post(start_trial))
@@ -142,6 +143,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/routines", post(add_routine))
         .route("/v1/routines/{id}", post(switch_routine))
         .route("/v1/routines/{id}/fire", post(fire_routine))
+        .route("/v1/routines/{id}/project", post(routine_project))
         .route("/v1/alarms", post(alarm))
         .route("/v1/alarms/recovered", post(recovered))
         // The home lab's containers, as the node sees them: what a question to the owner is
@@ -585,6 +587,9 @@ async fn reply(
 #[derive(Deserialize)]
 struct Rerun {
     round: String,
+    /// Start over: drop the scenario in play and queue every setup again.
+    #[serde(default)]
+    restart: bool,
 }
 
 /// The owner runs every scenario again, one at a time, the earlier round kept and labelled.
@@ -594,8 +599,38 @@ async fn rerun_holodeck(
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
     let round = req.round.clone();
-    let queued = blocking(move || hq.rerun_holodeck(&round)).await?;
+    let restart = req.restart;
+    let queued = blocking(move || {
+        if restart {
+            hq.restart_holodeck(&round)
+        } else {
+            hq.rerun_holodeck(&round)
+        }
+    })
+    .await?;
     Ok(Json(json!({ "queued": queued, "round": req.round })))
+}
+
+#[derive(Deserialize)]
+struct League {
+    project: i64,
+    brains: Vec<String>,
+}
+
+/// The owner starts the model league: the brains play chess against each other in a project
+/// that holds scenarios (ADR 0135, amended 2026-10-25).
+async fn start_league(
+    Extract(state): Extract<State>,
+    Json(req): Json<League>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let brains = req.brains.clone();
+    blocking(move || {
+        let named: Vec<&str> = brains.iter().map(String::as_str).collect();
+        hq.start_league(ProjectId(req.project), &named)
+    })
+    .await?;
+    Ok(Json(json!({ "started": true, "brains": req.brains })))
 }
 
 #[derive(Deserialize)]
@@ -1161,6 +1196,23 @@ async fn switch_routine(
     let hq = state.hq.clone();
     blocking(move || hq.switch_routine(RoutineId(id), req.enabled)).await?;
     Ok(Json(json!({ "routine": id, "enabled": req.enabled })))
+}
+
+#[derive(Deserialize)]
+struct RoutineProject {
+    #[serde(default)]
+    project: Option<i64>,
+}
+
+/// The owner moves a routine into a project under its goal, or out of one (D2).
+async fn routine_project(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<RoutineProject>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_routine_project(RoutineId(id), req.project.map(ProjectId))).await?;
+    Ok(Json(json!({ "routine": id, "project": req.project })))
 }
 
 /// What a firing did, as the node reads it.

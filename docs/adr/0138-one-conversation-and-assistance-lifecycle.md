@@ -9,6 +9,12 @@ support the new direction. This supersedes ADR 0137's requirement to preserve bo
 execution contracts as the final state. It does not claim replacement has shipped
 or authorize destructive history deletion, paid experiments or deployment.
 
+**Adopted provisionally, 2026-10-26** (D4, decided on the evidence at the owner's request):
+the replacement is live and the old paths are retired. It becomes final when the matched
+comparison (C4) is not worse than the retained consult and manager-relay baseline. That
+comparison waits for answered requests: the first three were one expired and two declined, each
+from a cause now fixed (see the 2026-10-25 amendment).
+
 ## Context
 
 [ADR 0137](0137-addressed-conversations-and-bounded-assistance.md) introduced
@@ -144,6 +150,22 @@ database backup; it must not run both engines against the same work.
 8. The final candidate is deployed through the existing NAS/Ansible release
    workflow with backup, drain, versioned cutover, live checks and a recorded
    enablement/rollback decision. No obsolete engine remains active in production.
+
+## Amendment (2026-10-25): what the first live requests taught
+
+The first three production requests were not answered: #1 expired (a tester's answer turn
+pinned to the Mac, fixed by answering on any free house model), and #2 and #3, Cy asking Dee on
+#677, were declined. Two causes, both fixed:
+
+- **The answer tool was hidden.** A local turn with more than twelve tools starts with its core
+  and a tool search; an expert's turn has the node's read tools and the shell beside it, so
+  `answer_assistance` itself was behind the search and the model ended in plain text. The tool a
+  special turn answers with (`answer_assistance`, `read_assistance_source`,
+  `record_assistance_finding`, `answer_quiz`) is now always loaded.
+- **Sources named, not passed.** Cy's question named `r877` but passed no evidence, and prose
+  grants nothing, so Dee had nothing to read. A consult whose question names a receipt or
+  document while passing none is refused, in the asker's turn, with the exact `evidence` to
+  pass. Prose still grants nothing.
 
 ## Consequences
 

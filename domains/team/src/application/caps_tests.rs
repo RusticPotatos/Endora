@@ -483,3 +483,39 @@ fn help_goes_to_a_colleague_or_a_tier_and_only_a_decision_goes_up_the_chain() {
         work.told
     );
 }
+
+/// A scenario is bounded by its own world (its move limit, its re-wakes), not by its player's
+/// day of free turns: live, the model league's black side waited "for tomorrow" mid-game after
+/// the night's Holodeck match, and its member could do no real work on the house either
+/// (2026-10-26). A scenario's turn starts past the day's cap, and does not count against it.
+#[test]
+fn a_scenarios_turn_is_bounded_by_its_world_not_by_its_players_day_of_free_turns() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, linus, task) = team(&clock, false);
+    for _ in 0..60 {
+        one_turn(&hq, linus, task, true);
+        later(&clock, 2 * MINUTE);
+    }
+    let goal = hq
+        .set_goal("Holodeck", "", super::engine::Author::Owner)
+        .unwrap();
+    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let project = hq.add_project(goal, "Lighthouse", "", lead, None).unwrap();
+    hq.set_project_tools(project, Some(vec!["scenario".to_owned()]))
+        .unwrap();
+    let world = hq.start_scenario(project, linus, 7).unwrap();
+    hq.tick().unwrap();
+    let played = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.task == Some(world))
+        .expect("a turn on the world");
+    assert!(
+        played.started_at.is_some(),
+        "it starts past the day's cap: {}",
+        played.end_reason
+    );
+    assert!(capped(&hq).is_empty());
+}

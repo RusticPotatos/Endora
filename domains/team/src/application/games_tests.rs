@@ -760,6 +760,18 @@ fn a_downtime_briefing_says_whose_move_it_is_in_chess() {
         ada.told
     );
     assert!(ada.told.contains("chess"), "{}", ada.told);
+    // Live, the house's model offered the office as well left it alone, turn after turn, and
+    // never moved: a turn whose move is due is about the move alone (2026-10-25).
+    assert!(
+        !ada.told.contains("Leaving the office as it is") && !ada.told.contains("You may place"),
+        "{}",
+        ada.told
+    );
+    assert!(
+        ada.told.contains("This turn is for your move"),
+        "{}",
+        ada.told
+    );
     hq.runner().finish(ada.run, true);
     let bo = downtime_for(&hq, &clock, t.bo);
     assert!(bo.told.contains("waiting for Ada"), "{}", bo.told);

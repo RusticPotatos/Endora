@@ -660,6 +660,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !self.conversations_enabled()? {
             return Err(refused("peer messaging and assistance are disabled"));
         }
+        // Prose grants nothing (`SourceRef::parse`), so a question that names its sources but
+        // passes none leaves the colleague nothing to read: live, both such requests were
+        // declined (2026-10-25). The asker is told how to pass them, in the same turn.
+        if evidence.is_empty() {
+            let named: Vec<String> = question
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter_map(crate::domain::assistance::SourceRef::parse)
+                .map(crate::domain::assistance::SourceRef::said)
+                .take(5)
+                .collect();
+            if !named.is_empty() {
+                let list = named
+                    .iter()
+                    .map(|n| format!("\"{n}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(EngineError::Refused(Refusal::UnpassedSources(format!(
+                    "your question names {} but passes no source, and {} can read only what \
+                     you pass: ask again with evidence: [{list}]",
+                    named.join(", "),
+                    expert.name
+                ))));
+            }
+        }
         let scope =
             match conversation {
                 Some(id) => self.store.conversation(id)?.ok_or(EngineError::Refused(

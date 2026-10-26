@@ -53,6 +53,7 @@ mod health;
 mod history;
 mod kinds;
 mod ladder;
+mod league;
 mod long_waits;
 mod map;
 mod memory;
@@ -3426,6 +3427,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.close_ended_scenarios()?;
         // The owner's re-run of the Holodeck: the next scenario starts once none is running.
         self.holodeck_rerun_tick()?;
+        // The model league: the next pair of brains sits down to chess once nothing is played.
+        self.league_tick(now)?;
         // 3c. A wake held for a task with no turn live on it has nothing to wait behind (ADR
         //     0133): it is asked again, and goes once the task's budget of talk is in hand.
         self.release_held_talk()?;
@@ -3628,20 +3631,42 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // free work brain it is allowed on. A turn that has nowhere it may run waits where
             // it is, and says why. It is never given another brain; an alarm out of budget is
             // the one exception, and acts at once.
-            let need = self.need_of_run(&run, &member, &wakes, &known);
+            // A side of a league game is pinned to its brain, whoever plays it, and a Claude
+            // side is paid from the league's capped project alone.
+            let pinned = self.league_brain_of(run.task)?;
+            // A scenario's turn is bounded by its world, not its player's day (ADR 0133, amended).
+            let in_a_world = match run.task {
+                Some(task) => self.in_a_scenario(task)?,
+                None => false,
+            };
+            let need = match pinned {
+                Some(brain) => turns::Need::pinned(brain),
+                None => self.need_of_run(&run, &member, &wakes, &known),
+            };
             // Only judgment is paid for; work on the house's models reserves nothing.
-            let asked = if need.kind == turns::TurnKind::Judgment {
-                self.affordable(&member, project, run.asked_by_owner)?
-            } else {
-                Some(0)
+            let asked = match (need.kind, pinned) {
+                (turns::TurnKind::Work, _) => Some(0),
+                (turns::TurnKind::Judgment, Some(_)) => match self.project_left(project)? {
+                    Some(_) => self.affordable(&member, project, true)?,
+                    None => None,
+                },
+                (turns::TurnKind::Judgment, None) => {
+                    self.affordable(&member, project, run.asked_by_owner)?
+                }
             };
             let on_the_mac = running.iter().any(|r| r.brain == Some(Brain::Mac));
             let facts = turns::Facts {
                 work_brain: member.work_brain,
-                judgment_brain: member.judgment_brain(),
+                judgment_brain: pinned
+                    .filter(|b| b.cloud())
+                    .unwrap_or_else(|| member.judgment_brain()),
                 mac_waits: mac::wait_for(self.mac_facts().as_ref(), now, on_the_mac),
                 can_afford: asked.is_some(),
-                free_turns_today: starts.free_turns_of(&run),
+                free_turns_today: if in_a_world {
+                    0
+                } else {
+                    starts.free_turns_of(&run)
+                },
             };
             let (brain, amount, fell_back) = match turns::place(need, &facts) {
                 turns::Placed::On(brain) => (brain, asked.unwrap_or(0), false),
@@ -3679,7 +3704,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 run.end_reason.clear();
             }
             self.store.save_run(&run)?;
-            starts.started(member.id, brain, now);
+            starts.started(member.id, brain, now, in_a_world);
             let context = RunContext {
                 run: run.id,
                 member: member.id,
@@ -4835,6 +4860,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.emit(
             EventKind::RoutineChanged,
             json!({ "routine": id.0, "title": routine.title, "enabled": on }),
+        )
+    }
+
+    /// The owner moves a routine into a project under its goal, or out of one (`None`). What
+    /// it fires from then on is the project's, with its help scope, tools and budget (D2,
+    /// 2026-10-25: a lead's standing reviews belong to the lead's area project).
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a routine or project that does not exist; what
+    /// `projects::may_hold` refuses for a project under another goal or not active.
+    pub fn set_routine_project(&self, id: RoutineId, project: Option<ProjectId>) -> Done<()> {
+        let _held = self.held();
+        let mut routine = self.routine(id)?;
+        if let Some(project) = project {
+            let found = self.project(project)?;
+            crate::domain::projects::may_hold(found.goal, found.status, routine.goal)
+                .map_err(EngineError::Refused)?;
+        }
+        routine.project = project;
+        self.store.save_routine(&routine)?;
+        self.emit(
+            EventKind::RoutineChanged,
+            json!({ "routine": id.0, "title": routine.title, "project": project.map(|p| p.0) }),
         )
     }
 

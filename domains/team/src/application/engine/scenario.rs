@@ -256,7 +256,7 @@ impl World {
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Refuses a project that does not give its work the scenario tool alone.
-    fn holds_scenarios(&self, project: ProjectId) -> Done<crate::domain::Project> {
+    pub(super) fn holds_scenarios(&self, project: ProjectId) -> Done<crate::domain::Project> {
         let found = self.project(project)?;
         if self.project_tools(project)?.as_deref() != Some(&[TOOL.to_owned()][..]) {
             return Err(refused(format!(
@@ -429,7 +429,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// [`Self::start_chess`] taken under the engine's lock, as the owner's asking.
-    fn start_chess_held_lock(
+    pub(super) fn start_chess_held_lock(
         &self,
         project: ProjectId,
         players: [MemberId; 2],
@@ -611,29 +611,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.store.setting(&round_key(task.id))?.is_some() {
                 continue;
             }
-            let holder = |id: TaskId| -> Done<i64> {
-                Ok(self
-                    .task(id)?
-                    .assignee
-                    .ok_or(EngineError::Unknown("a scenario's player"))?
-                    .0)
-            };
-            let mut players = vec![holder(task.id)?];
-            for part in &place.parts {
-                players.push(holder(*part)?);
-            }
-            let setup = format!(
-                "{}:{}:{}:{}:{}",
-                place.kind.name(),
-                place.seed,
-                task.project.map_or(0, |p| p.0),
-                u8::from(place.plan_first),
-                players
-                    .iter()
-                    .map(i64::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
+            let setup = self.setup_of(task, &place)?;
             if !setups.contains(&setup) {
                 setups.push(setup);
             }
@@ -646,8 +624,76 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(setups.len())
     }
 
+    /// The owner starts the re-run over, on the engine as it is now (2026-10-25): the scenario
+    /// being played is dropped (kept, never deleted), every world not yet in a round is
+    /// labelled `round`, and every distinct setup there has ever been, earlier rounds'
+    /// included, is queued again, oldest first, one at a time. Returns how many are queued.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for an empty label; a store failure.
+    pub fn restart_holodeck(&self, round: &str) -> Done<usize> {
+        let _held = self.held();
+        let _asked = self.for_owner();
+        let round = super::one_line(round, 60);
+        if round.is_empty() {
+            return Err(EngineError::Unknown("round label"));
+        }
+        let mut tasks = self.store.tasks()?;
+        tasks.sort_by_key(|t| t.id);
+        let mut setups: Vec<String> = Vec::new();
+        for task in tasks.iter().filter(|t| t.parent.is_none()) {
+            let Some(place) = self.place_of(task.id)?.filter(|p| p.world == task.id) else {
+                continue;
+            };
+            if !task.status.finished() {
+                for world in std::iter::once(task.id).chain(place.parts.iter().copied()) {
+                    if !self.task(world)?.status.finished() {
+                        self.store
+                            .set_task_status(world, crate::domain::TaskStatus::Dropped)?;
+                    }
+                }
+            }
+            if self.store.setting(&round_key(task.id))?.is_none() {
+                self.store.set_setting(&round_key(task.id), &round)?;
+            }
+            let setup = self.setup_of(task, &place)?;
+            if !setups.contains(&setup) {
+                setups.push(setup);
+            }
+        }
+        self.store.set_setting(RERUN_QUEUE, &setups.join(";"))?;
+        Ok(setups.len())
+    }
+
+    /// A scenario's setup, as the re-run queue keeps it: `kind:seed:project:plan:players`.
+    fn setup_of(&self, task: &crate::domain::Task, place: &Place) -> Done<String> {
+        let holder = |id: TaskId| -> Done<i64> {
+            Ok(self
+                .task(id)?
+                .assignee
+                .ok_or(EngineError::Unknown("a scenario's player"))?
+                .0)
+        };
+        let mut players = vec![holder(task.id)?];
+        for part in &place.parts {
+            players.push(holder(*part)?);
+        }
+        Ok(format!(
+            "{}:{}:{}:{}:{}",
+            place.kind.name(),
+            place.seed,
+            task.project.map_or(0, |p| p.0),
+            u8::from(place.plan_first),
+            players
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ))
+    }
+
     /// The scenarios waiting to run again, in order.
-    fn rerun_queue(&self) -> Done<Vec<String>> {
+    pub(super) fn rerun_queue(&self) -> Done<Vec<String>> {
         Ok(self
             .store
             .setting(RERUN_QUEUE)?
@@ -665,20 +711,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.rerun_queue()?.len())
     }
 
-    /// On the tick: when no scenario is running, the next one queued to run again starts. A
-    /// setup that no longer starts (a player let go, a project changed) is passed over.
-    pub(super) fn holodeck_rerun_tick(&self) -> Done<()> {
-        let mut queue = self.rerun_queue()?;
-        if queue.is_empty() {
-            return Ok(());
-        }
+    /// Whether a scenario's world is being played: one at a time, for the re-run and the league.
+    pub(super) fn a_world_is_live(&self) -> Done<bool> {
         for task in self.store.tasks()? {
             if task.parent.is_none()
                 && !task.status.finished()
                 && self.place_of(task.id)?.is_some_and(|p| p.world == task.id)
             {
-                return Ok(());
+                return Ok(true);
             }
+        }
+        Ok(false)
+    }
+
+    /// On the tick: when no scenario is running, the next one queued to run again starts. A
+    /// setup that no longer starts (a player let go, a project changed) is passed over.
+    pub(super) fn holodeck_rerun_tick(&self) -> Done<()> {
+        let mut queue = self.rerun_queue()?;
+        if queue.is_empty() || self.a_world_is_live()? {
+            return Ok(());
         }
         let next = queue.remove(0);
         self.store.set_setting(RERUN_QUEUE, &queue.join(";"))?;
