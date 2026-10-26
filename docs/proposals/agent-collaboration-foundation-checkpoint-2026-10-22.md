@@ -427,6 +427,23 @@ only for money beyond existing caps, deletion, outside actions or safety-blocked
 6. Merge to develop after a privacy scan; stop. Steps that only observe and find nothing new
    are recorded and passed.
 
+**Loop progress.** 2. #796 went round for a day without reaching the board (the 3780efbc
+snapshot's runs, wakes and thread): Ada's `ask_owner` goes to Mara, who told her three times to
+"ask the owner yourself"; when Mara did draft it (run 2381), Dee sent it back and the send-back
+woke Ada, the task's holder, who cannot redo the CEO's decision. Every desk card was #673's or
+the fork's; none was #796's, though the team believed one waited. Fixed in `74eef5ae` (ADR 0111
+amended): a CEO's draft sent back wakes the CEO, and the CEO's briefing says only it reaches the
+board. #796 itself still needs the CEO to draft it again.
+3. Mac waits (started minus queued, 3 days): Mac 28.5 min mean against local 1.2 and Claude
+under 1, but by day 13.9 (23 Oct), 0.1 (24th), 136.9 (25th, before ADR 0130's amendment), 8.0
+(26th; since 14:00 at most 26 min). The "waited over 3 h" notice was the 25th's backlog.
+Decided: no rerouting; the Mac's model is the stronger (ADR 0131) and its queue is healthy now.
+1. (partly) Live since a1b02bb9/3780efbc: 27 turns, none at the reply bound; run 2848 (Dee's
+league move on #840, cut by a drain) keeps both attempts under the "tried again" line. The
+reply bound needs more house turns to show (the old rate was 8 in 441).
+4. (in progress) Game 840 drawn (Mac and Haiku); game 844, Mac against Sonnet, playing; two
+pairs left; $0.23 of $10.
+
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
 2. Observe a real failure outcome (expired, declined or cancelled) displayed.
