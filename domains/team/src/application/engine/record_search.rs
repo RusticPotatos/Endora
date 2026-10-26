@@ -17,7 +17,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// A member asks the record a question: the passages of what the team said in the last
     /// ninety days that hold its distinctive words, newest first, at most five of at most four
     /// hundred characters, each with something to cite. No one is woken and nothing is spent. A
-    /// member on a cloud model is never given a passage from a turn that read Confidential data.
+    /// member on a cloud model is never given a passage from a turn that read Restricted data
+    /// (ADR 0141; before it, Confidential).
     ///
     /// # Errors
     /// [`Refusal::TurnOver`]; [`HistoryRefusal::NothingToSearchFor`]; [`HistoryRefusal::NoSuchMember`].
@@ -50,15 +51,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task,
             project,
         };
-        // What a turn is given depends on the brain it runs on (ADR 0131): a turn on the house's
-        // model may be given a passage from a turn that read Confidential data, a turn on Claude
-        // may not.
+        // What a turn is given depends on the brain it runs on (ADR 0131): since ADR 0141 only a
+        // Restricted passage is kept from a turn on Claude.
         let on_the_cloud = turn.brain.unwrap_or(asker.brain).cloud();
         let found = self.store.search_record(&query)?;
         let chosen = record::choose(found.clone(), &terms, on_the_cloud);
+        // A passage from a turn that read Confidential data still marks the turn given it.
         if chosen.iter().any(|e| {
             found.iter().any(|p| {
-                p.locator == e.locator && !crate::domain::history::may_reach_a_cloud_member(p.tier)
+                p.locator == e.locator && p.tier >= endora_kernel::tier::Tier::Confidential
             })
         }) {
             // Fail closed before returning any inherited confidential text. This also protects

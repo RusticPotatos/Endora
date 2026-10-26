@@ -464,7 +464,7 @@ fn assistance_obeys_the_real_free_turn_cap_without_a_polling_loop() {
 }
 
 #[test]
-fn a_grant_cannot_downgrade_an_original_whose_observed_tier_changes() {
+fn an_original_whose_turn_later_read_confidential_data_stays_shared() {
     let clock = Hands(AtomicI64::new(NOON));
     let p = pair(&clock);
     let previous = turn_of(&p.hq, p.requester);
@@ -520,14 +520,15 @@ fn a_grant_cannot_downgrade_an_original_whose_observed_tier_changes() {
         },
     )
     .unwrap();
-    assert!(p.hq.read_document(expert.run, document, 1).is_err());
+    // ADR 0141: a source whose turn read Confidential data is shared like any other.
+    assert!(p.hq.read_document(expert.run, document, 1).is_ok());
     assert!(
         p.hq.answer_assistance_in(
             expert.run,
-            "Cannot verify this source.",
+            "The report says the check passed.",
             &[SourceRef::Document(document)]
         )
-        .is_err()
+        .is_ok()
     );
 }
 

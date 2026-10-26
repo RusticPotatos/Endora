@@ -118,16 +118,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let source_run = match source {
             SourceRef::Document(id) => self.store.document(id)?.and_then(|document| document.run),
-            SourceRef::Receipt(id) => self
-                .store
-                .call_receipt(id)?
-                .filter(|receipt| !receipt.confidential)
-                .map(|receipt| receipt.run),
+            SourceRef::Receipt(id) => self.store.call_receipt(id)?.map(|receipt| receipt.run),
         };
-        let Some(source_run) = source_run else {
-            return Ok(false);
-        };
-        Ok(!self.store.run_read_confidential(source_run)?)
+        // A Confidential source is shared like any other (ADR 0141); it must still exist.
+        Ok(source_run.is_some())
     }
 
     pub(super) fn check_assistance_source(&self, run: RunId, source: SourceRef) -> Done<bool> {
@@ -351,12 +345,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if request.status != "processing" || request.deadline_at <= self.clock.now() {
             return Err(refused("assistance request is no longer active"));
         }
-        // A Confidential answer stays on the house's models (ADR 0140).
-        if self.store.run_read_confidential(run)? && self.on_claude(run)? {
-            return Err(refused(
-                "a Confidential answer is given only on the house's models",
-            ));
-        }
         if evidence.len() > assistance::SOURCES_MOST
             || evidence
                 .iter()
@@ -524,10 +512,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 continue;
             }
             // Queued once: the moment the question reaches the colleague is the feed's "asked".
-            // A colleague's answer is on a tier at least the asker's (ADR 0139), unless the
-            // ask is Confidential, which stays on the house's models (ADR 0140).
-            let up = self.on_claude(pending.requester_run)?
-                && !self.store.run_read_confidential(pending.requester_run)?;
+            // A colleague's answer is on a tier at least the asker's (ADR 0139), Confidential or
+            // not (ADR 0141).
+            let up = self.on_claude(pending.requester_run)?;
             if let Some(run) = self.store.queue_assistance(pending.id, now, up)? {
                 self.emit_help(EventKind::HelpAsked, &pending, run)?;
             }
@@ -590,16 +577,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Before a colleague's turn reads a question, or the asker's result turn reads the
-    /// answer (ADR 0140): what either read carries its mark, and nothing Confidential reaches a
-    /// turn on Claude.
+    /// answer: what either read carries its mark (ADR 0140; since ADR 0141 the mark no longer
+    /// keeps it from a turn on Claude).
     pub(super) fn assistance_reached(&self, run: RunId, sources: &[RunId]) -> Done<()> {
         for source in sources {
             self.inherit_input_from(run, Some(*source))?;
-        }
-        if self.store.run_read_confidential(run)? && self.on_claude(run)? {
-            return Err(refused(
-                "a Confidential ask is read only on the house's models",
-            ));
         }
         Ok(())
     }

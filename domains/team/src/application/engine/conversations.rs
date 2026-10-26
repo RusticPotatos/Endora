@@ -347,11 +347,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.conversation_for(run, conversation, "send")?;
         let turn = self.running(run)?;
         let result = (|| {
-            if self.store.run_read_confidential(run)? {
-                return Err(refused(
-                    "the information pilot cannot send from a Confidential turn",
-                ));
-            }
             let text = conversation::words(key, text, evidence).map_err(refused)?;
             self.all_there(evidence)?;
             self.store

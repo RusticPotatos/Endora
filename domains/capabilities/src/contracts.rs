@@ -493,16 +493,15 @@ mod tests {
     }
 
     #[test]
-    fn a_log_goes_to_a_cloud_turn_only_when_it_is_the_leads() {
+    fn a_log_goes_to_any_turn_on_any_model() {
+        // ADR 0141: Confidential is open to Claude.
         let all = all();
         let (status, logs, restart) = (&all[0], &all[1], &all[2]);
         for role in ["lead", "developer", "reviewer", "researcher"] {
-            assert!(logs.may_be_seen_by(role, false), "{role} at home");
-            assert!(status.may_be_seen_by(role, true) && restart.may_be_seen_by(role, true));
-        }
-        assert!(logs.may_be_seen_by("lead", true));
-        for role in ["developer", "reviewer", "researcher"] {
-            assert!(!logs.may_be_seen_by(role, true), "a cloud {role}");
+            for cloud in [false, true] {
+                assert!(logs.may_be_seen_by(role, cloud), "{role}, cloud {cloud}");
+                assert!(status.may_be_seen_by(role, cloud) && restart.may_be_seen_by(role, cloud));
+            }
         }
         // The CEO reads the home lab as the lead does, its state and its logs, and never acts
         // on it (ADR 0120, the owner's word of 2026-10-18).

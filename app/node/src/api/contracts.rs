@@ -1854,29 +1854,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cloud_turn_reads_logs_only_when_it_is_the_leads() {
-        // The owner's decision of 2026-10-17 (ADR 0109): the lead thinking with Claude may read
-        // a scrubbed log; no other member on a cloud model may.
+    async fn a_cloud_turn_reads_logs_whatever_its_role() {
+        // ADR 0141: Confidential is open to Claude; a log is read by any member on it.
         for role in ["reviewer", "developer", "researcher"] {
             let state = on_claude(role);
             assert!(
-                !listed(&state).await.contains(&"container_logs".to_owned()),
-                "a cloud {role} is not offered logs"
+                listed(&state).await.contains(&"container_logs".to_owned()),
+                "a cloud {role} is offered logs"
             );
             let (status, said) =
                 use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
-            assert_eq!(status, StatusCode::FORBIDDEN, "{role}: {said}");
-            assert!(
-                said["error"].as_str().unwrap().contains("Confidential"),
-                "{said}"
-            );
-            assert!(
-                audit(&state)
-                    .iter()
-                    .any(|a| a.contains("Linus (run 7) was refused container_logs")),
-                "{:?}",
-                audit(&state)
-            );
+            assert_eq!(status, StatusCode::OK, "{role}: {said}");
         }
         let state = on_claude("lead");
         let offered = listed(&state).await;

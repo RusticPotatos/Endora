@@ -65,7 +65,8 @@ pub struct CallReceipt {
     pub ok: bool,
     /// Whether the tool changes something rather than only looks.
     pub act: bool,
-    /// Whether what it gave back is Confidential: never shown to a member on a cloud model.
+    /// Whether what it gave back is Confidential: shown to any member since ADR 0141, and kept
+    /// so the turn that read it is marked.
     pub confidential: bool,
     /// Whether the turn's sandbox reported it (ADR 0117) rather than the node witnessing it.
     pub sandbox: bool,
@@ -80,8 +81,9 @@ impl CallReceipt {
         format!("r{}", self.id)
     }
 
-    /// One line for a reader: `r12 homelab_status (ok): sonarr running…`. For a reader on a
-    /// cloud model (`cloud`) a Confidential excerpt is left out, and said to be.
+    /// One line for a reader: `r12 homelab_status (ok): sonarr running…`. Since ADR 0141 a
+    /// Confidential excerpt is shown to a reader on a cloud model too; `cloud` is kept so a
+    /// later rule can tell the readers apart again.
     #[must_use]
     pub fn line(&self, cloud: bool) -> String {
         let how = if self.ok { "ok" } else { "refused" };
@@ -90,11 +92,9 @@ impl CallReceipt {
         } else {
             format!(" {}", self.args)
         };
-        let excerpt = if self.confidential && cloud {
-            "(Confidential: not shown on a cloud model)".to_owned()
-        } else {
-            self.excerpt.clone()
-        };
+        // Confidential excerpts are shown on Claude too (ADR 0141); `cloud` no longer hides one.
+        let _ = cloud;
+        let excerpt = self.excerpt.clone();
         let from = if self.sandbox {
             ", sandbox-reported"
         } else {
@@ -1220,7 +1220,7 @@ mod tests {
     }
 
     #[test]
-    fn a_receipts_line_hides_a_confidential_excerpt_from_a_cloud_reader() {
+    fn a_receipts_line_shows_a_confidential_excerpt_to_any_reader() {
         let r = CallReceipt {
             id: 12,
             run: NOW,
@@ -1239,7 +1239,8 @@ mod tests {
             r.line(false),
             "r12 container_logs container: sonarr (ok): GET /api 500"
         );
-        assert!(!r.line(true).contains("GET /api"));
+        // ADR 0141: Confidential is open to Claude.
+        assert_eq!(r.line(true), r.line(false));
         let reported = CallReceipt {
             tool: "Bash".to_owned(),
             args: "git status".to_owned(),

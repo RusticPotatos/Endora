@@ -151,7 +151,8 @@ fn asking_the_record_finds_the_post_and_the_turn_with_what_to_cite_and_wakes_no_
 }
 
 #[test]
-fn a_turn_on_claude_is_never_given_what_a_turn_that_read_confidential_data_said() {
+fn a_turn_on_claude_is_given_what_a_turn_that_read_confidential_data_said() {
+    // ADR 0141: Confidential is open to Claude (ADR 0129 kept it back).
     let clock = Hands(AtomicI64::new(NOON));
     let hq = engine(&clock);
     let t = team(&hq);
@@ -171,8 +172,8 @@ fn a_turn_on_claude_is_never_given_what_a_turn_that_read_confidential_data_said(
     let question = json!({ "question": "why did we cap sonarr's memory?" });
     let to_the_cloud = use_tool(&hq, &rae, "ask_record", &question).unwrap();
     assert!(
-        to_the_cloud.starts_with("Nothing in HQ's record"),
-        "neither the turn nor the post it came with: {to_the_cloud}"
+        to_the_cloud.contains("decided to cap sonarr"),
+        "the turn and the post it came with: {to_the_cloud}"
     );
     let at_home = use_tool(&hq, &ada, "ask_record", &question).unwrap();
     assert!(

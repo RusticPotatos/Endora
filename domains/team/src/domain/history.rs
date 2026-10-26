@@ -123,10 +123,11 @@ pub fn tier_from_name(name: &str) -> Tier {
 }
 
 /// Whether what a turn of this tier said may be given to a member thinking on a cloud model:
-/// nothing from a turn that read Confidential data or above is (ADR 0129).
+/// anything but Restricted (ADR 0141: Confidential is open to Claude; it was kept back by ADR
+/// 0129).
 #[must_use]
 pub fn may_reach_a_cloud_member(tier: Tier) -> bool {
-    tier < Tier::Confidential
+    tier != Tier::Restricted
 }
 
 /// One turn's conversation, as HQ keeps it.
@@ -279,7 +280,8 @@ mod tests {
         assert_eq!(tier_of(true), Tier::Confidential);
         assert_eq!(tier_of(false), Tier::Internal);
         assert!(may_reach_a_cloud_member(Tier::Internal));
-        assert!(!may_reach_a_cloud_member(Tier::Confidential));
+        // ADR 0141: Confidential is open to Claude; Restricted stays home.
+        assert!(may_reach_a_cloud_member(Tier::Confidential));
         assert!(!may_reach_a_cloud_member(Tier::Restricted));
     }
 
