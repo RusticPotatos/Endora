@@ -8,6 +8,23 @@ const HQ_HOLO_UNITS = { lighthouse: "minutes", silent_station: "ticks", chess: "
 
 function hqHoloKind(kind) { return HQ_HOLO_KINDS[kind] || String(kind || ""); }
 
+// A chess result in words, given each side as already-escaped text: who won, or a draw.
+function hqChessEnd(end, white, black) {
+  if (end === "white_won") return `${white} won`;
+  if (end === "black_won") return `${black} won`;
+  if (end === "draw") return "drawn";
+  return esc(end || "");
+}
+
+// The brain a league game's side played with, or "" for a game outside the league.
+function hqLeagueBrain(task, side) {
+  const l = ((HQ.snap || {}).holodeck || {}).league || {};
+  const game = (l.games || []).find((g) => Number(g.task) === Number(task));
+  if (!game) return "";
+  const row = (l.table || []).find((r) => r.brain === game[side]);
+  return row ? row.label : game[side];
+}
+
 // The Holodeck card, in the Work tab: nothing until there is something in it.
 function hqHolodeck(s) {
   const h = s && s.holodeck;
@@ -40,7 +57,7 @@ function hqLeague(l) {
   const label = (name) => { const row = (l.table || []).find((r) => r.brain === name); return esc(row ? row.label : name); };
   const rows = l.table.map((r, i) => `<li>${i + 1}. ${esc(r.label)} <small>${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
   const games = (l.games || []).slice().reverse().map((g) => hqLine(`hq:holo:open:${Number(g.task)}`,
-    `${label(g.white)} against ${label(g.black)}`, esc(g.end || "playing")));
+    `White: ${label(g.white)} · Black: ${label(g.black)}`, g.end ? hqChessEnd(g.end, label(g.white), label(g.black)) : "playing"));
   const list = hqMore("league", games, 3);
   const left = Number(l.pairs_left || 0);
   return `<p class="hq-who">Model league</p><ul class="hq-lines">${rows}</ul>
@@ -64,9 +81,13 @@ function hqScenarioView(d) {
   let body = "";
   if (d.kind === "chess") {
     const sides = d.sides || {};
+    // Black's side above the board and white's below, as the board is drawn, each with its brain in a league game.
+    const side = (colour) => { const brain = hqLeagueBrain(d.task, colour); return `${esc(sides[colour] || "")}${brain ? ` · ${esc(brain)}` : ""}`; };
+    const who = (colour) => `${colour === "white" ? "White" : "Black"} (${esc(sides[colour] || "")})`;
     const board = d.rows ? hqChessBoard({ rows: d.rows, white: sides.white || "", black: sides.black || "", fen: d.fen || "" }) : "";
-    const state = d.result ? `${esc(d.result)}${d.reason ? `, ${esc(d.reason)}` : ""}` : `${esc(d.to_move || "")} to move`;
-    body = `${board}<p>${state}</p><p class="hq-note">${d.moves ? esc(d.moves) : "No moves yet."}</p>`;
+    const state = d.result && d.result !== "in_progress" ? `${hqChessEnd(d.result, who("white"), who("black"))}${d.reason ? `, ${esc(d.reason)}` : ""}` : `${who(d.to_move === "black" ? "black" : "white")} to move`;
+    body = `<p class="hq-side black">♚ Black: ${side("black")}</p>${board}<p class="hq-side white">♔ White: ${side("white")}</p>
+      <p>${state}</p><p class="hq-note">${d.moves ? esc(d.moves) : "No moves yet."}</p>`;
   } else if (d.kind === "silent_station") {
     const s = d.state || {};
     body = `<p>Life support ${Number(s.life_support)} ticks · ship energy ${Number(s.ship_energy)} · station power ${Number(s.station_power)}% ·
@@ -81,7 +102,7 @@ function hqScenarioView(d) {
   const roles = (d.by_role || []).map((r) => `<li>${esc(r.role)}: ${esc(r.by)}, ${Number(r.accepted)} ${legal[0]}, ${Number(r.refused)} ${legal[1]}</li>`).join("");
   const steps = (d.log || []).map((a) => `<li${a.ok ? "" : ` class="hq-refused"`}>${a.ok ? "" : "refused: "}${esc(a.by)}${a.role ? ` (${esc(a.role)})` : ""}: ${esc(a.action)} → ${esc(a.said)}</li>`).join("");
   return `${head}${body}${roles ? `<ul class="hq-team">${roles}</ul>` : ""}
-    ${steps ? `<p class="hq-who">Step by step</p><ol class="hq-log">${steps}</ol>` : `<p class="hq-empty">Nothing done yet.</p>`}`;
+    ${steps ? `<p class="hq-who">Step by step</p><ol class="hq-log hq-steps">${steps}</ol>` : `<p class="hq-empty">Nothing done yet.</p>`}`;
 }
 
 // A trial's conditions side by side, summed from the record.
@@ -106,7 +127,7 @@ function hqReplayView(d) {
     return `<li>${esc(s.by)} ${s.potted ? "potted" : "missed"} (${(s.balls || []).map(Number).join("–")})</li>`;
   }).join("");
   const check = d.matches === false ? `<p class="hq-note">This replay does not end as the record says.</p>` : "";
-  return `${head}${check}<ol class="hq-log">${steps}</ol>`;
+  return `${head}${check}<ol class="hq-log hq-steps">${steps}</ol>`;
 }
 
 // The taps: open a scenario, compare a trial, replay a match, close what is open.

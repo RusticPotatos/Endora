@@ -371,6 +371,8 @@
   .hq-log li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
   .hq-log time { color: var(--hq-muted); font-variant-numeric: tabular-nums; }
   .hq-log span { overflow-wrap: anywhere; }
+  .hq-steps li { display: block; overflow-wrap: anywhere; }
+  .hq-side { margin: 6px 0 0; font-size: 13px; }
   .hq-more { background: none; border: 0; box-shadow: none; padding: 0 2px; color: var(--hq-blue); font: inherit; text-decoration: underline; cursor: pointer; }
   /* On a phone the log is part of the page, not a small window to scroll inside the page. */
   @media (max-width: 560px) { .hq-log { max-height: none; overflow-y: visible; } }
