@@ -120,6 +120,8 @@ fn tools() -> Value {
         { "name": "consult", "description": "Ask a colleague.",
           "inputSchema": { "type": "object", "properties": { "member": { "type": "string" },
                            "question": { "type": "string" } }, "required": ["member", "question"] } },
+        { "name": "chess", "description": "Your game of chess.",
+          "inputSchema": { "type": "object", "properties": { "action": { "type": "string" } }, "required": ["action"] } },
     ])
 }
 
@@ -438,7 +440,7 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
     let first = &to_model[0];
     assert_eq!(first.path, "/team-relay/local/v1/chat/completions");
     assert_eq!(first.body["model"], "local");
-    assert_eq!(first.body["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(first.body["tools"].as_array().unwrap().len(), 6);
     assert_eq!(
         first.body["tools"][1],
         json!({ "type": "function", "function": {
@@ -1010,6 +1012,7 @@ fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
             "post",
             "set_status",
             "consult",
+            "chess",
             "homelab_status",
             "restart_container"
         ]
@@ -1097,7 +1100,7 @@ fn a_401_from_the_node_ends_the_turn_and_a_node_without_contracts_leaves_hqs_too
             .as_array()
             .unwrap()
             .len(),
-        5
+        6
     );
     assert_eq!(
         methods(&to_hq).last().map(String::as_str),
@@ -1412,8 +1415,13 @@ fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
             .contains("your task was claimed for you")
     );
     assert_eq!(
-        body["tools"][0],
-        json!({ "name": "claim", "description": "Take a task as yours.",
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "claim")
+            .unwrap(),
+        &json!({ "name": "claim", "description": "Take a task as yours.",
                 "input_schema": tools()[1]["inputSchema"] }),
         "an MCP tool, as an Anthropic tool"
     );
@@ -2021,6 +2029,7 @@ fn the_bridge_serves_hqs_tools_and_the_nodes_and_a_question_ends_the_turn() {
             "post",
             "set_status",
             "consult",
+            "chess",
             "homelab_status",
             "container_logs",
             "restart_container"
@@ -2199,6 +2208,8 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
         // Asking a colleague is offered up front (ADR 0139-0140): the briefing names it, and a
         // tool behind a search was never used in production.
         "consult",
+        // So is the game a turn is woken to move in: behind a search, no move was ever made.
+        "chess",
         "find_tools",
     ] {
         assert!(first.iter().any(|n| n == core), "{core} missing: {first:?}");
