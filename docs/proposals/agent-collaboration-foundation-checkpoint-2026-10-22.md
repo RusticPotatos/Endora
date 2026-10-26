@@ -302,6 +302,45 @@ effective-context-engineering-for-ai-agents); developers.openai.com function-cal
 
 **C. Prove it and decide** (observation, then owner decisions)
 
+**Open items decided, 2026-10-25 night** (the owner asked for them to be answered on the
+evidence; CLAUDE.md rule 5):
+- **B3, settled.** #672, #677 and #678 met their criteria and closed once the ladder was
+  fixed (ADR 0139). #676 shows a tier escalation working in production: three empty turns,
+  then "Ada takes it a model tier up", and Ada on Claude used #677's list and moved on.
+- **#677 repo access, moot.** Cy finished #677 without it.
+- **Rae's work brain stays the Mac** (free). Since slimming (L1-L2) her turns finish: #671
+  and #674 are in review and #675 is being done. Revisit only if a turn times out again.
+- **D2.** A lead's standing reviews ("State of my area", "Patterns") belong to the lead's
+  area project: Ada's to Home lab upkeep (1), Kit's to ansible-nas clean-up (2), giving their
+  turns help scope and the project's budget. The CEO's "Daily review" and "Planning" stay
+  unscoped and are paid from the pool, since the CEO's context stays fail-closed (A2e) and the
+  CEO asks for decisions, not help. This needs an owner route that sets a routine's project
+  (none exists).
+- **D3.** The comparison spends no new money: (i) offline, recorded production outcomes
+  since the cutover against the retained consult and manager-relay baseline; (ii) one
+  Holodeck trial on the house's models (free): Silent Station crews with and without
+  `consult`. A frozen cap of $5 from the pool applies if a Claude tier is used.
+- **D4.** Adopt provisionally: the replacement is live and the old paths are retired. Record
+  it as final in ADR 0138's status when C4's comparison is not worse; revise if it is.
+- **C3.** Checked at phone width (375 px) in the browser pane; a check on the physical phone
+  stays the owner's, and is optional.
+- **Left with the owner** (outside actions on the NAS, which only the owner runs): desk 338
+  (run two host commands so the team can name what stops gluetun) and desk 339 (merge
+  `hq/task-672-role-readmes` on the fork and run the playbook).
+
+**Loop plan, 2026-10-25 night**, each step test-first where it changes code, full gate,
+release, production check, record:
+1. A3: replay production briefings offline and report, by role and wake, the share of task
+   turns offered help.
+2. D2: an owner route that sets a routine's project; set Ada's and Kit's reviews.
+3. C3: Work at 375 px in the pane; fix what is hard to read or overflows.
+4. C1: an answered help request in production, end to end (answer, finding, task section,
+   feed, accounting); diagnose if none comes within a day of real work.
+5. The league's first game (pinned brains, Claude paid within its cap) and office chess
+   progressing.
+6. C4 per D3; then D4 recorded in ADR 0138.
+7. Merge to develop after a privacy scan; record in the checkpoint and memory.
+
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
 2. Observe a real failure outcome (expired, declined or cancelled) displayed.
