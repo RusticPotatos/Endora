@@ -433,7 +433,9 @@ snapshot's runs, wakes and thread): Ada's `ask_owner` goes to Mara, who told her
 woke Ada, the task's holder, who cannot redo the CEO's decision. Every desk card was #673's or
 the fork's; none was #796's, though the team believed one waited. Fixed in `74eef5ae` (ADR 0111
 amended): a CEO's draft sent back wakes the CEO, and the CEO's briefing says only it reaches the
-board. #796 itself still needs the CEO to draft it again.
+board. Live after the owner's yes (posted in #796 at 21:55): Ada found the team cannot flip
+the owner's setting and asked Mara; Mara, without bouncing it back, directed Bo to prepare the
+ansible-nas change for the owner to run, with the variable, run command and revert (22:17).
 3. Mac waits (started minus queued, 3 days): Mac 28.5 min mean against local 1.2 and Claude
 under 1, but by day 13.9 (23 Oct), 0.1 (24th), 136.9 (25th, before ADR 0130's amendment), 8.0
 (26th; since 14:00 at most 26 min). The "waited over 3 h" notice was the 25th's backlog.
@@ -443,6 +445,7 @@ league move on #840, cut by a drain) keeps both attempts under the "tried again"
 reply bound needs more house turns to show (the old rate was 8 in 441).
 4. (in progress) Game 840 drawn (Mac and Haiku); game 844, Mac against Sonnet, playing; two
 pairs left; $0.23 of $10.
+1. At 22:21, 58 turns since a1b02bb9 (30 on house models), none at the reply bound.
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
