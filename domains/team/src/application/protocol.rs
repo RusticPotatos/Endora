@@ -678,6 +678,30 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if judgment {
         list.retain(|t| t["name"] != "escalate");
     }
+    // In the loops, the member one rank up reviews (ADR 0142): its review turn has the tool.
+    let reviewing = engine
+        .store()
+        .wake(run.wake)
+        .ok()
+        .flatten()
+        .is_some_and(|w| w.reason == crate::domain::WakeReason::ReviewRequested);
+    if reviewing && member.role != Role::Reviewer && !list.iter().any(|t| t["name"] == "review") {
+        if let Some(task) = run.task.and_then(|t| engine.store().task(t).ok().flatten()) {
+            if engine
+                .loop_reviewer_of(&task)
+                .ok()
+                .flatten()
+                .is_some_and(|r| r.id == member.id)
+            {
+                if let Some(review) = tools(Role::Reviewer)
+                    .as_array()
+                    .and_then(|all| all.iter().find(|t| t["name"] == "review").cloned())
+                {
+                    list.push(review);
+                }
+            }
+        }
+    }
     // A scenario's turn acts in its world with its tool (the Holodeck plan's phases 5 and 6).
     if let Ok(Some(kind)) = engine.scenario_kind_of_run(run.id) {
         list.push(super::scenario_tool::tool(kind));

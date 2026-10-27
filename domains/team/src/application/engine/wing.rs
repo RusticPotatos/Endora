@@ -491,6 +491,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .max_by_key(|b| b.id)
             .filter(|newest| newest.head != branch.head);
         if newer.is_none() {
+            // In the loops a failed check is one of the item's failures (ADR 0142).
+            if !ok {
+                self.loop_failed(check.task)?;
+            }
             self.store.set_gate(check.task, ok)?;
             self.emit(
                 EventKind::GateResult,

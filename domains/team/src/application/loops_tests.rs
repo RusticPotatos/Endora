@@ -313,3 +313,129 @@ fn without_model_members_no_loop_gives_out_work() {
     hq.tick().unwrap();
     assert_eq!(assignee(&hq, t), None);
 }
+
+fn turn_of(hq: &Hq<'_>, member: MemberId) -> super::ports::RunContext {
+    hq.tick().unwrap();
+    hq.runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.member == member)
+        .expect("a turn of the member's")
+}
+
+fn use_tool(
+    hq: &Hq<'_>,
+    context: &super::ports::RunContext,
+    tool: &str,
+    args: &serde_json::Value,
+) -> Result<String, String> {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    super::protocol::call(hq, &run, &member, tool, args)
+}
+
+fn woken(hq: &Hq<'_>, member: MemberId, task: TaskId, reason: WakeReason) -> bool {
+    hq.wakes()
+        .unwrap()
+        .iter()
+        .any(|w| w.member == member && w.task == Some(task) && w.reason == reason)
+}
+
+/// The owner, 2026-10-27: no testers; one smarter model checks the work (ADR 0142). Work in
+/// review goes to the member one rank up, who is offered the review tool, and a send-back
+/// counts as one of the item's failures.
+///
+/// Given Bo's item, moved to review,
+/// when HQ asks for its review,
+/// then Rae (one rank up) is woken to it and may review it; Rae's send-back wakes Bo.
+#[test]
+fn work_in_review_goes_to_the_member_one_rank_up() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "The lint passes.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    assert!(woken(&hq, f.rae, fix, WakeReason::ReviewRequested));
+    hq.tell_mac(true, "ready");
+    let rae = turn_of(&hq, f.rae);
+    let (run, member) = hq.turn_of(&rae.token).unwrap().unwrap();
+    let offered = super::protocol::tools_in(&hq, &run, &member);
+    assert!(
+        offered
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "review"),
+        "the reviewer one rank up is offered the review tool"
+    );
+    use_tool(
+        &hq,
+        &rae,
+        "review",
+        &serde_json::json!({ "task": fix.0, "verdict": "send_back", "notes": "The lint still fails." }),
+    )
+    .unwrap();
+    assert!(woken(&hq, f.bo, fix, WakeReason::SentBack));
+    assert_eq!(hq.loop_failures(fix).unwrap(), 1);
+}
+
+/// Three failures move an item up one rank; a failure at the top rank goes to the owner.
+///
+/// Given Bo's item,
+/// when it fails three times, then three more, and so on up the ranks,
+/// then it goes to Rae, then Ada, then Kit, then Mara, and Mara's third failure puts it on the
+/// owner's desk.
+#[test]
+fn three_failures_move_an_item_up_a_rank_and_the_top_rank_s_go_to_the_owner() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = item(&hq, &f, "Find what stops gluetun", Priority::Normal);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, hard), Some(f.bo));
+    let names = |id: Option<MemberId>| {
+        hq.store()
+            .members()
+            .unwrap()
+            .into_iter()
+            .find(|m| Some(m.id) == id)
+            .map(|m| m.name)
+    };
+    for next in ["Rae", "Ada", "Kit", "Mara"] {
+        for _ in 0..3 {
+            hq.loop_failed(hard).unwrap();
+        }
+        assert_eq!(names(assignee(&hq, hard)).as_deref(), Some(next));
+        assert_eq!(
+            hq.loop_failures(hard).unwrap(),
+            0,
+            "counted afresh at each rank"
+        );
+    }
+    assert!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .all(|d| d.task != Some(hard))
+    );
+    for _ in 0..3 {
+        hq.loop_failed(hard).unwrap();
+    }
+    let desk = hq.store().desk().unwrap();
+    assert!(
+        desk.iter().any(|d| d.task == Some(hard)
+            && d.status == "waiting"
+            && d.text.contains("every rank")),
+        "{desk:?}"
+    );
+}

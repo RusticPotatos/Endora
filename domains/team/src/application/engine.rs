@@ -1987,6 +1987,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
     /// thread, as it stands.
     fn review_asked(&self, task: &Task) -> Done<()> {
+        // In the loops, the member one rank up reviews it (ADR 0142).
+        if let Some(reviewer) = self.loop_reviewer_of(task)? {
+            self.post_held_lock(
+                Author::Endora,
+                task.id,
+                &format!("{} reviews this, one rank up.", reviewer.name),
+            )?;
+            self.wake_held_lock(reviewer.id, Some(task.id), WakeReason::ReviewRequested)?;
+            return Ok(());
+        }
         // Sent back three times: a huddle of its area decides it (ADR 0120, amending 0114's
         // owner's round); the owner's only with no lead to call one.
         let rung = self.rung_of(task.id)?;
@@ -2090,10 +2100,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let run = self.running(run)?;
         self.reach(&run, task, true)?;
         let reviewer = self.member(run.member)?;
-        if reviewer.role != Role::Reviewer {
+        let current = self.task(task)?;
+        // In the loops, the member one rank up reviews (ADR 0142); otherwise, the tester.
+        let in_the_loops = self
+            .loop_reviewer_of(&current)?
+            .is_some_and(|r| r.id == reviewer.id);
+        if reviewer.role != Role::Reviewer && !in_the_loops {
             return Err(EngineError::Refused(Refusal::NotYours));
         }
-        let current = self.task(task)?;
         let to = if approve {
             TaskStatus::Done
         } else {
@@ -2121,6 +2135,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.emit_sent_back(task, reviewer.id, "tester", reason)?;
             if let Some(owner) = drafter.or(worker) {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
+            }
+            // In the loops a send-back is one of the item's failures (ADR 0142).
+            if in_the_loops {
+                return self.loop_failed(task);
             }
             // Bounced with nothing new between: a huddle, not another round (ADR 0124).
             return self.after_sent_back(task);

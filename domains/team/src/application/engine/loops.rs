@@ -6,7 +6,17 @@
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
-use crate::domain::{Member, ProjectId, ProjectStatus, Refusal, TaskStatus, WakeReason};
+use crate::domain::{
+    Member, MemberId, ProjectId, ProjectStatus, Refusal, Task, TaskId, TaskStatus, WakeReason,
+};
+
+/// How many failed checks at one rank move an item up (ADR 0142).
+const FAILURES_A_RANK: u32 = 3;
+
+/// Where an item's failures at its rank are counted.
+fn failures_key(task: TaskId) -> String {
+    format!("loop_failures:{}", task.0)
+}
 
 /// The rank a loop starts at when the owner has not said: the house's model.
 const START: u8 = 5;
@@ -47,6 +57,113 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .setting(&rank_key(project))?
             .and_then(|r| r.parse().ok())
             .unwrap_or(START))
+    }
+
+    /// The members who take part in the loops.
+    fn loop_members(&self) -> Done<Vec<Member>> {
+        Ok(self
+            .store
+            .members()?
+            .into_iter()
+            .filter(in_the_loops)
+            .collect())
+    }
+
+    /// The member who holds an item, if it is one who takes part in the loops.
+    fn loop_holder(&self, task: &Task) -> Done<Option<Member>> {
+        let Some(holder) = task.owner.or(task.assignee) else {
+            return Ok(None);
+        };
+        Ok(self.loop_members()?.into_iter().find(|m| m.id == holder))
+    }
+
+    /// The member nearest above `rank` (a smaller number), if any.
+    fn one_rank_up(members: &[Member], rank: u8) -> Option<&Member> {
+        members
+            .iter()
+            .filter(|m| m.brain.rank() < rank)
+            .max_by_key(|m| (m.brain.rank(), std::cmp::Reverse(m.id.0)))
+    }
+
+    /// Who reviews an item in the loops (ADR 0142): the member one rank above its holder, and
+    /// the top rank's work the member just below it. `None` for work outside the loops.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub(crate) fn loop_reviewer_of(&self, task: &Task) -> Done<Option<Member>> {
+        let Some(holder) = self.loop_holder(task)? else {
+            return Ok(None);
+        };
+        let members = self.loop_members()?;
+        let rank = holder.brain.rank();
+        let up = Self::one_rank_up(&members, rank).or_else(|| {
+            members
+                .iter()
+                .filter(|m| m.id != holder.id && m.brain.rank() > rank)
+                .min_by_key(|m| (m.brain.rank(), m.id.0))
+        });
+        Ok(up.cloned())
+    }
+
+    /// An item's failures at its present rank.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn loop_failures(&self, task: TaskId) -> Done<u32> {
+        Ok(self
+            .store
+            .setting(&failures_key(task))?
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0))
+    }
+
+    /// One of an item's failures (a failed check, or a send-back), the lock held. The third at
+    /// a rank hands it to the member one rank up; the top rank's third goes to the owner.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub(crate) fn loop_failed(&self, task: TaskId) -> Done<()> {
+        let found = self.task(task)?;
+        let Some(holder) = self.loop_holder(&found)? else {
+            return Ok(());
+        };
+        let failures = self.loop_failures(task)? + 1;
+        if failures < FAILURES_A_RANK {
+            self.store
+                .set_setting(&failures_key(task), &failures.to_string())?;
+            return Ok(());
+        }
+        self.store.set_setting(&failures_key(task), "0")?;
+        let members = self.loop_members()?;
+        let Some(up) = Self::one_rank_up(&members, holder.brain.rank()) else {
+            let text = format!(
+                "{} failed at every rank, Mara's last: {}. Its thread says what was tried.",
+                found.title, holder.name
+            );
+            self.store
+                .add_desk("question", Some(task), None, None, &text, self.clock.now())?;
+            return self.emit(
+                crate::domain::EventKind::DeskAdded,
+                serde_json::json!({ "kind": "question", "task": task.0 }),
+            );
+        };
+        let up: MemberId = up.id;
+        let to = self.member(up)?;
+        self.store.release(task)?;
+        self.store.set_assignee(task, Some(up))?;
+        if found.status != TaskStatus::Todo {
+            self.store.set_task_status(task, TaskStatus::Todo)?;
+        }
+        self.post_held_lock(
+            super::Author::Endora,
+            task,
+            &format!(
+                "It failed {FAILURES_A_RANK} times at {}'s rank: it goes to {}, one rank up.",
+                holder.name, to.name
+            ),
+        )?;
+        self.wake_held_lock(up, Some(task), WakeReason::Assigned)?;
+        Ok(())
     }
 
     /// The loops' part of the tick: each loop with nothing in hand hands out its top item.
