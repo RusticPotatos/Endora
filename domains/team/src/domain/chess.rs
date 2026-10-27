@@ -534,6 +534,38 @@ mod tests {
     }
 
     #[test]
+    fn a_pawn_on_the_last_rank_promotes_however_the_promotion_is_written() {
+        let to_the_edge = ["a4", "b5", "axb5", "a6", "bxa6", "Bb7", "axb7", "Nc6"];
+        for (said, kept, piece) in [
+            ("bxa8=Q", "bxa8=Q", 'Q'),
+            ("bxa8Q", "bxa8=Q", 'Q'),
+            ("bxa8=Q+", "bxa8=Q", 'Q'),
+            ("bxa8=N", "bxa8=N", 'N'),
+        ] {
+            let mut g = game();
+            play_all(&mut g, &to_the_edge);
+            let moved = g.play(WHITE, said, 300).unwrap();
+            assert_eq!(moved.san, kept, "{said}");
+            assert_eq!(g.moves.last().map(String::as_str), Some(kept));
+            let board = replay(&g.moves).unwrap().board;
+            assert!(
+                board.to_string().starts_with(&format!("{piece}2qkbnr/")),
+                "{said}: {board}"
+            );
+        }
+        // A pawn move to the last rank with no piece named is a legal promotion's shape, but
+        // the rules need the piece: it is refused, with the promotions among the legal moves.
+        let mut g = game();
+        play_all(&mut g, &to_the_edge);
+        match g.play(WHITE, "bxa8", 300) {
+            Err(Refused::Illegal { legal, .. }) => {
+                assert!(legal.iter().any(|m| m == "bxa8=Q"), "{legal:?}");
+            }
+            other => panic!("bxa8 with no piece: {other:?}"),
+        }
+    }
+
+    #[test]
     fn the_board_at_the_start_has_twenty_legal_moves_and_white_to_move() {
         let view = game().view().unwrap();
         assert_eq!(
