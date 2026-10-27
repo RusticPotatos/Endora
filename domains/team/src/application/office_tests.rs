@@ -48,7 +48,11 @@ struct Team {
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let bo = hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
     let cy = hq.hire("Cy", Role::Researcher, 20, 1, 1).unwrap();

@@ -12,10 +12,6 @@ use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::notebook::{self, Note};
 use crate::domain::{EventKind, Member, MemberId, Millis, Ref, Refusal, Role, RunId};
 
-/// The line that ends a briefing, naming the notebook's tools.
-pub(super) const TOOLS: &str = "Your notebook: note (on evidence), forget (say why), \
-                                read_notebook, notebook_checked.\n";
-
 /// When a member last tidied its notebook (forgot a note, or said it had looked).
 fn tidied_key(member: MemberId) -> String {
     format!("notebook_tidied:{}", member.0)
@@ -68,112 +64,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             })
             .collect();
         Ok(json!({ "member": member.0, "notes": notes }))
-    }
-
-    /// A turn adds a note to its own member's notebook: its words (one line, at most 300
-    /// characters) and the evidence it rests on, at least one reference, each in HQ's record.
-    /// Returns the note's number.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::EmptyNote`], [`Refusal::TooLong`];
-    /// [`Refusal::NoteNeedsEvidence`]; [`Refusal::NoSuchEvidence`] naming the missing
-    /// reference; [`Refusal::NotebookFull`].
-    pub fn note_in(&self, run: RunId, text: &str, cited: &[Ref]) -> Done<i64> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let who = self.member(turn.member)?;
-        let text = self.dated_true(&who.name, "a note", text)?;
-        let text = notebook::clean(&text).map_err(EngineError::Refused)?;
-        if cited.is_empty() {
-            return Err(EngineError::Refused(Refusal::NoteNeedsEvidence));
-        }
-        self.all_there(cited)?;
-        // A claim the owner retracted is not written again (ADR 0124).
-        self.not_retracted(&text)?;
-        if self.store.notes(who.id)?.len() >= notebook::NOTES_MOST {
-            return Err(EngineError::Refused(Refusal::NotebookFull));
-        }
-        let id = self
-            .store
-            .add_note(who.id, &text, cited, false, Some(run), self.clock.now())?;
-        // The notes it cites are what it is built on.
-        self.note_parents(id, &text)?;
-        self.emit(
-            EventKind::NoteWritten,
-            json!({ "member": who.id.0, "name": who.name, "note": id, "text": text,
-                    "by": who.name }),
-        )?;
-        Ok(id)
-    }
-
-    /// A turn forgets one of its own member's notes, saying why. Forgetting is a tidy.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::NoSuchNote`] for a note that is not in this member's
-    /// notebook, whoever's it is; [`Refusal::ForgetNeedsReason`].
-    pub fn forget_in(&self, run: RunId, note: i64, reason: &str) -> Done<Note> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let who = self.member(turn.member)?;
-        let found = self
-            .store
-            .notes(who.id)?
-            .into_iter()
-            .find(|n| n.id == note)
-            .ok_or(EngineError::Refused(Refusal::NoSuchNote(note)))?;
-        if !found.from_owner {
-            self.inherit_input_from(run, found.written_in_run)?;
-        }
-        let reason = super::one_line(reason, 300);
-        if reason.is_empty() {
-            return Err(EngineError::Refused(Refusal::ForgetNeedsReason));
-        }
-        self.store.delete_note(note)?;
-        self.store
-            .set_setting(&tidied_key(who.id), &self.clock.now().to_string())?;
-        self.emit(
-            EventKind::NoteForgotten,
-            json!({ "member": who.id.0, "name": who.name, "note": note, "text": found.text,
-                    "reason": reason, "by": who.name }),
-        )?;
-        Ok(found)
-    }
-
-    /// A turn reads its own member's whole notebook, newest first, with each note's evidence.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`].
-    pub fn read_notebook_in(&self, run: RunId) -> Done<String> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let notes = self.store.notes(turn.member)?;
-        self.inherit_notebook_inputs(run, &notes)?;
-        if notes.is_empty() {
-            return Ok("Your notebook is empty.".to_owned());
-        }
-        let now = self.clock.now();
-        let mut said = format!("Your notes ({}), newest first:\n", notes.len());
-        for note in notes.iter().rev() {
-            let cites = if note.evidence.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", Ref::kept(&note.evidence).replace(',', ", "))
-            };
-            said.push_str(&format!("- {}{cites}\n", note.line(now)));
-        }
-        Ok(said)
-    }
-
-    /// A turn says it has looked over its notebook and nothing needs changing: a tidy.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`].
-    pub fn notebook_checked_in(&self, run: RunId) -> Done<()> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        Ok(self
-            .store
-            .set_setting(&tidied_key(turn.member), &self.clock.now().to_string())?)
     }
 
     /// After a post: the member's notes it cited by number, or whose evidence it cited, were

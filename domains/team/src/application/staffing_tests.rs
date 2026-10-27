@@ -4,11 +4,10 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::engine::{Author, Engine, Settings};
-use super::ports::{Clock, DeskItem, NewRoutine, NewTask, RunContext, TeamStore};
-use super::protocol::call;
+use super::ports::{Clock, DeskItem, NewRoutine, NewTask, TeamStore};
 use crate::domain::{
     GoalId, Member, MemberId, Priority, ProjectId, Receipt, Refusal, Refused, Role, TaskId,
     WakeReason,
@@ -41,19 +40,21 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// (Kit leads, Rae and Zed are developers).
 struct Team {
     ceo: MemberId,
-    ada: MemberId,
     dee: MemberId,
     kit: MemberId,
     rae: MemberId,
     zed: MemberId,
     goal: GoalId,
     project: ProjectId,
-    plan: TaskId,
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
+    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
     hq.set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
@@ -68,14 +69,12 @@ fn team(hq: &Hq<'_>) -> Team {
     hq.tick().unwrap();
     Team {
         ceo,
-        ada,
         dee,
         kit: seeded.lead,
         rae: seeded.developers[0],
         zed: seeded.developers[1],
         goal: seeded.goal,
         project: seeded.project,
-        plan: seeded.task,
     }
 }
 
@@ -95,47 +94,6 @@ fn desk_of(hq: &Hq<'_>, kind: &str) -> Vec<DeskItem> {
         .into_iter()
         .filter(|d| d.kind == kind && d.status == "waiting")
         .collect()
-}
-
-/// The newest turn of `member`'s, after a tick or two to start it. The wing's members build
-/// with the Mac (ADR 0131), so the node says it is free.
-fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
-    hq.tell_mac(true, "ready");
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    hq.runner()
-        .started()
-        .into_iter()
-        .rfind(|c| c.member == member)
-        .expect("a turn")
-}
-
-/// Every turn that has started is over, and what its end woke has started and is over too. The
-/// Mac takes one turn at a time (ADR 0131), so a test about the next member's turn begins clear.
-fn all_turns_over(hq: &Hq<'_>) {
-    for _ in 0..3 {
-        for started in hq.runner().started() {
-            hq.runner().finish(started.run, true);
-        }
-        hq.tell_mac(true, "ready");
-        hq.tick().unwrap();
-    }
-    for started in hq.runner().started() {
-        hq.runner().finish(started.run, true);
-    }
-}
-
-/// A new turn of `member`'s on `task`: woken (a mention), then started. Kit's first turn, on
-/// the plan, was over before a test began (see `team`), so a test that wants a briefing written
-/// after it changed the world, or a turn it can still use tools in, wakes him again.
-fn woken_turn(hq: &Hq<'_>, member: MemberId, task: TaskId) -> RunContext {
-    hq.wake(member, Some(task), WakeReason::Mentioned).unwrap();
-    turn(hq, member)
-}
-
-fn use_tool(hq: &Hq<'_>, context: &RunContext, tool: &str, args: &Value) -> Result<String, String> {
-    let (run, who) = hq.turn_of(&context.token).unwrap().expect("a running turn");
-    call(hq, &run, &who, tool, args)
 }
 
 /// An open task of the wing's project, handed to nobody (so nobody is woken).
@@ -279,14 +237,6 @@ fn a_furloughed_member_is_never_woken_and_is_left_out_of_briefings_and_shares() 
         hq.wake(t.zed, None, WakeReason::Mentioned).unwrap(),
         Receipt::Refused(Refused::Furloughed)
     );
-    // Kit's turn: his team does not list Zed; the CEO's does not either.
-    let kit = woken_turn(&hq, t.kit, t.plan);
-    assert!(kit.told.contains("Rae"), "{}", kit.told);
-    assert!(!kit.told.contains("Zed"), "{}", kit.told);
-    hq.wake(t.ceo, None, WakeReason::QuestionAsked).unwrap();
-    let ceo = turn(&hq, t.ceo);
-    assert!(ceo.told.contains("Rae"), "{}", ceo.told);
-    assert!(!ceo.told.contains("Zed"), "{}", ceo.told);
     // It keeps its record, its name and its place.
     let zed = member(&hq, t.zed);
     assert_eq!((zed.name.as_str(), zed.reports_to), ("Zed", Some(t.kit)));
@@ -327,173 +277,6 @@ fn the_owner_furloughs_and_recalls_any_member_but_the_ceo() {
     .unwrap();
     let refused = hq.furlough(t.rae).unwrap_err().to_string();
     assert!(refused.contains("1 open task"), "{refused}");
-}
-
-#[test]
-fn a_lead_with_a_backlog_gets_a_furloughed_member_back_first() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    hq.furlough(t.zed).unwrap();
-    let kit = woken_turn(&hq, t.kit, t.plan);
-    let tasks: Vec<TaskId> = (0..2)
-        .map(|n| open_task(&hq, &t, &format!("Branch {n}")))
-        .collect();
-    let cite =
-        |ids: &[TaskId]| -> Vec<String> { ids.iter().map(|i| format!("task {i}")).collect() };
-    let ask = |args: Value| use_tool(&hq, &kit, "request_staff", &args);
-    // One active developer (Rae): two open tasks are enough.
-    let said = ask(
-        json!({ "project": t.project.0, "why": "two branches wait", "evidence": cite(&tasks) }),
-    )
-    .unwrap();
-    assert!(said.contains("owner's desk"), "{said}");
-    let item = desk_of(&hq, "recall").pop().expect("a recall on the desk");
-    assert_eq!(item.member, Some(t.kit));
-    assert!(item.text.contains("Zed"), "{}", item.text);
-    assert!(desk_of(&hq, "hire").is_empty());
-    hq.decide(item.id, "approve").unwrap();
-    let zed = member(&hq, t.zed);
-    assert!(!zed.furloughed());
-    assert_eq!(zed.reports_to, Some(t.kit));
-    let events: Vec<String> = hq
-        .store()
-        .events_after(0)
-        .unwrap()
-        .into_iter()
-        .map(|e| e.kind)
-        .collect();
-    assert!(events.contains(&"member.recalled".to_owned()), "{events:?}");
-}
-
-#[test]
-fn staff_are_requested_on_evidence_of_a_backlog_by_a_lead_alone() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let kit = woken_turn(&hq, t.kit, t.plan);
-    let ask = |args: Value| use_tool(&hq, &kit, "request_staff", &args);
-    let tasks: Vec<TaskId> = (0..3)
-        .map(|n| open_task(&hq, &t, &format!("Branch {n}")))
-        .collect();
-    let cite =
-        |ids: &[TaskId]| -> Vec<String> { ids.iter().map(|i| format!("task {i}")).collect() };
-    let p = t.project.0;
-    // Evidence is needed, and must exist.
-    let refused = ask(json!({ "project": p, "why": "x", "evidence": [] })).unwrap_err();
-    assert!(refused.contains("evidence"), "{refused}");
-    let refused = ask(json!({ "project": p, "why": "x", "evidence": ["task 999"] })).unwrap_err();
-    assert!(refused.contains("not in HQ's record"), "{refused}");
-    // Two active developers: three open tasks are not twice as many.
-    let refused = ask(json!({ "project": p, "why": "x", "evidence": cite(&tasks) })).unwrap_err();
-    assert!(
-        refused.contains("3 open tasks")
-            && refused.contains("2 active developers")
-            && refused.contains("at least 4"),
-        "{refused}"
-    );
-    // A task of another project, or one that is over, does not count.
-    let other = hq
-        .add_task(
-            Author::Owner,
-            NewTask {
-                goal: t.goal,
-                project: None,
-                parent: None,
-                title: "Elsewhere".to_owned(),
-                description: String::new(),
-                assignee: None,
-                priority: Priority::Normal,
-                waits_on: Vec::new(),
-            },
-        )
-        .unwrap();
-    let mut with_other = cite(&tasks);
-    with_other.push(format!("task {other}"));
-    let refused = ask(json!({ "project": p, "why": "x", "evidence": with_other })).unwrap_err();
-    assert!(
-        refused.contains(&format!("task {other}")) && refused.contains("not an open task of"),
-        "{refused}"
-    );
-    // Four open tasks: no furloughed developer, so it becomes the hire request.
-    let mut four = tasks.clone();
-    four.push(open_task(&hq, &t, "Branch 3"));
-    let said =
-        ask(json!({ "project": p, "why": "four branches wait", "evidence": cite(&four) })).unwrap();
-    assert!(said.contains("owner's desk"), "{said}");
-    let hire = desk_of(&hq, "hire").pop().expect("a hire request");
-    assert_eq!(hire.member, Some(t.kit));
-    // One at a time.
-    let again = ask(json!({ "project": p, "why": "four branches wait", "evidence": cite(&four) }))
-        .unwrap_err();
-    assert!(again.contains("waiting"), "{again}");
-    // Only a lead is offered it, and only a lead may call it.
-    assert!(
-        super::protocol::tools(Role::Lead)
-            .to_string()
-            .contains("request_staff")
-    );
-    for role in [Role::Developer, Role::Reviewer, Role::Researcher, Role::Ceo] {
-        assert!(
-            !super::protocol::tools(role)
-                .to_string()
-                .contains("request_staff"),
-            "{role:?}"
-        );
-    }
-    // Kit's turn is over, and the Mac, which takes one turn at a time, is free for Rae's.
-    all_turns_over(&hq);
-    hq.wake(t.rae, Some(four[0]), WakeReason::Mentioned)
-        .unwrap();
-    let rae = turn(&hq, t.rae);
-    let refused = use_tool(
-        &hq,
-        &rae,
-        "request_staff",
-        &json!({ "project": p, "why": "x", "evidence": cite(&four) }),
-    )
-    .unwrap_err();
-    assert!(refused.contains("only a lead"), "{refused}");
-    // Nor a lead for a project that is not hers.
-    all_turns_over(&hq);
-    hq.wake(t.ada, Some(four[1]), WakeReason::Mentioned)
-        .unwrap();
-    let ada = turn(&hq, t.ada);
-    let refused = use_tool(
-        &hq,
-        &ada,
-        "request_staff",
-        &json!({ "project": p, "why": "x", "evidence": cite(&four) }),
-    )
-    .unwrap_err();
-    assert!(refused.contains("lead"), "{refused}");
-    let _ = t.ada;
-}
-
-#[test]
-fn the_wings_seats_still_hold_when_staff_are_requested() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    // Three more developers fill the wing's five seats.
-    for name in ["Sam", "Lee", "Max"] {
-        let id = hq
-            .hire_by_owner(name, Role::Developer, "claude-haiku-5-5", Some(t.kit))
-            .unwrap();
-        assert!(member(&hq, id).reports_to == Some(t.kit));
-    }
-    let kit = woken_turn(&hq, t.kit, t.plan);
-    let tasks: Vec<String> = (0..10)
-        .map(|n| format!("task {}", open_task(&hq, &t, &format!("Branch {n}"))))
-        .collect();
-    let refused = use_tool(
-        &hq,
-        &kit,
-        "request_staff",
-        &json!({ "project": t.project.0, "why": "x", "evidence": tasks }),
-    )
-    .unwrap_err();
-    assert!(refused.contains("developers"), "{refused}");
 }
 
 #[test]

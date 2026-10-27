@@ -6,13 +6,12 @@
 
 use serde_json::{Value, json};
 
-use super::engine::{Engine, EngineError, Proposal};
+use super::engine::{Engine, EngineError};
 use super::ports::{Clock, NewTask, Run, TeamStore, WorkerAdapter};
 use crate::domain::drain;
 use crate::domain::review::SendBackReason;
 use crate::domain::{
-    Criterion, GoalId, Member, Micros, Priority, ProjectId, Ref, Refusal, Role, RunStatus, TaskId,
-    TaskStatus,
+    Criterion, Member, Priority, Ref, Refusal, Role, RunStatus, TaskId, TaskStatus,
 };
 
 /// A send-back's `reason` parameter (ADR 0132): the kind of failure HQ counts, so that a fall in
@@ -152,7 +151,6 @@ fn criteria_arg(args: &Value) -> Vec<Criterion> {
         .unwrap_or_default()
 }
 
-/// The tool a manager hands a subordinate's task on with (ADR 0114).
 /// The `handover` a post may carry (ADR 0134): only when HQ has told the turn a restart is
 /// coming. It is the same note work handed on needs, kept for the member's own next turn.
 fn drain_handover_schema() -> Value {
@@ -163,52 +161,6 @@ fn drain_handover_schema() -> Value {
          the task stays yours."
     );
     schema
-}
-
-fn hand_to_tool() -> Value {
-    json!({
-        "name": "hand_to",
-        "description": "Hand a task held by someone below you in the chain (who reports to you, or to someone who does) to another member: yourself, or one below you. A task in another lead's area stays in it: only that lead moves it out. Say why, and give the handover note (done, not done, next, watch out): the why goes in the thread, the note starts their first turn on it, and they are woken.",
-        "inputSchema": { "type": "object", "properties": {
-            "task": { "type": "integer", "description": "the task's number" },
-            "to": { "type": "string", "description": "the member's name" },
-            "why": { "type": "string" },
-            "handover": super::protocol_world::handover_schema(),
-        }, "required": ["task", "to", "why", "handover"] },
-    })
-}
-
-/// The tool a lead and the CEO accept or send back tested work with (ADR 0114).
-fn accept_tool() -> Value {
-    json!({
-        "name": "accept",
-        "description": "Accept work in review against its criteria (it is done), or send it back to its member with exactly what does not hold. Only once the tester has passed it (when there is a tester who did not do it), and never your own work. Accepting cites evidence per criterion: the tester's readings count as fresh.",
-        "inputSchema": { "type": "object", "properties": {
-            "task": { "type": "integer", "description": "the task's number" },
-            "verdict": { "type": "string", "enum": ["accept", "send_back"] },
-            "notes": { "type": "string" },
-            "reason": reason_schema(),
-            "evidence": per_criterion("For accept: what shows each criterion holds."),
-        }, "required": ["task", "verdict", "notes"] },
-    })
-}
-
-/// The tool a lead and the CEO propose a project with (ADR 0113).
-fn propose_project_tool() -> Value {
-    let ids = |what: &str| json!({ "type": "array", "items": { "type": "integer" }, "description": what });
-    json!({
-        "name": "propose_project",
-        "description": "Propose a project: a piece of one goal with its own lead, for work that keeps coming back in your area. Cite its evidence from HQ's record: task numbers and alarm event ids (at least one, each checked). It waits for the CEO, who decides it (yes, no or not now). A monthly cap, if you ask one, is the owner's to grant.",
-        "inputSchema": { "type": "object", "properties": {
-            "goal": { "type": "integer", "description": "the goal it serves (default: your task's)" },
-            "title": { "type": "string" },
-            "reason": { "type": "string", "description": "why, from what the team found" },
-            "lead": { "type": "string", "description": "the member who leads it, a lead or the CEO (default: you)" },
-            "cap": { "type": "number", "description": "a monthly cap in dollars, if one is wanted" },
-            "tasks": ids("task numbers it rests on"),
-            "events": ids("alarm event ids it rests on"),
-        }, "required": ["title", "reason"] },
-    })
 }
 
 /// The tool every member reads a task's documents with (ADR 0115): a branch's diff, a
@@ -224,7 +176,7 @@ fn read_document_tool() -> Value {
     })
 }
 
-/// The tool a lead or a developer asks for a kept branch to be checked again with (ADR 0115).
+/// The tool a member asks for a kept branch to be checked again with (ADR 0115).
 fn recheck_tool() -> Value {
     json!({
         "name": "recheck",
@@ -249,64 +201,6 @@ fn read_doc_tool() -> Value {
     })
 }
 
-/// The tool a lead asks the owner to hire with (ADR 0115).
-fn request_hire_tool() -> Value {
-    json!({
-        "name": "request_hire",
-        "description": "Ask the owner to hire a member who will report to you: a role below yours, a brain that role may think with, why, and evidence from HQ's record. In the engineering wing the seats are fixed: one lead and at most five developers on Claude Haiku or the house's model; a request beyond them is refused with the count. The request waits on the owner's desk; approving hires. One request at a time.",
-        "inputSchema": { "type": "object", "properties": {
-            "name": { "type": "string", "description": "a name for the new member (optional)" },
-            "role": { "type": "string", "enum": ["developer", "researcher", "reviewer"] },
-            "brain": { "type": "string", "description": "local, claude-haiku-5-5 or claude-sonnet-5-5, as the role allows" },
-            "why": { "type": "string" },
-            "evidence": ids("What shows the need: at least one."),
-        }, "required": ["role", "brain", "why", "evidence"] },
-    })
-}
-
-/// The tool a lead asks for staff with when its project has a backlog (ADR 0118).
-fn request_staff_tool() -> Value {
-    json!({
-        "name": "request_staff",
-        "description": "Ask the owner for more hands on one of your projects, when its work is piling up: the project, why, and the project's open tasks as evidence (task numbers; at least twice the developers the project has at work, each checked to be open and in the project). A developer on furlough is offered back first; with none, it becomes a hire request under the same seats. The owner approves either; the member reports to you. One request at a time.",
-        "inputSchema": { "type": "object", "properties": {
-            "project": { "type": "integer", "description": "the project's number" },
-            "why": { "type": "string" },
-            "evidence": ids("The project's open tasks that wait for hands, as task numbers."),
-        }, "required": ["project", "why", "evidence"] },
-    })
-}
-
-/// A lead's verdict on a guard's finding in its area (ADR 0124).
-fn judge_finding_tool() -> Value {
-    json!({
-        "name": "judge_finding",
-        "description": "Say whether one of HQ's guard findings in your area was real, when HQ names one in a thread (\"finding N\"): real, false_positive (the guard fired on healthy work), not_enough (the record does not say), or resolved (real, and put right). Say whether the fix worked, if you know. Your verdicts are how HQ tunes its guards.",
-        "inputSchema": { "type": "object", "properties": {
-            "finding": { "type": "integer", "description": "the finding's number" },
-            "verdict": { "type": "string", "enum": ["real", "false_positive", "not_enough", "resolved"] },
-            "fix_worked": { "type": "boolean", "description": "whether what was done about it worked" },
-        }, "required": ["finding", "verdict"] },
-    })
-}
-
-/// The tool a lead narrows what done means for a task in its area with (ADR 0133).
-fn narrow_criteria_tool() -> Value {
-    json!({
-        "name": "narrow_criteria",
-        "description": "Narrow or reword what done means for a task in your area, when it has taken far more talk than it was worth: as many criteria as it has now or fewer, and at least one. Say why. The change is posted in the task's thread and recorded; a tester's pass on the old criteria then needs checking again, and the task's budget of talk starts afresh.",
-        "inputSchema": { "type": "object", "properties": {
-            "task": { "type": "integer", "description": "the task's number" },
-            "criteria": { "type": "array", "items": { "type": "object", "properties": {
-                "text": { "type": "string" },
-                "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" },
-                "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown" },
-            }, "required": ["text"] }, "description": "what done means now, replacing what it meant" },
-            "why": { "type": "string", "description": "why, in a sentence: it goes in the thread" },
-        }, "required": ["task", "criteria"] },
-    })
-}
-
 /// What a downtime turn may not do: it makes no work.
 const MAKES_WORK: [&str; 6] = [
     "create_task",
@@ -317,15 +211,10 @@ const MAKES_WORK: [&str; 6] = [
     "request_staff",
 ];
 
-/// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
-/// input. Only the reviewer is offered `review`. The CEO (ADR 0111, 0120) sets direction:
-/// it directs the leads (`direct`), decides their proposals, puts decisions to the board with
-/// `ask_owner`, keeps the house log and reads; it neither proposes projects nor accepts work.
+/// The tools every member is offered (ADR 0142), as MCP lists them: name, what it does, and its
+/// input. There are no roles: the member one rank up is offered `review` in its review turn.
 #[must_use]
-pub fn tools(role: Role) -> Value {
-    if role == Role::Ceo {
-        return ceos_tools();
-    }
+pub fn tools() -> Value {
     let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
         json!({
             "name": name,
@@ -349,13 +238,13 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "post",
-            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. A mention hands no work to anyone: ask a colleague with consult. A finding cites its evidence; a post with none, in a turn with no receipts, is marked unsupported.",
+            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. A mention hands no work to anyone. A finding cites its evidence; a post with none, in a turn with no receipts, is marked unsupported.",
             json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What the post rests on, if anything."), "handover": drain_handover_schema() }),
             &["task", "text"]
         ),
         tool(
             "set_status",
-            "Move your task on (todo, doing, in_review, blocked), with a reason. in_review cites evidence for each criterion (a live one: a reading from this turn); the tester re-checks and the lead accepts, which is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. For done, why: met_criteria, or superseded (name the successor) or not_needed.",
+            "Move your task on (todo, doing, in_review, blocked), with a reason. in_review cites evidence for each criterion (a live one: a reading from this turn); the member one rank up re-checks it, which is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. For done, why: met_criteria, or superseded (name the successor) or not_needed.",
             json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on, which superseded needs" } }),
             &["task", "status", "reason"]
         ),
@@ -366,14 +255,8 @@ pub fn tools(role: Role) -> Value {
             &["title", "description"]
         ),
         tool(
-            "escalate",
-            "Stuck on this task on the house's model (errors recurring, an approach not converging, results that do not fit)? Take it up a model tier: your turn ends and you take it up again on your Claude, with why in the thread. Twice a task a day at most; a decision still goes to whoever holds it, with ask_owner.",
-            json!({ "why": { "type": "string", "description": "what you tried and what keeps failing" } }),
-            &["why"]
-        ),
-        tool(
             "ask_owner",
-            "A decision your task needs, or a proposal, up the chain in the task's thread: to your lead (a project's task: its lead), a lead's to the CEO, citing evidence (the owner's desk only when there is no CEO); a tester passing on the CEO's decision cites evidence too. Asking ends your turn; you are woken with the answer. Decisions only: for a hard problem, escalate it a model tier up.",
+            "Put a decision on the owner's desk, citing evidence: only what the owner alone decides (money beyond the caps, credentials, accepting a risk, an irreversible step, or taste). Asking ends your turn; you are woken with the answer. Everything else you decide yourself; work that keeps failing goes a rank up on its own.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),
@@ -383,83 +266,37 @@ pub fn tools(role: Role) -> Value {
             json!({ "minutes": { "type": "integer", "minimum": 5, "maximum": 720 }, "why": { "type": "string", "description": "what you will look at when you come back" } }),
             &["minutes", "why"]
         ),
-        tool(
-            "note",
-            "Note in YOUR notebook something you learned and will need again: at most 300 characters, on evidence from HQ's record (a receipt, task or event; each is checked). Your notes come back in your briefings, newest first.",
-            json!({ "text": { "type": "string", "maxLength": crate::domain::notebook::NOTE_MOST }, "evidence": ids("What the note rests on: at least one.") }),
-            &["text", "evidence"]
-        ),
-        tool(
-            "forget",
-            "Remove one of YOUR notes that is wrong or no longer true, saying why. Forgetting counts as tidying your notebook.",
-            json!({ "note": { "type": "integer", "description": "the note's number, 12 for n12" }, "reason": { "type": "string" } }),
-            &["note", "reason"]
-        ),
-        tool(
-            "read_notebook",
-            "Read all of YOUR notes, newest first, with the evidence each rests on (the briefing shows only the newest dozen).",
-            json!({}),
-            &[]
-        ),
-        tool(
-            "notebook_checked",
-            "Say you have looked over YOUR notebook and nothing needs changing. It counts as tidying it, which you are asked to do about once a week.",
-            json!({}),
-            &[]
-        ),
     ]);
-    if role == Role::Reviewer {
-        if let Some(list) = all.as_array_mut() {
-            // The tester passes or sends back, and never makes work (ADR 0114): she is not
-            // offered the tool the engine would refuse her anyway.
-            list.retain(|t| t["name"] != "create_task");
-            list.push(tool(
-                "review",
-                "You are the tester. Your verdict on work in review, after re-checking it yourself: take your own readings to confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of your own this turn (its lead then accepts it); send_back returns it to its owner with exactly what does not hold. Sending back is a finished test too. Never your own work. You pass or send back; you never create or assign work.",
-                json!({ "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" }, "reason": reason_schema(), "evidence": per_criterion("For approve: your readings and what else shows each criterion holds.") }),
-                &["task", "verdict", "notes"],
-            ));
-        }
-    }
-    if role == Role::Lead {
-        if let Some(list) = all.as_array_mut() {
-            list.push(propose_project_tool());
-            list.push(accept_tool());
-            list.push(hand_to_tool());
-            list.push(request_hire_tool());
-            list.push(request_staff_tool());
-            let report_part = |what: &str| json!({ "type": "string", "maxLength": crate::domain::areas::REPORT_PART_MOST, "description": what });
-            list.push(tool(
-                "report_area",
-                "Report on your area to the CEO, in your \"State of my area\" turn: four short parts, any of them \"nothing\". It is kept as your area's report, which the CEO's daily review reads, and closes the report's task.",
-                json!({
-                    "moved": report_part("what moved, with task numbers"),
-                    "stuck": report_part("what is stuck, and on what"),
-                    "need": report_part("what you need, and from whom"),
-                    "proposals": report_part("what you propose (make each with propose_project)"),
-                }),
-                &["moved", "stuck", "need", "proposals"],
-            ));
-            list.push(narrow_criteria_tool());
-            list.push(judge_finding_tool());
-        }
-    }
-    if matches!(role, Role::Lead | Role::Developer) {
-        if let Some(list) = all.as_array_mut() {
-            list.push(recheck_tool());
-        }
-    }
     if let Some(list) = all.as_array_mut() {
+        list.push(recheck_tool());
         list.push(read_document_tool());
         list.push(read_doc_tool());
         list.push(super::chess_tool::tool());
-        // The team's world (ADR 0122): a lesson is a story now, which tell_story keeps;
-        // note_lesson is no longer offered.
-        list.extend(super::protocol_world::tools(role));
+        list.extend(
+            super::protocol_world::tools(Role::Developer)
+                .into_iter()
+                .filter(|t| t["name"] == "read_world"),
+        );
         // Asking the past (ADR 0129).
         list.extend(super::protocol_history::tools());
+        list.push(tool(
+            "add_to_map",
+            "Add one line to the team's map when you find where something lives (a setting, a file, a log, who or what owns it), so the next member need not look. The same line again confirms it; lines nobody confirms fade after 30 days.",
+            json!({ "line": { "type": "string", "maxLength": 190, "description": "what, and where it is" } }),
+            &["line"],
+        ));
     }
     all
+}
+
+/// The member one rank up's verdict on work in review (ADR 0142), offered in its review turn.
+fn review_tool() -> Value {
+    let task = json!({ "type": "integer", "description": "the task's number" });
+    json!({
+        "name": "review",
+        "description": "Your verdict on work in review, one rank up, after re-checking it yourself: take your own readings to confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of your own this turn; send_back returns it to its owner with exactly what does not hold. Sending back is a finished review too. Never your own work.",
+        "inputSchema": { "type": "object", "properties": { "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" }, "reason": reason_schema(), "evidence": per_criterion("For approve: your readings and what else shows each criterion holds.") }, "required": ["task", "verdict", "notes"] },
+    })
 }
 
 /// The tools one turn is offered (what `tools/list` answers): its member's role's, and, in the
@@ -473,31 +310,12 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     run: &Run,
     member: &Member,
 ) -> Value {
-    // In the loops (ADR 0142) every member has the same tools, and none of the company's.
-    let in_the_loops = engine.in_the_loops(member.id).unwrap_or(false);
-    let mut all = if in_the_loops {
-        loop_tools()
-    } else {
-        tools(member.role)
-    };
+    let mut all = tools();
     let Some(list) = all.as_array_mut() else {
         return all;
     };
     if engine.in_quiz(run.id).unwrap_or(false) {
         list.push(super::protocol_world::quiz_tool());
-    }
-    // A judgment turn already thinks with Claude: escalating is for a work turn (ADR 0139).
-    let judgment = engine
-        .store()
-        .wake(run.wake)
-        .ok()
-        .flatten()
-        .is_none_or(|w| {
-            crate::domain::turns::kind_of(w.reason, member.role)
-                == crate::domain::turns::TurnKind::Judgment
-        });
-    if judgment {
-        list.retain(|t| t["name"] != "escalate");
     }
     // In the loops, the member one rank up reviews (ADR 0142): its review turn has the tool.
     let reviewing = engine
@@ -506,7 +324,7 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
         .ok()
         .flatten()
         .is_some_and(|w| w.reason == crate::domain::WakeReason::ReviewRequested);
-    if reviewing && member.role != Role::Reviewer && !list.iter().any(|t| t["name"] == "review") {
+    if reviewing {
         if let Some(task) = run.task.and_then(|t| engine.store().task(t).ok().flatten()) {
             if engine
                 .loop_reviewer_of(&task)
@@ -514,12 +332,7 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .flatten()
                 .is_some_and(|r| r.id == member.id)
             {
-                if let Some(review) = tools(Role::Reviewer)
-                    .as_array()
-                    .and_then(|all| all.iter().find(|t| t["name"] == "review").cloned())
-                {
-                    list.push(review);
-                }
+                list.push(review_tool());
             }
         }
     }
@@ -551,157 +364,6 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     all
 }
 
-/// What a member in the loops is offered (ADR 0142), whatever its role: the work's tools, and
-/// none of the company's (asking colleagues, escalating, huddles, notebooks, the office's
-/// proposals, the world's curation).
-const LOOP_TOOLS: [&str; 13] = [
-    "my_turn",
-    "claim",
-    "post",
-    "set_status",
-    "create_task",
-    "ask_owner",
-    "check_back",
-    "recheck",
-    "read_document",
-    "read_doc",
-    "chess",
-    "read_world",
-    "ask_record",
-];
-
-fn loop_tools() -> Value {
-    let mut all = tools(Role::Lead);
-    if let Some(list) = all.as_array_mut() {
-        list.retain(|t| t["name"].as_str().is_some_and(|n| LOOP_TOOLS.contains(&n)));
-        list.push(json!({
-            "name": "add_to_map",
-            "description": "Add one line to the team's map when you find where something lives (a setting, a file, a log, who or what owns it), so the next member need not look. The same line again confirms it; lines nobody confirms fade after 30 days.",
-            "inputSchema": { "type": "object", "properties": { "line": { "type": "string", "maxLength": 190, "description": "what, and where it is" } }, "required": ["line"] },
-        }));
-    }
-    all
-}
-
-/// The CEO's tools (ADR 0111).
-fn ceos_tools() -> Value {
-    let all = tools(Role::Lead);
-    let keep = [
-        "my_turn",
-        "claim",
-        "post",
-        "set_status",
-        "create_task",
-        "check_back",
-        "note",
-        "forget",
-        "read_notebook",
-        "notebook_checked",
-        "office",
-        "judge_finding",
-    ];
-    let mut list: Vec<Value> = all
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|t| keep.iter().any(|k| t["name"] == *k))
-        .cloned()
-        .collect();
-    // The CEO delegates to leads from its own work (ADR 0120); in a lead's area it directs.
-    for listed in &mut list {
-        if listed["name"] == "create_task" {
-            listed["description"] = json!(
-                "Hand a lead new work from one of your own tasks (your review, your planning, a project you lead), with its acceptance criteria. Only to a lead: the lead plans it and hands its parts on in its area. On a task in a lead's area, use direct instead."
-            );
-        }
-    }
-    let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
-        json!({
-            "name": name,
-            "description": description,
-            "inputSchema": { "type": "object", "properties": properties, "required": required },
-        })
-    };
-    let part = |what: &str| json!({ "type": "string", "maxLength": crate::domain::chain::DECISION_PART_MOST, "description": what });
-    list.push(tool(
-        "ask_owner",
-        "Put a decision to the owner, who is the board: only what they alone decide (money beyond the pool, new goals and priorities, hiring or letting go a member, what only they can know), on evidence. The reviewer checks it first. Asking ends your turn: you are woken when the board decides.",
-        json!({
-            "decision": part("what the board is to decide, as a question"),
-            "recommendation": part("what you recommend, and the options"),
-            "why": part("why, from what the team found"),
-            "evidence": ids("What it rests on: at least one."),
-        }),
-        &["decision", "recommendation", "why", "evidence"],
-    ));
-    list.push(tool(
-        "note_house",
-        "Add one dated line to the house page's timeline (world:house), yours to keep: what you learned about the house or decided, at most 500 characters. What the house treats as true now goes in a section, with write_world.",
-        json!({ "entry": { "type": "string", "maxLength": crate::domain::house::HOUSE_ENTRY_MOST } }),
-        &["entry"],
-    ));
-    // The team's world (ADR 0122): the CEO keeps the house page.
-    list.extend(super::protocol_world::tools(Role::Ceo));
-    // Asking the past (ADR 0129): the CEO consults leads only, which the engine holds it to.
-    list.extend(super::protocol_history::tools());
-    list.push(tool(
-        "direct",
-        "Give the lead of a task's area a direction: what you want done, looked at or weighed, on evidence from HQ's record. It is posted in the task's thread and wakes the lead, who decides what to do with it. On a task in a lead's area you read and talk, and direct; you never claim, move, close, accept or send back its work.",
-        json!({
-            "task": { "type": "integer", "description": "the task's number" },
-            "direction": { "type": "string", "maxLength": super::engine::DIRECTION_MOST },
-            "evidence": ids("What it rests on: at least one."),
-        }),
-        &["task", "direction", "evidence"],
-    ));
-    let strategy_part = |what: &str| json!({ "type": "string", "maxLength": crate::domain::areas::STRATEGY_PART_MOST, "description": what });
-    list.push(tool(
-        "set_strategy",
-        "Write a goal's strategy, which you own: give only the parts you change. purpose is the goal of the goal; success is what success looks like; measures are the named numbers you steer by, one a line, from those HQ computes (unplanned outages over 10 min, median alarm to closed, repeat alarms within 24 h, median branch submitted to push approved, branches passing the tester first time); bets are the active projects and why; not_now is what you chose not to do. On evidence from HQ's record.",
-        json!({
-            "goal": { "type": "integer", "description": "the goal's number" },
-            "purpose": strategy_part("the goal of the goal"),
-            "success": strategy_part("what success looks like"),
-            "measures": strategy_part("the measures, one a line"),
-            "bets": strategy_part("the current bets: the active projects, and why"),
-            "not_now": strategy_part("what we chose not to do now"),
-            "evidence": ids("What it rests on: at least one."),
-        }),
-        &["goal", "evidence"],
-    ));
-    list.push(tool(
-        "decide_project",
-        "Decide a project a lead proposed: accept it (it starts, and its lead is handed its first task) or send it back, saying why; your why is posted to whoever proposed it. A cap it asks, or one you give, goes to the owner with your why as the recommendation.",
-        json!({
-            "project": { "type": "integer", "description": "the project's number" },
-            "verdict": { "type": "string", "enum": ["accept", "send_back"] },
-            "why": { "type": "string" },
-            "cap": { "type": "number", "description": "a monthly cap in dollars to recommend to the owner" },
-            "evidence": ids("What your decision rests on: at least one."),
-        }),
-        &["project", "verdict", "why", "evidence"],
-    ));
-    list.push(tool(
-        "propose_goal",
-        "Propose a new goal to the owner, who is the board: what, why, and the evidence from HQ's record it rests on (task numbers, alarm event ids). It waits on the board's desk.",
-        json!({
-            "title": { "type": "string" },
-            "reason": { "type": "string" },
-            "tasks": { "type": "array", "items": { "type": "integer" } },
-            "events": { "type": "array", "items": { "type": "integer" } },
-        }),
-        &["title", "reason"],
-    ));
-    let mut hand_to = hand_to_tool();
-    hand_to["description"] = json!(
-        "Hand a task of your own, or one held by someone below you, to a lead (never to anyone else: the lead hands it on in its area). A task in a lead's area goes only to that lead, never to another area's: to have it moved, direct its lead. Say why; it goes in the thread, and the lead is woken."
-    );
-    list.push(hand_to);
-    list.push(read_document_tool());
-    list.push(read_doc_tool());
-    Value::Array(list)
-}
-
 /// The most a member writes in one post: a thread is read by every turn after it.
 const LONGEST_POST: usize = 4000;
 
@@ -714,40 +376,6 @@ fn task_arg(args: &Value) -> Result<TaskId, String> {
         .as_i64()
         .map(TaskId)
         .ok_or_else(|| "which task? Give its number as `task`".to_owned())
-}
-
-/// The integers in an array argument, if any.
-fn numbers(args: &Value, key: &str) -> Vec<i64> {
-    args[key]
-        .as_array()
-        .map(|a| a.iter().filter_map(Value::as_i64).collect())
-        .unwrap_or_default()
-}
-
-/// A monthly cap in dollars, if one was given.
-fn cap_arg(args: &Value) -> Result<Option<Micros>, String> {
-    let said = match &args["cap"] {
-        Value::Null => return Ok(None),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.clone(),
-        _ => String::new(),
-    };
-    crate::domain::projects::read_dollars(&said)
-        .map(Some)
-        .ok_or_else(|| "`cap` is a monthly amount in dollars, like 10 or 12.50".to_owned())
-}
-
-fn member_named<S: TeamStore, W: WorkerAdapter, C: Clock>(
-    engine: &Engine<S, W, C>,
-    name: &str,
-) -> Result<Member, String> {
-    engine
-        .store()
-        .members()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|m| m.name.eq_ignore_ascii_case(name.trim()))
-        .ok_or_else(|| format!("no member called {name}"))
 }
 
 /// Why work closes as `status`, from `why` (one of the set's names), with `duplicate_of` for a
@@ -865,7 +493,7 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // the briefing, while the drain notice below remains the final instruction.
     let answer = if tool == "my_turn" {
         answer.map(|mut text| {
-            text.push_str("\nEndora team protocol v2: any colleague can be asked (consult), a hard problem goes a model tier up (escalate), and ask_owner is for decisions only. Any task-thread consultation or record-fallback guidance in the saved turn belongs to v1 and does not apply to this endpoint. Task-linked help requires classified input; a named conversation must be on the task's project. Task reporting, acceptance and owner-decision authority are unchanged.\n");
+            text.push_str("\nEndora team protocol v2: one team of loops. Work the task, check it, and ask_owner only for the owner's decisions; three failures take the work a rank up.\n");
             text
         })
     } else {
@@ -1091,190 +719,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .map_err(|e| said(&e))?;
             Ok(format!("Created task {}.", id.0))
         }
-        "ask_owner" if member.role == Role::Ceo => {
-            let decision = crate::domain::chain::Decision::new(
-                args["decision"].as_str().unwrap_or(""),
-                args["recommendation"].as_str().unwrap_or(""),
-                args["why"].as_str().unwrap_or(""),
-            )
-            .map_err(|e| e.to_string())?;
-            let cited = evidence_flat(args)?;
-            match engine
-                .ask_board(run.id, &decision, &cited)
-                .map_err(|e| said(&e))?
-            {
-                super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the board, and this turn has ended: stop now. You are woken if it is sent back, or when the board decides.".to_owned()),
-                _ => Ok("It is on the board's desk, and this turn has ended: stop now. You are woken when the board decides.".to_owned()),
-            }
-        }
-        "propose_project" => {
-            let goal = match args["goal"].as_i64() {
-                Some(goal) => GoalId(goal),
-                None => {
-                    let task = run.task.ok_or_else(|| {
-                        "which goal? Give its number as `goal`: this turn has no task".to_owned()
-                    })?;
-                    engine
-                        .store()
-                        .task(task)
-                        .map_err(|e| e.to_string())?
-                        .ok_or_else(|| "your task is gone".to_owned())?
-                        .goal
-                }
-            };
-            let lead = match args["lead"].as_str().filter(|l| !l.trim().is_empty()) {
-                Some(name) => member_named(engine, name)?.id,
-                None => member.id,
-            };
-            let proposal = Proposal {
-                goal,
-                title: text_arg(args, "title")?.to_owned(),
-                reason: text_arg(args, "reason")?.to_owned(),
-                lead,
-                cap: cap_arg(args)?,
-                tasks: numbers(args, "tasks").into_iter().map(TaskId).collect(),
-                events: numbers(args, "events"),
-            };
-            let id = engine
-                .propose_project(run.id, &proposal)
-                .map_err(|e| said(&e))?;
-            Ok(format!(
-                "Project {} is proposed: it waits for the CEO, whose word comes back in this thread.",
-                id.0
-            ))
-        }
-        "decide_project" => {
-            let project = args["project"]
-                .as_i64()
-                .map(ProjectId)
-                .ok_or_else(|| "which project? Give its number as `project`".to_owned())?;
-            let accept = match args["verdict"].as_str() {
-                Some("accept") => true,
-                Some("send_back") => false,
-                _ => return Err("`verdict` must be accept or send_back".to_owned()),
-            };
-            let why = text_arg(args, "why")?;
-            let now = engine
-                .decide_project(
-                    run.id,
-                    project,
-                    accept,
-                    why,
-                    cap_arg(args)?,
-                    &evidence_flat(args)?,
-                )
-                .map_err(|e| said(&e))?;
-            Ok(format!("Project {} is {}.", project.0, now.name()))
-        }
-        "narrow_criteria" => {
-            let task = task_arg(args)?;
-            let criteria = criteria_arg(args);
-            engine
-                .narrow_criteria_in(run.id, task, &criteria, args["why"].as_str().unwrap_or(""))
-                .map_err(|e| said(&e))?;
-            Ok(format!(
-                "Task {}'s criteria are narrowed: it is in its thread, and a tester's pass on \
-                 the old ones needs checking again.",
-                task.0
-            ))
-        }
-        "judge_finding" => {
-            let id = args["finding"]
-                .as_i64()
-                .ok_or_else(|| "which finding? Give its number as `finding`".to_owned())?;
-            let verdict = args["verdict"]
-                .as_str()
-                .and_then(crate::domain::guards::Verdict::from_name)
-                .ok_or_else(|| {
-                    "`verdict` is real, false_positive, not_enough or resolved".to_owned()
-                })?;
-            engine
-                .judge_finding_in(run.id, id, verdict, args["fix_worked"].as_bool())
-                .map_err(|e| said(&e))?;
-            Ok(format!("Finding {id} is judged {}.", verdict.name()))
-        }
-        "set_strategy" => {
-            let goal = args["goal"]
-                .as_i64()
-                .map(GoalId)
-                .ok_or_else(|| "which goal? Give its number as `goal`".to_owned())?;
-            let part = |key: &str| args[key].as_str().map(str::to_owned);
-            let edit = crate::domain::areas::StrategyEdit {
-                purpose: part("purpose"),
-                success: part("success"),
-                measures: part("measures"),
-                bets: part("bets"),
-                not_now: part("not_now"),
-            };
-            engine
-                .set_strategy_in(run.id, goal, &edit, &evidence_flat(args)?)
-                .map_err(|e| said(&e))?;
-            Ok(format!(
-                "Goal {}'s strategy is written; the owner sees it on the goal's card.",
-                goal.0
-            ))
-        }
-        "report_area" => {
-            let part = |key: &str| args[key].as_str().unwrap_or("");
-            let id = engine
-                .report_area_in(
-                    run.id,
-                    [
-                        part("moved"),
-                        part("stuck"),
-                        part("need"),
-                        part("proposals"),
-                    ],
-                )
-                .map_err(|e| said(&e))?;
-            Ok(format!(
-                "Your area report is kept (a{id}) and its task closed: the CEO reads it in the daily review. Your turn may end."
-            ))
-        }
-        "direct" => {
-            let task = task_arg(args)?;
-            let direction = text_arg(args, "direction")?;
-            let lead = engine
-                .direct_in(run.id, task, direction, &evidence_flat(args)?)
-                .map_err(|e| said(&e))?;
-            let name = engine
-                .store()
-                .members()
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .find(|m| m.id == lead)
-                .map_or_else(|| "the lead".to_owned(), |m| m.name);
-            Ok(format!(
-                "Your direction is in task {}'s thread, and {name} is woken: {name} decides.",
-                task.0
-            ))
-        }
-        "propose_goal" => {
-            let tasks: Vec<TaskId> = numbers(args, "tasks").into_iter().map(TaskId).collect();
-            let goal = engine
-                .propose_goal(
-                    run.id,
-                    text_arg(args, "title")?,
-                    text_arg(args, "reason")?,
-                    &tasks,
-                    &numbers(args, "events"),
-                )
-                .map_err(|e| said(&e))?;
-            Ok(format!(
-                "Goal {} is proposed: it waits on the board's desk.",
-                goal.0
-            ))
-        }
-        "note_house" => {
-            let entry = text_arg(args, "entry")?;
-            let line = engine.note_house(run.id, entry).map_err(|e| said(&e))?;
-            Ok(format!("Noted on the house page's timeline: {line}"))
-        }
-        "rewrite_house" => {
-            let log = args["log"].as_str().unwrap_or("");
-            let kept = engine.rewrite_house(run.id, log).map_err(|e| said(&e))?;
-            Ok(format!("The house log is rewritten: {kept} characters."))
-        }
         "read_doc" => {
             let path = text_arg(args, "path")?;
             let part = args["part"]
@@ -1313,71 +757,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                  receipt in the task's thread, and you are woken when it does.",
                 task.0
             ))
-        }
-        "request_hire" => {
-            let role = Role::from_name(text_arg(args, "role")?)
-                .filter(|r| *r != Role::Ceo)
-                .ok_or_else(|| "`role` is developer, researcher or reviewer".to_owned())?;
-            let item = engine
-                .request_hire(
-                    run.id,
-                    args["name"].as_str().filter(|n| !n.trim().is_empty()),
-                    role,
-                    text_arg(args, "brain")?,
-                    text_arg(args, "why")?,
-                    &evidence_flat(args)?,
-                )
-                .map_err(|e| said(&e))?;
-            Ok(format!(
-                "The request is on the owner's desk (item {}): they hire or decline, and you hear in this thread. Go on with your turn.",
-                item.0
-            ))
-        }
-        "note" => {
-            let text = text_arg(args, "text")?;
-            let cited = evidence_flat(args)?;
-            let id = engine.note_in(run.id, text, &cited).map_err(|e| said(&e))?;
-            Ok(format!("Noted as n{id} in your notebook."))
-        }
-        "forget" => {
-            let id = match &args["note"] {
-                Value::Number(n) => n.as_i64(),
-                Value::String(s) => super::engine::note_number(s),
-                _ => None,
-            }
-            .ok_or_else(|| "which note? Give its number as `note` (12 for n12)".to_owned())?;
-            let reason = args["reason"].as_str().unwrap_or("");
-            let gone = engine.forget_in(run.id, id, reason).map_err(|e| said(&e))?;
-            // What was built on it is named (ADR 0124).
-            let built = engine.built_on(id).map_err(|e| said(&e))?;
-            Ok(format!("n{id} is forgotten: {}{built}", gone.text))
-        }
-        "read_notebook" => engine.read_notebook_in(run.id).map_err(|e| said(&e)),
-        "notebook_checked" => {
-            engine.notebook_checked_in(run.id).map_err(|e| said(&e))?;
-            Ok("Your notebook is checked: nothing to tidy for a week.".to_owned())
-        }
-        "request_staff" => {
-            let project = args["project"]
-                .as_i64()
-                .map(ProjectId)
-                .ok_or_else(|| "which project? Give its number as `project`".to_owned())?;
-            let item = engine
-                .request_staff(
-                    run.id,
-                    project,
-                    text_arg(args, "why")?,
-                    &evidence_flat(args)?,
-                )
-                .map_err(|e| said(&e))?;
-            Ok(format!(
-                "The request is on the owner's desk (item {}): they bring a member back or hire, and you hear in this thread. Go on with your turn.",
-                item.0
-            ))
-        }
-        "escalate" => {
-            let why = text_arg(args, "why")?;
-            engine.escalate_in(run.id, why).map_err(|e| said(&e))
         }
         "ask_owner" => {
             let text = text_arg(args, "text")?;
@@ -1426,42 +805,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 Err(e) => Err(said(&e)),
             }
         }
-        "hand_to" => {
-            let task = task_arg(args)?;
-            let to = member_named(engine, text_arg(args, "to")?)?;
-            let why = text_arg(args, "why")?;
-            let handover = super::protocol_world::handover_needed(args)?;
-            engine
-                .hand_to_in(run.id, task, to.id, why, &handover)
-                .map_err(|e| said(&e))?;
-            Ok(format!(
-                "Task {} is {}'s now; they are woken.",
-                task.0, to.name
-            ))
-        }
-        "accept" => {
-            let task = task_arg(args)?;
-            let accept = match args["verdict"].as_str() {
-                Some("accept") => true,
-                Some("send_back") => false,
-                _ => return Err("`verdict` must be accept or send_back".to_owned()),
-            };
-            let notes = text_arg(args, "notes")?;
-            let reason = reason_arg(args, !accept)?;
-            let cited = evidence_lists(args)?;
-            match engine.accept_in(run.id, task, accept, notes, &cited, reason) {
-                Ok(()) if accept => Ok(format!("Task {} is accepted: it is done.", task.0)),
-                Ok(()) => Ok(format!(
-                    "Task {} is sent back to its member, who is woken to put it right.",
-                    task.0
-                )),
-                Err(EngineError::Refused(Refusal::GateNotPassed)) => Err(
-                    "this work needs the gate (tests, lint and build), which has not passed: it stays in review"
-                        .to_owned(),
-                ),
-                Err(e) => Err(said(&e)),
-            }
-        }
         "add_to_map" => {
             let line = text_arg(args, "line")?;
             engine.add_to_map(run.id, line).map_err(|e| said(&e))
@@ -1477,15 +820,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
             let waits = crate::domain::routines::check_back_minutes(minutes);
             Ok(format!(
                 "You will be woken on this task in {waits} minutes, if it is still open: {why}"
-            ))
-        }
-        "note_lesson" => {
-            let lesson = text_arg(args, "lesson")?;
-            let handle = engine.note_lesson(run.id, lesson).map_err(|e| said(&e))?;
-            Ok(format!(
-                "Kept as story:{handle}, marked to retell: lessons are stories now. Tell it whole \
-                 with tell_story under the same handle (when it matters, the tempting move, what \
-                 to do instead, and why)."
             ))
         }
         // The node's model relay charges every call a turn makes, as it makes it; a worker that

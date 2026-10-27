@@ -9,7 +9,7 @@ use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::application::scorecard::Window;
 use crate::application::scorecard::outcomes::talk_work;
 use crate::domain::guards::{self, Guard, THRESHOLDS, TurnSeen, Verdict};
-use crate::domain::{EventKind, MemberId, Millis, Refusal, RunId, TaskId, WakeReason};
+use crate::domain::{EventKind, MemberId, Millis, TaskId, WakeReason};
 
 /// Where HQ keeps when it last looked for process-health findings.
 const LOOKED_AT: &str = "guards_looked_at";
@@ -278,44 +278,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     // ---- verdicts -----------------------------------------------------------------------------
-
-    /// A lead gives a finding in its area its verdict (ADR 0124), in its turn.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`EngineError::Unknown`] for a finding that does not exist;
-    /// [`Refusal::NotYours`] for a finding outside the lead's area.
-    pub fn judge_finding_in(
-        &self,
-        run: RunId,
-        id: i64,
-        verdict: Verdict,
-        fix_worked: Option<bool>,
-    ) -> Done<()> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let finding = self
-            .store
-            .findings()?
-            .into_iter()
-            .find(|f| f.id == id)
-            .ok_or(EngineError::Unknown("finding"))?;
-        let lead = self.member(turn.member)?;
-        let by_task = match finding.task {
-            Some(task) => match self.store.task(TaskId(task))? {
-                Some(task) => self.area_lead(&task)?.is_some_and(|l| l.id == lead.id),
-                None => false,
-            },
-            None => false,
-        };
-        let by_project = match finding.project {
-            Some(p) => self.project(crate::domain::ProjectId(p))?.lead == lead.id,
-            None => false,
-        };
-        if !(by_task || by_project) {
-            return Err(EngineError::Refused(Refusal::NotYours));
-        }
-        self.judge_held_lock(id, verdict, fix_worked, &lead.name)
-    }
 
     /// The owner's verdict on a guard's notice from the desk: the finding is judged, and the
     /// notice put away.

@@ -11,39 +11,6 @@ Feature: Guards against how agent teams fail
     Given Ada is the lead
     And the goal "Keep the home lab healthy"
 
-  # Seed: narrow_criteria open to every role fails the refusal step; shut to the lead fails the
-  # narrowing step; one that lets it widen fails the last.
-  Scenario: A lead narrows what done means for work in its area, and nobody else may
-    Given Linus is the developer
-    And Linus has the task "Tidy the docs" that is done when both "The links work" and "The headings are consistent" hold
-    When Linus's turn starts
-    And Linus tries to narrow what done means for "Tidy the docs" to "The links work"
-    Then it is refused, saying "only the lead of the task's area narrows its criteria"
-    When Linus's turn ends
-    And Ada is woken about "Tidy the docs"
-    And Ada tries to give "Tidy the docs" three criteria
-    Then it is refused, saying "the task has 2 and you gave 3"
-    When Ada narrows what done means for "Tidy the docs" to "The links work"
-    Then the task "Tidy the docs" is done when "The links work"
-    And HQ says in "Tidy the docs": "Ada narrowed what done means"
-
-  # Seed: not_retracted always passing fails the refusal step.
-  Scenario: A retracted claim can't come back
-    Given Linus is the developer
-    And Linus has the task "Look at sonarr"
-    When Linus writes the note "Sonarr needs a restart every night."
-    And Linus's turn ends
-    And Ada is woken about "Look at sonarr"
-    And Ada writes the note "As we found, sonarr needs a restart every night or the queue sticks."
-    And Ada's turn ends
-    And the owner says Linus's note "Sonarr needs a restart every night." is not true
-    Then the sweep finds Ada's note "As we found, sonarr needs a restart every night or the queue sticks."
-    When the owner forgets what the sweep found
-    Then Ada has no notes
-    When Linus is woken about "Look at sonarr"
-    And Linus writes the note "Reminder: sonarr needs a restart every night."
-    Then it is refused, saying "this says again what was retracted on"
-
   # Seed: submit_when_enough returning at once fails the in_review step.
   Scenario: Enough evidence means submit
     Given Linus is the developer

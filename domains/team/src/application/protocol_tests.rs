@@ -8,7 +8,7 @@ use serde_json::json;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, Run, RunContext, TeamStore};
 use super::protocol::{call, tools};
-use crate::domain::{GoalId, Member, MemberId, Priority, Role, TaskId, TaskStatus};
+use crate::domain::{Member, MemberId, Priority, Role, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -22,7 +22,6 @@ type Hq<'a> = Engine<SqliteTeamStore, SimulatedRunner, &'a Hands>;
 
 struct Setup {
     dev: MemberId,
-    goal: GoalId,
     task: TaskId,
 }
 
@@ -56,7 +55,7 @@ fn started(clock: &Hands) -> (Hq<'_>, Setup, RunContext) {
         .unwrap();
     hq.tick().unwrap();
     let context = hq.runner().started()[0].clone();
-    (hq, Setup { dev, goal, task }, context)
+    (hq, Setup { dev, task }, context)
 }
 
 fn turn(hq: &Hq<'_>, token: &str) -> (Run, Member) {
@@ -68,7 +67,7 @@ fn turn(hq: &Hq<'_>, token: &str) -> (Run, Member) {
 #[test]
 fn asking_up_the_chain_is_for_decisions_and_colleagues_are_not_asked() {
     // ADR 0138 keeps management escalation for decisions; ADR 0142 retires asking colleagues.
-    let ask = tools(Role::Developer)
+    let ask = tools()
         .as_array()
         .unwrap()
         .iter()
@@ -142,7 +141,7 @@ fn tools_that_were_never_built_are_not_offered_told_of_or_known() {
         Role::Researcher,
         Role::Reviewer,
     ] {
-        let offered: Vec<String> = tools(role)
+        let offered: Vec<String> = tools()
             .as_array()
             .unwrap()
             .iter()
@@ -172,169 +171,6 @@ fn tools_that_were_never_built_are_not_offered_told_of_or_known() {
     assert!(
         told.contains("Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, check_back,"),
         "{told}"
-    );
-}
-
-#[test]
-fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
-    let clock = Hands(AtomicI64::new(1_792_166_400_000));
-    let (hq, s, context) = started(&clock);
-    let (run, me) = turn(&hq, &context.token);
-    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
-
-    assert!(
-        use_tool("my_turn", json!({}))
-            .unwrap()
-            .contains("Add a list of watches")
-    );
-    use_tool("claim", json!({ "task": s.task.0 })).unwrap();
-    assert_eq!(hq.store().task(s.task).unwrap().unwrap().owner, Some(s.dev));
-    use_tool(
-        "post",
-        json!({ "task": s.task.0, "text": "Started on the list." }),
-    )
-    .unwrap();
-    let thread = hq.store().thread(s.task).unwrap();
-    assert_eq!(
-        thread.last().unwrap().author,
-        "Linus",
-        "posted as the turn's member"
-    );
-    assert!(
-        use_tool("my_turn", json!({}))
-            .unwrap()
-            .contains("Linus [unsupported]: Started on the list."),
-        "a post citing nothing, in a turn with no reading"
-    );
-
-    use_tool(
-        "set_status",
-        json!({ "task": s.task.0, "status": "in_review", "reason": "ready for a look",
-                "evidence": [format!("task {}", s.task.0)] }),
-    )
-    .unwrap();
-    let refused = use_tool(
-        "set_status",
-        json!({ "task": s.task.0, "status": "done", "reason": "finished" }),
-    );
-    assert!(refused.is_err(), "only the gate sets done");
-    assert_eq!(
-        hq.store().task(s.task).unwrap().unwrap().status,
-        TaskStatus::InReview
-    );
-
-    // Work goes only to members below: the developer may not hand the reviewer a task.
-    let above = use_tool(
-        "create_task",
-        json!({ "title": "Review the list", "description": "check it", "assignee": "grace" }),
-    );
-    assert!(above.unwrap_err().contains("below you"));
-    let made = use_tool(
-        "create_task",
-        json!({ "title": "Review the list", "description": "check it" }),
-    )
-    .unwrap();
-    assert!(made.starts_with("Created task"), "{made}");
-    let sub = hq
-        .store()
-        .tasks()
-        .unwrap()
-        .into_iter()
-        .find(|t| t.title == "Review the list")
-        .unwrap();
-    assert_eq!((sub.parent, sub.goal), (Some(s.task), s.goal));
-    assert!(
-        use_tool(
-            "create_task",
-            json!({ "title": "x", "description": "y", "assignee": "Nobody" })
-        )
-        .is_err()
-    );
-
-    assert!(use_tool("format_the_disk", json!({})).is_err());
-    let names: Vec<String> = tools(Role::Developer)
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap().to_owned())
-        .collect();
-    // Every member may play chess (ADR 0121); every member reads the world and tells stories (ADR 0122),
-    // and proposes to a page it does not keep and reports what its map lacks (ADR 0126); and
-    // every member asks the record (ADR 0129), and colleagues are no longer asked (ADR 0142);
-    // and a developer asks for its kept branch to be checked
-    // again (ADR 0115). A quiz's answer is that turn's tool alone (ADR 0131, amended), and
-    // answer_consult is retired (ADR 0138). A stuck member takes its problem a model tier up
-    // with escalate (ADR 0139).
-    assert_eq!(names.len(), 21, "{names:?}");
-    assert!(names.contains(&"escalate".to_owned()));
-    assert!(names.contains(&"recheck".to_owned()));
-    assert!(names.contains(&"ask_record".to_owned()));
-    for tool in ["answer_quiz", "answer_consult"] {
-        assert!(
-            !names.contains(&tool.to_owned()),
-            "{tool} is for its own turn"
-        );
-    }
-    assert!(names.contains(&"read_world".to_owned()) && names.contains(&"tell_story".to_owned()));
-    assert!(
-        !names.contains(&"huddle_view".to_owned()),
-        "huddles went (ADR 0142)"
-    );
-    assert!(
-        !names.contains(&"office".to_owned()),
-        "office proposals went (ADR 0142)"
-    );
-    assert!(names.contains(&"chess".to_owned()));
-    assert!(names.contains(&"read_document".to_owned()));
-    // Every role keeps a notebook of its own (ADR 0118).
-    assert!(
-        ["note", "forget", "read_notebook", "notebook_checked"]
-            .iter()
-            .all(|n| names.contains(&(*n).to_owned()))
-    );
-    assert!(
-        names.contains(&"read_doc".to_owned()),
-        "every member reads the library"
-    );
-    assert!(
-        !names.contains(&"review".to_owned()),
-        "only the reviewer gives a verdict"
-    );
-    let reviewers: Vec<String> = tools(Role::Reviewer)
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap().to_owned())
-        .collect();
-    // With chess (ADR 0121) and the world (ADR 0122), and escalate (ADR 0139).
-    assert_eq!(reviewers.len(), 20, "{reviewers:?}");
-    assert!(
-        !reviewers.contains(&"create_task".to_owned()),
-        "the tester passes or sends back, and never makes work"
-    );
-    assert!(
-        !reviewers.contains(&"note_lesson".to_owned())
-            && !names.contains(&"note_lesson".to_owned()),
-        "a lesson is a story now: tell_story"
-    );
-    assert!(reviewers.contains(&"tell_story".to_owned()));
-    assert!(reviewers.contains(&"review".to_owned()));
-    // The tester judges and does not run the lab's checks; a lead and a developer ask for them
-    // again, and the CEO, who keeps out of the area's work, does not (ADR 0115).
-    assert!(!reviewers.contains(&"recheck".to_owned()));
-    let offered = |role: Role| -> bool {
-        tools(role)
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|t| t["name"] == "recheck")
-    };
-    assert!(offered(Role::Lead) && offered(Role::Developer));
-    assert!(!offered(Role::Ceo) && !offered(Role::Researcher));
-    assert!(names.contains(&"check_back".to_owned()));
-    assert!(
-        !names.contains(&"report_usage".to_owned()),
-        "the relay is the meter: a worker reports nothing"
     );
 }
 
@@ -752,7 +588,7 @@ fn a_turn_asks_to_check_back_on_its_own_task_and_is_told_when() {
         use_tool("check_back", json!({ "minutes": 10 })).is_err(),
         "why"
     );
-    let tool = tools(Role::Lead)
+    let tool = tools()
         .as_array()
         .unwrap()
         .iter()
@@ -760,130 +596,6 @@ fn a_turn_asks_to_check_back_on_its_own_task_and_is_told_when() {
         .cloned()
         .unwrap();
     assert_eq!(tool["inputSchema"]["required"], json!(["minutes", "why"]));
-}
-
-#[test]
-fn a_lesson_noted_the_old_way_is_a_story_to_retell_and_the_owner_is_told() {
-    use crate::application::world_ports::WorldStore;
-    // 17 October 2026, at noon UTC.
-    let clock = Hands(AtomicI64::new(1_792_238_400_000));
-    let (hq, s, dev_turn) = started(&clock);
-    let ada = hq.store().members().unwrap()[0].id;
-    hq.set_goal_note(s.goal, "Owntone is being retired.")
-        .unwrap();
-    hq.add_task(
-        Author::Owner,
-        NewTask {
-            goal: s.goal,
-            project: None,
-            parent: None,
-            title: "Check the home lab".to_owned(),
-            description: String::new(),
-            assignee: Some(ada),
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        },
-    )
-    .unwrap();
-    let lead = next_turn(&hq, ada);
-    let (run, me) = turn(&hq, &lead.token);
-    let lesson = "An RSS sync that finds releases and grabs none is normal.";
-    // A worker told of note_lesson before stories (ADR 0122): kept as a story to retell, in
-    // the lead's area, and the goal's notes are left as the owner wrote them.
-    let said = call(&hq, &run, &me, "note_lesson", &json!({ "lesson": lesson })).unwrap();
-    assert!(said.contains("story:an-rss-sync"), "{said}");
-    assert_eq!(hq.goal_note(s.goal).unwrap(), "Owntone is being retired.");
-    let stories = hq.store().stories().unwrap();
-    assert_eq!(stories.len(), 1);
-    assert!(stories[0].to_retell);
-    assert_eq!(stories[0].instead, lesson);
-    assert_eq!(stories[0].scope, crate::domain::world::Scope::Area(ada));
-    let desk = hq.store().desk().unwrap();
-    let told = desk.last().unwrap();
-    assert_eq!(told.kind, "notice");
-    assert_eq!(told.text, format!("Ada noted: {lesson}"));
-    assert_eq!(told.member, Some(ada));
-    assert_eq!(hq.store().count_events("lesson.noted").unwrap().0, 1);
-
-    // At most 300 characters, and something said.
-    assert!(
-        call(
-            &hq,
-            &run,
-            &me,
-            "note_lesson",
-            &json!({ "lesson": "x".repeat(301) })
-        )
-        .unwrap_err()
-        .contains("300")
-    );
-    assert!(call(&hq, &run, &me, "note_lesson", &json!({ "lesson": "  " })).is_err());
-    // The same lesson again is a second story, under its own handle.
-    let again = call(&hq, &run, &me, "note_lesson", &json!({ "lesson": lesson })).unwrap();
-    assert!(again.contains("story:an-rss-sync-2"), "{again}");
-
-    // A developer keeps none.
-    let (run, me) = turn(&hq, &dev_turn.token);
-    let refused = call(&hq, &run, &me, "note_lesson", &json!({ "lesson": lesson })).unwrap_err();
-    assert!(
-        refused.contains("only the lead and the reviewer"),
-        "{refused}"
-    );
-    assert!(
-        !tools(Role::Lead)
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|t| t["name"] == "note_lesson"),
-        "tell_story is offered instead"
-    );
-}
-
-/// The lead is told who is on the team and to split the work: the developer fixes, the
-/// researcher looks things up, the reviewer checks, and a step her brain may not take goes to
-/// a member who may. Nobody else's briefing carries it.
-#[test]
-fn the_leads_briefing_names_the_team_and_says_to_hand_work_on() {
-    let clock = Hands(AtomicI64::new(1_792_166_400_000));
-    let (hq, s, linus) = started(&clock);
-    let ada = hq
-        .store()
-        .members()
-        .unwrap()
-        .into_iter()
-        .find(|m| m.name == "Ada")
-        .unwrap()
-        .id;
-    hq.add_task(
-        Author::Owner,
-        NewTask {
-            goal: s.goal,
-            project: None,
-            parent: None,
-            title: "Check the home lab".to_owned(),
-            description: String::new(),
-            assignee: Some(ada),
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        },
-    )
-    .unwrap();
-    hq.tick().unwrap();
-    let lead = hq
-        .runner()
-        .started()
-        .into_iter()
-        .find(|c| c.member == ada)
-        .expect("the lead's turn started");
-    let (run, me) = turn(&hq, &lead.token);
-    let told = call(&hq, &run, &me, "my_turn", &json!({})).unwrap();
-    assert!(told.contains("Your team:"), "{told}");
-    assert!(told.contains("Linus (developer, Claude Haiku)"), "{told}");
-    assert!(told.contains("Grace (reviewer, Claude Haiku)"), "{told}");
-    assert!(told.contains("hand"), "{told}");
-    let (run, me) = turn(&hq, &linus.token);
-    let told = call(&hq, &run, &me, "my_turn", &json!({})).unwrap();
-    assert!(!told.contains("Your team:"), "only the lead's: {told}");
 }
 
 // Run 1831 was refused for evidence written as objects, `{"receipt": "r301", "task": "task
@@ -932,7 +644,7 @@ fn measure_tool_descriptions() {
         Role::Reviewer,
         Role::Researcher,
     ] {
-        let all = tools(role);
+        let all = tools();
         let mut sizes: Vec<(usize, String)> = all
             .as_array()
             .unwrap()

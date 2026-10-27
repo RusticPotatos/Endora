@@ -2023,23 +2023,6 @@ function hqScorecard(s) {
     .map(([w, at]) => `the record for ${w} starts ${esc(when(at))}`).join("; ");
   // Each team's seats (ADR 0118): who is at work and who is on furlough. Never anyone gone.
   const teams = (card.teams || []).map((t) => `<li>${esc(t.name || "A lead")}'s team: ${Number(t.seats)} seats · ${Number(t.active)} at work · ${Number(t.furloughed)} on furlough</li>`).join("");
-  // Each area's measures (ADR 0120), which the CEO steers by, and its lead's latest report.
-  const labOf = (m) => (m ? `${n(m.alarms)} alarms · ${n(m.outages)} outages over 10 min · closed in ${m.closed_median_ms == null ? "—" : hqSpan(m.closed_median_ms)} · ${n(m.repeats)} repeats within 24 h` : "");
-  const branchesOf = (m) => (m ? `${n(m.submitted)} branches · to push approved ${m.to_push_median_ms == null ? "—" : hqSpan(m.to_push_median_ms)} · ${n(m.passed_first)} of ${n(m.tested)} passed the tester first time` : "");
-  const reports = s.area_reports || [];
-  const area = (a) => {
-    const measure = (label, f) => (f(a.today) || f(a.week) ? `<tr><th>${label}</th><td>${esc(f(a.today) || "—")}</td><td>${esc(f(a.week) || "—")}</td></tr>` : "");
-    const lab = measure("The lab", (w) => labOf(w && w.lab)), work = measure("Branches", (w) => branchesOf(w && w.branches));
-    const r = reports.find((x) => x.lead === a.lead);
-    const said = r ? `<dl class="hq-kv"><dt>Moved</dt><dd>${esc(r.moved || "nothing")}</dd><dt>Stuck</dt><dd>${esc(r.stuck || "nothing")}</dd>
-        <dt>Needs</dt><dd>${esc(r.need || "nothing")}</dd><dt>Proposes</dt><dd>${esc(r.proposals || "nothing")}</dd></dl>
-        <p class="hq-note">${esc(a.name || "The lead")}'s report, ${esc(when(r.at))}</p>`
-      : `<p class="hq-empty">No report from ${esc(a.name || "the lead")} yet.</p>`;
-    return `<div class="hq-group"><h3>${esc(a.name || "A lead")}'s area</h3>
-      ${lab || work ? `<table class="hq-score"><thead><tr><th></th><th>Today</th><th>7 days</th></tr></thead><tbody>${lab}${work}</tbody></table>` : `<p class="hq-empty">No measures yet.</p>`}
-      ${said}</div>`;
-  };
-  const areas = (card.areas || []).map(area).join("");
   // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
   const pl = card.pool;
   if (pl) measures.push(["Pool", `pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`, null]);
@@ -2049,7 +2032,6 @@ function hqScorecard(s) {
     <h3>The team's turns</h3>
     ${hqScoreRows("measure", measures, "Today", "7 days")}
     ${topUp}
-    ${areas ? `<details><summary>Each area</summary>${areas}</details>` : ""}
     ${teams ? `<details><summary>Seats</summary><ul class="hq-team">${teams}</ul></details>` : ""}
     <details><summary>Per member</summary><div class="hq-score-members">
       <div><b>Today</b><ul class="hq-team">${members(card.today)}</ul></div>

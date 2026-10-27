@@ -23,29 +23,6 @@ Feature: Elastic staffing and notebooks
     And waking Rae is refused as furloughed
     But Zed is at work
 
-  Scenario: A lead with a backlog gets a furloughed member back first
-    Given Zed is on furlough
-    And the wing's project has 2 open tasks
-    When Kit's turn starts
-    And Kit asks for staff for the wing's project, citing its 2 open tasks
-    Then the owner's desk holds a request to recall "Zed"
-    And the owner's desk holds 0 hire requests
-    When the owner approves the recall
-    Then Zed is at work
-    And Zed reports to Kit
-
-  Scenario: A note needs evidence
-    Given Kit's planning turn is over
-    And Kit hands Rae the task "Look at the proxy" in the wing
-    When Rae's turn starts
-    And Rae notes "The proxy restarts clean." citing nothing
-    Then it is refused for "evidence"
-    When Rae notes "The proxy restarts clean." citing "task 999"
-    Then it is refused for "task 999"
-    And Rae's notebook holds 0 notes
-    When Rae notes "The proxy restarts clean." citing the task "Look at the proxy"
-    Then Rae's notebook holds 1 note
-
   Scenario: A furloughed member keeps its notes
     Given Kit's planning turn is over
     And Rae noted "The proxy restarts clean." resting on the wing's first task

@@ -84,9 +84,6 @@ mod games_tests;
 mod scenario_tests;
 
 #[cfg(test)]
-mod raci_tests;
-
-#[cfg(test)]
 mod world_tests;
 
 #[cfg(test)]

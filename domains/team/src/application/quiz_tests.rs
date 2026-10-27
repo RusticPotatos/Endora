@@ -51,7 +51,11 @@ fn engine(clock: &Hands, quiz: bool) -> Hq<'_> {
 
 /// Mara the CEO, and Ada, Linus and Dee, as they are hired.
 fn team(hq: &Hq<'_>) -> Team {
-    hq.seat_ceo("Mara").unwrap().unwrap();
+    {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
     let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
@@ -191,7 +195,7 @@ fn answer_quiz_is_offered_in_the_quiz_turn_and_in_no_other() {
     let names = offered(&hq, &context);
     assert!(names.contains(&"answer_quiz".to_owned()), "{names:?}");
     // It has what its role has beside it.
-    for kept in ["my_turn", "read_world", "note"] {
+    for kept in ["my_turn", "read_world", "chess"] {
         assert!(names.contains(&kept.to_owned()), "{kept} in {names:?}");
     }
     // Another member's turn, on an ordinary task, is not offered it, nor is a role's list.
@@ -212,7 +216,7 @@ fn answer_quiz_is_offered_in_the_quiz_turn_and_in_no_other() {
         "an ordinary turn"
     );
     for role in [Role::Ceo, Role::Lead, Role::Developer, Role::Reviewer] {
-        let list = crate::application::protocol::tools(role);
+        let list = crate::application::protocol::tools();
         assert!(
             !list
                 .as_array()

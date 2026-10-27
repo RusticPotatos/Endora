@@ -144,7 +144,11 @@ fn a_new_member_judges_with_haiku_and_works_with_the_mac_until_the_owner_says_ot
         (Brain::Haiku, Brain::Mac)
     );
     // The CEO, who may not think with Haiku, judges with Opus as it is seated.
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     assert_eq!(member(&hq, ceo).judgment_brain(), Brain::Opus);
     // The owner chooses each from its own list, and each keeps the other as it was.
     assert_eq!(
@@ -719,7 +723,11 @@ fn an_alarm_that_makes_the_routines_task_is_judged_on_claude_when_there_is_money
 fn work_whose_turn_waits_for_budget_is_held_never_stuck_and_nothing_climbs() {
     let clock = hands();
     let hq = hq(&clock, 1);
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let t = team(&hq);
     // Ada leads a project, so stuck work in it would climb to her, a huddle and the CEO.
     let project = hq

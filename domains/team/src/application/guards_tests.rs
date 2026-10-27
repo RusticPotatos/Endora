@@ -123,42 +123,6 @@ fn blocked_work_with_a_reason_and_a_live_check_back_is_held_not_stranded() {
     assert_eq!(climbed(&hq), 0, "held work does not climb the ladder");
 }
 
-/// A turn that failed for good leaves HQ unable to tell whether its member stopped: the
-/// area's lead looks once, and the member is not nudged as if it had dropped the work.
-#[test]
-fn work_whose_last_turn_failed_is_indeterminate_and_its_lead_looks_once() {
-    let clock = Hands(AtomicI64::new(NOON));
-    let (hq, dev, task) = team(&clock, true);
-    for _ in 0..3 {
-        let t = turn(&hq, dev);
-        hq.runner().finish(t.run, false);
-        hq.tick().unwrap();
-        later(&clock, 61_000);
-    }
-    assert!(
-        hq.store()
-            .runs()
-            .unwrap()
-            .iter()
-            .any(|r| r.task == Some(task) && r.status == crate::domain::RunStatus::Failed),
-        "failed for good"
-    );
-    for _ in 0..3 {
-        later(&clock, STRANDED_AFTER_MS + 1);
-        hq.tick().unwrap();
-    }
-    assert_eq!(wakes_for(&hq, task, WakeReason::AssignmentRecovery), 0);
-    assert_eq!(wakes_for(&hq, task, WakeReason::Guard), 1, "one look");
-    assert_eq!(climbed(&hq), 0, "indeterminate never climbs");
-    let thread = hq.store().thread(task).unwrap();
-    assert!(
-        thread
-            .iter()
-            .any(|p| p.author == "endora" && p.text.contains("cannot tell")),
-        "{thread:?}"
-    );
-}
-
 /// A recovery wake is recorded with what it saw before it is sent; nothing new on the task
 /// means it is never sent again, whatever reset the task's nudge.
 #[test]
@@ -840,87 +804,6 @@ fn evidence_already_enough_is_submitted_by_hq_after_three_re_checks() {
 }
 
 // ---- retract and sweep ----------------------------------------------------------------------
-
-/// A claim the owner retracts is taken out, what else says it is swept for the owner to
-/// forget at once, and a member writing it again is refused, saying when it was retracted.
-#[test]
-fn a_retracted_claim_is_swept_and_cannot_come_back() {
-    use crate::domain::Ref;
-    let clock = Hands(AtomicI64::new(NOON));
-    let (hq, dev, task) = team(&clock, true);
-    let ada = hq
-        .store()
-        .members()
-        .unwrap()
-        .into_iter()
-        .find(|m| m.role == Role::Lead)
-        .unwrap()
-        .id;
-    let on = [Ref::Task(task)];
-    let t = turn(&hq, dev);
-    let wrong = hq
-        .note_in(t.run, "Sonarr needs a restart every night.", &on)
-        .unwrap();
-    let built = hq
-        .note_in(t.run, &format!("Per n{wrong}, restart it at 02:00."), &on)
-        .unwrap();
-    let other = hq
-        .note_in(t.run, "Radarr's queue is empty on Sundays.", &on)
-        .unwrap();
-    hq.runner().finish(t.run, true);
-    hq.tick().unwrap();
-    hq.wake(ada, Some(task), WakeReason::Mentioned).unwrap();
-    let a = turn(&hq, ada);
-    let copied = hq
-        .note_in(
-            a.run,
-            "As we found, sonarr needs a restart every night or the queue sticks",
-            &on,
-        )
-        .unwrap();
-    hq.runner().finish(a.run, true);
-    hq.tick().unwrap();
-
-    let said = hq.retract(&format!("note:{wrong}")).unwrap();
-    assert_eq!(
-        said["built_on_it"],
-        serde_json::json!([format!("note:{built}")])
-    );
-    let swept: Vec<String> = said["sweep"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["target"].as_str().unwrap().to_owned())
-        .collect();
-    assert_eq!(swept, [format!("note:{copied}")], "only what says it again");
-    assert!(hq.store().notes(dev).unwrap().iter().all(|n| n.id != wrong));
-    let id = said["retraction"].as_i64().unwrap();
-    assert_eq!(
-        hq.forget_swept(id, &[format!("note:{copied}"), format!("note:{other}")])
-            .unwrap(),
-        1,
-        "only what the sweep found"
-    );
-    assert!(hq.store().notes(ada).unwrap().is_empty());
-    assert_eq!(hq.store().notes(dev).unwrap().len(), 2, "the rest stay");
-    // Written again, in other words around it: refused, with the day it was retracted.
-    hq.wake(dev, Some(task), WakeReason::Mentioned).unwrap();
-    let again = turn(&hq, dev);
-    let refused = hq
-        .note_in(
-            again.run,
-            "Reminder: sonarr needs a restart every night (r9).",
-            &on,
-        )
-        .unwrap_err()
-        .to_string();
-    assert!(
-        refused.contains("this says again what was retracted on")
-            && refused.contains(&format!("note:{wrong}")),
-        "{refused}"
-    );
-    assert!(hq.retract("note:9999").is_err());
-}
 
 // ---- the same ask, once on the desk ---------------------------------------------------------
 

@@ -27,7 +27,11 @@ fn canonical_team(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
         clock,
         Settings::default(),
     );
-    hq.seat_ceo("Member 1").unwrap();
+    {
+        let id = hq.hire("Member 1", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let lead = hq.hire("Member 2", Role::Lead, 25, 2, 0).unwrap();
     let dev = hq.hire("Member 3", Role::Developer, 40, 2, 0).unwrap();
     hq.set_reports_to(dev, lead).unwrap();
@@ -48,20 +52,6 @@ fn canonical_team(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
         )
         .unwrap();
     (hq, dev, task)
-}
-
-#[test]
-fn canonical_context_preserves_actual_management_decision_routing() {
-    let clock = Hands(AtomicI64::new(NOON));
-    let (hq, dev, task) = canonical_team(&clock);
-    let worker = working(&hq, dev, task);
-    assert!(
-        worker
-            .told
-            .contains("Your questions (ask_owner) go to Member 2"),
-        "the worker needs its actual authority route: {}",
-        worker.told
-    );
 }
 
 #[test]

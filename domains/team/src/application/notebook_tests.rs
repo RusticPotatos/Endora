@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
-use super::protocol::{call, tools};
+use super::protocol::call;
 use crate::domain::{GoalId, MemberId, Priority, Ref, Role, TaskId, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -44,7 +44,11 @@ struct Team {
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
     hq.set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -130,149 +134,6 @@ fn kept_note(hq: &Hq<'_>, t: &Team, text: &str, at: i64) -> i64 {
 }
 
 #[test]
-fn a_note_needs_evidence_that_is_in_hqs_record() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let (rae, task) = raes_turn(&hq, &t, "Look at the proxy");
-    let note = |args: Value| use_tool(&hq, &rae, "note", &args);
-    let refused = note(json!({ "text": "The proxy restarts clean." })).unwrap_err();
-    assert!(refused.contains("evidence"), "{refused}");
-    let refused = note(json!({ "text": "The proxy restarts clean.", "evidence": [] })).unwrap_err();
-    assert!(refused.contains("evidence"), "{refused}");
-    let refused =
-        note(json!({ "text": "The proxy restarts clean.", "evidence": ["task 999"] })).unwrap_err();
-    assert!(
-        refused.contains("task 999") && refused.contains("not in HQ's record"),
-        "{refused}"
-    );
-    let refused =
-        note(json!({ "text": "x".repeat(301), "evidence": [format!("task {task}")] })).unwrap_err();
-    assert!(refused.contains("300"), "{refused}");
-    let refused = note(json!({ "text": "  ", "evidence": [format!("task {task}")] })).unwrap_err();
-    assert!(refused.contains("text"), "{refused}");
-    let said =
-        note(json!({ "text": "The proxy restarts clean.", "evidence": [format!("task {task}")] }))
-            .unwrap();
-    assert!(said.contains("n1"), "{said}");
-    let kept = hq.store().notes(t.rae).unwrap();
-    assert_eq!(kept.len(), 1);
-    let kept = &kept[0];
-    assert_eq!(kept.text, "The proxy restarts clean.");
-    assert_eq!(kept.evidence, [Ref::Task(task)]);
-    assert!(!kept.from_owner);
-    assert!(kept.written_in_run.is_some());
-    assert_eq!((kept.written_at, kept.last_used_at), (START, START));
-}
-
-#[test]
-fn a_member_writes_and_forgets_only_its_own_notes() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let first = kept_note(&hq, &t, "The proxy restarts clean.", START);
-    let (zed, _) = {
-        let task = task_for(&hq, &t, t.zed, "Look at the router");
-        (turn(&hq, t.zed), task)
-    };
-    // The tools name no member: a note goes in the notebook of the turn's own member.
-    for role in [
-        Role::Ceo,
-        Role::Lead,
-        Role::Developer,
-        Role::Researcher,
-        Role::Reviewer,
-    ] {
-        let all = tools(role);
-        for name in ["note", "forget", "read_notebook", "notebook_checked"] {
-            let tool = all
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|x| x["name"] == name)
-                .unwrap_or_else(|| panic!("{role:?} lacks {name}"));
-            assert!(
-                tool["inputSchema"]["properties"].get("member").is_none(),
-                "{name} names a member"
-            );
-        }
-    }
-    let refused = use_tool(
-        &hq,
-        &zed,
-        "forget",
-        &json!({ "note": first, "reason": "wrong" }),
-    )
-    .unwrap_err();
-    assert!(refused.contains("not in your notebook"), "{refused}");
-    assert_eq!(hq.store().notes(t.rae).unwrap().len(), 1);
-    let (rae, _) = raes_turn(&hq, &t, "Look at the proxy");
-    let refused = use_tool(&hq, &rae, "forget", &json!({ "note": first })).unwrap_err();
-    assert!(refused.contains("why"), "{refused}");
-    let said = use_tool(
-        &hq,
-        &rae,
-        "forget",
-        &json!({ "note": format!("n{first}"), "reason": "it was a one-off" }),
-    )
-    .unwrap();
-    assert!(said.contains("forgotten"), "{said}");
-    assert!(hq.store().notes(t.rae).unwrap().is_empty());
-    let events = hq.store().events_after(0).unwrap();
-    let gone = events
-        .iter()
-        .find(|e| e.kind == "note.forgotten")
-        .expect("said in the feed");
-    assert_eq!(gone.data["reason"], "it was a one-off");
-    assert_eq!(gone.data["text"], "The proxy restarts clean.");
-}
-
-#[test]
-fn the_notebook_is_in_the_briefing_newest_first_capped_and_summed_up() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    for n in 1..=15 {
-        kept_note(&hq, &t, &format!("Note number {n}."), START + n);
-    }
-    let (rae, _) = raes_turn(&hq, &t, "Look at the proxy");
-    let told = &rae.told;
-    assert!(told.contains("Your notes (15):"), "{told}");
-    assert!(
-        told.find("n15: Note number 15.").unwrap() < told.find("n14: Note number 14.").unwrap(),
-        "{told}"
-    );
-    assert!(told.contains("n4: Note number 4."), "{told}");
-    assert!(!told.contains("n3: Note number 3."), "twelve only: {told}");
-    assert!(
-        told.contains("and 3 older notes: use read_notebook"),
-        "{told}"
-    );
-    // read_notebook returns all of them, with their evidence.
-    let all = use_tool(&hq, &rae, "read_notebook", &json!({})).unwrap();
-    assert!(
-        all.contains("n1: Note number 1.") && all.contains("n15: Note number 15."),
-        "{all}"
-    );
-    assert!(all.contains("task 1"), "{all}");
-    // Long notes run out of room first.
-    let hq2_clock = Hands(AtomicI64::new(START));
-    let hq2 = engine(&hq2_clock);
-    let t2 = team(&hq2);
-    for n in 1..=12 {
-        kept_note(&hq2, &t2, &format!("{n} {}", "y".repeat(280)), START + n);
-    }
-    let (rae2, _) = raes_turn(&hq2, &t2, "Look at the proxy");
-    let shown = rae2.told.matches("- n").count();
-    assert!((1..=4).contains(&shown), "{shown}: {}", rae2.told);
-    assert!(
-        rae2.told.contains("older notes: use read_notebook"),
-        "{}",
-        rae2.told
-    );
-}
-
-#[test]
 fn the_ceos_briefing_carries_only_the_count_of_its_notes_and_the_tool() {
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock);
@@ -298,49 +159,6 @@ fn the_ceos_briefing_carries_only_the_count_of_its_notes_and_the_tool() {
         ceo.told
     );
     assert!(!ceo.told.contains("House note 1."), "{}", ceo.told);
-}
-
-#[test]
-fn a_tidy_is_asked_a_week_on_and_forgetting_or_a_check_ends_it() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let first = kept_note(&hq, &t, "The proxy restarts clean.", START);
-    kept_note(&hq, &t, "The router logs to the NAS.", START);
-    let (early, _) = raes_turn(&hq, &t, "Look at the proxy");
-    assert!(!early.told.contains("Tidy your notes"), "{}", early.told);
-    clock.0.store(START + 8 * DAY, Ordering::SeqCst);
-    let (due, _) = raes_turn(&hq, &t, "Look at the router");
-    assert!(
-        due.told
-            .contains("Tidy your notes: forget any that are wrong or no longer true (cite why)."),
-        "{}",
-        due.told
-    );
-    // Asked once a day, not on every turn.
-    let (again, _) = raes_turn(&hq, &t, "Look at the DNS");
-    assert!(!again.told.contains("Tidy your notes"), "{}", again.told);
-    // Forgetting is a tidy: a week of quiet follows.
-    clock.0.store(START + 10 * DAY, Ordering::SeqCst);
-    use_tool(
-        &hq,
-        &again,
-        "forget",
-        &json!({ "note": first, "reason": "wrong" }),
-    )
-    .unwrap();
-    clock.0.store(START + 16 * DAY, Ordering::SeqCst);
-    let (soon, _) = raes_turn(&hq, &t, "Look at the printer");
-    assert!(!soon.told.contains("Tidy your notes"), "{}", soon.told);
-    clock.0.store(START + 18 * DAY, Ordering::SeqCst);
-    let (due2, _) = raes_turn(&hq, &t, "Look at the switch");
-    assert!(due2.told.contains("Tidy your notes"), "{}", due2.told);
-    // Saying nothing needs changing is a tidy too.
-    let said = use_tool(&hq, &due2, "notebook_checked", &json!({})).unwrap();
-    assert!(said.contains("checked"), "{said}");
-    clock.0.store(START + 20 * DAY, Ordering::SeqCst);
-    let (after, _) = raes_turn(&hq, &t, "Look at the modem");
-    assert!(!after.told.contains("Tidy your notes"), "{}", after.told);
 }
 
 #[test]

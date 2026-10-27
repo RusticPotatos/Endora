@@ -188,33 +188,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(true)
     }
 
-    /// Work HQ cannot tell about gets one look from the lead of its area (ADR 0124): said in
-    /// its thread, and the lead woken, once for what HQ saw of it.
-    pub(super) fn look_once(&self, task: &Task, found: Diagnosis) -> Done<()> {
-        let Some(lead) = self.area_lead(task)? else {
-            return Ok(());
-        };
-        let saw = self.task_saw(task)?;
-        let key = guards::nudge_key(task.id.0, lead.id.0, "look", &saw);
-        if !self
-            .store
-            .record_nudge(&key, task.id, lead.id, "look", self.clock.now())?
-        {
-            return Ok(());
-        }
-        self.post_held_lock(
-            Author::Endora,
-            task.id,
-            &format!(
-                "HQ cannot tell whether this stopped by accident: {}. {}, look at it once and \
-                 decide: carry on with it, hand it on, or drop it.",
-                found.why, lead.name
-            ),
-        )?;
-        self.wake_held_lock(lead.id, Some(task.id), WakeReason::Guard)?;
-        Ok(())
-    }
-
     // ---- findings -----------------------------------------------------------------------------
 
     /// A guard's detection, weighed against the finding for its key (ADR 0132): one finding for a

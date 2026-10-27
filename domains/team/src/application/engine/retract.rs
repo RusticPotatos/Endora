@@ -240,26 +240,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }))
     }
 
-    /// A new note's parents: the notes it cites by number (`n12`), that exist.
-    pub(super) fn note_parents(&self, note: i64, text: &str) -> Done<()> {
-        let mut known = Vec::new();
-        for m in self.store.members()? {
-            known.extend(self.store.notes(m.id)?.into_iter().map(|n| n.id));
-        }
-        for word in text.split(|c: char| !c.is_ascii_alphanumeric()) {
-            let Some(rest) = word.strip_prefix(['n', 'N']) else {
-                continue;
-            };
-            let Ok(parent) = rest.parse::<i64>() else {
-                continue;
-            };
-            if parent != note && known.contains(&parent) {
-                self.store.add_note_parent(note, parent)?;
-            }
-        }
-        Ok(())
-    }
-
     /// What a forgotten note's descendants are told to its forgetter: the notes built on it.
     pub fn built_on(&self, note: i64) -> Done<String> {
         let children = self.store.note_children(note)?;

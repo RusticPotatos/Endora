@@ -54,47 +54,9 @@ impl Office {
             .expect("the store answers")
             .expect("the turn's briefing is recorded")
     }
-
-    fn day(&self, at: i64) -> String {
-        let day = endora_team::domain::money::day_of(at, 0);
-        let (_, month, d) = civil(day);
-        let months = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ];
-        format!("{d} {}", months[(month as usize + 11) % 12])
-    }
-}
-
-/// The year, the month and the day of the month of a day since the epoch.
-fn civil(day: i64) -> (i64, u32, u32) {
-    let z = day + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (
-        yoe + era * 400 + i64::from(m <= 2),
-        u32::try_from(m).unwrap_or(1),
-        u32::try_from(d).unwrap_or(1),
-    )
 }
 
 // --- Moving the old record in ----------------------------------------------------------------
-
-#[given(expr = "the house log has the line {string}")]
-fn house_log_line(w: &mut Office, line: String) {
-    let log = w.hq.house_log().expect("the store answers");
-    let log = if log.is_empty() {
-        line
-    } else {
-        format!("{log}\n{line}")
-    };
-    w.hq.set_house_log(&log)
-        .expect("the owner's log, before the world");
-}
 
 #[given(regex = r#"^the goal's notes hold the lesson "(.+)" noted by (\w+) on (\d+ \w+)$"#)]
 fn lesson_in_notes(w: &mut Office, lesson: String, who: String, on: String) {
@@ -115,24 +77,6 @@ fn starts_with_the_world(w: &mut Office) {
     assert!(w.hq.migrate_world().expect("the move is made"), "moved now");
 }
 
-#[when("HQ starts with the world again")]
-fn starts_again(w: &mut Office) {
-    assert!(
-        !w.hq.migrate_world().expect("the store answers"),
-        "a second start changes nothing"
-    );
-}
-
-#[then(regex = r#"^the house page's timeline says "(.+)" on (\d+ \w+)$"#)]
-fn timeline_says_on(w: &mut Office, line: String, on: String) {
-    let timeline = w.hq.store().timeline("house").expect("the store answers");
-    let found = timeline
-        .iter()
-        .find(|l| l.line == line)
-        .unwrap_or_else(|| panic!("the timeline: {timeline:?}"));
-    assert_eq!(w.day(found.at), on);
-}
-
 #[then(regex = r#"^the house page's timeline says "(.+)"$"#)]
 fn timeline_says(w: &mut Office, said: String) {
     let timeline = w.hq.store().timeline("house").expect("the store answers");
@@ -140,29 +84,6 @@ fn timeline_says(w: &mut Office, said: String) {
         timeline.iter().any(|l| l.line.contains(&said)),
         "the timeline: {timeline:?}"
     );
-}
-
-#[then(regex = r"^the house page's timeline has (\d+) lines$")]
-fn timeline_has(w: &mut Office, count: usize) {
-    assert_eq!(
-        w.hq.store()
-            .timeline("house")
-            .expect("the store answers")
-            .len(),
-        count
-    );
-}
-
-#[then(expr = "the house log still says {string}")]
-fn house_log_still(w: &mut Office, said: String) {
-    let log = w.hq.house_log().expect("the store answers");
-    assert!(log.contains(&said), "the house log: {log}");
-}
-
-#[when(expr = "{word} notes on the house page {string}")]
-fn notes_on_house(w: &mut Office, name: String, entry: String) {
-    w.use_tool(&name, "note_house", &json!({ "entry": entry }))
-        .expect("the CEO keeps the house page");
 }
 
 // --- Stories ----------------------------------------------------------------------------------
@@ -354,15 +275,6 @@ fn recorded_as(w: &mut Office, name: String, situation: String) {
     assert_eq!(w.briefed(&name).situation.name(), situation);
 }
 
-#[then(expr = "{word}'s briefing opens with {string}")]
-fn opens_with(w: &mut Office, name: String, text: String) {
-    // After who it is, and the map every briefing opens with (ADR 0126).
-    let told = w.told(&name);
-    let without_map = endora_team::domain::map::without_map(&told);
-    let first = without_map.lines().nth(1).unwrap_or_default();
-    assert!(first.starts_with(&text), "{name} was told:\n{told}");
-}
-
 #[then(expr = "{word}'s briefing ends with {string}")]
 fn ends_with(w: &mut Office, name: String, text: String) {
     let told = w.told(&name);
@@ -389,16 +301,6 @@ fn nothing_unnamed(w: &mut Office, name: String) {
         );
     }
     assert!(briefed.tokens <= briefed.budget, "{briefed:?}");
-}
-
-#[when(expr = "{word} hands {string} to {word} without a handover note")]
-fn hands_without(w: &mut Office, name: String, title: String, to: String) {
-    let task = w.task(&title);
-    w.use_tool(
-        &name,
-        "hand_to",
-        &json!({ "task": task.0, "to": to, "why": "Zed is busy" }),
-    );
 }
 
 #[when(

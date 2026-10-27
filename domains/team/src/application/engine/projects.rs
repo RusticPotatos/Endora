@@ -184,29 +184,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
-    /// Gives every member hired before members reported to anyone the manager it would have
-    /// been given at hire: the lead the CEO, everyone else the earliest lead, or the CEO.
-    /// Returns how many it set. Run at every start; it changes nothing once each has one.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn backfill_reports_to(&self) -> Done<usize> {
-        let _held = self.held();
-        let members = self.store.members()?;
-        let mut set = 0;
-        for member in &members {
-            if member.reports_to.is_some() || member.role == Role::Ceo {
-                continue;
-            }
-            let Some(manager) = chain::manager(member, &members) else {
-                continue;
-            };
-            self.store.set_reports_to(member.id, Some(manager))?;
-            set += 1;
-        }
-        Ok(set)
-    }
-
     /// Who is woken when `member` hands `task` back: its project's lead, while at work; every
     /// other lead when the task is in no project, or its lead is paused or the one handing it
     /// back.
@@ -1040,76 +1017,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     // ---- what members and the screen are told ----------------------------------------------
-
-    /// A project in one line: `#3 Home lab upkeep (active, led by Ada): $1.20 of $10.00 this
-    /// month`.
-    pub(super) fn project_line(&self, project: &Project, members: &[Member]) -> Done<String> {
-        let spent = self.spent_this_month(project.id)?;
-        let lead = members
-            .iter()
-            .find(|m| m.id == project.lead)
-            .map_or("nobody", |m| m.name.as_str());
-        let status = match project.pause {
-            Some(Pause::Budget) => "paused for its budget".to_owned(),
-            Some(Pause::Owner) => "paused by the owner".to_owned(),
-            None => project.status.name().to_owned(),
-        };
-        let money = match project.cap {
-            Some(cap) => format!("{} of {} this month", dollars(spent), dollars(cap)),
-            None => format!("{} this month, no cap", dollars(spent)),
-        };
-        Ok(format!(
-            "#{} {} ({status}, led by {lead}): {money}",
-            project.id, project.title
-        ))
-    }
-
-    /// The lead's projects, for its briefing; empty when it leads none.
-    pub(super) fn projects_led(&self, lead: &Member) -> Done<String> {
-        let members = self.store.members()?;
-        let mut lines = String::new();
-        for project in self.store.projects()? {
-            if project.lead != lead.id || !project.status.holds_its_cap() {
-                continue;
-            }
-            lines.push_str(&format!("- {}\n", self.project_line(&project, &members)?));
-        }
-        if lines.is_empty() {
-            return Ok(lines);
-        }
-        Ok(format!(
-            "Your projects (you lead them; the sub-tasks of their tasks stay in them; \
-             propose_project for one more, with evidence):\n{lines}\
-             Your projects' plans are yours to decide: hand their parts on with create_task, \
-             and close a task of your own in them as done yourself (set_status done, on \
-             evidence). Inside an approved project you need nobody's leave, the CEO's included.\n"
-        ))
-    }
-
-    /// The projects at 80% of their cap or past it this month, for the CEO; empty when none.
-    pub(super) fn projects_past_warning(&self) -> Done<String> {
-        let members = self.store.members()?;
-        let mut lines = String::new();
-        for project in self.store.projects()? {
-            let Some(cap) = project.cap else {
-                continue;
-            };
-            if !project.status.takes_work() {
-                continue;
-            }
-            if projects::level(self.spent_this_month(project.id)?, cap) == Level::Under {
-                continue;
-            }
-            lines.push_str(&format!("- {}\n", self.project_line(&project, &members)?));
-        }
-        if lines.is_empty() {
-            return Ok(lines);
-        }
-        Ok(format!(
-            "Projects at {}% of their cap or more this month (the owner was told):\n{lines}",
-            projects::WARN_PERCENT
-        ))
-    }
 
     /// How many projects wait for the CEO's decision.
     pub(super) fn proposals_waiting(&self) -> Done<usize> {

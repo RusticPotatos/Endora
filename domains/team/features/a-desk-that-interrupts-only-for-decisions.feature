@@ -9,18 +9,6 @@ Feature: A desk that interrupts only for decisions
 
   # --- What interrupts, and what waits ---------------------------------------------------------
 
-  Scenario: A decision for the board still interrupts
-    Given Mara is the CEO
-    And Ada is the lead
-    And Linus is the developer
-    And the goal "Keep the home lab healthy"
-    And Linus has the task "Sonarr keeps running out of memory"
-    When Linus asks "May I raise sonarr's memory limit to 2 GB?"
-    And Ada asks "Linus wants sonarr at 2 GB. Spend it?"
-    And Mara puts the decision "Give sonarr 2 GB?" to the board, recommending "Yes", because "it is the one container short of memory"
-    Then the owner is interrupted by 1 item
-    And the digest is empty
-
   Scenario: Acting on an item takes it out of the digest
     Given Ada is the lead
     And the goal "Keep the home lab healthy"
@@ -28,15 +16,3 @@ Feature: A desk that interrupts only for decisions
     Then the digest holds 1 item: a notice "Linus restarted sonarr"
     When the owner marks it seen
     Then the digest is empty
-
-  Scenario: The outcomes count what interrupted the owner and what went to the digest
-    Given Mara is the CEO
-    And Ada is the lead
-    And Linus is the developer
-    And the goal "Keep the home lab healthy"
-    And Linus has the task "Sonarr keeps running out of memory"
-    When Linus asks "May I raise sonarr's memory limit to 2 GB?"
-    And Ada asks "Linus wants sonarr at 2 GB. Spend it?"
-    And Mara puts the decision "Give sonarr 2 GB?" to the board, recommending "Yes", because "it is the one container short of memory"
-    And Endora tells the owner "Linus restarted sonarr: it was unhealthy. It is now running."
-    Then the outcomes count 1 interruption and 1 item in the digest this week

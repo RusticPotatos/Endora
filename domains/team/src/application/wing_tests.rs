@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::engine::{Author, Engine, Settings, Submission};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::call;
-use crate::domain::wing::{MOST_DEVELOPERS, WING_GOAL, WING_PROJECT};
+use crate::domain::wing::{WING_GOAL, WING_PROJECT};
 use crate::domain::{
     Brain, Criterion, GoalId, MemberId, Priority, Refusal, Role, TaskId, TaskStatus, WakeReason,
 };
@@ -49,7 +49,11 @@ struct Team {
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
     let lab = hq
@@ -711,192 +715,6 @@ fn raes_other_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     .unwrap()
 }
 
-/// The push the owner is offered is of the branch's newest head, and the tester and the lead
-/// judged one head. A head submitted after the pass (a probe, a second try) used to change what
-/// the card offered, with the gate left as the first head's check set it.
-///
-/// Given a branch whose check passed, that the tester passed, and the lead is to accept,
-/// when a new head is submitted,
-/// then the task is back in doing with no pass standing and its gate waiting for the new head's
-/// own check, the lead has nothing to accept, and no push is offered until it is reviewed again.
-#[test]
-fn a_new_head_after_the_pass_needs_a_new_review() {
-    const NAME: &str = "hq/task-3-tidy-the-deluge-role";
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let (task, rae, _) = submitted(&hq, &t, true);
-    // The first head: its check passes, Rae submits the task, Dee passes it on her checkout.
-    let c1 = hq.next_check().unwrap().unwrap();
-    hq.check_done(
-        c1.id,
-        &c1.token,
-        true,
-        "syntax ok, ansible-lint ok, yamllint ok",
-        "",
-    )
-    .unwrap();
-    let check1 = hq.store().call_receipts_of(rae.run).unwrap().pop().unwrap();
-    use_tool(
-        &hq,
-        &rae,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": "done",
-                 "evidence": [[format!("r{}", check1.id)]] }),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    hq.runner().finish(rae.run, true);
-    let dee = turn(&hq, t.dee);
-    let own = checks_out(&hq, &dee, NAME);
-    use_tool(
-        &hq,
-        &dee,
-        "review",
-        &json!({ "task": task.0, "verdict": "approve", "notes": "it holds",
-                 "evidence": [[format!("r{}", check1.id), format!("r{own}")]] }),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    assert!(
-        wakes_after(&hq, 0).contains(&(t.kit, WakeReason::AcceptanceAsked)),
-        "the lead is asked to accept the first head"
-    );
-    hq.runner().finish(dee.run, true);
-    // The lead's turn on it comes and ends without a decision (turns on one task take their
-    // turn one at a time). Then the owner speaks to Rae, who submits a new head in her turn.
-    let kit1 = turn(&hq, t.kit);
-    hq.runner().finish(kit1.run, true);
-    hq.tick().unwrap();
-    hq.post(Author::Owner, task, "One more page, please.")
-        .unwrap();
-    let rae2 = turn(&hq, t.rae);
-    let mut second = submission(true);
-    second.head = "0f1e2d3c4b5a69788796a5b4".to_owned();
-    hq.record_branch(&rae2.token, &second).unwrap();
-    // (The node's receipt of that submission, as it writes one: a turn that submitted a branch
-    // is not a turn that showed nothing.)
-    hq.record_receipt(
-        &rae2.token,
-        &super::engine::Called {
-            tool: "repo_submit".to_owned(),
-            args: format!("branch: {NAME}"),
-            excerpt: format!(
-                "submitted branch {NAME} at 0f1e2d3c4b5a for task {}",
-                task.0
-            ),
-            ok: true,
-            act: true,
-            confidential: false,
-        },
-    )
-    .unwrap();
-    // The review is void: back in doing, the gate waits for the new head's own check.
-    assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Doing,
-        "a new head needs a new review"
-    );
-    assert_eq!(
-        hq.store().gate(task).unwrap(),
-        Some(false),
-        "the first head's check is not the new head's"
-    );
-    let said = thread(&hq, task);
-    assert!(
-        said.iter().any(|p| p.starts_with("endora: Sent back: ")
-            && p.contains("submitted again at 0f1e2d3c4b5a")
-            && p.contains("new head needs a new review")),
-        "{said:?}"
-    );
-    // Rae's turn ends; HQ finds the task idle in doing and wakes her once more, which runs its
-    // course at a turn's own pace, half an hour on. Then the lead, asked again, has nothing to
-    // accept, and nothing is offered to the owner.
-    hq.runner().finish(rae2.run, true);
-    hq.tick().unwrap();
-    clock.0.fetch_add(30 * 60 * 1000, Ordering::SeqCst);
-    quiet(&hq);
-    hq.wake(t.kit, Some(task), WakeReason::AcceptanceAsked)
-        .unwrap();
-    let kit = turn(&hq, t.kit);
-    let refused = use_tool(
-        &hq,
-        &kit,
-        "accept",
-        &json!({ "task": task.0, "verdict": "accept", "notes": "good",
-                 "evidence": [[format!("r{}", check1.id)]] }),
-    )
-    .unwrap_err();
-    assert!(refused.contains("does not go from doing"), "{refused}");
-    assert!(hq.store().desk().unwrap().iter().all(|d| d.kind != "push"));
-    // The second round: the new head's check, the task submitted again, a new pass, the lead.
-    hq.runner().finish(kit.run, true);
-    hq.tick().unwrap();
-    let c2 = hq.next_check().unwrap().unwrap();
-    hq.check_done(
-        c2.id,
-        &c2.token,
-        true,
-        "syntax ok, ansible-lint ok, yamllint ok",
-        "",
-    )
-    .unwrap();
-    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
-    let check2 = hq
-        .store()
-        .call_receipts_of(rae2.run)
-        .unwrap()
-        .pop()
-        .unwrap();
-    let rae3 = turn(&hq, t.rae);
-    use_tool(
-        &hq,
-        &rae3,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": "done again",
-                 "evidence": [[format!("r{}", check2.id)]] }),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    hq.runner().finish(rae3.run, true);
-    hq.tick().unwrap();
-    let dee2 = turn(&hq, t.dee);
-    let own2 = checks_out(&hq, &dee2, NAME);
-    use_tool(
-        &hq,
-        &dee2,
-        "review",
-        &json!({ "task": task.0, "verdict": "approve", "notes": "the new head holds",
-                 "evidence": [[format!("r{}", check2.id), format!("r{own2}")]] }),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    hq.runner().finish(dee2.run, true);
-    let kit2 = turn(&hq, t.kit);
-    use_tool(
-        &hq,
-        &kit2,
-        "accept",
-        &json!({ "task": task.0, "verdict": "accept", "notes": "good",
-                 "evidence": [[format!("r{}", check2.id)]] }),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Done
-    );
-    // The card offers the head that was reviewed this time.
-    let pushes: Vec<_> = hq
-        .store()
-        .desk()
-        .unwrap()
-        .into_iter()
-        .filter(|d| d.kind == "push")
-        .collect();
-    assert_eq!(pushes.len(), 1);
-    assert!(
-        pushes[0].text.contains("0f1e2d3c4b5a"),
-        "the second head: {}",
-        pushes[0].text
-    );
-}
-
 /// The gate is the task's and every check overwrote it: a check of an older head that reported
 /// late set the gate for a newer one. It is the newest head's.
 #[test]
@@ -1192,157 +1010,6 @@ fn a_lost_check_is_given_up_after_half_an_hour() {
     );
 }
 
-#[test]
-fn the_wings_branch_reaches_the_owner_only_on_approval() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let (task, rae, _) = submitted(&hq, &t, true);
-    let handed = hq.next_check().unwrap().unwrap();
-    hq.check_done(
-        handed.id,
-        &handed.token,
-        true,
-        "syntax ok, ansible-lint ok, yamllint ok",
-        "",
-    )
-    .unwrap();
-    assert!(hq.push_asked(crate::domain::DeskId(999)).unwrap().is_none());
-    assert!(
-        hq.store().desk().unwrap().iter().all(|d| d.kind != "push"),
-        "nothing is offered before the work is done"
-    );
-    // Rae submits, Dee passes it, Kit accepts: done, and only then the desk.
-    let receipt = hq.store().call_receipts_of(rae.run).unwrap().pop().unwrap();
-    use_tool(
-        &hq,
-        &rae,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": "done", "evidence": [[format!("r{}", receipt.id)]] }),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    hq.runner().finish(rae.run, true);
-    let dee = turn(&hq, t.dee);
-    // Her own reading is the branch itself: she checks it out, as the node lets her.
-    let own = checks_out(&hq, &dee, "hq/task-3-tidy-the-deluge-role");
-    use_tool(
-        &hq,
-        &dee,
-        "review",
-        &json!({ "task": task.0, "verdict": "approve", "notes": "read the diff and the check", "evidence": [[format!("r{}", receipt.id), format!("r{own}")]] }),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    hq.runner().finish(dee.run, true);
-    let kit = turn(&hq, t.kit);
-    use_tool(
-        &hq,
-        &kit,
-        "accept",
-        &json!({ "task": task.0, "verdict": "accept", "notes": "good", "evidence": [[format!("r{}", receipt.id)]] }),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Done
-    );
-    let items: Vec<_> = hq
-        .store()
-        .desk()
-        .unwrap()
-        .into_iter()
-        .filter(|d| d.kind == "push")
-        .collect();
-    assert_eq!(items.len(), 1);
-    let item = &items[0];
-    assert!(
-        item.text.starts_with(
-            "Push hq/task-3-tidy-the-deluge-role to your fork (2 files, checks passed)."
-        ),
-        "{}",
-        item.text
-    );
-    assert_eq!(item.task, Some(task));
-    assert_eq!(hq.store().branches().unwrap()[0].status, "offered");
-    // Declined: it stays on the node, and Rae hears.
-    hq.decide(item.id, "decline").unwrap();
-    assert_eq!(hq.store().branches().unwrap()[0].status, "declined");
-    assert!(
-        thread(&hq, task)
-            .pop()
-            .unwrap()
-            .contains("declined pushing")
-    );
-    assert!(hq.push_asked(item.id).unwrap().is_none());
-    // Approved (a second submission, the same way): the node is asked, and tells what came of it.
-    // Kit's turns (the acceptance, then the plan whose branches are all done) are over, so the
-    // Mac, which takes one turn at a time, is free for the next branch.
-    all_turns_over(&hq);
-    let (task2, rae2, _) = submitted(&hq, &t, true);
-    hq.store()
-        .set_task_status(task2, TaskStatus::InReview)
-        .unwrap();
-    let current = hq.store().task(task2).unwrap().unwrap();
-    hq.store().set_task_status(task2, TaskStatus::Done).unwrap();
-    hq.offer_push(current.id).unwrap();
-    let item = hq
-        .store()
-        .desk()
-        .unwrap()
-        .into_iter()
-        .filter(|d| d.kind == "push" && d.status == "waiting")
-        .next_back()
-        .unwrap();
-    hq.decide(item.id, "approve").unwrap();
-    let branch = hq
-        .push_asked(item.id)
-        .unwrap()
-        .expect("the node is asked to push");
-    assert_eq!((branch.task, branch.status.as_str()), (task2, "approved"));
-    let before = hq.store().wakes().unwrap().len();
-    hq.push_outcome(
-        item.id,
-        true,
-        "Pushed hq/task-3-tidy-the-deluge-role (a1b2c3d4e5f6) to the fork: merge it on GitHub.",
-    )
-    .unwrap();
-    assert_eq!(
-        hq.store().branches().unwrap().pop().unwrap().status,
-        "pushed"
-    );
-    let receipt = hq
-        .store()
-        .call_receipts_of(rae2.run)
-        .unwrap()
-        .pop()
-        .unwrap();
-    assert_eq!(
-        (receipt.tool.as_str(), receipt.act, receipt.ok),
-        ("push", true, true)
-    );
-    assert!(
-        thread(&hq, task2)
-            .pop()
-            .unwrap()
-            .contains("Pushed hq/task-3")
-    );
-    assert!(wakes_after(&hq, before).contains(&(t.rae, WakeReason::ProposalDecided)));
-    assert_eq!(
-        hq.push_outcome(item.id, true, "again"),
-        Err(super::EngineError::Refused(Refusal::Finished)),
-        "told once"
-    );
-    assert_eq!(
-        hq.store()
-            .desk()
-            .unwrap()
-            .iter()
-            .find(|d| d.id == item.id)
-            .unwrap()
-            .status,
-        "pushed"
-    );
-}
-
 /// A change the owner approved and the node pushed is a landed change (ADR 0132), and the screen's
 /// outcomes say so; the branch submitted and the check passed before it are counted too, and an
 /// approval the node has not yet pushed is not a change that landed.
@@ -1498,138 +1165,14 @@ fn members_of(hq: &Hq<'_>, id: MemberId) -> crate::domain::Member {
 }
 
 #[test]
-fn the_wing_may_not_grow_past_its_seats() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let kit = woken_turn(&hq, t.kit, t.plan);
-    let ask = |args: Value| use_tool(&hq, &kit, "request_hire", &args);
-    // Evidence, a role below, a brain the role may use, and the wing's brains.
-    let refused = ask(
-        json!({ "role": "developer", "brain": "claude-haiku-5-5", "why": "two branches wait" }),
-    )
-    .unwrap_err();
-    assert!(refused.contains("evidence"), "{refused}");
-    let refused = ask(json!({ "role": "developer", "brain": "claude-haiku-5-5", "why": "x", "evidence": ["task 999"] })).unwrap_err();
-    assert!(refused.contains("not in HQ's record"), "{refused}");
-    let refused = ask(json!({ "role": "developer", "brain": "claude-sonnet-5-5", "why": "x", "evidence": [format!("task {}", t.plan.0)] })).unwrap_err();
-    assert!(
-        refused.contains("Claude Haiku or the house's model"),
-        "{refused}"
-    );
-    let refused = ask(json!({ "role": "researcher", "brain": "claude-haiku-5-5", "why": "x", "evidence": [format!("task {}", t.plan.0)] })).unwrap_err();
-    assert!(refused.contains("no seat for a researcher"), "{refused}");
-    assert!(
-        ask(json!({ "role": "ceo", "brain": "local", "why": "x", "evidence": ["task 1"] }))
-            .is_err()
-    );
-    // Within the seats: the request waits on the desk, one at a time.
-    let said = ask(json!({ "name": "Sam", "role": "developer", "brain": "claude-haiku-5-5", "why": "two branches wait with nobody free", "evidence": [format!("task {}", t.plan.0)] })).unwrap();
-    assert!(said.contains("owner's desk"), "{said}");
-    let item = hq
-        .store()
-        .desk()
-        .unwrap()
-        .into_iter()
-        .find(|d| d.kind == "hire")
-        .unwrap();
-    assert!(
-        item.text
-            .starts_with("Hire Sam as developer on claude-haiku-5-5, reporting to member"),
-        "{}",
-        item.text
-    );
-    assert!(
-        item.text.contains("Kit asks: two branches wait"),
-        "{}",
-        item.text
-    );
-    let refused = ask(json!({ "role": "developer", "brain": "local", "why": "x", "evidence": [format!("task {}", t.plan.0)] })).unwrap_err();
-    assert!(refused.contains("still waiting"), "{refused}");
-    // Approved: Sam joins, reporting to Kit, and Kit hears in the thread.
-    hq.decide(item.id, "approve").unwrap();
-    let sam = hq
-        .store()
-        .members()
-        .unwrap()
-        .into_iter()
-        .find(|m| m.name == "Sam")
-        .expect("hired");
-    assert_eq!(
-        (sam.role, sam.brain, sam.reports_to),
-        (Role::Developer, Brain::Haiku, Some(t.kit))
-    );
-    assert!(
-        thread(&hq, t.plan)
-            .pop()
-            .unwrap()
-            .contains("approved the hire: Sam")
-    );
-    assert_eq!(hq.wing_members().unwrap().len(), 4, "Kit, Rae, Zed, Sam");
-    // Up to five developers; the sixth is refused with the count.
-    for name in ["Lee", "Max"] {
-        hq.hire_by_owner(name, Role::Developer, "local", Some(t.kit))
-            .unwrap();
-    }
-    assert_eq!(hq.wing_members().unwrap().len(), 6);
-    let refused = ask(json!({ "role": "developer", "brain": "local", "why": "x", "evidence": [format!("task {}", t.plan.0)] })).unwrap_err();
-    assert!(
-        refused.contains(&format!(
-            "{MOST_DEVELOPERS} of its {MOST_DEVELOPERS} developers"
-        )),
-        "{refused}"
-    );
-    let refused = ask(json!({ "role": "lead", "brain": "claude-sonnet-5-5", "why": "x", "evidence": [format!("task {}", t.plan.0)] })).unwrap_err();
-    assert!(
-        refused.contains("below your own"),
-        "a lead asks for a role below: {refused}"
-    );
-    // The owner's own hiring is not limited; the screen says the agreed seats.
-    hq.hire_by_owner("Ash", Role::Developer, "claude-haiku-5-5", Some(t.kit))
-        .unwrap();
-    let snap = hq.snapshot().unwrap();
-    assert_eq!(snap["wing"]["developers"], 6);
-    assert_eq!(snap["wing"]["most_developers"], MOST_DEVELOPERS);
-    assert_eq!(snap["wing"]["leads"], json!([t.kit.0]));
-    // Outside the wing, Ada may ask without the wing's count; only a lead asks at all.
-    all_turns_over(&hq);
-    hq.add_task(
-        Author::Owner,
-        NewTask {
-            goal: t.lab,
-            project: None,
-            parent: None,
-            title: "Look over the lab".to_owned(),
-            description: String::new(),
-            assignee: Some(t.ada),
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        },
-    )
-    .unwrap();
-    let ada = turn(&hq, t.ada);
-    let said = use_tool(&hq, &ada, "request_hire", &json!({ "role": "developer", "brain": "claude-sonnet-5-5", "why": "the lab needs a second pair of hands", "evidence": [format!("task {}", t.plan.0)] })).unwrap();
-    assert!(said.contains("owner's desk"), "{said}");
-    // Ada's turn is over, and the Mac, which takes one turn at a time, is free for Rae's.
-    all_turns_over(&hq);
-    hq.wake(t.rae, Some(t.plan), WakeReason::Mentioned).unwrap();
-    let rae = turn(&hq, t.rae);
-    let refused = use_tool(
-        &hq,
-        &rae,
-        "request_hire",
-        &json!({ "role": "developer", "brain": "local", "why": "x", "evidence": ["task 1"] }),
-    )
-    .unwrap_err();
-    assert!(refused.contains("only a lead"), "{refused}");
-    let _ = t.dee;
-}
-
-#[test]
 fn the_wing_is_seeded_once_and_an_old_team_keeps_what_it_had() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
     let seeded = hq.seed_wing().unwrap().expect("seeded");
@@ -1684,7 +1227,11 @@ fn the_wing_is_seeded_once_and_an_old_team_keeps_what_it_had() {
     assert_eq!(hq.store().tasks().unwrap().len(), 1);
     // A team that already has the goal and a Kit (an older HQ) is completed, not doubled.
     let other = engine(&clock);
-    other.seat_ceo("Mara").unwrap();
+    {
+        let id = other.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        other.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let kit = other.hire("Kit", Role::Lead, 25, 2, 5).unwrap();
     let goal = other.set_goal(WING_GOAL, "mine", Author::Owner).unwrap();
     let seeded = other.seed_wing().unwrap().unwrap();

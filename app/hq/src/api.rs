@@ -1822,49 +1822,27 @@ mod tests {
             .iter()
             .filter_map(|t| t["name"].as_str())
             .collect();
-        // The demo's first turn is its lead's, who keeps the team's lessons and proposes
-        // projects, accepts tested work, hands a subordinate's task on, asks the owner to hire
-        // and reads a task's documents and the team's library, too, and asks for staff when a
-        // project has a backlog. Every member keeps a notebook of its own, too (ADR 0118):
-        // note, forget, read and check. Every member shapes the office (ADR 0119). And it
-        // reports on its area (ADR 0120); stuck work and huddles went with the ladder (ADR 0142). It reads the world, tells stories (a lesson is one now), confirms and
-        // retires what it stewards, and proposes canon (ADR 0122). It may play chess (ADR 0121),
-        // and no longer shapes the office (ADR 0142).
-        // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
-        // keeps (ADR 0126). It asks the record; peer help is absent while disabled.
-        // The quiz's answer belongs only to its own turn (ADR 0131, amended). And it
-        // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
-        // for work in its area (ADR 0133). On a work turn, it may take a stuck problem a model
-        // tier up (ADR 0139).
-        assert_eq!(names.len(), 35, "{names:?}");
-        assert!(names.contains(&"escalate"));
-        assert!(!names.contains(&"consult") && !names.contains(&"answer_consult"));
-        assert!(names.contains(&"recheck"));
-        assert!(names.contains(&"judge_finding"));
-        assert!(names.contains(&"narrow_criteria"));
-        assert!(!names.contains(&"office"), "the office is no longer shaped");
-        assert!(names.contains(&"chess"), "every member may play chess");
-        assert!(names.contains(&"tell_story") && names.contains(&"propose_project"));
-        assert!(!names.contains(&"note_lesson"));
-        for added in [
-            "read_world",
-            "verify_world",
-            "retire_world",
-            "propose_canon",
-        ] {
-            assert!(names.contains(&added), "{added}");
-        }
-        assert!(names.contains(&"report_area"));
-        for gone in ["decide_stuck", "huddle_view"] {
-            assert!(!names.contains(&gone), "{gone}");
-        }
-        assert!(names.contains(&"request_staff") && names.contains(&"note"));
-        assert!(
-            names.contains(&"read_doc"),
-            "every member reads the library"
+        // Every member is offered the same tools, and none of the company's (ADR 0142): the
+        // work's, the record's, chess, and the map.
+        assert_eq!(
+            names,
+            [
+                "my_turn",
+                "claim",
+                "post",
+                "set_status",
+                "create_task",
+                "ask_owner",
+                "check_back",
+                "recheck",
+                "read_document",
+                "read_doc",
+                "chess",
+                "read_world",
+                "ask_record",
+                "add_to_map"
+            ]
         );
-        assert!(names.contains(&"accept") && names.contains(&"hand_to"));
-        assert!(names.contains(&"request_hire") && names.contains(&"read_document"));
         assert!(
             !names.contains(&"report_usage"),
             "the relay charges for model use, not the worker"
@@ -3681,44 +3659,6 @@ mod tests {
         assert_eq!(st.hq.store().routines().unwrap().len(), 1);
     }
 
-    #[test]
-    fn with_the_demo_off_the_ceo_is_seated_once_and_its_daily_review_made_once() {
-        let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        let (seated, routine, planning) = crate::seed_ceo(&st.hq).unwrap();
-        let ceo = seated.expect("seated");
-        assert_eq!((routine, planning), (None, None), "no goal yet");
-        let goal = st
-            .hq
-            .set_goal("Keep the home lab healthy", "", Author::Owner)
-            .unwrap();
-        // The home lab's routine is still made, though the CEO's comes first here.
-        let (again, made, planning) = crate::seed_ceo(&st.hq).unwrap();
-        assert_eq!(again, None, "seated once");
-        let made = made.expect("its daily review");
-        let planning = planning.expect("its weekly planning");
-        assert!(crate::seed_routine(&st.hq).unwrap().is_some());
-        let routines = st.hq.store().routines().unwrap();
-        let review = routines.iter().find(|r| r.id == made).unwrap();
-        assert_eq!(review.title, "Daily review");
-        assert_eq!((review.goal, review.assignee), (goal, ceo));
-        assert_eq!(review.every_ms, 24 * 3_600_000);
-        assert!(!review.on_lab_trouble);
-        assert!(routines.iter().any(|r| r.assignee == lead));
-        let plan = routines.iter().find(|r| r.id == planning).unwrap();
-        assert_eq!(
-            (plan.title.as_str(), plan.assignee, plan.every_ms),
-            ("Planning", ceo, 7 * 24 * 3_600_000)
-        );
-        assert_eq!(crate::seed_ceo(&st.hq).unwrap(), (None, None, None), "once");
-        let members = st.hq.store().members().unwrap();
-        let mara = members.iter().find(|m| m.id == ceo).unwrap();
-        assert_eq!(
-            (mara.name.as_str(), mara.role, mara.brain.name()),
-            ("Mara", Role::Ceo, "claude-opus-5-5")
-        );
-    }
-
     #[tokio::test]
     async fn the_owner_renames_a_member_and_edits_the_house_log_through_the_node() {
         let st = state(false);
@@ -3972,7 +3912,11 @@ mod tests {
     #[tokio::test]
     async fn the_owner_furloughs_and_recalls_a_member_but_never_the_ceo_and_nobody_is_deleted() {
         let st = state(false);
-        let ceo = st.hq.seat_ceo("Jane Doe").unwrap().unwrap();
+        let ceo = {
+            let id = st.hq.hire("Jane Doe", Role::Ceo, 35, 1, 3).unwrap();
+            st.hq.set_brain(id, "claude-opus-5-5").unwrap();
+            id
+        };
         let dev = st
             .hq
             .hire("Richard Roe", Role::Developer, 40, 2, 0)
@@ -4155,7 +4099,11 @@ mod tests {
             (rae.role, rae.brain.name(), rae.reports_to),
             (Role::Developer, "claude-haiku-5-5", Some(MemberId(kit)))
         );
-        st.hq.seat_ceo("Mara").unwrap();
+        {
+            let id = st.hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+            st.hq.set_brain(id, "claude-opus-5-5").unwrap();
+            id
+        };
         let res = app
             .clone()
             .oneshot(hire(

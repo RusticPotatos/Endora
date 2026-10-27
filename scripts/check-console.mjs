@@ -678,12 +678,7 @@ if (failures.length) {
           waiting: { budget: 2, mac: 1, cap: 0, oldest_ms: 540000 }, talk_at: 3600000 },
         // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
         pool: { base: 2333333, topped_up: 2333333 },
-        teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }],
-        // Each area's measures (ADR 0120).
-        areas: [{ lead: 1, name: "Ada", members: [1, 2],
-                  today: { lab: { alarms: 2, outages: 1, closed_median_ms: 960000, repeats: 1 }, branches: null },
-                  week: { lab: { alarms: 5, outages: 2, closed_median_ms: 1200000, repeats: 3 }, branches: null } }] },
-      area_reports: [{ lead: 1, at: 7, moved: "#667 closed", stuck: "<img src=r onerror=alert(13)> gluetun", need: "", proposals: "pin gluetun" }],
+        teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }] },
       routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
                    on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false, project: 1 },
                  { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
@@ -789,7 +784,7 @@ if (failures.length) {
     '<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">0 landed this week</span>']) {
     if (!office.includes(said)) fail(`hq: the outcomes do not say ${said}`);
   }
-  if (office.indexOf("<h3>Outcomes</h3>") > office.indexOf("<th>Today</th><th>7 days</th>")) fail("hq: the outcomes do not head the card");
+  if (office.indexOf("<h3>Outcomes</h3>") < 0 || office.indexOf("<h3>Outcomes</h3>") > office.indexOf("<h3>The team's turns</h3>")) fail("hq: the outcomes do not head the card");
   if (office.includes("$0.00 each")) fail("hq: nothing landed is shown as costing nothing");
   {
     const landed = runInContext(`(() => { const o = HQ.snap.scorecard.outcomes, kept = o.week.landed; o.week.landed = 3;
@@ -1074,11 +1069,6 @@ if (failures.length) {
     if (editing.includes("<img src=z") || editing.includes("<img src=s")) fail("hq: a goal's words became markup while edited");
     runInContext('HQ.more = {};', context);
   }
-  // Each area's measures and its lead's latest report, the report's words text.
-  for (const said of ["Ada's area", "2 alarms · 1 outages over 10 min · closed in 16 min · 1 repeats within 24 h", "pin gluetun"]) {
-    if (!office.includes(said)) fail(`hq: the scorecard's areas do not say ${said}`);
-  }
-  if (office.includes("<img src=r") || !office.includes("&lt;img src=r")) fail("hq: a lead's report became markup");
   if (office.includes("hq:decide:16:approve") || office.includes('id="hq-answer-16"')) fail("hq: a notice was offered a decision");
   // The wing (ADR 0115): a hire request hires or declines; a push the node can make is approved
   // or declined; one it cannot is only seen, and offers the bundle; the hire form is there.

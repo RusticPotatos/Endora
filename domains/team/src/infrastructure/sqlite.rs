@@ -3136,16 +3136,6 @@ CREATE TABLE IF NOT EXISTS check_backs (
             Noon,
             crate::application::Settings::default(),
         );
-        // Whom each reports to, filled in as each would have been hired.
-        assert_eq!(hq.backfill_reports_to(), Ok(3));
-        let reports: Vec<Option<i64>> = hq
-            .store()
-            .members()
-            .unwrap()
-            .iter()
-            .map(|m| m.reports_to.map(|r| r.0))
-            .collect();
-        assert_eq!(reports, [None, Some(1), Some(2), Some(1)]);
         let made = hq.migrate_projects().unwrap().expect("made");
         assert_eq!(hq.migrate_projects(), Ok(None), "once");
         let projects = hq.store().projects().unwrap();

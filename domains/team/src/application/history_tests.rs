@@ -40,7 +40,11 @@ pub(super) fn engine(clock: &Hands) -> Hq<'_> {
 
 /// Mara the CEO, Ada the lead and Linus the developer under her, all on the house's model.
 fn team(hq: &Hq<'_>) -> Team {
-    hq.seat_ceo("Mara").unwrap().unwrap();
+    {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
     hq.set_reports_to(linus, ada).unwrap();

@@ -49,7 +49,11 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// Mara the CEO, Ada the lead on Sonnet, Linus a developer on the house's model, and Dee the
 /// tester, who reports to Ada.
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
     let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
@@ -122,11 +126,6 @@ fn reading(hq: &Hq<'_>, context: &RunContext) -> String {
         )
         .unwrap();
     format!("r{id}")
-}
-
-fn handover() -> Value {
-    json!({ "done": "The proxy config is read.", "not_done": "The restart.",
-            "next": "Restart it after 22:00.", "watch_out": "The VPN drops for a minute." })
 }
 
 #[test]
@@ -322,72 +321,6 @@ fn the_export_reads_newest_first_and_each_page_once_with_the_screens_role_names(
     assert!(md.contains("- Ada (Lead, "), "{md}");
     assert!(md.contains("- Linus (Developer, "), "{md}");
     assert!(md.contains("- Dee (Tester, "), "{md}");
-}
-
-#[test]
-fn every_briefing_says_what_day_it_is_and_a_year_out_on_todays_date_is_corrected() {
-    let clock = Hands(AtomicI64::new(OCT_18));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    for (member, who) in [
-        (t.ceo, "Mara"),
-        (t.lead, "Ada"),
-        (t.dev, "Linus"),
-        (t.tester, "Dee"),
-    ] {
-        task_for(&hq, t.goal, member, "Look");
-        let context = turn(&hq, member);
-        let told = &context.told;
-        assert!(
-            told.contains(&format!("You are {who}, the team's"))
-                && told.contains(" Today is Sun 18 Oct 2026.\n"),
-            "{told}"
-        );
-        // The turn is over before the next member's: the Mac takes one turn at a time.
-        end(&hq, &clock, &context);
-    }
-    // The CEO writes a house note, a section, and a note, each starting with last year's date.
-    task_for(&hq, t.goal, t.ceo, "Review");
-    let mara = turn(&hq, t.ceo);
-    let fresh = reading(&hq, &mara);
-    use_tool(
-        &hq,
-        &mara,
-        "note_house",
-        &json!({ "entry": "2025-10-18: The NAS is fine." }),
-    )
-    .unwrap();
-    use_tool(
-        &hq,
-        &mara,
-        "write_world",
-        &json!({ "heading": "Backups", "headline": "18 Oct 2025: Backups run at 03:00.",
-                 "body": "2025-10-17: nightly", "stage": "insight", "warrant": "read",
-                 "evidence": [fresh.clone()] }),
-    )
-    .unwrap();
-    use_tool(
-        &hq,
-        &mara,
-        "note",
-        &json!({ "text": "Oct 18, 2025 the NAS is fine", "evidence": [fresh] }),
-    )
-    .unwrap();
-    let section = &hq.store().sections().unwrap()[0];
-    assert_eq!(section.headline, "18 Oct 2026: Backups run at 03:00.");
-    assert_eq!(section.body, "2026-10-17: nightly");
-    assert_eq!(
-        hq.notebook(t.ceo).unwrap()[0].text,
-        "Oct 18, 2026 the NAS is fine"
-    );
-    let corrected = hq
-        .store()
-        .events_after(0)
-        .unwrap()
-        .into_iter()
-        .filter(|e| e.data["what"] == "year corrected")
-        .count();
-    assert_eq!(corrected, 4, "each correction is recorded");
 }
 
 #[test]
@@ -756,129 +689,6 @@ fn a_story_is_told_in_its_tellers_scope_and_cited_by_its_handle() {
         read.contains("Story passed-on-faith (Ada's area, observation)"),
         "{read}"
     );
-}
-
-#[test]
-fn work_is_handed_on_only_with_a_handover_note_and_the_next_turn_starts_from_it() {
-    let clock = Hands(AtomicI64::new(OCT_18));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let rae = hq.hire("Rae", Role::Developer, 40, 2, 5).unwrap();
-    let task = task_for(&hq, t.goal, t.dev, "Fix the proxy");
-    let linus = turn(&hq, t.dev);
-    end(&hq, &clock, &linus);
-    task_for(&hq, t.goal, t.lead, "Plan");
-    let ada = turn(&hq, t.lead);
-    let hand = |with: Option<Value>| {
-        let mut args = json!({ "task": task.0, "to": "Rae", "why": "Linus is busy" });
-        if let Some(note) = with {
-            args["handover"] = note;
-        }
-        use_tool(&hq, &ada, "hand_to", &args)
-    };
-    assert!(hand(None).unwrap_err().contains("handover note"));
-    let mut half = handover();
-    half["watch_out"] = json!("");
-    assert!(hand(Some(half)).unwrap_err().contains("handover note"));
-    hand(Some(handover())).unwrap();
-    let kept = hq.store().handovers(task).unwrap();
-    assert_eq!(kept.len(), 1);
-    assert_eq!((kept[0].from, kept[0].to), (Some(t.dev), Some(rae)));
-    end(&hq, &clock, &ada);
-
-    let rae_turn = turn(&hq, rae);
-    assert_eq!(rae_turn.task, Some(task));
-    let briefed = hq.briefed(rae_turn.run).unwrap().unwrap();
-    assert_eq!(briefed.situation, Situation::Handover);
-    let without_map = crate::domain::map::without_map(&rae_turn.told);
-    let first = without_map.lines().nth(1).unwrap();
-    assert!(
-        first.starts_with("Handed over by Ada on #")
-            && first.contains("Watch out: The VPN drops for a minute."),
-        "the note comes first: {}",
-        rae_turn.told
-    );
-    assert!(briefed.briefed.contains(&"handover".to_owned()));
-}
-
-#[test]
-fn each_turn_records_its_situation_and_a_recall_starts_with_what_changed() {
-    let clock = Hands(AtomicI64::new(OCT_18));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let task = task_for(&hq, t.goal, t.dev, "Look at the feed");
-    let first = turn(&hq, t.dev);
-    assert_eq!(
-        hq.briefed(first.run).unwrap().unwrap().situation,
-        Situation::Fresh
-    );
-    end(&hq, &clock, &first);
-    hq.post(Author::Owner, task, "Anything?").unwrap();
-    let again = turn(&hq, t.dev);
-    assert_eq!(
-        hq.briefed(again.run).unwrap().unwrap().situation,
-        Situation::Continuing
-    );
-    end(&hq, &clock, &again);
-    // A day later on the same task: after a gap.
-    clock.0.fetch_add(DAY, Ordering::SeqCst);
-    hq.post(Author::Owner, task, "And now?").unwrap();
-    let later = turn(&hq, t.dev);
-    assert_eq!(
-        hq.briefed(later.run).unwrap().unwrap().situation,
-        Situation::AfterGap
-    );
-    assert!(
-        later.told.contains("What changed since 18 Oct")
-            || later.told.contains("changed since 18 Oct"),
-        "{}",
-        later.told
-    );
-    end(&hq, &clock, &later);
-    hq.drop_task(task).unwrap();
-
-    // Furloughed for a week, and recalled.
-    hq.furlough(t.dev).unwrap();
-    clock.0.fetch_add(7 * DAY, Ordering::SeqCst);
-    task_for(&hq, t.goal, t.ceo, "Weekly");
-    let mara = turn(&hq, t.ceo);
-    use_tool(
-        &hq,
-        &mara,
-        "note_house",
-        &json!({ "entry": "Sonarr moved to the new disk." }),
-    )
-    .unwrap();
-    end(&hq, &clock, &mara);
-    hq.recall(t.dev).unwrap();
-    task_for(&hq, t.goal, t.dev, "Back to work");
-    let back = turn(&hq, t.dev);
-    let briefed = hq.briefed(back.run).unwrap().unwrap();
-    assert_eq!(briefed.situation, Situation::Recalled);
-    // The map opens every briefing (ADR 0126); what the situation is about follows it.
-    let after_name = crate::domain::map::without_map(&back.told)
-        .lines()
-        .nth(1)
-        .unwrap()
-        .to_owned();
-    assert_eq!(after_name, "What changed since 19 Oct:", "{}", back.told);
-    assert!(
-        back.told.contains("Mara: Sonarr moved to the new disk."),
-        "{}",
-        back.told
-    );
-    assert!(
-        back.told
-            .contains("You were furloughed from 19 Oct to 26 Oct; read your notes first.")
-    );
-    assert!(
-        briefed.dropped.is_empty(),
-        "nothing was left out: {briefed:?}"
-    );
-    assert!(briefed.tokens <= briefed.budget);
-    // The replay shows it.
-    let replay = hq.replay_run(back.run).unwrap().shown();
-    assert_eq!(replay["briefed"]["situation"], "recalled");
 }
 
 #[test]

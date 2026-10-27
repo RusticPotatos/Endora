@@ -7,30 +7,6 @@ Feature: What the team's work came to
 
   # --- A change landed ---------------------------------------------------------------------
 
-  Scenario: A change has landed only once the node pushed what the owner approved
-    Given Mara is the CEO
-    And Ada is the lead
-    And Dee is the tester
-    And the goal "Keep the home lab healthy"
-    And the engineering wing
-    And Kit's planning turn is over
-    And Kit hands Rae the task "Tidy the deluge role" in the wing
-    When Rae's turn starts
-    And Rae submits the branch "hq/task-2-tidy-the-deluge-role"
-    And the check of "hq/task-2-tidy-the-deluge-role" passes
-    Then the outcomes say 0 changes landed this week
-    And the outcomes give no cost for a landed change
-    And the outcomes say 1 branch submitted and 1 check passed this week
-    When Rae submits "Tidy the deluge role" for review
-    And Dee passes "Tidy the deluge role" on the check and her own reading
-    And Kit accepts "Tidy the deluge role"
-    Then the owner's desk holds a push of "hq/task-2-tidy-the-deluge-role"
-    And the outcomes say 0 changes landed this week
-    When the owner approves the push
-    Then the outcomes say 0 changes landed this week
-    When the node says it pushed: "Pushed hq/task-2-tidy-the-deluge-role to the fork: merge it on GitHub."
-    Then the outcomes say 1 change landed this week
-
   Scenario: Money spent with nothing landed has no cost for a change
     Given Ada is the lead
     And Linus is the developer

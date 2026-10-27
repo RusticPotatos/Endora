@@ -30,24 +30,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         })
     }
 
-    /// What a turn asked for by `reason`, about `task`, for `member`, needs: decided here from
-    /// why and what it is about, and never by the member.
-    pub(super) fn need_of_wake(
-        &self,
-        member: &Member,
-        task: Option<TaskId>,
-        reason: WakeReason,
-    ) -> Done<Need> {
-        // The leads' standing reviews are judgment whatever woke them; the CEO's are by role.
-        let a_review = match task {
-            Some(task) if member.role == Role::Lead => self.report_task_ids()?.contains(&task),
-            _ => false,
-        };
+    /// What a turn asked for by `reason`, for `member`, needs: decided here from why it was
+    /// asked, and never by the member.
+    pub(super) fn need_of_wake(&self, member: &Member, reason: WakeReason) -> Done<Need> {
         // A developer in the engineering wing builds with the repo's tools, and its lead plans
         // that code.
         let in_the_wing = matches!(member.role, Role::Developer | Role::Lead)
             && self.wing_members()?.contains(&member.id);
-        Ok(Need::of(reason, member.role, a_review, in_the_wing))
+        Ok(Need::of(reason, member.role, false, in_the_wing))
     }
 
     /// What a queued turn needs: the strictest of the wakes that asked for it, its own and every

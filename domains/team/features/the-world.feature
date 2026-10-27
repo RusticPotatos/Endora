@@ -12,19 +12,6 @@ Feature: The team's world: stages, stories and situations
     And Dee is the tester
     And the goal "Keep the home lab healthy"
 
-  Scenario: The house log becomes the house page's timeline, and nothing is lost
-    Given the house log has the line "- 15 Oct: The NAS has 16 GB."
-    And the house log has the line "- 16 Oct 2026: Sonarr may have 2 GB."
-    When HQ starts with the world
-    Then the house page's timeline says "The NAS has 16 GB." on 15 Oct
-    And the house page's timeline says "Sonarr may have 2 GB." on 16 Oct
-    And the house log still says "Sonarr may have 2 GB."
-    When HQ starts with the world again
-    Then the house page's timeline has 2 lines
-    Given Mara has the task "Review the house"
-    When Mara notes on the house page "Backups moved to 04:00."
-    Then the house page's timeline says "Backups moved to 04:00." on 17 Oct
-
   Scenario: A lesson the tester noted is a story to retell, and its handle stands in for it
     Given the goal's notes hold the lesson "Closed too soon: the alarm came back two hours later." noted by Dee on 10 Oct
     When HQ starts with the world
@@ -69,38 +56,6 @@ Feature: The team's world: stages, stories and situations
     And Ada's briefing says "[unconfirmed since 17 Oct]"
     When Ada confirms "story:closed-too-soon" on a fresh reading
     Then the World shows "closed-too-soon" as "insight"
-
-  Scenario: A recalled member starts with what changed, and nothing is cut unnamed
-    Given Rae is the developer
-    When the owner furloughs Rae
-    And 7 days pass
-    Given Mara has the task "The weekly look"
-    When Mara notes on the house page "Sonarr moved to the new disk."
-    And the owner recalls Rae
-    Given Rae has the task "Back to work"
-    When Rae's turn starts
-    Then Rae's turn is recorded as "recalled"
-    And Rae's briefing opens with "What changed since 17 Oct:"
-    And Rae's briefing says "Mara: Sonarr moved to the new disk."
-    And Rae's briefing says "You were furloughed from 17 Oct to 24 Oct; read your notes first."
-    And nothing was left out of Rae's briefing unnamed
-
-  Scenario: Work is handed on only with a handover note, and the next turn starts from it
-    Given Zed is the developer
-    And Rae is the developer
-    And Zed has the task "Fix the proxy"
-    When Zed's turn starts
-    And Zed's turn ends
-    Given Ada has the task "Plan the week"
-    Then Ada's turn starts on "Plan the week"
-    When Ada hands "Fix the proxy" to Rae without a handover note
-    Then it is refused for "handover note"
-    When Ada hands "Fix the proxy" to Rae, saying done "The config is read.", not done "The restart.", next "Restart after 22:00.", watch out "The VPN drops for a minute."
-    And Ada's turn ends
-    Then Rae's turn starts on "Fix the proxy"
-    And Rae's turn is recorded as "handover"
-    And Rae's briefing opens with "Handed over by Ada on #"
-    And Rae's briefing says "Watch out: The VPN drops for a minute."
 
   Scenario: The NAS model's briefing keeps to its budget, and says what it left out
     Given the node says the Mac is not ready: "owner active"

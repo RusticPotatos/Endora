@@ -49,7 +49,11 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// Mara the CEO; Ada and Bo, two leads; Linus a developer and Dee the tester, both under Ada;
 /// one goal and the project "Upkeep", Ada's.
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let bo = hq.hire("Bo", Role::Lead, 25, 2, 3).unwrap();
     let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
@@ -830,40 +834,6 @@ fn a_cited_address_that_does_not_resolve_is_a_broken_road_found_by_code() {
 fn propose(page: &str, heading: &str, task: TaskId) -> Value {
     json!({ "page": page, "heading": heading, "headline": format!("{heading}: how it goes"),
             "body": "Nightly, at 03:00.", "evidence": [format!("task {}", task.0)] })
-}
-
-/// A claim the owner retracted is not proposed to a page again (ADR 0124), in the proposer's own
-/// words around it; the refusal says when it was retracted, and nothing is proposed.
-#[test]
-fn a_retracted_claim_is_not_proposed_to_a_page_again() {
-    let clock = Hands(AtomicI64::new(OCT_18));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    hq.migrate_map().unwrap();
-    let page = area(t.ada);
-    let (linus, task) = working(&hq, t.goal, t.linus, "Fix the proxy");
-    use_tool(
-        &hq,
-        &linus,
-        "note",
-        &json!({ "text": "Backups Backups: how it goes Nightly, at 03:00.",
-                 "evidence": [format!("task {}", task.0)] }),
-    )
-    .unwrap();
-    let wrong = hq.notebook(t.linus).unwrap()[0].id;
-    hq.retract(&format!("note:{wrong}")).unwrap();
-    let refused = use_tool(
-        &hq,
-        &linus,
-        "propose_world",
-        &propose(&page, "Backups", task),
-    )
-    .unwrap_err();
-    assert!(
-        refused.contains("this says again what was retracted on"),
-        "{refused}"
-    );
-    assert!(hq.store().proposals().unwrap().is_empty());
 }
 
 #[test]

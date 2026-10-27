@@ -209,3 +209,17 @@ it). Nothing else in the plan waits on the owner.
   - The input lineage stays, always on.
   - The tables go after the release snapshot, which is their archive.
   - The team context is about 96,300 lines.
+  - Released ace5bc11; the gate passed with 4,469 tests.
+- **Step 8, part B, office proposals and votes deleted** (released f6b6e062): the office keeps its
+  layout, ping-pong, pool and chess; proposals, votes, undo, reset and veto go, with their tables.
+- **Step 3's exit check met in production:** Bo's stalls on #855 climbed it a rank, to Rae (the
+  Mac, rank 4). No desk card, no huddle.
+- **Step 8, parts C and D, the stuck ladder, huddles and the coordination guards deleted**
+  (−6,974 lines):
+  - In the loops a stall is one of the item's failures. Outside them, parked work is marked
+    stuck once it has sat as long as stranded work, and keeps its finding.
+  - Gone: the budget of talk, the ceremony, carousel, redundant-wake and fence-push guards,
+    `decide_stuck`, `huddle_view`, the guard modes and the CEO's rescue count.
+  - Kept: the stuck and same-ask findings, the "woken for nothing" refusal (it saves money),
+    the runaway tripwire and the day's cap on the house's models, and the talk-against-work line.
+  - The team context is about 88,200 lines.

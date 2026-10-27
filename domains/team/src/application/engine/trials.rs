@@ -30,7 +30,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// the turn waits for it rather than going elsewhere.
     fn turn_brain_of(&self, member: &crate::domain::Member) -> Done<&'static str> {
         use crate::domain::turns::{Allowed, TurnKind};
-        let need = self.need_of_wake(member, None, crate::domain::WakeReason::Assigned)?;
+        let need = self.need_of_wake(member, crate::domain::WakeReason::Assigned)?;
         if need.kind == TurnKind::Judgment {
             return Ok(member.brain.name());
         }

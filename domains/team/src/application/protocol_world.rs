@@ -64,14 +64,6 @@ pub fn handover_arg(args: &Value) -> Result<Option<HandoverNote>, String> {
     .map_err(|e| e.to_string())
 }
 
-/// The `handover` argument, which must be there.
-///
-/// # Errors
-/// [`WorldRefusal::HandoverNeeded`] when it is not; what the note refuses.
-pub fn handover_needed(args: &Value) -> Result<HandoverNote, String> {
-    handover_arg(args)?.ok_or_else(|| WorldRefusal::HandoverNeeded.to_string())
-}
-
 /// The tool a member answers the nightly quiz on its map with. Offered in the quiz's own turn
 /// and in no other (ADR 0131, amended): a tool only one turn in a night can use is not one more
 /// for every other turn to choose among.

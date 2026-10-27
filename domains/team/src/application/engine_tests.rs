@@ -121,11 +121,7 @@ fn an_assigned_task_queues_a_turn_and_the_tick_starts_it_with_its_why() {
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].member, t.dev);
     assert_eq!(started[0].task, Some(task));
-    assert!(
-        started[0]
-            .told
-            .contains("You are Linus, the team's developer.")
-    );
+    assert!(started[0].told.contains("You are Linus, rank "));
     assert!(
         started[0]
             .told
@@ -1733,7 +1729,11 @@ fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
 fn a_members_daily_share_is_weighted_by_its_brains_price() {
     let clock = hands();
     let hq = hq(&clock, 8);
-    hq.seat_ceo("Mara").unwrap();
+    {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let on = |name: &str, role: Role, brain: &str| {
         let id = hq.hire(name, role, role.share(), 2, 0).unwrap();
         hq.set_brain(id, brain).unwrap();
