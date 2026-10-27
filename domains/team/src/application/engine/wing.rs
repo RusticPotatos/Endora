@@ -1,15 +1,14 @@
 //! The engineering wing and the git flow (ADR 0115): a submitted branch recorded with its
 //! document and a check job queued for the dev node; the check's result as a receipt that
-//! wakes the submitter and the tester (or sends failed work back); the owner's push offered on
-//! the desk once the lead accepts, and what came of it; hiring by the owner, a lead's request
-//! to hire within the wing's seats; the wing seeded once; and documents members read. Every
-//! rule is code: branch names, seats, roles, who is woken, what closes.
+//! wakes the submitter (or sends failed work back); the owner's push offered on the desk once
+//! the work passes review, and what came of it; hiring by the owner; the wing seeded once; and
+//! documents members read. Every rule is code: branch names, who is woken, what closes.
 
 use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, DeskItem, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::wing::{self, HireRequest, WING_GOAL, WING_NOTE, WING_PROJECT};
+use crate::domain::wing::{self, WING_GOAL, WING_NOTE, WING_PROJECT};
 use crate::domain::{
     Brain, Branch, CallReceipt, Check, Criterion, Document, EventKind, GoalId, GoalStatus,
     MemberId, Priority, ProjectId, Refusal, Role, RunId, TaskId, TaskStatus, WakeReason,
@@ -951,37 +950,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
-    /// The owner's decision on a hire request (the lock held): approved, the member joins,
-    /// reporting to the lead who asked; either way the lead hears in the task's thread.
-    pub(super) fn decide_hire(&self, found: &DeskItem, approve: bool) -> Done<()> {
-        let request = HireRequest::read(&found.text).ok_or(EngineError::Unknown("hire request"))?;
-        let said = if approve {
-            let id = self.hire_held_lock(
-                &request.name,
-                request.role,
-                &[request.brain.name()],
-                Some(request.reports_to),
-                "owner, asked by a lead",
-            )?;
-            format!(
-                "The owner approved the hire: {} ({}) joins as {} on {}, reporting to you.",
-                request.name,
-                id,
-                request.role.name(),
-                request.brain.label()
-            )
-        } else {
-            format!("The owner declined hiring {}.", request.name)
-        };
-        if let Some(task) = found.task {
-            self.post_held_lock(Author::Owner, task, &said)?;
-            if let Some(asker) = found.member {
-                self.wake_held_lock(asker, Some(task), WakeReason::ProposalDecided)?;
-            }
-        }
-        Ok(())
-    }
-
     // ---- the wing, seeded once (ADR 0115) --------------------------------------------------
 
     /// Seeds the wing, once (a setting remembers it), for HQ started with the demo off: the
@@ -1208,8 +1176,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok((json!(documents), json!(branches)))
     }
 
-    /// The wing as the HQ screen shows it: its goal, its projects' leads, its members and the
-    /// agreed seats.
+    /// The wing as the HQ screen shows it: its goal, its projects' leads and its members.
     pub(super) fn wing_shown(&self) -> Done<serde_json::Value> {
         let members = self.store.members()?;
         let leads = self.wing_leads()?;
@@ -1220,9 +1187,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "goal": WING_GOAL,
             "leads": leads.iter().map(|l| l.0).collect::<Vec<_>>(),
             "members": wing.iter().map(|m| m.id.0).collect::<Vec<_>>(),
-            "developers": wing.iter().filter(|m| m.role == Role::Developer).count(),
-            "most_developers": wing::MOST_DEVELOPERS,
-            "most_leads": wing::MOST_LEADS,
         }))
     }
 }

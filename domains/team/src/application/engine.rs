@@ -3382,35 +3382,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("approval", "decline") => {
                 self.settle_unrun(found, "The owner declined this, and it was not run")?;
             }
-            // Work sent back three times is the owner's to advance (ADR 0114).
-            ("rounds", "accept") => {
-                let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
-                if task.status == TaskStatus::InReview {
-                    self.post_held_lock(Author::Owner, task.id, "The owner accepts this as done.")?;
-                    self.store.set_task_status(task.id, TaskStatus::Done)?;
-                    self.emit_status(&task, TaskStatus::Done)?;
-                    self.after_finishing(&task)?;
-                }
-            }
-            ("rounds", "send_back") => {
-                let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
-                if task.status == TaskStatus::InReview {
-                    self.store.set_task_status(task.id, TaskStatus::Doing)?;
-                    self.post_held_lock(
-                        Author::Owner,
-                        task.id,
-                        "The owner sends this back: put it right and submit it again.",
-                    )?;
-                    self.emit_status(&task, TaskStatus::Doing)?;
-                    if let Some(member) = task.owner.or(task.assignee) {
-                        self.wake_held_lock(member, Some(task.id), WakeReason::SentBack)?;
-                    }
-                }
-            }
-            // A piece proposed for canon (ADR 0122): only the owner makes it so.
-            ("canon", "approve" | "decline") => self.decide_canon(found, decision == "approve")?,
-            // The wing (ADR 0115): a lead's request to hire, and a branch to push.
-            ("hire", "approve" | "decline") => self.decide_hire(found, decision == "approve")?,
+            // The wing (ADR 0115): a branch to push.
             ("push", "approve" | "decline") => self.decide_push(found, decision == "approve")?,
             // The check after a deploy (ADR 0115, amended): the owner's word that it is deployed.
             ("deploy", "deployed" | "not_deploying") => {

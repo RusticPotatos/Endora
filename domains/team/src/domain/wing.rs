@@ -1,20 +1,13 @@
 //! The engineering wing (ADR 0115): the team that works on the lab's ansible-nas fork through
-//! branches the owner alone pushes. Its seats are a rule in code (one lead on Sonnet, at most
-//! [`MOST_DEVELOPERS`] developers on Haiku or the house's model); a hire a lead asks for is a
-//! request on the owner's desk, written and read here; and the records the flow leaves on a
+//! branches the owner alone pushes. The records the flow leaves on a
 //! task (a document, a submitted branch, a check of it) are plain data.
 
-use super::brain::Brain;
-use super::work::{MemberId, Millis, Role, RunId, TaskId};
+use super::work::{MemberId, Millis, RunId, TaskId};
 
 /// The owner's goal the wing works towards.
 pub const WING_GOAL: &str = "Improve the lab";
 /// The wing's first project, under that goal.
 pub const WING_PROJECT: &str = "ansible-nas clean-up";
-/// The most developers the wing seats.
-pub const MOST_DEVELOPERS: usize = 5;
-/// The most leads the wing seats.
-pub const MOST_LEADS: usize = 1;
 /// Where the team's branches live: under `hq/`, and nowhere else (the node enforces it).
 pub const BRANCH_PREFIX: &str = "hq/";
 
@@ -32,12 +25,10 @@ pub const WING_NOTE: &str = "The wing's job is the owner's public ansible-nas fo
     dev node; the result comes back as a receipt. The fork's develop already has findings, so \
     the check judges your branch against develop: it passes when no check is worse than it \
     is on develop, and the receipt says both. Then submit the task for review (set_status \
-    in_review, citing the receipts): Dee, the tester, checks the branch out and reads the diff \
-    and the check; the lead \
-    accepts. The owner alone pushes an accepted branch to the fork and merges it there: HQ \
-    never pushes on its own, never opens a pull request, never merges. The lead plans the \
-    clean-up, hands developers one branch each, and reviews; a developer reads the fork's docs \
-    (ansible_nas_doc) before changing a role.";
+    in_review, citing the receipts): the member one rank up reads the diff and the check, and \
+    passes it or sends it back. The owner alone pushes a passed branch to the fork and merges \
+    it there: HQ never pushes on its own, never opens a pull request, never merges. One branch \
+    per item; read the fork's docs (ansible_nas_doc) before changing a role.";
 
 /// What every member of the wing is told about the fork's own rules (ADR 0116).
 pub const FORK_RULES: &str = "The fork's own AGENTS.md, when it exists, is the repo's rules; \
@@ -47,59 +38,6 @@ pub const FORK_RULES: &str = "The fork's own AGENTS.md, when it exists, is the r
 pub const FORK_RULES_LEAD: &str = "The fork's own AGENTS.md, when it exists, is the repo's \
     rules; propose one if missing. Until it exists it is the first branch to propose: the draft \
     is docs/drafts/ansible-nas-AGENTS.md in Endora's library (read_doc).\n";
-
-/// A hire a lead asks the owner for, as it is written on the desk and read back from it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HireRequest {
-    /// The new member's name.
-    pub name: String,
-    /// Its role.
-    pub role: Role,
-    /// What it thinks with.
-    pub brain: Brain,
-    /// Whom it reports to: the lead who asked.
-    pub reports_to: MemberId,
-    /// Why, in the lead's words.
-    pub why: String,
-}
-
-impl HireRequest {
-    /// The first line of the desk item, which [`Self::read`] reads back; the rest is the
-    /// lead's why and evidence, for the owner.
-    #[must_use]
-    pub fn write(&self, asker: &str, evidence: &str) -> String {
-        format!(
-            "Hire {} as {} on {}, reporting to member {}.\n{asker} asks: {}\nEvidence: {evidence}",
-            self.name,
-            self.role.name(),
-            self.brain.name(),
-            self.reports_to.0,
-            self.why.trim()
-        )
-    }
-
-    /// The request from a desk item's text, if it is one.
-    #[must_use]
-    pub fn read(text: &str) -> Option<Self> {
-        let first = text.lines().next()?.strip_prefix("Hire ")?;
-        let (name, rest) = first.split_once(" as ")?;
-        let (role, rest) = rest.split_once(" on ")?;
-        let (brain, rest) = rest.split_once(", reporting to member ")?;
-        let to = rest.strip_suffix('.')?.parse::<i64>().ok()?;
-        let why = text
-            .lines()
-            .nth(1)
-            .and_then(|l| l.split_once(" asks: "))
-            .map_or("", |(_, why)| why);
-        Some(Self {
-            name: name.to_owned(),
-            role: Role::from_name(role)?,
-            brain: Brain::from_name(brain)?,
-            reports_to: MemberId(to),
-            why: why.to_owned(),
-        })
-    }
-}
 
 /// A document on a task (ADR 0115): a branch's diff, a check's report. Read by the tester,
 /// the lead and the owner; never changed.

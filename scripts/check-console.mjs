@@ -535,7 +535,7 @@ if (failures.length) {
                 { id: 7, name: "Rae", role: "developer", look: 2, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [{ run: 30, task: 9 }], reports_to: 6, brain: "claude-haiku-5-5", brains: [] },
                 // Elastic staffing (ADR 0118): a developer on furlough, who keeps her place.
                 { id: 8, name: "Zed", role: "developer", look: 4, paused: false, furloughed: true, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], reports_to: 6, brain: "claude-haiku-5-5", brains: [] }],
-      wing: { goal: "Improve the lab", leads: [6], members: [6, 7], developers: 1, most_developers: 5, most_leads: 1 },
+      wing: { goal: "Improve the lab", leads: [6], members: [6, 7] },
       house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
       // The team's world (ADR 0122): sections by stage, the timeline and the derived pages;
       // every word a member's, so every word escaped.
@@ -1001,7 +1001,6 @@ if (failures.length) {
   for (const id of ["hq-hire-name", "hq-hire-role", "hq-hire-work", "hq-hire-judgment", "hq-hire-to"]) {
     if (!office.includes(`id="${id}"`)) fail(`hq: the hire form lacks ${id}`);
   }
-  if (!office.includes("1 of 5 developer seats are taken")) fail("hq: the wing's seats are not said");
   // A member out for the day (ADR 0113): an allowance with an amount box, or tomorrow; the
   // text a model-free card shows is still text.
   for (const act of ["hq:decide:27:approve", "hq:decide:27:decline"]) {

@@ -19,11 +19,6 @@ use crate::domain::{EventKind, Member, MemberId, Millis, Ref, Refusal, RunId};
 /// How many lessons a lead is asked to retell at a time.
 pub const RETELL_AT_ONCE: usize = 3;
 
-/// A desk item proposing canon names its address here.
-fn canon_key(item: crate::domain::DeskId) -> String {
-    format!("canon_proposed:{}", item.0)
-}
-
 /// A section a steward writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldWrite {
@@ -537,29 +532,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.mark_progress(writer.id, task)?;
         }
         Ok(address)
-    }
-
-    /// The owner's word on a proposal for canon, from the desk.
-    pub(super) fn decide_canon(
-        &self,
-        item: &crate::application::ports::DeskItem,
-        yes: bool,
-    ) -> Done<()> {
-        let address = self
-            .store
-            .setting(&canon_key(item.id))?
-            .ok_or(EngineError::Unknown("proposal for canon"))?;
-        if !yes {
-            return self.emit(
-                EventKind::WorldChanged,
-                json!({ "what": "not_canon", "address": address, "by": "owner" }),
-            );
-        }
-        let proposer = match item.member {
-            Some(m) => self.member(m)?.name,
-            None => "a member".to_owned(),
-        };
-        self.promote_held_lock(&address, &format!("on {proposer}'s proposal"))
     }
 
     /// The owner makes a section or a story canon, from the World card or the desk. It keeps

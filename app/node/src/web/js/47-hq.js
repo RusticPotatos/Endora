@@ -1541,8 +1541,6 @@ function viewHQ() {
   const log = HQ.log.slice(0, HQ.logShown).map(hqLogLine).join("");
   const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
   const older = olderLeft ? `<div class="hq-row"><button class="hq-btn" data-act="hq:logolder:0:more"${HQ.logBusy ? " disabled" : ""}>${HQ.logBusy ? "Loading…" : "Show older"}</button></div>` : "";
-  const wing = s.wing || {};
-  const wingLine = wing.goal ? `<p class="hq-note">The engineering wing (goal "${esc(wing.goal)}") seats ${wing.most_leads || 1} lead on Claude Sonnet and at most ${wing.most_developers || 5} developers on Claude Haiku or the house's model when its lead asks to hire: ${wing.developers || 0} of ${wing.most_developers || 5} developer seats are taken. Your own hiring here is not limited.</p>` : "";
   const team = hqRoster(s);
   return `<div class="hq" data-tab="${esc(hqTab())}">
     <div class="hq-bar">
@@ -1571,7 +1569,7 @@ function viewHQ() {
         ${hqDigest(s)}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
       ${hqPanel("team", `
-        <section class="hq-card"><h2>Team</h2>${team}${wingLine}</section>
+        <section class="hq-card"><h2>Team</h2>${team}</section>
         ${hqMacCard(s)}
         ${hqOffice(s)}
         ${hqWorldCard(s)}

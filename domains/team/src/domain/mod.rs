@@ -55,7 +55,7 @@ pub use routines::{CheckBack, CheckBackStatus, Firing, Routine};
 pub use runs::{Exit, Fault, Liveness, RunStatus};
 pub use runtime::Runtime;
 pub use wakes::{Receipt, Refused, WakeDecision, WakeReason, WakeSituation};
-pub use wing::{Branch, Check, Document, HireRequest};
+pub use wing::{Branch, Check, Document};
 pub use work::{
     DeskId, Goal, GoalId, GoalStatus, Member, MemberId, Millis, Priority, ProjectId, Refusal, Role,
     RoutineId, RunId, Task, TaskId, TaskStatus, WakeId,
