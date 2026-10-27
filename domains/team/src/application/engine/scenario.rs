@@ -602,7 +602,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut archived = Vec::new();
         let mut setups: Vec<String> = Vec::new();
         for task in tasks.iter().filter(|t| t.parent.is_none()) {
-            let Some(place) = self.place_of(task.id)?.filter(|p| p.world == task.id) else {
+            // Chess is the league's, reset on its own: an old match is never queued again.
+            let Some(place) = self
+                .place_of(task.id)?
+                .filter(|p| p.world == task.id && p.kind != Kind::Chess)
+            else {
                 continue;
             };
             if !task.status.finished() {
@@ -642,7 +646,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         tasks.sort_by_key(|t| t.id);
         let mut setups: Vec<String> = Vec::new();
         for task in tasks.iter().filter(|t| t.parent.is_none()) {
-            let Some(place) = self.place_of(task.id)?.filter(|p| p.world == task.id) else {
+            // Chess is the league's, reset on its own: an old match is never queued again.
+            let Some(place) = self
+                .place_of(task.id)?
+                .filter(|p| p.world == task.id && p.kind != Kind::Chess)
+            else {
                 continue;
             };
             if !task.status.finished() {

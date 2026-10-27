@@ -1277,14 +1277,15 @@ fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_ro
             .unwrap();
     }
     let before = hq.store().tasks().unwrap().len();
-    // Three distinct setups: the second mission is the first one's twin.
-    assert_eq!(hq.rerun_holodeck("round 1").unwrap(), 3);
+    // Two distinct setups: the second mission is the first one's twin, and the match is the
+    // league's, which is reset on its own.
+    assert_eq!(hq.rerun_holodeck("round 1").unwrap(), 2);
     assert!(
         hq.rerun_holodeck("round 2").is_err(),
         "one re-run at a time"
     );
     let listed = |hq: &Hq<'_>| hq.snapshot().unwrap()["holodeck"]["scenarios"].clone();
-    for world in [lit, mission, again, game] {
+    for world in [lit, mission, again] {
         assert!(
             listed(&hq)
                 .as_array()
@@ -1313,7 +1314,7 @@ fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_ro
         "the lighthouse first, its seed"
     );
     assert_eq!(first[0].assignee, Some(crew[0]));
-    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 2);
+    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 1);
     hq.tick().unwrap();
     assert_eq!(open(&hq).len(), 1, "the next waits for this one to end");
     hq.store()
@@ -1332,14 +1333,9 @@ fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_ro
         .set_task_status(second[0].id, TaskStatus::Dropped)
         .unwrap();
     hq.tick().unwrap();
-    let third = open(&hq);
-    assert_eq!(
-        hq.scenario_of(third[0].id).unwrap(),
-        Some(3),
-        "then the match"
-    );
-    assert_eq!(third[0].assignee, Some(crew[1]), "white as before");
+    assert!(open(&hq).is_empty(), "and no match: {:?}", open(&hq));
     assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 0);
+    let _ = game;
 }
 
 /// The owner, 2026-10-25: have every scenario play out again on the new engine, while a re-run
@@ -1590,4 +1586,28 @@ fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
     let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
     assert_eq!(league["games"].as_array().unwrap().len(), 1, "{league}");
     assert_ne!(league["games"][0]["task"], live.0);
+}
+
+// Chess belongs to the league, which the owner resets on its own: running the Holodeck again
+// queues its scenarios and never an old match, which would be played outside the league.
+#[test]
+fn running_the_holodeck_again_queues_its_scenarios_and_no_chess_match() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([linus, zed, rae], project) = crew(&hq);
+    let lamp = hq.start_scenario(project, linus, 2).unwrap();
+    let game = hq.start_chess(project, [zed, rae], 1).unwrap();
+    for task in hq.store().tasks().unwrap() {
+        if [lamp, game].contains(&task.id) || task.parent == Some(game) {
+            hq.store()
+                .set_task_status(task.id, crate::domain::TaskStatus::Done)
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        hq.rerun_holodeck("before").unwrap(),
+        1,
+        "the lighthouse alone"
+    );
+    assert_eq!(hq.restart_holodeck("again").unwrap(), 1, "and again");
 }
