@@ -88,3 +88,18 @@ A failed step stops and rolls back to the previous release. The loop stops when 
   The lines went down by 271 net: the cuts (509 doc lines, the duplicate mappings and filters)
   paid for two store traits, two query methods, the opened-task route and their tests. The time
   is now mostly HQ building the snapshot, not sending it.
+
+## Follow-up: the snapshot's build (ef3aad78, live)
+
+The owner agreed the next lever was HQ building the snapshot, not sending it. Measured inside
+HQ on the NAS: 613–1,093 ms a build. Timed part by part against a copy of the live store, the
+cost was four reads that grew with the record:
+- every task row read the whole branches and checks tables, and a brief row its whole thread
+  and documents, for nothing it showed: now read once for the board, with `post_counts`;
+- the scorecard parsed the whole event feed (3.7 MB of JSON, mostly ticks and the retired
+  guards' findings) to read seven kinds: now `events_of(KINDS_READ)`;
+- the desk count scanned the desk once for each item added (3,600 × the desk): now a set;
+- a project's month walked each turn's ledger rows twice: now a partial index of reserves.
+
+The snapshot came out byte for byte the same on that copy. Production: 278–318 ms a build
+(was 613–1,093), 428 KB; a done task still opens whole.
