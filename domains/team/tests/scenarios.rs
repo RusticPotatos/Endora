@@ -1495,54 +1495,7 @@ fn minutes_pass(w: &mut Office, minutes: i64) {
     w.tick();
 }
 
-impl Office {
-    fn matches_of(
-        &self,
-        kind: endora_team::domain::games::Kind,
-    ) -> Vec<endora_team::domain::games::Record> {
-        self.hq
-            .store()
-            .games()
-            .expect("the store answers")
-            .into_iter()
-            .filter(|g| g.kind == kind)
-            .collect()
-    }
-}
-
-#[then("ping-pong has been played")]
-fn ping_pong_played(w: &mut Office) {
-    let played = w.matches_of(endora_team::domain::games::Kind::PingPong);
-    assert!(played.len() >= 2, "ping-pong matches: {played:?}");
-}
-
-#[then("every ping-pong match was first to 11, two clear")]
-fn ping_pong_by_the_rules(w: &mut Office) {
-    for m in w.matches_of(endora_team::domain::games::Kind::PingPong) {
-        let (won, lost) = m.scores();
-        assert!(won >= 11 && won - lost >= 2, "{m:?}");
-    }
-}
-
-#[then("the ping-pong leaderboard names the players")]
-fn ping_pong_board(w: &mut Office) {
-    let snap = w.hq.snapshot().expect("the snapshot is built");
-    let board = snap["games"]["ping_pong"]["leaderboard"]
-        .as_array()
-        .expect("a leaderboard")
-        .clone();
-    assert!(!board.is_empty());
-    for row in &board {
-        let name = row["name"].as_str().expect("a name");
-        assert!(["Ada", "Bo", "Cy"].contains(&name), "{row}");
-    }
-    let wins: i64 = board.iter().filter_map(|r| r["wins"].as_i64()).sum();
-    assert_eq!(
-        wins as usize,
-        w.matches_of(endora_team::domain::games::Kind::PingPong)
-            .len()
-    );
-}
+impl Office {}
 
 #[then("no match woke anyone or ran a turn")]
 fn nobody_woken(w: &mut Office) {

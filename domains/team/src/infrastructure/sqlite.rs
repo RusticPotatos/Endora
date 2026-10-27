@@ -9,6 +9,7 @@ use crate::application::ports::{
     Wake,
 };
 use crate::application::ports::{LedgerRow, ThreadPost};
+use crate::domain::chess;
 use crate::domain::history::{InputOrigin, InputRef};
 use crate::domain::office;
 use crate::domain::{
@@ -17,7 +18,6 @@ use crate::domain::{
     Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
 use crate::domain::{Branch, Check, Document};
-use crate::domain::{chess, games};
 
 mod guards;
 mod history;
@@ -194,16 +194,9 @@ CREATE TABLE IF NOT EXISTS office_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL,
     placed_by TEXT NOT NULL, placed_at INTEGER NOT NULL
 ) STRICT;
--- Games in the office (ADR 0121): the ping-pong and pool matches HQ's engine has played, and
--- the games of chess the members play in downtime (moves as standard notation, space between).
--- Made only if missing, so a store from before the games gains them and keeps everything else.
-CREATE TABLE IF NOT EXISTS games (
-    id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
-    player_a INTEGER NOT NULL REFERENCES members(id), player_b INTEGER NOT NULL REFERENCES members(id),
-    score_a INTEGER NOT NULL, score_b INTEGER NOT NULL,
-    winner INTEGER NOT NULL REFERENCES members(id), note TEXT NOT NULL DEFAULT '',
-    played_at INTEGER NOT NULL
-) STRICT;
+-- Games in the office (ADR 0121): the games of chess the members play in downtime (moves as
+-- standard notation, space between). Made only if missing, so a store from before the games
+-- gains them and keeps everything else.
 CREATE TABLE IF NOT EXISTS chess_games (
     id INTEGER PRIMARY KEY,
     white INTEGER NOT NULL REFERENCES members(id), black INTEGER NOT NULL REFERENCES members(id),
@@ -321,6 +314,7 @@ const RETIRED_CONVERSATIONS: &str = "
     DROP TABLE IF EXISTS retractions;
     DROP TABLE IF EXISTS note_parents;
     DROP TABLE IF EXISTS notes;
+    DROP TABLE IF EXISTS games;
     DELETE FROM findings WHERE guard NOT IN ('stuck', 'same_ask');
     DELETE FROM settings WHERE key LIKE 'ladder:%' OR key LIKE 'huddle:%'
       OR key LIKE 'guard_mode:%' OR key LIKE 'coordination_since:%'
@@ -2447,67 +2441,6 @@ impl TeamStore for SqliteTeamStore {
         tx.commit().map_err(backend)
     }
 
-    fn add_game(&self, record: &games::Record) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO games (kind, player_a, player_b, score_a, score_b, winner, note, played_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                record.kind.name(),
-                record.a.0,
-                record.b.0,
-                record.score_a,
-                record.score_b,
-                record.winner.0,
-                record.note,
-                record.at
-            ],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn games(&self) -> Stored<Vec<games::Record>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, kind, player_a, player_b, score_a, score_b, winner, note, played_at \
-                 FROM games ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, u32>(4)?,
-                    r.get::<_, u32>(5)?,
-                    r.get::<_, i64>(6)?,
-                    r.get::<_, String>(7)?,
-                    r.get::<_, i64>(8)?,
-                ))
-            })
-            .map_err(backend)?;
-        let mut all = Vec::new();
-        for row in rows {
-            let (id, kind, a, b, score_a, score_b, winner, note, at) = row.map_err(backend)?;
-            all.push(games::Record {
-                id,
-                kind: games::Kind::from_name(&kind).ok_or_else(|| corrupt("a game's kind"))?,
-                a: MemberId(a),
-                b: MemberId(b),
-                score_a,
-                score_b,
-                winner: MemberId(winner),
-                note,
-                at,
-            });
-        }
-        Ok(all)
-    }
-
     fn add_chess_game(&self, white: MemberId, black: MemberId, at: Millis) -> Stored<i64> {
         let conn = self.conn()?;
         conn.execute(
@@ -2873,24 +2806,9 @@ CREATE TABLE IF NOT EXISTS check_backs (
         )
         .unwrap();
         let store = SqliteTeamStore::over(conn).unwrap();
-        assert!(store.games().unwrap().is_empty());
         assert!(store.chess_games().unwrap().is_empty());
         assert_eq!(store.members().unwrap().len(), 2);
         assert_eq!(store.setting("house_log").unwrap().as_deref(), Some("kept"));
-        // A match is kept and read back whole.
-        let record = games::Record {
-            id: 0,
-            kind: games::Kind::Pool,
-            a: MemberId(1),
-            b: MemberId(2),
-            score_a: 7,
-            score_b: 5,
-            winner: MemberId(2),
-            note: "Ada scratched on the 8".to_owned(),
-            at: 9,
-        };
-        let id = store.add_game(&record).unwrap();
-        assert_eq!(store.games().unwrap(), [games::Record { id, ..record }]);
         // A game of chess is kept with its moves, and updated as it goes.
         let game = store.add_chess_game(MemberId(1), MemberId(2), 10).unwrap();
         let mut kept = store.chess_games().unwrap().remove(0);

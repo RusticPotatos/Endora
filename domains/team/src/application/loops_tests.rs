@@ -442,6 +442,59 @@ fn the_member_one_rank_up_passes_work_in_review() {
     );
 }
 
+/// Work that changed nothing has no branch, so there is nothing for the gate to run on: its
+/// pass closes it. Live, #855 found roles/ already clean; Rae submitted it with no branch, Ada
+/// passed it, and it waited in review for a gate that could never run.
+///
+/// Given Bo's item in review with no branch and no gate,
+/// when Rae (one rank up) approves it on a reading of her own,
+/// then the item is done.
+#[test]
+fn work_with_no_branch_needs_no_gate_to_pass() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "Already clean.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tell_mac(true, "ready");
+    let rae = turn_of(&hq, f.rae);
+    let mine = hq
+        .record_receipt(
+            &rae.token,
+            &super::engine::Called {
+                tool: "homelab_status".to_owned(),
+                args: String::new(),
+                excerpt: "lint: clean".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    use_tool(
+        &hq,
+        &rae,
+        "review",
+        &serde_json::json!({ "task": fix.0, "verdict": "approve", "notes": "Nothing to change.",
+                             "evidence": [format!("r{mine}")] }),
+    )
+    .unwrap();
+    assert_eq!(
+        hq.store().task(fix).unwrap().unwrap().status,
+        TaskStatus::Done
+    );
+}
+
 /// Three failures move an item up one rank; a failure at the top rank goes to the owner.
 ///
 /// Given Bo's item,
@@ -789,34 +842,6 @@ fn a_loop_turn_is_told_what_the_loop_did_lately() {
     item(&hq, &f, "Fix the next lint", Priority::Normal);
     let next = turn_of(&hq, f.bo);
     assert!(next.told.contains("yamllint line lengths"), "{}", next.told);
-}
-
-/// The office in the loops (ADR 0142): ping-pong and pool are an animation in the browser, so
-/// HQ plays and records no matches of them; chess goes on.
-#[test]
-fn in_the_loops_no_match_of_ping_pong_or_pool_is_played_or_recorded() {
-    let clock = Hands(AtomicI64::new(NOON));
-    let hq = Engine::new(
-        SqliteTeamStore::in_memory().unwrap(),
-        SimulatedRunner::new(8),
-        &clock,
-        Settings {
-            pool_per_month: 30 * DOLLAR,
-            games: true,
-            ..Settings::default()
-        },
-    );
-    let _f = five(&hq);
-    for _ in 0..20 {
-        clock
-            .0
-            .fetch_add(crate::domain::games::GAP_MS + 60_000, Ordering::SeqCst);
-        hq.tick().unwrap();
-        for started in hq.runner().started() {
-            hq.runner().finish(started.run, true);
-        }
-    }
-    assert!(hq.store().games().unwrap().is_empty(), "no tracked matches");
 }
 
 /// Production, 27 Oct: HQ restarted and a migration of ADR 0131's gave Bo and Rae back a Claude,

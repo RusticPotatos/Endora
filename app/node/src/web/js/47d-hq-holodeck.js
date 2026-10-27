@@ -1,7 +1,7 @@
-// ---- the Holodeck on the HQ screen (ADR 0135), and replays of the office's matches (0121) ----
-// The Work tab lists the scenarios and the trials and opens one step by step; the Office
-// replays a match of pool or ping-pong shot by shot or rally by rally. All of it is fetched
-// when it is opened, and all of it is the team's or the world's words, so all of it is escaped.
+// ---- the Holodeck on the HQ screen (ADR 0135) ----
+// The Work tab lists the scenarios and the trials and opens one step by step. All of it is
+// fetched when it is opened, and all of it is the team's or the world's words, so all of it is
+// escaped.
 
 const HQ_HOLO_KINDS = { lighthouse: "Lighthouse", silent_station: "Silent Station", chess: "Chess" };
 const HQ_HOLO_UNITS = { lighthouse: "minutes", silent_station: "ticks", chess: "half-moves" };
@@ -68,13 +68,12 @@ function hqLeague(l) {
     ${games.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : ""}`;
 }
 
-// Whatever is open: a scenario, a trial or a replayed match, with a way to close it.
+// Whatever is open: a scenario or a trial, with a way to close it.
 function hqHoloDetail() {
   const h = HQ.holo;
   if (!h || !h.data) return "";
   const close = `<div class="hq-row"><button class="hq-btn" data-act="hq:holo:close:0">Close</button></div>`;
   if (h.what === "trial") return hqTrialView(h.data) + close;
-  if (h.what === "replay") return hqReplayView(h.data) + close;
   return hqScenarioView(h.data) + close;
 }
 
@@ -120,20 +119,7 @@ function hqTrialView(d) {
     <p class="hq-note">A few runs a condition show a difference, not a reason: open each run's log before believing an explanation.</p>`;
 }
 
-// A match from the office played again: every shot of pool, every rally of ping-pong.
-function hqReplayView(d) {
-  const players = d.players || [], score = d.score || [];
-  const head = `<div class="hq-sel">${d.kind === "pool" ? "Pool" : "Ping-pong"}: ${esc(players[0])} against ${esc(players[1])}, ${score.map(Number).join("–")}, ${esc(d.winner)} won</div>`;
-  const steps = (d.steps || []).map((s) => {
-    if (s.step === "rally") return `<li>${(s.score || []).map(Number).join("–")} ${esc(s.won_by)}</li>`;
-    if (s.step === "scratch") return `<li>${esc(s.by)} scratched on the 8</li>`;
-    return `<li>${esc(s.by)} ${s.potted ? "potted" : "missed"} (${(s.balls || []).map(Number).join("–")})</li>`;
-  }).join("");
-  const check = d.matches === false ? `<p class="hq-note">This replay does not end as the record says.</p>` : "";
-  return `${head}${check}<ol class="hq-log hq-steps">${steps}</ol>`;
-}
-
-// The taps: open a scenario, compare a trial, replay a match, close what is open.
+// The taps: open a scenario, compare a trial, close what is open.
 async function hqHoloAct(what, arg) {
   if (what === "close") { HQ.holo = null; render(); return true; }
   // Every scenario again, one at a time: the earlier round is kept, labelled with today.
@@ -148,8 +134,7 @@ async function hqHoloAct(what, arg) {
     await loadHQ(); render(); return true;
   }
   const path = what === "open" ? `/v1/hq/scenarios/${Number(arg)}`
-    : what === "trial" ? `/v1/hq/trials/${encodeURIComponent(String(arg || ""))}`
-    : what === "replay" ? `/v1/hq/games/${Number(arg)}/replay` : "";
+    : what === "trial" ? `/v1/hq/trials/${encodeURIComponent(String(arg || ""))}` : "";
   if (!path) return true;
   try { HQ.holo = { what: what === "open" ? "scenario" : what, data: await api("GET", path) }; }
   catch (e) { flash("Couldn't open it: " + e.message, "err"); }

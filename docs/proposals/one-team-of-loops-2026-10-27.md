@@ -223,3 +223,24 @@ it). Nothing else in the plan waits on the owner.
   - Kept: the stuck and same-ask findings, the "woken for nothing" refusal (it saves money),
     the runaway tripwire and the day's cap on the house's models, and the talk-against-work line.
   - The team context is about 88,200 lines.
+- **Found and fixed (e2b1cd37):** the review tool's approval still asked for a tester's role, so
+  a loop reviewer could only send work back. Live, Ada could not pass #855 and asked the owner to
+  record it. Now the member one rank up passes work on a reading of its own, and its pass closes
+  it (gated work through the gate).
+- **Released 790c1822 (parts C, D and E):** gate 3,581 tests; the drain cut nothing.
+- **Step 8, part E, the chain of command's roles retired:**
+  - Every member gets one tool list and one briefing: its name, its model's rank and its work.
+  - Gone: the CEO's, leads' and tester's tool lists and briefings; the RACI; the CEO's seat,
+    daily review and weekly planning; area reports and patterns; asking up a chain (every
+    question goes to the owner's desk); the tester's and lead's review rounds (review is one rank
+    up, and with nobody one rank up the owner reads it).
+  - The demo mode's scripted team retired too. It walked work through those rounds, so HQ now
+    always waits for a real runner, and its tests seed their own small team.
+  - The Role type stays in the store for now; nothing branches on it in a turn.
+- **Step 8, part F, first cut, the world's curation retired:** the nightly quiz, gaps and broken
+  roads, members' proposals to pages, retraction and its sweep, and the notebooks, with their
+  tables. Kept: the house and lab pages (every briefing now carries how the lab is built),
+  read_world, the map and the history search.
+  - Left for days 2–3: section stages and canon, stories and lessons, the world migration, and
+    the dead Refusal variants and domain types.
+- **The team context is about 71,100 lines** (from about 96,300 before step 8).

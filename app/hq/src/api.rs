@@ -111,7 +111,6 @@ pub fn app(state: State) -> Router {
         .route("/v1/trials", post(start_trial))
         .route("/v1/trials/{name}", get(trial_report))
         // A match of ping-pong or pool played again, step by step.
-        .route("/v1/games/{id}/replay", get(game_replay))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
         // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
@@ -986,15 +985,6 @@ async fn start_scenario(
         }
     };
     Ok(Json(json!({ "task": task.0, "seed": seed })))
-}
-
-/// A kept match of ping-pong or pool, step by step.
-async fn game_replay(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    Ok(Json(blocking(move || hq.game_replay(id)).await?))
 }
 
 #[derive(Deserialize)]

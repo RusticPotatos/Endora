@@ -27,16 +27,6 @@ Feature: The open office
     Then Bo's turn runs on "local"
     And the pool has paid nothing
 
-  Scenario: Ping-pong keeps score, and costs nothing
-    Given the games are on
-    When 25 minutes pass
-    And 25 minutes pass
-    Then ping-pong has been played
-    And every ping-pong match was first to 11, two clear
-    And the activity feed says " at ping-pong"
-    And the ping-pong leaderboard names the players
-    And no match woke anyone or ran a turn
-
   Scenario: Chess is played by the rules
     Given downtime is on
     When a tick passes

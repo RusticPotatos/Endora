@@ -3057,21 +3057,14 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
                  { label: "<b>dee</b>", runs: 2, done: 2, not_done: 0, unfinished: 0, mean_score: 100, mean_elapsed: 25, refused: 0, unsafe_runs: 0, turns: 2, idle_turns: 0, spent: 0, brains: ["mac"] }],
     runs: [], markdown: "# Trial" } });
   if (!trial.includes("<table") || !trial.includes("mac") || trial.includes("<b>dee</b>")) fail("holodeck: a trial is not compared side by side, or not escaped: " + trial);
-  const replay = shown({ what: "replay", data: { id: 218, kind: "pool", players: ["Kit", "Bo"], score: [5, 8], winner: "Bo", matches: true,
-    steps: [{ step: "shot", by: "Kit", potted: false, balls: [0, 0] }, { step: "shot", by: "Bo", potted: true, balls: [0, 1] }, { step: "scratch", by: "Kit" }] } });
-  if (!replay.includes("Bo potted") || !replay.includes("Kit missed") || !replay.includes("scratch")) fail("holodeck: a game of pool is not replayed shot by shot: " + replay);
-  const pong = shown({ what: "replay", data: { id: 219, kind: "ping_pong", players: ["Bo", "Dee"], score: [11, 6], winner: "Bo", matches: true,
-    steps: [{ step: "rally", won_by: "Bo", score: [1, 0] }, { step: "rally", won_by: "Dee", score: [1, 1] }] } });
-  if (!pong.includes("1–0") || !pong.includes("1–1")) fail("holodeck: a game of ping-pong is not replayed rally by rally: " + pong);
-  // Tapping Open fetches the scenario and shows it; tapping Replay fetches the match.
+  // Tapping Open fetches the scenario and shows it; tapping a trial fetches the trial.
   runInContext(`__asked = []; api = async (method, path) => { __asked.push(method + " " + path); return { task: 708, kind: "chess", log: [] }; };`, context);
   await runInContext(`hqDispatch("hq", "holo", "open", "708")`, context);
-  await runInContext(`hqDispatch("hq", "holo", "replay", "218")`, context);
   await runInContext(`hqDispatch("hq", "holo", "trial", "bo-vs-dee")`, context);
   const asked = JSON.parse(runInContext("JSON.stringify(__asked)", context));
-  if (asked.join("|") !== "GET /v1/hq/scenarios/708|GET /v1/hq/games/218/replay|GET /v1/hq/trials/bo-vs-dee") fail("holodeck: the taps do not fetch what they open: " + asked.join("|"));
+  if (asked.join("|") !== "GET /v1/hq/scenarios/708|GET /v1/hq/trials/bo-vs-dee") fail("holodeck: the taps do not fetch what they open: " + asked.join("|"));
   runInContext(`[HQ.snap, HQ.holo, api, render, flash] = __keepHolo;`, context);
-  console.log("holodeck: scenarios, trials and match replays are listed and opened, escaped");
+  console.log("holodeck: scenarios and trials are listed and opened, escaped");
 }
 
 // Endora is HQ (ADR 0136): every device opens on HQ, the menu leads to HQ and the house's own

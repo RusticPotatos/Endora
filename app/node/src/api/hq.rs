@@ -804,11 +804,6 @@ pub(super) async fn hq_start_trial(
     Ok(answer)
 }
 
-/// A match of ping-pong or pool from the office, played again step by step.
-pub(super) async fn hq_game_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    ask(&state, format!("/v1/games/{id}/replay"), None).await
-}
-
 /// A trial compared: its conditions side by side, every run, and a report to keep.
 pub(super) async fn hq_trial(State(state): State<AppState>, Path(name): Path<String>) -> Answer {
     ask(&state, format!("/v1/trials/{name}"), None).await
@@ -1578,10 +1573,6 @@ mod tests {
         assert_eq!(matched.0["task"], 41);
         let shown = hq_scenario(State(state.clone()), Path(41)).await.unwrap();
         assert_eq!(shown.0["end"], "solved");
-        let replayed = hq_game_replay(State(state.clone()), Path(219))
-            .await
-            .unwrap();
-        assert_eq!(replayed.0["end"], "solved", "passed through as HQ said it");
         let sent: Vec<String> = seen
             .lock()
             .unwrap()
@@ -1595,7 +1586,6 @@ mod tests {
                 "/v1/scenarios",
                 "/v1/scenarios",
                 "/v1/scenarios/41",
-                "/v1/games/219/replay"
             ]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)

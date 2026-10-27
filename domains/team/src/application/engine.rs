@@ -1997,9 +1997,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             return Ok(());
         }
-        let the_home_labs = self.the_home_labs(&current)?;
-        let gated = review::needs_gate(self.routine_of(task)?.is_some(), the_home_labs);
-        if gated {
+        if self.gated(&current)? {
             // Gated work keeps the gate's rule: done only once the gate has passed.
             self.approve_held_lock(reviewer.id, task)?;
             self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
@@ -2040,6 +2038,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Whether a task is the home lab's: under a goal whose routine takes its alarms.
+    /// Whether passing `task` waits for the gate: work that is not a routine's check nor the
+    /// home lab's, and that has a branch for the gate to run on. Work that changed nothing has
+    /// none (live, #855 found roles/ already clean and waited in review for a gate that could
+    /// never run).
+    pub(super) fn gated(&self, task: &Task) -> Done<bool> {
+        let needs = review::needs_gate(
+            self.routine_of(task.id)?.is_some(),
+            self.the_home_labs(task)?,
+        );
+        Ok(needs && self.store.branches()?.iter().any(|b| b.task == task.id))
+    }
+
     fn the_home_labs(&self, task: &Task) -> Done<bool> {
         Ok(self
             .store

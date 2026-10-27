@@ -542,11 +542,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Closes checked work as done: gated work through the gate's rule, the rest at once.
     fn close_checked(&self, task: &Task, by: MemberId) -> Done<()> {
-        let gated = crate::domain::review::needs_gate(
-            self.routine_of(task.id)?.is_some(),
-            self.the_home_labs(task)?,
-        );
-        if gated {
+        if self.gated(task)? {
             return self.approve_held_lock(by, task.id);
         }
         self.store.set_task_status(task.id, TaskStatus::Done)?;

@@ -6,12 +6,11 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use serde_json::{Value, json};
 
-use super::engine::{Author, Engine, EngineError, Settings};
-use super::ports::{Clock, NewTask, RunContext, TeamStore};
+use super::engine::{Author, Engine, Settings};
+use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools};
 use crate::domain::chess::{self, Status};
-use crate::domain::games::{self, Kind};
-use crate::domain::{GoalId, MemberId, Priority, Role, RunStatus, WakeReason};
+use crate::domain::{MemberId, Role, RunStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -157,256 +156,14 @@ fn only(hq: &Hq<'_>, t: &Team, keep: [MemberId; 2]) {
 // ---- ping-pong and pool -------------------------------------------------------------------
 
 #[test]
-fn free_members_play_ping_pong_and_pool_and_it_costs_nothing() {
+fn the_snapshot_carries_chess_and_no_tracked_ping_pong_or_pool() {
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock, false, true);
     let t = team(&hq);
     hq.tick().unwrap();
-    let played = hq.store().games().unwrap();
-    assert_eq!(played.len(), 2, "one match of each, at once: {played:?}");
-    let kinds: Vec<Kind> = played.iter().map(|g| g.kind).collect();
-    assert_eq!(kinds, [Kind::PingPong, Kind::Pool]);
-    // Four different players of the four who are free; never the CEO.
-    let mut players: Vec<MemberId> = played.iter().flat_map(|g| [g.a, g.b]).collect();
-    players.sort();
-    players.dedup();
-    assert_eq!(players.len(), 4);
-    assert!(!players.contains(&t.ceo));
-    // No model was called for a match: the one wake is chess's, white's first move.
-    let white = hq.store().chess_games().unwrap()[0].white;
-    let wakes = hq.store().wakes().unwrap();
-    assert!(
-        wakes
-            .iter()
-            .all(|w| w.member == white && w.reason == WakeReason::Downtime),
-        "a match wakes nobody: {wakes:?}"
-    );
-    assert!(
-        hq.store().runs().unwrap().iter().all(|r| r.member == white),
-        "a match is no turn"
-    );
-}
-
-#[test]
-fn a_match_is_said_in_the_feed_winner_first() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock, false, true);
-    team(&hq);
-    hq.tick().unwrap();
-    let said = events(&hq, "game.played");
-    assert_eq!(said.len(), 2);
-    let record = &hq.store().games().unwrap()[0];
-    let (won, lost) = record.scores();
-    let text = said[0]["text"].as_str().unwrap();
-    assert!(
-        text.contains(" beat ") && text.contains(&format!(" {won}\u{2013}{lost} at ping-pong")),
-        "{text}"
-    );
-    assert_eq!(said[0]["game"], "ping_pong");
-    assert_eq!(
-        said[0]["winner"],
-        said[0]["text"].as_str().unwrap().split(' ').next().unwrap()
-    );
-    assert!(said[1]["text"].as_str().unwrap().contains(" at pool"));
-}
-
-#[test]
-fn scores_obey_the_rules_over_many_matches() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock, false, true);
-    team(&hq);
-    for _ in 0..120 {
-        clock.0.fetch_add(GAP, Ordering::SeqCst);
-        hq.tick().unwrap();
-    }
-    let all = hq.store().games().unwrap();
-    assert!(all.len() > 100, "{} matches", all.len());
-    for g in &all {
-        let (won, lost) = g.scores();
-        assert!(g.winner == g.a || g.winner == g.b);
-        assert_ne!(g.a, g.b);
-        match g.kind {
-            Kind::PingPong => {
-                assert!(won >= 11 && won - lost >= 2, "{g:?}");
-                assert!(lost >= 10 || won == 11, "{g:?}");
-            }
-            Kind::Pool if g.note.is_empty() => assert!(won == 8 && lost <= 7, "{g:?}"),
-            Kind::Pool => {
-                assert!(g.note.ends_with("scratched on the 8"), "{g:?}");
-                assert_eq!(lost, 7, "{g:?}");
-            }
-        }
-    }
-}
-
-const GAP: i64 = games::GAP_MS;
-
-#[test]
-fn a_game_is_played_at_most_three_times_an_hour() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock, false, true);
-    team(&hq);
-    for _ in 0..60 {
-        hq.tick().unwrap();
-        clock.0.fetch_add(MINUTE, Ordering::SeqCst);
-    }
-    let all = hq.store().games().unwrap();
-    for kind in Kind::ALL {
-        let count = all.iter().filter(|g| g.kind == kind).count();
-        assert_eq!(count, 3, "{} in an hour", kind.label());
-    }
-    // And a member rests between matches: nobody plays two within ten minutes.
-    for g in &all {
-        for other in all.iter().filter(|o| o.id != g.id) {
-            let shared = [g.a, g.b].iter().any(|m| *m == other.a || *m == other.b);
-            if shared {
-                assert!((g.at - other.at).abs() >= games::REST_MS, "{g:?} {other:?}");
-            }
-        }
-    }
-}
-
-#[test]
-fn nobody_plays_who_is_busy_paused_on_furlough_holding_work_or_the_ceo() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock, false, true);
-    let t = team(&hq);
-    let goal: GoalId = hq
-        .set_goal("Keep the lab healthy", "", Author::Owner)
-        .unwrap();
-    hq.add_task(
-        Author::Owner,
-        NewTask {
-            goal,
-            project: None,
-            parent: None,
-            title: "Look at the proxy".to_owned(),
-            description: String::new(),
-            assignee: Some(t.bo),
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        },
-    )
-    .unwrap();
-    hq.pause(t.cy, true).unwrap();
-    hq.furlough(t.dee).unwrap();
-    // Ada has a turn running; Bo holds a task; Cy is paused; Dee is on furlough.
-    let ada = mention_turn(&hq, t.ada);
-    hq.tick().unwrap();
-    assert!(hq.store().games().unwrap().is_empty(), "nobody is free");
-    // Ada's turn ends and she is free, but one is not enough for a match.
-    hq.runner().finish(ada.run, true);
-    hq.tick().unwrap();
-    assert!(hq.store().games().unwrap().is_empty(), "one is not a match");
-    // Cy comes back; now Ada and Cy play, and only they.
-    hq.pause(t.cy, false).unwrap();
-    hq.tick().unwrap();
-    let all = hq.store().games().unwrap();
-    assert!(!all.is_empty());
-    for g in &all {
-        let mut pair = [g.a, g.b];
-        pair.sort();
-        assert_eq!(pair, [t.ada, t.cy], "{g:?}");
-    }
-}
-
-#[test]
-fn a_match_needs_two_free_members() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock, false, true);
-    let t = team(&hq);
-    only(&hq, &t, [t.ada, t.bo]);
-    hq.pause(t.ada, true).unwrap();
-    hq.tick().unwrap();
-    assert!(hq.store().games().unwrap().is_empty(), "one is not enough");
-    hq.pause(t.ada, false).unwrap();
-    hq.tick().unwrap();
-    let all = hq.store().games().unwrap();
-    assert!(!all.is_empty());
-    for g in &all {
-        let mut pair = [g.a, g.b];
-        pair.sort();
-        assert_eq!(pair, [t.ada, t.bo]);
-    }
-}
-
-#[test]
-fn the_same_team_and_clock_play_the_same_matches() {
-    let scores = || {
-        let clock = Hands(AtomicI64::new(START));
-        let hq = engine(&clock, false, true);
-        team(&hq);
-        for _ in 0..12 {
-            clock.0.fetch_add(GAP, Ordering::SeqCst);
-            hq.tick().unwrap();
-        }
-        hq.store()
-            .games()
-            .unwrap()
-            .into_iter()
-            .map(|g| {
-                (
-                    g.kind, g.a, g.b, g.score_a, g.score_b, g.winner, g.note, g.at,
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    let first = scores();
-    assert!(first.len() >= 12);
-    assert_eq!(first, scores());
-}
-
-#[test]
-fn games_are_off_unless_the_service_turns_them_on() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock, false, false);
-    team(&hq);
-    for _ in 0..5 {
-        clock.0.fetch_add(GAP, Ordering::SeqCst);
-        hq.tick().unwrap();
-    }
-    assert!(hq.store().games().unwrap().is_empty());
-}
-
-#[test]
-fn the_snapshot_carries_the_leaderboards_the_last_five_results_and_the_chess_games() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock, false, true);
-    let t = team(&hq);
-    for _ in 0..8 {
-        hq.tick().unwrap();
-        clock.0.fetch_add(GAP, Ordering::SeqCst);
-    }
-    let all = hq.store().games().unwrap();
     let chess_id = hq.store().add_chess_game(t.ada, t.bo, START).unwrap();
     let shown = hq.snapshot().unwrap()["games"].clone();
-    for key in ["ping_pong", "pool"] {
-        let board = shown[key]["leaderboard"].as_array().unwrap();
-        assert!(!board.is_empty(), "{key}");
-        let first = &board[0];
-        for field in ["member", "name", "wins", "losses", "streak"] {
-            assert!(first.get(field).is_some(), "{key} lacks {field}");
-        }
-        let wins: u64 = board.iter().map(|r| r["wins"].as_u64().unwrap()).sum();
-        let of_kind = all.iter().filter(|g| g.kind.name() == key).count() as u64;
-        assert_eq!(wins, of_kind, "{key}: every match has a winner");
-    }
-    // The scoreboard by each table says the latest match there.
-    let last = &shown["ping_pong"]["last"];
-    let newest = all.iter().rfind(|g| g.kind == Kind::PingPong).unwrap();
-    assert_eq!(last["score"], json!([newest.scores().0, newest.scores().1]));
-    assert!(last["winner"].as_str().is_some() && last["loser"].as_str().is_some());
-    assert_eq!(
-        hq.snapshot().unwrap()["games"]["chess"]["last"],
-        Value::Null
-    );
-    let recent = shown["recent"].as_array().unwrap();
-    assert_eq!(recent.len(), 5);
-    assert!(
-        recent[0]["at"].as_i64() >= recent[4]["at"].as_i64(),
-        "newest first"
-    );
-    assert!(recent[0]["text"].as_str().unwrap().contains(" beat "));
+    assert!(shown.get("ping_pong").is_none() && shown.get("pool").is_none());
     // The game HQ set free members, and this one.
     let all_live = shown["chess"]["games"].as_array().unwrap();
     assert_eq!(all_live.len(), 2);
@@ -791,38 +548,6 @@ fn a_member_without_a_game_is_told_it_may_challenge_someone() {
     let ada = downtime_for(&hq, &clock, t.ada);
     assert!(ada.told.contains("challenge"), "{}", ada.told);
     let _ = (t.cy, t.dee);
-}
-
-// Every match HQ plays in the office plays again step by step as it went: the owner sees how
-// a game of pool or ping-pong went, not only its score, and the replay checks itself against
-// the record.
-#[test]
-fn every_match_the_office_played_replays_step_by_step_as_kept() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock, false, true);
-    team(&hq);
-    for _ in 0..40 {
-        clock.0.fetch_add(GAP, Ordering::SeqCst);
-        hq.tick().unwrap();
-    }
-    let all = hq.store().games().unwrap();
-    assert!(all.len() > 20, "{} matches", all.len());
-    for g in &all {
-        let again = hq.game_replay(g.id).unwrap();
-        assert_eq!(again["matches"], true, "{again}");
-        let steps = again["steps"].as_array().unwrap();
-        assert!(!steps.is_empty());
-        let last = steps.last().unwrap();
-        match g.kind {
-            Kind::PingPong => {
-                assert_eq!(last["step"], "rally");
-                assert_eq!(last["score"], json!([g.score_a, g.score_b]));
-            }
-            Kind::Pool => assert!(last["step"] == "shot" || last["step"] == "scratch"),
-        }
-        assert!(again["players"][0].is_string() && again["winner"].is_string());
-    }
-    assert_eq!(hq.game_replay(99_999), Err(EngineError::Unknown("match")));
 }
 
 /// The owner, 2026-10-25: no game of chess had ever been played in the office, since only a

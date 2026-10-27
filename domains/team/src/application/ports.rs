@@ -3,6 +3,7 @@
 use core::fmt;
 use std::time::Duration;
 
+use crate::domain::chess;
 use crate::domain::office;
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{CallReceipt, Criterion, Label, Ref};
@@ -14,7 +15,6 @@ use crate::domain::{
     RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
 use crate::domain::{Evidence, ProjectId, ProjectStatus};
-use crate::domain::{chess, games};
 
 /// A store that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1035,17 +1035,6 @@ pub trait TeamStore:
     fn replace_office_items(&self, items: &[office::Item]) -> Stored<()>;
     // ---- games in the office (ADR 0121) ---------------------------------------------------
 
-    /// Keeps a ping-pong or pool match that was played (the record's own number is ignored);
-    /// returns the number it was given.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn add_game(&self, record: &games::Record) -> Stored<i64>;
-    /// Every match played, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn games(&self) -> Stored<Vec<games::Record>>;
     /// Starts a game of chess, white to move; returns its number.
     ///
     /// # Errors
