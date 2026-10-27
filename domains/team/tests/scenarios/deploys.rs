@@ -2,8 +2,9 @@
 //! platform cut short is tried again as the same member, and raises nothing.
 
 use cucumber::then;
-use endora_team::application::TeamStore;
+
 use endora_team::application::ports::Run;
+use endora_team::application::run_ports::RunStore;
 use endora_team::domain::runs::own_attempts;
 use endora_team::domain::{RunStatus, WakeReason};
 

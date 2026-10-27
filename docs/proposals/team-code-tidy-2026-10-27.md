@@ -55,3 +55,14 @@ A failed step stops and rolls back to the previous release. The loop stops when 
 6. **Record.** The baseline table measured again, and a line in memory.
 
 ## Progress
+- **Step 1, done (8f6f4186, 61b6ccce; live).** The cost was the snapshot, not the reads: it sent
+  every done task's thread, evidence and documents (1.1 MB of 1.6). Finished tasks now come in
+  brief (no thread, evidence, documents, description or chain of why), and opening one asks
+  `GET /v1/hq/tasks/{id}`; one `task_row` builds both. The store gained `live_runs` (a partial
+  index) and `runs_of(task)`: whole-turn reads 39 → 14. Every task's waits are one query, not
+  872. The `.tasks()?` target (12) was dropped: each read is now two queries, so the count no
+  longer costs anything. Production: snapshot 1.6 MB → 441 KB, 941–1,588 → 684–1,317 ms; a done
+  task opens with its whole thread.
+- **Steps 2 and 3, done (c819a821, 13e55790; live, released with step 1's second commit).**
+  One `event_from`; one typed `setting_json` for the seven hand-written parses (`serde` named
+  directly for its bound; `serde_json` already built it). Events and the league read on production.

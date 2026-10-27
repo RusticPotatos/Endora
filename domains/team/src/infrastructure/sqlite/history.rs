@@ -392,6 +392,7 @@ impl HistoryStore for SqliteTeamStore {
 #[cfg(test)]
 mod tests {
     use crate::application::ports::TeamStore;
+    use crate::application::run_ports::RunStore;
     use rusqlite::Connection;
 
     use super::*;

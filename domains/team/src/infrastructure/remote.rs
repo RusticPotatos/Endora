@@ -5,6 +5,7 @@
 //! ended by the engine's longest-turn limit.
 
 use std::collections::{HashMap, VecDeque};
+
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -209,7 +210,8 @@ impl WorkerAdapter for RemoteRunner {
 mod tests {
     use super::*;
     use crate::application::engine::{Author, Engine, Settings};
-    use crate::application::ports::{Clock, NewTask, TeamStore};
+    use crate::application::ports::{Clock, NewTask};
+    use crate::application::run_ports::RunStore;
     use crate::domain::{MemberId, Priority, Role, RunStatus};
     use crate::infrastructure::SqliteTeamStore;
 
