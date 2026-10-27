@@ -2011,7 +2011,7 @@ fn the_snapshot_carries_finished_work_in_brief_and_a_task_opens_whole() {
     let brief = row(closed);
     assert_eq!(brief["posts"], 5);
     assert_eq!(brief["brief"], true);
-    for left_out in ["thread", "evidence", "documents"] {
+    for left_out in ["thread", "evidence", "documents", "description", "why"] {
         assert!(brief.get(left_out).is_none(), "{left_out}: {brief}");
     }
     // Opened, a finished task comes whole, each post with its place in the thread.
@@ -2023,6 +2023,7 @@ fn the_snapshot_carries_finished_work_in_brief_and_a_task_opens_whole() {
     assert_eq!(thread[4]["text"], "closed 4");
     assert!(whole["evidence"].is_object(), "{whole}");
     assert_eq!(whole["title"], brief["title"]);
+    assert_eq!(whole["why"][0], "Long done");
     assert!(hq.task_shown(TaskId(9_999)).is_err());
 }
 

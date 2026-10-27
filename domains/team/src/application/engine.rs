@@ -4040,8 +4040,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.task_row(task, &tasks, &goals, &self.store.routines()?, true)
     }
 
-    /// A task as the screen shows it. Finished work comes in brief, with no thread, evidence
-    /// or documents (those of 800 done tasks made the snapshot 1.6 MB on every poll); the
+    /// A task as the screen shows it. Finished work comes in brief, with no thread, evidence,
+    /// documents, description or chain of why (those of 800 done tasks made the snapshot 1.6 MB on every poll); the
     /// owner's screen asks for it `whole` when it is opened.
     fn task_row(
         &self,
@@ -4051,25 +4051,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         routines: &[crate::domain::Routine],
         whole: bool,
     ) -> Done<serde_json::Value> {
-        let mut chain = vec![t.title.clone()];
-        let mut parent = t.parent;
-        while let Some(up) = parent.and_then(|id| tasks.iter().find(|x| x.id == id)) {
-            chain.push(up.title.clone());
-            parent = up.parent;
-        }
-        if let Some(goal) = goals.iter().find(|g| g.id == t.goal) {
-            chain.push(format!("Goal: {}", goal.title));
-        }
         let thread = self.store.thread(t.id)?;
         let (documents, branches) = self.documents_shown(t.id)?;
         let mut row = json!({
             "id": t.id.0, "goal": t.goal.0, "project": t.project.map(|p| p.0),
             "parent": t.parent.map(|p| p.0), "title": t.title,
-            "description": t.description, "owner": t.owner.map(|o| o.0),
+            "owner": t.owner.map(|o| o.0),
             "assignee": t.assignee.map(|a| a.0), "status": t.status.name(),
             "priority": t.priority.name(), "depth": t.depth,
             "waits_on": t.waits_on.iter().map(|w| w.0).collect::<Vec<_>>(),
-            "gate": self.store.gate(t.id)?, "why": chain,
+            "gate": self.store.gate(t.id)?,
             "routine": routines.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
             "posts": thread.len(), "brief": !whole,
             // The wing's branches on it (ADR 0115).
@@ -4081,6 +4072,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "successor": c.successor.map(|s| s.0), "by": c.by, "at": c.at })),
         });
         if whole {
+            row["description"] = json!(t.description);
+            let mut chain = vec![t.title.clone()];
+            let mut parent = t.parent;
+            while let Some(up) = parent.and_then(|id| tasks.iter().find(|x| x.id == id)) {
+                chain.push(up.title.clone());
+                parent = up.parent;
+            }
+            if let Some(goal) = goals.iter().find(|g| g.id == t.goal) {
+                chain.push(format!("Goal: {}", goal.title));
+            }
+            row["why"] = json!(chain);
             // Each post with its place in the thread, which the activity log finds it by.
             row["thread"] = thread
                 .iter()
