@@ -336,21 +336,6 @@ pub const WINDOWS: [(Millis, &str); 2] = [(DAY, "24 h"), (7 * DAY, "7 d")];
 /// guards' windows (ADR 0124, amended).
 pub const RESCUE_WINDOW_MS: Millis = 7 * DAY;
 
-/// Whether the event feed still reaches back to `from`, the start of a window counted over it.
-/// The node prunes the feed to the newest events it keeps, so a count over events is a whole
-/// count only if nothing inside the window was pruned. `oldest_kept` is the oldest event the feed
-/// holds: its place in the feed and when it happened; `None` for an empty feed. The first event
-/// ever is place 1, so an oldest kept event after it means events were pruned; then the feed
-/// reaches the window if that event is no newer than the window's start. A feed never pruned
-/// holds everything there was.
-#[must_use]
-pub const fn feed_reaches(from: Millis, oldest_kept: Option<(i64, Millis)>) -> bool {
-    match oldest_kept {
-        None => true,
-        Some((place, at)) => place <= 1 || at <= from,
-    }
-}
-
 // ---- the stopped diagnosis ------------------------------------------------------------------
 
 /// Whether open work is moving, and if it stopped, whether on purpose (ADR 0124).
@@ -708,14 +693,7 @@ pub enum Raised {
     Hold,
 }
 
-impl Raised {
-    /// Whether the detection is news: a finding opens, or opens again, and whoever is told of
-    /// findings may be told.
-    #[must_use]
-    pub const fn is_news(self) -> bool {
-        matches!(self, Self::Open | Self::Renew | Self::Reopen)
-    }
-}
+impl Raised {}
 
 /// What a detection with this `mark` does to the key's `latest` finding (ADR 0132); `step` is
 /// how much the mark must have grown past the judged finding's for the evidence to count as new
@@ -1059,19 +1037,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_a_finding_that_opens_is_news() {
-        for (how, news) in [
-            (Raised::Open, true),
-            (Raised::Renew, true),
-            (Raised::Reopen, true),
-            (Raised::Refresh, false),
-            (Raised::Hold, false),
-        ] {
-            assert_eq!(how.is_news(), news, "{how:?}");
-        }
-    }
-
     /// Talk is coordination, by the turns' labels: a turn that took
     /// a first reading, or nothing, is neither; a review round and a re-check are.
     #[test]
@@ -1179,21 +1144,6 @@ mod tests {
         assert_eq!(turn_kind(&asked), TurnKind::Coordination);
         assert_eq!(turn_kind(&seen(Label::Blocked)), TurnKind::Neither);
         assert_eq!(turn_kind(&seen(Label::Empty)), TurnKind::Neither);
-    }
-
-    /// A count over the event feed is a whole count only if nothing inside its window was pruned.
-    #[test]
-    fn the_feed_reaches_a_window_unless_events_inside_it_were_pruned() {
-        let from = 10_000;
-        // Nothing in it at all, or never pruned (the first event ever is place 1): all there was.
-        assert!(feed_reaches(from, None));
-        assert!(feed_reaches(from, Some((1, from + 5_000))));
-        // Pruned, and the oldest kept event is no newer than the window's start: it reaches.
-        assert!(feed_reaches(from, Some((500, from))));
-        assert!(feed_reaches(from, Some((500, from - 1))));
-        // Pruned, and the oldest kept event is inside the window: some of it is gone.
-        assert!(!feed_reaches(from, Some((500, from + 1))));
-        assert!(!feed_reaches(from, Some((2, from + 5_000))));
     }
 
     #[test]

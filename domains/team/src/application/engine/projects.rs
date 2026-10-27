@@ -1018,16 +1018,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- what members and the screen are told ----------------------------------------------
 
-    /// How many projects wait for the CEO's decision.
-    pub(super) fn proposals_waiting(&self) -> Done<usize> {
-        Ok(self
-            .store
-            .projects()?
-            .iter()
-            .filter(|p| p.status == ProjectStatus::Proposed)
-            .count())
-    }
-
     /// The projects as the screen shows them, with this month's money.
     pub(super) fn projects_shown(&self, tasks: &[Task]) -> Done<serde_json::Value> {
         let (from, until) = self.month();

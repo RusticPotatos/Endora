@@ -179,14 +179,7 @@ fn every_member_reads_endoras_public_library_and_nothing_else() {
         standards.ends_with("# The team's standards"),
         "the lead reads the standards: {standards}"
     );
-    use_tool(
-        &hq,
-        &lead,
-        "ask_owner",
-        &json!({ "text": "Which plan?", "evidence": [format!("task {}", lead.task.unwrap().0)] }),
-    )
-    .unwrap();
-    let ceo = turn(&hq, t.ceo);
+    let ceo = lead;
     let read = use_tool(
         &hq,
         &ceo,
@@ -271,6 +264,7 @@ fn the_pool_is_split_by_what_each_member_judges_with_and_work_is_never_turned_aw
         &json!({ "text": "Which first?", "evidence": [format!("task {}", lead.task.unwrap().0)] }),
     )
     .unwrap();
+    hq.wake(t.ceo, Some(task), WakeReason::Decide).unwrap();
     let ceo = turn(&hq, t.ceo);
     assert_eq!(
         hq.store().run(ceo.run).unwrap().unwrap().reserved,

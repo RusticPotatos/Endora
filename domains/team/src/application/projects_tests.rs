@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use serde_json::json;
 
-use super::engine::{Asked, Author, Engine, EngineError, Settings};
+use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::{call, tools};
 use crate::domain::money::DOLLAR;
@@ -38,7 +38,6 @@ fn engine(clock: &Hands) -> Hq<'_> {
 }
 
 struct Team {
-    ceo: MemberId,
     lead: MemberId,
     dev: MemberId,
     goal: GoalId,
@@ -47,23 +46,15 @@ struct Team {
 /// The CEO on Opus, a lead on Sonnet, a developer on the house's model, and the home lab's
 /// goal.
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-        hq.set_brain(id, "claude-opus-5-5").unwrap();
-        id
-    };
+    let ceo = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+    hq.set_brain(ceo, "claude-opus-5-5").unwrap();
     let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
     let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
-    Team {
-        ceo,
-        lead,
-        dev,
-        goal,
-    }
+    Team { lead, dev, goal }
 }
 
 fn task_in(
@@ -409,24 +400,6 @@ fn a_pause_the_owner_made_holds_every_turn_and_never_lifts_itself() {
             asked: "resume".to_owned()
         }))
     );
-}
-
-#[test]
-fn a_question_goes_to_whom_the_member_reports_and_past_one_who_is_paused() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let second = hq.hire("Grace", Role::Lead, 25, 2, 0).unwrap();
-    hq.set_reports_to(t.dev, second).unwrap();
-    let ask = |title: &str| {
-        let task = task_in(&hq, t.goal, None, t.dev, title).unwrap();
-        let context = turn(&hq, t.dev);
-        assert_eq!(context.task, Some(task));
-        hq.ask_owner(context.run, "May I restart it?").unwrap()
-    };
-    assert_eq!(ask("Fix sonarr"), Asked::Up(second));
-    hq.pause(second, true).unwrap();
-    assert_eq!(ask("Fix radarr"), Asked::Up(t.ceo), "Grace reports to Mara");
 }
 
 #[test]

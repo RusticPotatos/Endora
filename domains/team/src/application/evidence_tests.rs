@@ -750,48 +750,6 @@ fn each_turns_label_comes_from_what_it_did() {
 }
 
 #[test]
-fn asking_up_the_chain_is_blocked_and_the_testers_send_back_is_a_finished_test() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq, true, true);
-    let task = owners_task(&hq, &t, t.dev, "Look at sonarr");
-    let linus = turn(&hq, t.dev);
-    use_tool(
-        &hq,
-        &linus,
-        "ask_owner",
-        &json!({ "text": "Which sonarr?" }),
-    )
-    .unwrap();
-    assert_eq!(label(&hq, linus.run), Some(Label::Blocked));
-    let ada = turn(&hq, t.lead);
-    end(&hq, &clock, &ada);
-
-    hq.post(Author::Owner, task, "The main one.").unwrap();
-    let again = turn(&hq, t.dev);
-    use_tool(&hq, &again, "claim", &json!({ "task": task.0 })).unwrap();
-    use_tool(
-        &hq,
-        &again,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": "done",
-                 "evidence": [format!("task {}", task.0)] }),
-    )
-    .unwrap();
-    end(&hq, &clock, &again);
-    let grace = turn(&hq, t.tester.unwrap());
-    use_tool(
-        &hq,
-        &grace,
-        "review",
-        &json!({ "task": task.0, "verdict": "send_back", "notes": "No reading shows it." }),
-    )
-    .unwrap();
-    end(&hq, &clock, &grace);
-    assert_eq!(label(&hq, grace.run), Some(Label::Advanced));
-}
-
-#[test]
 fn the_back_off_holds_turns_that_only_talk_and_not_those_that_read() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);

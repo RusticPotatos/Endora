@@ -244,17 +244,6 @@ impl AreaReport {
     }
 }
 
-/// The next moment at `hour` o'clock by the owner's clock after `now`.
-#[must_use]
-pub const fn next_at_hour(now: Millis, offset_minutes: i64, hour: i64) -> Millis {
-    let day = super::money::day_of(now, offset_minutes);
-    let today = super::money::day_start(day, offset_minutes) + hour * 3_600_000;
-    if today > now {
-        return today;
-    }
-    today + super::money::DAY_MS
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,22 +318,6 @@ mod tests {
         assert_eq!(
             report.said(),
             "  Moved: #667 closed\n  Stuck: nothing\n  Needs: a gluetun change\n  Proposes: pin gluetun\n"
-        );
-    }
-
-    #[test]
-    fn the_report_is_due_at_the_owners_six_in_the_evening() {
-        // 17 October 2026, at noon UTC, is 08:00 EDT: due at 18:00 EDT, 22:00 UTC.
-        let noon_utc: Millis = 1_792_238_400_000;
-        let edt = -4 * 60;
-        assert_eq!(
-            next_at_hour(noon_utc, edt, REPORT_HOUR),
-            noon_utc + 10 * 3_600_000
-        );
-        // After six, the next day's.
-        assert_eq!(
-            next_at_hour(noon_utc + 11 * 3_600_000, edt, REPORT_HOUR),
-            noon_utc + 34 * 3_600_000
         );
     }
 }

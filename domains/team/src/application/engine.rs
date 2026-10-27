@@ -2027,15 +2027,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         // The tester's verdict is her deliverable, whichever way it goes (ADR 0114).
         self.mark_progress(reviewer.id, task)?;
-        // A CEO's decision for the board goes back to the CEO, who wrote it: the task's member
-        // cannot redo it (#796 woke its lead, who asked the CEO again, round and round).
-        let drafter = self.ceos_draft(&current)?.map(|(ceo, _)| ceo.id);
         if !approve {
             self.store.set_task_status(task, TaskStatus::Doing)?;
             self.post_own_held_lock(reviewer.id, task, &format!("Sent back: {notes}"), &[])?;
             self.emit_status(&current, TaskStatus::Doing)?;
             self.emit_sent_back(task, reviewer.id, "tester", reason)?;
-            if let Some(owner) = drafter.or(worker) {
+            if let Some(owner) = worker {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
             }
             // In the loops a send-back is one of the item's failures (ADR 0142).
@@ -2340,30 +2337,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- runs --------------------------------------------------------------------------------
 
-    /// Why a turn was started: the reason of the wake that queued it.
-    /// How hard the member's Claude tries this turn, by its role and what the turn is for
-    /// (see [`effort::effort_for`]): for the CEO, what the turn is for.
-    fn effort_of(&self, member: &Member, run: &Run) -> Done<Option<Effort>> {
-        if member.role != Role::Ceo {
-            return Ok(effort::effort_for(
-                member.brain,
-                member.role,
-                effort::Weight::Ordinary,
-            ));
-        }
-        let (drafted, review) = match run.task {
-            Some(task) => (
-                self.ceos_draft(&self.task(task)?)?.is_some(),
-                self.routine_of(task)?.is_some(),
-            ),
-            None => (false, false),
-        };
-        let proposals = self.proposals_waiting()? > 0;
-        let weight = WakeReason::from_name(self.reason_for(run)?)
-            .map_or(effort::Weight::Ordinary, |r| {
-                effort::ceo_weight(r, review, proposals, drafted)
-            });
-        Ok(effort::effort_for(member.brain, member.role, weight))
+    /// How hard the member's Claude tries this turn (see [`effort::effort_for`]).
+    fn effort_of(&self, member: &Member) -> Option<Effort> {
+        effort::effort_for(member.brain, member.role, effort::Weight::Ordinary)
     }
 
     fn reason_for(&self, run: &Run) -> Done<&'static str> {
@@ -3134,7 +3110,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 task: run.task,
                 told: run.told.clone(),
                 token: self.store.issue_token(run.id)?,
-                effort: self.effort_of(&on, &run)?,
+                effort: self.effort_of(&on),
             };
             if let Err(why) = self.runner.start(&context) {
                 self.fail(run, &format!("could not start: {}", why.0), Fault::Worker)?;
@@ -3187,18 +3163,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// A member asks the owner something about its task: a question on the desk, and the end
     /// of its turn, which can do nothing useful until the owner has seen it. Seeing it wakes
     /// that member again. One question a member about a task waits at a time, so a turn
-    /// cannot fill the owner's desk.
-    ///
-    /// While the team has a CEO at work, nobody's question but the CEO's reaches the desk
-    /// (ADR 0111): it goes up the chain instead (see [`chain::escalation`]), posted in the task's
-    /// thread for the one above, who is woken to answer there. The CEO's is a decision for the
-    /// board ([`Self::ask_board`]); the reviewer's, about the CEO's decision it checked, passes
-    /// that decision on to the board's desk.
-    ///
-    /// A question about the home lab, from anyone but the reviewer, goes to the reviewer
-    /// first (see [`review::goes_to_review`]): the task moves to `in_review` with the draft in
-    /// its thread, and the reviewer is woken to check it. Whatever reaches the desk lists the
-    /// container-like names the home lab does not have (see [`review::checked`]).
+    /// cannot fill the owner's desk. Whatever reaches the desk lists the container-like names
+    /// the home lab does not have (see [`review::checked`]).
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a turn with no task; [`EngineError::Refused`] with
@@ -3227,74 +3193,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let text = cut(record::scrub(text).trim(), 1200);
         let lab = self.lab_names();
         let turn = self.running(run)?;
-        let task = self.task(
-            turn.task
-                .ok_or(EngineError::Unknown("task for this turn"))?,
-        )?;
-        let member = self.member(turn.member)?;
-        // In the loops there is no chain: a question goes to the owner's desk (ADR 0142).
-        if self.in_the_loops(member.id)? {
-            let text = self.with_evidence(&text, cited)?;
-            let checked = review::checked(&text, lab.as_deref());
-            return self
-                .ask_held_lock(run, "question", &|name| format!("{name} asks: {checked}"))
-                .map(Asked::Desk);
-        }
-        // The CEO's word to the board is a decision, with its recommendation (ADR 0111).
-        if member.role == Role::Ceo {
-            let decision =
-                Decision::read(&text).ok_or(EngineError::Refused(Refusal::NotADecision))?;
-            return self.to_the_board(turn, &task, &member, &decision, cited);
-        }
-        // The reviewer passing on the CEO's decision, checked: it reaches the board as the
-        // CEO's, as the reviewer wrote it, or as the CEO did if the reviewer's lost its shape.
-        if member.role == Role::Reviewer {
-            if let Some((ceo, drafted)) = self.ceos_draft(&task)? {
-                self.judge_decision(cited, turn.id)?;
-                let decision = Decision::read(&text).unwrap_or(drafted);
-                let evidence = self.evidence_said(cited)?;
-                return self
-                    .board_desk(turn, &task, &ceo, &decision, Some(&member), &evidence)
-                    .map(Asked::Desk);
-            }
-        }
-        // Up the chain, while the team has a CEO at work; otherwise as before there was one.
-        if let Some(above) = self.asked_of(&member, Some(&task))? {
-            // The lead sends something up to the CEO only on evidence (ADR 0114).
-            if member.role == Role::Lead && above.role == Role::Ceo {
-                self.judge_decision(cited, turn.id)?;
-            }
-            let text = self.with_evidence(&text, cited)?;
-            return self.up_the_chain(turn, &task, &member, &above, &text);
-        }
+        turn.task
+            .ok_or(EngineError::Unknown("task for this turn"))?;
+        // There is no chain: a question goes to the owner's desk (ADR 0142).
         let text = self.with_evidence(&text, cited)?;
-        if let Some(reviewer) = self.reviewer_for(&member, &task, &text, lab.as_deref())? {
-            return self.to_review(turn, &task, &member, reviewer, &text);
-        }
         let checked = review::checked(&text, lab.as_deref());
         self.ask_held_lock(run, "question", &|name| format!("{name} asks: {checked}"))
             .map(Asked::Desk)
-    }
-
-    /// The CEO puts a decision to the board, about its turn's task (ADR 0111): checked by the
-    /// reviewer first, as every draft for the owner is, then on the board's desk with its
-    /// recommendation. Its turn ends either way.
-    ///
-    /// # Errors
-    /// [`Refusal::OnlyTheCeo`] for any other member, and what [`Self::ask_owner`] refuses.
-    pub fn ask_board(
-        &self,
-        run: RunId,
-        decision: &Decision,
-        cited: &[crate::domain::Ref],
-    ) -> Done<Asked> {
-        let _held = self.held();
-        let (turn, ceo) = self.the_ceos_turn(run)?;
-        let task = self.task(
-            turn.task
-                .ok_or(EngineError::Unknown("task for this turn"))?,
-        )?;
-        self.to_the_board(turn, &task, &ceo, decision, cited)
     }
 
     /// A question with the evidence it cites under it, by id.
@@ -3303,140 +3208,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(text.to_owned());
         }
         Ok(format!("{text}\nEvidence: {}", self.evidence_said(cited)?))
-    }
-
-    /// The CEO's decision on its way to the board: only on evidence from HQ's record (ADR
-    /// 0114), through the reviewer first.
-    fn to_the_board(
-        &self,
-        run: Run,
-        task: &Task,
-        ceo: &Member,
-        decision: &Decision,
-        cited: &[crate::domain::Ref],
-    ) -> Done<Asked> {
-        self.judge_decision(cited, run.id)?;
-        let evidence = self.evidence_said(cited)?;
-        let reviewer = self
-            .reviewer()?
-            .filter(|r| r.at_work() && r.id != ceo.id && !task.status.finished());
-        if let Some(reviewer) = reviewer {
-            let text = format!("{}\nEvidence: {evidence}", decision.text());
-            return self.to_review(run, task, ceo, reviewer.id, &text);
-        }
-        self.board_desk(run, task, ceo, decision, None, &evidence)
-            .map(Asked::Desk)
-    }
-
-    /// The CEO's decision on the board's desk, from the CEO (so the board's word wakes it),
-    /// saying who checked it; and the end of the turn that put it there.
-    fn board_desk(
-        &self,
-        run: Run,
-        task: &Task,
-        ceo: &Member,
-        decision: &Decision,
-        checked_by: Option<&Member>,
-        evidence: &str,
-    ) -> Done<crate::domain::DeskId> {
-        if self.waiting_question(ceo.id, task.id)? {
-            return Err(EngineError::Refused(Refusal::AlreadyAsked));
-        }
-        let mut text = decision.text();
-        // What the CEO cited, and what the reviewer did when she checked it.
-        let drafted = self
-            .store
-            .thread(task.id)?
-            .into_iter()
-            .rev()
-            .find(|p| p.text.starts_with(review::DRAFT) && p.author == ceo.name)
-            .and_then(|p| {
-                p.text
-                    .lines()
-                    .find_map(|l| l.strip_prefix("Evidence: ").map(str::to_owned))
-            });
-        if let Some(cited) = drafted.filter(|_| checked_by.is_some()) {
-            text.push_str(&format!("\nEvidence: {cited}"));
-        }
-        if !evidence.is_empty() {
-            let whose = if checked_by.is_some() {
-                "Checked against"
-            } else {
-                "Evidence"
-            };
-            text.push_str(&format!("\n{whose}: {evidence}"));
-        }
-        if let Some(reviewer) = checked_by {
-            text.push_str(&format!("\nChecked by {}, the reviewer.", reviewer.name));
-        }
-        // The same decision from another task, already waiting, is one card (ADR 0124).
-        let desk = self.ask_on_the_desk("decision", task.id, ceo.id, &text)?;
-        let id = run.id;
-        self.end_blocked(run, RunStatus::Succeeded, "put a decision to the board")?;
-        self.runner.stop(id, self.settings.grace);
-        Ok(desk)
-    }
-
-    /// The CEO's decision waiting in a task's review, if that is what the reviewer has before
-    /// it: the newest of a draft for the owner and a move to review is a draft of the CEO's.
-    fn ceos_draft(&self, task: &Task) -> Done<Option<(Member, Decision)>> {
-        if task.status != TaskStatus::InReview {
-            return Ok(None);
-        }
-        let newest = self
-            .store
-            .thread(task.id)?
-            .into_iter()
-            .rev()
-            .find(|p| p.text.starts_with(review::DRAFT) || p.text.contains(" → in_review"));
-        let Some(draft) = newest.filter(|p| p.text.starts_with(review::DRAFT)) else {
-            return Ok(None);
-        };
-        let ceo = self
-            .store
-            .members()?
-            .into_iter()
-            .find(|m| m.role == Role::Ceo && m.name == draft.author);
-        Ok(ceo.and_then(|ceo| Decision::read(&draft.text).map(|d| (ceo, d))))
-    }
-
-    /// Who `member` asks up the chain of command, if anyone: whom it reports to, or the next
-    /// one up while that one is paused (ADR 0113, [`chain::escalation`]); the CEO at work when
-    /// the chain ends before it. Nobody for the CEO, who asks the board, and nobody while the
-    /// team has no CEO at work: then the team works as it did before there was one.
-    fn above(&self, member: &Member) -> Done<Option<Member>> {
-        let members = self.store.members()?;
-        let ceo = members
-            .iter()
-            .filter(|m| m.role == Role::Ceo && m.at_work() && m.id != member.id)
-            .min_by_key(|m| m.id)
-            .cloned();
-        if member.role == Role::Ceo || ceo.is_none() {
-            return Ok(None);
-        }
-        let up = chain::escalation(member, &members)
-            .and_then(|id| members.iter().find(|m| m.id == id).cloned());
-        Ok(up.or(ceo))
-    }
-
-    /// Whom `member` asks about `task` (ADR 0111, amended): the lead of the task's project,
-    /// when it is in one and that lead is at work and not the asker; otherwise up its own
-    /// chain ([`Self::above`]). Live, the tester asked the lead she reports to about a task of
-    /// another lead's project, who knew nothing of it. Nobody while the team has no CEO at work.
-    fn asked_of(&self, member: &Member, task: Option<&Task>) -> Done<Option<Member>> {
-        let Some(above) = self.above(member)? else {
-            return Ok(None);
-        };
-        let Some(project) = task.and_then(|t| t.project) else {
-            return Ok(Some(above));
-        };
-        let lead = self.project(project)?.lead;
-        let lead = self
-            .store
-            .members()?
-            .into_iter()
-            .find(|m| m.id == lead && m.at_work() && m.id != member.id);
-        Ok(Some(lead.unwrap_or(above)))
     }
 
     /// Whether a turn is work, on the house's model, rather than judgment on Claude (ADR 0131).
@@ -3471,99 +3242,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         self.store.set_setting(&key, &(done + 1).to_string())?;
         Ok(true)
-    }
-
-    /// A member's question, up the chain: posted in the task's thread for the one above, the
-    /// asker's turn ended, and the one above woken to answer there. One question a member
-    /// about a task waits for its answer at a time.
-    fn up_the_chain(
-        &self,
-        run: Run,
-        task: &Task,
-        member: &Member,
-        above: &Member,
-        text: &str,
-    ) -> Done<Asked> {
-        let thread = self.store.thread(task.id)?;
-        let posts: Vec<(&str, &str)> = thread
-            .iter()
-            .map(|p| (p.author.as_str(), p.text.as_str()))
-            .collect();
-        let waiting = chain::unanswered(&posts, &above.name)
-            .iter()
-            .any(|(asker, _)| *asker == member.name);
-        if waiting {
-            return Err(EngineError::Refused(Refusal::AlreadyAsked));
-        }
-        self.post_own_held_lock(member.id, task.id, &chain::question(&above.name, text), &[])?;
-        let id = run.id;
-        self.end_blocked(
-            run,
-            RunStatus::Succeeded,
-            &format!("asked {}, the {}", above.name, above.role.name()),
-        )?;
-        self.wake_held_lock(above.id, Some(task.id), WakeReason::QuestionAsked)?;
-        self.runner.stop(id, self.settings.grace);
-        Ok(Asked::Up(above.id))
-    }
-
-    /// The reviewer a member's question goes to before the owner's desk, if it goes to one:
-    /// the first member with the reviewer's role, for an open task of the home lab's or a
-    /// question that speaks of containers, from anyone but that reviewer.
-    fn reviewer_for(
-        &self,
-        member: &Member,
-        task: &Task,
-        text: &str,
-        lab: Option<&[String]>,
-    ) -> Done<Option<MemberId>> {
-        if task.status.finished() {
-            return Ok(None);
-        }
-        let reviewer = self.reviewer()?;
-        let the_home_labs = self.the_home_labs(task)?;
-        let speaks = review::names_containers(text, lab.unwrap_or_default());
-        let goes = review::goes_to_review(
-            member.role == Role::Reviewer,
-            reviewer.is_some(),
-            the_home_labs,
-            speaks,
-        );
-        Ok(reviewer.filter(|_| goes).map(|r| r.id))
-    }
-
-    /// A member's question, as a draft for the reviewer: the task moves to `in_review`, the
-    /// draft goes in its thread, the member's turn ends, and the reviewer is woken to check it.
-    fn to_review(
-        &self,
-        run: Run,
-        task: &Task,
-        member: &Member,
-        reviewer: MemberId,
-        text: &str,
-    ) -> Done<Asked> {
-        if self.waiting_question(member.id, task.id)? {
-            return Err(EngineError::Refused(Refusal::AlreadyAsked));
-        }
-        // The draft is the asker's work: a task nobody had taken becomes theirs, so the
-        // reviewer, starting its turn on it, cannot take it and then review its own.
-        if task.owner.is_none() {
-            self.store.claim(task.id, member.id)?;
-        }
-        if task.status != TaskStatus::InReview {
-            self.store.set_task_status(task.id, TaskStatus::InReview)?;
-            self.emit_status(task, TaskStatus::InReview)?;
-        }
-        self.post_own_held_lock(member.id, task.id, &format!("{}{text}", review::DRAFT), &[])?;
-        let id = run.id;
-        self.end_blocked(
-            run,
-            RunStatus::Succeeded,
-            "sent a draft for the owner to review",
-        )?;
-        self.wake_held_lock(reviewer, Some(task.id), WakeReason::ReviewRequested)?;
-        self.runner.stop(id, self.settings.grace);
-        Ok(Asked::Review(reviewer))
     }
 
     /// Whether a question or an approval from `member` about `task` still waits on the desk.

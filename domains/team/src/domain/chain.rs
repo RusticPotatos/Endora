@@ -39,18 +39,6 @@ pub fn direction(to: &str, text: &str, evidence: &str) -> String {
     format!("{DIRECTION_FOR}{to}: {}\nEvidence: {evidence}", text.trim())
 }
 
-/// The newest direction in a thread (each post its author's name and its text, oldest first)
-/// for `to`: who gave it, and what it says, without its evidence line.
-#[must_use]
-pub fn latest_direction(thread: &[(&str, &str)], to: &str) -> Option<(String, String)> {
-    let asked = format!("{DIRECTION_FOR}{to}: ");
-    thread.iter().rev().find_map(|(author, text)| {
-        let said = text.strip_prefix(asked.as_str())?;
-        let said = said.split("\nEvidence: ").next().unwrap_or(said);
-        Some(((*author).to_owned(), said.to_owned()))
-    })
-}
-
 /// Who a member in `role` reports to when it joins (`members` being the team before it):
 /// the lead to the CEO; the developer, the researcher and the reviewer to the lead, or the
 /// CEO when there is no lead; the CEO to nobody, which is the board. Each the earliest hired.
