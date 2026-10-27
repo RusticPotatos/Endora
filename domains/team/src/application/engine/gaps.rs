@@ -43,15 +43,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         .transpose()?;
                     return Ok((there != Some(true)).then(|| "there is no such page".to_owned()));
                 }
-                Address::Story(handle) => {
-                    return Ok(match self.story_called(&handle)? {
-                        None => Some("there is no such story".to_owned()),
-                        Some(s) if s.stage == Stage::Retired => {
-                            Some(format!("the story is retired ({})", s.why))
-                        }
-                        Some(_) => None,
-                    });
-                }
                 Address::Section { page, anchor } => {
                     let there = PageKey::parse(&page)
                         .map(|k| self.page_exists(k))

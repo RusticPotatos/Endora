@@ -20,8 +20,6 @@ pub const WALL_ROWS: i64 = 2;
 pub const WALL_ROW: i64 = 1;
 /// The most items the floor holds.
 pub const MOST_ITEMS: usize = 40;
-/// The most changes one proposal makes.
-pub const MOST_CHANGES: usize = 5;
 
 /// What the team may put in the office.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

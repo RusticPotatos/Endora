@@ -169,7 +169,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             };
             pieces.push(Piece::new(
                 "what changed",
-                self.changed_since(member, since)?,
+                self.changed_since(since)?,
                 Weight::Core,
             ));
         }
@@ -380,8 +380,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
-    /// What changed on the house page and in a member's stories since `since`.
-    fn changed_since(&self, member: &Member, since: Millis) -> Done<String> {
+    /// What changed on the house page since `since`.
+    fn changed_since(&self, since: Millis) -> Done<String> {
         let mut lines: Vec<String> = Vec::new();
         for s in self.store.sections()? {
             if s.updated_at > since {
@@ -399,18 +399,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 lines.push(format!("- {}, {}: {}\n", self.said_day(l.at), l.by, l.line));
             }
         }
-        let members = self.store.members()?;
-        let seen = self.scopes_seen(member, &members);
-        for s in self.store.stories()? {
-            if seen.contains(&s.scope) && s.written_at > since {
-                lines.push(format!("- Story {} was told: {}\n", s.handle, s.instead));
-            }
-        }
         let day = self.said_day(since);
         if lines.is_empty() {
-            return Ok(format!(
-                "Nothing on the house page or in your stories changed since {day}.\n"
-            ));
+            return Ok(format!("Nothing on the house page changed since {day}.\n"));
         }
         let earlier = lines.len().saturating_sub(CHANGED_MOST);
         let mut said = format!("What changed since {day}:\n");

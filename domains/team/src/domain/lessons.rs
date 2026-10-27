@@ -4,16 +4,10 @@
 //! every turn and the owner edits. The notes stay within their limit: a lesson that would not
 //! fit is refused, and the owner tidies them.
 
-use super::work::{Millis, Refusal, Role};
+use super::work::{Millis, Refusal};
 
 /// The most characters one lesson may run to.
 pub const LESSON_MOST: usize = 300;
-
-/// Whether a member in `role` keeps the team's lessons: the lead and the reviewer.
-#[must_use]
-pub const fn keeps_lessons(role: Role) -> bool {
-    matches!(role, Role::Lead | Role::Reviewer)
-}
 
 /// The months' short names, January first.
 const MONTHS: [&str; 12] = [
@@ -145,11 +139,5 @@ mod tests {
         );
         assert_eq!(appended("123456", "- a", 10), Ok("123456\n- a".to_owned()));
         assert_eq!(appended("1234567", "- a", 10), Err(Refusal::NotesFull));
-    }
-
-    #[test]
-    fn only_the_lead_and_the_reviewer_keep_lessons() {
-        assert!(keeps_lessons(Role::Lead) && keeps_lessons(Role::Reviewer));
-        assert!(!keeps_lessons(Role::Developer) && !keeps_lessons(Role::Researcher));
     }
 }

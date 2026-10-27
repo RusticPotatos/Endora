@@ -242,7 +242,10 @@ mod tests {
         let (status, world) = send(&app, "GET", "/v1/world", Some(TOKEN), json!(null)).await;
         assert_eq!(status, StatusCode::OK, "{world}");
         assert_eq!(world["pages"][0]["slug"], "house");
-        assert_eq!(world["stories"], json!([]));
+        assert!(
+            world.get("stories").is_none(),
+            "stories went with the world's curation"
+        );
         let (status, export) =
             send(&app, "GET", "/v1/world/export", Some(TOKEN), json!(null)).await;
         assert_eq!(status, StatusCode::OK);

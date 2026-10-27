@@ -266,13 +266,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not seed the house log: {e}"),
         }
-        // The team's world (ADR 0122), once: the house log's lines into the house page's
-        // timeline, the lessons into stories to retell. Nothing old is deleted.
-        match hq.migrate_world() {
-            Ok(true) => println!("hq: moved the house log and the lessons into the team's world"),
-            Ok(false) => {}
-            Err(e) => eprintln!("hq: could not move the house log into the team's world: {e}"),
-        }
         // The team's map (ADR 0126): a page for every area, project, goal and role, made once
         // each from the team as it stands. Nothing is changed or deleted.
         match hq.migrate_map() {
@@ -282,12 +275,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 made.areas, made.projects, made.goals, made.roles
             ),
             Err(e) => eprintln!("hq: could not make the map's pages: {e}"),
-        }
-        // What the move dated wrongly, mended once (ADR 0122).
-        match hq.repair_world_dates() {
-            Ok(0) => {}
-            Ok(n) => println!("hq: mended the dates of {n} lines of the house page's timeline"),
-            Err(e) => eprintln!("hq: could not mend the house page's dates: {e}"),
         }
         // The office's decorations as data (ADR 0119), once: the team moves them from there.
         match hq.seed_office() {

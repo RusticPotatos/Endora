@@ -6,8 +6,8 @@
 
 use super::ports::Stored;
 use crate::domain::situations::Briefed;
-use crate::domain::world::{Handover, Section, Story};
-use crate::domain::world_migration::{Fix, Plan, Row, TimelineLine};
+use crate::domain::world::{Handover, Section};
+use crate::domain::world_migration::TimelineLine;
 use crate::domain::{MemberId, Millis, RunId, TaskId};
 
 /// The world's part of HQ's store.
@@ -60,24 +60,6 @@ pub trait WorldStore {
     /// [`super::ports::StoreError`] if the store fails.
     fn add_timeline(&self, line: &TimelineLine, run: Option<RunId>) -> Stored<i64>;
 
-    /// Every story, oldest first.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails.
-    fn stories(&self) -> Stored<Vec<Story>>;
-
-    /// Writes a story: a new one when its id is 0 (its id is returned), else the one with its id.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails, or the handle is taken.
-    fn save_story(&self, story: &Story) -> Stored<i64>;
-
-    /// Notes that a post cited a story by its handle.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails.
-    fn touch_story(&self, id: i64, at: Millis) -> Stored<()>;
-
     /// Keeps a handover note.
     ///
     /// # Errors
@@ -106,26 +88,4 @@ pub trait WorldStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn briefed(&self, run: RunId) -> Stored<Option<Briefed>>;
-
-    /// The rows of a page's timeline written by `by`, oldest first, with their ids.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails.
-    fn timeline_rows_by(&self, page: &str, by: &str) -> Stored<Vec<Row>>;
-
-    /// Mends timeline rows, once: in one transaction with the mark that it is done, and with
-    /// each row's old date and text kept aside, so a second start changes nothing and nothing
-    /// is lost. The one change a timeline ever takes. Returns whether it was applied now.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails; nothing is applied then.
-    fn repair_timeline(&self, fixes: &[Fix], at: Millis) -> Stored<bool>;
-
-    /// Applies the move of the old record into the world, once: in one transaction with the
-    /// mark that it is done, so a second start changes nothing. Returns whether it was applied
-    /// now.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails; nothing is applied then.
-    fn migrate_world(&self, plan: &Plan, at: Millis) -> Stored<bool>;
 }

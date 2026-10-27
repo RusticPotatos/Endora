@@ -9,14 +9,9 @@
 
 use super::brain::Brain;
 use super::situations::Weight;
-use super::work::{GoalId, Member, MemberId, Millis, ProjectId, Role, RunId};
-use super::world::{DAY_MS, Snapshot};
+use super::work::{GoalId, Member, MemberId, ProjectId, Role};
 use super::{Project, ProjectStatus};
 
-/// The most characters of a gap's `what` and `where_looked`.
-pub const GAP_MOST: usize = 200;
-/// The most proposals a member may have open at once.
-pub const PROPOSALS_OPEN_MOST: usize = 5;
 /// The most characters of a map's lines for a turn on the NAS's model.
 pub const MAP_CHARS_LOCAL: usize = 1_400;
 /// The most characters of a map's lines for a turn on the owner's Mac.
@@ -41,10 +36,6 @@ pub const MAP_SECTIONS_PER_PAGE: usize = 3;
 /// The line that ends a map in a briefing; the Claude Code worker gives the block back to a
 /// turn whose conversation was compacted.
 pub const MAP_END: &str = "(End of your map.)";
-/// How long a quiz stays open for its member to answer.
-pub const QUIZ_OPEN_MS: Millis = 12 * 60 * 60 * 1000;
-/// How many nights running a page must fail the quiz to be flagged to its steward.
-pub const FAILING_NIGHTS: usize = 3;
 
 /// A page of the world, by the data it is about. Its slug is its address: `world:<slug>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -536,17 +527,6 @@ pub fn cited(text: &str) -> Vec<String> {
     found.into_iter().map(|(_, w)| w).collect()
 }
 
-/// A road that does not lead where it says.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Road {
-    /// The section that cites it.
-    pub from: String,
-    /// The address it cites.
-    pub to: String,
-    /// Why it does not resolve, in words.
-    pub why: String,
-}
-
 // ---- proposals and gaps -------------------------------------------------------------------
 
 /// Where a proposal to a page stands.
@@ -578,91 +558,6 @@ impl ProposalStatus {
             .into_iter()
             .find(|s| s.name() == name)
     }
-}
-
-/// A change a member proposes to a page it does not steward: a section, new or revised, that the
-/// steward writes or declines.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PageProposal {
-    /// Its row; 0 before it is kept.
-    pub id: i64,
-    /// The page's slug.
-    pub page: String,
-    /// The section it would revise, by anchor.
-    pub anchor: Option<String>,
-    /// The section's heading.
-    pub heading: String,
-    /// What a briefing shows of it.
-    pub headline: String,
-    /// The rest of it.
-    pub body: String,
-    /// What it rests on.
-    pub evidence: Vec<Snapshot>,
-    /// Who proposed it.
-    pub by: MemberId,
-    /// The turn it was proposed in.
-    pub run: Option<RunId>,
-    /// When.
-    pub at: Millis,
-    /// Where it stands.
-    pub status: ProposalStatus,
-    /// Who decided it: a name, or `the owner`.
-    pub decided_by: String,
-    /// Why it was declined (or a word on accepting).
-    pub why: String,
-    /// When it was decided.
-    pub decided_at: Option<Millis>,
-    /// Whether the proposer has been told how it went.
-    pub told: bool,
-}
-
-/// A thing a member looked for on the map and did not find. Kept apart from a broken road,
-/// which is a road code finds: this is knowledge that is missing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Gap {
-    /// Its row; 0 before it is kept.
-    pub id: i64,
-    /// What was looked for.
-    pub what: String,
-    /// Where the member looked.
-    pub where_looked: String,
-    /// What makes two reports the same gap.
-    pub key: String,
-    /// The steward it goes to; `None` for the CEO.
-    pub steward: Option<MemberId>,
-    /// Who reported it first.
-    pub by: MemberId,
-    /// The turn it was first reported in.
-    pub run: Option<RunId>,
-    /// How many times it was reported.
-    pub count: i64,
-    /// When it was first reported.
-    pub opened_at: Millis,
-    /// When it was last reported.
-    pub last_at: Millis,
-    /// When it was closed, if it was.
-    pub closed_at: Option<Millis>,
-    /// Who closed it.
-    pub closed_by: String,
-    /// How: what was written, or why not.
-    pub how: String,
-}
-
-/// What makes two reports of a gap the same: the first ten words of letters and digits.
-#[must_use]
-pub fn gap_key(what: &str) -> String {
-    what.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .take(10)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Midnight-free day number of `at`: the quiz's night.
-#[must_use]
-pub const fn night_of(at: Millis, offset_minutes: i64) -> i64 {
-    (at + offset_minutes * 60_000).div_euclid(DAY_MS)
 }
 
 #[cfg(test)]
@@ -843,16 +738,5 @@ mod tests {
             .map(str::to_owned)
         );
         assert!(cited("nothing here, not even world: alone").is_empty());
-    }
-
-    #[test]
-    fn two_reports_of_one_gap_share_a_key() {
-        assert_eq!(
-            gap_key("How backups are  verified?"),
-            gap_key("how backups are verified")
-        );
-        assert_ne!(gap_key("how backups run"), gap_key("how restores run"));
-        assert_eq!(night_of(1_792_324_800_000, 0), 20_744);
-        assert_eq!(night_of(1_792_324_800_000, 12 * 60), 20_745);
     }
 }

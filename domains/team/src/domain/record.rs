@@ -134,10 +134,6 @@ pub enum Source {
     Section,
     /// A line of a page's timeline.
     Timeline,
-    /// A story.
-    Story,
-    /// A note in a member's notebook.
-    Note,
     /// A turn's conversation.
     Conversation,
 }
@@ -151,8 +147,6 @@ impl Source {
             Self::Handover => "handover note",
             Self::Section => "world page",
             Self::Timeline => "timeline",
-            Self::Story => "story",
-            Self::Note => "notebook",
             Self::Conversation => "turn",
         }
     }

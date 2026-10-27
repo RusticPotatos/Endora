@@ -1,6 +1,6 @@
 //! Searching HQ's record (ADR 0129). Each kind of record is asked for the passages that hold
 //! any of the question's words, newest first, within the days a search looks back: posts (a turn's
-//! last words among them), handover notes, world sections and timelines, stories, notebooks, and
+//! last words among them), handover notes, world sections and timelines, and
 //! the conversations of turns, which are searched through the full-text index where the SQLite
 //! has one (the bundled one does) and by a bounded scan where it does not. The choosing, the
 //! ranking and the tier rule are the domain's; this only finds.
@@ -94,11 +94,10 @@ impl SqliteTeamStore {
         found.extend(posts(&conn, q)?);
         found.extend(handovers(&conn, q)?);
         found.extend(conversations(&conn, q)?);
-        // What is not about a task or a project, or one member's: the pages and the stories.
+        // What is not about a task or a project, or one member's: the pages.
         if q.task.is_none() && q.project.is_none() {
             found.extend(sections(&conn, q)?);
             found.extend(timelines(&conn, q)?);
-            found.extend(stories(&conn, q)?);
         }
         Ok(found)
     }
@@ -235,38 +234,6 @@ fn timelines(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
             tier: tier(&r[6]),
             indexed: false,
             text: text(&r[3]),
-        })
-        .collect())
-}
-
-fn stories(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
-    let body =
-        "(s.handle || ' ' || s.moment || ' ' || s.reflex || ' ' || s.instead || ' ' || s.because)";
-    let mut args = vec![Value::Integer(q.since)];
-    let mut sql = format!(
-        "SELECT s.handle, s.author, {body}, s.written_at, s.written_in_run, {}
-         FROM stories s WHERE s.written_at >= ? AND {}",
-        read_secrets("s.written_in_run"),
-        like_any(body, &q.terms, &mut args)
-    );
-    if let Some(member) = &q.member {
-        args.push(Value::Text(member.clone()));
-        sql.push_str(" AND s.author = ?");
-    }
-    sql.push_str(" ORDER BY s.written_at DESC LIMIT ?");
-    limit(&mut args);
-    Ok(run_of(conn, &sql, &args)?
-        .iter()
-        .map(|r| Passage {
-            source: Source::Story,
-            locator: format!("story:{}", text(&r[0])),
-            by: text(&r[1]),
-            at: int(&r[3]).unwrap_or(0),
-            task: None,
-            run: int(&r[4]).map(RunId),
-            tier: tier(&r[5]),
-            indexed: false,
-            text: text(&r[2]),
         })
         .collect())
 }

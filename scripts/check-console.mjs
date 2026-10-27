@@ -537,15 +537,14 @@ if (failures.length) {
                 { id: 8, name: "Zed", role: "developer", look: 4, paused: false, furloughed: true, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], reports_to: 6, brain: "claude-haiku-5-5", brains: [] }],
       wing: { goal: "Improve the lab", leads: [6], members: [6, 7], developers: 1, most_developers: 5, most_leads: 1 },
       house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
-      // The team's world (ADR 0122): sections by stage, the timeline, the derived pages and
-      // the stories; every word a member's, so every word escaped.
+      // The team's world (ADR 0122): sections by stage, the timeline and the derived pages;
+      // every word a member's, so every word escaped.
       world: { migrated: false,
         pages: [{ slug: "house", title: "The house", derived: false, timeline: [{ at: 5, day: "17 Oct 2026", by: "Mara", line: "<img src=t onerror=alert(31)> moved" }] },
                 { slug: "lab", title: "How the lab is built", derived: true, lines: ["The home lab is managed by ansible-nas."] },
                 { slug: "team", title: "The team", derived: true, lines: ["Ada (lead, Claude Sonnet)"] }],
         sections: [{ address: "world:house#backups", heading: "<b>Backups</b>", headline: "<img src=w onerror=alert(32)> at 03:00", stage: "insight", said: "insight", revision: 2, written_by: "Mara", warrant: "read", why: "" },
                    { address: "world:house#disk", heading: "Disk", headline: "16 GB", stage: "canon", said: "canon", revision: 3, written_by: "the owner", warrant: "", why: "" }],
-        stories: [{ address: "story:closed-too-soon", handle: "closed-too-soon", stage: "insight", said: "unconfirmed since 17 Sep", unconfirmed_since: 1, instead: "<img src=y onerror=alert(33)> wait", to_retell: true, author: "Dee", whose: "Ada's area" }],
         // The team's map (ADR 0126): pages by steward; every word a member's, so every word escaped.
         map: {
           pages: [
@@ -1140,9 +1139,9 @@ if (failures.length) {
   // The house log: readable and editable, and its text stays text.
   if (!office.includes('id="hq-house"') || !office.includes('data-act="hq:house:save"') || !office.includes("House log")) fail("hq: the house log cannot be read and edited");
   if (office.includes("<img src=h") || !office.includes("&lt;/textarea&gt;&lt;img src=h")) fail("hq: the house log became markup");
-  // The World card (ADR 0122): pages by stage, the owner's canon acts, the stories, the export.
+  // The World card (ADR 0122): pages by stage, the owner's canon acts, the export.
   for (const said of ["<h2>World</h2>", 'data-act="hq:world:section:promote-0"', 'data-act="hq:world:section:demote-1"',
-    'data-act="hq:world:story:promote-0"', 'data-act="hq:world:export:md"', "unconfirmed since 17 Sep", "to retell"]) {
+    'data-act="hq:world:export:md"']) {
     if (!office.includes(said)) fail(`hq: the World card does not show ${said}`);
   }
   {

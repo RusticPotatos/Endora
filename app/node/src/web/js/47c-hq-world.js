@@ -1,7 +1,7 @@
 
 // ---- Endora HQ: the team's world (ADR 0122) -------------------------------------------------
 // What the team knows, by stage: the house page's sections (canon first), its dated timeline,
-// the lab and team pages HQ derives, and the stories. Only the owner makes something canon or
+// the lab and team pages HQ derives. Only the owner makes something canon or
 // demotes it, here. Every word is a member's or the record's, so
 // all of it is escaped. The whole world downloads as one Markdown file.
 
@@ -203,10 +203,6 @@ function hqWorldCard(s) {
       <small> ${esc(p.address)} · revision ${Number(p.revision) || 1}, ${esc(p.written_by || "")}${p.warrant ? ` · warrant: ${esc(p.warrant)}` : ""}${p.why ? ` · ${esc(p.why)}` : ""}</small>
       <div class="hq-row">${hqWorldActs("section", i, p)}</div></li>`;
   const open = HQ_WORLD_VIEW.page;
-  const stories = (w.stories || []).map((p, i) => `<li><b>${esc(p.handle)}</b> ${hqStageTag(p)}${p.to_retell ? ` <span class="hq-tag">to retell</span>` : ""}
-      <span>${p.moment ? `When ${esc(p.moment)} ` : ""}${p.reflex ? `Tempting: ${esc(p.reflex)} ` : ""}Instead: ${esc(p.instead)}${p.because ? ` Because: ${esc(p.because)}` : ""}</span>
-      <small> ${esc(p.whose || p.scope || "")} · told by ${esc(p.author || "")}${p.why ? ` · ${esc(p.why)}` : ""}</small>
-      <div class="hq-row">${hqWorldActs("story", i, p)}</div></li>`).join("");
   return `<section class="hq-card"><h2>World</h2>
     ${hqClamp("worldintro", "What the team knows, by stage: field note, then observation, then insight, then canon (settled truth only you can set). Unconfirmed is an insight nobody confirmed in time. Edit rewrites a section; Make canon settles it.", "hq-note")}
     <div class="hq-row"><button class="hq-btn tall ok" aria-expanded="${hqWorldDoc().md || hqWorldDoc().open ? "true" : "false"}" data-act="hq:world:paste:show">Paste Markdown</button>
@@ -223,7 +219,6 @@ function hqWorldCard(s) {
       <textarea id="hq-w-text" rows="4" autocapitalize="off" maxlength="1200" aria-label="Section text (first line is its headline)"></textarea>
       <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:world:write:section">Write the section</button>
         <button class="hq-btn tall" data-act="hq:world:write:timeline">Add to the timeline</button></div>` : ""}
-    ${stories ? `<h3>Stories</h3><ul class="hq-team hq-world">${stories}</ul>` : `<p class="hq-empty">No stories yet.</p>`}
     ${hqWorldEditor()}</section>`;
 }
 
@@ -264,7 +259,7 @@ async function hqWorldAct(kind, what) {
     await loadHQ(); render(); return true;
   }
   const [op, n] = String(what || "").split("-");
-  const list = kind === "story" ? (w.stories || []) : (w.sections || []);
+  const list = w.sections || [];
   const p = list[Number(n)];
   if (!p) return true;
   try {

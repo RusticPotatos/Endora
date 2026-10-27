@@ -332,10 +332,6 @@ pub const fn enough_said(live: bool) -> &'static str {
 /// The two windows the process-health detectors look over: a day, and a week.
 pub const WINDOWS: [(Millis, &str); 2] = [(DAY, "24 h"), (7 * DAY, "7 d")];
 
-/// How far back the CEO's stepping in on a member's work is counted: a week, the longest of the
-/// guards' windows (ADR 0124, amended).
-pub const RESCUE_WINDOW_MS: Millis = 7 * DAY;
-
 // ---- the stopped diagnosis ------------------------------------------------------------------
 
 /// Whether open work is moving, and if it stopped, whether on purpose (ADR 0124).

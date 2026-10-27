@@ -120,56 +120,6 @@ fn reading(hq: &Hq<'_>, context: &RunContext) -> String {
 }
 
 #[test]
-fn a_move_that_dated_the_house_log_a_year_out_is_repaired_once_and_nothing_is_lost() {
-    use crate::domain::world_migration::{Plan, TimelineLine};
-    // The move ran at 04:00 on 18 Oct 2026, and the live data came out as it did then.
-    let early = OCT_18 - 8 * 3_600_000;
-    let clock = Hands(AtomicI64::new(early));
-    let hq = engine(&clock);
-    assert_eq!(
-        hq.repair_world_dates().unwrap(),
-        0,
-        "nothing to mend before the move"
-    );
-    hq.set_house_log("- 18 Oct: 18 Oct: #668 accepted.\n- 17 Oct: 2025-10-18: Taken.\n- 16 Oct 2025: A year ago.")
-        .unwrap();
-    let row = |at, line: &str| TimelineLine {
-        page: "house".to_owned(),
-        at,
-        by: "the house log".to_owned(),
-        line: line.to_owned(),
-    };
-    let wrong = Plan {
-        timeline: vec![
-            row(OCT_18 - 365 * DAY, "18 Oct: #668 accepted."),
-            row(OCT_18 - DAY, "2025-10-18: Taken."),
-            row(OCT_18 - 2 * DAY - 365 * DAY, "A year ago."),
-        ],
-        lessons: Vec::new(),
-    };
-    assert!(hq.store().migrate_world(&wrong, early).unwrap());
-
-    assert_eq!(hq.repair_world_dates().unwrap(), 2, "two rows mended");
-    let lines: Vec<(i64, String)> = hq
-        .store()
-        .timeline("house")
-        .unwrap()
-        .into_iter()
-        .map(|l| (l.at, l.line))
-        .collect();
-    assert_eq!(
-        lines,
-        vec![
-            (OCT_18 - 2 * DAY - 365 * DAY, "A year ago.".to_owned()),
-            (OCT_18 - DAY, "Taken.".to_owned()),
-            (OCT_18, "#668 accepted.".to_owned()),
-        ],
-        "the year of a yearless date; the writer's own year, and a date written twice"
-    );
-    assert_eq!(hq.repair_world_dates().unwrap(), 0, "once");
-}
-
-#[test]
 fn the_export_reads_newest_first_and_each_page_once_with_the_screens_role_names() {
     let clock = Hands(AtomicI64::new(OCT_18));
     let hq = engine(&clock);

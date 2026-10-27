@@ -11,10 +11,10 @@ use crate::domain::evidence::Found;
 use crate::domain::map::PageKey;
 use crate::domain::situations::Situation;
 use crate::domain::world::{
-    self, Address, HOUSE, HandoverNote, Scope, Section, Snapshot, Stage, Story, Trust, WorldRefusal,
+    self, Address, HOUSE, HandoverNote, Section, Snapshot, Stage, Trust, WorldRefusal,
 };
-use crate::domain::world_migration::{self, TimelineLine};
-use crate::domain::{EventKind, Member, MemberId, Millis, Ref, Refusal, Role, RunId};
+use crate::domain::world_migration::TimelineLine;
+use crate::domain::{EventKind, Member, MemberId, Millis, Ref, Refusal, RunId};
 
 /// How many lessons a lead is asked to retell at a time.
 pub const RETELL_AT_ONCE: usize = 3;
@@ -83,141 +83,17 @@ fn refused(r: WorldRefusal) -> EngineError {
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the move of the old record (once) ------------------------------------------------
 
-    /// Moves the house log and the goals' lessons into the world, once: the house log's lines
-    /// into the house page's timeline at their dates, and each lesson into a story to retell.
-    /// Nothing old is deleted or changed. Returns whether it was moved now; a second start
-    /// changes nothing.
-    ///
-    /// # Errors
-    /// A store failure; nothing is moved then.
-    pub fn migrate_world(&self) -> Done<bool> {
-        let _held = self.held();
-        let members = self.store.members()?;
-        let writers: Vec<(String, Scope)> = members
-            .iter()
-            .map(|m| (m.name.clone(), self.scope_written(m, &members)))
-            .collect();
-        let mut notes = Vec::new();
-        for goal in self.store.goals()? {
-            notes.push(self.store.goal_note(goal.id)?);
-        }
-        let seeded: Vec<String> = crate::domain::house::lab_built()
-            .lines()
-            .map(str::to_owned)
-            .collect();
-        let handles: Vec<String> = self
-            .store
-            .stories()?
-            .into_iter()
-            .map(|s| s.handle)
-            .collect();
-        let plan = world_migration::plan(
-            &self.house_log()?,
-            &seeded,
-            &notes,
-            &writers,
-            &handles,
-            self.clock.now(),
-            self.settings.offset_minutes,
-        );
-        if !self.store.migrate_world(&plan, self.clock.now())? {
-            return Ok(false);
-        }
-        self.emit(
-            EventKind::WorldChanged,
-            json!({ "what": "migrated", "timeline": plan.timeline.len(),
-                    "stories": plan.lessons.len(), "by": "Endora" }),
-        )?;
-        Ok(true)
-    }
-
-    /// Mends, once, what the move dated wrongly (the first run of it compared a yearless
-    /// day's noon with the move's instant, so a move in the early morning put the move's own
-    /// day a year back, and it kept the dates writers had put at the start of their lines):
-    /// the rows the house log became take the year the log's own dates imply and lose the
-    /// date at the start of their text. What a row said before is kept in
-    /// `world_timeline_repairs`. Returns how many rows were mended; 0 when it has been done,
-    /// or when there is no move yet to mend.
-    ///
-    /// # Errors
-    /// A store failure; nothing is mended then.
-    pub fn repair_world_dates(&self) -> Done<usize> {
-        let _held = self.held();
-        let Some(moved_at) = self
-            .store
-            .setting("world_migrated")?
-            .and_then(|m| m.parse::<Millis>().ok())
-        else {
-            return Ok(0);
-        };
-        let rows = self
-            .store
-            .timeline_rows_by(HOUSE.slug, world_migration::FROM_THE_HOUSE_LOG)?;
-        let fixes = world_migration::repairs(
-            &rows,
-            &self.house_log()?,
-            moved_at,
-            self.settings.offset_minutes,
-        );
-        if !self.store.repair_timeline(&fixes, self.clock.now())? || fixes.is_empty() {
-            return Ok(0);
-        }
-        self.emit(
-            EventKind::WorldChanged,
-            json!({ "what": "dates repaired", "timeline": fixes.len(), "by": "Endora" }),
-        )?;
-        Ok(fixes.len())
-    }
-
     /// Whether the old record has been moved into the world.
     pub(super) fn world_migrated(&self) -> Done<bool> {
         Ok(self.store.setting("world_migrated")?.is_some())
     }
 
-    /// A goal's notes as a briefing reads them: without the lessons that are stories now.
+    /// A goal's notes as a briefing reads them.
     pub(super) fn goal_note_briefed(&self, goal: crate::domain::GoalId) -> Done<String> {
-        let note = self.store.goal_note(goal)?;
-        let moved: Vec<String> = self
-            .store
-            .stories()?
-            .into_iter()
-            .filter_map(|s| s.migrated_from)
-            .collect();
-        if moved.is_empty() {
-            return Ok(note);
-        }
-        Ok(note
-            .lines()
-            .filter(|l| !moved.iter().any(|m| m == l.trim()))
-            .collect::<Vec<_>>()
-            .join("\n")
-            .trim()
-            .to_owned())
+        Ok(self.store.goal_note(goal)?)
     }
 
     // ---- who writes what ------------------------------------------------------------------
-
-    /// The scope a member's stories go in: the CEO's the house's, a lead's its area's, the
-    /// tester's her lead's area's, anyone else's its own.
-    pub(super) fn scope_written(&self, member: &Member, members: &[Member]) -> Scope {
-        match member.role {
-            Role::Ceo => Scope::House,
-            Role::Lead => Scope::Area(member.id),
-            Role::Reviewer => {
-                crate::domain::staffing::lead_of(member, members).map_or(Scope::House, Scope::Area)
-            }
-            _ => Scope::Member(member.id),
-        }
-    }
-
-    /// The scopes whose stories a member is told: the house's, its area's, and its own.
-    pub(super) fn scopes_seen(&self, member: &Member, members: &[Member]) -> Vec<Scope> {
-        let mut seen = vec![Scope::House, Scope::Member(member.id)];
-        if let Some(lead) = crate::domain::staffing::lead_of(member, members) {
-            seen.push(Scope::Area(lead));
-        }
-        seen
-    }
 
     // ---- evidence and trust ---------------------------------------------------------------
 
@@ -299,17 +175,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
-    /// How far a story is trusted now.
-    pub(super) fn story_trust(&self, s: &Story) -> Done<Trust> {
-        Ok(world::trust(
-            s.stage,
-            s.verified_at.unwrap_or(s.written_at),
-            s.scope.horizon_days(),
-            self.clock.now(),
-            self.resolves(&s.evidence)?,
-        ))
-    }
-
     /// A stage as shown: `insight`, or `observation, unconfirmed since 17 Sep`.
     pub(super) fn stage_said(&self, trust: Trust) -> String {
         match trust.unconfirmed_since {
@@ -336,14 +201,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .sections()?
             .into_iter()
             .find(|s| s.page == page && s.anchor == anchor))
-    }
-
-    pub(super) fn story_called(&self, handle: &str) -> Done<Option<Story>> {
-        Ok(self
-            .store
-            .stories()?
-            .into_iter()
-            .find(|s| s.handle == handle))
     }
 
     /// A member's text with the year of a date it starts with corrected when the year is out
@@ -410,8 +267,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`Refusal::TurnOver`]; [`WorldRefusal::NotAnAddress`]; [`WorldRefusal::Nothing`].
     pub fn read_world_in(&self, run: RunId, address: &str) -> Done<String> {
         let _held = self.held();
-        let turn = self.running(run)?;
-        let reader = self.member(turn.member)?;
+        self.running(run)?;
         let at = Self::address(address)?;
         let now = self.clock.now();
         match &at {
@@ -429,34 +285,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.inherit_input_from(run, s.written_in_run)?;
                 self.store.touch_section(s.id, now)?;
                 self.section_said(&s)
-            }
-            Address::Story(handle) => {
-                let s = self
-                    .story_called(handle)?
-                    .filter(|s| match s.scope {
-                        Scope::Member(id) => id == reader.id,
-                        _ => true,
-                    })
-                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
-                self.inherit_input_from(run, s.written_in_run)?;
-                self.store.touch_story(s.id, now)?;
-                let trust = self.story_trust(&s)?;
-                let mut said = format!(
-                    "Story {} ({}, {}), told by {} on {}:\n{}\n",
-                    s.handle,
-                    self.scope_said(s.scope)?,
-                    self.stage_said(trust),
-                    s.author,
-                    self.said_day(s.written_at),
-                    s.told()
-                );
-                if s.to_retell {
-                    said.push_str(
-                        "It is a one-line lesson from before stories: still to be retold whole.\n",
-                    );
-                }
-                said.push_str(&Self::evidence_lines(&s.evidence));
-                Ok(said)
             }
         }
     }
@@ -476,14 +304,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             })
             .collect();
         format!("It rests on: {}\n", lines.join("; "))
-    }
-
-    fn scope_said(&self, scope: Scope) -> Done<String> {
-        Ok(match scope {
-            Scope::House => "the house's".to_owned(),
-            Scope::Area(lead) => format!("{}'s area", self.member(lead)?.name),
-            Scope::Member(member) => format!("{}'s own", self.member(member)?.name),
-        })
     }
 
     /// A section, whole, as `read_world` gives it.
@@ -780,18 +600,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.store.save_section(&s, &said)?;
                 s.headline
             }
-            Address::Story(handle) => {
-                let mut s = self
-                    .story_called(handle)?
-                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
-                Self::may_be_canon(s.stage, &at)?;
-                s.stage = Stage::Canon;
-                s.verified_at = Some(now);
-                s.why.clone_from(&said);
-                s.to_retell = false;
-                self.store.save_story(&s)?;
-                s.short()
-            }
             Address::Page(_) => return Err(refused(WorldRefusal::NotAnAddress(at.said()))),
         };
         self.timeline_line(
@@ -978,18 +786,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.store.save_section(&s, &said)?;
                 s.headline
             }
-            Address::Story(handle) => {
-                let mut s = self
-                    .story_called(handle)?
-                    .ok_or_else(|| refused(WorldRefusal::Nothing(at.said())))?;
-                if s.stage != Stage::Canon {
-                    return Err(refused(WorldRefusal::NotCanon(at.said())));
-                }
-                s.stage = to;
-                s.why.clone_from(&said);
-                self.store.save_story(&s)?;
-                s.short()
-            }
             Address::Page(_) => return Err(refused(WorldRefusal::NotAnAddress(at.said()))),
         };
         self.timeline_line(
@@ -1005,56 +801,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
-    /// A one-line lesson, as `note_lesson` kept it before stories: a story marked to retell, in
-    /// its writer's scope, under a handle from its first words. The owner is told on the desk.
-    pub(super) fn lesson_as_story(&self, run: &Run, writer: &Member, lesson: &str) -> Done<String> {
-        let lesson =
-            world::one_line(lesson, crate::domain::lessons::LESSON_MOST).map_err(|_| {
-                EngineError::Refused(Refusal::TooLong(crate::domain::lessons::LESSON_MOST))
-            })?;
-        let members = self.store.members()?;
-        let taken: Vec<String> = self
-            .store
-            .stories()?
-            .into_iter()
-            .map(|s| s.handle)
-            .collect();
-        let handle = world::handle_from(&lesson, &taken);
-        let now = self.clock.now();
-        let story = Story {
-            id: 0,
-            scope: self.scope_written(writer, &members),
-            handle: handle.clone(),
-            moment: String::new(),
-            reflex: String::new(),
-            instead: lesson.clone(),
-            because: String::new(),
-            evidence: Vec::new(),
-            stage: Stage::Observation,
-            warrant: String::new(),
-            taught: crate::domain::situations::TAUGHT_BY_DEFAULT.to_vec(),
-            author: writer.name.clone(),
-            written_in_run: Some(run.id),
-            written_at: now,
-            to_retell: true,
-            migrated_from: None,
-            verified_at: None,
-            last_used_at: now,
-            why: String::new(),
-        };
-        self.store.save_story(&story)?;
-        Ok(handle)
-    }
-
-    /// After a member's post: the stories it names by handle, and the sections it names by
-    /// address, were used.
+    /// After a member's post: the sections it names by address were used.
     pub(super) fn world_used(&self, text: &str) -> Done<()> {
         let now = self.clock.now();
-        for s in self.store.stories()? {
-            if s.cited_in(text) {
-                self.store.touch_story(s.id, now)?;
-            }
-        }
         let lower = text.to_ascii_lowercase();
         for s in self.store.sections()? {
             if lower.contains(&s.address()) {
@@ -1131,19 +880,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                              "line": l.line })
             })
             .collect();
-        let mut stories = Vec::new();
-        for s in self.store.stories()? {
-            let trust = self.story_trust(&s)?;
-            stories.push(json!({
-                "address": s.address(), "handle": s.handle, "scope": s.scope.name(),
-                "whose": self.scope_said(s.scope).unwrap_or_default(), "moment": s.moment,
-                "reflex": s.reflex, "instead": s.instead, "because": s.because,
-                "stage": s.stage.name(), "shown": trust.stage.name(),
-                "said": self.stage_said(trust), "unconfirmed_since": trust.unconfirmed_since,
-                "to_retell": s.to_retell, "author": s.author, "written_at": s.written_at,
-                "why": s.why, "evidence": snaps(&s.evidence),
-            }));
-        }
         Ok(json!({
             "pages": [
                 { "slug": HOUSE.slug, "title": HOUSE.title, "derived": false,
@@ -1154,7 +890,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                   "lines": self.team_said()?.lines().skip(1).map(|l| l.trim_start_matches("- ").to_owned()).collect::<Vec<_>>() },
             ],
             "sections": sections,
-            "stories": stories,
             "migrated": self.world_migrated()?,
             "map": self.map_shown()?,
         }))
@@ -1256,34 +991,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ));
         for line in self.team_said()?.lines().skip(1) {
             md.push_str(&format!("{line}\n"));
-        }
-        md.push_str("\n## Stories\n\n");
-        for s in self.store.stories()? {
-            let trust = self.story_trust(&s)?;
-            md.push_str(&format!(
-                "### {} ({}, {})\n\n",
-                s.handle,
-                self.scope_said(s.scope)?,
-                self.stage_said(trust)
-            ));
-            for (label, part) in [
-                ("When", &s.moment),
-                ("Tempting", &s.reflex),
-                ("Instead", &s.instead),
-                ("Because", &s.because),
-            ] {
-                if !part.is_empty() {
-                    md.push_str(&format!("- {label}: {part}\n"));
-                }
-            }
-            if s.to_retell {
-                md.push_str("- To retell: a one-line lesson from before stories.\n");
-            }
-            md.push_str(&format!(
-                "- Told by {}, {}\n\n",
-                s.author,
-                day_with_year(s.written_at, off)
-            ));
         }
         Ok(md)
     }

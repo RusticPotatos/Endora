@@ -315,6 +315,7 @@ const RETIRED_CONVERSATIONS: &str = "
     DROP TABLE IF EXISTS note_parents;
     DROP TABLE IF EXISTS notes;
     DROP TABLE IF EXISTS games;
+    DROP TABLE IF EXISTS stories;
     DELETE FROM findings WHERE guard NOT IN ('stuck', 'same_ask');
     DELETE FROM settings WHERE key LIKE 'ladder:%' OR key LIKE 'huddle:%'
       OR key LIKE 'guard_mode:%' OR key LIKE 'coordination_since:%'

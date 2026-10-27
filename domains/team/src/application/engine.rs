@@ -18,7 +18,6 @@ use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
 use crate::domain::guards::{GuardRefusal, Stopped};
 use crate::domain::history::InputOrigin;
-use crate::domain::lessons;
 use crate::domain::mac::{self, MacFacts};
 use crate::domain::money::{self, Micros};
 use crate::domain::record;
@@ -89,13 +88,6 @@ pub const THREAD_TAIL: usize = 3;
 
 /// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
 pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
-
-/// How far back the CEO's briefing looks for the home lab's trouble and the board's desk.
-pub const CEO_LOOKS_BACK_MS: Millis = 7 * 24 * 60 * 60 * 1000;
-
-/// The most lines of what changed the CEO is told on a turn that is not its daily review: the
-/// newest, and how many earlier ones there were.
-pub const CEO_NEWS_MOST: usize = 20;
 
 /// Where HQ keeps the house log (ADR 0111).
 const HOUSE_LOG: &str = "house_log";
@@ -4184,48 +4176,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "why": why }),
         )?;
         Ok(due)
-    }
-
-    /// A turn of the lead's or the reviewer's notes a lesson the team will need again. Since
-    /// stories (ADR 0122) it is kept as a story marked to retell, under a handle from its first
-    /// words, in its writer's area, and no longer in the goal's notes; `tell_story` is the tool
-    /// members are offered now, and this stays for a worker told of it before. Each is an event
-    /// in the feed and a notice on the owner's desk. Returns the story's handle.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`] for a turn that has ended; [`Refusal::NotALessonKeeper`] for a
-    /// member that is neither; [`EngineError::Unknown`] for a turn with no task, or no lesson;
-    /// [`Refusal::TooLong`] for a lesson past [`lessons::LESSON_MOST`].
-    pub fn note_lesson(&self, run: RunId, lesson: &str) -> Done<String> {
-        let _held = self.held();
-        let run = self.running(run)?;
-        let member = self.member(run.member)?;
-        if !lessons::keeps_lessons(member.role) {
-            return Err(EngineError::Refused(Refusal::NotALessonKeeper));
-        }
-        let task = run.task.ok_or(EngineError::Unknown("task for this turn"))?;
-        let goal = self.task(task)?.goal;
-        if lesson.trim().is_empty() {
-            return Err(EngineError::Unknown("lesson"));
-        }
-        let now = self.clock.now();
-        let handle = self.lesson_as_story(&run, &member, lesson)?;
-        let said = lesson.split_whitespace().collect::<Vec<_>>().join(" ");
-        self.emit(
-            EventKind::LessonNoted,
-            json!({ "goal": goal.0, "task": task.0, "member": member.id.0, "lesson": said,
-                    "story": handle }),
-        )?;
-        let text = format!("{} noted: {said}", member.name);
-        let desk = self
-            .store
-            .add_desk("notice", Some(task), None, Some(member.id), &text, now)?;
-        self.quiet_in_the_loops(desk)?;
-        self.emit(
-            EventKind::DeskAdded,
-            json!({ "item": desk.0, "kind": "notice", "task": task.0 }),
-        )?;
-        Ok(handle)
     }
 
     // ---- what the office shows ------------------------------------------------------------

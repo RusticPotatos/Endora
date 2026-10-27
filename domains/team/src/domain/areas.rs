@@ -12,21 +12,6 @@ use super::work::{GoalId, MemberId, Millis, Refusal, RunId, TaskId};
 pub const STRATEGY_PART_MOST: usize = 800;
 /// The most characters one part of an area report may run to.
 pub const REPORT_PART_MOST: usize = 600;
-/// The title of a lead's daily report routine.
-pub const REPORT_ROUTINE: &str = "State of my area";
-/// The title of a lead's weekly patterns routine.
-pub const PATTERNS_ROUTINE: &str = "Patterns";
-/// The hour of the owner's day a lead's report is due.
-pub const REPORT_HOUR: i64 = 18;
-
-/// The measures HQ computes for a team, by name, as a strategy names them.
-pub const MEASURES: [&str; 5] = [
-    "unplanned outages over 10 min",
-    "median alarm to closed",
-    "repeat alarms within 24 h",
-    "median branch submitted to push approved",
-    "branches passing the tester first time",
-];
 
 /// A goal's strategy.
 #[derive(Debug, Clone, PartialEq, Eq)]

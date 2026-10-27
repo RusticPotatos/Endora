@@ -32,8 +32,6 @@ pub const BODY_MOST: usize = 1_200;
 pub const WARRANT_MOST: usize = 300;
 /// The most characters of one line of a page's timeline.
 pub const TIMELINE_LINE_MOST: usize = 500;
-/// The most characters of each part of a story.
-pub const STORY_PART_MOST: usize = 300;
 /// The most characters of a whole handover note.
 pub const HANDOVER_MOST: usize = 1_200;
 /// The most characters of a reason for a stage change.
@@ -160,20 +158,15 @@ pub enum Address {
         /// Its anchor, stable for its life.
         anchor: String,
     },
-    /// A story, by its handle: `story:closed-too-soon`.
-    Story(String),
 }
 
 impl Address {
     /// An address as a member writes it: `world:house#backups`, `house#backups`, `world:lab`,
-    /// `world:area/3#backups`, `story:closed-too-soon`, case aside. Whether the page is there
+    /// `world:area/3#backups`, case aside. Whether the page is there
     /// is for the record to say.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         let text = text.trim().to_ascii_lowercase();
-        if let Some(handle) = text.strip_prefix("story:") {
-            return handle_of(handle).ok().map(Self::Story);
-        }
         let text = text.strip_prefix("world:").unwrap_or(&text);
         let (slug, anchor) = match text.split_once('#') {
             Some((slug, anchor)) => (slug, Some(anchor)),
@@ -187,13 +180,12 @@ impl Address {
         (made == anchor).then_some(Self::Section { page, anchor: made })
     }
 
-    /// As it is cited: `world:house#backups`, `story:closed-too-soon`.
+    /// As it is cited: `world:house#backups`.
     #[must_use]
     pub fn said(&self) -> String {
         match self {
             Self::Page(page) => format!("world:{page}"),
             Self::Section { page, anchor } => format!("world:{page}#{anchor}"),
-            Self::Story(handle) => format!("story:{handle}"),
         }
     }
 }
@@ -478,140 +470,6 @@ impl Scope {
     }
 }
 
-/// A story's handle as written: two to four words of lowercase letters and digits joined by
-/// `-` (`closed-too-soon`, `restart-is-not-a-fix`), at most 48 characters.
-///
-/// # Errors
-/// [`WorldRefusal::NotAHandle`].
-pub fn handle_of(text: &str) -> Result<String, WorldRefusal> {
-    let made: String = text
-        .trim()
-        .to_ascii_lowercase()
-        .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
-        .filter(|w| !w.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    let parts: Vec<&str> = made.split('-').filter(|w| !w.is_empty()).collect();
-    let words = parts.iter().all(|w| {
-        w.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    });
-    if !(2..=4).contains(&parts.len()) || !words || made.len() > 48 {
-        return Err(WorldRefusal::NotAHandle(
-            text.trim().chars().take(60).collect(),
-        ));
-    }
-    Ok(made)
-}
-
-/// A handle made from a lesson's first words, apart from every one `taken`: its first three
-/// words of letters and digits (`lesson` after a lone one), then `-2`, `-3` until it is free.
-#[must_use]
-pub fn handle_from(words: &str, taken: &[String]) -> String {
-    let mut parts: Vec<String> = words
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(str::to_ascii_lowercase)
-        .take(3)
-        .collect();
-    while parts.len() < 2 {
-        parts.push("lesson".to_owned());
-    }
-    let first = parts.join("-");
-    let mut made = first.clone();
-    let mut n = 2;
-    while taken.contains(&made) {
-        made = format!("{first}-{n}");
-        n += 1;
-    }
-    made
-}
-
-/// One story: a lesson in four parts under a handle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Story {
-    /// Its row.
-    pub id: i64,
-    /// Whose it is.
-    pub scope: Scope,
-    /// Its handle: `story:<handle>` is its address.
-    pub handle: String,
-    /// When it matters.
-    pub moment: String,
-    /// The tempting wrong move.
-    pub reflex: String,
-    /// What to do instead.
-    pub instead: String,
-    /// Why: the failure or the evidence behind it.
-    pub because: String,
-    /// What it rests on.
-    pub evidence: Vec<Snapshot>,
-    /// How established it is, as stored.
-    pub stage: Stage,
-    /// Why it is believed, for an insight or canon.
-    pub warrant: String,
-    /// The situations in which a briefing tells it whole; otherwise only its handle and what to
-    /// do instead.
-    pub taught: Vec<super::situations::Situation>,
-    /// Who told it.
-    pub author: String,
-    /// The turn it was told in, if a member's.
-    pub written_in_run: Option<RunId>,
-    /// When it was told (for a migrated lesson, when the lesson was noted).
-    pub written_at: Millis,
-    /// Whether it is a one-line lesson from before stories, still to be retold whole.
-    pub to_retell: bool,
-    /// The lesson's line in a goal's notes it was made from, if it was.
-    pub migrated_from: Option<String>,
-    /// When it was last confirmed on fresh evidence.
-    pub verified_at: Option<Millis>,
-    /// When a post last cited its handle; its telling, until then.
-    pub last_used_at: Millis,
-    /// Why its stage last changed, by whom.
-    pub why: String,
-}
-
-impl Story {
-    /// Its address.
-    #[must_use]
-    pub fn address(&self) -> String {
-        format!("story:{}", self.handle)
-    }
-
-    /// The story told whole, on one line.
-    #[must_use]
-    pub fn told(&self) -> String {
-        let mut parts = Vec::new();
-        for (label, part) in [
-            ("When", &self.moment),
-            ("Tempting", &self.reflex),
-            ("Instead", &self.instead),
-            ("Because", &self.because),
-        ] {
-            if !part.is_empty() {
-                parts.push(format!("{label}: {part}"));
-            }
-        }
-        format!("{}: {}", self.handle, parts.join(" "))
-    }
-
-    /// The story in one short line: its handle and what to do instead, marked when it is still
-    /// to be retold.
-    #[must_use]
-    pub fn short(&self) -> String {
-        let retell = if self.to_retell { " (to retell)" } else { "" };
-        format!("{}: {}{retell}", self.handle, self.instead)
-    }
-
-    /// Whether `text` names the story by its handle, as a word of its own.
-    #[must_use]
-    pub fn cited_in(&self, text: &str) -> bool {
-        text.to_ascii_lowercase()
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-            .any(|word| word.trim_matches('-') == self.handle)
-    }
-}
-
 /// What a member says when it hands work on: what is done, what is not, what comes next and
 /// what to watch out for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -724,8 +582,6 @@ pub enum WorldRefusal {
     NotAHandle(String),
     /// A handle another story already has.
     HandleTaken(String),
-    /// A story with a part missing.
-    StoryNeedsParts,
     /// Retiring, or demoting, needs the reason.
     NeedsWhy,
     /// Superseding names what replaces it.
@@ -831,10 +687,6 @@ impl fmt::Display for WorldRefusal {
                 f,
                 "another story is already called {handle}: give this one its own handle"
             ),
-            Self::StoryNeedsParts => f.write_str(
-                "a story says when it matters (moment), the tempting move (reflex), what to do \
-                 instead (instead) and why (because)",
-            ),
             Self::NeedsWhy => f.write_str("say why"),
             Self::NeedsSuccessor => {
                 f.write_str("superseding names the address of what replaces it")
@@ -910,7 +762,6 @@ mod tests {
             ("House#Backups", "world:house#backups"),
             ("world:lab", "world:lab"),
             ("team", "world:team"),
-            ("story:Closed-Too-Soon", "story:closed-too-soon"),
             ("World:Area/3#Backups", "world:area/3#backups"),
             ("role/tester", "world:role/tester"),
             ("project/2", "world:project/2"),
@@ -1060,31 +911,6 @@ mod tests {
     }
 
     #[test]
-    fn a_handle_is_two_to_four_short_words() {
-        assert_eq!(
-            handle_of("Closed too soon"),
-            Ok("closed-too-soon".to_owned())
-        );
-        assert_eq!(
-            handle_of("restart_is-not-a"),
-            Ok("restart-is-not-a".to_owned())
-        );
-        assert!(handle_of("single").is_err());
-        assert!(handle_of("one two three four five").is_err());
-        assert!(handle_of("wait, what?").is_err());
-        let taken = vec!["closed-too-soon".to_owned()];
-        assert_eq!(
-            handle_from("Closed too soon: the alarm came back.", &taken),
-            "closed-too-soon-2"
-        );
-        assert_eq!(handle_from("Sonarr!", &[]), "sonarr-lesson");
-        assert_eq!(
-            handle_of(&handle_from("Closed too soon", &taken)),
-            Ok("closed-too-soon-2".to_owned())
-        );
-    }
-
-    #[test]
     fn a_line_a_member_writes_cannot_hide_text_turn_it_around_or_wake_anyone() {
         // Control characters alone were taken out; the characters that turn text around, the
         // ones that are not there, and an @ that would wake a member, were not (ADR 0129).
@@ -1103,45 +929,6 @@ mod tests {
     fn a_section_body_keeps_its_lines_and_loses_what_could_turn_text_around() {
         let kept = body("Disks\n\n- one\u{202E}\n- two @Kit\u{200B}").unwrap();
         assert_eq!(kept, "Disks\n\n- one \n- two \u{FF20}Kit");
-    }
-
-    #[test]
-    fn a_story_is_told_whole_or_in_one_line_and_cited_by_its_handle() {
-        let story = Story {
-            id: 1,
-            scope: Scope::Area(MemberId(2)),
-            handle: "closed-too-soon".to_owned(),
-            moment: "An alarm's task looks fixed after a restart.".to_owned(),
-            reflex: "Close it at once.".to_owned(),
-            instead: "Wait an hour with no new alarm, then close.".to_owned(),
-            because: "Task 667 came back two hours later.".to_owned(),
-            evidence: Vec::new(),
-            stage: Stage::Insight,
-            warrant: String::new(),
-            taught: Vec::new(),
-            author: "Ada".to_owned(),
-            written_in_run: None,
-            written_at: 0,
-            to_retell: false,
-            migrated_from: None,
-            verified_at: None,
-            last_used_at: 0,
-            why: String::new(),
-        };
-        assert_eq!(
-            story.told(),
-            "closed-too-soon: When: An alarm's task looks fixed after a restart. Tempting: \
-             Close it at once. Instead: Wait an hour with no new alarm, then close. Because: \
-             Task 667 came back two hours later."
-        );
-        assert_eq!(
-            story.short(),
-            "closed-too-soon: Wait an hour with no new alarm, then close."
-        );
-        assert!(story.cited_in("Sent back: closed-too-soon."));
-        assert!(story.cited_in("(story:closed-too-soon)"));
-        assert!(!story.cited_in("closed-too-soon-2 is another"));
-        assert_eq!(story.address(), "story:closed-too-soon");
     }
 
     #[test]
