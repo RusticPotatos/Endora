@@ -47,48 +47,7 @@ fn canonical_team(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
             },
         )
         .unwrap();
-    hq.set_conversations_enabled(true).unwrap();
     (hq, dev, task)
-}
-
-#[test]
-fn canonical_context_inherits_restart_handover_source_privacy() {
-    use super::history_ports::HistoryStore;
-    use crate::domain::world::HandoverNote;
-    for source in ["internal", "confidential", "unknown"] {
-        let clock = Hands(AtomicI64::new(NOON));
-        let (hq, dev, task) = canonical_team(&clock);
-        let worker = working(&hq, dev, task);
-        if source == "confidential" {
-            hq.store().mark_confidential_input(worker.run).unwrap();
-        }
-        hq.begin_drain(None).unwrap();
-        hq.wrap_up_in(
-            worker.run,
-            task,
-            &HandoverNote {
-                done: "Fixture read".into(),
-                not_done: "Finding pending".into(),
-                next: "Check fixture".into(),
-                watch_out: "Retain original evidence".into(),
-            },
-        )
-        .unwrap();
-        if source == "unknown" {
-            let mut legacy = hq.store().handovers(task).unwrap().pop().unwrap();
-            legacy.id = 0;
-            legacy.run = None;
-            hq.store().add_handover(&legacy).unwrap();
-        }
-        later(&clock, 2 * MINUTE);
-        hq.end_drain().unwrap();
-        hq.tick().unwrap();
-        assert_eq!(
-            hq.store().run_read_confidential(worker.run).unwrap(),
-            source != "internal",
-            "handover source: {source}"
-        );
-    }
 }
 
 #[test]

@@ -89,9 +89,6 @@ const LEGACY_TASK_PAGE: &str =
     LEFT JOIN input_origins o ON o.kind='post' AND o.resource=p.id
     WHERE c.thread=?1 AND c.id>?2 ORDER BY c.id LIMIT 51";
 pub(super) const CONSULT_PROJECT_FOR_RUN: &str = "(SELECT p.project FROM consults c JOIN consult_projects p ON p.consult=c.id WHERE c.answer_run=?1 ORDER BY c.id LIMIT 1)";
-pub(super) const CONSULT_TURN_COUNT: &str =
-    "SELECT count(*) FROM (SELECT id FROM consults WHERE asker_run=?1 LIMIT 2)";
-pub(super) const CONSULT_DAY_COUNT: &str = "SELECT count(*) FROM (SELECT id FROM consults WHERE asker=?1 AND at_ms>=?2 AND at_ms<?3 LIMIT 6)";
 
 // A task-bearing turn keeps its task responsibility. Canonical expert/result
 // associations take precedence even though their wake may also say "consulted".
@@ -99,8 +96,6 @@ pub(super) const CONSULT_DAY_COUNT: &str = "SELECT count(*) FROM (SELECT id FROM
 const LEGACY_LIVE_RUNS: &str = "SELECT r.id FROM runs r
     JOIN wakes w ON w.id=r.wake
     WHERE r.task IS NULL AND r.status IN ('queued','running','retry_waiting')
-    AND NOT EXISTS(SELECT 1 FROM assistance_requests a WHERE a.expert_run=r.id)
-    AND NOT EXISTS(SELECT 1 FROM assistance_requests a WHERE a.notice_run=r.id)
     AND (w.reason='consulted'
       OR EXISTS(SELECT 1 FROM consults c WHERE c.answer_run=r.id)
       OR EXISTS(SELECT 1 FROM consult_deliveries d WHERE d.run=r.id AND d.stage='expert'))
@@ -451,59 +446,6 @@ mod tests {
     }
 
     #[test]
-    fn startup_retirement_stops_and_settles_only_legacy_peer_work_once() {
-        use crate::application::engine::{Engine, Settings};
-        use crate::application::ports::Clock;
-        use crate::infrastructure::simulated::SimulatedRunner;
-        struct Fixed;
-        impl Clock for Fixed {
-            fn now(&self) -> i64 {
-                100
-            }
-        }
-        let store = SqliteTeamStore::in_memory().unwrap();
-        consult_fixture(&store);
-        store.conn().unwrap().execute_batch("INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(2,2,'consulted','queued',0),(3,2,'assigned','queued',0),(7,2,'consulted','queued',0),(8,1,'question_answered','queued',0);
-            UPDATE runs SET wake=2,started_at=1,reserved=100,spent=20 WHERE id=2;
-            UPDATE runs SET wake=3 WHERE id=3;
-            UPDATE runs SET task=1 WHERE id=1;
-            INSERT INTO runs(id,member,wake,status,queued_at) VALUES(7,2,7,'running',0),(8,1,8,'queued',0);
-            INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(1,1,'Fixture','',1,'active','owner',0,0);
-            INSERT INTO conversations(id,project,member1,member2,at_ms) VALUES(1,1,1,2,0);
-            INSERT INTO assistance_requests(conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status,expert_run,notice_run)
-            VALUES(1,1,1,1,2,'fixture-key','Fixture','',0,0,1000,'answered',7,8);
-            INSERT INTO run_tokens(run,token) VALUES(2,'fixture-expert-token');
-            INSERT INTO ledger(run,member,day,kind,amount,at_ms) VALUES(2,2,0,'reserve',100,1),(2,2,0,'use',20,2);").unwrap();
-        let hq = Engine::new(store, SimulatedRunner::new(8), Fixed, Settings::default());
-        assert_eq!(hq.retire_legacy_peer_work().unwrap(), 1);
-        assert_eq!(hq.runner().stopped(), vec![RunId(2)]);
-        assert_eq!(
-            hq.store().run(RunId(2)).unwrap().unwrap().status.name(),
-            "stopped"
-        );
-        assert!(hq.turn_of("fixture-expert-token").unwrap().is_none());
-        for run in [RunId(1), RunId(3), RunId(7)] {
-            assert_eq!(
-                hq.store().run(run).unwrap().unwrap().status.name(),
-                "running"
-            );
-        }
-        assert_eq!(
-            hq.store().run(RunId(8)).unwrap().unwrap().status.name(),
-            "queued"
-        );
-        let ledger = hq.store().ledger_of(RunId(2)).unwrap();
-        assert_eq!(ledger.len(), 4, "one charge and one release");
-        assert_eq!(hq.retire_legacy_peer_work().unwrap(), 0);
-        assert_eq!(hq.store().ledger_of(RunId(2)).unwrap(), ledger);
-        assert_eq!(hq.runner().stopped(), vec![RunId(2)]);
-        let history = hq.legacy_task_conversations(TaskId(1), 0).unwrap();
-        assert_eq!(history["records"][0]["outcome"], "cancelled");
-        assert!(history["records"][0]["answer"].is_null());
-        assert_eq!(hq.store().wakes().unwrap().len(), 5);
-    }
-
-    #[test]
     fn startup_retirement_failure_is_recoverable_without_repeated_accounting() {
         use crate::application::engine::{Engine, Settings};
         use crate::application::ports::Clock;
@@ -588,47 +530,6 @@ mod tests {
         }
         assert_eq!(steps[0], steps[1]);
         assert!(steps[1] < 100);
-    }
-
-    #[test]
-    fn legacy_retirement_preserves_task_work_and_canonical_expert_and_result_turns() {
-        let store = SqliteTeamStore::in_memory().unwrap();
-        consult_fixture(&store);
-        store.conn().unwrap().execute_batch("INSERT INTO wakes(id,member,reason,receipt,at_ms) VALUES(2,2,'consulted','queued',0);
-            INSERT INTO runs(id,member,wake,task,status,queued_at) VALUES
-            (4,2,2,NULL,'queued',0),(5,2,1,NULL,'retry_waiting',0),
-            (6,2,2,1,'running',0),(7,2,2,NULL,'running',0),
-            (8,1,2,NULL,'queued',0),(9,2,2,NULL,'succeeded',0);
-            INSERT INTO consult_deliveries(consult,stage,wake,run,receipt) VALUES(1,'expert',1,5,'queued');
-            INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(1,1,'Fixture','',1,'active','owner',0,0);
-            INSERT INTO conversations(id,project,member1,member2,at_ms) VALUES(1,1,1,2,0);
-            INSERT INTO assistance_requests(conversation,project,requester,requester_run,expert,client_key,objective,evidence,accepted_day,accepted_at,deadline_at,status,expert_run,notice_run)
-            VALUES(1,1,1,1,2,'fixture-key','Fixture','',0,0,100,'answered',7,8);
-            INSERT INTO run_tokens(run,token) VALUES(2,'fixture-token');
-            INSERT INTO ledger(run,member,day,kind,amount,at_ms) VALUES(2,2,0,'reserve',100,0);").unwrap();
-        let batch = store.retire_legacy_consultations().unwrap();
-        assert_eq!(batch.cancelled, 1);
-        assert_eq!(batch.runs, vec![RunId(2), RunId(4), RunId(5)]);
-        let conn = store.conn().unwrap();
-        for table in [
-            "run_tokens",
-            "ledger",
-            "assistance_requests",
-            "consult_deliveries",
-        ] {
-            assert_eq!(
-                conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
-                    .get::<_, i64>(0))
-                    .unwrap(),
-                1
-            );
-        }
-        assert_eq!(
-            conn.query_row("SELECT status FROM assistance_requests", [], |r| r
-                .get::<_, String>(0))
-                .unwrap(),
-            "answered"
-        );
     }
 
     #[test]
@@ -796,7 +697,7 @@ mod tests {
         assert!(measurements[1].1 < 1_000);
         // The same query loses the bound when its live-run indexes are removed.
         let conn = store.conn().unwrap();
-        conn.execute_batch("DROP INDEX runs_live_taskless; DROP INDEX assistance_live_member_run;")
+        conn.execute_batch("DROP INDEX runs_live_taskless;")
             .unwrap();
         let mut unindexed = conn.prepare(LEGACY_LIVE_RUNS).unwrap();
         assert_eq!(
@@ -911,76 +812,6 @@ mod tests {
         }
         assert_eq!(steps[0], steps[1]);
         assert!(steps[1] < 1_000, "{steps:?}");
-    }
-
-    #[test]
-    fn retained_consult_project_survives_cutover_settlement_and_late_usage() {
-        use crate::application::conversation_ports::ConversationStore;
-        use crate::application::ports::TeamStore;
-        let store = SqliteTeamStore::in_memory().unwrap();
-        consult_fixture(&store);
-        store.conn().unwrap().execute_batch("INSERT INTO projects(id,goal,title,reason,lead,status,created_by,created_at,updated_at) VALUES(1,1,'Fixture','',1,'active','owner',0,0),(2,1,'Other fixture','',1,'active','owner',0,0);
-            INSERT INTO consult_projects(consult,project) VALUES(1,1);
-            INSERT INTO runs(id,member,wake,status,queued_at) VALUES(4,2,1,'running',0);
-            UPDATE consults SET answer_run=4,status='cancelled',why='Retired before cutover' WHERE id=1;
-            UPDATE tasks SET project=2 WHERE id=1;").unwrap();
-        let run = RunId(4);
-        assert_eq!(
-            store.assistance_charging_project(run).unwrap(),
-            Some(crate::domain::ProjectId(1))
-        );
-        store.reserve(run, MemberId(2), 0, 100, 0).unwrap();
-        store.record_use(run, MemberId(2), 0, 20, 1).unwrap();
-        store.settle(run, MemberId(2), 0, 2).unwrap();
-        store
-            .record_use(run, MemberId(2), 1, 5, 86_400_001)
-            .unwrap();
-        let conn = store.conn().unwrap();
-        let rows: i64 = conn
-            .query_row("SELECT count(*) FROM ledger WHERE run=?1", [run.0], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        let wrong: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM ledger WHERE run=?1 AND project IS NOT 1",
-                [run.0],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(rows >= 5);
-        assert_eq!(
-            wrong, 0,
-            "reserve, use, settle and late charges retain the admitted project"
-        );
-    }
-
-    #[test]
-    fn retained_legacy_quota_queries_stay_bounded_as_unrelated_history_grows() {
-        use rusqlite::StatementStatus;
-        let mut observed = Vec::new();
-        for size in [1_000, 100_000] {
-            let store = SqliteTeamStore::in_memory().unwrap();
-            consult_fixture(&store);
-            let conn = store.conn().unwrap();
-            conn.execute("WITH RECURSIVE n(id) AS (VALUES(1000) UNION ALL SELECT id+1 FROM n WHERE id<999+?1)
-                INSERT INTO consults(id,asker,asker_run,expert,thread,question,status,at_ms)
-                SELECT id,1,2,2,1,'Retained fixture','cancelled',-1 FROM n", [size]).unwrap();
-            let mut turn = conn.prepare(CONSULT_TURN_COUNT).unwrap();
-            assert_eq!(turn.query_row([1], |r| r.get::<_, i64>(0)).unwrap(), 1);
-            let mut day = conn.prepare(CONSULT_DAY_COUNT).unwrap();
-            assert_eq!(
-                day.query_row([1, 0, 86_400_000], |r| r.get::<_, i64>(0))
-                    .unwrap(),
-                1
-            );
-            observed.push((
-                turn.get_status(StatementStatus::VmStep),
-                day.get_status(StatementStatus::VmStep),
-            ));
-        }
-        assert_eq!(observed[0], observed[1]);
-        assert!(observed[1].0 < 1_000 && observed[1].1 < 1_000);
     }
 
     #[test]

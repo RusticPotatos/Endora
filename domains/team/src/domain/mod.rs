@@ -1,7 +1,6 @@
 //! The team's domain: the work, wakes, runs, money and the event feed, as pure rules.
 
 pub mod areas;
-pub mod assistance;
 pub mod brain;
 pub mod caps;
 pub mod chain;
@@ -9,7 +8,6 @@ pub mod chess;
 pub mod chess_match;
 pub mod closure;
 pub mod consult;
-pub mod conversation;
 pub mod cut;
 pub mod deploy;
 pub mod desk;

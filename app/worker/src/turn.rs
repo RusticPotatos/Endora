@@ -325,23 +325,16 @@ const DEFER_PAST: usize = 12;
 /// A local turn's core, always offered: its turn, its task, its way up a model tier, its word up
 /// and to a colleague, its notes, the workbench's shell and the lab's container tools the
 /// instructions name.
-const ALWAYS: [&str; 17] = [
+const ALWAYS: [&str; 13] = [
     "my_turn",
     "claim",
     "post",
     "set_status",
     "escalate",
     "ask_owner",
-    // Asking a colleague (ADR 0139-0140): the briefing names it, and behind a search it was
-    // never used in production.
-    "consult",
     // The game a turn is woken to move in: behind a search, no move was ever made (2026-10-25).
     "chess",
-    // The tool a special turn answers with, offered only in that turn: behind a search, a
-    // colleague's answer turn never answered and both live requests were declined (2026-10-25).
-    "answer_assistance",
-    "read_assistance_source",
-    "record_assistance_finding",
+    // The tool a special turn answers with, offered only in that turn.
     "answer_quiz",
     "note",
     SHELL,

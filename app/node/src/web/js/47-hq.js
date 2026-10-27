@@ -1613,7 +1613,6 @@ function viewHQ() {
         <section class="hq-card"><h2>Find a task</h2>
           <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
           <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
-        ${hqConversations(s)}
         ${hqHolodeck(s)}
         ${hqGuards(s)}
         ${hqScorecard(s)}`)}
@@ -2365,8 +2364,8 @@ function hqSelected() {
     <dt>Project</dt><dd>${hqTaskProject(t)}</dd>
     <dt>Lock</dt><dd>${runner ? "held by R" + runner.id : "free"}</dd>
     <dt>Blocked by</dt><dd>${(t.waits_on || []).length ? t.waits_on.map(hqKey).join(", ") : "nothing"}</dd>
-    <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${hqEvidence(t)}${hqDocuments(t)}${hqTurns((r) => r.task === t.id, "task-" + t.id)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}${hqTaskHelp(t.id)}
-    ${replayTaskLink(t.id)}${hqPastQuestions(t.id)}
+    <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${hqEvidence(t)}${hqDocuments(t)}${hqTurns((r) => r.task === t.id, "task-" + t.id)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}
+    ${replayTaskLink(t.id)}
     <textarea id="hq-reply-${t.id}" rows="2" placeholder="Reply in the thread: whoever has it reads it now" aria-label="Your reply"></textarea>
     <div class="hq-row"><button class="hq-btn ok" data-act="hq:reply:${t.id}:send">Send</button></div>`;
 }
@@ -2397,8 +2396,6 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
   if (noun === "mac") return hqMacAct(id, arg);
-  if (noun === "conversations") return hqConversationAct(id,arg);
-  if (noun === "past-questions") return hqPastQuestionsAct(id,arg);
   // The Holodeck and the office's replays (ADR 0135, 0121).
   if (noun === "holo") return hqHoloAct(id, arg);
   if (noun === "roster") {

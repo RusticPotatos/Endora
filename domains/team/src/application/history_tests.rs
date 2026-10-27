@@ -102,7 +102,6 @@ fn retained_task_questions_are_owner_readable_in_bounded_pages_without_peer_enab
         hq.wakes().unwrap().len(),
         hq.store().runs().unwrap().len(),
     );
-    assert!(!hq.conversations_enabled().unwrap());
     let first = hq.legacy_task_conversations(task, -1).unwrap();
     assert_eq!(first["records"].as_array().unwrap().len(), 50);
     assert_eq!(first["records"][0]["id"], "legacy-consult:1");

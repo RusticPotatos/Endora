@@ -20,8 +20,6 @@ use crate::domain::{
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{chess, games};
 
-mod assistance;
-mod conversations;
 mod guards;
 mod history;
 mod input_lineage;
@@ -316,6 +314,28 @@ const TURN_COLUMNS: [(&str, &str); 2] = [("members", "work_brain TEXT"), ("runs"
 const INTERRUPTION_COLUMNS: [(&str, &str); 1] =
     [("runs", "interrupted INTEGER NOT NULL DEFAULT 0")];
 
+/// What the conversations and help requests kept (ADR 0137, 0138), retired by one team of loops
+/// (ADR 0142): the release before this one snapshotted the whole store, and that snapshot is the
+/// archive. Two things they also made are kept: documents are never rewritten, and a task's runs
+/// are found by index.
+const RETIRED_CONVERSATIONS: &str = "
+    CREATE TRIGGER IF NOT EXISTS documents_are_immutable BEFORE UPDATE ON documents
+     BEGIN SELECT RAISE(ABORT, 'an original document is never rewritten'); END;
+    CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task,id) WHERE task IS NOT NULL;
+    DROP TRIGGER IF EXISTS messages_are_immutable;
+    DROP TABLE IF EXISTS assistance_findings;
+    DROP TABLE IF EXISTS assistance_source_grants;
+    DROP TABLE IF EXISTS assistance_day_usage;
+    DROP TABLE IF EXISTS assistance_turn_usage;
+    DROP TABLE IF EXISTS assistance_requests;
+    DROP TABLE IF EXISTS conversation_messages;
+    DROP TABLE IF EXISTS conversation_operations;
+    DROP TABLE IF EXISTS conversation_ready_runs;
+    DROP TABLE IF EXISTS conversation_day_usage;
+    DROP TABLE IF EXISTS conversation_turn_usage;
+    DROP TABLE IF EXISTS conversations;
+";
+
 /// Gives every member two brains (ADR 0131), once. A member on the house's model or the Mac keeps
 /// it as its **work brain**, and a member on Claude gets the Mac to work with. A member that has
 /// no Claude to judge with (the house's model in its `brain`, or nothing it knows) is given the
@@ -396,10 +416,9 @@ impl SqliteTeamStore {
         // is made if this SQLite has FTS5; searching works without it.
         conn.execute_batch(history::SCHEMA).map_err(backend)?;
         conn.execute_batch(input_lineage::SCHEMA).map_err(backend)?;
+        conn.execute_batch(RETIRED_CONVERSATIONS).map_err(backend)?;
         input_lineage::accept_system_origin(&conn)?;
         let _ = conn.execute_batch(history::FULL_TEXT);
-        conn.execute_batch(conversations::SCHEMA).map_err(backend)?;
-        conn.execute_batch(assistance::SCHEMA).map_err(backend)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -1666,9 +1685,7 @@ impl TeamStore for SqliteTeamStore {
                 &format!(
                     "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project, owner)
                      VALUES (?1, ?2, ?3, 'reserve', ?4, ?5,
-                        COALESCE((SELECT project FROM assistance_requests WHERE expert_run = ?1),
-                                 (SELECT project FROM assistance_requests WHERE notice_run = ?1),
-                                 {consult_project},
+                        COALESCE({consult_project},
                                  (SELECT t.project FROM runs r JOIN tasks t ON t.id = r.task WHERE r.id = ?1)),
                         {RUNS_OWNER})",consult_project=history::CONSULT_PROJECT_FOR_RUN
                 ),

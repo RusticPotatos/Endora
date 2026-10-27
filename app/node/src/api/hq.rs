@@ -12,8 +12,6 @@ pub(super) use world::*;
 /// The guards (ADR 0124).
 mod guards;
 pub(super) use guards::*;
-mod conversations;
-pub(super) use conversations::*;
 
 fn client(
     state: &AppState,
@@ -141,20 +139,6 @@ pub(super) async fn hq_task_consultations(
     ask(
         &state,
         format!("/v1/tasks/{id}/consultations?after={}", q.after.max(0)),
-        None,
-    )
-    .await
-}
-
-/// The help a task's own turns asked colleagues for, read through a fixed route (ADR 0138).
-pub(super) async fn hq_task_assistance(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Query(q): Query<HqAfter>,
-) -> Answer {
-    ask(
-        &state,
-        format!("/v1/tasks/{id}/assistance?after={}", q.after.max(0)),
         None,
     )
     .await
@@ -1128,34 +1112,6 @@ mod tests {
             seen.lock().unwrap()[0].0,
             "/v1/tasks/7/consultations?after=0"
         );
-        assert!(
-            endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn a_tasks_help_exchanges_use_a_fixed_read_route_and_keep_the_page() {
-        let expected = json!({"task":7,"requests":[{"id":3,"objective":"<b>asked</b>","answer":"<i>said</i>"}],"after":3,"has_more":false});
-        let page = expected.clone();
-        let (url, seen) = fake(Arc::new(move |_, _| {
-            (200, "application/json", page.to_string())
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let received = hq_task_assistance(
-            State(state.clone()),
-            Path(7),
-            Query(HqAfter {
-                after: -1,
-                before: None,
-                limit: None,
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(received.0, expected);
-        assert_eq!(seen.lock().unwrap()[0].0, "/v1/tasks/7/assistance?after=0");
         assert!(
             endora_application::AuditLog::recent(state.audit.as_ref(), 10)
                 .unwrap()

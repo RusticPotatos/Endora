@@ -501,7 +501,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "ask_owner",
-            "A decision your task needs, or a proposal, up the chain in the task's thread: to your lead (a project's task: its lead), a lead's to the CEO, citing evidence (the owner's desk only when there is no CEO); a tester passing on the CEO's decision cites evidence too. Asking ends your turn; you are woken with the answer. Decisions only: for help, consult any colleague, or escalate a hard problem a model tier up.",
+            "A decision your task needs, or a proposal, up the chain in the task's thread: to your lead (a project's task: its lead), a lead's to the CEO, citing evidence (the owner's desk only when there is no CEO); a tester passing on the CEO's decision cites evidence too. Asking ends your turn; you are woken with the answer. Decisions only: for a hard problem, escalate it a model tier up.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),
@@ -634,44 +634,8 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     let Some(list) = all.as_array_mut() else {
         return all;
     };
-    let answering = match engine.in_assistance(run.id) {
-        Ok(answering) => answering,
-        Err(_) => return json!([]),
-    };
-    let verifying = match engine.store().assistance_notice_for_run(run.id) {
-        Ok(request) => request.is_some(),
-        Err(_) => return json!([]),
-    };
-    if answering || verifying {
-        const MAY: &[&str] = &[
-            "my_turn",
-            "read_world",
-            "read_notebook",
-            "read_doc",
-            "read_document",
-            "ask_record",
-        ];
-        list.retain(|tool| {
-            tool["name"]
-                .as_str()
-                .is_some_and(|name| MAY.contains(&name))
-        });
-        if answering {
-            list.push(super::protocol_conversations::answer_assistance_tool());
-        } else {
-            list.push(super::protocol_conversations::record_assistance_finding_tool());
-        }
-        list.push(super::protocol_conversations::read_assistance_source_tool());
-        return all;
-    }
     if engine.in_quiz(run.id).unwrap_or(false) {
         list.push(super::protocol_world::quiz_tool());
-    }
-    if engine.retired_peer_turn(run.id).unwrap_or(false) {
-        return json!([]);
-    }
-    if !in_the_loops {
-        list.extend(super::protocol_conversations::tools(engine, run));
     }
     // A judgment turn already thinks with Claude: escalating is for a work turn (ADR 0139).
     let judgment = engine
@@ -976,40 +940,7 @@ pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     run: &Run,
     member: &Member,
 ) -> Value {
-    if !matches!(engine.retired_peer_turn(run.id), Ok(false)) {
-        return json!([]);
-    }
-    let mut tools = tools_for_turn(engine, run, member);
-    if let Some(list) = tools.as_array_mut() {
-        let can_send = engine.may_ask_colleagues(member, run).unwrap_or(false);
-        list.retain(|tool| {
-            tool["name"] != "answer_consult"
-                && (can_send
-                    || !matches!(
-                        tool["name"].as_str(),
-                        Some("consult" | "request_assistance" | "send_message")
-                    ))
-        });
-        for tool in list.iter_mut().filter(|tool| tool["name"] == "consult") {
-            tool["description"] = json!(
-                "Ask any colleague one bounded question with read-only assistance; from a project's task the conversation is found or made for you. No task-thread answer or automatic record fallback is created. A paused peer waits within the request deadline. Use read_messages to discover the scope and cite only granted original sources."
-            );
-            if let Some(properties) = tool["inputSchema"]["properties"].as_object_mut() {
-                properties.remove("task");
-                properties["conversation"]["description"] = json!(
-                    "A conversation with this colleague; name one only when more than one matches this pair."
-                );
-                properties["key"]["description"] = json!(
-                    "Optional stable retry key; otherwise derived from this turn and question."
-                );
-                properties["evidence"]["description"] = json!(
-                    "Original document/receipt locators already granted to the selected conversation."
-                );
-            }
-            tool["inputSchema"]["additionalProperties"] = json!(false);
-        }
-    }
-    tools
+    tools_for_turn(engine, run, member)
 }
 
 /// Run a v2 tool through the existing token, authority, lineage and drain gates.
@@ -1023,27 +954,7 @@ pub fn call_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     tool: &str,
     args: &Value,
 ) -> Result<String, String> {
-    if engine.retired_peer_turn(run.id).map_err(|e| said(&e))? {
-        return Err("this legacy expert turn is retired; no tools are authorized".into());
-    }
-    if tool == "answer_consult" {
-        return Err("answer_consult is retired in team protocol v2; only an assigned assistance expert may use answer_assistance".into());
-    }
-    if tool != "consult" {
-        return call_for(engine, run, member, tool, args);
-    }
-    let mut canonical = args
-        .as_object()
-        .ok_or("consult arguments must be an object")?
-        .clone();
-    if canonical.keys().any(|key| {
-        !["member", "question", "conversation", "key", "evidence"].contains(&key.as_str())
-    }) {
-        return Err("team protocol v2 consult accepts conversation scope, not task routing or caller-supplied authority".into());
-    }
-    // Normalize omitted evidence without creating a source grant.
-    canonical.entry("evidence").or_insert_with(|| json!([]));
-    call_for(engine, run, member, tool, &Value::Object(canonical))
+    call_for(engine, run, member, tool, args)
 }
 
 /// Runs one tool for a turn. `Ok` is what the worker reads back; `Err` is a refusal it reads
@@ -1078,10 +989,7 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // A successful canonical consult returns only the typed assistance acceptance.
     // claim returns only a typed task-ID acknowledgment, not newly read content.
     // Other unclassified tool results still follow the conservative lineage rule below.
-    let peer_consult = tool == "consult";
     if answer.is_ok()
-        && !peer_consult
-        && engine.conversations_enabled().unwrap_or(false)
         && !matches!(
             tool,
             "my_turn"
@@ -1143,31 +1051,10 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if still.is_none_or(|r| r.status != RunStatus::Running) {
         return Err(Refusal::TurnOver.to_string());
     }
-    let refused = |reason: String| {
-        if matches!(
-            tool,
-            "send_message"
-                | "read_messages"
-                | "request_assistance"
-                | "answer_assistance"
-                | "read_assistance_source"
-                | "cancel_assistance"
-        ) {
-            engine
-                .conversation_protocol_refused(run.id, tool)
-                .map_err(|e| said(&e))?;
-        }
-        Err(reason)
-    };
+    let refused = |reason: String| -> Result<String, String> { Err(reason) };
     // Downtime makes no work (ADR 0119): the tools that would are refused in its turns.
     if MAKES_WORK.contains(&tool) && engine.in_downtime(run.id).map_err(|e| said(&e))? {
         return refused(Refusal::InDowntime.to_string());
-    }
-    if let Some(refusal) = engine
-        .assistance_turn_refuses(run.id, tool)
-        .map_err(|e| said(&e))?
-    {
-        return refused(refusal);
     }
     // The check after a deploy reads the lab and closes its check, and nothing more (ADR 0115,
     // amended): refused here, whatever the model was told.
@@ -1191,9 +1078,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
         return answer;
     }
     if let Some(answer) = super::protocol_history::call(engine, run, member, tool, args) {
-        return answer;
-    }
-    if let Some(answer) = super::protocol_conversations::call(engine, run, tool, args) {
         return answer;
     }
     match tool {

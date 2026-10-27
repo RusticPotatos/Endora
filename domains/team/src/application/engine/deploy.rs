@@ -132,9 +132,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// A store failure.
     pub fn lab_tools_of(&self, run: RunId) -> Done<Option<Vec<String>>> {
-        if self.in_assistance_flow(run)? {
-            return Ok(Some(Vec::new()));
-        }
         if self.in_deploy_check(run)? {
             return Ok(Some(
                 deploy::LAB_READS.iter().map(|t| (*t).to_owned()).collect(),
@@ -150,7 +147,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// A store failure.
     pub fn may_use_a_shell(&self, run: RunId) -> Done<bool> {
-        if self.in_assistance_flow(run)? || self.in_deploy_check(run)? {
+        if self.in_deploy_check(run)? {
             return Ok(false);
         }
         Ok(self

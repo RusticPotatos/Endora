@@ -474,7 +474,7 @@ fn help_goes_to_a_colleague_or_a_tier_and_only_a_decision_goes_up_the_chain() {
     };
     let ask = said("ask_owner");
     assert!(
-        ask.contains("decision") && ask.contains("consult") && ask.contains("escalate"),
+        ask.contains("decision") && !ask.contains("consult") && ask.contains("escalate"),
         "{ask}"
     );
     assert!(

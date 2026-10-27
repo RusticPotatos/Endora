@@ -1255,10 +1255,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(document) = self.store.document(id)? else {
             return Err(EngineError::Refused(Refusal::NotADocument));
         };
-        if self.check_assistance_source(run, crate::domain::assistance::SourceRef::Document(id))? {
-            self.inherit_input_from(run, document.run)?;
-            return Ok(document_part(&document, part));
-        }
         let mut reach = match turn.task {
             Some(task) => self.work_of(task)?,
             None => Vec::new(),

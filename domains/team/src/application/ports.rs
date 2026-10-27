@@ -283,7 +283,6 @@ pub trait TeamStore:
     + super::guard_ports::GuardStore
     + super::map_ports::MapStore
     + super::history_ports::HistoryStore
-    + super::conversation_ports::ConversationStore
 {
     /// Adds a member.
     ///

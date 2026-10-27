@@ -37,10 +37,7 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
-mod assistance;
 mod budget;
-mod consult;
-mod conversations;
 mod deploy;
 mod digest;
 mod discipline;
@@ -54,6 +51,7 @@ mod history;
 mod kinds;
 mod ladder;
 mod league;
+mod lineage;
 mod long_waits;
 mod loops;
 mod map;
@@ -73,7 +71,6 @@ mod runaway;
 mod runtime;
 mod scenario;
 mod staffing;
-mod task_context;
 mod trials;
 mod wing;
 mod world;
@@ -2406,7 +2403,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// lock is held.
     fn stop_all_held_lock(&self, by: &str, why: &str, evidence: serde_json::Value) -> Done<()> {
         self.store.set_stopped(true)?;
-        self.store.cancel_assistance()?;
         self.store.set_setting(runaway::STOPPED_BY, by)?;
         let reason = if by == "owner" {
             "the kill switch"
@@ -2483,10 +2479,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         run.end_reason = why.to_owned();
         run.reserved = 0;
         self.store.save_run(&run)?;
-        if self.store.assistance_for_run(run.id)?.is_some() {
-            self.store
-                .close_unanswered_assistance(run.id, status == RunStatus::Succeeded)?;
-        }
         self.store
             .set_wake(run.wake, Receipt::Finished, Some(run.id))?;
         // The tokens as the relay reported them, which only it adds to: all the input sent
@@ -2556,16 +2548,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         };
         let why = why.as_str();
-        if let Some(status) = self.assistance_terminal_for(run.id)? {
-            self.end(
-                run,
-                status,
-                &format!("assistance ended before worker recovery: {why}"),
-            )?;
-            return Ok(false);
-        }
-        let assistance_delivery = self.store.assistance_for_run(run.id)?.is_some()
-            || self.store.assistance_notice_for_run(run.id)?.is_some();
+        let assistance_delivery = false;
         // A turn on the owner's Mac that failed because the Mac went away (the owner came back,
         // the laptop left its charger) did nothing wrong: it is tried again when the Mac is
         // free, and the failure is not counted against it (ADR 0130).
@@ -2632,25 +2615,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// its situation needs within its budget (ADR 0122), then its work; and at the very end,
     /// what of the world was left out and how to read it. The run records its situation.
     fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
-        self.prepare_conversation_turn(run.id)?;
-        if let Some(request) = self.store.assistance_for_run(run.id)? {
-            self.assistance_reached(run.id, &[request.requester_run])?;
-            return self.assistance_briefing(member, &request);
-        }
-        if let Some(request) = self.store.assistance_notice_for_run(run.id)? {
-            let mut sources = vec![request.requester_run];
-            sources.extend(request.expert_run);
-            self.assistance_reached(run.id, &sources)?;
-            return self.assistance_notice_briefing(member, &request);
-        }
-        let mut told = if self.canonical_task_context_applies(member, run)? {
-            self.canonical_task_briefing(member, run)?
-        } else {
-            let (_, memory) = self.memory(member, run)?;
-            let mut told = self.briefing_body(member, run, &memory.text)?;
-            told.push_str(&memory.omitted);
-            told
-        };
+        let (_, memory) = self.memory(member, run)?;
+        let mut told = self.briefing_body(member, run, &memory.text)?;
+        told.push_str(&memory.omitted);
         // In the loops: the map and what the loop did lately (ADR 0142).
         if self.in_the_loops(member.id)? {
             told.push_str(&self.loops_said(run)?);
@@ -2665,8 +2632,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(told)
     }
 
-    fn colleague_help_said(&self, member: &Member, run: &Run) -> Done<bool> {
-        Ok(!self.in_quiz(run.id)? && self.may_ask_colleagues(member, run)?)
+    fn colleague_help_said(&self, _member: &Member, _run: &Run) -> Done<bool> {
+        // Colleagues are no longer asked (ADR 0142): the loops' checks and ranks are the help.
+        Ok(false)
     }
 
     /// The briefing, around what it carries of the world (`memory`).
@@ -3316,9 +3284,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // up again, before its turns are looked at, so the ones the restart cut are counted; and
         // one nobody ended outlasts its age.
         self.drain_tick_held_lock(now)?;
-        self.expire_assistance_tick(now)?;
-        // Owner-requested deletion stays bounded and also runs while the team is stopped.
-        self.store.purge_conversation_batch()?;
         if self.store.stopped()? {
             return Ok(report);
         }
@@ -3462,8 +3427,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
 
         // Explicit assistance is a durable intent; a bounded set may enter the normal queue.
-        self.assistance_tick(now)?;
-        self.assistance_notice_tick(now)?;
         // 3b. The office (ADR 0119): proposals whose time came carry or are dropped, and one
         //     member with nothing to do is given a downtime turn.
         self.office_tick()?;
@@ -3523,14 +3486,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(owner) = task.owner else {
                 continue;
             };
-            // An accepted canonical question is deliberate work in progress.
-            // Recovery must not occupy the requester ahead of its result turn.
-            if self.store.task_awaits_assistance(task.id, owner)? {
-                if task.nudged {
-                    self.store.set_nudged(task.id, false)?;
-                }
-                continue;
-            }
             // A scenario's world wakes its players (ADR 0135): waiting for it is no stall.
             if self.in_a_scenario(task.id)? {
                 continue;
@@ -3654,20 +3609,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut starts = self.starts_read(now)?;
         let mut started = 0;
         for mut run in queued {
-            if let Some(status) = self.assistance_terminal_for(run.id)? {
-                self.end(run, status, "assistance request already ended")?;
-                continue;
-            }
-            if self.retired_peer_turn(run.id)? {
-                self.end(run, RunStatus::Stopped, "legacy peer help retired")?;
-                continue;
-            }
-            if (self.store.assistance_for_run(run.id)?.is_some()
-                || self.store.assistance_notice_for_run(run.id)?.is_some())
-                && !self.conversations_enabled()?
-            {
-                continue;
-            }
             // A turn queued for work that has since finished (dropped, or done) is ended, not
             // started: nothing is left for it to do.
             let over = run
