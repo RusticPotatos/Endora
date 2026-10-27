@@ -453,6 +453,10 @@ Also live: a deploy card links its branch to the fork's compare page (`7a3294a3`
 ask). In ansible-nas, every scheduled job on the NAS moved to nas_maintenance with its reason
 and a lint rule (branch `feat/nas-scheduled-jobs`, 9c35b8b, for the owner to merge); the gluetun
 timer is still on until the owner sets `gluetun_periodic_restart_enabled: false`.
+Then: ansible-nas PR #2 merged (c05f375) and applied; a dry run caught the job built without
+vpn-download-stack's facts (sonarr added to the restart), fixed by tagging it always (aef34e5).
+The owner set the switch false (b3ad52a, in group_vars/nas.yml); the timer stopped at 00:10 UTC
+27 Oct, and #796's 48-72 h window started (posted in #796 with the end state).
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
