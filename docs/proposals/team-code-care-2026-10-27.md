@@ -52,3 +52,34 @@ recorded.
 6. **Record.** The baseline measured again, and a line in memory.
 
 ## Progress
+
+- **Step 1, done (9246bd0d, live).** The six longest and four more became named steps: `tick`'s
+  numbered steps are methods, `call_tool` a table with `refusal` before it, `start_queued` hands
+  a `Placement` to `launch`. Over 100 lines: 11 → 1, `Refusal`'s Display, a table of 63 messages.
+- **Step 2, done (f5c49793, live).** Loop bodies that were chains of `continue` became methods with
+  early returns (`settle_one`, `stalled_one`, …); `section_hop` returns a `ControlFlow`. Deeper
+  than 4: 48 → 8; deeper than 5: none. The league reset reads the tasks once, not once a game.
+- **Step 3, done (4143952b, live).** `EventStore`, `DeskStore`, `ScheduleStore`, `WingStore` and
+  `ReceiptStore` split off, each with its SQLite file: `TeamStore`'s own methods 96 → 55.
+- **Step 4, done (b063b91c, live with step 5).** Slice and vector indexes Clippy says may panic:
+  81 → 37, each bounded where it stands; the record's rows are fixed-width arrays (`run_of::<N>`).
+  Clippy's other 75 hits there are JSON lookups, which give `null`, not a panic.
+- **Step 5, done (23dc9bbd, live).** The team crate warns on `clippy::pedantic` and
+  `excessive_nesting`; its `clippy.toml` sets 100 lines and depth 5; what pedantic asks and this
+  code does not do is allowed by name at the root, each with its reason. A deliberate 101-line
+  function and a six-deep block failed the gate. `indexing_slicing` stays off (the JSON lookups).
+- **Step 6, recorded.** The baseline measured again:
+
+  | Measure | Before | After |
+  |---|---|---|
+  | `else` after an early exit / `unwrap`, `panic!` outside tests | 0 / 0 | 0 / 0 |
+  | Functions over 100 lines | 11 | 1 (a table) |
+  | Blocks deeper than 4 / deeper than 5 | 48 / 7 | 8 / 0 |
+  | `TeamStore`'s own methods | 96 | 55 |
+  | Slice indexing that can panic, unbounded where it stands | 81 | 0 (37 bounded) |
+  | Lints beyond Clippy's defaults the gate enforces | none | pedantic, nesting, length |
+  | Team Rust, all of it | 61,313 | 62,046 |
+
+  The lines grew by 733: each new step, store trait and helper has its signature and doc. Steps 4
+  and 5 went out in one release; every step was gated alone. Production after each: health, a
+  snapshot (286–406 ms) and ticks going on; no turn was cut by any drain.
