@@ -447,12 +447,23 @@ reply bound needs more house turns to show (the old rate was 8 in 441).
 pairs left; $0.23 of $10.
 1. Done. By 00:30 on 27 Oct, 90 turns since a1b02bb9 (46 on house models, including the Mac's
 league games 840 and 844 to their ends): none at the reply bound, none failed.
-4. (in progress) Games 840 and 844 drawn (the Mac draws both Claudes); game 849, Haiku against
-Sonnet, the last first meeting, playing; $0.51 of $10.
+4. Done, 27 Oct: every pair has met. Sonnet beat Haiku (849). Table: Sonnet 1231 (2-1-0), Mac
+1201 (0-3-0), Haiku 1199 (1-1-1), Local 1169 (0-1-2); $0.84 of $10; rematches started (851,
+Mac against Local), no stall.
+5. Left open by observation: no help request since the fixes (5 conversations, none with a
+message), so C1 and C4 wait for real work to raise one; D4 stays provisional in ADR 0138.
+6. Merged to develop after a privacy scan (below). Loop stopped.
+Owner follow-ups found on the way: MongoDB is published on 0.0.0.0:27017 with what is likely the
+role's public default password (#676 would fail its own assert: no vault_mongodb_root_password);
+the owner holds #674 until #796's window ends, since the gluetun role restarts the stack.
 Also live: a deploy card links its branch to the fork's compare page (`7a3294a3`, the owner's
 ask). In ansible-nas, every scheduled job on the NAS moved to nas_maintenance with its reason
 and a lint rule (branch `feat/nas-scheduled-jobs`, 9c35b8b, for the owner to merge); the gluetun
 timer is still on until the owner sets `gluetun_periodic_restart_enabled: false`.
+Then: ansible-nas PR #2 merged (c05f375) and applied; a dry run caught the job built without
+vpn-download-stack's facts (sonarr added to the restart), fixed by tagging it always (aef34e5).
+The owner set the switch false (b3ad52a, in group_vars/nas.yml); the timer stopped at 00:10 UTC
+27 Oct, and #796's 48-72 h window started (posted in #796 with the end state).
 
 1. Observe the first production request triggered by real work; verify its
    answer, finding, task section, feed lines and accounting in Work.
