@@ -164,3 +164,19 @@ it). Nothing else in the plan waits on the owner.
 - **Spend per landed change:** below the team's last 7 days.
 - **Lines in the team context:** 55,000–60,000 after 24 hours, under 50,000 after 3 days.
 - **The checks:** they catch a loop's mistakes before the owner sees them.
+
+## Progress
+
+- **Rollback point, 27 Oct 01:17 UTC:** `before-loops` image tags on the NAS and the Pi;
+  snapshots `before-loops-hq-20261027T011732Z.db` and `before-loops-node-20261027T011732Z.db`.
+- **Step 0:** ADR 0142 accepted (fdf50788). Sixteen ADRs marked superseded or amended, and
+  where-things-go updated.
+- **Steps 1–4, code:**
+  - members as ranked models, with the name generator (step 1);
+  - loops handing out their plans' items (step 2);
+  - three failures climbing a rank, and review one rank up (step 3);
+  - the company switched off for members in the loops, and the `become_one_team` cut-over
+    (step 4).
+
+  Each step was written test first; the full gate passed for steps 1, 2 and 3. Nothing changes
+  in production until the cut-over runs.
