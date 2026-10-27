@@ -28,15 +28,6 @@ const OWN_WAKES: [WakeReason; 3] = [
     WakeReason::Guard,
 ];
 
-/// What a guard's detection came to (ADR 0132): the finding it concerned, and what was done to
-/// it.
-pub(super) struct Found {
-    /// The finding.
-    pub(super) id: i64,
-    /// What the detection did to it.
-    pub(super) how: Raised,
-}
-
 /// The key of a task's stuck finding: one is kept for the task.
 pub(super) fn stuck_key(task: TaskId) -> String {
     format!("stuck:{}", task.0)
@@ -229,9 +220,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// A guard's detection, weighed against the finding for its key (ADR 0132): one finding for a
     /// guard and what it is about, however often it sees it. `mark` is the evidence the detection
     /// rests on, a count that only grows with new evidence (see [`Guard::step`]). The finding is
-    /// opened, opened again, renewed, refreshed or left alone as [`guards::reconcile`] says, and
-    /// what it did, with the finding's id, is returned: only news (`Open`, `Renew`, `Reopen`) is
-    /// for the callers to tell anyone of.
+    /// opened, opened again, renewed, refreshed or left alone as [`guards::reconcile`] says.
     pub(super) fn find(
         &self,
         guard: Guard,
@@ -240,12 +229,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         project: Option<i64>,
         evidence: &str,
         mark: i64,
-    ) -> Done<Found> {
+    ) -> Done<()> {
         let latest = self.store.latest_finding(key)?;
         let how = guards::reconcile(latest.as_ref(), mark, guard.step());
         let Some(latest) = latest else {
-            let id = self.open(guard, key, task, project, evidence, mark)?;
-            return Ok(Found { id, how });
+            self.open(guard, key, task, project, evidence, mark)?;
+            return Ok(());
         };
         match how {
             Raised::Hold => {}
@@ -260,11 +249,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 if latest.cleared_at.is_none() {
                     self.clear(&latest)?;
                 }
-                let id = self.open(guard, key, task, project, evidence, mark)?;
-                return Ok(Found { id, how });
+                self.open(guard, key, task, project, evidence, mark)?;
             }
         }
-        Ok(Found { id: latest.id, how })
+        Ok(())
     }
 
     /// A new finding for a key: kept, and told in the feed.
@@ -602,7 +590,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// time it is seen so, and raised again only when it has moved since (ADR 0132). What it
     /// rests on is how many of the task's turns advanced it: work that stops again with no turn
     /// having moved it is the same stuck work.
-    pub(super) fn found_stuck(&self, task: &Task, why: &str) -> Done<Found> {
+    pub(super) fn found_stuck(&self, task: &Task, why: &str) -> Done<()> {
         let advanced = self
             .store
             .runs()?

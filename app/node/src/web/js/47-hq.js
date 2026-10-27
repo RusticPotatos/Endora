@@ -336,8 +336,7 @@ function hqTell(e, live, older) {
     "help.concluded": ["done", `${name} concluded from ${hqName(d.expert)}'s answer${on}`],
     "wake.queued": ["wake", `Woke ${name}: ${reason}${on}`],
     "wake.folded": ["wake", `${reason} → folded into ${name}'s live run${on}`],
-    "wake.held": ["wake", d.why === "coordination_budget" ? `${name} waits: talk on ${key} is over its budget, and its lead decides (${reason})`
-      : `${name} waits: ${key} is being worked (${reason})`],
+    "wake.held": ["wake", `${name} waits: ${key} is being worked (${reason})`],
     "wake.refused": ["warn", `Wake for ${name} skipped: ${String(d.why || "").replace(/_/g, " ")}`],
     "run.started": ["run", `R${d.run} ${name} starts${key ? " on " + key : ""}${reason ? ` (${reason})` : ""}, ${hqDollars(d.reserved)} held`],
     "run.ended": [d.result === "succeeded" ? "done" : d.result === "retry_waiting" ? "warn" : "bad",
@@ -371,7 +370,6 @@ function hqTell(e, live, older) {
     "story.told": ["run", `${d.by} ${d.retold ? "retold" : "told"} the story ${d.handle}`],
     "task.handed_over": ["run", `${hqName(d.by)} handed ${key} on: ${d.note || ""}`],
     // A guard that is tried in shadow was switched on, or put back in shadow (ADR 0133).
-    "guard.mode": ["you", d.mode === "on" ? `You switched the ${String(d.guard || "").replace(/_/g, " ")} guard on` : `You put the ${String(d.guard || "").replace(/_/g, " ")} guard back in shadow`],
     // A lead narrowed what done means for a task in its area (ADR 0133).
     "task.criteria": ["run", `${hqName(d.by)} narrowed what done means for ${key}: ${(d.after || []).join("; ")}${d.why ? " (" + d.why + ")" : ""}`],
     // A drain before a restart (ADR 0134): silent on the desk, one line here.
@@ -412,11 +410,6 @@ function hqTell(e, live, older) {
     // Roles as an enforced RACI (ADR 0120): strategy, the leads' reports and the ladder.
     "goal.strategy": ["you", `Goal ${d.goal}'s strategy was written by ${d.by === "owner" ? "you" : d.by}`],
     "area.reported": ["run", `${hqName(d.lead)} reported on their area`],
-    "stuck.climbed": ["warn", d.rung === "tier"
-      ? `${key} is stuck: ${hqName(d.to)} takes it a model tier up`
-      : `${key} is stuck: it goes to ${d.to ? hqName(d.to) : "the owner"} (${d.rung})`],
-    "huddle.called": ["wake", `Huddle on ${key}: ${(d.members || []).map(hqName).join(", ")}`],
-    "huddle.decided": ["done", `${hqName(d.lead)} decided ${key}: ${String(d.decision || "").replace(/_/g, " ")}`],
   }[e.kind];
   if (said) {
     const at = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -1667,10 +1660,8 @@ function hqRosterLine(m, members) {
   const waits = hqWaitingFor(m);
   const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today of ${hqDollars(m.per_day)}`;
   const open = !!HQ.roster[m.id];
-  const rescues = m.rescues === null ? "How often the CEO stepped in this week: HQ cannot tell, the record has lost part of it."
-    : m.rescues ? `The CEO stepped in ${Number(m.rescues)} ${m.rescues === 1 ? "time" : "times"} this week.` : "";
   const controls = open ? `<div class="hq-controls">
-      <p class="hq-who"><span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${rescues ? `<p class="hq-who">${rescues}</p>` : ""}${hqBrains(m)}${hqReports(m, members)}
+      <p class="hq-who"><span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}${hqReports(m, members)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div>${hqNotebook(m)}</div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
@@ -2077,19 +2068,11 @@ function hqGuards(s) {
     const judged = p.real + p.resolved + p.false_positive;
     const share = p.precision == null ? "not judged yet" : `${p.precision}% real of ${judged} judged`;
     const fixes = p.fix_judged ? ` · fixes worked ${p.fixed} of ${p.fix_judged}` : "";
-    // A guard that is tried in shadow before it acts (ADR 0133) says which it is in, and the
-    // owner switches it: in shadow it records what it would have done and holds nothing.
-    const on = p.mode === "on";
-    const mode = p.mode ? `<p class="hq-note">${on ? "On: it holds talk on a task over its budget, and asks the task's lead to decide it."
-      : "In shadow: it records what it would have held, and holds nothing, until you switch it on."}
-      <button class="hq-btn${on ? " ok" : ""}" aria-pressed="${on ? "true" : "false"}" data-act="hq:guardmode:${esc(p.guard)}:${on ? "shadow" : "on"}">${on ? "Put it back in shadow" : "Switch it on"}</button></p>` : "";
-    // One line each (the owner, 2026-10-25); tapped, its counts in full and its switch.
-    const line = `${p.mode ? `${on ? "on" : "shadow"} · ` : ""}${Number(p.fired)} found · ${Number(p.open)} open`;
+    // One line each (the owner, 2026-10-25); tapped, its counts in full.
+    const line = `${Number(p.fired)} found · ${Number(p.open)} open`;
     return hqOpenRow(`guard${String(p.guard).replace(/[^\w-]/g, "")}`, esc(p.plainly), line,
-      `<span>${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}</span>${mode}`);
+      `<span>${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}</span>`);
   }).join("");
-  // What each window's turns spent is said beside it (ADR 0133).
-  const ceremony = (g.ceremony || []).map((c) => `<li${c.over ? ` class="hq-refused"` : ""}>${esc(c.title)}: ${(c.windows || []).map((w) => esc(w.said) + (w.spent ? ` (${hqDollars(w.spent)} spent)` : "")).join(" · ")}${c.over ? " · talking more than working" : ""}${c.cannot_tell ? " · cannot tell whether it is talking more than working: some turns have no label" : ""}</li>`).join("");
   const finding = (f) => {
     const said = f.verdict ? `Judged ${esc(verdicts[f.verdict] || f.verdict)}${f.judged_by ? ` by ${esc(f.judged_by)}` : ""}${f.fix_worked == null ? "" : f.fix_worked ? ", and its fix worked" : ", and its fix did not work"}.` : "Not judged yet.";
     // Only the choices still open (the owner, 2026-10-25: 115 buttons on one card): a verdict
@@ -2117,9 +2100,8 @@ function hqGuards(s) {
   const t = g.thresholds || {};
   return `<section class="hq-card"><h2>Guards</h2>
     <ul class="hq-team">${lines}</ul>
-    ${ceremony ? `<details><summary>Talk against work, each project and each piece of work over the line</summary><ul class="hq-team">${ceremony}</ul></details>` : ""}
     <h3>Findings</h3><ul class="hq-team hq-findings">${findings || `<li class="hq-empty">No findings.</li>`}</ul>${listed.more}
-    ${hqClamp("thresholds", `Thresholds: ${Number(t.ceremony_least)} coordination turns at ${Number(t.ceremony_ratio)}:1 · sent back ${Number(t.carousel_returns)} times with nothing new · ${Number(t.redundant_wakes)} turns of nothing · ${Number(t.fence_refusals_in_a_turn)} refused acts a turn${t.coordination_budget == null ? "" : ` · a budget of ${Number(t.coordination_budget)} turns of talk a day on a task`}.${t.free_turns_a_day == null ? "" : ` Caps, always on: ${Number(t.free_turns_a_day)} turns a day for a member on the house's own models · the team is stopped when ${Number(t.runaway_turns)} turns start in ${Math.round(Number(t.runaway_window_ms) / 60000)} minutes.`}`, "hq-note")}</section>`;
+    ${hqClamp("thresholds", `Thresholds: ${Number(t.redundant_wakes)} turns of nothing.${t.free_turns_a_day == null ? "" : ` Caps, always on: ${Number(t.free_turns_a_day)} turns a day for a member on the house's own models · the team is stopped when ${Number(t.runaway_turns)} turns start in ${Math.round(Number(t.runaway_window_ms) / 60000)} minutes.`}`, "hq-note")}</section>`;
 }
 
 // The house log (ADR 0111): the CEO's own document of the house, which it and the lead read
@@ -2654,13 +2636,6 @@ async function hqDispatch(verb, noun, id, arg) {
     const title = val("hq-goal"); if (!title) return true;
     try { await api("POST", "/v1/hq/goals", { title, reason: "" }); flash("Goal set.", "ok"); }
     catch (e) { flash("Couldn't set it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
-  // A guard that is tried in shadow before it acts (ADR 0133): switched on, or back to shadow.
-  if (noun === "guardmode") {
-    if (arg === "on" && !confirm("Switch this guard on? It will hold talk on a task over its budget, and ask the task's lead to decide it.")) return true;
-    try { await api("POST", `/v1/hq/guards/${encodeURIComponent(id)}/mode`, { mode: arg }); flash(arg === "on" ? "Switched on." : "Back in shadow.", "ok"); }
-    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // The owner's switches for the team's contracts.

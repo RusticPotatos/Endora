@@ -439,11 +439,11 @@ mod tests {
         let (store, task, _) = store_with_a_task();
         let f = Finding {
             id: 0,
-            guard: Guard::Ceremony,
-            key: "ceremony:p1".to_owned(),
+            guard: Guard::Stuck,
+            key: "stuck:p1".to_owned(),
             task: Some(task.0),
             project: None,
-            rule: Guard::Ceremony.rule(),
+            rule: Guard::Stuck.rule(),
             evidence: "14 coordination turns, 1 product change".to_owned(),
             opened_at: 10,
             cleared_at: None,
@@ -481,14 +481,14 @@ mod tests {
         );
     }
 
-    fn ceremony_finding(task: TaskId) -> Finding {
+    fn a_finding(task: TaskId) -> Finding {
         Finding {
             id: 0,
-            guard: Guard::Ceremony,
-            key: "ceremony:p1".to_owned(),
+            guard: Guard::Stuck,
+            key: "stuck:p1".to_owned(),
             task: Some(task.0),
             project: None,
-            rule: Guard::Ceremony.rule(),
+            rule: Guard::Stuck.rule(),
             evidence: "14 coordination turns, 1 product change".to_owned(),
             opened_at: 10,
             cleared_at: None,
@@ -508,16 +508,16 @@ mod tests {
     #[test]
     fn a_finding_is_refreshed_and_opened_again_in_place_and_the_newest_for_its_key_is_found() {
         let (store, task, _) = store_with_a_task();
-        assert_eq!(store.latest_finding("ceremony:p1").unwrap(), None);
+        assert_eq!(store.latest_finding("stuck:p1").unwrap(), None);
         let id = store
-            .open_finding(&ceremony_finding(task))
+            .open_finding(&a_finding(task))
             .unwrap()
             .expect("a new finding");
 
         store
             .refresh_finding(id, "16 coordination turns, 1 product change", 20, Some(16))
             .unwrap();
-        let seen = store.latest_finding("ceremony:p1").unwrap().unwrap();
+        let seen = store.latest_finding("stuck:p1").unwrap().unwrap();
         assert_eq!(seen.evidence, "16 coordination turns, 1 product change");
         assert_eq!(
             (seen.seen_at, seen.mark, seen.episodes, seen.opened_at),
@@ -526,7 +526,7 @@ mod tests {
         // A lower count never lowers it; none given leaves it as it stands (a judged one).
         store.refresh_finding(id, "13 turns", 25, Some(13)).unwrap();
         store.refresh_finding(id, "15 turns", 26, None).unwrap();
-        let seen = store.latest_finding("ceremony:p1").unwrap().unwrap();
+        let seen = store.latest_finding("stuck:p1").unwrap().unwrap();
         assert_eq!((seen.seen_at, seen.mark), (26, 16), "{seen:?}");
 
         // Opened again: cleared first, and only a cleared one opens.
@@ -540,7 +540,7 @@ mod tests {
                 .reopen_finding(id, "18 coordination turns, 1 product change", 40, 18)
                 .unwrap()
         );
-        let again = store.latest_finding("ceremony:p1").unwrap().unwrap();
+        let again = store.latest_finding("stuck:p1").unwrap().unwrap();
         assert_eq!(again.id, id, "the same finding");
         assert_eq!(
             (
@@ -562,15 +562,15 @@ mod tests {
             .open_finding(&Finding {
                 opened_at: 60,
                 seen_at: 60,
-                ..ceremony_finding(task)
+                ..a_finding(task)
             })
             .unwrap()
             .expect("a new one once cleared");
         assert_eq!(
-            store.latest_finding("ceremony:p1").unwrap().unwrap().id,
+            store.latest_finding("stuck:p1").unwrap().unwrap().id,
             second
         );
-        assert_eq!(store.latest_finding("ceremony:p2").unwrap(), None);
+        assert_eq!(store.latest_finding("stuck:p2").unwrap(), None);
     }
 
     /// A finding seen again says so on the desk card it put up, while the card waits; a card the

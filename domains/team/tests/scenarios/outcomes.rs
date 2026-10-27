@@ -46,13 +46,6 @@ fn was_spent(w: &mut Office, dollars: f64) {
     assert_eq!(week["spent"], json!(micros(dollars)), "{week}");
 }
 
-#[then(regex = r"^the outcomes say (\d+) turns? of talk against (\d+) turns? of work this week$")]
-fn talk_against_work(w: &mut Office, talk: u64, work: u64) {
-    let week = w.outcomes_this_week();
-    assert_eq!(week["talk"]["coordination"], json!(talk), "{week}");
-    assert_eq!(week["talk"]["product"], json!(work), "{week}");
-}
-
 #[then(
     regex = r"^(\d+) turns? waits? for budget and (\d+|none) for the Mac, the oldest for (\d+) minutes$"
 )]

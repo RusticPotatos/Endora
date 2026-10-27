@@ -11,7 +11,6 @@ use super::scorecard::outcomes::{
 };
 use super::scorecard_tests::{MINUTE, NOON, event, run, spending};
 use crate::domain::consult::{Consult, Status};
-use crate::domain::guards::{self, TurnSeen};
 use crate::domain::money::DAY_MS;
 use crate::domain::{Branch, Check, Event, Label, MemberId, RunId, RunStatus, TaskId};
 
@@ -236,60 +235,6 @@ fn a_landed_changes_cost_is_the_windows_spend_over_what_landed_and_none_when_not
         Some(0),
         "landed on the house's own models, which cost nothing"
     );
-}
-
-fn seen(label: Label) -> TurnSeen {
-    TurnSeen {
-        ended_at: NOON - HOUR,
-        label,
-        checking: false,
-        acted: false,
-        branch: false,
-        criterion_met: false,
-        new_evidence: false,
-        asked: false,
-        spent: 0,
-    }
-}
-
-/// Talk against work is counted with the ceremony guard's own labels (ADR 0124), so the card and
-/// the guard cannot disagree about a window.
-#[test]
-fn talk_and_work_are_the_ceremony_guards_own_counts_so_the_two_agree() {
-    let acted = TurnSeen {
-        acted: true,
-        ..seen(Label::Advanced)
-    };
-    let review = TurnSeen {
-        checking: true,
-        ..seen(Label::Advanced)
-    };
-    let mut turns = vec![seen(Label::TalkOnly); 5];
-    // A re-check with nothing new is talk; an empty turn is neither.
-    turns.push(seen(Label::Checked));
-    turns.push(review);
-    turns.push(seen(Label::Empty));
-    turns.extend(vec![acted; 2]);
-    turns.push(TurnSeen {
-        ended_at: NOON - 3 * DAY_MS,
-        ..seen(Label::TalkOnly)
-    });
-
-    let d = talk_work(&turns, &[], &[], &day());
-    let guard = guards::ceremony(&turns, NOON, DAY_MS);
-    assert_eq!(
-        (d.coordination, d.product),
-        (guard.coordination, guard.product)
-    );
-    assert_eq!((d.coordination, d.product), (7, 2));
-
-    let w = talk_work(&turns, &[], &[], &week());
-    let guard = guards::ceremony(&turns, NOON, 7 * DAY_MS);
-    assert_eq!(
-        (w.coordination, w.product),
-        (guard.coordination, guard.product)
-    );
-    assert_eq!(w.coordination, 8);
 }
 
 #[test]

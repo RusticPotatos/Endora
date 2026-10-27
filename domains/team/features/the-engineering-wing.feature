@@ -175,19 +175,6 @@ Feature: The engineering wing and the git flow
     And the owner's desk holds a "deploy_check" card saying ": Inconclusive"
     And the task "Check the home lab after deploying hq/task-2-add-the-drift-check" is dropped
 
-  # Task 670 sat 44 minutes in review, was set blocked out of the tester's reach, and climbed
-  # to the CEO five times for a review that had simply not happened.
-  Scenario: Work left in review is never blocked, and its lead is woken
-    Given Kit's planning turn is over
-    And Kit hands Rae the task "Add the missing app pages" in the wing
-    When Rae's turn starts
-    And Rae submits the branch "hq/task-2-add-the-missing-app-pages"
-    And the check passes: "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 errors (develop 14): no worse than develop"
-    And Rae submits "Add the missing app pages" for review
-    And "Add the missing app pages" sits with nobody coming back to it
-    Then Kit is asked to decide "Add the missing app pages"
-    And the task "Add the missing app pages" is in_review
-
   # A CEO's draft for the board moves the work task itself into review; passing it closed
   # the work, and offered its push, with no evidence judged.
   Scenario: A draft for the owner never closes the work

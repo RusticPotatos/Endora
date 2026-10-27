@@ -2139,42 +2139,6 @@ fn daily_review(w: &mut Office, name: String) {
     w.hq.fire_routine(routine).expect("the review runs");
 }
 
-/// Time passes on a task nobody comes back to, as the tick sees it: what is queued starts and
-/// ends, ten minutes go by, and again, until the ladder climbs a rung (at most four rounds).
-#[when(expr = "{string} sits with nobody coming back to it")]
-fn sits(w: &mut Office, title: String) {
-    let task = w.task(&title);
-    let climbed = |w: &Office| {
-        w.hq.store()
-            .events_after(0)
-            .expect("the store answers")
-            .iter()
-            .filter(|e| {
-                matches!(e.kind.as_str(), "stuck.climbed" | "huddle.called")
-                    && e.data["task"] == task.0
-            })
-            .count()
-    };
-    let before = climbed(w);
-    for _ in 0..4 {
-        w.tick();
-        w.tick();
-        for started in w.hq.runner().started() {
-            w.hq.runner().finish(started.run, true);
-        }
-        w.tick();
-        w.clock.0.fetch_add(
-            endora_team::application::engine::STRANDED_AFTER_MS + 1,
-            Ordering::SeqCst,
-        );
-        w.tick();
-        if climbed(w) > before {
-            return;
-        }
-    }
-    panic!("{title} never climbed the ladder");
-}
-
 #[then(expr = "{word} takes {string} a model tier up")]
 fn takes_a_tier_up(w: &mut Office, name: String, title: String) {
     let (member, task) = (w.member(&name), w.task(&title));
@@ -2184,55 +2148,6 @@ fn takes_a_tier_up(w: &mut Office, name: String, title: String) {
         (member, Some(task), WakeReason::Escalated),
         "{wake:?}"
     );
-}
-
-#[then(expr = "{word} is asked to decide {string}")]
-fn asked_to_decide(w: &mut Office, name: String, title: String) {
-    let (member, task) = (w.member(&name), w.task(&title));
-    let wake = w.last_wake();
-    assert_eq!(
-        (wake.member, wake.task, wake.reason),
-        (member, Some(task), WakeReason::Decide),
-        "{wake:?}"
-    );
-}
-
-#[then(expr = "a huddle is called on {string}")]
-fn huddle_called(w: &mut Office, title: String) {
-    let task = w.task(&title);
-    assert!(
-        w.hq.store()
-            .events_after(0)
-            .expect("the store answers")
-            .iter()
-            .any(|e| e.kind == "huddle.called" && e.data["task"] == task.0),
-        "no huddle on {title}"
-    );
-}
-
-/// A member's one short turn in a huddle: its view, on the task as evidence; then it ends.
-#[when(expr = "{word} gives the view {string} on {string}")]
-fn gives_view(w: &mut Office, name: String, view: String, title: String) {
-    let task = w.task(&title);
-    w.use_tool(
-        &name,
-        "huddle_view",
-        &json!({ "task": task.0, "view": view, "evidence": [format!("task {}", task.0)] }),
-    )
-    .expect("the member is heard");
-    turn_ends(w, name);
-}
-
-#[when(regex = r#"^(\w+) decides "(.+)": (\w+), "(.+)"$"#)]
-fn decides_stuck(w: &mut Office, name: String, title: String, decision: String, detail: String) {
-    let task = w.task(&title);
-    w.use_tool(
-        &name,
-        "decide_stuck",
-        &json!({ "task": task.0, "decision": decision, "detail": detail,
-                 "evidence": [format!("task {}", task.0)] }),
-    )
-    .expect("the lead decides");
 }
 
 #[when(expr = "{word} checks back in an hour")]
@@ -2292,10 +2207,6 @@ fn give_allowance(w: &mut Office, _name: String, dollars: String) {
 // --- The open office (ADR 0119) ------------------------------------------------------------------
 
 impl Office {
-    fn office_items(&self) -> Vec<endora_team::domain::office::Item> {
-        self.hq.store().office_items().expect("the store answers")
-    }
-
     /// `member`'s downtime turns, as the record has them.
     fn downtime_turns(&self, member: &str) -> Vec<endora_team::application::ports::Run> {
         let id = self.member(member);
@@ -2355,34 +2266,6 @@ fn feed_does_not_say(w: &mut Office, said: String) {
         !feed.iter().any(|t| t.contains(&said)),
         "the feed: {feed:#?}"
     );
-}
-
-#[then(regex = r#"^the office has no "(.+)"$"#)]
-fn office_has_no(w: &mut Office, kind: String) {
-    let kind = endora_team::domain::office::Kind::from_name(&kind).expect("a kind in the catalog");
-    assert!(w.office_items().iter().all(|i| i.kind != kind));
-}
-
-#[then(regex = r#"^the office has a "(.+)" at (\d+), (\d+)$"#)]
-fn office_has_at(w: &mut Office, kind: String, x: i64, y: i64) {
-    let kind = endora_team::domain::office::Kind::from_name(&kind).expect("a kind in the catalog");
-    assert!(
-        w.office_items()
-            .iter()
-            .any(|i| i.kind == kind && (i.x, i.y) == (x, y)),
-        "the office: {:?}",
-        w.office_items()
-    );
-}
-
-#[then("the office has the default layout")]
-fn office_is_default(w: &mut Office) {
-    let items = w.office_items();
-    assert_eq!(
-        items.len(),
-        endora_team::domain::office::default_layout().len()
-    );
-    assert!(items.iter().all(|i| i.placed_by == "endora"));
 }
 
 #[given("downtime is on")]

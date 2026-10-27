@@ -87,16 +87,10 @@ mod scenario_tests;
 mod raci_tests;
 
 #[cfg(test)]
-mod ladder_tests;
-
-#[cfg(test)]
 mod world_tests;
 
 #[cfg(test)]
 mod guards_tests;
-
-#[cfg(test)]
-mod budget_tests;
 
 #[cfg(test)]
 mod caps_tests;

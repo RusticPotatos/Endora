@@ -43,16 +43,6 @@ Feature: What the team's work came to
 
   # --- Talk against work -------------------------------------------------------------------
 
-  Scenario: Talk against work is counted as the ceremony guard counts it
-    Given Ada is the lead
-    And the goal "Keep the home lab healthy"
-    And the project "Home lab upkeep" led by Ada
-    And Ada has the task "Plan the backups" in the project "Home lab upkeep"
-    When Ada talks about "Plan the backups" for 12 turns and changes nothing
-    And HQ looks at how the team is doing
-    Then the outcomes say 12 turns of talk against 0 turns of work this week
-    And the guards card says "12 coordination turns, 0 product changes in 24 h"
-
   # --- What waits --------------------------------------------------------------------------
 
   Scenario: Turns that wait are counted by what they wait for, with the oldest wait

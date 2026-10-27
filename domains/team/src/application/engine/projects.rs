@@ -1014,7 +1014,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }));
         }
         self.store.set_task_project(task, Some(to))?;
-        self.off_the_ladder(task)?;
         if found.status == crate::domain::TaskStatus::Blocked {
             self.store
                 .set_task_status(task, crate::domain::TaskStatus::Todo)?;

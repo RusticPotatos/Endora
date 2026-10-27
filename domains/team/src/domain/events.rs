@@ -135,12 +135,6 @@ pub enum EventKind {
     StrategySet,
     /// A lead reported on its area (ADR 0120).
     AreaReported,
-    /// Stuck work climbed a rung of the ladder (ADR 0120).
-    StuckClimbed,
-    /// A huddle was called on stuck work: the task and its members (ADR 0120).
-    HuddleCalled,
-    /// A lead decided stuck work, in a huddle or on its own (ADR 0120).
-    HuddleDecided,
     /// A guard made a finding (ADR 0124).
     GuardFound,
     /// A guard's finding cleared: its condition no longer holds.
@@ -155,8 +149,6 @@ pub enum EventKind {
     /// A lead narrowed or reworded what done means for a task in its area: the criteria it had
     /// and the criteria it has (ADR 0133).
     CriteriaChanged,
-    /// The owner switched a guard that is tried in shadow on, or back to shadow (ADR 0133).
-    GuardMode,
     /// A drain began: nothing new starts until a restart has been (ADR 0134).
     DrainBegan,
     /// A drain ended, and how many turns ended before it and how many the restart cut.
@@ -238,9 +230,6 @@ impl EventKind {
             Self::ScenarioActed => "scenario.acted",
             Self::StrategySet => "goal.strategy",
             Self::AreaReported => "area.reported",
-            Self::StuckClimbed => "stuck.climbed",
-            Self::HuddleCalled => "huddle.called",
-            Self::HuddleDecided => "huddle.decided",
             Self::PoolToppedUp => "pool.topped_up",
             Self::GuardFound => "guard.found",
             Self::GuardCleared => "guard.cleared",
@@ -248,7 +237,6 @@ impl EventKind {
             Self::SentBack => "task.sent_back",
             Self::RecordAsked => "record.asked",
             Self::CriteriaChanged => "task.criteria",
-            Self::GuardMode => "guard.mode",
             Self::DrainBegan => "drain.began",
             Self::DrainEnded => "drain.ended",
             Self::HelpAsked => "help.asked",

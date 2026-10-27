@@ -122,44 +122,6 @@ impl WakeReason {
         )
     }
 
-    /// Whether the wake only asks members to talk to each other (ADR 0133): a mention, a review
-    /// or an acceptance asked for, a question up the chain and its answer. A task that has had
-    /// its budget of talk with nothing changed holds these; every other wake still reaches it:
-    /// the owner's word, a decision, a check-back, work handed on, a guard's look. The match has
-    /// no wildcard: a new reason does not compile until it is classified here.
-    #[must_use]
-    pub const fn is_talk(self) -> bool {
-        match self {
-            Self::Mentioned
-            | Self::ReviewRequested
-            | Self::AcceptanceAsked
-            | Self::QuestionAsked
-            | Self::QuestionAnswered => true,
-            Self::Assigned
-            | Self::WaitFinished
-            | Self::SubtasksFinished
-            | Self::ProposalDecided
-            | Self::LeadReview
-            | Self::Retry
-            | Self::Recovery
-            | Self::CheckBack
-            | Self::Alarm
-            | Self::OwnerReplied
-            | Self::AssignmentRecovery
-            | Self::SentBack
-            | Self::CheckDone
-            | Self::Downtime
-            | Self::Directed
-            | Self::Decide
-            | Self::Huddle
-            | Self::Guard
-            | Self::WaitDropped
-            | Self::Consulted
-            | Self::Escalated
-            | Self::ConsultedUp => false,
-        }
-    }
-
     /// Whether the wake comes from a clock rather than from someone: a timer, a check-back or
     /// an alarm. One of these that names no task, for a member with no open task, finds
     /// nothing to do.
@@ -413,10 +375,6 @@ pub struct WakeSituation {
     /// Whether the wake brings nothing new, to a member whose last turns on the task showed
     /// nothing, again and again (ADR 0124): it is not woken for nothing once more.
     pub woken_for_nothing: bool,
-    /// Whether the wake only asks for talk ([`WakeReason::is_talk`]) on a task that has had more
-    /// than its budget of it with nothing changed, the guard is on, and its lead can decide it
-    /// (ADR 0133): what would start a turn is held instead, not lost.
-    pub coordination_held: bool,
 }
 
 /// What to do with a wake.
@@ -483,15 +441,6 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
         }
         return WakeDecision::Hold;
     }
-    // Talk on a task that has had its budget of it, with nothing changing, is held, not started
-    // (ADR 0133): it waits as a wake behind a live turn waits, and the first one stands for the
-    // rest.
-    if situation.coordination_held {
-        if situation.already_held {
-            return WakeDecision::Refuse(Refused::Duplicate);
-        }
-        return WakeDecision::Hold;
-    }
     WakeDecision::Queue
 }
 
@@ -512,7 +461,6 @@ mod tests {
             project_paused: false,
             furloughed: false,
             woken_for_nothing: false,
-            coordination_held: false,
         }
     }
 
@@ -528,75 +476,6 @@ mod tests {
         assert_eq!(Refused::from_name("redundant"), Some(Refused::Redundant));
     }
     const OTHER: MemberId = MemberId(2);
-
-    /// The wakes that only ask members to talk (ADR 0133), by name: everything else reaches a
-    /// task that has had its budget of talk, the owner's word and the lead's look first.
-    #[test]
-    fn a_mention_a_review_an_acceptance_and_a_question_with_its_answer_are_talk_and_nothing_else_is()
-     {
-        use WakeReason as W;
-        let talk = [
-            W::Mentioned,
-            W::ReviewRequested,
-            W::AcceptanceAsked,
-            W::QuestionAsked,
-            W::QuestionAnswered,
-        ];
-        for reason in WakeReason::all() {
-            assert_eq!(reason.is_talk(), talk.contains(&reason), "{reason:?}");
-        }
-        // The ways out of a spinning task must reach it.
-        for reason in [
-            W::OwnerReplied,
-            W::ProposalDecided,
-            W::Guard,
-            W::Decide,
-            W::Directed,
-        ] {
-            assert!(!reason.is_talk(), "{reason:?}");
-        }
-    }
-
-    /// A talk wake that would start a turn on a task over its budget is held, a second from the
-    /// same member is the duplicate of the first, and a member already on the task takes it into
-    /// its turn as ever (ADR 0133).
-    #[test]
-    fn talk_over_its_budget_is_held_instead_of_started() {
-        let over = WakeSituation {
-            coordination_held: true,
-            ..quiet()
-        };
-        assert_eq!(decide(ME, &over), WakeDecision::Hold);
-        let again = WakeSituation {
-            already_held: true,
-            ..over.clone()
-        };
-        assert_eq!(decide(ME, &again), WakeDecision::Refuse(Refused::Duplicate));
-        let on_it = WakeSituation {
-            live: vec![LiveTurn {
-                run: RunId(7),
-                member: ME,
-                foldable: true,
-            }],
-            ..over.clone()
-        };
-        assert_eq!(decide(ME, &on_it), WakeDecision::Fold(RunId(7)));
-        let other = WakeSituation {
-            live: vec![LiveTurn {
-                run: RunId(8),
-                member: OTHER,
-                foldable: true,
-            }],
-            ..over
-        };
-        assert_eq!(
-            decide(ME, &other),
-            WakeDecision::Hold,
-            "behind its turn, as ever"
-        );
-        // The guard being off, or the wake not being talk, nothing is held.
-        assert_eq!(decide(ME, &quiet()), WakeDecision::Queue);
-    }
 
     #[test]
     fn a_wake_on_a_free_task_is_queued() {

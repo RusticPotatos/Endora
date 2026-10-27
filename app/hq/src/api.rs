@@ -1827,8 +1827,7 @@ mod tests {
         // and reads a task's documents and the team's library, too, and asks for staff when a
         // project has a backlog. Every member keeps a notebook of its own, too (ADR 0118):
         // note, forget, read and check. Every member shapes the office (ADR 0119). And it
-        // reports on its area, decides its area's stuck work, and gives its view in a huddle
-        // (ADR 0120). It reads the world, tells stories (a lesson is one now), confirms and
+        // reports on its area (ADR 0120); stuck work and huddles went with the ladder (ADR 0142). It reads the world, tells stories (a lesson is one now), confirms and
         // retires what it stewards, and proposes canon (ADR 0122). It may play chess (ADR 0121),
         // and no longer shapes the office (ADR 0142).
         // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
@@ -1837,7 +1836,7 @@ mod tests {
         // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
         // for work in its area (ADR 0133). On a work turn, it may take a stuck problem a model
         // tier up (ADR 0139).
-        assert_eq!(names.len(), 37, "{names:?}");
+        assert_eq!(names.len(), 35, "{names:?}");
         assert!(names.contains(&"escalate"));
         assert!(!names.contains(&"consult") && !names.contains(&"answer_consult"));
         assert!(names.contains(&"recheck"));
@@ -1855,8 +1854,9 @@ mod tests {
         ] {
             assert!(names.contains(&added), "{added}");
         }
-        for added in ["report_area", "decide_stuck", "huddle_view"] {
-            assert!(names.contains(&added), "{added}");
+        assert!(names.contains(&"report_area"));
+        for gone in ["decide_stuck", "huddle_view"] {
+            assert!(!names.contains(&gone), "{gone}");
         }
         assert!(names.contains(&"request_staff") && names.contains(&"note"));
         assert!(

@@ -7,8 +7,8 @@
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::{
-    Brain, Member, MemberId, ProjectId, ProjectStatus, Refusal, Role, Task, TaskId, TaskStatus,
-    WakeReason,
+    Brain, Member, MemberId, Millis, ProjectId, ProjectStatus, Refusal, Role, Task, TaskId,
+    TaskStatus, WakeReason,
 };
 
 /// The five members and their models, ranked (ADR 0142).
@@ -57,6 +57,22 @@ fn in_the_loops(member: &Member) -> bool {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
+    /// Whether nothing (a turn queued, started or ended, or a wake) has happened on `task` for
+    /// longer than `ms`.
+    pub(super) fn idle_for(&self, task: TaskId, ms: Millis) -> Done<bool> {
+        let runs = self.store.runs()?;
+        let wakes = self.store.wakes()?;
+        let last = runs
+            .iter()
+            .filter(|r| r.task == Some(task))
+            .flat_map(|r| [Some(r.queued_at), r.started_at, r.ended_at])
+            .flatten()
+            .chain(wakes.iter().filter(|w| w.task == Some(task)).map(|w| w.at))
+            .max()
+            .unwrap_or(Millis::MIN);
+        Ok(self.clock.now().saturating_sub(last) > ms)
+    }
+
     /// The cut-over to one team of loops (ADR 0142), once, by the owner. Mara, Kit, Ada, Rae
     /// and Bo become the ranked models, plain members with no reporting line; every other
     /// member retires, its open work back on its loop's plan (one playing in a scenario

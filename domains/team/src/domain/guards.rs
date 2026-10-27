@@ -24,24 +24,9 @@ const DAY: Millis = 24 * 60 * MINUTE;
 /// scattered through the code that enforces them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Thresholds {
-    /// Coordination turns per product change at which a project is talking about work
-    /// rather than doing it.
-    pub ceremony_ratio: usize,
-    /// The fewest coordination turns in a window before the ratio means anything.
-    pub ceremony_least: usize,
-    /// Times a task is sent back, with no new evidence between, before it goes straight to a
-    /// huddle.
-    pub carousel_returns: usize,
     /// Turns in a row that showed nothing, each after a wake, before a member stops being woken
     /// on a task.
     pub redundant_wakes: usize,
-    /// Refused acts in one turn that make a fence-push finding.
-    pub fence_refusals_in_a_turn: usize,
-    /// Different members refused the same act, within [`Self::fence_window_ms`], that make a
-    /// fence-push finding.
-    pub fence_members: usize,
-    /// How far back the same refused act by different members is counted.
-    pub fence_window_ms: Millis,
     /// The most open sub-tasks one task may have.
     pub open_subtasks_most: usize,
     /// The deepest a sub-task may be made (the owner's task is depth 0).
@@ -58,13 +43,6 @@ pub struct Thresholds {
     /// How alike, both ways, a new question or decision for the owner must be to one waiting
     /// on the desk to be the same ask (in percent of each one's shingles the other holds).
     pub same_ask_percent: usize,
-    /// The most coordination turns one task may take within [`Self::coordination_window_ms`] with
-    /// nothing changing before the talk it asks for is held (ADR 0133): counted from the task's
-    /// newest product change, or from its lead's last decision about it, if later. The verdicts on
-    /// its findings tune it.
-    pub coordination_budget: usize,
-    /// How far back a task's coordination turns are counted against that budget.
-    pub coordination_window_ms: Millis,
     /// The most turns a member starts in a day on the house's own models, the Mac or the NAS's
     /// (ADR 0133): they cost nothing, so no budget stops a member that has run away with them.
     /// Past it the member's work turns wait until the day turns.
@@ -79,13 +57,7 @@ pub struct Thresholds {
 /// The thresholds HQ starts with (ADR 0124): loose enough to learn real numbers before they
 /// bite, from each finding's verdict.
 pub const THRESHOLDS: Thresholds = Thresholds {
-    ceremony_ratio: 4,
-    ceremony_least: 12,
-    carousel_returns: 3,
     redundant_wakes: 3,
-    fence_refusals_in_a_turn: 3,
-    fence_members: 2,
-    fence_window_ms: DAY,
     open_subtasks_most: 5,
     depth_most: 3,
     sufficient_turns: 3,
@@ -93,8 +65,6 @@ pub const THRESHOLDS: Thresholds = Thresholds {
     retracted_shared_least: 2,
     look_every_ms: 5 * MINUTE,
     same_ask_percent: 60,
-    coordination_budget: 20,
-    coordination_window_ms: DAY,
     free_turns_a_day: 60,
     runaway_turns: 40,
     runaway_window_ms: 10 * MINUTE,
@@ -522,7 +492,7 @@ pub fn nudge_key(task: i64, member: i64, reason: &str, saw: &str) -> String {
 
 // ---- process health ---------------------------------------------------------------------------
 
-/// What one ended turn did, as the ceremony detector reads it from the record.
+/// What one ended turn did, as the outcomes line reads it from the record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnSeen {
     /// When it ended.
@@ -545,7 +515,7 @@ pub struct TurnSeen {
     pub spent: Micros,
 }
 
-/// What a turn was, to the ceremony detector.
+/// What a turn was, to the outcomes line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnKind {
     /// It changed the product: an act, a branch, a criterion met.
@@ -574,252 +544,28 @@ pub const fn turn_kind(t: &TurnSeen) -> TurnKind {
     }
 }
 
-/// The ceremony of a project, or of a piece of work outside one, over one window: its
-/// coordination turns, its product changes and what all its turns spent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ceremony {
-    /// Coordination turns.
-    pub coordination: usize,
-    /// Turns that changed the product.
-    pub product: usize,
-    /// What every turn that ended in the window spent, whatever it did (ADR 0133).
-    pub spent: Micros,
-    /// Turns that ended in the window and that HQ cannot read: they have no label (they ended
-    /// before turns were labelled), so whether each talked or changed the product is not known.
-    pub unread: usize,
-}
-
-/// What a window's ceremony comes to (ADR 0124, amended): over the line, under it, or that HQ
-/// cannot tell, which it never takes for either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Over {
-    /// Talk about work rather than work, whatever the turns HQ cannot read were.
-    Yes,
-    /// Not, whatever the turns HQ cannot read were.
-    No,
-    /// It depends on what the turns HQ cannot read were.
-    CannotTell,
-}
-
-impl Over {
-    /// Whether the window is over the line, for certain.
-    #[must_use]
-    pub const fn is_yes(self) -> bool {
-        matches!(self, Self::Yes)
-    }
-
-    /// Stable lowercase name.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Yes => "over",
-            Self::No => "under",
-            Self::CannotTell => "cannot_tell",
-        }
-    }
-}
-
-impl Ceremony {
-    /// Whether the window is talk about work rather than work: at least
-    /// [`Thresholds::ceremony_least`] coordination turns, and [`Thresholds::ceremony_ratio`]
-    /// of them or more for each product change. Turns HQ cannot read ([`Self::unread`]) may each
-    /// have been talk, a change or neither, so it is over only if it is over whatever they were
-    /// (taken all for changes), under only if it is under whatever they were (all for talk), and
-    /// otherwise it cannot be told: never read as either on a count HQ does not have.
-    #[must_use]
-    pub const fn over(&self) -> Over {
-        if self.holds(self.coordination, self.product + self.unread) {
-            return Over::Yes;
-        }
-        if !self.holds(self.coordination + self.unread, self.product) {
-            return Over::No;
-        }
-        Over::CannotTell
-    }
-
-    /// Whether `coordination` turns against `product` changes are talk about work.
-    const fn holds(&self, coordination: usize, product: usize) -> bool {
-        coordination >= THRESHOLDS.ceremony_least
-            && coordination >= THRESHOLDS.ceremony_ratio * product
-    }
-
-    /// As the scorecard and a finding say it.
-    #[must_use]
-    pub fn said(&self, window: &str) -> String {
-        let unread = match self.unread {
-            0 => String::new(),
-            1 => ", 1 turn it cannot read".to_owned(),
-            n => format!(", {n} turns it cannot read"),
-        };
-        format!(
-            "{} coordination turns, {} product {} in {window}{unread}",
-            self.coordination,
-            self.product,
-            if self.product == 1 {
-                "change"
-            } else {
-                "changes"
-            }
-        )
-    }
-
-    /// As a finding says it: [`Self::said`], and what the window's turns spent (ADR 0133).
-    #[must_use]
-    pub fn said_with_cost(&self, window: &str) -> String {
-        format!(
-            "{} ({} spent)",
-            self.said(window),
-            super::projects::dollars(self.spent)
-        )
-    }
-}
-
-/// The ceremony of `turns` that ended within `ms` before `now`, and what every one of them
-/// spent.
-#[must_use]
-pub fn ceremony(turns: &[TurnSeen], now: Millis, ms: Millis) -> Ceremony {
-    ceremony_with_unread(turns, &[], now, ms)
-}
-
-/// As [`ceremony`], and the turns HQ cannot read (`unread`, when each ended) that ended in the
-/// same window.
-#[must_use]
-pub fn ceremony_with_unread(
-    turns: &[TurnSeen],
-    unread: &[Millis],
-    now: Millis,
-    ms: Millis,
-) -> Ceremony {
-    let within = turns
-        .iter()
-        .filter(|t| t.ended_at <= now && now - t.ended_at < ms);
-    let mut found = Ceremony {
-        coordination: 0,
-        product: 0,
-        spent: 0,
-        unread: unread
-            .iter()
-            .filter(|at| **at <= now && now - **at < ms)
-            .count(),
-    };
-    for t in within {
-        found.spent = found.spent.saturating_add(t.spent);
-        match turn_kind(t) {
-            TurnKind::Product => found.product += 1,
-            TurnKind::Coordination => found.coordination += 1,
-            TurnKind::Neither => {}
-        }
-    }
-    found
-}
-
-/// The talk a task has had with nothing coming of it (ADR 0133): its coordination turns within
-/// [`Thresholds::coordination_window_ms`] of `now` that came after its newest product change and
-/// after `since`, when its lead last decided it. A turn that changed the product, or the lead's
-/// deciding, starts the count again. `turns` are in the order they ran: which came after a change
-/// is the order, not the clock, which two turns can share to the millisecond.
-#[must_use]
-pub fn talk_turns(turns: &[TurnSeen], now: Millis, since: Millis) -> Vec<TurnSeen> {
-    let within: Vec<&TurnSeen> = turns
-        .iter()
-        .filter(|t| t.ended_at <= now && t.ended_at > since)
-        .filter(|t| now - t.ended_at < THRESHOLDS.coordination_window_ms)
-        .collect();
-    let after_the_change = within
-        .iter()
-        .rposition(|t| turn_kind(t) == TurnKind::Product)
-        .map_or(0, |changed| changed + 1);
-    within[after_the_change..]
-        .iter()
-        .filter(|t| turn_kind(t) == TurnKind::Coordination)
-        .map(|t| **t)
-        .collect()
-}
-
-/// How many turns of [`talk_turns`] a task has had.
-#[must_use]
-pub fn talk_without_progress(turns: &[TurnSeen], now: Millis, since: Millis) -> usize {
-    talk_turns(turns, now, since).len()
-}
-
-/// Whether that much talk is more than a task's budget (ADR 0133).
-#[must_use]
-pub const fn over_budget(talk: usize) -> bool {
-    talk > THRESHOLDS.coordination_budget
-}
-
-/// Whether a task is on the review carousel (ADR 0124): sent back at least
-/// [`Thresholds::carousel_returns`] times (`returns`, when, oldest first), with no new evidence
-/// submitted between the last of them: every reference each submission (`submitted`, when
-/// and what it cited) made between two returns had been cited before the first of the two.
-#[must_use]
-pub fn carousel(returns: &[Millis], submitted: &[(Millis, Vec<super::evidence::Ref>)]) -> bool {
-    let most = THRESHOLDS.carousel_returns;
-    if returns.len() < most {
-        return false;
-    }
-    let last = &returns[returns.len() - most..];
-    last.windows(2).all(|pair| {
-        let (from, until) = (pair[0], pair[1]);
-        let before: Vec<super::evidence::Ref> = submitted
-            .iter()
-            .filter(|(at, _)| *at <= from)
-            .flat_map(|(_, refs)| refs.iter().copied())
-            .collect();
-        submitted
-            .iter()
-            .filter(|(at, _)| from < *at && *at <= until)
-            .flat_map(|(_, refs)| refs.iter())
-            .all(|r| before.contains(r))
-    })
-}
-
 // ---- findings and their verdicts ------------------------------------------------------------
 
-/// The guards that make findings (ADR 0124).
+/// The guards that make findings (ADR 0124; the ones that policed coordination went with the
+/// company, ADR 0142).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Guard {
-    /// Work stopped by accident, on the escalation ladder or the owner's desk.
+    /// Work stopped by accident, on the owner's desk.
     Stuck,
-    /// A project's coordination far outweighs its product change.
-    Ceremony,
-    /// A task sent back again and again with no new evidence between.
-    Carousel,
-    /// A member woken on a task again and again for nothing.
-    RedundantWake,
-    /// Members pushing at the fence: acts refused again and again.
-    FencePush,
     /// The same ask for the owner from two tasks, put on one desk card.
     SameAsk,
-    /// A task that has taken more coordination turns than its budget with nothing changing
-    /// (ADR 0133). The one guard that changes what the team does, and so the one that is tried in
-    /// shadow before it acts ([`GuardMode`]).
-    Coordination,
 }
 
 impl Guard {
     /// Every guard, in the order the scorecard shows them.
-    pub const ALL: [Self; 7] = [
-        Self::Stuck,
-        Self::Ceremony,
-        Self::Carousel,
-        Self::RedundantWake,
-        Self::FencePush,
-        Self::SameAsk,
-        Self::Coordination,
-    ];
+    pub const ALL: [Self; 2] = [Self::Stuck, Self::SameAsk];
 
     /// Stable lowercase name.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Stuck => "stuck",
-            Self::Ceremony => "ceremony",
-            Self::Carousel => "carousel",
-            Self::RedundantWake => "redundant_wake",
-            Self::FencePush => "fence_push",
             Self::SameAsk => "same_ask",
-            Self::Coordination => "coordination",
         }
     }
 
@@ -834,115 +580,30 @@ impl Guard {
     pub const fn plainly(self) -> &'static str {
         match self {
             Self::Stuck => "Stuck work",
-            Self::Ceremony => "Talk about work",
-            Self::Carousel => "Review carousel",
-            Self::RedundantWake => "Woken for nothing",
-            Self::FencePush => "Pushing at the fence",
             Self::SameAsk => "The same ask twice",
-            Self::Coordination => "Coordination over budget",
         }
-    }
-
-    /// Whether the guard is tried in shadow before it acts (ADR 0133): it records what it would
-    /// have done and does nothing, until the owner switches it on. Only a guard that changes what
-    /// the team does can be: the rest only record, and have nothing to hold back.
-    #[must_use]
-    pub const fn has_shadow(self) -> bool {
-        matches!(self, Self::Coordination)
-    }
-
-    /// The mode a guard starts in: shadow for one that is tried first, on for the rest.
-    #[must_use]
-    pub const fn starts_in(self) -> GuardMode {
-        if self.has_shadow() {
-            return GuardMode::Shadow;
-        }
-        GuardMode::On
     }
 
     /// How much more evidence than was judged makes a finding worth raising again (ADR 0132),
-    /// in the units of its [`Finding::mark`]: another [`Thresholds::ceremony_least`] turns of
-    /// talk for the ceremony, whose count creeps up with every turn, and another
-    /// [`Thresholds::coordination_budget`] for a task's budget of talk (ADR 0133), which creeps
-    /// the same way; one more of the thing counted for the rest, each of which is an event of
-    /// its own.
+    /// in the units of its [`Finding::mark`]: one more of the thing counted, each of which is an
+    /// event of its own.
     #[must_use]
     pub const fn step(self) -> i64 {
-        match self {
-            Self::Ceremony => THRESHOLDS.ceremony_least as i64,
-            Self::Coordination => THRESHOLDS.coordination_budget as i64,
-            Self::Stuck
-            | Self::Carousel
-            | Self::RedundantWake
-            | Self::FencePush
-            | Self::SameAsk => 1,
-        }
+        1
     }
 
     /// The rule that fires it, as a finding states it, with its numbers from [`THRESHOLDS`].
     #[must_use]
     pub fn rule(self) -> String {
-        let t = THRESHOLDS;
         match self {
             Self::Stuck => {
                 "open work parked (its member idle, still owed) after its nudge".to_owned()
             }
-            Self::Ceremony => format!(
-                "at least {} coordination turns and {}:1 or more against product change, over 24 h or 7 d",
-                t.ceremony_least, t.ceremony_ratio
-            ),
-            Self::Carousel => format!(
-                "sent back {} times with no new evidence between",
-                t.carousel_returns
-            ),
-            Self::RedundantWake => format!(
-                "{} turns in a row on the task that showed nothing",
-                t.redundant_wakes
-            ),
-            Self::FencePush => format!(
-                "{} refused acts in one turn, or the same refused act by {} members within 24 h",
-                t.fence_refusals_in_a_turn, t.fence_members
-            ),
             Self::SameAsk => format!(
                 "a question or decision for the owner {}% alike, both ways, to one already waiting",
-                t.same_ask_percent
-            ),
-            Self::Coordination => format!(
-                "more than {} coordination turns on one task in 24 h with nothing changed since \
-                 (a product change, or its lead's decision, starts the count again)",
-                t.coordination_budget
+                THRESHOLDS.same_ask_percent
             ),
         }
-    }
-}
-
-/// How a guard that changes what the team does behaves (ADR 0133). New authority is tried before
-/// it is given: in shadow a guard records what it would have done and does nothing, so its
-/// verdicts say how often it would have been right; on, it acts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GuardMode {
-    /// It records what it would have done, and holds nothing back.
-    Shadow,
-    /// It acts.
-    On,
-}
-
-impl GuardMode {
-    /// Stable lowercase name, as stored and shown.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Shadow => "shadow",
-            Self::On => "on",
-        }
-    }
-
-    /// The mode with this [`name`](Self::name), if there is one.
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Shadow, Self::On]
-            .into_iter()
-            .find(|m| m.name() == name)
     }
 }
 
@@ -1411,109 +1072,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn talk_has_to_grow_by_a_dozen_turns_a_budget_by_a_budget_and_every_other_guard_by_one_thing() {
-        assert_eq!(Guard::Ceremony.step(), 12);
-        assert_eq!(
-            Guard::Ceremony.step(),
-            i64::try_from(THRESHOLDS.ceremony_least).unwrap()
-        );
-        assert_eq!(Guard::Coordination.step(), 20, "another budget of talk");
-        for guard in Guard::ALL
-            .into_iter()
-            .filter(|g| !matches!(g, Guard::Ceremony | Guard::Coordination))
-        {
-            assert_eq!(guard.step(), 1, "{guard:?}");
-        }
-    }
-
-    /// A task's budget of talk (ADR 0133): twenty coordination turns in a day with nothing
-    /// changed. The twenty-first is the one that exceeds it.
-    #[test]
-    fn the_budget_of_talk_is_twenty_coordination_turns_in_a_day_and_the_twenty_first_is_over_it() {
-        assert_eq!(
-            (
-                THRESHOLDS.coordination_budget,
-                THRESHOLDS.coordination_window_ms
-            ),
-            (20, DAY)
-        );
-        assert!(!over_budget(0) && !over_budget(20));
-        assert!(over_budget(21));
-        assert!(
-            Guard::Coordination
-                .rule()
-                .contains("more than 20 coordination turns")
-        );
-    }
-
-    fn talk_ago(now: Millis, ago: Millis) -> TurnSeen {
-        TurnSeen {
-            ended_at: now - ago,
-            ..seen(Label::TalkOnly)
-        }
-    }
-
-    fn change_ago(now: Millis, ago: Millis) -> TurnSeen {
-        TurnSeen {
-            ended_at: now - ago,
-            acted: true,
-            ..seen(Label::Advanced)
-        }
-    }
-
-    /// A product change starts a task's count again, and so does its lead's decision about it;
-    /// talk older than the window is out.
-    #[test]
-    fn talk_is_counted_from_the_newest_change_or_decision_and_within_the_day() {
-        let now = 10 * DAY;
-        // Four turns of talk, then a change, then three more.
-        let turns = [
-            talk_ago(now, 9_000),
-            talk_ago(now, 8_000),
-            talk_ago(now, 7_000),
-            talk_ago(now, 6_000),
-            change_ago(now, 5_000),
-            talk_ago(now, 4_000),
-            talk_ago(now, 3_000),
-            talk_ago(now, 2_000),
-        ];
-        assert_eq!(
-            talk_without_progress(&turns, now, 0),
-            3,
-            "only what came after the change"
-        );
-        assert_eq!(
-            talk_without_progress(&turns[..4], now, 0),
-            4,
-            "no change yet"
-        );
-        assert_eq!(
-            talk_without_progress(&turns, now, now - 3_500),
-            2,
-            "its lead decided it between the second and the third"
-        );
-        let old = [
-            talk_ago(now, DAY + 1),
-            talk_ago(now, DAY),
-            talk_ago(now, DAY - 1),
-        ];
-        assert_eq!(
-            talk_without_progress(&old, now, 0),
-            1,
-            "a day ago to the millisecond is out"
-        );
-        let later = TurnSeen {
-            ended_at: now + 1,
-            ..seen(Label::TalkOnly)
-        };
-        assert_eq!(talk_without_progress(&[later], now, 0), 0, "not yet");
-    }
-
-    /// Talk is what the ceremony guard calls coordination, by the same labels: a turn that took
+    /// Talk is coordination, by the turns' labels: a turn that took
     /// a first reading, or nothing, is neither; a review round and a re-check are.
     #[test]
-    fn only_coordination_turns_are_talk_by_the_ceremony_guards_own_labels() {
+    fn only_coordination_turns_are_talk() {
         let now = 10 * DAY;
         let at = |label: Label| TurnSeen {
             ended_at: now - 1_000,
@@ -1537,44 +1099,28 @@ mod tests {
             },
             at(Label::TalkOnly),
         ];
-        assert_eq!(talk_without_progress(&turns, now, 0), 4);
-        assert_eq!(
-            talk_without_progress(&turns, now, 0),
-            ceremony(&turns, now, DAY).coordination,
-            "the same count the ceremony makes"
-        );
-    }
-
-    /// Only the guard that changes what the team does is tried in shadow first (ADR 0133).
-    #[test]
-    fn only_the_budget_of_talk_is_tried_in_shadow_first() {
-        assert!(Guard::Coordination.has_shadow());
-        assert_eq!(Guard::Coordination.starts_in(), GuardMode::Shadow);
-        for guard in Guard::ALL.into_iter().filter(|g| *g != Guard::Coordination) {
-            assert!(!guard.has_shadow(), "{guard:?}");
-            assert_eq!(guard.starts_in(), GuardMode::On, "{guard:?}");
-        }
-        for mode in ["shadow", "on"] {
-            assert_eq!(GuardMode::from_name(mode).map(GuardMode::name), Some(mode));
-        }
-        assert_eq!(GuardMode::from_name("off"), None);
+        let talk = turns
+            .iter()
+            .filter(|t| turn_kind(t) == TurnKind::Coordination)
+            .count();
+        assert_eq!(talk, 4);
     }
 
     #[test]
     fn a_guards_precision_is_real_out_of_judged_and_not_enough_is_no_verdict() {
         let all = [
-            finding(Guard::Ceremony, Some(Verdict::Real), Some(true)),
-            finding(Guard::Ceremony, Some(Verdict::Resolved), Some(false)),
-            finding(Guard::Ceremony, Some(Verdict::FalsePositive), None),
-            finding(Guard::Ceremony, Some(Verdict::NotEnough), None),
-            finding(Guard::Ceremony, None, None),
+            finding(Guard::SameAsk, Some(Verdict::Real), Some(true)),
+            finding(Guard::SameAsk, Some(Verdict::Resolved), Some(false)),
+            finding(Guard::SameAsk, Some(Verdict::FalsePositive), None),
+            finding(Guard::SameAsk, Some(Verdict::NotEnough), None),
+            finding(Guard::SameAsk, None, None),
             finding(Guard::Stuck, None, None),
         ];
         let p = precision(&all);
-        let ceremony = p.iter().find(|p| p.guard == Guard::Ceremony).unwrap();
-        assert_eq!((ceremony.fired, ceremony.open), (5, 1));
-        assert_eq!(ceremony.percent(), Some(66));
-        assert_eq!((ceremony.fixed, ceremony.fix_judged), (1, 2));
+        let same = p.iter().find(|p| p.guard == Guard::SameAsk).unwrap();
+        assert_eq!((same.fired, same.open), (5, 1));
+        assert_eq!(same.percent(), Some(66));
+        assert_eq!((same.fixed, same.fix_judged), (1, 2));
         let stuck = p.iter().find(|p| p.guard == Guard::Stuck).unwrap();
         assert_eq!(stuck.percent(), None, "nothing judged yet");
         assert_eq!(p.len(), Guard::ALL.len());
@@ -1635,109 +1181,6 @@ mod tests {
         assert_eq!(turn_kind(&seen(Label::Empty)), TurnKind::Neither);
     }
 
-    #[test]
-    fn talking_about_work_is_over_at_twelve_turns_and_four_to_one() {
-        let talk = |n: usize, at: Millis| {
-            vec![
-                TurnSeen {
-                    ended_at: at,
-                    ..seen(Label::TalkOnly)
-                };
-                n
-            ]
-        };
-        let product = TurnSeen {
-            acted: true,
-            ..seen(Label::Advanced)
-        };
-        let mut turns = talk(11, 1_000);
-        let c = ceremony(&turns, 2_000, DAY);
-        assert_eq!(
-            (c.coordination, c.product, c.over()),
-            (11, 0, Over::No),
-            "too few"
-        );
-        turns.extend(talk(1, 1_500));
-        assert_eq!(ceremony(&turns, 2_000, DAY).over(), Over::Yes);
-        turns.extend(vec![product; 3]);
-        let c = ceremony(&turns, 2_000, DAY);
-        assert_eq!(
-            (c.coordination, c.product, c.over()),
-            (12, 3, Over::Yes),
-            "12:3 is 4:1"
-        );
-        turns.push(product);
-        assert_eq!(
-            ceremony(&turns, 2_000, DAY).over(),
-            Over::No,
-            "12:4 is under"
-        );
-        assert_eq!(
-            ceremony(&turns, 1_000 + DAY, DAY).coordination,
-            1,
-            "only the window's turns"
-        );
-        assert_eq!(
-            ceremony(&turns, 2_000, DAY).said("24 h"),
-            "12 coordination turns, 4 product changes in 24 h"
-        );
-    }
-
-    /// A window with turns HQ cannot read is over only if it is over whatever they were, under
-    /// only if it is under whatever they were, and otherwise HQ cannot tell (ADR 0124, amended).
-    #[test]
-    fn a_window_with_turns_hq_cannot_read_is_over_under_or_cannot_be_told() {
-        let window = |coordination, product, unread| Ceremony {
-            coordination,
-            product,
-            spent: 0,
-            unread,
-        };
-        // Nothing unread: as it always was.
-        assert_eq!(window(12, 3, 0).over(), Over::Yes);
-        assert_eq!(window(12, 4, 0).over(), Over::No);
-        assert_eq!(window(11, 0, 0).over(), Over::No);
-        // Over even if all three unread turns changed the product (12 against 3).
-        assert_eq!(window(12, 0, 3).over(), Over::Yes);
-        // 12 against 3 is over; one unread turn that changed the product makes it 12 against 4,
-        // and one that talked makes it 13 against 3: it depends on what it was.
-        assert_eq!(window(12, 3, 1).over(), Over::CannotTell);
-        // Short of the line by one turn that may have talked.
-        assert_eq!(window(11, 0, 1).over(), Over::CannotTell);
-        // Under even if every unread turn talked (7 of 12), or changed nothing at all.
-        assert_eq!(window(5, 5, 2).over(), Over::No);
-        assert_eq!(window(10, 0, 1).over(), Over::No);
-        assert!(window(12, 0, 3).over().is_yes() && !window(12, 3, 1).over().is_yes());
-        assert_eq!(
-            [Over::Yes, Over::No, Over::CannotTell].map(Over::name),
-            ["over", "under", "cannot_tell"]
-        );
-    }
-
-    /// The turns HQ cannot read are counted in the window they ended in, and said.
-    #[test]
-    fn the_turns_hq_cannot_read_are_counted_in_their_window_and_said() {
-        let turns = vec![
-            TurnSeen {
-                ended_at: 1_900,
-                ..seen(Label::TalkOnly)
-            };
-            2
-        ];
-        let c = ceremony_with_unread(&turns, &[1_000, 1_500, 2_000 - DAY - 1], 2_000, DAY);
-        assert_eq!((c.coordination, c.product, c.unread), (2, 0, 2));
-        assert_eq!(
-            c.said("24 h"),
-            "2 coordination turns, 0 product changes in 24 h, 2 turns it cannot read"
-        );
-        let one = ceremony_with_unread(&turns, &[1_000], 2_000, DAY);
-        assert_eq!(
-            one.said("24 h"),
-            "2 coordination turns, 0 product changes in 24 h, 1 turn it cannot read"
-        );
-        assert_eq!(ceremony(&turns, 2_000, DAY).unread, 0);
-    }
-
     /// A count over the event feed is a whole count only if nothing inside its window was pruned.
     #[test]
     fn the_feed_reaches_a_window_unless_events_inside_it_were_pruned() {
@@ -1751,71 +1194,6 @@ mod tests {
         // Pruned, and the oldest kept event is inside the window: some of it is gone.
         assert!(!feed_reaches(from, Some((500, from + 1))));
         assert!(!feed_reaches(from, Some((2, from + 5_000))));
-    }
-
-    /// A finding says what the talk cost (ADR 0133): what every turn that ended in the window
-    /// spent, whatever it did, in dollars and cents. The plain line the scorecard shows is as it
-    /// was.
-    #[test]
-    fn a_ceremonys_cost_is_what_the_windows_turns_spent_and_is_said_with_it() {
-        let paid = |at: Millis, spent: Micros| TurnSeen {
-            ended_at: at,
-            spent,
-            ..seen(Label::TalkOnly)
-        };
-        let product = TurnSeen {
-            acted: true,
-            label: Label::Advanced,
-            ..paid(9 * DAY + 3, 20_000)
-        };
-        let turns = [
-            paid(9 * DAY + 1, 50_000),
-            paid(9 * DAY + 2, 30_000),
-            product,
-            paid(5 * DAY, 100_000),
-            paid(2 * DAY, 900_000),
-        ];
-        let now = 10 * DAY;
-        let day = ceremony(&turns, now, DAY);
-        assert_eq!((day.coordination, day.product, day.spent), (2, 1, 100_000));
-        assert_eq!(
-            day.said_with_cost("24 h"),
-            "2 coordination turns, 1 product change in 24 h ($0.10 spent)"
-        );
-        assert_eq!(
-            day.said("24 h"),
-            "2 coordination turns, 1 product change in 24 h"
-        );
-        let week = ceremony(&turns, now, 7 * DAY);
-        assert_eq!(
-            (week.coordination, week.product, week.spent),
-            (3, 1, 200_000),
-            "the turn eight days old is in neither"
-        );
-        assert_eq!(
-            week.said_with_cost("7 d"),
-            "3 coordination turns, 1 product change in 7 d ($0.20 spent)"
-        );
-    }
-
-    #[test]
-    fn a_task_bounced_three_times_with_nothing_new_is_on_the_carousel() {
-        use super::super::evidence::Ref;
-        let r = Ref::Receipt;
-        let first = vec![(10, vec![r(1)])];
-        assert!(!carousel(&[20, 40], &first), "twice is not yet");
-        let same = vec![(10, vec![r(1)]), (30, vec![r(1)]), (50, vec![r(1)])];
-        assert!(carousel(&[20, 40, 60], &same));
-        let renewed = vec![(10, vec![r(1)]), (30, vec![r(1)]), (50, vec![r(2)])];
-        assert!(
-            !carousel(&[20, 40, 60], &renewed),
-            "new evidence between the last two returns"
-        );
-        let silent = vec![(10, vec![r(1)])];
-        assert!(
-            carousel(&[20, 40, 60], &silent),
-            "nothing submitted between is nothing new"
-        );
     }
 
     #[test]
@@ -1965,9 +1343,7 @@ mod tests {
     #[test]
     fn the_thresholds_start_where_adr_0124_says() {
         let t = THRESHOLDS;
-        assert_eq!((t.ceremony_ratio, t.ceremony_least), (4, 12));
-        assert_eq!((t.carousel_returns, t.redundant_wakes), (3, 3));
+        assert_eq!(t.redundant_wakes, 3);
         assert_eq!((t.open_subtasks_most, t.depth_most), (5, 3));
-        assert_eq!(t.fence_window_ms, DAY);
     }
 }

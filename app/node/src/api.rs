@@ -382,7 +382,6 @@ pub fn app(state: AppState) -> Router {
             post(hq_finding_verdict),
         )
         // A guard that is tried in shadow before it acts (ADR 0133): on, or back in shadow.
-        .route("/v1/hq/guards/{guard}/mode", post(hq_guard_mode))
         // Retract and sweep (ADR 0124): "Not true", what else says it, and forgetting it.
         .route("/v1/hq/retractions", post(hq_retract))
         .route("/v1/hq/retractions/{id}/sweep", get(hq_sweep))

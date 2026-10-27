@@ -407,12 +407,6 @@ pub fn tools(role: Role) -> Value {
             json!({}),
             &[]
         ),
-        tool(
-            "huddle_view",
-            "Give your view on stuck work while its huddle lasts (a huddle asks you in your turn, and anyone may add one): three sentences at most, on evidence from HQ's record. Give it and stop; the area's lead then decides.",
-            json!({ "task": task, "view": { "type": "string", "maxLength": crate::domain::ladder::VIEW_MOST }, "evidence": ids("What your view rests on: at least one.") }),
-            &["task", "view", "evidence"]
-        ),
     ]);
     if role == Role::Reviewer {
         if let Some(list) = all.as_array_mut() {
@@ -445,22 +439,6 @@ pub fn tools(role: Role) -> Value {
                     "proposals": report_part("what you propose (make each with propose_project)"),
                 }),
                 &["moved", "stuck", "need", "proposals"],
-            ));
-            list.push(tool(
-                "decide_stuck",
-                "Decide stuck work in your area, when HQ asks you (your turn says it is stuck): proceed (say with what), drop, hand_to a member of your team (`to`), needs_ceo (money, a new goal, another area), or needs_board (the owner alone: money beyond the caps, a hire, the owner's repos). On evidence. Dropping it or handing it on needs the handover note; dropping it says why (obsolete, duplicate with duplicate_of, wont_do, blocked_forever) and names the successor task if one carries the work on. Only a board matter reaches the owner, through the CEO.",
-                json!({
-                    "task": { "type": "integer", "description": "the task's number" },
-                    "decision": { "type": "string", "enum": ["proceed", "drop", "hand_to", "needs_ceo", "needs_board"] },
-                    "detail": { "type": "string", "description": "what, and why, in a sentence or two" },
-                    "to": { "type": "string", "description": "for hand_to: the member's name" },
-                    "why": { "type": "string", "enum": ["obsolete", "duplicate", "wont_do", "blocked_forever"], "description": "for drop: why it is dropped" },
-                    "duplicate_of": { "type": "integer", "description": "for a duplicate: the task it duplicates" },
-                    "successor": { "type": "integer", "description": "for drop: the task that carries the work on, if one does" },
-                    "evidence": ids("What the decision rests on: at least one."),
-                    "handover": super::protocol_world::handover_schema(),
-                }),
-                &["task", "decision", "detail", "evidence"],
             ));
             list.push(narrow_criteria_tool());
             list.push(judge_finding_tool());
@@ -1187,50 +1165,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!("Project {} is {}.", project.0, now.name()))
-        }
-        "huddle_view" => {
-            let task = task_arg(args)?;
-            engine
-                .huddle_view_in(run.id, task, text_arg(args, "view")?, &evidence_flat(args)?)
-                .map_err(|e| said(&e))?;
-            Ok("Your view is with the huddle: your turn may end now.".to_owned())
-        }
-        "decide_stuck" => {
-            let task = task_arg(args)?;
-            let decision = args["decision"]
-                .as_str()
-                .and_then(crate::domain::ladder::Decision::from_name)
-                .ok_or_else(|| Refusal::NotADecisionForStuck.to_string())?;
-            let to = match args["to"].as_str().filter(|t| !t.trim().is_empty()) {
-                Some(name) => Some(member_named(engine, name)?.id),
-                None => None,
-            };
-            let handover = super::protocol_world::handover_arg(args)?;
-            // A drop's reason is the engine's to refuse, after whether the decision is the
-            // lead's to make at all.
-            let dropped = match decision {
-                crate::domain::ladder::Decision::Drop => {
-                    closure_arg(args, TaskStatus::Dropped).ok()
-                }
-                _ => None,
-            };
-            engine
-                .decide_stuck_in(
-                    run.id,
-                    task,
-                    decision,
-                    text_arg(args, "detail")?,
-                    to,
-                    &evidence_flat(args)?,
-                    handover.as_ref(),
-                    dropped,
-                )
-                .map_err(|e| said(&e))?;
-            Ok(format!(
-                "Task {} is decided ({}): it is in its thread.",
-                task.0,
-                decision.name().replace('_', " ")
-            ))
         }
         "narrow_criteria" => {
             let task = task_arg(args)?;

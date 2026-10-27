@@ -108,10 +108,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "task": run.task.map(|t| t.0), "tool": receipt.tool, "ok": receipt.ok,
                     "act": receipt.act, "sandbox": sandbox }),
         )?;
-        // A refused act may be the team pushing at the fence (ADR 0124).
-        if receipt.act && !receipt.ok {
-            self.after_refused_act(run.id, &receipt.tool)?;
-        }
         Ok(id)
     }
 
@@ -392,9 +388,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }));
         }
         self.set_criteria_held_lock(task, criteria)?;
-        // Narrowed, its talk is counted afresh, and the question put to its lead is answered
-        // (ADR 0133).
-        self.renew_coordination_budget(task)?;
         let texts = |all: &[Criterion]| all.iter().map(|c| c.text.clone()).collect::<Vec<_>>();
         let said = |all: &[Criterion]| {
             if all.is_empty() {
@@ -755,7 +748,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<TaskId> {
         let _held = self.held();
         let turn = self.running(run)?;
-        let task_parent = task.parent;
         // Who may hand what to whom comes first: a member who may not make the task at all is
         // told so, not asked what it serves.
         let to_another = task.assignee.filter(|a| *a != turn.member);
@@ -795,13 +787,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         if let Some(own) = turn.task {
             self.mark_progress(turn.member, own)?;
-        }
-        // A lead splitting the task it was asked about has decided it: the talk is counted afresh
-        // (ADR 0133).
-        if let Some(parent) =
-            task_parent.filter(|p| self.asked_about_talk(*p, turn.member).unwrap_or(false))
-        {
-            self.renew_coordination_budget(parent)?;
         }
         Ok(id)
     }
@@ -972,8 +957,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if let Some(owner) = worker {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
             }
-            // Bounced with nothing new between: a huddle, not another round (ADR 0124).
-            return self.after_sent_back(task);
+            return Ok(());
         }
         let tested = self.tested_since_submitted(task)?;
         let tester_there = matches!(

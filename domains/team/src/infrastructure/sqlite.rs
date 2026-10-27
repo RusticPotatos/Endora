@@ -300,8 +300,9 @@ const TURN_COLUMNS: [(&str, &str); 2] = [("members", "work_brain TEXT"), ("runs"
 const INTERRUPTION_COLUMNS: [(&str, &str); 1] =
     [("runs", "interrupted INTEGER NOT NULL DEFAULT 0")];
 
-/// What the conversations and help requests kept (ADR 0137, 0138), and the office's proposals,
-/// votes and undo history (ADR 0119), retired by one team of loops
+/// What the conversations and help requests kept (ADR 0137, 0138), the office's proposals,
+/// votes and undo history (ADR 0119), and the ladder's, huddles' and coordination guards' findings
+/// and settings (ADR 0120, 0124, 0133), retired by one team of loops
 /// (ADR 0142): the release before this one snapshotted the whole store, and that snapshot is the
 /// archive. Two things they also made are kept: documents are never rewritten, and a task's runs
 /// are found by index.
@@ -324,6 +325,10 @@ const RETIRED_CONVERSATIONS: &str = "
     DROP TABLE IF EXISTS office_votes;
     DROP TABLE IF EXISTS office_proposals;
     DROP TABLE IF EXISTS office_history;
+    DELETE FROM findings WHERE guard NOT IN ('stuck', 'same_ask');
+    DELETE FROM settings WHERE key LIKE 'ladder:%' OR key LIKE 'huddle:%'
+      OR key LIKE 'guard_mode:%' OR key LIKE 'coordination_since:%'
+      OR key LIKE 'coordination_asked:%' OR key = 'guards_ceremony';
 ";
 
 /// Gives every member two brains (ADR 0131), once. A member on the house's model or the Mac keeps
@@ -3008,11 +3013,13 @@ CREATE TABLE IF NOT EXISTS check_backs (
              CREATE UNIQUE INDEX findings_open_by_key ON findings(key) WHERE cleared_at IS NULL;
              INSERT INTO findings (id, guard, key, rule, evidence, opened_at, verdict, judged_by)
                 VALUES (1, 'stuck', 'stuck:7', 'parked', '#7 Look', 500, 'real', 'owner'),
-                       (2, 'ceremony', 'ceremony:project:2', 'talk', '14 turns', 900, NULL, '');",
+                       (2, 'same_ask', 'same_ask:3:2', 'alike', '#2 the same ask', 900, NULL, ''),
+                       (3, 'ceremony', 'ceremony:project:2', 'talk', '14 turns', 950, NULL, '');",
         )
         .unwrap();
         let store = SqliteTeamStore::over(conn).unwrap();
         let found = store.findings().unwrap();
+        // A retired guard's finding is dropped (ADR 0142); the release's snapshot is its archive.
         assert_eq!(found.len(), 2);
         assert_eq!(
             (
@@ -3025,7 +3032,7 @@ CREATE TABLE IF NOT EXISTS check_backs (
             "seen when it opened, on its first episode, resting on nothing yet"
         );
         assert_eq!(found[0].verdict, Some(crate::domain::guards::Verdict::Real));
-        assert_eq!(found[1].evidence, "14 turns");
+        assert_eq!(found[1].evidence, "#2 the same ask");
         // A second start finds the columns and changes nothing.
         guards::gain_columns(&store.conn().unwrap()).unwrap();
         assert_eq!(store.findings().unwrap(), found);
@@ -3033,7 +3040,7 @@ CREATE TABLE IF NOT EXISTS check_backs (
         store
             .refresh_finding(2, "16 turns", 1_000, Some(16))
             .unwrap();
-        let seen = store.latest_finding("ceremony:project:2").unwrap().unwrap();
+        let seen = store.latest_finding("same_ask:3:2").unwrap().unwrap();
         assert_eq!(
             (seen.seen_at, seen.mark, seen.evidence.as_str()),
             (1_000, 16, "16 turns")

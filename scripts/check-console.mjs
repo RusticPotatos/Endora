@@ -624,15 +624,10 @@ if (failures.length) {
       // Caps on talk and runaway (ADR 0133): the budget of talk is a guard tried in shadow (it has
       // a mode; the others only record and have none), work outside any project is listed by its
       // tree with what its turns spent, and the caps are told beside the thresholds.
-      guards: { thresholds: { ceremony_ratio: 4, ceremony_least: 12, carousel_returns: 3, redundant_wakes: 3, fence_refusals_in_a_turn: 3,
-                              coordination_budget: 20, coordination_window_ms: 86400000, free_turns_a_day: 60, runaway_turns: 40, runaway_window_ms: 600000 },
-        precision: [{ guard: "ceremony", plainly: "Talk about work", rule: "r", fired: 3, open: 1, real: 1, resolved: 1, false_positive: 1, not_enough: 0, fixed: 1, fix_judged: 2, precision: 66 },
-                    { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null },
-                    { guard: "coordination", plainly: "Coordination over budget", rule: "r", fired: 1, open: 1, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null, mode: "shadow" }],
-        ceremony: [{ project: 1, title: "<u>Upkeep</u>", over: true, windows: [{ window: "24 h", said: "14 coordination turns, 1 product change in 24 h", over: true }] },
-                   { project: 2, title: "Backups", over: false, cannot_tell: true, windows: [{ window: "24 h", said: "11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read", over: false, verdict: "cannot_tell" }] },
-                   { project: null, title: "#12 <i>Plan the backups</i>", over: true, windows: [{ window: "24 h", said: "21 coordination turns, 0 product changes in 24 h", over: true, spent: 1230000 }] }],
-        findings: [{ id: 3, guard: "ceremony", plainly: "Talk about work", task: 7, project: 1, rule: "at least 12 coordination turns", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, seen_at: 5000, episodes: 3, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
+      guards: { thresholds: { redundant_wakes: 3, free_turns_a_day: 60, runaway_turns: 40, runaway_window_ms: 600000 },
+        precision: [{ guard: "same_ask", plainly: "The same ask twice", rule: "r", fired: 3, open: 1, real: 1, resolved: 1, false_positive: 1, not_enough: 0, fixed: 1, fix_judged: 2, precision: 66 },
+                    { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null }],
+        findings: [{ id: 3, guard: "same_ask", plainly: "The same ask twice", task: 7, project: 1, rule: "60% alike", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, seen_at: 5000, episodes: 3, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
                    { id: 4, guard: "stuck", plainly: "Stuck work", task: 7, project: null, rule: "parked", evidence: "#7 x", opened_at: 2, seen_at: 2, episodes: 1, cleared_at: 3, verdict: null, fix_worked: null, judged_by: "" }] },
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
@@ -717,10 +712,7 @@ if (failures.length) {
     hqTell({ id: 62, at: 0, kind: "help.concluded", data: { member: 2, expert: 1, task: null, conversation: 4, request: 3, run: 12 } }, false);
     // Caps on talk and runaway (ADR 0133): a wake held for a task's budget of talk, the owner
     // switching that guard, a lead narrowing what done means, and who stopped the team.
-    hqTell({ id: 56, at: 0, kind: "wake.held", data: { member: 2, task: 7, reason: "mentioned", why: "coordination_budget" } }, false);
     hqTell({ id: 57, at: 0, kind: "wake.held", data: { member: 2, task: 7, reason: "mentioned" } }, false);
-    hqTell({ id: 58, at: 0, kind: "guard.mode", data: { guard: "coordination", mode: "on" } }, false);
-    hqTell({ id: 59, at: 0, kind: "guard.mode", data: { guard: "coordination", mode: "shadow" } }, false);
     hqTell({ id: 60, at: 0, kind: "task.criteria", data: { task: 7, by: 1, before: ["a"], after: ["The plan names three backups"], why: "too wide" } }, false);
     hqTell({ id: 61, at: 0, kind: "stopped", data: { by: "tripwire", why: "stopped by the runaway tripwire", turns: 40, window_ms: 600000, members: [{ member: 1, name: "Ada", turns: 22 }, { member: 2, name: "Bo", turns: 18 }] } }, false);
     hqTell({ id: 62, at: 0, kind: "stopped", data: { by: "owner", why: "trying it" } }, false);`, context);
@@ -759,12 +751,9 @@ if (failures.length) {
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min",
     "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now judges with claude-sonnet-5-5", "Ada now works with the owner&#39;s Mac",
     "Mara joined the team as CEO", "Mara noted in the house log: - 17 Oct: The NAS has 16 GB.",
-    "Huddle on EL-7: Ada, Bo", "Ada decided EL-7: hand to",
     "Bo asked Ada for help (EL-7)", "Ada answered Bo (EL-7)", "Bo concluded from Ada&#39;s answer",
     // Caps on talk and runaway (ADR 0133).
-    "Bo waits: talk on EL-7 is over its budget, and its lead decides (mentioned)",
     "Bo waits: EL-7 is being worked (mentioned)",
-    "You switched the coordination guard on", "You put the coordination guard back in shadow",
     "Ada narrowed what done means for EL-7: The plan names three backups (too wide)",
     "The runaway tripwire stopped the team: 40 turns started in 10 minutes (Ada 22, Bo 18); nothing new starts until you resume",
     "You pulled the kill switch: every run stopped, nothing new starts"]) {
@@ -862,67 +851,20 @@ if (failures.length) {
   // Only the choices still open: a judged finding offers to change its verdict, not all four.
   if (office.includes('data-act="hq:verdict:3:false_positive"')) fail("hq: a judged finding still offers every verdict");
   if (office.includes('data-act="hq:fixed:4:yes"')) fail("hq: a finding nobody judged asks whether its fix worked");
-  // How often the CEO stepped into a member's work (ADR 0124), on the roster.
-  if (!office.includes("The CEO stepped in 2 times this week")) fail("hq: the roster does not count the CEO's rescues");
-  // HQ that cannot tell (the pruned feed lost part of the week) says so, and never says nought.
-  // (Once, for the one member whose count is null: a snapshot that says nothing of it says nothing.)
-  if (office.split("How often the CEO stepped in this week: HQ cannot tell").length - 1 !== 1) fail("hq: the roster does not say it cannot tell the CEO's rescues, once, for the one it cannot tell");
   // The same ask from another task is put with a card (ADR 0124), and the card says so.
   if (!office.includes('question · <button class="hq-link" data-act="hq:pick:task:7">EL-7</button> · also on <button class="hq-link" data-act="hq:pick:task:9">EL-9</button>: one answer reaches each')) fail("hq: a card does not say which other tasks share its ask, as links that open them");
-  for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b> <small>3 found · 1 open</small>", "<span>3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2</span>",
-    "<b>Stuck work</b> <small>0 found · 0 open</small>", "<span>0 found · 0 open · not judged yet</span>", "&lt;u&gt;Upkeep&lt;/u&gt;: 14 coordination turns, 1 product change in 24 h · talking more than working",
-    "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep",
-    // A window HQ cannot tell the ceremony of says so, and is not marked as talking more.
-    "Backups: 11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read · cannot tell whether it is talking more than working: some turns have no label"]) {
+  for (const said of ["<h2>Guards</h2>", "<b>The same ask twice</b> <small>3 found · 1 open</small>", "<span>3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2</span>",
+    "<b>Stuck work</b> <small>0 found · 0 open</small>", "<span>0 found · 0 open · not judged yet</span>",
+    "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep"]) {
     if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
   }
   if (office.includes("<img src=g") || office.includes("<u>Upkeep</u>")) fail("hq: a guard's finding became markup");
-  // The budget of talk is tried in shadow before it acts (ADR 0133): its row says which it is in
-  // and offers the other way; a guard that only records offers no switch. What a piece of work's
-  // turns spent is said beside them, for work outside any project too, and the caps are told
-  // beside the thresholds, but only when HQ serves them.
+  // The caps are told beside the thresholds, but only when HQ serves them.
   {
-    for (const said of ['<b>Coordination over budget</b> <small>shadow · 1 found · 1 open</small>', "<span>1 found · 1 open · not judged yet</span>",
-      "In shadow: it records what it would have held, and holds nothing, until you switch it on.",
-      'aria-pressed="false" data-act="hq:guardmode:coordination:on">Switch it on</button>',
-      "#12 &lt;i&gt;Plan the backups&lt;/i&gt;: 21 coordination turns, 0 product changes in 24 h ($1.23 spent) · talking more than working",
-      "a budget of 20 turns of talk a day on a task",
-      "Caps, always on: 60 turns a day for a member on the house&#39;s own models · the team is stopped when 40 turns start in 10 minutes."]) {
-      if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
-    }
-    if (office.includes("hq:guardmode:ceremony") || office.includes("hq:guardmode:stuck")) fail("hq: a guard that only records is offered a switch");
-    if (office.includes("<i>Plan the backups</i>")) fail("hq: the title of work outside a project became markup");
-    if (office.includes("14 coordination turns, 1 product change in 24 h (")) fail("hq: a window that spent nothing is given a cost");
-    // The same card with the guard switched on, with no mode served, and with no caps served.
-    const guardsWith = (change) => runInContext(`(() => { const g = HQ.snap.guards, kept = JSON.stringify([g.precision[2], g.thresholds]);
-      ${change}
-      const was = HQ.more; HQ.more = {}; for (const p of g.precision) HQ.more["guard" + String(p.guard).replace(/[^\\w-]/g, "")] = true;
-      const html = hqGuards(HQ.snap); HQ.more = was; [g.precision[2], g.thresholds] = JSON.parse(kept); return html; })()`, context);
-    const on = guardsWith('g.precision[2].mode = "on";');
-    for (const said of ['<b>Coordination over budget</b> <small>on · 1 found · 1 open</small>',
-      "On: it holds talk on a task over its budget, and asks the task's lead to decide it.",
-      'aria-pressed="true" data-act="hq:guardmode:coordination:shadow">Put it back in shadow</button>']) {
-      if (!on.includes(said)) fail(`hq: a guard switched on does not say ${said}`);
-    }
-    if (on.includes("In shadow:") || on.includes("hq:guardmode:coordination:on")) fail("hq: a guard switched on still offers to switch on");
-    if (guardsWith("delete g.precision[2].mode;").includes("guardmode")) fail("hq: a guard with no mode is offered a switch");
-    const older = guardsWith("delete g.thresholds.free_turns_a_day; delete g.thresholds.coordination_budget;");
-    if (older.includes("Caps, always on") || older.includes("a budget of") || older.includes("NaN")) fail("hq: an HQ that does not serve the caps has them shown");
-  }
-  // The switch itself: giving the guard authority is asked first, putting it back in shadow is
-  // not, and each goes to the node's route for that guard.
-  {
-    runInContext(`var __modeCalls = [], __modeSaved = [api, loadHQ, render, flash, confirm];
-      api = async (m, p, b) => { __modeCalls.push(m + " " + p + " " + JSON.stringify(b)); return {}; };
-      loadHQ = async () => {}; render = () => {}; flash = () => {};`, context);
-    await runInContext(`confirm = () => false; hqDispatch("hq", "guardmode", "coordination", "on")`, context);
-    await runInContext(`confirm = () => true; hqDispatch("hq", "guardmode", "coordination", "on")`, context);
-    await runInContext(`confirm = () => false; hqDispatch("hq", "guardmode", "coordination", "shadow")`, context);
-    const sent = JSON.stringify(runInContext("__modeCalls", context));
-    runInContext(`[api, loadHQ, render, flash, confirm] = __modeSaved;`, context);
-    if (sent !== JSON.stringify(['POST /v1/hq/guards/coordination/mode {"mode":"on"}', 'POST /v1/hq/guards/coordination/mode {"mode":"shadow"}'])) {
-      fail(`hq: the guard's switch asked the node ${sent}`);
-    }
+    if (!office.includes("Caps, always on: 60 turns a day for a member on the house&#39;s own models · the team is stopped when 40 turns start in 10 minutes.")) fail("hq: the guards card does not tell the caps");
+    const older = runInContext(`(() => { const g = HQ.snap.guards, kept = JSON.stringify(g.thresholds);
+      delete g.thresholds.free_turns_a_day; const html = hqGuards(HQ.snap); g.thresholds = JSON.parse(kept); return html; })()`, context);
+    if (older.includes("Caps, always on") || older.includes("NaN")) fail("hq: an HQ that does not serve the caps has them shown");
   }
   // A finding seen again says when, and a finding opened again says how often (ADR 0132); one
   // seen once, and found once, says neither.

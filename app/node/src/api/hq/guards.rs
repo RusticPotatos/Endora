@@ -35,44 +35,6 @@ pub(in crate::api) async fn hq_finding_verdict(
 }
 
 #[derive(Deserialize)]
-pub(in crate::api) struct HqGuardMode {
-    mode: String,
-}
-
-/// The owner switches a guard that is tried in shadow on, or back to shadow (ADR 0133).
-pub(in crate::api) async fn hq_guard_mode(
-    State(state): State<AppState>,
-    Path(guard): Path<String>,
-    Json(req): Json<HqGuardMode>,
-) -> Answer {
-    // A guard is named in lowercase letters and underscores. Anything else is not one, and is not
-    // made part of HQ's address.
-    if guard.is_empty() || !guard.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "no such guard" })),
-        ));
-    }
-    let mode = req.mode;
-    let answer = ask(
-        &state,
-        format!("/v1/guards/{guard}/mode"),
-        Some(json!({ "mode": mode })),
-    )
-    .await?;
-    let name = guard.replace('_', " ");
-    record(
-        &state,
-        &if mode == "on" {
-            format!("you switched the {name} guard on")
-        } else {
-            format!("you put the {name} guard back in shadow")
-        },
-    );
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
 pub(in crate::api) struct HqRetract {
     target: String,
 }
@@ -129,58 +91,6 @@ pub(in crate::api) async fn hq_forget_swept(
 mod tests {
     use super::super::super::relay::tests::{fake, node};
     use super::*;
-
-    /// Switching the budget of talk on, or back to shadow, goes to HQ signed and is in the audit
-    /// log; a name that is not a guard's is not made part of HQ's address.
-    #[tokio::test]
-    async fn the_owners_mode_for_a_guard_passes_through_signed_and_is_recorded() {
-        let (url, seen) = fake(Arc::new(|_, _| {
-            (
-                200,
-                "application/json",
-                json!({ "guard": "coordination", "mode": "on" }).to_string(),
-            )
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let mode = |m: &str| HqGuardMode { mode: m.to_owned() };
-        let _ = hq_guard_mode(
-            State(state.clone()),
-            Path("coordination".to_owned()),
-            Json(mode("on")),
-        )
-        .await
-        .unwrap();
-        let _ = hq_guard_mode(
-            State(state.clone()),
-            Path("coordination".to_owned()),
-            Json(mode("shadow")),
-        )
-        .await
-        .unwrap();
-        let sent = seen.lock().unwrap().clone();
-        assert_eq!(sent[0].0, "/v1/guards/coordination/mode");
-        let body = |i: usize| serde_json::from_str::<serde_json::Value>(&sent[i].2).unwrap();
-        assert_eq!(body(0), json!({ "mode": "on" }));
-        assert_eq!(body(1), json!({ "mode": "shadow" }));
-        for odd in ["../stop", "a/b", "Coordination", ""] {
-            let refused =
-                hq_guard_mode(State(state.clone()), Path(odd.to_owned()), Json(mode("on")))
-                    .await
-                    .unwrap_err();
-            assert_eq!(refused.0, StatusCode::NOT_FOUND, "{odd:?}");
-        }
-        assert_eq!(seen.lock().unwrap().len(), 2, "none of those was passed on");
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-            .unwrap()
-            .iter()
-            .map(|r| r.summary().to_owned())
-            .collect();
-        assert!(
-            audit.contains(&"HQ: you switched the coordination guard on".to_owned())
-                && audit.contains(&"HQ: you put the coordination guard back in shadow".to_owned()),
-            "{audit:?}"
-        );
-    }
 
     #[tokio::test]
     async fn the_owners_verdict_passes_through_signed_and_is_recorded() {

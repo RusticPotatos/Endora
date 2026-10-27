@@ -11,33 +11,6 @@ Feature: Guards against how agent teams fail
     Given Ada is the lead
     And the goal "Keep the home lab healthy"
 
-  # Seed: Ceremony::over never holding fails the desk step.
-  Scenario: Talking about work isn't work
-    Given the project "Home lab upkeep" led by Ada
-    And Ada has the task "Plan the backups" in the project "Home lab upkeep"
-    When Ada talks about "Plan the backups" for 12 turns and changes nothing
-    And HQ looks at how the team is doing
-    Then the owner's desk holds a finding "Talk about work"
-    And Ada is woken about it
-    And the guards card says "12 coordination turns, 0 product changes in 24 h"
-    When the owner says the finding was real
-    Then the guard "ceremony" is 100% real
-
-  # Seed: the ceremony counting only the tasks inside a project finds nothing here, and the
-  # desk step fails; the finding without the spend fails the cost step.
-  Scenario: Talking about work outside a project isn't work either, and the finding says what it cost
-    Given Linus is the developer
-    And Dee is the tester
-    When Linus is handed the task "Tidy the docs"
-    And Linus's turn starts
-    And Linus's turn ends
-    And Dee reviews "Tidy the docs" 12 times at $0.05 a turn and changes nothing
-    And HQ looks at how the team is doing
-    Then the owner's desk holds a finding "Talk about work"
-    And the finding says "12 coordination turns, 0 product changes in 24 h ($0.60 spent)"
-    And the guards card says "Tidy the docs"
-    And Ada is woken about it
-
   # Seed: narrow_criteria open to every role fails the refusal step; shut to the lead fails the
   # narrowing step; one that lets it widen fails the last.
   Scenario: A lead narrows what done means for work in its area, and nobody else may
@@ -53,22 +26,6 @@ Feature: Guards against how agent teams fail
     When Ada narrows what done means for "Tidy the docs" to "The links work"
     Then the task "Tidy the docs" is done when "The links work"
     And HQ says in "Tidy the docs": "Ada narrowed what done means"
-
-  # Seed: after_sent_back returning before the carousel's check fails the huddle step.
-  Scenario: A task bounced three times goes to a huddle
-    Given Grace is the tester
-    And Linus is the developer
-    And Linus has the task "Look at sonarr"
-    When Linus submits "Look at sonarr" for review
-    And Grace sends back "Look at sonarr" because "no reading of sonarr"
-    And Grace's turn ends
-    And Linus submits "Look at sonarr" for review
-    And Grace sends back "Look at sonarr" because "still no reading"
-    And Grace's turn ends
-    And Linus submits "Look at sonarr" for review
-    And Grace sends back "Look at sonarr" because "the same again"
-    Then a huddle is called on "Look at sonarr", because it was "sent back 3 times with no new evidence between"
-    And the owner's desk is empty
 
   # Seed: not_retracted always passing fails the refusal step.
   Scenario: A retracted claim can't come back
@@ -111,18 +68,3 @@ Feature: Guards against how agent teams fail
     And the team has 2 tasks
     When the owner hands Ada the task "Restore from the backup", waiting on "Read the logs"
     Then it is not refused
-
-  # A turn that ended before turns were labelled may have been the talk that puts the project over,
-  # or the change that keeps it under. HQ says it cannot tell; it neither blames nor clears.
-  # Seed: Ceremony::over reading an unread turn as talk fails the card step; as a change, the
-  # same; either way a finding opens on a count HQ does not have and fails the desk step.
-  Scenario: A guard that cannot tell says so, and opens no finding
-    Given the project "Home lab upkeep" led by Ada
-    And Ada has the task "Plan the backups" in the project "Home lab upkeep"
-    When Ada talks about "Plan the backups" for 12 turns and changes nothing
-    And one of Ada's turns on "Plan the backups" ended before turns were labelled
-    And HQ looks at how the team is doing
-    Then the guards card says "11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read"
-    And the guards card cannot tell whether "Home lab upkeep" is talking more than working
-    And the owner's desk holds no finding
-    And Ada is not woken by a guard

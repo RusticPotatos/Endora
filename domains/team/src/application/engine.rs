@@ -37,7 +37,6 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
-mod budget;
 mod deploy;
 mod digest;
 mod discipline;
@@ -49,7 +48,6 @@ mod guards;
 mod health;
 mod history;
 mod kinds;
-mod ladder;
 mod league;
 mod lineage;
 mod long_waits;
@@ -1221,12 +1219,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Some(task) if !reason.brings_news() => self.woken_for_nothing(member.id, task)?,
                 _ => false,
             },
-            // Talk on a task that has had its budget of it, with nothing changing, is held while
-            // the guard is on and its lead can decide it (ADR 0133).
-            coordination_held: match task {
-                Some(task) if reason.is_talk() => self.talk_is_held(task)?,
-                _ => false,
-            },
         })
     }
 
@@ -1235,7 +1227,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         member: MemberId,
         task: Option<TaskId>,
         reason: WakeReason,
-    ) -> Done<(WakeDecision, bool)> {
+    ) -> Done<WakeDecision> {
         let who = self.member(member)?;
         // News is never kept waiting: a turn on its task held back by the back-off, or waiting
         // to try again, is brought forward to take it.
@@ -1251,7 +1243,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             _ => wakes::decide(member, &situation),
         };
-        Ok((decision, situation.coordination_held))
+        Ok(decision)
     }
 
     fn wake_held_lock(
@@ -1265,7 +1257,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "legacy consultation wakes are retired; use authorized assistance",
             )));
         }
-        let (decision, coordination_held) = self.decide_wake(member, task, reason)?;
+        let decision = self.decide_wake(member, task, reason)?;
         let now = self.clock.now();
         let mut about = json!({
             "member": member.0, "task": task.map(|t| t.0), "reason": reason.name(),
@@ -1298,14 +1290,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .store
                     .add_wake(member, task, reason, Receipt::Held, None, now)?;
                 self.mark_owners(wake, None)?;
-                if coordination_held {
-                    about["why"] = json!("coordination_budget");
-                }
                 self.emit(EventKind::WakeHeld, about)?;
-                // Held for the budget of talk: the task's lead is asked what to do, once.
-                if let (true, Some(task)) = (coordination_held, task) {
-                    self.coordination_held_notice(task)?;
-                }
                 Ok(Receipt::Held)
             }
             WakeDecision::Refuse(why) => {
@@ -1313,9 +1298,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .add_wake(member, task, reason, Receipt::Refused(why), None, now)?;
                 about["why"] = json!(why.name());
                 self.emit(EventKind::WakeRefused, about)?;
-                if let (wakes::Refused::Redundant, Some(task)) = (why, task) {
-                    self.found_redundant(member, task)?;
-                }
                 Ok(Receipt::Refused(why))
             }
         }
@@ -1993,30 +1975,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.wake_held_lock(reviewer.id, Some(task.id), WakeReason::ReviewRequested)?;
             return Ok(());
         }
-        // Sent back three times: a huddle of its area decides it (ADR 0120, amending 0114's
-        // owner's round); the owner's only with no lead to call one.
-        let rung = self.rung_of(task.id)?;
-        // The carousel's huddle is deciding it (ADR 0124): no round before its decision.
-        let carousel = self
-            .store
-            .findings()?
-            .iter()
-            .any(|f| f.key == format!("carousel:{}", task.id.0) && f.cleared_at.is_none());
-        if carousel && matches!(rung, Some((crate::domain::ladder::Rung::Huddle, _))) {
-            self.post_held_lock(
-                Author::Endora,
-                task.id,
-                "Submitted while its huddle decides it: it waits for the lead's decision, not \
-                 another round.",
-            )?;
-            return Ok(());
-        }
-        let decided = matches!(rung, Some((crate::domain::ladder::Rung::Decided, _)));
-        if !decided && crate::domain::evidence::to_the_owner(self.sent_back(task.id)?) {
-            if let Some(lead) = self.area_lead(task)? {
-                let rounds = self.sent_back(task.id)?;
-                return self.call_huddle(task, &lead, &format!("sent back {rounds} times"));
-            }
+        // Sent back three times: the owner's (ADR 0114).
+        if crate::domain::evidence::to_the_owner(self.sent_back(task.id)?) {
             return self.rounds_to_the_owner(task);
         }
         match self.checkers_of(task)? {
@@ -2136,8 +2096,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if in_the_loops {
                 return self.loop_failed(task);
             }
-            // Bounced with nothing new between: a huddle, not another round (ADR 0124).
-            return self.after_sent_back(task);
+            return Ok(());
         }
         let the_home_labs = self.the_home_labs(&current)?;
         let gated = review::needs_gate(self.routine_of(task)?.is_some(), the_home_labs);
@@ -2514,8 +2473,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.store.set_nudged(task, false)?;
             }
             self.release_held(task)?;
-            // A huddle hears each member once (ADR 0120).
-            self.after_huddle_turn(&run)?;
         }
         if status == RunStatus::Succeeded && label.is_some() {
             // Enough evidence, re-checked three times: HQ submits it (ADR 0124).
@@ -2940,7 +2897,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.reason_for(run)? == WakeReason::Directed.name() {
             untraced.push_str(&self.direction_said(member, task.id)?);
         }
-        untraced.push_str(&self.ladder_said(member, run, &task)?);
         if !untraced.is_empty() {
             self.unclassified_message_input(run.id)?;
         }
@@ -2965,7 +2921,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                  check_back, note_house, write_world, decide_proposal, verify_world, \
                  retire_world, propose_canon, tell_story, read_world, propose_world, read_doc, \
                  hand_to (to a lead), \
-                 read_document, note, forget, read_notebook, office, judge_finding.\n",
+                 read_document, note, forget, read_notebook, judge_finding.\n",
             );
             return Ok(told);
         }
@@ -2982,7 +2938,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 ", review, read_document, read_doc, read_world, tell_story, propose_world, office. "
             }
             Role::Lead => {
-                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, decide_stuck, narrow_criteria, judge_finding, read_document, read_doc, read_world, tell_story, propose_world, decide_proposal, write_world, verify_world, retire_world, propose_canon, office. "
+                ", propose_project, accept, hand_to, request_hire, request_staff, report_area, narrow_criteria, judge_finding, read_document, read_doc, read_world, tell_story, propose_world, decide_proposal, write_world, verify_world, retire_world, propose_canon. "
             }
             _ => ", read_document, read_doc, read_world, tell_story, propose_world, office. ",
         });
@@ -3307,8 +3263,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Once a day, on the day's first tick: members with nothing to do are offered to the
         // owner for furlough (ADR 0118).
         self.idle_look()?;
-        // A huddle whose views are late goes to its lead to decide (ADR 0120).
-        self.huddles_due()?;
         // Check-backs whose time came wake their member, while the task is still open.
         for back in self.store.check_backs()? {
             if back.status != CheckBackStatus::Pending || back.due_at > now {
@@ -3450,9 +3404,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.league_tick(now)?;
         // The loops hand out their plans' next items (ADR 0142).
         self.loops_tick()?;
-        // 3c. A wake held for a task with no turn live on it has nothing to wait behind (ADR
-        //     0133): it is asked again, and goes once the task's budget of talk is in hand.
-        self.release_held_talk()?;
 
         // 4. Queued turns start where a member has a free slot, budget can be reserved, and a
         //    runner has room: urgent work first, then the oldest. The tripwire may stop the team
@@ -3525,9 +3476,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
                 continue;
             }
-            // In a lead's area it climbs the ladder (ADR 0120), once it has sat as long as
-            // stranded work does: a lead woken to decide is a turn, never a reflex.
-            if self.area_lead(task)?.is_some() && !self.idle_for(task.id, STRANDED_AFTER_MS)? {
+            // It is marked stuck once it has sat as long as stranded work does: never a reflex.
+            if !self.idle_for(task.id, STRANDED_AFTER_MS)? {
                 continue;
             }
             self.store.set_task_status(task.id, TaskStatus::Blocked)?;
@@ -3538,10 +3488,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             )?;
             report.stuck += 1;
             self.found_stuck(task, found.why)?;
-            // Stuck work climbs the ladder (ADR 0120); the owner's desk only with no lead.
-            if !self.climb_stuck(task, "it was nudged once and did not move")? {
-                self.stuck_on_the_desk(task, "It was nudged once and did not move.")?;
-            }
         }
 
         // 5b. Open work handed to a member that nothing will bring it back to: no turn queued,
@@ -4692,21 +4638,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             stuck += 1;
             self.found_stuck(task, found.why)?;
-            // Stuck work climbs the ladder (ADR 0120); the owner's desk only with no lead.
-            let (why, on_the_desk) = if in_review {
-                (
-                    "it waits in review, its tester was woken once, and no verdict came",
-                    "It waits in review, its tester was woken once, and no verdict came.",
-                )
-            } else {
-                (
-                    "it was handed on, woken once, and nobody came back to it",
-                    "It was handed on, woken once, and nobody came back to it.",
-                )
-            };
-            if !self.climb_stuck(task, why)? {
-                self.stuck_on_the_desk(task, on_the_desk)?;
-            }
         }
         Ok((nudged, stuck))
     }
@@ -5333,7 +5264,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let pool_day = self.pool_day_today()?;
         let topped_up = self.topup_of(day)?;
         let all_members = self.store.members()?;
-        let rescues = self.rescues()?;
         for m in all_members.clone() {
             let committed = self.store.committed(Some(m.id), day)?;
             let spent = self.store.spent(Some(m.id), day)?;
@@ -5373,7 +5303,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .collect::<Vec<_>>(),
                 // How often the CEO reached into its work this week (ADR 0124); null when the
                 // pruned feed no longer holds the week, and HQ cannot tell.
-                "rescues": rescues.as_ref().map(|r| r.get(&m.id.0).copied().unwrap_or(0)),
             }));
         }
         let why = |task: &Task| {
