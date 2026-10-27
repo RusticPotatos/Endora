@@ -128,6 +128,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}", post(change_project))
         .route("/v1/projects/{id}/cap", post(project_cap))
         .route("/v1/projects/{id}/tools", post(project_tools))
+        .route("/v1/projects/{id}/rank", post(loop_rank))
         // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
         .route("/v1/scenarios", post(start_scenario))
         .route("/v1/scenarios/rerun", post(rerun_holodeck))
@@ -1185,6 +1186,22 @@ struct ProjectTools {
 
 /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or with
 /// `null` takes the list away.
+#[derive(Deserialize)]
+struct LoopRank {
+    rank: u8,
+}
+
+/// The owner sets the rank a loop's items start at (ADR 0142).
+async fn loop_rank(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoopRank>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_loop_rank(ProjectId(id), req.rank)).await?;
+    Ok(Json(json!({ "project": id, "rank": req.rank })))
+}
+
 async fn project_tools(
     Extract(state): Extract<State>,
     Path(id): Path<i64>,

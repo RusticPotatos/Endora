@@ -843,6 +843,31 @@ pub(super) struct HqProjectTools {
 
 /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or takes
 /// the list away.
+#[derive(Deserialize)]
+pub(super) struct HqLoopRank {
+    rank: u8,
+}
+
+/// The owner sets the rank a loop's items start at (ADR 0142): 1 (Opus) to 5 (the house's
+/// model).
+pub(super) async fn hq_loop_rank(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqLoopRank>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/rank"),
+        Some(json!({ "rank": req.rank })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you set loop {id} to start at rank {}", req.rank),
+    );
+    Ok(answer)
+}
+
 pub(super) async fn hq_project_tools(
     State(state): State<AppState>,
     Path(id): Path<i64>,

@@ -55,6 +55,7 @@ mod kinds;
 mod ladder;
 mod league;
 mod long_waits;
+mod loops;
 mod map;
 mod memory;
 mod notebook;
@@ -3466,6 +3467,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.holodeck_rerun_tick()?;
         // The model league: the next pair of brains sits down to chess once nothing is played.
         self.league_tick(now)?;
+        // The loops hand out their plans' next items (ADR 0142).
+        self.loops_tick()?;
         // 3c. A wake held for a task with no turn live on it has nothing to wait behind (ADR
         //     0133): it is asked again, and goes once the task's budget of talk is in hand.
         self.release_held_talk()?;
