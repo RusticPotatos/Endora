@@ -174,9 +174,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The Holodeck as the owner's screen lists it: the latest scenarios, newest first, and
     /// the trials, newest first, each with its world and how many runs it started.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn holodeck_shown(&self) -> Done<Value> {
         let mut trials = Vec::new();
         for name in self.trial_names()?.iter().rev() {

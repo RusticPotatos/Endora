@@ -30,9 +30,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Puts the default layout on the floor, once: what the office has always had, as items
     /// the team may move. Returns whether it did. What the team removes later does not come
     /// back.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn seed_office(&self) -> Done<bool> {
         let _held = self.held();
         if self.store.setting(OFFICE_SEEDED)?.is_some() {
@@ -60,9 +57,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The things on the floor.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn office_items(&self) -> Done<Vec<office::Item>> {
         Ok(self.store.office_items()?)
     }
@@ -85,9 +79,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Whether a turn is a downtime turn.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn in_downtime(&self, run: RunId) -> Done<bool> {
         let Some(found) = self.store.run(run)? else {
             return Ok(false);

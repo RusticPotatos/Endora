@@ -78,9 +78,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// member retires, its open work back on its loop's plan (one playing in a scenario
     /// retires when its game ends: run this again then). Only the lab's health check runs on,
     /// as Bo's. Running it again changes nothing that is done. Returns what it did.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn become_one_team(&self) -> Done<serde_json::Value> {
         let _held = self.held();
         let now = self.clock.now();
@@ -199,9 +196,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Who reviews an item in the loops (ADR 0142): the member one rank above its holder, and
     /// the top rank's work the member just below it. `None` for work outside the loops.
-    ///
-    /// # Errors
-    /// A store failure.
     pub(crate) fn loop_reviewer_of(&self, task: &Task) -> Done<Option<Member>> {
         let Some(holder) = self.loop_holder(task)? else {
             return Ok(None);
@@ -375,9 +369,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// An item's failures at its present rank.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn loop_failures(&self, task: TaskId) -> Done<u32> {
         Ok(self
             .store
@@ -388,9 +379,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// One of an item's failures (a failed check, or a send-back), the lock held. The third at
     /// a rank hands it to the member one rank up; the top rank's third goes to the owner.
-    ///
-    /// # Errors
-    /// A store failure.
     pub(crate) fn loop_failed(&self, task: TaskId) -> Done<()> {
         let found = self.task(task)?;
         let Some(holder) = self.loop_holder(&found)? else {

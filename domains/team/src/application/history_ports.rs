@@ -134,21 +134,15 @@ pub trait HistoryStore {
     /// Reliable source identity, or Unknown for legacy/missing/invalidated input.
     /// This metadata lookup is for audit; a classifier must read content and origin
     /// together in one snapshot, not pair it with an earlier independent content read.
-    /// # Errors
-    /// A store failure.
     fn input_origin(
         &self,
         input: crate::domain::history::InputRef,
     ) -> Stored<crate::domain::history::InputOrigin>;
     /// Persist that HQ supplied Confidential history to this turn, before returning it.
-    /// # Errors
-    /// A store failure.
     fn mark_confidential_input(&self, run: RunId) -> Stored<()>;
 
     /// Whether this turn read Confidential tool results or inherited Confidential history.
     /// A missing source run also fails closed; existence and tier use one snapshot.
-    /// # Errors
-    /// A store failure.
     fn run_read_confidential(&self, run: RunId) -> Stored<bool>;
 
     /// Keeps a turn's conversation. A turn has one.

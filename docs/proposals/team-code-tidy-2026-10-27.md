@@ -55,6 +55,7 @@ A failed step stops and rolls back to the previous release. The loop stops when 
 6. **Record.** The baseline table measured again, and a line in memory.
 
 ## Progress
+
 - **Step 1, done (8f6f4186, 61b6ccce; live).** The cost was the snapshot, not the reads: it sent
   every done task's thread, evidence and documents (1.1 MB of 1.6). Finished tasks now come in
   brief (no thread, evidence, documents, description or chain of why), and opening one asks
@@ -66,3 +67,10 @@ A failed step stops and rolls back to the previous release. The loop stops when 
 - **Steps 2 and 3, done (c819a821, 13e55790; live, released with step 1's second commit).**
   One `event_from`; one typed `setting_json` for the seven hand-written parses (`serde` named
   directly for its bound; `serde_json` already built it). Events and the league read on production.
+- **Step 4, done (b2c36b59).** `RunStore` (turns, tokens, the ledger) and `OfficeStore` (the
+  room's items, chess) split off `TeamStore`: its own methods 119 → 93. engine.rs's wakes and
+  turns sections moved to `engine/waking.rs` and `engine/running.rs`: 4,401 → 3,763 lines.
+- **Step 5, done short of its exit.** The premise was wrong: dated "who and when" notes are rare
+  (8 doc lines, 6 others), and most of them carry a reason or an incident, so they stay. The
+  boilerplate was 171 `# Errors` sections saying only that the store can fail, which the return
+  type says: cut, 509 lines. Not the 1,000 the exit asked; nothing else met the rule.

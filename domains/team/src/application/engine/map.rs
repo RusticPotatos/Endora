@@ -40,9 +40,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// that is not given up. Nothing is changed or
     /// deleted, so a second start makes none, and a lead hired later gets its page the next
     /// time. Returns how many of each were made.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn migrate_map(&self) -> Done<MapMigrated> {
         let _held = self.held();
         self.migrate_map_held()
@@ -259,9 +256,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The map as the World card shows it: every page with its steward and what is on it.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn map_shown(&self) -> Done<serde_json::Value> {
         let sections = self.store.sections()?;
         let mut slugs: Vec<String> = vec![

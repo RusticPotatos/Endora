@@ -285,9 +285,6 @@ pub trait TeamStore:
     + super::office_ports::OfficeStore
 {
     /// Adds a member.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_member(
         &self,
         name: &str,
@@ -297,74 +294,35 @@ pub trait TeamStore:
         look: u8,
     ) -> Stored<MemberId>;
     /// Every member, in the order they joined.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn members(&self) -> Stored<Vec<Member>>;
     /// Pauses or resumes a member.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_paused(&self, member: MemberId, paused: bool) -> Stored<()>;
     /// Puts a member on furlough from `at` (ADR 0118). Nothing else about it changes: members
     /// are never deleted.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn furlough_member(&self, member: MemberId, at: Millis) -> Stored<()>;
     /// Ends a member's furlough at `at`.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()>;
     /// Sets a brain of a member's (ADR 0131), the one named going to the slot it belongs to: a
     /// Claude is the brain it judges with, a house model the brain it works with. The other
     /// slot is left as it is.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
     /// Sets a member's model (ADR 0142): both its brains, so every turn runs on it.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_model(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
     /// Sets what a member does its work with (ADR 0131): the Mac or the house's own model.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_work_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
     /// What runs a member's turns, as the owner set it (ADR 0117): the worker for a member
     /// never set, or one the store does not know.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn runtime_of(&self, member: MemberId) -> Stored<crate::domain::Runtime>;
     /// Sets what runs a member's turns.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_runtime(&self, member: MemberId, runtime: crate::domain::Runtime) -> Stored<()>;
     /// Renames a member.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn rename_member(&self, member: MemberId, name: &str) -> Stored<()>;
     /// Sets whom a member reports to (ADR 0113).
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_reports_to(&self, member: MemberId, to: Option<MemberId>) -> Stored<()>;
     /// Sets a member's role (ADR 0142's cut-over makes every member a plain one).
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_role(&self, member: MemberId, role: Role) -> Stored<()>;
 
     /// Adds a goal.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_goal(
         &self,
         title: &str,
@@ -384,35 +342,17 @@ pub trait TeamStore:
         origin: crate::domain::history::InputOrigin,
     ) -> Stored<GoalId>;
     /// A goal.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn goal(&self, id: GoalId) -> Stored<Option<Goal>>;
     /// Every goal, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn goals(&self) -> Stored<Vec<Goal>>;
     /// Sets a goal's status.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_goal_status(&self, id: GoalId, status: GoalStatus) -> Stored<()>;
     /// A goal's notes from the owner: empty when there are none.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn goal_note(&self, id: GoalId) -> Stored<String>;
     /// Sets a goal's notes from the owner; empty clears them.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_goal_note(&self, id: GoalId, note: &str) -> Stored<()>;
 
     /// Adds a task, at `depth` hands from its goal.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_task(&self, task: &NewTask, depth: u8) -> Stored<TaskId>;
     /// Atomically create task body and empty criteria with reliable source identity.
     /// # Errors
@@ -424,74 +364,35 @@ pub trait TeamStore:
         origin: crate::domain::history::InputOrigin,
     ) -> Stored<TaskId>;
     /// A task.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn task(&self, id: TaskId) -> Stored<Option<Task>>;
     /// Every task, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn tasks(&self) -> Stored<Vec<Task>>;
     /// Takes a task for `member`, in one step that succeeds for exactly one member: `Ok(None)`
     /// if it is now theirs, `Ok(Some(other))` if another member has it.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn claim(&self, task: TaskId, member: MemberId) -> Stored<Option<MemberId>>;
     /// Lets a task go: it has no owner.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn release(&self, task: TaskId) -> Stored<()>;
     /// Sets a task's status.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_task_status(&self, task: TaskId, status: TaskStatus) -> Stored<()>;
     /// Puts a task in a project, or in none.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_task_project(&self, task: TaskId, project: Option<ProjectId>) -> Stored<()>;
     /// Records whether a task has had its one recovery nudge.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_nudged(&self, task: TaskId, nudged: bool) -> Stored<()>;
     /// Records whether the task's waiter has been woken now its waits are over.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_woken_after_waits(&self, task: TaskId, woken: bool) -> Stored<()>;
     /// Whether the task's waiter has been woken now its waits are over.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn woken_after_waits(&self, task: TaskId) -> Stored<bool>;
     /// Records the gate's latest result for a task.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_gate(&self, task: TaskId, passed: bool) -> Stored<()>;
     /// The gate's latest result for a task, if it has run.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn gate(&self, task: TaskId) -> Stored<Option<bool>>;
 
     /// Adds a post to a task's thread.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn post(&self, task: TaskId, author: &str, text: &str, at: Millis) -> Stored<()> {
         self.post_marked(task, author, text, at, &[], false)
     }
     /// Adds a post to a task's thread with the evidence it cites, and whether it is
     /// unsupported (ADR 0114).
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn post_marked(
         &self,
         task: TaskId,
@@ -512,9 +413,6 @@ pub trait TeamStore:
         origin: crate::domain::history::InputOrigin,
     ) -> Stored<()>;
     /// Sets what done means for a task.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_criteria(&self, task: TaskId, criteria: &[Criterion]) -> Stored<()>;
     /// Change only the criteria's provenance; task-body provenance is independent.
     /// # Errors
@@ -526,55 +424,25 @@ pub trait TeamStore:
         origin: crate::domain::history::InputOrigin,
     ) -> Stored<()>;
     /// Hands a task to a member, or to nobody.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_assignee(&self, task: TaskId, member: Option<MemberId>) -> Stored<()>;
     /// Records a receipt the node wrote (its `id` is ignored) and returns its id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_call_receipt(&self, receipt: &CallReceipt) -> Stored<i64>;
     /// A receipt, by its id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn call_receipt(&self, id: i64) -> Stored<Option<CallReceipt>>;
     /// A turn's receipts, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn call_receipts_of(&self, run: RunId) -> Stored<Vec<CallReceipt>>;
     /// Adds an action to a scenario's log (its `id` is ignored) and returns its id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_scenario_action(&self, action: &ScenarioAction) -> Stored<i64>;
     /// A scenario's log, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn scenario_actions(&self, task: TaskId) -> Stored<Vec<ScenarioAction>>;
     /// Records evidence cited for a criterion.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_cited(&self, cited: &Cited) -> Stored<()>;
     /// The evidence cited on a task, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn cited(&self, task: TaskId) -> Stored<Vec<Cited>>;
     /// A task's thread, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn thread(&self, task: TaskId) -> Stored<Vec<Post>>;
 
     /// Records a wake with its receipt.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_wake(
         &self,
         member: MemberId,
@@ -585,99 +453,48 @@ pub trait TeamStore:
         at: Millis,
     ) -> Stored<WakeId>;
     /// Updates a wake's receipt.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_wake(&self, id: WakeId, receipt: Receipt, run: Option<RunId>) -> Stored<()>;
     /// Marks a wake as raised by the owner's own request.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_wake_by_owner(&self, id: WakeId) -> Stored<()>;
     /// The wakes held for a task, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn held_wakes(&self, task: TaskId) -> Stored<Vec<Wake>>;
     /// One wake by its stable ID, without reading retained wake history.
     /// # Errors
     /// A store failure or corrupt matching record.
     fn wake(&self, id: WakeId) -> Stored<Option<Wake>>;
     /// Every wake, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn wakes(&self) -> Stored<Vec<Wake>>;
 
     /// Adds a project.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_project(&self, project: &NewProject, at: Millis) -> Stored<ProjectId>;
     /// Every project, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn projects(&self) -> Stored<Vec<Project>>;
     /// Saves a project's changes: its lead, status, pause, cap and asked cap, and when.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn save_project(&self, project: &Project) -> Stored<()>;
     /// Says what a desk item is about, when that is a project.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_desk_project(&self, id: crate::domain::DeskId, project: ProjectId) -> Stored<()>;
 
     /// Appends an event to the feed and returns its id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn emit(&self, at: Millis, kind: &str, data: &serde_json::Value) -> Stored<i64>;
     /// The id of the latest event, 0 when there is none.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn last_event(&self) -> Stored<i64>;
     /// How many events of a kind there are, and when the latest was.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn count_events(&self, kind: &str) -> Stored<(i64, Option<Millis>)>;
     /// Deletes all but the newest `keep` events that are not ticks, and every tick not among the
     /// newest `keep` of all: the feed is for display, and a reader that fell that far behind
     /// starts again from a snapshot. The ticks do not count, or the heartbeat pushes out the
     /// week the guards read. Endora's audit log is the record.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn prune_events(&self, keep: i64) -> Stored<usize>;
     /// The event with this id, if the feed still has it.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn event(&self, id: i64) -> Stored<Option<Event>>;
     /// Whether the feed still has the event with this id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn has_event(&self, id: i64) -> Stored<bool>;
     /// The events after `id`, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn events_after(&self, id: i64) -> Stored<Vec<Event>>;
     /// The latest `limit` events with an id below `id`, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn events_before(&self, id: i64, limit: usize) -> Stored<Vec<Event>>;
 
     /// Puts something on the owner's desk, about a task or a goal, from a member or not.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_desk(
         &self,
         kind: &str,
@@ -688,47 +505,23 @@ pub trait TeamStore:
         at: Millis,
     ) -> Stored<crate::domain::DeskId>;
     /// Records how the owner decided a desk item.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_desk_status(&self, id: crate::domain::DeskId, status: &str) -> Stored<()>;
     /// Rewords a desk item that still waits: a finding seen again says what it fired on now
     /// (ADR 0132). An item the owner has decided keeps the words it was decided on.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_desk_text(&self, id: crate::domain::DeskId, text: &str) -> Stored<()>;
     /// Everything on the desk, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn desk(&self) -> Stored<Vec<DeskItem>>;
 
     /// Whether the kill switch is on.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn stopped(&self) -> Stored<bool>;
     /// Pulls or releases the kill switch.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_stopped(&self, stopped: bool) -> Stored<()>;
     /// One of HQ's own settings, by its key: the house log, and what was done once.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn setting(&self, key: &str) -> Stored<Option<String>>;
     /// Sets one of HQ's own settings.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_setting(&self, key: &str, value: &str) -> Stored<()>;
 
     /// Adds a timer.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_timer(
         &self,
         member: MemberId,
@@ -737,37 +530,19 @@ pub trait TeamStore:
         every_ms: Millis,
     ) -> Stored<i64>;
     /// Every timer.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn timers(&self) -> Stored<Vec<Timer>>;
     /// Moves a timer to its next time.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_timer_due(&self, id: i64, due_at: Millis) -> Stored<()>;
 
     /// Adds a routine, on, first due at `next_due_at`.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_routine(&self, routine: &NewRoutine, next_due_at: Millis) -> Stored<RoutineId>;
     /// Every routine, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn routines(&self) -> Stored<Vec<Routine>>;
     /// Saves a routine's changes: on or off, when it is next due, when it last fired, its
     /// last task, and its project.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn save_routine(&self, routine: &Routine) -> Stored<()>;
 
     /// Adds a pending check-back.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_check_back(
         &self,
         member: MemberId,
@@ -777,76 +552,37 @@ pub trait TeamStore:
         at: Millis,
     ) -> Stored<i64>;
     /// Every check-back, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn check_backs(&self) -> Stored<Vec<CheckBack>>;
     /// Records what became of a check-back, and when.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn set_check_back(&self, id: i64, status: CheckBackStatus, at: Millis) -> Stored<()>;
 
     /// Adds a document to a task (ADR 0115; its `id` is ignored) and returns its id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_document(&self, document: &Document) -> Stored<i64>;
     /// A document, by its id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn document(&self, id: i64) -> Stored<Option<Document>>;
     /// A task's documents, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn documents_of(&self, task: TaskId) -> Stored<Vec<Document>>;
     /// Records a submitted branch (its `id` is ignored) and returns its id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_branch(&self, branch: &Branch) -> Stored<i64>;
     /// Every submitted branch, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn branches(&self) -> Stored<Vec<Branch>>;
     /// Saves a branch's status.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn save_branch(&self, branch: &Branch) -> Stored<()>;
     /// Queues a check of a branch (its `id` and `token` are ignored): returns its id and the
     /// job's own token, made by the store.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn add_check(&self, check: &Check) -> Stored<(i64, String)>;
     /// Every check, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn checks(&self) -> Stored<Vec<Check>>;
     /// Saves a check's status, result and times.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn save_check(&self, check: &Check) -> Stored<()>;
 
     /// Every post in a task's thread with the evidence it cited, oldest first: what Replay
     /// reads back.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn thread_cited(&self, task: TaskId) -> Stored<Vec<ThreadPost>>;
 
     // ---- roles as an enforced RACI (ADR 0120) ------------------------------------------
 
     /// Every task marked as a lead's report: the task, its lead, and its kind.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
     fn report_tasks(&self) -> Stored<Vec<(TaskId, MemberId, String)>>;
 }
 

@@ -457,9 +457,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The tools a project's work is given, if the owner narrowed them.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn project_tools(&self, id: ProjectId) -> Done<Option<Vec<String>>> {
         Ok(projects::tools_read(
             self.store.setting(&projects::tools_key(id))?.as_deref(),
@@ -480,9 +477,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Why a turn on a narrowed project's work is refused one of HQ's tools, if it is: any
     /// but its own four and what the project gives it.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn project_refuses(&self, run: RunId, tool: &str) -> Done<Option<String>> {
         let Some((project, tools)) = self.project_tools_of_run(run)? else {
             return Ok(None);
@@ -837,9 +831,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// alarms, led by the earliest lead at work (or the CEO), with no cap. The CEO's own
     /// routines (its daily review) stay out of it: they look over the whole house. Nothing once
     /// any project exists, or with no routine that takes the alarms. Returns the project made.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn migrate_projects(&self) -> Done<Option<ProjectId>> {
         let _held = self.held();
         if !self.store.projects()?.is_empty() {

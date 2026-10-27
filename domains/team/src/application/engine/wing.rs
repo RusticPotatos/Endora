@@ -367,9 +367,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The next check job for the runner: the oldest waiting, now running. A check running
     /// longer than [`wing::CHECK_LOST_AFTER_MS`] is given up first, as failed. Nothing while
     /// the kill switch is pulled.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn next_check(&self) -> Done<Option<Check>> {
         let _held = self.held();
         if self.store.stopped()? {
@@ -400,9 +397,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The check a job token names, while it waits or runs: how the node knows which bundle
     /// to hand the check's sandbox.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn check_by_token(&self, token: &str) -> Done<Option<(Check, Branch)>> {
         let _held = self.held();
         if token.len() < 32 {
@@ -598,9 +592,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// saying the branch, its size and how its checks went; or, when the node has no deploy
     /// key, that pushing is not set up and where the bundle is. Called when a task reaches
     /// done; nothing for a task with no branch, or one offered already.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn offer_push(&self, task: TaskId) -> Done<()> {
         let Some(branch) = self
             .store
@@ -704,9 +695,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The branch a push item the owner approved asks the node to push, if that is what the
     /// item is.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn push_asked(&self, item: crate::domain::DeskId) -> Done<Option<Branch>> {
         let _held = self.held();
         let Some(found) = self
@@ -887,9 +875,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The members of the wing: whoever leads one of its projects, and whoever reports up to
     /// them.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn wing_members(&self) -> Done<Vec<MemberId>> {
         // With nobody reporting to anyone (ADR 0142), the wing is its projects' leads.
         let leads = self.wing_leads()?;
@@ -906,9 +891,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// repository's rules when it exists, and one is proposed when it is missing; its lead is
     /// told the draft in Endora's library is the first branch to propose (ADR 0116). Nothing
     /// for anyone outside the wing.
-    ///
-    /// # Errors
-    /// A store failure.
     pub(super) fn wing_rules(&self, member: &crate::domain::Member) -> Done<&'static str> {
         if !matches!(member.role, Role::Lead | Role::Developer) {
             return Ok("");
@@ -925,9 +907,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Whether a member changes the lab (ADR 0120): a lead or a developer in the engineering
     /// wing, who may submit a branch and ask for it to be checked again. What the node asks
     /// before it offers or runs a submission, so nothing is kept for anyone else.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn changes_the_lab(&self, member: MemberId) -> Done<bool> {
         // Any member at work may change the lab (ADR 0142): checks and review stop bad work.
         Ok(self.member(member)?.at_work())

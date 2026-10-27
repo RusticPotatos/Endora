@@ -507,9 +507,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the team and the work ---------------------------------------------------------
 
     /// Adds a member. (Hiring goes through the owner's desk once HQ is a service.)
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn hire(
         &self,
         name: &str,
@@ -534,9 +531,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Pauses or resumes a member: a paused member's wakes are turned away.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn pause(&self, member: MemberId, paused: bool) -> Done<()> {
         let _held = self.held();
         Ok(self.store.set_paused(member, paused)?)
@@ -652,9 +646,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the house log (ADR 0111) ---------------------------------------------------------
 
     /// The house log: empty when nothing is in it.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn house_log(&self) -> Done<String> {
         Ok(self.store.setting(HOUSE_LOG)?.unwrap_or_default())
     }
@@ -672,9 +663,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// only when it is empty: what the CEO or the owner wrote is never overwritten, and a log
     /// the owner cleared later stays clear. Said in the feed as Endora's. Returns whether it
     /// was seeded now.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn seed_house_log(&self) -> Done<bool> {
         let _held = self.held();
         if self.store.setting(HOUSE_LOG_SEEDED)?.is_some() {
@@ -792,9 +780,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Sets a goal. The owner's is active at once; one Endora proposes waits on the desk.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn set_goal(&self, title: &str, reason: &str, by: Author) -> Done<GoalId> {
         let _held = self.held();
         if by != Author::Owner {
@@ -1263,9 +1248,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A goal's notes from the owner: empty when there are none.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn goal_note(&self, goal: GoalId) -> Done<String> {
         Ok(self.store.goal_note(goal)?)
     }
@@ -1872,9 +1854,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the kill switch -----------------------------------------------------------------
 
     /// Stops every turn at once; every wake is turned away until the owner resumes.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn stop_all(&self, why: &str) -> Done<()> {
         let _held = self.held();
         self.stop_all_held_lock("owner", why, json!({}))
@@ -1905,9 +1884,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Lets the team work again. Only the owner does this.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn resume(&self) -> Done<()> {
         let _held = self.held();
         self.resume_held_lock()
@@ -1918,9 +1894,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The engine's regular pass (every 30 seconds), in the spec's order: timers, routines and
     /// check-backs, ended and vanished turns, retries, starts, stuck work, finished waits. A
     /// late tick runs once.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn tick(&self) -> Done<TickReport> {
         let _held = self.held();
         let mut report = TickReport::default();
@@ -2376,9 +2349,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The turn a token was issued for, while it runs: its run and its member. A token for a
     /// turn that has ended opens nothing.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn turn_of(&self, token: &str) -> Done<Option<(Run, Member)>> {
         let Some(id) = self.store.run_of_token(token)? else {
             return Ok(None);
@@ -2920,9 +2890,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Tells the owner something done that needs no decision: a notice on the desk, only seen
     /// or dismissed. From a turn (`run`), it is from that turn's member and about its task:
     /// how Endora reports a safe fix a member made through a contract (ADR 0106).
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn notice(&self, run: Option<RunId>, text: &str) -> Done<crate::domain::DeskId> {
         let _held = self.held();
         let run = match run {
@@ -3098,9 +3065,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// An alarm from Endora about the home lab, in its words: fired into the first routine
     /// that is on and takes the home lab's alarms. `None` when no routine takes them.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn alarm(&self, said: &str) -> Done<Option<(RoutineId, Fired)>> {
         let _held = self.held();
         let said = one_line(said, 300);
@@ -3126,9 +3090,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// tells the member that the moment passed, so it looks at the state now rather than
     /// diagnosing what already recovered. `None`, and nothing done, when no routine takes the
     /// alarms or its task is not open: a recovery hands out no work.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn recovered(&self, said: &str) -> Done<Option<TaskId>> {
         let _held = self.held();
         let said = one_line(said, 300);
@@ -3258,9 +3219,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Routines made before their origin was recorded (ADR 0138 A2b) whose words are exactly
     /// one of HQ's own templates (`title`, `description`) the composition root names. They are recorded as HQ's; every other
     /// stays unknown. Returns how many were.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn vouch_template_routines(&self, also: &[(&str, &str)]) -> Done<usize> {
         let _held = self.held();
         let mut vouched = 0;
@@ -3387,9 +3345,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A setting kept as JSON, read as `T`; `None` when it is not set or does not read.
-    ///
-    /// # Errors
-    /// A store failure.
     fn setting_json<T: serde::de::DeserializeOwned>(&self, key: &str) -> Done<Option<T>> {
         Ok(self
             .store
@@ -3474,9 +3429,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Everything on screen now (spec section 12), and the id of the last event in it: the
     /// event stream resumes after that id, so nothing is shown twice or missed.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn snapshot(&self) -> Done<serde_json::Value> {
         let _held = self.held();
         let day = self.today();
@@ -3726,27 +3678,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Keeps the newest `keep` events that are not ticks, and the ticks among the newest `keep`
     /// of all, and deletes the rest. Returns how many went.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn prune_events(&self, keep: i64) -> Done<usize> {
         let _held = self.held();
         Ok(self.store.prune_events(keep)?)
     }
 
     /// The events after `id`, for the stream.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn events_after(&self, id: i64) -> Done<Vec<crate::domain::Event>> {
         Ok(self.store.events_after(id)?)
     }
 
     /// The `limit` events just before an id (at most [`MOST_EVENTS_BEFORE`]), oldest first:
     /// how the activity log goes further back than what it was opened with.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn events_before(&self, id: i64, limit: usize) -> Done<Vec<crate::domain::Event>> {
         Ok(self
             .store
@@ -3754,9 +3697,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Every wake, with its receipt.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn wakes(&self) -> Done<Vec<Wake>> {
         Ok(self.store.wakes()?)
     }

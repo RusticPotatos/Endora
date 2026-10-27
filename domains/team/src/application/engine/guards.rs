@@ -99,9 +99,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The stopped diagnosis of `task` as the record stands now (ADR 0124); `None` for a task
     /// that is finished, or gone.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn diagnosis(&self, task: TaskId) -> Done<Option<Diagnosis>> {
         let Some(task) = self.store.task(task)? else {
             return Ok(None);

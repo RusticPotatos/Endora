@@ -128,9 +128,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// its tools has that list (the Holodeck plan's phase 4; the node uses the names that are
     /// its own). Explicit assistance and its result verification receive an empty list.
     /// `None` for other turns, which have what their role and brain give them.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn lab_tools_of(&self, run: RunId) -> Done<Option<Vec<String>>> {
         if self.in_deploy_check(run)? {
             return Ok(Some(
@@ -143,9 +140,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Whether a turn may be given a shell where the runner has one: not a deploy check's,
     /// which reads the lab through the node and nothing else, nor an explicit assistance or
     /// verification turn, nor one on a project's work whose list does not name the shell.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn may_use_a_shell(&self, run: RunId) -> Done<bool> {
         if self.in_deploy_check(run)? {
             return Ok(false);
@@ -157,9 +151,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Why a deploy check's turn is refused one of HQ's tools, if it is: anything but its four,
     /// and a move of its task to anything but done or blocked.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn deploy_check_refuses(
         &self,
         run: RunId,

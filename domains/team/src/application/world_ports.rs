@@ -73,8 +73,6 @@ pub trait WorldStore {
     fn handovers(&self, task: TaskId) -> Stored<Vec<Handover>>;
     /// Latest note for this recipient, otherwise the task's latest note. Reads at
     /// most one row from each indexed branch; retained notes stay unchanged.
-    /// # Errors
-    /// A store failure.
     fn latest_handover(&self, task: TaskId, member: MemberId) -> Stored<Option<Handover>>;
 
     /// Records what a turn was briefed (its latest attempt's).

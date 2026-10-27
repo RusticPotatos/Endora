@@ -543,9 +543,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A task's scenario, by its seed, if it is in one.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn scenario_of(&self, task: TaskId) -> Done<Option<u64>> {
         Ok(self.place_of(task)?.map(|p| p.seed))
     }
@@ -1086,9 +1083,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The scenarios as the owner's screen lists them, newest first, the latest `most`: each
     /// world's task, kind, title and status, how it ended and its time. Read from the projects
     /// that give their work the scenario tool alone, where every scenario is.
-    ///
-    /// # Errors
-    /// A store failure.
     pub(super) fn scenarios_listed(&self, most: usize) -> Done<Vec<Value>> {
         let mut holding = Vec::new();
         for project in self.store.projects()? {
@@ -1166,9 +1160,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Why a turn is refused one of HQ's tools on a scenario, if it is: moving a scenario's
     /// task, or a part of a mission, is the world's, never a member's word.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn scenario_refuses(&self, tool: &str, args: &Value) -> Done<Option<String>> {
         if tool != "set_status" {
             return Ok(None);

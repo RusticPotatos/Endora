@@ -481,9 +481,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The world as the HQ screen shows it: the pages by stage, with their timelines, and the
     /// stories.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn world_shown(&self) -> Done<Value> {
         let off = self.settings.offset_minutes;
         let snaps = |all: &[Snapshot]| -> Vec<Value> {
@@ -583,9 +580,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The world as one Markdown document, for the owner to download and keep.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn world_markdown(&self) -> Done<String> {
         let off = self.settings.offset_minutes;
         let now = self.clock.now();
@@ -632,9 +626,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// What a turn was briefed: its situation, what of the world it carried and what was left
     /// out, against its budget.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn briefed(&self, run: RunId) -> Done<Option<crate::domain::situations::Briefed>> {
         Ok(self.store.briefed(run)?)
     }
