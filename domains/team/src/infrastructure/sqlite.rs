@@ -909,6 +909,16 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
+    fn set_role(&self, member: MemberId, role: Role) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET role = ?2 WHERE id = ?1",
+                params![member.0, role.name()],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
     fn rename_member(&self, member: MemberId, name: &str) -> Stored<()> {
         self.conn()?
             .execute(
@@ -2157,14 +2167,15 @@ impl TeamStore for SqliteTeamStore {
         self.conn()?
             .execute(
                 "UPDATE routines SET enabled = ?2, next_due_at = ?3, last_fired_at = ?4,
-                    last_task = ?5, project = ?6 WHERE id = ?1",
+                    last_task = ?5, project = ?6, assignee = ?7 WHERE id = ?1",
                 params![
                     routine.id.0,
                     routine.enabled,
                     routine.next_due_at,
                     routine.last_fired_at,
                     routine.last_task.map(|t| t.0),
-                    routine.project.map(|p| p.0)
+                    routine.project.map(|p| p.0),
+                    routine.assignee.0
                 ],
             )
             .map_err(backend)?;

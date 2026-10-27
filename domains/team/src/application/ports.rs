@@ -389,6 +389,11 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_reports_to(&self, member: MemberId, to: Option<MemberId>) -> Stored<()>;
+    /// Sets a member's role (ADR 0142's cut-over makes every member a plain one).
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_role(&self, member: MemberId, role: Role) -> Stored<()>;
 
     /// Adds a goal.
     ///

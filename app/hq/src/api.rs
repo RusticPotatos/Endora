@@ -129,6 +129,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}/cap", post(project_cap))
         .route("/v1/projects/{id}/tools", post(project_tools))
         .route("/v1/projects/{id}/rank", post(loop_rank))
+        .route("/v1/one-team", post(one_team))
         // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
         .route("/v1/scenarios", post(start_scenario))
         .route("/v1/scenarios/rerun", post(rerun_holodeck))
@@ -1186,6 +1187,12 @@ struct ProjectTools {
 
 /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or with
 /// `null` takes the list away.
+/// The owner's cut-over to one team of loops (ADR 0142): what it did.
+async fn one_team(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || hq.become_one_team()).await?))
+}
+
 #[derive(Deserialize)]
 struct LoopRank {
     rank: u8,

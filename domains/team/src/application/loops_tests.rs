@@ -439,3 +439,187 @@ fn three_failures_move_an_item_up_a_rank_and_the_top_rank_s_go_to_the_owner() {
         "{desk:?}"
     );
 }
+
+/// Today's team of eight, with roles, routines and work, as production has it.
+fn the_old_team(hq: &Hq<'_>) -> (GoalId, TaskId) {
+    let g = goal(hq);
+    let hired = |name: &str, role: Role| hq.hire(name, role, 10, 2, 0).unwrap();
+    let mara = hired("Mara", Role::Ceo);
+    let kit = hired("Kit", Role::Lead);
+    let ada = hired("Ada", Role::Lead);
+    hired("Rae", Role::Developer);
+    hired("Bo", Role::Developer);
+    let cy = hired("Cy", Role::Researcher);
+    hired("Dee", Role::Reviewer);
+    hired("Zed", Role::Developer);
+    let routine = |title: &str, to: MemberId| {
+        hq.add_routine(
+            Author::Owner,
+            super::ports::NewRoutine {
+                title: title.to_owned(),
+                description: String::new(),
+                goal: g,
+                project: None,
+                assignee: to,
+                every_ms: 6 * 60 * 60 * 1000,
+                on_lab_trouble: title == "Check the home lab",
+            },
+        )
+        .unwrap()
+    };
+    routine("Check the home lab", ada);
+    routine("Daily review", mara);
+    routine("State of my area", kit);
+    let cys = task(hq, g, "Cy's research");
+    hq.store().set_assignee(cys, Some(cy)).unwrap();
+    (g, cys)
+}
+
+/// The cut-over (ADR 0142): five members become the ranked models, with no roles or reporting
+/// lines; Cy, Dee and Zed retire, their open work back on the plan; only the lab's health check
+/// runs on, as Bo's. Running it again changes nothing.
+#[test]
+fn the_team_becomes_one_team_of_five_ranked_models() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let (_, cys) = the_old_team(&hq);
+    hq.become_one_team().unwrap();
+    let members = hq.store().members().unwrap();
+    let by = |name: &str| members.iter().find(|m| m.name == name).unwrap().clone();
+    for (name, brain) in [
+        ("Mara", Brain::Opus),
+        ("Kit", Brain::Sonnet),
+        ("Ada", Brain::Haiku),
+        ("Rae", Brain::Mac),
+        ("Bo", Brain::Local),
+    ] {
+        let m = by(name);
+        assert_eq!((m.brain, m.work_brain), (brain, brain), "{name}");
+        assert_eq!(m.role, Role::Developer, "{name}: no titles in the code");
+        assert_eq!(m.reports_to, None, "{name}: no reporting lines");
+        assert!(m.at_work(), "{name}");
+    }
+    for name in ["Cy", "Dee", "Zed"] {
+        assert!(by(name).furloughed(), "{name} retires");
+    }
+    let held = hq.store().task(cys).unwrap().unwrap();
+    assert_eq!(
+        (held.assignee, held.owner),
+        (None, None),
+        "Cy's work is back on the plan"
+    );
+    let routines = hq.store().routines().unwrap();
+    let on: Vec<_> = routines.iter().filter(|r| r.enabled).collect();
+    assert_eq!(on.len(), 1, "{routines:?}");
+    assert_eq!(
+        (on[0].title.as_str(), on[0].assignee),
+        ("Check the home lab", by("Bo").id)
+    );
+    hq.become_one_team().unwrap();
+    assert_eq!(
+        hq.store().members().unwrap().len(),
+        8,
+        "nothing new the second time"
+    );
+}
+
+/// A member in the loops has the work's tools and none of the company's.
+#[test]
+fn a_member_in_the_loops_is_offered_the_work_s_tools_alone() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    let (run, member) = hq.turn_of(&bo.token).unwrap().unwrap();
+    let offered: Vec<String> = super::protocol::tools_in(&hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    for gone in [
+        "consult",
+        "escalate",
+        "huddle_view",
+        "note",
+        "propose_world",
+        "office",
+        "request_assistance",
+        "decide_stuck",
+        "hand_to",
+    ] {
+        assert!(!offered.iter().any(|n| n == gone), "{gone} in {offered:?}");
+    }
+    for kept in [
+        "my_turn",
+        "claim",
+        "post",
+        "set_status",
+        "create_task",
+        "ask_owner",
+        "read_world",
+        "ask_record",
+    ] {
+        assert!(
+            offered.iter().any(|n| n == kept),
+            "{kept} missing from {offered:?}"
+        );
+    }
+    let _ = fix;
+}
+
+/// A member in the loops asks the owner directly, on the desk: there is no chain to go up.
+#[test]
+fn a_member_in_the_loops_asks_the_owner_on_the_desk() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let fix = item(&hq, &f, "Raise sonarr's memory", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(
+        &hq,
+        &bo,
+        "ask_owner",
+        &serde_json::json!({ "text": "May sonarr have 2 GB of the NAS's 16?",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    let desk = hq.store().desk().unwrap();
+    assert!(
+        desk.iter()
+            .any(|d| d.kind == "question" && d.task == Some(fix)),
+        "{desk:?}"
+    );
+}
+
+/// A loop item that sits with nothing moving it is nudged once; each later stall is one of its
+/// failures, and there is no ladder and no desk.
+#[test]
+fn a_stalled_loop_item_counts_failures_instead_of_climbing_the_ladder() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    hq.runner().finish(bo.run, true);
+    for _ in 0..6 {
+        clock
+            .0
+            .fetch_add(super::engine::STRANDED_AFTER_MS + 60_000, Ordering::SeqCst);
+        hq.tick().unwrap();
+        for started in hq.runner().started() {
+            hq.runner().finish(started.run, true);
+        }
+    }
+    assert!(hq.loop_failures(fix).unwrap() > 0 || assignee(&hq, fix) != Some(f.bo));
+    assert!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .all(|d| d.task != Some(fix)),
+        "no desk card for a stall"
+    );
+}

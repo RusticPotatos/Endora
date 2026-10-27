@@ -97,6 +97,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// each project's ceremony over the day and the week, and findings that cleared.
     pub(super) fn health_tick(&self) -> Done<()> {
         self.clear_what_moved()?;
+        // In the loops (ADR 0142) there is no coordination to guard: failures climb the ranks.
+        if !self.loop_members()?.is_empty() {
+            return Ok(());
+        }
         let now = self.clock.now();
         let looked: Millis = self
             .store

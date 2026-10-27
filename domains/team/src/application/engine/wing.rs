@@ -934,6 +934,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// A store failure.
     pub fn changes_the_lab(&self, member: MemberId) -> Done<bool> {
+        // In the loops any member may change the lab (ADR 0142): checks and review stop bad work.
+        if self.in_the_loops(member)? {
+            return Ok(true);
+        }
         let leads = self.wing_leads()?;
         let members = self.store.members()?;
         Ok(members
@@ -944,6 +948,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Refuses a member outside the wing who would change the lab, naming the wing's lead.
     fn may_change_the_lab(&self, member: &crate::domain::Member) -> Done<()> {
+        if self.in_the_loops(member.id)? {
+            return Ok(());
+        }
         let leads = self.wing_leads()?;
         let members = self.store.members()?;
         if wing::changes_the_lab(member, &leads, &members) {

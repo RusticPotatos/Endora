@@ -3536,6 +3536,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(found) = self.diagnosis(task.id)? else {
                 continue;
             };
+            // In the loops (ADR 0142) a stall is nudged once, then each further stall is one
+            // of the item's failures: three climb a rank. No ladder, no desk.
+            if self.loop_holds(task)? {
+                if matches!(found.stopped, Stopped::Working | Stopped::Held) {
+                    continue;
+                }
+                if !task.nudged {
+                    self.store.set_nudged(task.id, true)?;
+                    if self.nudge_once(task, owner, WakeReason::Recovery)? {
+                        report.nudged += 1;
+                    }
+                    continue;
+                }
+                if self.idle_for(task.id, STRANDED_AFTER_MS)? {
+                    self.loop_stalled(task)?;
+                    report.stuck += 1;
+                }
+                continue;
+            }
             match found.stopped {
                 Stopped::Working | Stopped::Held => continue,
                 Stopped::Indeterminate => {
@@ -3870,6 +3889,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .ok_or(EngineError::Unknown("task for this turn"))?,
         )?;
         let member = self.member(turn.member)?;
+        // In the loops there is no chain: a question goes to the owner's desk (ADR 0142).
+        if self.in_the_loops(member.id)? {
+            let text = self.with_evidence(&text, cited)?;
+            let checked = review::checked(&text, lab.as_deref());
+            return self
+                .ask_held_lock(run, "question", &|name| format!("{name} asks: {checked}"))
+                .map(Asked::Desk);
+        }
         // The CEO's word to the board is a decision, with its recommendation (ADR 0111).
         if member.role == Role::Ceo {
             let decision =
@@ -4701,6 +4728,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 if self.nudge_once(task, member, WakeReason::AssignmentRecovery)? {
                     nudged += 1;
                 }
+                continue;
+            }
+            // In the loops (ADR 0142) stranded work is one of the item's failures.
+            if self.loop_holds(task)? {
+                self.loop_stalled(task)?;
+                stuck += 1;
                 continue;
             }
             // Work in review is never put out of the tester's reach (task 670: blocked 44

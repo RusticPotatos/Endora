@@ -843,6 +843,16 @@ pub(super) struct HqProjectTools {
 
 /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or takes
 /// the list away.
+/// The owner's cut-over to one team of loops (ADR 0142), recorded in the audit log.
+pub(super) async fn hq_one_team(State(state): State<AppState>) -> Answer {
+    let answer = ask(&state, "/v1/one-team".to_owned(), Some(json!({}))).await?;
+    record(
+        &state,
+        &format!("you made the team one team of loops: {}", answer.0),
+    );
+    Ok(answer)
+}
+
 #[derive(Deserialize)]
 pub(super) struct HqLoopRank {
     rank: u8,

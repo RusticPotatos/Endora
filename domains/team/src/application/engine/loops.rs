@@ -7,8 +7,21 @@
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::{
-    Member, MemberId, ProjectId, ProjectStatus, Refusal, Task, TaskId, TaskStatus, WakeReason,
+    Brain, Member, MemberId, ProjectId, ProjectStatus, Refusal, Role, Task, TaskId, TaskStatus,
+    WakeReason,
 };
+
+/// The five members and their models, ranked (ADR 0142).
+const SEATS: [(&str, Brain); 5] = [
+    ("Mara", Brain::Opus),
+    ("Kit", Brain::Sonnet),
+    ("Ada", Brain::Haiku),
+    ("Rae", Brain::Mac),
+    ("Bo", Brain::Local),
+];
+
+/// The one routine the loops keep: the lab's health check, as Bo's recurring item.
+const HEALTH_CHECK: &str = "Check the home lab";
 
 /// How many failed checks at one rank move an item up (ADR 0142).
 const FAILURES_A_RANK: u32 = 3;
@@ -32,6 +45,77 @@ fn in_the_loops(member: &Member) -> bool {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
+    /// The cut-over to one team of loops (ADR 0142), once, by the owner. Mara, Kit, Ada, Rae
+    /// and Bo become the ranked models, plain members with no reporting line; every other
+    /// member retires, its open work back on its loop's plan (one playing in a scenario
+    /// retires when its game ends: run this again then). Only the lab's health check runs on,
+    /// as Bo's. Running it again changes nothing that is done. Returns what it did.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn become_one_team(&self) -> Done<serde_json::Value> {
+        let _held = self.held();
+        let now = self.clock.now();
+        let members = self.store.members()?;
+        let tasks = self.store.tasks()?;
+        let (mut seated, mut retired, mut playing) = (Vec::new(), Vec::new(), Vec::new());
+        for member in &members {
+            if let Some((_, model)) = SEATS
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
+            {
+                self.store.set_model(member.id, *model)?;
+                self.store.set_role(member.id, Role::Developer)?;
+                self.store.set_reports_to(member.id, None)?;
+                seated.push(member.name.clone());
+                continue;
+            }
+            if member.furloughed() {
+                continue;
+            }
+            let held: Vec<&Task> = tasks
+                .iter()
+                .filter(|t| {
+                    !t.status.finished()
+                        && (t.owner == Some(member.id) || t.assignee == Some(member.id))
+                })
+                .collect();
+            let mut in_a_game = false;
+            for task in &held {
+                if self.in_a_scenario(task.id)? {
+                    in_a_game = true;
+                }
+            }
+            if in_a_game {
+                playing.push(member.name.clone());
+                continue;
+            }
+            for task in held {
+                self.store.release(task.id)?;
+                self.store.set_assignee(task.id, None)?;
+                if task.status == TaskStatus::Doing {
+                    self.store.set_task_status(task.id, TaskStatus::Todo)?;
+                }
+            }
+            self.store.furlough_member(member.id, now)?;
+            retired.push(member.name.clone());
+        }
+        let bo = self
+            .store
+            .members()?
+            .into_iter()
+            .find(|m| m.name.eq_ignore_ascii_case("Bo"));
+        for mut routine in self.store.routines()? {
+            let health = routine.title == HEALTH_CHECK;
+            if let (true, Some(bo)) = (health, &bo) {
+                routine.assignee = bo.id;
+            }
+            routine.enabled = health;
+            self.store.save_routine(&routine)?;
+        }
+        Ok(serde_json::json!({ "seated": seated, "retired": retired, "still_playing": playing }))
+    }
+
     /// The owner sets the rank a loop's items start at: 1 (Opus) to 5 (the house's model).
     ///
     /// # Errors
@@ -60,7 +144,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The members who take part in the loops.
-    fn loop_members(&self) -> Done<Vec<Member>> {
+    pub(super) fn loop_members(&self) -> Done<Vec<Member>> {
         Ok(self
             .store
             .members()?
@@ -105,6 +189,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(up.cloned())
     }
 
+    /// Whether an item is held by a member in the loops: its stalls and failures climb the
+    /// ranks, not the ladder, and no guard of coordination looks at it.
+    pub(super) fn loop_holds(&self, task: &Task) -> Done<bool> {
+        Ok(self.loop_holder(task)?.is_some())
+    }
+
+    /// Whether a member takes part in the loops.
+    pub(crate) fn in_the_loops(&self, member: MemberId) -> Done<bool> {
+        Ok(self.loop_members()?.iter().any(|m| m.id == member))
+    }
+
+    /// An item that sat with nothing moving it, after its one nudge: one of its failures. Kept
+    /// at its rank, its holder is woken to try again; past the third, it has climbed.
+    pub(super) fn loop_stalled(&self, task: &Task) -> Done<()> {
+        let holder = task.owner.or(task.assignee);
+        self.loop_failed(task.id)?;
+        let now = self.task(task.id)?;
+        if now.owner.or(now.assignee) == holder {
+            if let Some(holder) = holder {
+                self.wake_held_lock(holder, Some(task.id), WakeReason::Recovery)?;
+            }
+        }
+        Ok(())
+    }
+
     /// An item's failures at its present rank.
     ///
     /// # Errors
@@ -131,7 +240,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if failures < FAILURES_A_RANK {
             self.store
                 .set_setting(&failures_key(task), &failures.to_string())?;
-            return Ok(());
+            return self.post_held_lock(
+                super::Author::Endora,
+                task,
+                &format!(
+                    "Failure {failures} of {FAILURES_A_RANK} at {}'s rank.",
+                    holder.name
+                ),
+            );
         }
         self.store.set_setting(&failures_key(task), "0")?;
         let members = self.loop_members()?;

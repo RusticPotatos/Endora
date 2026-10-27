@@ -624,7 +624,13 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     run: &Run,
     member: &Member,
 ) -> Value {
-    let mut all = tools(member.role);
+    // In the loops (ADR 0142) every member has the same tools, and none of the company's.
+    let in_the_loops = engine.in_the_loops(member.id).unwrap_or(false);
+    let mut all = if in_the_loops {
+        loop_tools()
+    } else {
+        tools(member.role)
+    };
     let Some(list) = all.as_array_mut() else {
         return all;
     };
@@ -664,7 +670,9 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if engine.retired_peer_turn(run.id).unwrap_or(false) {
         return json!([]);
     }
-    list.extend(super::protocol_conversations::tools(engine, run));
+    if !in_the_loops {
+        list.extend(super::protocol_conversations::tools(engine, run));
+    }
     // A judgment turn already thinks with Claude: escalating is for a work turn (ADR 0139).
     let judgment = engine
         .store()
@@ -726,6 +734,33 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 })
             });
         }
+    }
+    all
+}
+
+/// What a member in the loops is offered (ADR 0142), whatever its role: the work's tools, and
+/// none of the company's (asking colleagues, escalating, huddles, notebooks, the office's
+/// proposals, the world's curation).
+const LOOP_TOOLS: [&str; 13] = [
+    "my_turn",
+    "claim",
+    "post",
+    "set_status",
+    "create_task",
+    "ask_owner",
+    "check_back",
+    "recheck",
+    "read_document",
+    "read_doc",
+    "chess",
+    "read_world",
+    "ask_record",
+];
+
+fn loop_tools() -> Value {
+    let mut all = tools(Role::Lead);
+    if let Some(list) = all.as_array_mut() {
+        list.retain(|t| t["name"].as_str().is_some_and(|n| LOOP_TOOLS.contains(&n)));
     }
     all
 }
