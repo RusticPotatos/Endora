@@ -333,7 +333,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 )?;
             }
             WakeDecision::Fold(run) => {
-                self.store.set_wake(oldest.id, Receipt::Folded, Some(run))?
+                self.store.set_wake(oldest.id, Receipt::Folded, Some(run))?;
             }
             // Still held behind another turn; it waits on.
             WakeDecision::Hold | WakeDecision::Refuse(wakes::Refused::Duplicate) => {}

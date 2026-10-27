@@ -571,6 +571,8 @@ pub enum Refusal {
 }
 
 impl fmt::Display for Refusal {
+    // One message for each refusal: a table, not logic.
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TakenBy(member) => write!(f, "member {member} has this task"),

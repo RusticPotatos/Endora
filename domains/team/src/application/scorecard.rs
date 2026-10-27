@@ -405,7 +405,7 @@ fn median(mut values: Vec<Millis>) -> Option<Millis> {
     if values.len() % 2 == 1 {
         return Some(values[mid]);
     }
-    Some((values[mid - 1] + values[mid]) / 2)
+    Some(i64::midpoint(values[mid - 1], values[mid]))
 }
 
 fn alarms(record: &Record<'_>, window: &Window) -> Alarms {

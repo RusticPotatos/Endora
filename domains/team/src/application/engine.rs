@@ -2842,12 +2842,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // itself, or leave it stopped and have the card seen.
             ("tripwire", "resume") => return self.resume_held_lock(),
             ("tripwire", "seen" | "dismiss") => {}
-            ("push", "seen" | "dismiss")
+            ("push" | "notice" | "deploy_check", "seen" | "dismiss")
             | ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
-            | ("question", "dismiss")
-            | ("notice", "seen" | "dismiss")
-            | ("deploy_check", "seen" | "dismiss") => {}
+            | ("question", "dismiss") => {}
             _ => return Err(EngineError::Unknown("decision for this item")),
         }
         self.store.set_desk_status(item, decision)?;

@@ -62,6 +62,9 @@ pub(crate) fn without_dates(entry: &str) -> &str {
 /// The entry after a date it starts with (`2025-10-18:`, `17 Oct:`, `18 October 2025 -`,
 /// `Oct 18, 2025:`), when one is followed by a separator; `None` when it starts with none.
 fn without_date(entry: &str) -> Option<&str> {
+    fn bare(w: &str) -> &str {
+        w.trim_end_matches([':', ','])
+    }
     let digits = |w: &str, most: usize| {
         !w.is_empty() && w.len() <= most && w.bytes().all(|b| b.is_ascii_digit())
     };
@@ -70,9 +73,6 @@ fn without_date(entry: &str) -> Option<&str> {
         matches!(parts.as_slice(), [y, m, d] if y.len() == 4 && digits(y, 4) && digits(m, 2) && digits(d, 2))
     };
     let words: Vec<&str> = entry.splitn(6, ' ').collect();
-    fn bare(w: &str) -> &str {
-        w.trim_end_matches([':', ','])
-    }
     let month = super::lessons::is_month;
     // How many words the date takes: an ISO date, a day and a month, or a month and a day.
     let mut took = match words.as_slice() {

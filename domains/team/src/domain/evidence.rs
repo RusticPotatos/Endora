@@ -362,9 +362,9 @@ impl Ref {
         let lettered = |w: &str, letter: char| w.strip_prefix(letter).and_then(number);
         let mut found = Vec::new();
         let mut i = 0;
-        while i < words.len() {
+        while let Some(&word) = words.get(i) {
             let next = words.get(i + 1).copied().unwrap_or("");
-            let (it, used) = match words[i] {
+            let (it, used) = match word {
                 "receipt" => (
                     lettered(next, 'r')
                         .or_else(|| number(next))

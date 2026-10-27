@@ -2148,6 +2148,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
     #[test]
     fn a_store_made_before_claude_code_runs_every_member_on_the_worker() {
+        use crate::domain::Runtime;
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA_BEFORE_EVIDENCE).unwrap();
@@ -2157,7 +2158,6 @@ CREATE TABLE IF NOT EXISTS projects (
         )
         .unwrap();
         let store = SqliteTeamStore::over(conn).unwrap();
-        use crate::domain::Runtime;
         assert_eq!(store.runtime_of(MemberId(1)).unwrap(), Runtime::Worker);
         store.set_runtime(MemberId(1), Runtime::ClaudeCode).unwrap();
         assert_eq!(store.runtime_of(MemberId(1)).unwrap(), Runtime::ClaudeCode);

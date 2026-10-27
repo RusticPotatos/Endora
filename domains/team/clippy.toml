@@ -1,0 +1,4 @@
+# The team crate's limits (docs/proposals/team-code-care-2026-10-27.md): no function over 100
+# lines but a table, and no block nested deeper than five.
+too-many-lines-threshold = 100
+excessive-nesting-threshold = 5
