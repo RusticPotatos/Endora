@@ -67,11 +67,7 @@ fn without_date(entry: &str) -> Option<&str> {
     };
     let iso = |w: &str| {
         let parts: Vec<&str> = w.split('-').collect();
-        parts.len() == 3
-            && parts[0].len() == 4
-            && digits(parts[0], 4)
-            && digits(parts[1], 2)
-            && digits(parts[2], 2)
+        matches!(parts.as_slice(), [y, m, d] if y.len() == 4 && digits(y, 4) && digits(m, 2) && digits(d, 2))
     };
     let words: Vec<&str> = entry.splitn(6, ' ').collect();
     fn bare(w: &str) -> &str {
@@ -89,7 +85,7 @@ fn without_date(entry: &str) -> Option<&str> {
     if words.get(took).is_some_and(|w| digits(bare(w), 4)) {
         took += 1;
     }
-    let last = words[took - 1];
+    let last = words.get(took - 1)?;
     if last.ends_with(':') || last.ends_with(',') {
         return Some(entry_after(entry, took));
     }
@@ -150,12 +146,14 @@ pub fn corrected_year(text: &str, today: i64) -> Option<(String, i64)> {
         (y, m, d, format!("{y}-"))
     } else if let Some(day) = number(&first, 2) {
         let month = month_of(&bare(words.get(1)?))?;
-        let year = number(&bare(words.get(2)?), 4).filter(|_| bare(words[2]).len() == 4)?;
+        let third = bare(words.get(2)?);
+        let year = number(&third, 4).filter(|_| third.len() == 4)?;
         (year, month, day, year.to_string())
     } else {
         let month = month_of(&first)?;
         let day = number(&bare(words.get(1)?), 2)?;
-        let year = number(&bare(words.get(2)?), 4).filter(|_| bare(words[2]).len() == 4)?;
+        let third = bare(words.get(2)?);
+        let year = number(&third, 4).filter(|_| third.len() == 4)?;
         (year, month, day, year.to_string())
     };
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {

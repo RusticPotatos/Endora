@@ -65,12 +65,12 @@ impl Decision {
                 .find("Decision: ")
                 .filter(|_| parts[0].is_none())
                 .map_or(line, |at| &line[at..]);
-            for (i, label) in ["Decision: ", "Recommendation: ", "Why: "]
-                .iter()
-                .enumerate()
+            for (part, label) in parts
+                .iter_mut()
+                .zip(["Decision: ", "Recommendation: ", "Why: "])
             {
                 if let Some(said) = line.strip_prefix(label) {
-                    parts[i] = parts[i].or(Some(said));
+                    *part = part.or(Some(said));
                 }
             }
         }
