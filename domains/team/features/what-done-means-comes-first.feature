@@ -23,17 +23,6 @@ Feature: What done means comes first
     And the task "Remove literal passwords from the role defaults" is done when "No role default holds a password"
     And Ada is woken about it
 
-  # Seed: the depth-0 exemption in subtask_discipline fails the refusal step.
-  Scenario: A lead's split of the owner's work says what each part serves
-    Given Ada has the task "Remove literal passwords" that is done when both "No role default holds a password" and "Each role reads its secret from the vault" hold
-    When Ada's turn starts
-    And Ada hands Linus the part "Find the literal passwords" of "Remove literal passwords", done when "A list of them is posted"
-    Then it is refused, saying "which of #1's criteria does this serve?"
-    And the team still has 1 task
-    When Ada hands Linus the part "Find the literal passwords" of "Remove literal passwords", done when "A list of them is posted", serving "1"
-    Then it is not refused
-    And the team has 2 tasks
-
   # Seed: refusing every split that names no `serves`, whether or not its task has criteria,
   # fails the Then.
   Scenario: Work already open with no criteria has none to name, so its split is free

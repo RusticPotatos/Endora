@@ -427,8 +427,6 @@ pub enum Refusal {
         /// What was asked for.
         asked: String,
     },
-    /// Only the lead and the reviewer keep the team's lessons.
-    NotALessonKeeper,
     /// A goal's notes have no room for one more lesson.
     NotesFull,
     /// Only the CEO does that (ADR 0111).
@@ -443,8 +441,6 @@ pub enum Refusal {
     History(super::history::HistoryRefusal),
     /// A deterministic conversation refusal (ADR 0137).
     Conversation(&'static str),
-    /// Why a turn cannot take its problem a model tier up (ADR 0139).
-    Escalation(&'static str),
     /// Not in Endora's public library.
     NotADoc,
     /// A decision for the board says what is to be decided, what the CEO recommends, and why.
@@ -530,10 +526,6 @@ pub enum Refusal {
     RefusedCall(String),
     /// The tester passes work only on readings of her own.
     NoOwnReading,
-    /// The lead accepts work only once the tester has passed it.
-    NotTested,
-    /// Only the work's lead accepts it, never its own.
-    NotTheLead,
     /// That is not a step a project takes from where it is.
     NotAProjectStep {
         /// Where it is.
@@ -543,26 +535,6 @@ pub enum Refusal {
     },
     /// The team has one CEO (ADR 0115).
     OnlyOneCeo,
-    /// The wing has no seat left for that role (ADR 0115).
-    NoSeat {
-        /// The role asked for.
-        role: Role,
-        /// How many the wing seats in it now.
-        count: usize,
-        /// How many it may.
-        most: usize,
-    },
-    /// The wing's members think with what the owner agreed for their role (ADR 0115).
-    WingBrain {
-        /// The role asked for.
-        role: Role,
-        /// What it may think with.
-        allowed: &'static str,
-    },
-    /// Only a lead asks the owner to hire; the CEO puts it to the board (ADR 0115).
-    OnlyLeadsHire,
-    /// A hire is asked for a role below the asker's.
-    NotBelowAsker,
     /// Not a document on a task this turn may read.
     NotADocument,
     /// A kept branch is checked out by the work it is for and the member who submitted it
@@ -578,81 +550,10 @@ pub enum Refusal {
     ForwardTheDraft,
     /// A recheck of a branch's checks is asked for by the work's lead or developer (ADR 0115).
     NotYourToRecheck,
-    /// Changing the lab (a branch submitted, or checked again) is the engineering wing's: its
-    /// lead and its developers (ADR 0120). `lead` is the wing's lead, if there is a wing.
-    BranchesAreTheWings {
-        /// The wing's lead, by name; none when there is no wing.
-        lead: Option<String>,
-    },
     /// A check of the branch is still waiting or running: one at a time (ADR 0115).
     CheckPending(i64),
-    /// The CEO is never furloughed: the owner's own line to the team (ADR 0118).
-    IsTheCeo,
-    /// The member is on furlough already.
-    AlreadyFurloughed,
-    /// The member is at work: there is nothing to recall it from.
-    NotFurloughed,
-    /// A member with open work is not furloughed: hand the work on first.
-    HoldsWork {
-        /// Its name.
-        name: String,
-        /// How many open tasks it holds.
-        count: usize,
-    },
-    /// Only a lead asks for staff (ADR 0118).
-    OnlyLeadsStaff,
-    /// Only a project's lead asks for its staff.
-    NotYourProject,
-    /// A request for staff cites too few of the project's open tasks.
-    NoBacklog {
-        /// How many open tasks of the project it cited.
-        cited: usize,
-        /// How many active developers the project has.
-        developers: usize,
-        /// How many it needed to cite.
-        needs: usize,
-    },
-    /// Evidence for staff is an open task of the project, and this is not one.
-    NotOpenInProject(String),
-    /// A note is evidence-backed: at least one reference from HQ's record.
-    NoteNeedsEvidence,
-    /// A note with no words.
-    EmptyNote,
-    /// No such note in the member's notebook.
-    NoSuchNote(i64),
-    /// Forgetting a note says why.
-    ForgetNeedsReason,
     /// Work is not handed to a member on furlough.
     Furloughed(String),
-    /// The task is in a lead's area (named): the CEO does not claim, move, close, accept or
-    /// send back its work, but directs the lead (ADR 0120).
-    CeoDirects(String),
-    /// The CEO hands work to a lead only; the lead hands it on in its area (ADR 0120).
-    CeoToLeads,
-    /// The task is in `lead`'s area and `to` works outside it: only that lead, who leads it, or
-    /// the owner hands its work out of the area (ADR 0120, amended).
-    OutsideTheArea {
-        /// The lead whose area the task is in.
-        lead: String,
-        /// The member it was to be handed to.
-        to: String,
-    },
-    /// The task is in no lead's area: there is nobody to direct.
-    NoAreaLead,
-    /// A strategy change that gives no part.
-    NotAStrategy,
-    /// An area report that says nothing.
-    EmptyReport,
-    /// Only a lead reports on its area, in its report's own turn.
-    NotAReport,
-    /// A huddle's view is three sentences at most.
-    ViewTooLong,
-    /// That member is not asked for a view on that task's huddle, or gave it already.
-    NotInTheHuddle,
-    /// Only the lead of the task's area decides stuck work, and only once it is stuck.
-    NotStuckForYou,
-    /// A decision that is not one of proceed, drop, hand_to, needs_ceo or needs_board.
-    NotADecisionForStuck,
     /// The rules of the office refuse a change (ADR 0119).
     Office(super::office::Refused),
     /// A game of chess refuses a move or a challenge (ADR 0121).
@@ -660,15 +561,8 @@ pub enum Refusal {
     /// A scenario refuses an action, or its world is not a model's to close (the Holodeck
     /// plan's phase 5): the world's own words.
     Scenario(String),
-    /// A colleague's question names original sources (`r877`, `d12`) that it does not pass in
-    /// `evidence`: the words alone grant nothing, so the colleague could read none of them.
-    UnpassedSources(String),
     /// There is no such proposal for the office.
     NoSuchProposal(i64),
-    /// The proposal is decided already.
-    ProposalClosed(i64),
-    /// A member has one vote on a proposal, and it is cast; the proposer's is its yes.
-    AlreadyVoted,
     /// A downtime turn makes no work: it is for the office and the notebook.
     InDowntime,
     /// Stuck work was to be tried again, but nobody can be woken for it now: nothing was
@@ -676,21 +570,6 @@ pub enum Refusal {
     NotWoken(super::wakes::Refused),
     /// Stuck work was to be tried again, but no member has it to wake.
     NobodyHasIt,
-    /// Only the lead of a task's area narrows or rewords its criteria (ADR 0133).
-    OnlyTheAreasLead,
-    /// Narrowing leaves at least one criterion: done must still mean something (ADR 0133).
-    NarrowedToNothing,
-    /// A lead narrows or rewords what done means and never widens it: as many criteria as the
-    /// task has, or fewer (ADR 0133).
-    NotNarrower {
-        /// How many criteria the task has.
-        had: usize,
-        /// How many were given.
-        gave: usize,
-    },
-    /// The owner switches a guard that is tried in shadow, and this one is not (ADR 0133): it
-    /// only records, so it has no shadow to switch.
-    NoShadowMode(&'static str),
 }
 
 impl fmt::Display for Refusal {
@@ -750,9 +629,6 @@ impl fmt::Display for Refusal {
                  alone",
                 role.name()
             ),
-            Self::NotALessonKeeper => {
-                f.write_str("only the lead and the reviewer note the team's lessons")
-            }
             Self::NotesFull => f.write_str("the notes are full; ask the owner to tidy them"),
             Self::OnlyTheCeo => f.write_str("only the CEO does that"),
             Self::HouseLogFull => f.write_str(
@@ -761,7 +637,7 @@ impl fmt::Display for Refusal {
             Self::World(refused) => refused.fmt(f),
             Self::Guard(refused) => refused.fmt(f),
             Self::History(refused) => refused.fmt(f),
-            Self::Conversation(reason) | Self::Escalation(reason) => f.write_str(reason),
+            Self::Conversation(reason) => f.write_str(reason),
             Self::NotADoc => f.write_str(
                 "read_doc reads Endora's public library only: docs/standards.md, or a path like docs/adr/0111-the-ceo-and-the-chain-of-command.md, docs/plans/endora-hq.md or docs/drafts/ansible-nas-AGENTS.md",
             ),
@@ -862,23 +738,13 @@ impl fmt::Display for Refusal {
                 "a tester passes work on her own readings: take them this turn and cite their \
                  receipts",
             ),
-            Self::NotTested => f.write_str(
-                "the tester has not passed this work yet: wait for her verdict",
-            ),
-            Self::NotTheLead => f.write_str(
-                "only the work's lead accepts it, and never work of its own",
-            ),
             Self::NotAProjectStep { from, asked } => {
                 write!(f, "a project that is {from} does not {asked}")
             }
             Self::Office(refused) => refused.fmt(f),
             Self::Chess(refused) => refused.fmt(f),
-            Self::Scenario(why) | Self::UnpassedSources(why) => f.write_str(why),
+            Self::Scenario(why) => f.write_str(why),
             Self::NoSuchProposal(id) => write!(f, "there is no proposal {id} for the office"),
-            Self::ProposalClosed(id) => write!(f, "proposal {id} is closed: it is decided"),
-            Self::AlreadyVoted => f.write_str(
-                "you already voted on this proposal (a proposer's own vote is its yes)",
-            ),
             Self::InDowntime => f.write_str(
                 "this is a downtime turn: it makes no work. React to a proposal, propose a small \
                  change to the office, or note an idea in your notebook",
@@ -892,46 +758,11 @@ impl fmt::Display for Refusal {
             Self::NobodyHasIt => f.write_str(
                 "it was not tried again, and still waits here: no member has this task to wake",
             ),
-            Self::OnlyTheAreasLead => f.write_str(
-                "only the lead of the task's area narrows its criteria: ask that lead, in the \
-                 task's thread",
-            ),
-            Self::NarrowedToNothing => f.write_str(
-                "narrowing keeps at least one criterion: done must still mean something",
-            ),
-            Self::NotNarrower { had, gave } => write!(
-                f,
-                "narrow_criteria narrows or rewords what done means and never widens it: the \
-                 task has {had} and you gave {gave}"
-            ),
-            Self::NoShadowMode(guard) => write!(
-                f,
-                "the {guard} guard only records what it finds: it has no shadow to switch"
-            ),
             Self::NotAManager => f.write_str(
                 "a member reports to another member, never itself and never in a circle; the \
                  CEO reports to the board",
             ),
             Self::OnlyOneCeo => f.write_str("the team has one CEO already"),
-            Self::NoSeat { role, count, most: 0 } => {
-                let _ = count;
-                write!(f, "the wing has no seat for a {}", role.name())
-            }
-            Self::NoSeat { role, count, most } => write!(
-                f,
-                "the wing seats {count} of its {most} {}{}: no seat is free; the owner may hire beyond that on the HQ screen",
-                role.name(),
-                if *most == 1 { "" } else { "s" }
-            ),
-            Self::WingBrain { role, allowed } => write!(
-                f,
-                "a {} in the wing thinks with {allowed}",
-                role.name()
-            ),
-            Self::OnlyLeadsHire => f.write_str(
-                "only a lead asks the owner to hire; the CEO puts hiring to the board with ask_owner",
-            ),
-            Self::NotBelowAsker => f.write_str("a hire is asked for a role below your own"),
             Self::NotADocument => f.write_str(
                 "read_document reads a document of your task, its sub-tasks or the task above: d12, as the thread names them",
             ),
@@ -950,94 +781,14 @@ impl fmt::Display for Refusal {
                 "a recheck is asked for by the work's lead or developer: the tester judges what \
                  the checks found, and the CEO directs",
             ),
-            Self::BranchesAreTheWings { lead: Some(lead) } => write!(
-                f,
-                "changing the lab is the engineering wing's: {lead} leads it and its developers \
-                 submit the branches. Ask for the change with propose_project, with its criteria \
-                 and evidence; the CEO decides and the wing builds it"
-            ),
-            Self::BranchesAreTheWings { lead: None } => f.write_str(
-                "changing the lab is the engineering wing's, and there is no wing: ask the owner \
-                 with ask_owner",
-            ),
             Self::CheckPending(check) => write!(
                 f,
                 "check c{check} of this branch is still waiting or running: its result comes \
                  back as a receipt, and you may ask again once it has"
             ),
-            Self::IsTheCeo => f.write_str("the CEO is never furloughed"),
-            Self::AlreadyFurloughed => f.write_str("that member is on furlough already"),
-            Self::NotFurloughed => f.write_str("that member is at work: there is nothing to recall"),
-            Self::HoldsWork { name, count } => write!(
-                f,
-                "{name} has {count} open task{}: hand {} on to someone else first",
-                if *count == 1 { "" } else { "s" },
-                if *count == 1 { "it" } else { "them" }
-            ),
-            Self::OnlyLeadsStaff => f.write_str(
-                "only a lead asks for staff; the CEO puts hiring to the board with ask_owner",
-            ),
-            Self::NotYourProject => {
-                f.write_str("only the project's lead asks for its staff: that project is not yours")
-            }
-            Self::NoBacklog { cited, developers, needs } => write!(
-                f,
-                "you cited {cited} open task{} of the project, but it has {developers} active developer{}: a request cites at least {needs}",
-                if *cited == 1 { "" } else { "s" },
-                if *developers == 1 { "" } else { "s" }
-            ),
-            Self::NotOpenInProject(what) => write!(
-                f,
-                "{what} is not an open task of this project: cite its open tasks (task 12)"
-            ),
-            Self::NoteNeedsEvidence => f.write_str(
-                "a note cites its evidence: at least one receipt (r12), task (task 12) or event (event 340) from HQ's record",
-            ),
-            Self::EmptyNote => f.write_str("a note needs words"),
-            Self::NoSuchNote(id) => write!(f, "n{id} is not in your notebook"),
-            Self::ForgetNeedsReason => {
-                f.write_str("say why you forget a note: it was wrong, or is no longer true")
-            }
             Self::Furloughed(name) => write!(
                 f,
                 "{name} is on furlough and takes no work: hand it to a member at work, or ask for staff with request_staff"
-            ),
-            Self::CeoDirects(lead) => write!(
-                f,
-                "this is {lead}'s area: the CEO does not claim, move, close, accept or send back \
-                 its work. Give {lead} a direction with direct (task, direction, evidence), and \
-                 {lead} decides"
-            ),
-            Self::CeoToLeads => f.write_str(
-                "the CEO hands work to a lead only, and the lead hands it on in its area",
-            ),
-            Self::OutsideTheArea { lead, to } => write!(
-                f,
-                "{to} is outside {lead}'s area: only {lead}, who leads it, or the owner hands its \
-                 work out of it. Ask {lead} in the task's thread (the CEO directs: direct, with \
-                 evidence), and {lead} decides"
-            ),
-            Self::NoAreaLead => f.write_str(
-                "that task is in no lead's area: there is no lead at work to direct",
-            ),
-            Self::NotAStrategy => f.write_str(
-                "a strategy change gives at least one of purpose, success, measures, bets or not_now",
-            ),
-            Self::EmptyReport => f.write_str(
-                "a report says at least one of moved, stuck, need or proposals",
-            ),
-            Self::NotAReport => f.write_str(
-                "report_area is a lead's, in the turn of its own \"State of my area\" task",
-            ),
-            Self::ViewTooLong => f.write_str("a huddle's view is three sentences at most"),
-            Self::NotInTheHuddle => f.write_str(
-                "you are not asked for a view on that task's huddle, or you gave yours already",
-            ),
-            Self::NotStuckForYou => f.write_str(
-                "only the lead of the task's area decides stuck work, once HQ has found it stuck",
-            ),
-            Self::NotADecisionForStuck => f.write_str(
-                "`decision` is proceed, drop, hand_to (with `to`), needs_ceo or needs_board",
             ),
         }
     }

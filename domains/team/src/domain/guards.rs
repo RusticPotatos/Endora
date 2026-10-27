@@ -27,15 +27,6 @@ pub struct Thresholds {
     /// Turns in a row that showed nothing, each after a wake, before a member stops being woken
     /// on a task.
     pub redundant_wakes: usize,
-    /// The most open sub-tasks one task may have.
-    pub open_subtasks_most: usize,
-    /// The deepest a sub-task may be made (the owner's task is depth 0).
-    pub depth_most: u8,
-    /// Re-checking turns, after a member was told its evidence is enough, before HQ submits it.
-    pub sufficient_turns: usize,
-    /// How alike (in percent of the retracted text's shingles found) a text must be to a
-    /// retraction to match it.
-    pub retracted_percent: usize,
     /// The fewest shingles a text must share with a retraction to match it.
     pub retracted_shared_least: usize,
     /// How often the tick looks for process-health findings.
@@ -58,10 +49,6 @@ pub struct Thresholds {
 /// bite, from each finding's verdict.
 pub const THRESHOLDS: Thresholds = Thresholds {
     redundant_wakes: 3,
-    open_subtasks_most: 5,
-    depth_most: 3,
-    sufficient_turns: 3,
-    retracted_percent: 60,
     retracted_shared_least: 2,
     look_every_ms: 5 * MINUTE,
     same_ask_percent: 60,
@@ -100,27 +87,6 @@ pub enum GuardRefusal {
         /// How it finished.
         status: TaskStatus,
     },
-    /// The parent already has as many open sub-tasks as one task may.
-    TooManySubtasks {
-        /// The parent.
-        parent: super::work::TaskId,
-        /// Its open sub-tasks.
-        open: usize,
-    },
-    /// A sub-task would sit deeper than work may.
-    TooDeep {
-        /// The parent.
-        parent: super::work::TaskId,
-        /// How deep the sub-task would be.
-        depth: u8,
-    },
-    /// A sub-task says which of its parent's criteria it serves.
-    ServesWhich {
-        /// The parent.
-        parent: super::work::TaskId,
-        /// The parent's criteria, in order.
-        criteria: Vec<String>,
-    },
     /// An approval asked for says which of its task's criteria it serves.
     ApprovalServesWhich {
         /// The task the turn is on.
@@ -133,20 +99,10 @@ pub enum GuardRefusal {
         /// The task the turn is on.
         task: super::work::TaskId,
     },
-    /// What a member writes says again what the owner retracted.
-    Retracted {
-        /// What was retracted.
-        target: String,
-        /// On what day, as the owner reads it.
-        on: String,
-    },
-    /// Not something the owner can retract: a note, a section or a story.
-    NotRetractable(String),
 }
 
 impl core::fmt::Display for GuardRefusal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let t = THRESHOLDS;
         match self {
             Self::NotAClosure(status) => write!(
                 f,
@@ -177,32 +133,6 @@ impl core::fmt::Display for GuardRefusal {
                     status.name()
                 )
             }
-            Self::TooManySubtasks { parent, open } => write!(
-                f,
-                "#{parent} already has {open} open sub-tasks, and {} is the most: finish or \
-                 drop one, or add to one with post, before making another",
-                t.open_subtasks_most
-            ),
-            Self::TooDeep { parent, depth } => write!(
-                f,
-                "a sub-task of #{parent} would be {depth} deep, and {} is the deepest work goes: \
-                 do it in #{parent}, or ask its lead to plan it",
-                t.depth_most
-            ),
-            Self::ServesWhich { parent, criteria } => {
-                let listed: Vec<String> = criteria
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| format!("{}. {c}", i + 1))
-                    .collect();
-                write!(
-                    f,
-                    "which of #{parent}'s criteria does this serve? Give serves (its number or \
-                     its words): {}. Every part of a split serves one of the criteria it splits, \
-                     whoever asked for the task; a part that serves none is not part of it",
-                    listed.join("; ")
-                )
-            }
             Self::ApprovalServesWhich { task, criteria } => {
                 let listed: Vec<String> = criteria
                     .iter()
@@ -223,43 +153,8 @@ impl core::fmt::Display for GuardRefusal {
                  lead says what done means with narrow_criteria, and anyone else asks its lead \
                  in the task's thread, or asks the owner in words with ask_owner"
             ),
-            Self::Retracted { target, on } => write!(
-                f,
-                "this says again what was retracted on {on} ({target}): the owner said it is \
-                 not true. Do not write it again; if the record now shows otherwise, ask the \
-                 owner"
-            ),
-            Self::NotRetractable(said) => write!(
-                f,
-                "`{said}` is not a note (note:12), a section (world:house#backups) or a story \
-                 (story:a-handle)"
-            ),
         }
     }
-}
-
-/// Whether one more sub-task fits under a parent with `open` open sub-tasks, `depth` deep
-/// itself (ADR 0124): at most [`Thresholds::open_subtasks_most`] open under one task, and no
-/// deeper than [`Thresholds::depth_most`].
-///
-/// # Errors
-/// [`GuardRefusal::TooManySubtasks`] or [`GuardRefusal::TooDeep`], with the counts.
-pub fn room_for_a_subtask(
-    parent: super::work::TaskId,
-    open: usize,
-    depth: u8,
-) -> Result<(), GuardRefusal> {
-    if open >= THRESHOLDS.open_subtasks_most {
-        return Err(GuardRefusal::TooManySubtasks { parent, open });
-    }
-    let deeper = depth.saturating_add(1);
-    if deeper > THRESHOLDS.depth_most {
-        return Err(GuardRefusal::TooDeep {
-            parent,
-            depth: deeper,
-        });
-    }
-    Ok(())
 }
 
 /// Which of `criteria` (counted from 1) `said` names: its number (`2`, `#2`, `criterion 2`)
@@ -314,19 +209,6 @@ pub fn approval_serves(
             task,
             criteria: criteria.iter().map(|c| c.text.clone()).collect(),
         })
-}
-
-/// What a member whose evidence already meets its task's criteria is told (ADR 0124): submit
-/// now, with a fresh reading first for any live criterion.
-#[must_use]
-pub const fn enough_said(live: bool) -> &'static str {
-    if live {
-        return "Your evidence already meets the criteria: submit now (set_status in_review, \
-                citing it), with one fresh reading this turn for each live criterion. More \
-                checking of the same is not more evidence.";
-    }
-    "Your evidence already meets the criteria: submit now (set_status in_review, citing it). \
-     More checking of the same is not more evidence."
 }
 
 /// The two windows the process-health detectors look over: a day, and a week.
@@ -778,32 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn a_task_holds_five_open_sub_tasks_three_deep_and_says_so() {
-        use super::super::work::TaskId;
-        let p = TaskId(4);
-        assert!(room_for_a_subtask(p, 4, 2).is_ok());
-        let full = room_for_a_subtask(p, 5, 1).unwrap_err();
-        assert_eq!(full, GuardRefusal::TooManySubtasks { parent: p, open: 5 });
-        assert!(
-            full.to_string()
-                .contains("#4 already has 5 open sub-tasks, and 5 is the most")
-        );
-        let deep = room_for_a_subtask(p, 0, 3).unwrap_err();
-        assert_eq!(
-            deep,
-            GuardRefusal::TooDeep {
-                parent: p,
-                depth: 4
-            }
-        );
-        assert!(
-            deep.to_string()
-                .contains("would be 4 deep, and 3 is the deepest")
-        );
-    }
-
-    #[test]
-    fn a_sub_task_serves_a_criterion_named_by_number_or_words() {
+    fn a_criterion_is_named_by_number_or_words() {
         use super::super::evidence::Criterion;
         let c = [
             Criterion::new("The cause is found", false),
@@ -821,23 +678,6 @@ mod tests {
         for said in ["", "3", "0", "sonarr", "the fix"] {
             assert_eq!(serves(&c, said), None, "{said:?}");
         }
-        let asked = GuardRefusal::ServesWhich {
-            parent: super::super::work::TaskId(4),
-            criteria: c.iter().map(|k| k.text.clone()).collect(),
-        }
-        .to_string();
-        assert!(
-            asked.contains("which of #4's criteria does this serve?")
-                && asked.contains("1. The cause is found; 2. Sonarr is running"),
-            "{asked}"
-        );
-        // It applies to the owner's tasks and a routine's as to a member's (ADR 0124, amended),
-        // and the refusal says so, with what a part that serves none is.
-        assert!(
-            asked.contains("whoever asked for the task")
-                && asked.contains("a part that serves none is not part of it"),
-            "{asked}"
-        );
     }
 
     #[test]
@@ -925,6 +765,5 @@ mod tests {
     fn the_thresholds_start_where_adr_0124_says() {
         let t = THRESHOLDS;
         assert_eq!(t.redundant_wakes, 3);
-        assert_eq!((t.open_subtasks_most, t.depth_most), (5, 3));
     }
 }

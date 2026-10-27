@@ -80,11 +80,6 @@ impl SimulatedRunner {
         state.exits.insert(run, exit);
     }
 
-    /// Makes a running turn's container disappear.
-    pub fn vanish(&self, run: RunId) {
-        self.state().turns.insert(run, Liveness::Gone);
-    }
-
     /// Every turn started, in order, with what the member was told.
     #[must_use]
     pub fn started(&self) -> Vec<RunContext> {

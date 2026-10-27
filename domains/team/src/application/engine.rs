@@ -305,24 +305,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self
     }
 
-    /// Turns the nightly quiz on the map on or off (ADR 0126): whether a free member is asked a
-    /// few questions made from its map, overnight, in a downtime turn on the house's model.
-    /// The service turns it on at start; a scenario, when it is about the quiz.
-    pub fn set_quiz(&mut self, on: bool) {
-        self.settings.quiz = on;
-    }
-
     /// Turns downtime on or off (ADR 0119): whether a member with nothing to do is given a turn
     /// for the office and its notebook. The service turns it on at start; a scenario, when it
     /// is about downtime.
     pub fn set_downtime(&mut self, on: bool) {
         self.settings.downtime = on;
-    }
-
-    /// Turns the simulated games on or off (ADR 0121): whether free members play ping-pong and
-    /// pool, which costs nothing. The service turns it on at start.
-    pub fn set_games(&mut self, on: bool) {
-        self.settings.games = on;
     }
 
     /// The containers Endora's home lab has now, as the node says them: what each question to
@@ -2321,8 +2308,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.release_held(task)?;
         }
         if status == RunStatus::Succeeded && label.is_some() {
-            // Enough evidence, re-checked three times: HQ submits it (ADR 0124).
-            self.submit_when_enough(&run)?;
             self.after_nothing_shown(&run)?;
         }
         // A deploy check's one turn is over: its verdict, once (ADR 0115, amended).
@@ -2463,8 +2448,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(nudge) = self.nudge_for(member.id, run)? {
             told.push_str(&format!("{nudge}\n"));
         }
-        // Evidence already enough is submitted, not polished (ADR 0124).
-        told.push_str(&self.enough_said_for(member.id, run)?);
         let note = self.goal_note_briefed(task.goal)?;
         if !note.is_empty() {
             self.unclassified_message_input(run.id)?;
@@ -2472,7 +2455,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let mut why = vec![task.title.clone()];
         let mut parent = task.parent;
-        let mut first_parent = None;
         while let Some(id) = parent {
             let up = self
                 .store
@@ -2481,18 +2463,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.inherit_authored_input(run.id, up.body_origin)?;
             why.push(up.task.title.clone());
             parent = up.task.parent;
-            first_parent.get_or_insert(up);
         }
         if let Some(goal) = self.store.goal_input(task.goal)? {
             self.inherit_authored_input(run.id, goal.origin)?;
             why.push(format!("goal: {}", goal.goal.title));
         }
         told.push_str(&format!("Why it exists: {}\n", why.join(" ← ")));
-        let serves = self.serves_said(&task)?;
-        if let (false, Some(above)) = (serves.is_empty(), &first_parent) {
-            self.inherit_authored_input(run.id, above.criteria_origin)?;
-        }
-        told.push_str(&serves);
         let documents = self.documents_said(task.id)?;
         if !documents.is_empty() {
             self.documents_reached(run.id, task.id)?;

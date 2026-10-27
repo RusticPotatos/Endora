@@ -190,7 +190,7 @@ fn a_member_with_open_work_a_pause_or_a_furlough_gets_no_downtime() {
     )
     .unwrap();
     hq.pause(t.cy, true).unwrap();
-    hq.furlough(t.dee).unwrap();
+    hq.store().furlough_member(t.dee, START).unwrap();
     hq.runner().script(t.bo, Script::Succeeds);
     hq.runner().script(t.ada, Script::Succeeds);
     for day in 0..3 {

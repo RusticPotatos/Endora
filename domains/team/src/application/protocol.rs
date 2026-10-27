@@ -241,8 +241,8 @@ pub fn tools() -> Value {
         ),
         tool(
             "create_task",
-            "Create a sub-task of your task for another member (by name), with the tasks it waits on and its acceptance criteria: what done means, a short list, required for work handed to someone else. Mark live any criterion about the lab as it is now. Say which of your task's criteria it serves (serves: its number or its words); a task holds at most five open sub-tasks, and work goes at most three deep.",
-            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "serves": { "type": "string", "description": "which of your task's criteria this serves: its number (1, 2…) or its words" }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
+            "Create a sub-task of your task for another member (by name), with the tasks it waits on and its acceptance criteria: what done means, a short list, required for work handed to someone else. Mark live any criterion about the lab as it is now.",
+            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
             &["title", "description"]
         ),
         tool(
@@ -678,12 +678,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .as_array()
                 .map(|a| a.iter().filter_map(Value::as_i64).map(TaskId).collect())
                 .unwrap_or_default();
-            // Which of the parent's criteria it serves (ADR 0124): its number, or its words.
-            let serves = match &args["serves"] {
-                Value::Number(n) => Some(n.to_string()),
-                Value::String(s) => Some(s.clone()),
-                _ => None,
-            };
             let id = engine
                 .create_task_in(
                     run.id,
@@ -698,7 +692,6 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                         waits_on,
                     },
                     &criteria_arg(args),
-                    serves.as_deref(),
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!("Created task {}.", id.0))

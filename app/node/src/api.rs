@@ -393,10 +393,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/scenarios/{task}", get(hq_scenario))
         .route("/v1/hq/trials", post(hq_start_trial))
         .route("/v1/hq/trials/{name}", get(hq_trial))
-        // Elastic staffing (ADR 0118): the owner furloughs and recalls; there is no route that
-        // removes a member.
-        .route("/v1/hq/members/{id}/furlough", post(hq_furlough))
-        .route("/v1/hq/members/{id}/recall", post(hq_recall))
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/hq/pool/top-up", post(hq_pool_top_up))
         // The owner hires (ADR 0115), and downloads a branch's bundle when the node cannot push.

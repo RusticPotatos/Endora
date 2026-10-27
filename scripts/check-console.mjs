@@ -588,9 +588,6 @@ if (failures.length) {
              { id: 22, kind: "hire", task: 9, text: "Hire Sam as developer on claude-haiku-5-5, reporting to member 6.\\nKit asks: two branches wait <b>with nobody free</b>\\nEvidence: task 9" },
              { id: 23, kind: "push", task: 9, text: "Push hq/task-9-tidy-the-deluge-role to your fork (1 file, checks passed). It is a1b2c3d4e5f6 on top of 0123456789ab." },
              { id: 24, kind: "push", task: 9, text: "Branch hq/task-9-other is accepted (1 file, checks passed), but pushing is not set up on the node (ENDORA_GIT_PUSH_KEY_FILE names no deploy key). Download its bundle from the node at /v1/hq/bundles/9/task-9-other and push it yourself." },
-             // Elastic staffing (ADR 0118): an idle member offered for furlough, and a recall.
-             { id: 25, kind: "furlough", member: 3, text: "Cy has had nothing to do since 3 Oct: furlough, or keep? <b>Nobody is let go.</b>" },
-             { id: 26, kind: "recall", task: 9, member: 6, text: "Recall member 8 to report to member 6.\\nZed is on furlough; Kit asks: four branches wait\\nEvidence: task 9" },
              // A member at twice its share (ADR 0113): an allowance for today, or wait.
              { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." },
              // A branch on the fork to merge (owner, 2026-10-26): it opens on GitHub from its card;
@@ -651,8 +648,7 @@ if (failures.length) {
             memory: { reinvented: 0, record_asked: 0, consults: { asked: 0, answered: 0, from_record: 0 } } },
           waiting: { budget: 2, mac: 1, cap: 0, oldest_ms: 540000 }, talk_at: 3600000 },
         // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
-        pool: { base: 2333333, topped_up: 2333333 },
-        teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }] },
+        pool: { base: 2333333, topped_up: 2333333 } },
       routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
                    on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false, project: 1 },
                  { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
@@ -818,7 +814,7 @@ if (failures.length) {
     if (deskTab.indexOf("<h2>Your desk") > deskTab.indexOf("While you were away")) fail("hq: the desk is not above the digest");
     const order = ["hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
     if (order.some((at) => at < 0) || order[0] > order[1]) fail(`hq: the digest is not newest first: ${order}`);
-    if (!yours.startsWith(` <span class="hq-count">17</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
+    if (!yours.startsWith(` <span class="hq-count">15</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
     for (const act of ["hq:decide:16:seen", "hq:decide:12:retry"]) {
       if (yours.includes(act)) fail(`hq: ${act} is on the desk as well as in the digest`);
     }
@@ -1006,17 +1002,6 @@ if (failures.length) {
     if (!office.includes(`id="${id}"`)) fail(`hq: the hire form lacks ${id}`);
   }
   if (!office.includes("1 of 5 developer seats are taken")) fail("hq: the wing's seats are not said");
-  // Elastic staffing (ADR 0118): an idle member is offered for furlough (Furlough or Keep, never
-  // a way to let anyone go), a lead's recall is brought back or declined; each member's panel
-  // furloughs or recalls (never the CEO's), and the scorecard counts each team's seats.
-  for (const act of ["hq:decide:25:approve", "hq:decide:25:decline", "hq:decide:26:approve", "hq:decide:26:decline",
-    "hq:furlough:2", "hq:furlough:1", "hq:recall:8"]) {
-    if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk or a member's panel does not offer ${act}`);
-  }
-  if (office.includes('data-act="hq:furlough:5"') || office.includes('data-act="hq:recall:5"')) fail("hq: the CEO was offered a furlough");
-  if (office.includes('data-act="hq:furlough:8"') || office.includes('data-act="hq:recall:2"')) fail("hq: a furloughed member was offered a furlough, or a member at work a recall");
-  if (!office.includes(">Keep</button>") || !office.includes(">Bring back</button>")) fail("hq: the furlough cards are not worded as keep and bring back");
-  if (office.includes("<b>Nobody is let go.</b>")) fail("hq: a furlough offer became markup");
   // A member out for the day (ADR 0113): an allowance with an amount box, or tomorrow; the
   // text a model-free card shows is still text.
   for (const act of ["hq:decide:27:approve", "hq:decide:27:decline"]) {
@@ -1025,7 +1010,6 @@ if (failures.length) {
   if (!office.includes('id="hq-answer-27"') || !office.includes(">Wait for tomorrow</button>")) fail("hq: the out-for-the-day card has no amount box or no wait");
   if (office.includes("<b>$0.50</b>")) fail("hq: an out-for-the-day card became markup");
   if (!office.includes("on furlough · ")) fail("hq: the roster does not say who is on furlough");
-  if (!office.includes("3 seats · 2 at work · 1 on furlough") || !office.includes("&lt;u&gt;Kit&lt;/u&gt;")) fail("hq: the scorecard does not count a team's seats");
   // The Office card (ADR 0119, 0142): the floor and its games; the team no longer changes the
   // floor, so there is nothing to veto, undo or reset.
   for (const said of ["<h2>Office</h2>", "7 things on the floor"]) {

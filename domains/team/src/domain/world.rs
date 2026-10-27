@@ -578,20 +578,12 @@ pub enum WorldRefusal {
     HeadingInBody,
     /// Longer than it may be.
     TooLong(usize),
-    /// Not a handle a story can have.
-    NotAHandle(String),
-    /// A handle another story already has.
-    HandleTaken(String),
     /// Retiring, or demoting, needs the reason.
     NeedsWhy,
-    /// Superseding names what replaces it.
-    NeedsSuccessor,
     /// Work handed on with no handover note.
     HandoverNeeded,
     /// The house log is the house page's timeline now.
     HouseLogRetired,
-    /// Only the CEO and the leads propose canon.
-    NotAProposer,
     /// Only a trusted insight is proposed for canon.
     NotReadyForCanon(String),
     /// Something that is not canon cannot be demoted from it; something canon is already.
@@ -607,37 +599,12 @@ pub enum WorldRefusal {
         /// Whose it is.
         steward: String,
     },
-    /// A proposal only the page's steward decides.
-    DecidedBy {
-        /// The page.
-        what: String,
-        /// Whose it is.
-        steward: String,
-    },
-    /// A proposal to a page the proposer stewards: it writes it.
-    YourOwnPage(String),
     /// No page of the world is called that.
     NoSuchPage(String),
     /// No proposal has that number.
     NoSuchProposal(i64),
     /// The proposal was decided already.
     ProposalDecided(i64),
-    /// A member has this many proposals open: they wait for their stewards first.
-    TooManyProposals(usize),
-    /// A gap says what was looked for and where.
-    GapNeedsParts,
-    /// No gap has that number.
-    NoSuchGap(i64),
-    /// The gap is closed already.
-    GapClosed(i64),
-    /// Closing a gap says how it was answered.
-    GapNeedsHow,
-    /// The gap is another steward's.
-    GapNotYours(i64),
-    /// There is no quiz open for this member.
-    NoQuizForYou,
-    /// A quiz is answered with one answer per question.
-    QuizAnswers(usize),
 }
 
 impl fmt::Display for WorldRefusal {
@@ -679,18 +646,7 @@ impl fmt::Display for WorldRefusal {
                 "a section is one piece: no `#` or `##` heading inside its body (`###` is fine)",
             ),
             Self::TooLong(most) => write!(f, "at most {most} characters"),
-            Self::NotAHandle(said) => write!(
-                f,
-                "`{said}` is not a handle: two or three short words, like closed-too-soon"
-            ),
-            Self::HandleTaken(handle) => write!(
-                f,
-                "another story is already called {handle}: give this one its own handle"
-            ),
             Self::NeedsWhy => f.write_str("say why"),
-            Self::NeedsSuccessor => {
-                f.write_str("superseding names the address of what replaces it")
-            }
             Self::HandoverNeeded => f.write_str(
                 "handing work on needs a handover note: handover { done, not_done, next, \
                  watch_out }, each said",
@@ -699,7 +655,6 @@ impl fmt::Display for WorldRefusal {
                 "the house log is now the house page (world:house): note_house adds a dated line \
                  to its timeline, and write_world writes a section of it",
             ),
-            Self::NotAProposer => f.write_str("only the CEO and the leads propose canon"),
             Self::NotReadyForCanon(address) => write!(
                 f,
                 "{address} is not a trusted insight: confirm it (verify_world) before proposing it"
@@ -717,35 +672,9 @@ impl fmt::Display for WorldRefusal {
                 "{what} is kept by {steward}: propose the change with propose_world, and \
                  they decide"
             ),
-            Self::DecidedBy { what, steward } => write!(
-                f,
-                "{what} is kept by {steward}: only they decide what is proposed to it"
-            ),
-            Self::YourOwnPage(page) => write!(
-                f,
-                "world:{page} is yours: write it with write_world, a proposal is for a page \
-                 someone else keeps"
-            ),
             Self::NoSuchPage(said) => write!(f, "there is no page {said} in the world"),
             Self::NoSuchProposal(id) => write!(f, "there is no proposal {id}"),
             Self::ProposalDecided(id) => write!(f, "proposal {id} is decided already"),
-            Self::TooManyProposals(most) => write!(
-                f,
-                "you have {most} proposals open: wait for their stewards to decide them"
-            ),
-            Self::GapNeedsParts => f.write_str(
-                "a gap says what you looked for (what) and where you looked (where_looked)",
-            ),
-            Self::NoSuchGap(id) => write!(f, "there is no gap {id}"),
-            Self::GapClosed(id) => write!(f, "gap {id} is closed already"),
-            Self::GapNeedsHow => f.write_str(
-                "say how the gap was answered (how): the address you wrote, or why nothing",
-            ),
-            Self::GapNotYours(id) => write!(f, "gap {id} was reported to another steward"),
-            Self::NoQuizForYou => f.write_str("there is no quiz open for you"),
-            Self::QuizAnswers(n) => {
-                write!(f, "answer all {n} questions, one answer each, in order")
-            }
         }
     }
 }

@@ -11,18 +11,6 @@ Feature: Guards against how agent teams fail
     Given Ada is the lead
     And the goal "Keep the home lab healthy"
 
-  # Seed: submit_when_enough returning at once fails the in_review step.
-  Scenario: Enough evidence means submit
-    Given Linus is the developer
-    And Linus has the task "Find why sonarr restarts", done when "The cause is found"
-    When Linus takes "Find why sonarr restarts" and reads sonarr's logs
-    And Linus is woken and reads sonarr's logs again
-    Then Linus's briefing says "Your evidence already meets the criteria: submit now"
-    When Linus is woken and reads sonarr's logs again
-    And Linus is woken and reads sonarr's logs again
-    Then the task "Find why sonarr restarts" is in_review
-    And HQ says in "Find why sonarr restarts": "HQ submits it for Linus, on that evidence."
-
   # Live, work waiting on a dropped task is told at once and stays blocked. Now it is not made to
   # wait on one in the first place.
   # Seed: the waits check skipped for dropped work fails the refusal step.

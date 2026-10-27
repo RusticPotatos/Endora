@@ -45,10 +45,6 @@ pub(super) const SUBMITTED: &str = "submitted";
 const TESTED: &str = "tested";
 const CLOSED: &str = "closed";
 
-/// What the thread says when work is sent back, by the tester or the lead: what counts the
-/// rounds.
-pub(super) const SENT_BACK: &str = "Sent back: ";
-
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- receipts ---------------------------------------------------------------------------
 
@@ -328,17 +324,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// How many times a task's work was sent back, by the tester or the lead.
-    pub(super) fn sent_back(&self, task: TaskId) -> Done<usize> {
-        let members = self.store.members()?;
-        Ok(self
-            .store
-            .thread(task)?
-            .iter()
-            .filter(|p| p.text.starts_with(SENT_BACK) && members.iter().any(|m| m.name == p.author))
-            .count())
-    }
-
     // ---- who checks ---------------------------------------------------------------------------
 
     // ---- what a turn does with evidence -----------------------------------------------------
@@ -390,33 +375,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A turn hands work on (see [`Engine::add_task`]): work handed to another member says what
-    /// done means, and a sub-task of a task with criteria, the owner's and a routine's too, which
-    /// of them it serves (`serves`, ADR 0124, amended); no task holds more than five open
-    /// sub-tasks, nor work go deeper than three. Creating it is a change.
+    /// done means. Creating it is a change.
     ///
     /// # Errors
-    /// [`Refusal::NoCriteria`], [`Refusal::TooLong`], what [`Engine::add_task`] refuses, and
-    /// the sub-task discipline's refusals (with their counts).
+    /// [`Refusal::NoCriteria`], [`Refusal::TooLong`] and what [`Engine::add_task`] refuses.
     pub fn create_task_in(
         &self,
         run: RunId,
         task: NewTask,
         criteria: &[Criterion],
-        serves: Option<&str>,
     ) -> Done<TaskId> {
         let _held = self.held();
         let turn = self.running(run)?;
-        // Who may hand what to whom comes first: a member who may not make the task at all is
-        // told so, not asked what it serves.
+        // Who may hand what to whom comes first.
         let to_another = task.assignee.filter(|a| *a != turn.member);
         if let Some(to) = to_another {
             let (from, to) = (self.member(turn.member)?, self.member(to)?);
             crate::domain::work::may_delegate(from.role, to.role).map_err(EngineError::Refused)?;
         }
-        let served = match task.parent {
-            Some(parent) => self.subtask_discipline(parent, serves)?,
-            None => None,
-        };
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
         let id = self.add_task_authored_held_lock(
             Author::Member(turn.member),
@@ -425,10 +401,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )?;
         self.store
             .set_criteria_from(id, criteria, InputOrigin::Run(run))?;
-        if let Some(n) = served {
-            self.store
-                .set_setting(&super::discipline::serves_key(id), &n.to_string())?;
-        }
         if let Some(own) = turn.task {
             self.mark_progress(turn.member, own)?;
         }
@@ -895,8 +867,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             run.blocked |= stored.blocked;
         }
         let label = self.label_of(run)?;
-        // Re-checking evidence already enough is talk only (ADR 0124).
-        let label = self.after_enough_label(run, label)?;
         run.label = Some(label);
         Ok(Some(label))
     }

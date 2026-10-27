@@ -66,9 +66,6 @@ mod wing_tests;
 mod replay_tests;
 
 #[cfg(test)]
-mod staffing_tests;
-
-#[cfg(test)]
 mod runtime_tests;
 
 #[cfg(test)]

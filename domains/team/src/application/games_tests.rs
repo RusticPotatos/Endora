@@ -226,7 +226,7 @@ fn one_game_each_and_only_a_member_at_hand_can_be_challenged() {
     let hq = engine(&clock, true, false);
     let t = team(&hq);
     hq.pause(t.cy, true).unwrap();
-    hq.furlough(t.dee).unwrap();
+    hq.store().furlough_member(t.dee, START).unwrap();
     let ada = downtime_for(&hq, &clock, t.ada);
     let challenge =
         |who: &str| chess_tool(&hq, &ada, &json!({ "action": "challenge", "member": who }));

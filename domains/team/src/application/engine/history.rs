@@ -8,7 +8,7 @@ use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::history::{self, HistoryRefusal, Transcript};
 use crate::domain::situations;
-use crate::domain::{Millis, Refusal, RunId, Runtime};
+use crate::domain::{Millis, Refusal, Runtime};
 
 /// How often the retention rule is looked at: an hour.
 const PRUNE_EVERY_MS: Millis = 60 * 60 * 1000;
@@ -175,25 +175,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             cut,
             tier: kept.tier,
         }))
-    }
-
-    /// A turn's conversation, if HQ kept it and still has it.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn transcript_of(&self, run: RunId) -> Done<Option<Transcript>> {
-        let _held = self.held();
-        Ok(self.store.transcript(run)?)
-    }
-
-    /// Lets go of the conversations past their thirty days, and of all but the last five of each
-    /// member on each task, now. Returns how many went. The tick does this about hourly.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn prune_transcripts(&self) -> Done<usize> {
-        let _held = self.held();
-        self.prune_held()
     }
 
     fn prune_held(&self) -> Done<usize> {

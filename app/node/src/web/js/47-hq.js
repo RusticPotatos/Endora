@@ -1328,8 +1328,6 @@ const HQ_DESK_HELP = {
   project_budget: "This project spent its monthly cap, so its paid work waits. Raise the cap (type the new amount) to go on now; Wait for next month lets it resume when the month turns.",
   rounds: "This work was sent back three times. Accept as done closes it; Send it back gives it one more round.",
   hire: "A lead asks to add a member. Hire adds them; Decline does not.",
-  furlough: "This member has had nothing to do. Furlough rests them (nobody is let go); Keep leaves them working.",
-  recall: "A lead asks to bring a resting member back. Bring back does; Decline keeps them resting.",
   canon: "Canon = settled truth only you can change. Make it canon once you are sure it is true; Not canon leaves it as a note.",
   out_for_day: "This member has used twice its share and is stopped. Give it today lets this member keep working today up to the amount (type one, or leave it empty for as offered); Wait stops them until tomorrow's budget.",
   tripwire: "The team started far more turns in ten minutes than real work does, so HQ stopped it. Resume lets it work again; Seen leaves it stopped for you to look first. The activity log shows what they were doing.",
@@ -1366,10 +1364,6 @@ const HQ_DESK_CHOICES = {
   // fork. Without a deploy key on the node there is nothing to approve: the card offers
   // the branch's bundle to download instead.
   hire: [["approve", "Hire", "ok"], ["decline", "Decline", "no"]],
-  // Elastic staffing (ADR 0118): an idle member offered for furlough (never fired), and a
-  // lead's request to bring a furloughed member back.
-  furlough: [["approve", "Furlough", "ok"], ["decline", "Keep", "no"]],
-  recall: [["approve", "Bring back", "ok"], ["decline", "Decline", "no"]],
   // A piece of the world proposed for canon (ADR 0122): only the owner makes it so.
   canon: [["approve", "Make it canon", "ok"], ["decline", "Not canon", "no"]],
   // A member at twice its share with the pool's day not spent (ADR 0113): an allowance for
@@ -1642,18 +1636,9 @@ function hqRosterLine(m, members) {
   const controls = open ? `<div class="hq-controls">
       <p class="hq-who"><span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
-        <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div></div>` : "";
+        <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button></div></div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
       <span>${esc(hqRole(m.role))} · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : waits ? esc(waits) : "between turns") + " · "}${money}</span></button>${controls}</li>`;
-}
-
-// A member's furlough (ADR 0118), in its panel: put on furlough, or recalled. The CEO is never
-// furloughed; nobody is ever fired, so there is no button for that.
-function hqStaffing(m) {
-  if (m.role === "ceo") return "";
-  return m.furloughed
-    ? `<button class="hq-btn ok" data-act="hq:recall:${m.id}">Recall ${esc(m.name)}</button>`
-    : `<button class="hq-btn" data-act="hq:furlough:${m.id}">Furlough ${esc(m.name)}</button>`;
 }
 
 // The Team card as an org chart (the owner, on a phone: "super cluttered, can't tell the
@@ -1966,8 +1951,6 @@ function hqScorecard(s) {
   const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
   const since = [["today", card.today.since], ["the 7 days", card.week.since]].filter(([, at]) => at != null)
     .map(([w, at]) => `the record for ${w} starts ${esc(when(at))}`).join("; ");
-  // Each team's seats (ADR 0118): who is at work and who is on furlough. Never anyone gone.
-  const teams = (card.teams || []).map((t) => `<li>${esc(t.name || "A lead")}'s team: ${Number(t.seats)} seats · ${Number(t.active)} at work · ${Number(t.furloughed)} on furlough</li>`).join("");
   // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
   const pl = card.pool;
   if (pl) measures.push(["Pool", `pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`, null]);
@@ -1977,7 +1960,6 @@ function hqScorecard(s) {
     <h3>The team's turns</h3>
     ${hqScoreRows("measure", measures, "Today", "7 days")}
     ${topUp}
-    ${teams ? `<details><summary>Seats</summary><ul class="hq-team">${teams}</ul></details>` : ""}
     <details><summary>Per member</summary><div class="hq-score-members">
       <div><b>Today</b><ul class="hq-team">${members(card.today)}</ul></div>
       <div><b>7 days</b><ul class="hq-team">${members(card.week)}</ul></div></div></details>
@@ -2339,18 +2321,6 @@ async function hqDispatch(verb, noun, id, arg) {
       flash("Bundle saved. In your clone: git fetch <the file> refs/submissions/hq/" + slug + ":hq/" + slug, "ok");
     } catch (e) { flash("Couldn't fetch the bundle: " + e.message, "err"); }
     return true;
-  }
-  // Furlough or recall a member (ADR 0118): HQ refuses the CEO, and a member with open work.
-  if (noun === "furlough" || noun === "recall") {
-    const m = hqMember(Number(id)); if (!m) return true;
-    if (noun === "furlough" && !confirm(`Put ${m.name} on furlough? Nobody is let go: ${m.name} is not woken, keeps the record and notebook, and you can recall them.`)) return true;
-    try {
-      if (noun === "furlough") await api("POST", `/v1/hq/members/${id}/furlough`, {});
-      else await api("POST", `/v1/hq/members/${id}/recall`, {});
-      flash(noun === "furlough" ? `${m.name} is on furlough.` : `${m.name} is back at work.`, "ok");
-    }
-    catch (e) { flash("Couldn't do it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
   }
   // The owner adds to today's pool, for today only (ADR 0113 rule 6). HQ holds the limit.
   if (noun === "pool") {
