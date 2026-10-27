@@ -2651,6 +2651,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(&memory.omitted);
             told
         };
+        // In the loops: the map and what the loop did lately (ADR 0142).
+        if self.in_the_loops(member.id)? {
+            told.push_str(&self.loops_said(run)?);
+        }
         // Decided last, once the briefing has recorded what it showed the turn: a turn is told
         // of colleague help only when it is offered the tools (downtime lists them itself).
         if self.reason_for(run)? != WakeReason::Downtime.name()
@@ -5576,6 +5580,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "house_log": self.store.setting(HOUSE_LOG)?.unwrap_or_default(),
             // The team's world (ADR 0122): its pages by stage, and its stories.
             "world": self.world_shown()?,
+            "map_lines": self.map_lines_shown()?,
             "projects": self.projects_shown(&tasks)?,
             // The turns that ended last, with their labels (ADR 0114).
             "recent_runs": self.recent_runs(30)?,

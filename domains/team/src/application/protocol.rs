@@ -761,6 +761,11 @@ fn loop_tools() -> Value {
     let mut all = tools(Role::Lead);
     if let Some(list) = all.as_array_mut() {
         list.retain(|t| t["name"].as_str().is_some_and(|n| LOOP_TOOLS.contains(&n)));
+        list.push(json!({
+            "name": "add_to_map",
+            "description": "Add one line to the team's map when you find where something lives (a setting, a file, a log, who or what owns it), so the next member need not look. The same line again confirms it; lines nobody confirms fade after 30 days.",
+            "inputSchema": { "type": "object", "properties": { "line": { "type": "string", "maxLength": 190, "description": "what, and where it is" } }, "required": ["line"] },
+        }));
     }
     all
 }
@@ -1768,6 +1773,10 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 ),
                 Err(e) => Err(said(&e)),
             }
+        }
+        "add_to_map" => {
+            let line = text_arg(args, "line")?;
+            engine.add_to_map(run.id, line).map_err(|e| said(&e))
         }
         "check_back" => {
             let minutes = args["minutes"]

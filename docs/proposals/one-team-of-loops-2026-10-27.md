@@ -180,3 +180,18 @@ it). Nothing else in the plan waits on the owner.
 
   Each step was written test first; the full gate passed for steps 1, 2 and 3. Nothing changes
   in production until the cut-over runs.
+- **Released d1bf01ff (steps 1–4), cut over 27 Oct about 02:40 UTC:**
+  - `become_one_team` seated Mara (Opus, rank 1), Kit (Sonnet, 2), Ada (Haiku, 3), Rae (the
+    Mac, 4) and Bo (local, 5), all plain members.
+  - Cy and Dee retired; Zed retires when its league game ends.
+  - Only the lab's health check runs on, as Bo's.
+  - **Step 1's exit check met:** five ranked members. A sixth's generated name is proven by the
+    tests.
+  - **Step 2's exit check met:** the owner's item #855, put on the ansible-nas plan with no
+    assignee, was taken by Bo unasked and claimed within the minute.
+- **Step 5 (the desk) and step 6 (memory), code:** written test first.
+  - Notices are kept but never wait; there are no furlough offers and no Deployed cards.
+  - The map: `add_to_map`, where the same line again confirms it and unconfirmed lines fade
+    after 30 days; shown in briefings and in the World card.
+  - Each loop's latest lines go into its turns' briefings.
+  - "Give work" now asks which loop, not which lead.

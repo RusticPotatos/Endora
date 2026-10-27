@@ -1885,15 +1885,18 @@ if (failures.length) {
     if (runInContext("viewHQ()", context).includes('id="hq-work-title"')) fail("hq: the give-work form is open before it is asked for");
     await runInContext('dispatch("hq:work")', context);
     const form = runInContext("viewHQ()", context);
-    for (const said of ["What should the team do?", "What does done mean?", "Who leads it?", 'id="hq-work-title"', 'id="hq-work-done"', 'data-act="hq:work:send:go"', 'data-act="hq:work:cancel:go"', "live:"]) {
+    for (const said of ["What should the team do?", "What does done mean?", "Which loop?", 'id="hq-work-title"', 'id="hq-work-done"', 'data-act="hq:work:send:go"', 'data-act="hq:work:cancel:go"', "live:"]) {
       if (!form.includes(said)) fail(`hq: the give-work form does not show ${said}`);
     }
     // What done means is asked for, never optional (ADR 0124): the team starts from it.
     const giving = form.split('aria-label="Give the team work"')[1].split('hq:work:cancel:go')[0];
     if (giving.includes("(optional)")) fail("hq: the give-work form still calls what done means optional");
     if (!giving.includes("at least one line") || !/<textarea id="hq-work-done"[^>]*\brequired\b/.test(giving)) fail("hq: the give-work form does not require a line of what done means");
-    if (!form.includes('<option value="6" selected>Kit — Engineering</option>') || !form.includes('<option value="1">Ada — Ops</option>')) fail("hq: the leads are not offered by name and area, with Engineering's chosen");
-    const fields = { "hq-work-title": "Fix the <b>backups</b>", "hq-work-done": "backups run nightly; live: disk is under 80%\nreport sent\n\n", "hq-work-lead": "6" };
+    // One team of loops (ADR 0142): the work goes on a loop's plan, which hands it out; only
+    // active loops are offered, by name, escaped.
+    const loopSelect = form.split('<select id="hq-work-loop">')[1].split("</select>")[0];
+    if (!loopSelect.includes('<option value="2" selected>&lt;s&gt;Backups&lt;/s&gt;</option>') || loopSelect.includes('value="3"') || loopSelect.includes('value="1"')) fail("hq: the active loops are not offered by name: " + loopSelect);
+    const fields = { "hq-work-title": "Fix the <b>backups</b>", "hq-work-done": "backups run nightly; live: disk is under 80%\nreport sent\n\n", "hq-work-loop": "2" };
     const realGet = context.document.getElementById;
     context.document.getElementById = (id) => (id in fields ? { ...element(), value: fields[id] } : realGet(id));
     const sent = [];
@@ -1922,14 +1925,10 @@ if (failures.length) {
     const post = sent.find(([path]) => path === "/v1/hq/tasks");
     if (!post || post[1] !== "POST") fail(`hq: the form does not post a task: ${JSON.stringify(sent)}`);
     const body = JSON.parse(post[2]);
-    if (body.assignee !== 6 || body.title !== "Fix the <b>backups</b>") fail(`hq: the task goes to ${body.assignee} as ${body.title}`);
+    if (body.project !== 2 || body.goal !== 1 || "assignee" in body || body.title !== "Fix the <b>backups</b>") fail(`hq: the task goes to ${JSON.stringify(body)}`);
     if (JSON.stringify(body.criteria) !== JSON.stringify(["backups run nightly", "live: disk is under 80%", "report sent"])) fail(`hq: the done lines are ${JSON.stringify(body.criteria)}`);
     if (runInContext("HQ.working", context)) fail("hq: the form stays open after sending");
-    fields["hq-work-lead"] = "1";
-    await runInContext('dispatch("hq:work")', context);
-    await runInContext('dispatch("hq:work:send:go")', context);
-    const second = JSON.parse(sent.filter(([path]) => path === "/v1/hq/tasks")[1][2]);
-    if (second.assignee !== 1) fail("hq: choosing Ada does not send the work to Ada");
+
     await runInContext('dispatch("hq:work")', context);
     await runInContext('dispatch("hq:work:cancel:go")', context);
     if (runInContext("viewHQ()", context).includes('id="hq-work-title"')) fail("hq: Cancel leaves the form open");
@@ -3064,6 +3063,14 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
     if (!card.includes(need)) fail(`the World card lost ${need}`);
   }
   if (card.includes("<img src=w") || card.includes("<b>Backups</b>")) fail("a section's words are not escaped");
+  // The map (ADR 0142): what members found, most confirmed first, the new ones marked, escaped.
+  runInContext(`HQ.snap = Object.assign({}, HQ.snap, { map_lines: [
+      { line: "The gluetun switch is in <i>group_vars/nas.yml</i>", by: "Bo", at: Date.now() - 3600000, uses: 3 },
+      { line: "Sonarr's logs are in container_logs", by: "Rae", at: Date.now() - 20 * 86400000, uses: 1 }] });`, context);
+  const mapped = runInContext("hqWorldCard(HQ.snap)", context);
+  if (!mapped.includes("The map") || !/gluetun switch[\s\S]*confirmed 3 times[\s\S]*Sonarr/.test(mapped)) fail("the World card does not show the map: " + mapped);
+  if (!/gluetun switch[^<]*<\/span>[^<]*<span class="hq-tag">new<\/span>|new<\/span>[\s\S]*gluetun/.test(mapped) && !mapped.includes('class="hq-tag">new')) fail("a line found this week is not marked new");
+  if (mapped.includes("<i>group_vars")) fail("a map line is not escaped");
   if (card.includes('class="hq-btn ok"') || card.includes('class="hq-btn no"') || /class="hq-btn"/.test(card)) fail("a World button is not the tall kind");
   if (card.includes("hq-editor")) fail("the editor is open with nothing to edit");
 

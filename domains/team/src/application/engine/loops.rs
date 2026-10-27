@@ -20,6 +20,18 @@ const SEATS: [(&str, Brain); 5] = [
     ("Bo", Brain::Local),
 ];
 
+/// Where the map's lines are kept: `[{line, by, at, last, uses}]`.
+const MAP_KEY: &str = "map_lines";
+/// How long a line nobody confirms is kept.
+const MAP_FADES_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+/// The most characters of one line, and of the map in a briefing.
+const MAP_LINE_MOST: usize = 190;
+const MAP_SAID_MOST: usize = 1_400;
+/// The most lines kept; past it, the least confirmed and oldest go.
+const MAP_LINES_MOST: usize = 80;
+/// How many of a loop's latest lines a turn on it is told.
+const NOTES_MOST: usize = 6;
+
 /// The one routine the loops keep: the lab's health check, as Bo's recurring item.
 const HEALTH_CHECK: &str = "Check the home lab";
 
@@ -221,6 +233,133 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store.set_desk_status(desk, "seen")?;
         }
         Ok(())
+    }
+
+    /// The map's lines still kept at `now`, the most confirmed first, then the latest.
+    fn map_lines(&self, now: crate::domain::Millis) -> Done<Vec<serde_json::Value>> {
+        let mut lines: Vec<serde_json::Value> = self
+            .store
+            .setting(MAP_KEY)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        lines.retain(|l| now - l["last"].as_i64().unwrap_or(0) < MAP_FADES_MS);
+        lines.sort_by_key(|l| {
+            (
+                std::cmp::Reverse(l["uses"].as_i64().unwrap_or(0)),
+                std::cmp::Reverse(l["last"].as_i64().unwrap_or(0)),
+            )
+        });
+        Ok(lines)
+    }
+
+    /// A member adds a line to the map (ADR 0142): where something lives, found in its turn.
+    /// The same line again confirms it. Returns what the member is told.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`] for a turn that is not running; [`EngineError::Unknown`] for an
+    /// empty line; a store failure.
+    pub fn add_to_map(&self, run: crate::domain::RunId, line: &str) -> Done<String> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        let member = self.member(run.member)?;
+        let line = super::one_line(line, MAP_LINE_MOST);
+        if line.is_empty() {
+            return Err(EngineError::Unknown("map line"));
+        }
+        let now = self.clock.now();
+        let mut lines = self.map_lines(now)?;
+        let same = |l: &serde_json::Value| {
+            l["line"]
+                .as_str()
+                .is_some_and(|s| s.trim().eq_ignore_ascii_case(line.trim()))
+        };
+        let said = if let Some(found) = lines.iter_mut().find(|l| same(l)) {
+            found["uses"] = serde_json::json!(found["uses"].as_i64().unwrap_or(0) + 1);
+            found["last"] = serde_json::json!(now);
+            "It was on the map already: you confirmed it."
+        } else {
+            lines.push(
+                serde_json::json!({ "line": line, "by": member.name, "at": now,
+                                           "last": now, "uses": 1 }),
+            );
+            "It is on the map: every member's briefing shows it."
+        };
+        lines.truncate(MAP_LINES_MOST);
+        self.store
+            .set_setting(MAP_KEY, &serde_json::Value::Array(lines).to_string())?;
+        Ok(said.to_owned())
+    }
+
+    /// The map's lines for the owner: each with who found it, when, and how often confirmed.
+    pub(super) fn map_lines_shown(&self) -> Done<serde_json::Value> {
+        let lines = self.map_lines(self.clock.now())?;
+        Ok(serde_json::json!(
+            lines
+                .iter()
+                .map(
+                    |l| serde_json::json!({ "line": l["line"], "by": l["by"], "at": l["at"],
+                                              "uses": l["uses"] })
+                )
+                .collect::<Vec<_>>()
+        ))
+    }
+
+    /// What a turn in the loops is told besides its task (ADR 0142): the map, most confirmed
+    /// first, and what its loop did lately. Both are members' words, so the turn's input is
+    /// marked as of unknown origin.
+    pub(super) fn loops_said(&self, run: &crate::application::ports::Run) -> Done<String> {
+        let mut told = String::new();
+        let lines = self.map_lines(self.clock.now())?;
+        if !lines.is_empty() {
+            self.unclassified_message_input(run.id)?;
+            told.push_str(
+                "The map, where things are (add_to_map when you find one; the same line again \
+                 confirms it):\n",
+            );
+            for l in &lines {
+                let said = format!("- {}\n", l["line"].as_str().unwrap_or(""));
+                if told.len() + said.len() > MAP_SAID_MOST {
+                    break;
+                }
+                told.push_str(&said);
+            }
+        }
+        let Some(task) = run.task else {
+            return Ok(told);
+        };
+        let Some(project) = self.task(task)?.project else {
+            return Ok(told);
+        };
+        let names: Vec<String> = self.store.members()?.into_iter().map(|m| m.name).collect();
+        let mut lately: Vec<(crate::domain::Millis, String)> = Vec::new();
+        for other in self.store.tasks()? {
+            if other.project != Some(project) || other.id == task {
+                continue;
+            }
+            for post in self.store.thread(other.id)? {
+                if names.contains(&post.author) {
+                    lately.push((
+                        post.at,
+                        format!(
+                            "- {} on #{}: {}\n",
+                            post.author,
+                            other.id.0,
+                            super::one_line(&post.text, 200)
+                        ),
+                    ));
+                }
+            }
+        }
+        if lately.is_empty() {
+            return Ok(told);
+        }
+        self.unclassified_message_input(run.id)?;
+        lately.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        told.push_str("What this loop did lately, newest first:\n");
+        for (_, said) in lately.into_iter().take(NOTES_MOST) {
+            told.push_str(&said);
+        }
+        Ok(told)
     }
 
     /// An item's failures at its present rank.

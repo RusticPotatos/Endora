@@ -658,3 +658,81 @@ fn outside_the_loops_a_notice_waits() {
         .unwrap();
     assert_eq!(found.status, "waiting");
 }
+
+/// The map (ADR 0142): a member who finds where something lives adds one line; another who adds
+/// the same line confirms it; every later briefing shows the most confirmed first; a line nobody
+/// confirms for 30 days fades; the owner sees each line and how often it was confirmed.
+#[test]
+fn the_map_grows_from_what_members_find_and_fades_what_nobody_confirms() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let first = item(&hq, &f, "Find the gluetun switch", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    let said = use_tool(
+        &hq,
+        &bo,
+        "add_to_map",
+        &serde_json::json!({ "line": "The gluetun restart's switch is in group_vars/nas.yml" }),
+    )
+    .unwrap();
+    assert!(said.contains("map"), "{said}");
+    use_tool(
+        &hq,
+        &bo,
+        "add_to_map",
+        &serde_json::json!({ "line": "the GLUETUN restart's switch is in group_vars/nas.yml " }),
+    )
+    .unwrap();
+    let lines = hq.snapshot().unwrap()["map_lines"].clone();
+    assert_eq!(lines.as_array().unwrap().len(), 1, "{lines}");
+    assert_eq!(lines[0]["uses"], 2, "confirmed: {lines}");
+    assert_eq!(lines[0]["by"], "Bo");
+    hq.runner().finish(bo.run, true);
+    hq.store()
+        .set_task_status(first, crate::domain::TaskStatus::Done)
+        .unwrap();
+    item(&hq, &f, "Turn the timer off", Priority::Normal);
+    let next = turn_of(&hq, f.bo);
+    assert!(
+        next.told.contains("group_vars/nas.yml"),
+        "the next briefing shows the map: {}",
+        next.told
+    );
+    hq.runner().finish(next.run, true);
+    clock
+        .0
+        .fetch_add(31 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+    assert!(
+        hq.snapshot().unwrap()["map_lines"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "unconfirmed for 30 days, it fades"
+    );
+}
+
+/// A loop's notes (ADR 0142): a turn on a loop's item is told what the loop did lately, like
+/// Ralph's progress file, from the lines its turns ended with.
+#[test]
+fn a_loop_turn_is_told_what_the_loop_did_lately() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let first = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(
+        &hq,
+        &bo,
+        "post",
+        &serde_json::json!({ "task": first.0, "text": "Fixed the yamllint line lengths in roles/gluetun." }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.store()
+        .set_task_status(first, crate::domain::TaskStatus::Done)
+        .unwrap();
+    item(&hq, &f, "Fix the next lint", Priority::Normal);
+    let next = turn_of(&hq, f.bo);
+    assert!(next.told.contains("yamllint line lengths"), "{}", next.told);
+}

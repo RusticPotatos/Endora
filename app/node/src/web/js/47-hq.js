@@ -1388,22 +1388,22 @@ function hqDeskChoices(d) {
   return HQ_DESK_CHOICES[d.kind] || [];
 }
 
-// "Give work": a form, not pop-ups. Who leads it defaults to the engineering wing's lead.
+// "Give work": a form, not pop-ups. The work goes on a loop's plan, and the loop hands it out
+// (ADR 0142).
 function hqWorkForm(s) {
   if (!HQ.working) return "";
-  const wingLeads = (s.wing && s.wing.leads) || [];
-  const leads = (s.members || []).filter((m) => m.role === "lead");
+  const loops = (s.projects || []).filter((p) => p.status === "active");
   const draft = HQ.workDraft || {};
-  const pick = draft.lead ? Number(draft.lead) : (leads.find((m) => wingLeads.includes(m.id)) || leads[0] || {}).id;
-  const options = leads.map((m) => `<option value="${m.id}"${m.id === pick ? " selected" : ""}>${esc(m.name)} — ${wingLeads.includes(m.id) ? "Engineering" : "Ops"}</option>`).join("");
+  const pick = draft.loop ? Number(draft.loop) : (loops[0] || {}).id;
+  const options = loops.map((p) => `<option value="${p.id}"${p.id === pick ? " selected" : ""}>${esc(p.title)}</option>`).join("");
   return `<div class="hq-work" role="group" aria-label="Give the team work">
     <label for="hq-work-title">What should the team do?</label>
     <input id="hq-work-title" maxlength="200" autocomplete="off" value="${esc(draft.title || "")}" placeholder="e.g. Check why the backups are slow" />
     <label for="hq-work-done">What does done mean? (at least one line)</label>
     <textarea id="hq-work-done" rows="3" required aria-required="true" placeholder="One per line, or separated by ;">${esc(draft.done || "")}</textarea>
     <p class="hq-note" style="margin:0">Start one with <code>live:</code> to have it checked against the lab as it is now.</p>
-    <label for="hq-work-lead">Who leads it?</label>
-    <select id="hq-work-lead">${options || `<option value="">Nobody leads yet</option>`}</select>
+    <label for="hq-work-loop">Which loop?</label>
+    <select id="hq-work-loop">${options || `<option value="">No loop yet: make a project first</option>`}</select>
     <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:work:send:go">Send</button>
       <button class="hq-btn tall" data-act="hq:work:cancel:go">Cancel</button></div></div>`;
 }
@@ -1459,7 +1459,7 @@ document.body.addEventListener("input", (ev) => {
   const id = ev.target && ev.target.id;
   if (id === "hq-work-title") HQ.workDraft.title = ev.target.value;
   else if (id === "hq-work-done") HQ.workDraft.done = ev.target.value;
-  else if (id === "hq-work-lead") HQ.workDraft.lead = ev.target.value;
+  else if (id === "hq-work-loop") HQ.workDraft.loop = ev.target.value;
 });
 
 // One card of the desk or of the digest: what it says and is about, what its choices do, and the
@@ -2618,12 +2618,12 @@ async function hqDispatch(verb, noun, id, arg) {
         const tools = said.split(",").map((t) => t.trim()).filter(Boolean);
         await api("POST", `/v1/hq/projects/${id}/tools`, { tools: tools.length ? tools : null }); flash(tools.length ? "Tools set." : "Its work is given everything again.", "ok");
       } else if (arg === "work") {
-        const title = (prompt(`What should ${hqName(p.lead)} do in ${p.title}?`) || "").trim(); if (!title) return true;
+        const title = (prompt(`What should the team do in ${p.title}?`) || "").trim(); if (!title) return true;
         // The team starts from what done means (ADR 0124), here as in the Give work form: one line
         // is enough, and "live:" before it marks it as about the lab now.
         const done = (prompt(`What does done mean for it? One line (start with live: if it is about the lab as it is now).`) || "").trim();
         if (!done) { flash("Say what done means: at least one line, so the team knows when it is finished.", "warn"); return true; }
-        await api("POST", "/v1/hq/tasks", { goal: p.goal, project: p.id, title, assignee: p.lead, criteria: [done] }); flash("Handed to the team.", "ok");
+        await api("POST", "/v1/hq/tasks", { goal: p.goal, project: p.id, title, criteria: [done] }); flash("On the loop's plan.", "ok");
       } else {
         if (arg === "drop" && !confirm(`Drop ${p.title}? Its open tasks are dropped with it.`)) return true;
         const done = await api("POST", `/v1/hq/projects/${id}`, { action: arg }); flash(`${p.title} is ${done.status}.`, "ok");
@@ -2720,15 +2720,15 @@ async function hqDispatch(verb, noun, id, arg) {
     const field = (name) => { const el = document.getElementById(name); return el && el.value ? String(el.value).trim() : ""; };
     const title = field("hq-work-title");
     if (!title) { flash("Say what the team should do.", "warn"); return true; }
-    const s = HQ.snap || {}, goal = (s.goals || []).find((g) => g.status === "active");
-    if (!goal) { flash("Set the team a goal first.", "warn"); return true; }
+    const s = HQ.snap || {};
+    const loop = (s.projects || []).find((p) => p.id === Number(field("hq-work-loop")) && p.status === "active");
+    if (!loop) { flash("Pick a loop for it.", "warn"); return true; }
     // What done means, at least one line (ADR 0114, 0124): one a line or separated by semicolons,
     // "live:" before one about the lab as it is now. The team starts from it, so nothing is sent
     // without it, and the form stays open with what was typed.
     const criteria = field("hq-work-done").split(/[;\n]/).map((c) => c.trim()).filter(Boolean);
     if (!criteria.length) { flash("Say what done means: at least one line, so the team knows when it is finished.", "warn"); return true; }
-    const lead = Number(field("hq-work-lead"));
-    try { await api("POST", "/v1/hq/tasks", { goal: goal.id, title, assignee: lead || null, criteria }); flash("Handed to the team.", "ok"); }
+    try { await api("POST", "/v1/hq/tasks", { goal: loop.goal, project: loop.id, title, criteria }); flash("On the loop's plan.", "ok"); }
     catch (e) { flash("Couldn't hand it over: " + e.message, "err"); return true; }
     HQ.working = false; HQ.workDraft = {};
     await loadHQ(); render(); return true;

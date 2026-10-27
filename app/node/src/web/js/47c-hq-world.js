@@ -274,6 +274,18 @@ async function hqProposalAct(what) {
   await loadHQ(); render(); return true;
 }
 
+// The map (ADR 0142): one line each where a member found something, the most confirmed first;
+// what was found this week is marked new, and nobody's confirming for 30 days lets a line go.
+function hqMapLines(s) {
+  const lines = s.map_lines || [];
+  if (!lines.length) return "";
+  const week = Date.now() - 7 * 86400000;
+  const row = (l) => `<li><span>${esc(l.line)}</span>${Number(l.at) > week ? ` <span class="hq-tag">new</span>` : ""}
+      <small> ${esc(l.by || "")} · confirmed ${Number(l.uses) || 1} time${Number(l.uses) === 1 ? "" : "s"}</small></li>`;
+  return `<h3>The map</h3><p class="hq-note">Where things are, as the team found them: the most confirmed first.</p>
+    <ul class="hq-lines">${lines.map(row).join("")}</ul>`;
+}
+
 function hqWorldCard(s) {
   const w = s.world;
   if (!w) return "";
@@ -293,6 +305,7 @@ function hqWorldCard(s) {
     <div class="hq-row"><button class="hq-btn tall ok" aria-expanded="${hqWorldDoc().md || hqWorldDoc().open ? "true" : "false"}" data-act="hq:world:paste:show">Paste Markdown</button>
       <button class="hq-btn tall" data-act="hq:world:export:md">Download the world (Markdown)</button></div>
     ${hqWorldPaste()}
+    ${hqMapLines(s)}
     ${open ? hqWorldPageBody(w, open, sections, sectionRow) : hqWorldPageList(w)}
     <div class="hq-row"><button class="hq-btn tall" aria-expanded="${HQ_WORLD_VIEW.writing ? "true" : "false"}" data-act="hq:world:writing:toggle">Write a section</button></div>
     ${HQ_WORLD_VIEW.writing ? `<h3>Write as the owner</h3>
