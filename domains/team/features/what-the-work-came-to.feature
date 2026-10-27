@@ -33,16 +33,6 @@ Feature: What the team's work came to
 
   # --- Memory ------------------------------------------------------------------------------
 
-  Scenario: Work sent back because it already existed is counted as reinvented
-    Given Ada is the lead
-    And Grace is the tester
-    And Linus is the developer
-    And the goal "Keep the home lab healthy"
-    And Linus has the task "Restart the downloads"
-    When Linus submits "Restart the downloads" for review
-    And Grace sends back "Restart the downloads" because it already exists: "The restart job is in the media stack."
-    Then the outcomes count 1 piece of work reinvented this week
-
   Scenario: Asking the record and retained historical consultations are counted
     Given HQ keeps its team in a file
     And Mara is the CEO

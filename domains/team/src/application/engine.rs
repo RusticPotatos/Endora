@@ -1839,15 +1839,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         reason: &str,
     ) -> Done<()> {
         let current = self.task(task)?;
-        // Its holder moves it, or anyone above the holder in the chain of command (ADR 0114),
-        // saying so.
-        let on_behalf = if current.owner == Some(member) {
-            None
-        } else if self.above_in_chain(member, current.owner.or(current.assignee))? {
-            current.owner.or(current.assignee)
-        } else {
+        // Its holder moves it.
+        if current.owner != Some(member) {
             return Err(EngineError::Refused(Refusal::NotYours));
-        };
+        }
         // A routine's check changes no code: its member closes it (ADR 0107).
         let check = to == TaskStatus::Done && self.is_a_check(task)?;
         if check {
@@ -1861,17 +1856,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             self.mark_progress(member, task)?;
         }
-        let mut said = if to == TaskStatus::Todo {
+        let said = if to == TaskStatus::Todo {
             format!("Handed back: {reason}")
         } else {
             format!("{} → {}: {reason}", current.status.name(), to.name())
         };
-        if let Some(holder) = on_behalf {
-            said.push_str(&format!(
-                " (for {}, as one above them)",
-                self.member(holder)?.name
-            ));
-        }
         self.post_own_held_lock(member, task, &said, &[])?;
         if to == TaskStatus::Todo {
             self.store.release(task)?;
@@ -1879,9 +1868,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 EventKind::TaskReleased,
                 json!({ "task": task.0, "member": member.0 }),
             )?;
-            for lead in self.leads_to_wake(&current, member)? {
-                self.wake_held_lock(lead, Some(task), WakeReason::Assigned)?;
-            }
         }
         self.emit(
             EventKind::TaskChanged,
@@ -1921,31 +1907,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.wake_held_lock(reviewer.id, Some(task.id), WakeReason::ReviewRequested)?;
             return Ok(());
         }
-        // Sent back three times: the owner's (ADR 0114).
-        if crate::domain::evidence::to_the_owner(self.sent_back(task.id)?) {
-            return self.rounds_to_the_owner(task);
-        }
-        match self.checkers_of(task)? {
-            crate::domain::evidence::Checkers::Both { tester, .. }
-            | crate::domain::evidence::Checkers::TesterAlone(tester) => {
-                self.wake_held_lock(tester, Some(task.id), WakeReason::ReviewRequested)?;
-                return Ok(());
-            }
-            crate::domain::evidence::Checkers::LeadAlone(lead) => {
-                let name = self.member(lead)?.name;
-                self.post_held_lock(
-                    Author::Endora,
-                    task.id,
-                    &format!(
-                        "No tester but the one who did this work: {name}, its lead, accepts it \
-                         alone."
-                    ),
-                )?;
-                self.wake_held_lock(lead, Some(task.id), WakeReason::AcceptanceAsked)?;
-                return Ok(());
-            }
-            crate::domain::evidence::Checkers::Owner => {}
-        }
+        // Nobody one rank up: the owner reads it.
         let members = self.store.members()?;
         let thread: Vec<String> = self
             .store
@@ -2007,7 +1969,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let in_the_loops = self
             .loop_reviewer_of(&current)?
             .is_some_and(|r| r.id == reviewer.id);
-        if reviewer.role != Role::Reviewer && !in_the_loops {
+        if !in_the_loops {
             return Err(EngineError::Refused(Refusal::NotYours));
         }
         let to = if approve {

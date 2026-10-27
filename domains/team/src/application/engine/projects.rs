@@ -184,27 +184,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
-    /// Who is woken when `member` hands `task` back: its project's lead, while at work; every
-    /// other lead when the task is in no project, or its lead is paused or the one handing it
-    /// back.
-    pub(super) fn leads_to_wake(&self, task: &Task, member: MemberId) -> Done<Vec<MemberId>> {
-        let members = self.store.members()?;
-        if let Some(project) = task.project {
-            let lead = self.project(project)?.lead;
-            let at_work = members
-                .iter()
-                .any(|m| m.id == lead && !m.paused && m.id != member);
-            if at_work {
-                return Ok(vec![lead]);
-            }
-        }
-        Ok(members
-            .iter()
-            .filter(|m| m.role == Role::Lead && m.id != member)
-            .map(|m| m.id)
-            .collect())
-    }
-
     // ---- the owner's projects ------------------------------------------------------------
 
     /// The owner makes a project, active at once: under an active goal, led by a lead or the

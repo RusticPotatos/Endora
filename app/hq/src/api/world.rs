@@ -160,7 +160,6 @@ mod tests {
             )),
             token: Arc::new(TOKEN.to_owned()),
             runner_token: None,
-            demo: false,
             tick_seconds: 30,
             last_tick: Arc::default(),
         }

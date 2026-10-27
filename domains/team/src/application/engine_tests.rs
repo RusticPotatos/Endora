@@ -259,30 +259,6 @@ fn done_is_the_gate_and_a_different_reviewer_and_lands_on_the_desk() {
 }
 
 #[test]
-fn work_doubted_is_handed_back_to_the_lead_not_dropped() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    let task = task_for(&hq, t.goal, None, "Rewrite everything");
-    hq.claim(t.dev, task).unwrap();
-    assert_eq!(
-        hq.set_status(t.dev, task, TaskStatus::Dropped, "pointless"),
-        Err(EngineError::Refused(Refusal::HandBack))
-    );
-    hq.set_status(t.dev, task, TaskStatus::Todo, "this would break the app")
-        .unwrap();
-    let now = hq.store().task(task).unwrap().unwrap();
-    assert_eq!((now.owner, now.status), (None, TaskStatus::Todo));
-    let woken: Vec<(MemberId, WakeReason)> = hq
-        .wakes()
-        .unwrap()
-        .iter()
-        .map(|w| (w.member, w.reason))
-        .collect();
-    assert!(woken.contains(&(t.lead, WakeReason::Assigned)), "{woken:?}");
-}
-
-#[test]
 fn a_member_hands_work_only_down_and_the_task_counts_the_hands() {
     let clock = hands();
     let hq = hq(&clock, 4);
@@ -1411,45 +1387,6 @@ fn the_owner_decides_each_desk_item_once() {
             .unwrap()
             .is_empty()
     );
-}
-
-#[test]
-fn only_whole_work_reaches_the_desk_and_research_is_to_read() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    let researcher = hq.hire("Marie", Role::Researcher, 15, 2, 2).unwrap();
-    let whole = task_for(&hq, t.goal, None, "Find out why a container restarts");
-    let part = hq
-        .add_task(
-            Author::Owner,
-            NewTask {
-                goal: t.goal,
-                project: None,
-                parent: Some(whole),
-                title: "Read its logs".to_owned(),
-                description: String::new(),
-                assignee: None,
-                priority: Priority::Normal,
-                waits_on: Vec::new(),
-            },
-        )
-        .unwrap();
-    for (task, worker) in [(part, t.dev), (whole, researcher)] {
-        hq.claim(worker, task).unwrap();
-        hq.set_status(worker, task, TaskStatus::InReview, "ready")
-            .unwrap();
-        hq.record_gate(task, true, "").unwrap();
-        hq.approve(t.reviewer, task).unwrap();
-    }
-    let desk = hq.store().desk().unwrap();
-    assert_eq!(desk.len(), 1, "the part stayed with the team: {desk:?}");
-    assert_eq!(
-        (desk[0].kind.as_str(), desk[0].task),
-        ("ready_to_read", Some(whole))
-    );
-    assert!(desk[0].text.starts_with("Ready to read: "));
-    hq.decide(desk[0].id, "read").unwrap();
 }
 
 #[test]

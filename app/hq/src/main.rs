@@ -18,10 +18,10 @@ pub(crate) mod public_docs {
 
 use endora_team::application::engine::{Engine, Settings};
 use endora_team::domain::money;
-use endora_team::infrastructure::{RemoteRunner, Runner, SimulatedRunner, SqliteTeamStore, demo};
+use endora_team::infrastructure::{RemoteRunner, Runner, SqliteTeamStore};
 
-/// The engine HQ runs: its store, its runner (the simulated one for the demo, else the remote
-/// one a real runner asks for work), and the system clock.
+/// The engine HQ runs: its store, its runner (the remote one a real runner asks for work; the
+/// simulated one in tests), and the system clock.
 pub type Hq = Engine<SqliteTeamStore, Runner, api::SystemClock>;
 
 /// The shortest token HQ accepts. Anything shorter is refused at start, so a node and an HQ
@@ -206,39 +206,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let db = std::env::var("HQ_DB").unwrap_or_else(|_| "hq.db".to_owned());
     let addr = std::env::var("HQ_ADDR").unwrap_or_else(|_| "127.0.0.1:8790".to_owned());
-    let demo_mode = std::env::var("HQ_DEMO").is_ok_and(|v| v == "1");
     let tick_every = std::env::var("HQ_TICK_SECONDS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|s| *s >= 1)
         .unwrap_or(30);
-    if !demo_mode && runner_token.is_none() {
+    if runner_token.is_none() {
         eprintln!(
             "hq: neither HQ_RUNNER_TOKEN nor HQ_RUNNER_TOKEN_FILE is set, so no runner can ask \
              for work: turns wait until they time out."
         );
     }
 
-    // The demo's scripted members take their turns on the simulated runner; otherwise a real
-    // runner asks for them.
-    let runner = if demo_mode {
-        Runner::Simulated(SimulatedRunner::new(4))
-    } else {
-        Runner::Remote(RemoteRunner::default())
-    };
+    let runner = Runner::Remote(RemoteRunner::default());
     let settings = Settings {
         offset_minutes: owners_offset(|name| std::env::var(name).ok(), now_ms())?,
         // Downtime (ADR 0119): a member with nothing to do tidies the office or its notebook,
-        // free on the house's model. The scripted demo has none.
-        downtime: !demo_mode,
+        // free on the house's model.
+        downtime: true,
         // Ping-pong and pool between free members (ADR 0121): played in code, free.
-        games: !demo_mode,
+        games: true,
         // The nightly quiz on the map (ADR 0126): a free member, in a downtime turn on the
-        // house's model, scored by code. The scripted demo has none.
-        quiz: !demo_mode,
-        // The caps on a runaway (ADR 0133) are on for a real team from the start. The scripted
-        // demo takes a turn as fast as its tick lets it, costs nothing, and is exempt.
-        scripted: demo_mode,
+        // house's model, scored by code.
+        quiz: true,
         pool_per_month: THE_HOUSES_POOL,
         ..Settings::default()
     };
@@ -255,19 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // may execute in this process. Failure aborts startup; the next startup
     // repeats the bounded cleanup and settles only still-live legacy turns.
     hq.retire_legacy_peer_work()?;
-    let goal = if demo_mode {
-        Some(api::demo_goal(&hq)?)
-    } else {
-        None
-    };
-    // With the demo off, nothing it left behind becomes a real turn: its goals and their open
-    // tasks are put away, and a notice on the owner's desk says so.
-    if !demo_mode {
-        match demo::retire(&hq) {
-            Ok(0) => {}
-            Ok(n) => println!("hq: the demo is off: put away its {n} goals and their open work"),
-            Err(e) => eprintln!("hq: could not put the demo's work away: {e}"),
-        }
+    {
         match seed_routine(&hq) {
             Ok(None) => {}
             Ok(Some(id)) => {
@@ -362,11 +340,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ticks += 1;
             let prune = ticks % 100 == 0;
             let _ = tokio::task::spawn_blocking(move || {
-                // The scripted demo has no node to say whether the owner's Mac is free (ADR
-                // 0131): its Mac is always free, so a tester's review never waits on one.
-                if demo_mode {
-                    hq.tell_mac(true, "the demo's Mac is always free");
-                }
                 match hq.tick() {
                     Ok(_) => ticked.store(
                         endora_team::application::Clock::now(&api::SystemClock),
@@ -382,11 +355,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("hq: could not prune the event feed: {e}");
                     }
                 }
-                if let (Some(goal), Some(scripted)) = (goal, hq.runner().simulated()) {
-                    if let Err(e) = demo::act(&hq, scripted, goal) {
-                        eprintln!("hq: the demo team stumbled: {e}");
-                    }
-                }
             })
             .await;
         }
@@ -396,15 +364,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hq,
         token: Arc::new(token.trim().to_owned()),
         runner_token: runner_token.map(Arc::new),
-        demo: demo_mode,
         tick_seconds: tick_every,
         last_tick,
     });
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!(
-        "hq: listening on {addr}, ticking every {tick_every} s{}",
-        if demo_mode { ", demo team on" } else { "" }
-    );
+    println!("hq: listening on {addr}, ticking every {tick_every} s");
     axum::serve(listener, app).await?;
     Ok(())
 }

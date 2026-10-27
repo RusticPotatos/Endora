@@ -21,7 +21,6 @@ use endora_team::application::ports::{Clock, NewRoutine, NewTask};
 use endora_team::domain::{
     DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, Role, RoutineId, RunId, TaskId,
 };
-use endora_team::infrastructure::demo;
 
 use crate::Hq;
 
@@ -49,22 +48,11 @@ pub struct State {
     pub token: Arc<String>,
     /// The token a runner signs with; with none, no runner is answered.
     pub runner_token: Option<Arc<String>>,
-    /// Whether the scripted demo team is on.
-    pub demo: bool,
     /// How often the engine ticks, for the office's clock.
     pub tick_seconds: u64,
     /// When the last tick finished, in milliseconds since the epoch; 0 before the first
     /// (ADR 0124: `/health` says its age, so a wedged tick shows).
     pub last_tick: Arc<std::sync::atomic::AtomicI64>,
-}
-
-/// The demo's goal: set up the demo team the first time, and find its goal after (or give
-/// it a new one, if the demo's was put away while the demo was off).
-///
-/// # Errors
-/// What the engine refuses, or a store failure.
-pub fn demo_goal(hq: &Hq) -> Result<GoalId, EngineError> {
-    demo::goal(hq)
 }
 
 /// HQ's routes.
@@ -277,7 +265,7 @@ async fn health(Extract(state): Extract<State>) -> Json<serde_json::Value> {
     let age = (last > 0).then(|| SystemClock.now().saturating_sub(last));
     let period = i64::try_from(state.tick_seconds.saturating_mul(1_000)).unwrap_or(i64::MAX);
     Json(json!({
-        "ok": true, "demo": state.demo,
+        "ok": true,
         "last_tick_at": (last > 0).then_some(last), "tick_age_ms": age,
         "tick_seconds": state.tick_seconds,
         "ticking": age.is_some_and(|a| a <= period.saturating_mul(3)),
@@ -287,7 +275,6 @@ async fn health(Extract(state): Extract<State>) -> Json<serde_json::Value> {
 async fn snapshot(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
     let mut snap = blocking(move || hq.snapshot()).await?;
-    snap["demo"] = json!(state.demo);
     snap["tick_seconds"] = json!(state.tick_seconds);
     Ok(Json(snap))
 }
@@ -1239,19 +1226,11 @@ struct AlarmRequest {
     text: String,
 }
 
-/// Endora's node raises an alarm about the home lab: the routine that takes them fires. The
-/// demo's scripted team takes none: nothing in it is real.
+/// Endora's node raises an alarm about the home lab: the routine that takes them fires.
 async fn alarm(
     Extract(state): Extract<State>,
     Json(req): Json<AlarmRequest>,
 ) -> Result<Json<serde_json::Value>, Response> {
-    if state.demo {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "the demo is on: it takes no alarms" })),
-        )
-            .into_response());
-    }
     let hq = state.hq.clone();
     let done = blocking(move || hq.alarm(&req.text))
         .await
@@ -1266,18 +1245,11 @@ async fn alarm(
 
 /// Endora's node says something in the home lab that alarmed is back up: said in the open
 /// task the alarm went to, waking whoever has it. It hands out no work (`"posted": null`
-/// when no alarm's task is open), and the demo takes none.
+/// when no alarm's task is open).
 async fn recovered(
     Extract(state): Extract<State>,
     Json(req): Json<AlarmRequest>,
 ) -> Result<Json<serde_json::Value>, Response> {
-    if state.demo {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "the demo is on: it takes no alarms" })),
-        )
-            .into_response());
-    }
     let hq = state.hq.clone();
     let posted = blocking(move || hq.recovered(&req.text))
         .await
@@ -1341,9 +1313,11 @@ mod tests {
     const TOKEN: &str = "a-token-of-at-least-thirty-two-characters";
     const RUNNER: &str = "a-runner-token-of-at-least-thirty-two-chars";
 
-    /// HQ as it runs: the demo team on the simulated runner, or no demo and the remote one.
-    fn state(demo: bool) -> State {
-        let runner = if demo {
+    /// HQ as it runs on the remote runner, or, `simulated`, a small team on the simulated
+    /// runner: Ada, Bo, Cy and Dee, the home lab's goal, a goal Endora proposes, and Ada's first
+    /// task.
+    fn state(simulated: bool) -> State {
+        let runner = if simulated {
             Runner::Simulated(SimulatedRunner::new(4))
         } else {
             Runner::Remote(RemoteRunner::default())
@@ -1354,14 +1328,39 @@ mod tests {
             SystemClock,
             Settings::default(),
         ));
-        if demo {
-            demo_goal(&hq).unwrap();
+        if simulated {
+            let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+            hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
+            hq.hire("Cy", Role::Researcher, 15, 2, 2).unwrap();
+            hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+            let goal = hq
+                .set_goal("Keep the home lab healthy", "", Author::Owner)
+                .unwrap();
+            hq.set_goal(
+                "Make Endora handle most things itself",
+                "A proposal, waiting on your desk",
+                Author::Endora,
+            )
+            .unwrap();
+            hq.add_task(
+                Author::Owner,
+                endora_team::application::ports::NewTask {
+                    goal,
+                    project: None,
+                    parent: None,
+                    title: "Check the backups ran last night".to_owned(),
+                    description: String::new(),
+                    assignee: Some(ada),
+                    priority: endora_team::domain::Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
         }
         State {
             hq,
             token: Arc::new(TOKEN.to_owned()),
             runner_token: Some(Arc::new(RUNNER.to_owned())),
-            demo,
             tick_seconds: 30,
             last_tick: Arc::default(),
         }
@@ -1545,7 +1544,6 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(snap["demo"], true);
         assert_eq!(snap["members"].as_array().unwrap().len(), 4);
         let last = snap["last_event"].as_i64().unwrap();
         let res = app
@@ -3091,7 +3089,6 @@ mod tests {
             hq: Arc::new(engine),
             token: Arc::new(TOKEN.to_owned()),
             runner_token: Some(Arc::new(RUNNER.to_owned())),
-            demo: false,
             tick_seconds: 30,
             last_tick: Arc::default(),
         };
@@ -3464,7 +3461,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_alarm_from_the_node_reaches_the_routine_that_takes_it_and_never_the_demo() {
+    async fn an_alarm_from_the_node_reaches_the_routine_that_takes_it() {
         let alarm = |token: Option<&str>| {
             call(
                 "POST",
@@ -3473,13 +3470,6 @@ mod tests {
                 &json!({ "text": "sonarr became unhealthy at 14:02" }).to_string(),
             )
         };
-        let demo = app(state(true));
-        let res = demo.oneshot(alarm(Some(TOKEN))).await.unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::CONFLICT,
-            "the demo takes no alarms"
-        );
 
         let st = state(false);
         let app = app(st.clone());
@@ -3514,13 +3504,6 @@ mod tests {
                 &json!({ "text": "deluge is back up at 13:43" }).to_string(),
             )
         };
-        let demo = app(state(true));
-        let res = demo.oneshot(back(Some(TOKEN))).await.unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::CONFLICT,
-            "nothing in the demo is real"
-        );
 
         let st = state(false);
         let app = app(st.clone());

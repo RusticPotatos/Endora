@@ -26,39 +26,15 @@ const TOOL_NAMES: &[&str] = &[
     "read_doc",
 ];
 
-/// What the tester is told on every turn (ADR 0114, amended): her part is the verdict. Live,
-/// a tester tried three times to make the sub-tasks of work she was testing, was refused each
-/// time, and only then asked.
-pub const TESTER: &str = "A tester passes work or sends it back; she never creates or \
-    assigns work. When the work is fine, pass it (review, verdict approve), and say what you \
-    checked.";
-
 /// What the reviewer is told when work is put before it.
-pub const REVIEW_WORK: &str = "You are the tester: re-check it yourself. Take your own \
+pub const REVIEW_WORK: &str = "You review it one rank up: re-check it yourself. Take your own \
     readings (homelab_status, container_logs, the queues) to confirm each piece of its evidence \
     is real and still true. For a branch of the wing's, your own reading is the branch itself: \
     check it out (repo_checkout, with its name, hq/task-N-<slug>, as the thread gives it), look \
     at what it changes in the shell (git diff against its base, git log, the files), and cite \
     that checkout's receipt with the check's. Pass only what holds (review, verdict approve), \
-    citing your receipts per criterion: its lead then accepts it. Send it back with exactly what does not \
+    citing your receipts per criterion: your pass closes it. Send it back with exactly what does not \
     hold (review, verdict send_back). Send back any problem that no tool shows causing harm.";
-
-/// What the reviewer is told when a draft for the owner is put before it.
-pub const REVIEW_DRAFT: &str = "Check every claim in the draft against your tools and the \
-    receipts it cites (below, as the node recorded them) \
-    (homelab_status, container_logs, the queues). If everything holds, call ask_owner with the \
-    draft, corrected if needed. If not, send it back to its owner with exactly what does not \
-    hold (review, verdict send_back). Send back any problem that no tool shows causing harm. \
-    Send back, never forward, a draft that asks the owner for something the team's own tools \
-    could find (what is stuck, why, what a log says): the team finds it, the owner decides.";
-
-/// What the reviewer is told when the CEO's decision for the board is put before it (ADR 0111).
-pub const REVIEW_BOARD_DRAFT: &str = "Check every claim in the draft against your tools and \
-    the thread. If everything holds, call ask_owner with the draft, keeping its Decision:, \
-    Recommendation: and Why: lines, corrected if needed: it then reaches the board as the \
-    CEO's. If not, send it back to the CEO with exactly what does not hold (review, verdict \
-    send_back). Send back, never forward, a decision the team could make itself or a question \
-    its own tools could answer: the board decides only what the owner alone can.";
 
 /// Whether work needs the gate (tests, lint and build on a runner) before a review can close
 /// it: everything but a routine's task and work under a goal the home lab's routine serves,
@@ -183,13 +159,6 @@ pub fn named(text: &str) -> Vec<String> {
     found
 }
 
-/// Whether a text speaks of containers: it gives a container-like name, or names one the
-/// home lab has as a whole word.
-#[must_use]
-pub fn names_containers(text: &str, lab: &[String]) -> bool {
-    !named(text).is_empty() || !lab_names_in(text, lab).is_empty()
-}
-
 /// The home lab's containers a text names as whole words, case aside, in the lab's order.
 fn lab_names_in(text: &str, lab: &[String]) -> Vec<String> {
     let words: Vec<String> = text
@@ -245,19 +214,6 @@ pub fn checked(text: &str, lab: Option<&[String]>) -> String {
     )
 }
 
-/// Whether a member's question goes to the reviewer before the owner's desk: when there is a
-/// reviewer, the one asking is not it, and the task is the home lab's (under a goal whose
-/// routine takes the home lab's alarms) or the question speaks of containers.
-#[must_use]
-pub const fn goes_to_review(
-    asked_by_the_reviewer: bool,
-    there_is_a_reviewer: bool,
-    the_home_labs: bool,
-    speaks_of_containers: bool,
-) -> bool {
-    !asked_by_the_reviewer && there_is_a_reviewer && (the_home_labs || speaks_of_containers)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,18 +243,6 @@ mod tests {
             "a model, a command and a number are not containers"
         );
         assert!(named("sonarr_remove_and_search is not Docker's shape").is_empty());
-    }
-
-    #[test]
-    fn a_question_speaks_of_containers_when_it_names_one_the_lab_has_or_looks_like_one() {
-        assert!(names_containers("sonarr keeps restarting.", &lab()));
-        assert!(names_containers("Is owntone-spotify needed?", &lab()));
-        assert!(names_containers("What about `jellyfin`?", &[]));
-        assert!(!names_containers("Steel or titanium?", &lab()));
-        assert!(!names_containers(
-            "Shall I re-sonarr it?",
-            &["sonar".to_owned()]
-        ));
     }
 
     #[test]
@@ -342,22 +286,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_draft_goes_to_review_unless_the_reviewer_asks_or_there_is_none() {
-        assert!(goes_to_review(false, true, true, false));
-        assert!(goes_to_review(false, true, false, true));
-        assert!(!goes_to_review(false, true, false, false));
-        assert!(
-            !goes_to_review(true, true, true, true),
-            "the reviewer's own"
-        );
-        assert!(!goes_to_review(false, false, true, true), "no reviewer");
-    }
-
     /// Live (task 670): the tester was never told how to read a branch, and could not, so no
     /// pass of hers was ever recorded. Her reading of a wing branch is checking it out.
     #[test]
-    fn the_tester_is_told_to_read_a_branch_by_checking_it_out_and_to_cite_that_receipt() {
+    fn the_reviewer_is_told_to_read_a_branch_by_checking_it_out_and_to_cite_that_receipt() {
         assert!(
             REVIEW_WORK.contains("repo_checkout") && REVIEW_WORK.contains("hq/task-N-<slug>"),
             "{REVIEW_WORK}"
@@ -369,8 +301,8 @@ mod tests {
         // What the home lab's reviews already said stays.
         assert!(
             REVIEW_WORK.starts_with(
-                "You are the tester: re-check it yourself. Take your own readings (homelab_status, \
-                 container_logs, the queues)"
+                "You review it one rank up: re-check it yourself. Take your own readings \
+                 (homelab_status, container_logs, the queues)"
             ) && REVIEW_WORK.ends_with("Send back any problem that no tool shows causing harm."),
             "{REVIEW_WORK}"
         );

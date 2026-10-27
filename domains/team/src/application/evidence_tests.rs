@@ -33,7 +33,6 @@ const OCT_17: i64 = 1_792_166_400_000;
 struct Team {
     lead: MemberId,
     dev: MemberId,
-    tester: Option<MemberId>,
     goal: GoalId,
 }
 
@@ -54,33 +53,13 @@ fn team(hq: &Hq<'_>, ceo: bool, tester: bool) -> Team {
     }
     let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    let tester = tester.then(|| hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap());
+    if tester {
+        hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+    }
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
-    Team {
-        lead,
-        dev,
-        tester,
-        goal,
-    }
-}
-
-/// The home lab's routine, for Ada: its goal's work changes no code, so needs no gate.
-fn lab_routine(hq: &Hq<'_>, t: &Team) {
-    hq.add_routine(
-        Author::Endora,
-        NewRoutine {
-            title: "Check the home lab".to_owned(),
-            description: String::new(),
-            goal: t.goal,
-            project: None,
-            assignee: t.lead,
-            every_ms: 6 * HOUR_MS,
-            on_lab_trouble: true,
-        },
-    )
-    .unwrap();
+    Team { lead, dev, goal }
 }
 
 fn owners_task(hq: &Hq<'_>, t: &Team, to: MemberId, title: &str) -> TaskId {
@@ -263,114 +242,6 @@ fn a_sandbox_report_is_cited_for_what_the_sandbox_did_but_never_for_the_lab_now(
     assert_eq!(
         hq.store().task(sub.id).unwrap().unwrap().status,
         TaskStatus::InReview
-    );
-}
-
-#[test]
-fn work_is_handed_on_with_criteria_and_submitted_only_with_evidence_for_each() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq, false, true);
-    let parent = owners_task(&hq, &t, t.lead, "Keep sonarr up");
-    let ada = turn(&hq, t.lead);
-    use_tool(&hq, &ada, "claim", &json!({ "task": parent.0 })).unwrap();
-    let hand = |criteria: Value| {
-        use_tool(
-            &hq,
-            &ada,
-            "create_task",
-            &json!({ "title": "Find why sonarr stalls", "description": "and fix it",
-                     "assignee": "Linus", "criteria": criteria }),
-        )
-    };
-    assert_eq!(
-        hand(json!([])).unwrap_err(),
-        Refusal::NoCriteria.to_string()
-    );
-    hand(json!([{ "text": "the cause is in the thread" },
-                { "text": "sonarr is running and healthy", "live": true }]))
-    .unwrap();
-    let sub = hq.store().tasks().unwrap().pop().unwrap();
-    assert_eq!(
-        sub.criteria,
-        [
-            Criterion::new("the cause is in the thread", false),
-            Criterion::new("sonarr is running and healthy", true)
-        ]
-    );
-    end(&hq, &clock, &ada);
-
-    // Linus reads the lab in one turn, and submits in the next.
-    let first = turn(&hq, t.dev);
-    assert!(first.told.contains("What done means"), "{}", first.told);
-    assert!(
-        first
-            .told
-            .contains("2. sonarr is running and healthy [live")
-    );
-    use_tool(&hq, &first, "claim", &json!({ "task": sub.id.0 })).unwrap();
-    let older = reading(&hq, &first, "homelab_status", "", false);
-    end(&hq, &clock, &first);
-    hq.post(Author::Owner, sub.id, "Go on.").unwrap();
-    let linus = turn(&hq, t.dev);
-    assert_ne!(linus.run, first.run);
-    let submit = |evidence: Value| {
-        use_tool(
-            &hq,
-            &linus,
-            "set_status",
-            &json!({ "task": sub.id.0, "status": "in_review", "reason": "found it",
-                     "evidence": evidence }),
-        )
-    };
-    let said = submit(json!([])).unwrap_err();
-    assert!(
-        said.contains("criterion 1 (the cause is in the thread) has no evidence"),
-        "{said}"
-    );
-    let said = submit(json!([format!("task {}", sub.id.0)])).unwrap_err();
-    assert!(
-        said.contains("criterion 2 (sonarr is running and healthy)"),
-        "{said}"
-    );
-    // A live criterion: an older turn's reading is memory, not the lab now.
-    let said = submit(json!([format!("task {}", sub.id.0), format!("r{older}")])).unwrap_err();
-    assert!(said.contains("is about the lab now"), "{said}");
-    assert_eq!(
-        submit(json!([format!("task {}", sub.id.0), "r999"])).unwrap_err(),
-        "r999 is not in HQ's record"
-    );
-    assert_eq!(
-        submit(json!([format!("task {}", parent.0), format!("r{older}")])).unwrap_err(),
-        format!(
-            "task {} is not from this task's work: cite this work's own",
-            parent.0
-        )
-    );
-    let fresh = reading(&hq, &linus, "homelab_status", "", false);
-    submit(json!([
-        [format!("task {}", sub.id.0)],
-        [format!("r{older}"), format!("r{fresh}")]
-    ]))
-    .unwrap();
-    assert_eq!(
-        hq.store().task(sub.id).unwrap().unwrap().status,
-        TaskStatus::InReview
-    );
-    assert_eq!(
-        last_wake(&hq).2,
-        WakeReason::ReviewRequested,
-        "the tester is woken"
-    );
-    let cited = hq.store().cited(sub.id).unwrap();
-    assert_eq!(
-        cited.iter().map(|c| c.criterion).collect::<Vec<_>>(),
-        [1, 2]
-    );
-    assert!(
-        thread(&hq, sub.id)
-            .iter()
-            .any(|p| p.contains(&format!("r{fresh} (homelab_status)"))),
     );
 }
 
@@ -839,44 +710,6 @@ fn the_same_reading_again_shows_nothing_but_the_first_reading_does() {
 }
 
 #[test]
-fn with_no_other_lead_the_testers_pass_closes_the_work_and_says_so() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq, false, true);
-    lab_routine(&hq, &t);
-    hq.pause(t.lead, true).unwrap();
-    let task = owners_task(&hq, &t, t.dev, "Look at sonarr");
-    let linus = turn(&hq, t.dev);
-    use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
-    use_tool(
-        &hq,
-        &linus,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": "done",
-                 "evidence": [format!("task {}", task.0)] }),
-    )
-    .unwrap();
-    end(&hq, &clock, &linus);
-    let grace = turn(&hq, t.tester.unwrap());
-    let mine = reading(&hq, &grace, "homelab_status", "", false);
-    use_tool(
-        &hq,
-        &grace,
-        "review",
-        &json!({ "task": task.0, "verdict": "approve", "notes": "Holds.",
-                 "evidence": [format!("r{mine}")] }),
-    )
-    .unwrap();
-    assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Done
-    );
-    assert!(thread(&hq, task).contains(
-        &"No lead but the one who did this work: the tester's pass closes it.".to_owned()
-    ));
-}
-
-#[test]
 fn a_check_back_on_a_task_blocked_on_a_wait_is_replaced_by_the_wait() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
@@ -1072,123 +905,3 @@ fn the_snapshot_scores_how_the_team_is_doing() {
 // ---- a lead narrows what done means (ADR 0133) --------------------------------------------------
 
 // ---- why work was sent back (ADR 0132) --------------------------------------------------------
-
-/// Linus's task, handed in for review.
-fn handed_in(hq: &Hq<'_>, clock: &Hands, t: &Team) -> TaskId {
-    let task = owners_task(hq, t, t.dev, "Look at sonarr");
-    let linus = turn(hq, t.dev);
-    use_tool(hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
-    use_tool(
-        hq,
-        &linus,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": "done",
-                 "evidence": [format!("task {}", task.0)] }),
-    )
-    .unwrap();
-    end(hq, clock, &linus);
-    task
-}
-
-/// What the feed says of work sent back.
-fn sent_back_events(hq: &Hq<'_>) -> Vec<Value> {
-    hq.events_after(0)
-        .unwrap()
-        .into_iter()
-        .filter(|e| e.kind == "task.sent_back")
-        .map(|e| e.data)
-        .collect()
-}
-
-/// A tester who sends work back because the team already had it says so, and the feed keeps the
-/// reason: it is how the memory builds are measured, work reinvented against work found.
-#[test]
-fn a_tester_can_send_work_back_because_it_already_exists_and_the_feed_keeps_the_reason() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq, false, true);
-    let task = handed_in(&hq, &clock, &t);
-    let grace = turn(&hq, t.tester.unwrap());
-    use_tool(
-        &hq,
-        &grace,
-        "review",
-        &json!({ "task": task.0, "verdict": "send_back", "reason": "exists_already",
-                 "notes": "The restart role is in roles/deluge already." }),
-    )
-    .unwrap();
-    let sent = sent_back_events(&hq);
-    assert_eq!(sent.len(), 1, "{sent:?}");
-    assert_eq!(sent[0]["reason"], "exists_already");
-    assert_eq!(sent[0]["task"], task.0);
-    assert_eq!(sent[0]["by"], t.tester.unwrap().0);
-    assert_eq!(sent[0]["via"], "tester");
-    assert!(
-        thread(&hq, task)
-            .iter()
-            .any(|p| p == "Sent back: The restart role is in roles/deluge already."),
-        "the thread keeps the notes as they were: {:?}",
-        thread(&hq, task)
-    );
-}
-
-/// A send-back with no reason named is still recorded, with none: the feed counts every one.
-#[test]
-fn a_send_back_with_no_reason_is_kept_with_none() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq, false, true);
-    let task = handed_in(&hq, &clock, &t);
-    let grace = turn(&hq, t.tester.unwrap());
-    use_tool(
-        &hq,
-        &grace,
-        "review",
-        &json!({ "task": task.0, "verdict": "send_back", "notes": "No reading shows it." }),
-    )
-    .unwrap();
-    let sent = sent_back_events(&hq);
-    assert_eq!(sent.len(), 1, "{sent:?}");
-    assert_eq!(sent[0]["reason"], Value::Null);
-}
-
-/// Only a reason HQ counts is taken, and a reason belongs to a send-back alone.
-#[test]
-fn a_reason_must_be_one_hq_knows_and_goes_with_a_send_back_alone() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq, false, true);
-    let task = handed_in(&hq, &clock, &t);
-    let grace = turn(&hq, t.tester.unwrap());
-    let unknown = use_tool(
-        &hq,
-        &grace,
-        "review",
-        &json!({ "task": task.0, "verdict": "send_back", "reason": "boring",
-                 "notes": "Not for me." }),
-    )
-    .unwrap_err();
-    assert!(
-        unknown.contains("`reason` must be exists_already"),
-        "{unknown}"
-    );
-    let mine = reading(&hq, &grace, "homelab_status", "", false);
-    let on_a_pass = use_tool(
-        &hq,
-        &grace,
-        "review",
-        &json!({ "task": task.0, "verdict": "approve", "reason": "exists_already",
-                 "notes": "Holds.", "evidence": [format!("r{mine}")] }),
-    )
-    .unwrap_err();
-    assert!(
-        on_a_pass.contains("only goes with send_back"),
-        "{on_a_pass}"
-    );
-    assert!(sent_back_events(&hq).is_empty(), "nothing was sent back");
-    assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::InReview,
-        "both were refused, so the work stayed where it was"
-    );
-}

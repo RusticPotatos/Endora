@@ -1477,14 +1477,11 @@ document.body.addEventListener("input", (ev) => {
 // seen (ADR 0132). Every word goes through esc: they are a member's or a guard's.
 function hqNeed(s, d) {
   const choices = hqDeskChoices(d);
-  // In the demo nothing behind a card is real: say so on the card, not only in the header.
-  const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
-    : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
   const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
   const f = d.finding;
   const seen = f ? `${f.episodes > 1 ? ` · flagged ${Number(f.episodes)} times` : ""}${f.seen_at > d.at ? ` · last seen ${hqClock(f.seen_at)}` : ""}` : "";
-  return `<div class="hq-need ${esc(d.kind)}">${hqClamp(`need${d.id}`, (s.demo ? "Demo: " : "") + shown)}
-      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${seen}${demoNote}</p>
+  return `<div class="hq-need ${esc(d.kind)}">${hqClamp(`need${d.id}`, shown)}
+      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${seen}</p>
       ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval, d.serves) : ""}
@@ -1570,7 +1567,6 @@ function viewHQ() {
   return `<div class="hq" data-tab="${esc(hqTab())}">
     <div class="hq-bar">
       <h1>Endora HQ</h1>
-      ${s.demo ? `<span class="hq-demo">Demo · scripted team</span>` : ""}
       ${s.stopped && s.stopped_by === "tripwire" ? `<span class="hq-tag" role="status">Stopped by the runaway tripwire</span>` : ""}
       <span class="hq-grow"></span>
       <div class="hq-row">
@@ -1587,7 +1583,6 @@ function viewHQ() {
           aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the CEO's office with its door open, the meeting room, the kitchen and lounge, ping-pong, a pool table, a chess table, the server closet, the board room"></canvas></div>
         <div class="hq-stats">${stats}</div>
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
-        ${s.demo ? `<p class="hq-note">Demo: nothing is spent; turns reserve as real ones will.</p>` : ""}
       </div>
       ${hqPanel("now", `
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>

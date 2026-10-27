@@ -14,13 +14,13 @@ use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Cited, Clock, NewTask, Run, TeamStore, WorkerAdapter};
 use crate::domain::chain;
 use crate::domain::evidence::{
-    self, AfterNothing, CallReceipt, Checkers, Criterion, Found, Judged, Label, Ref, TurnFacts,
+    self, AfterNothing, CallReceipt, Criterion, Found, Judged, Label, Ref, TurnFacts,
 };
 use crate::domain::history::InputOrigin;
 use crate::domain::record;
 use crate::domain::review::SendBackReason;
 use crate::domain::{
-    EventKind, Member, MemberId, Millis, Refusal, Role, RunId, RunStatus, Task, TaskId, TaskStatus,
+    EventKind, Member, MemberId, Millis, Refusal, RunId, RunStatus, Task, TaskId, TaskStatus,
     WakeReason,
 };
 
@@ -342,121 +342,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- who checks ---------------------------------------------------------------------------
 
-    /// Whether `member` is above `holder` in the chain of command: whom the holder reports to,
-    /// and so on up, and the CEO above everyone (ADR 0114: the manager chain may act on a
-    /// subordinate's task).
-    pub(super) fn above_in_chain(&self, member: MemberId, holder: Option<MemberId>) -> Done<bool> {
-        let Some(holder) = holder.filter(|h| *h != member) else {
-            return Ok(false);
-        };
-        let members = self.store.members()?;
-        if members
-            .iter()
-            .any(|m| m.id == member && m.role == Role::Ceo)
-        {
-            return Ok(true);
-        }
-        let mut seen = vec![holder];
-        let mut at = members.iter().find(|m| m.id == holder);
-        while let Some(m) = at {
-            let Some(up) = chain::manager(m, &members) else {
-                return Ok(false);
-            };
-            if up == member {
-                return Ok(true);
-            }
-            if seen.contains(&up) {
-                return Ok(false);
-            }
-            seen.push(up);
-            at = members.iter().find(|x| x.id == up);
-        }
-        Ok(false)
-    }
-
-    /// Who accepts `task`'s work: the first at work of its project's lead, the worker's
-    /// manager when that one leads, the earliest lead, and the CEO; never the worker itself.
-    pub(super) fn lead_for(&self, task: &Task) -> Done<Option<Member>> {
-        let members = self.store.members()?;
-        let worker = task.owner.or(task.assignee);
-        let at_work = |id: Option<MemberId>| {
-            id.and_then(|id| members.iter().find(|m| m.id == id))
-                .filter(|m| m.at_work() && m.role.leads() && Some(m.id) != worker)
-                .cloned()
-        };
-        let first = |role: Role| {
-            members
-                .iter()
-                .filter(|m| m.role == role && m.at_work() && Some(m.id) != worker)
-                .min_by_key(|m| m.id)
-                .cloned()
-        };
-        let project_lead = match task.project {
-            Some(project) => Some(self.project(project)?.lead),
-            None => None,
-        };
-        let manager = worker
-            .and_then(|w| members.iter().find(|m| m.id == w))
-            .and_then(|m| chain::manager(m, &members));
-        Ok(at_work(project_lead)
-            .or_else(|| at_work(manager))
-            .or_else(|| first(Role::Lead))
-            .or_else(|| first(Role::Ceo)))
-    }
-
-    /// Who checks `task`'s work now.
-    pub(super) fn checkers_of(&self, task: &Task) -> Done<Checkers<MemberId>> {
-        let worker = task.owner.or(task.assignee);
-        let tester = self.reviewer()?.filter(|r| r.at_work()).map(|r| r.id);
-        let lead = self.lead_for(task)?.map(|l| l.id);
-        Ok(evidence::checkers(worker, tester, lead))
-    }
-
-    /// Work sent back three times: its next submission is the owner's, with why each time, and
-    /// only the owner advances it (ADR 0114). Once a submission.
-    pub(super) fn rounds_to_the_owner(&self, task: &Task) -> Done<()> {
-        let waiting = self
-            .store
-            .desk()?
-            .iter()
-            .any(|d| d.kind == "rounds" && d.status == "waiting" && d.task == Some(task.id));
-        if waiting {
-            return Ok(());
-        }
-        let members = self.store.members()?;
-        let why: Vec<String> = self
-            .store
-            .thread(task.id)?
-            .iter()
-            .filter(|p| p.text.starts_with(SENT_BACK) && members.iter().any(|m| m.name == p.author))
-            .map(|p| {
-                format!(
-                    "- {}: {}",
-                    p.author,
-                    record::clean(p.text.trim_start_matches(SENT_BACK))
-                )
-            })
-            .collect();
-        let desk = self.store.add_desk(
-            "rounds",
-            Some(task.id),
-            None,
-            None,
-            &format!(
-                "Sent back {} times: {}. Its next round is yours: accept it as done, or send it \
-                 back to its member.\n{}",
-                why.len(),
-                task.title,
-                why.join("\n")
-            ),
-            self.clock.now(),
-        )?;
-        self.emit(
-            EventKind::DeskAdded,
-            json!({ "item": desk.0, "kind": "rounds", "task": task.id.0 }),
-        )
-    }
-
     // ---- what a turn does with evidence -----------------------------------------------------
 
     /// A turn moves its task on (see [`Engine::set_status_in`]), with evidence: submitting work
@@ -479,8 +364,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let current = self.task(task)?;
         let check = to == TaskStatus::Done && self.is_a_check(task)?;
         let judged = to == TaskStatus::InReview || (check && !current.criteria.is_empty());
-        let holds = current.owner == Some(turn.member)
-            || self.above_in_chain(turn.member, current.owner.or(current.assignee))?;
+        let holds = current.owner == Some(turn.member);
         if judged && holds {
             self.judge_work(
                 &current,
@@ -614,7 +498,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let one_rank_up = self
             .loop_reviewer_of(&current)?
             .is_some_and(|r| r.id == tester.id);
-        if tester.role != Role::Reviewer && !one_rank_up {
+        if !one_rank_up {
             return Err(EngineError::Refused(Refusal::NotYours));
         }
         if current.status != TaskStatus::InReview {
@@ -653,19 +537,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &[],
         )?;
         self.mark_progress(tester.id, task)?;
-        if one_rank_up {
-            return self.close_checked(&current, tester.id);
-        }
-        let lead = self.lead_for(&current)?.filter(|l| l.id != tester.id);
-        if let Some(lead) = lead {
-            self.wake_held_lock(lead.id, Some(task), WakeReason::AcceptanceAsked)?;
-            return Ok(());
-        }
-        self.post_held_lock(
-            Author::Endora,
-            task,
-            "No lead but the one who did this work: the tester's pass closes it.",
-        )?;
         self.close_checked(&current, tester.id)
     }
 

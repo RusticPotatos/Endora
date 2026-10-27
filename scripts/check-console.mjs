@@ -524,7 +524,7 @@ if (failures.length) {
     // (hostile on purpose), one the owner did.
     HQ.notebooks = { 2: [{ id: 4, text: "<img src=n onerror=alert(9)> keep the VPN up", evidence: ["task 7", "r12"], from_owner: false, stale: true },
                          { id: 5, text: "Never at night.", evidence: [], from_owner: true, stale: false }], 8: [] };
-    HQ.snap = { demo: true, stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
+    HQ.snap = { stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
@@ -823,7 +823,6 @@ if (failures.length) {
     if (!spent.includes("pool $2.33<")) fail("hq: a day with no top-up says it has one");
   }
   if (office.includes("the record for the 7 days starts")) fail("hq: a week the record covers is said to start late");
-  if (!office.includes("Demo · scripted team")) fail("hq: demo mode is not labelled");
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
   // A live update redraws the screen; the activity log keeps its scroll through it.
   if (!office.includes('class="hq-log" data-keep-scroll="hq-log"')) fail("hq: the activity log loses its place on every update");
@@ -1144,10 +1143,6 @@ if (failures.length) {
   // A member's question can be answered on its card: the answer goes in the task's thread.
   if (!office.includes('id="hq-answer-15"')) fail("hq: a question cannot be answered from its card");
   if (office.includes('id="hq-answer-12"')) fail("hq: stuck work was offered an answer box");
-  if (!office.includes("Demo: Ready to merge: y") || !office.includes("no pull request behind this")) {
-    fail("hq: a demo card does not say it is a demo");
-  }
-  if (!office.includes("nothing is spent")) fail("hq: the demo's spend line reads as real money");
   if (office.includes("<img src=x") || office.includes("<b>Fix</b>")) fail("hq: a task's text became markup");
   // A wing task looked at: its branch with its check, and its documents, as text.
   const wingTask = runInContext('HQ.selected = { type: "task", id: 9 }; viewHQ()', context);
@@ -1976,7 +1971,7 @@ if (failures.length) {
 {
   const fail = (what) => { console.error(what); process.exit(1); };
   runInContext(`HQ.error = ""; HQ.selected = { type: "task", id: 7 };
-    HQ.snap = { demo: false, stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
+    HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
       members: [{ id: 2, name: "Bo", role: "developer", look: 4, running: [], brains: [] }],
       tasks: [{ id: 7, goal: 1, title: "Look at <b>sonarr</b>", status: "doing", owner: 2, why: [], thread: [] }],
       runs: [], recent_runs: [{ id: 2, member: 2, task: 7, status: "succeeded", label: "advanced" }] };`, context);

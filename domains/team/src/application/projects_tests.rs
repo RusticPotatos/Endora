@@ -402,48 +402,6 @@ fn a_pause_the_owner_made_holds_every_turn_and_never_lifts_itself() {
     );
 }
 
-#[test]
-fn a_task_handed_back_wakes_its_projects_lead_only() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let second = hq.hire("Grace", Role::Lead, 25, 2, 0).unwrap();
-    let p = hq.add_project(t.goal, "Media", "", second, None).unwrap();
-    let back = |project: Option<ProjectId>, title: &str| {
-        let task = task_in(&hq, t.goal, project, t.dev, title).unwrap();
-        let context = turn(&hq, t.dev);
-        use_tool(&hq, &context, "claim", &json!({ "task": task.0 })).unwrap();
-        use_tool(
-            &hq,
-            &context,
-            "set_status",
-            &json!({ "task": task.0, "status": "todo", "reason": "not mine" }),
-        )
-        .unwrap();
-        hq.runner().finish(context.run, true);
-        let woken: Vec<MemberId> = hq
-            .store()
-            .wakes()
-            .unwrap()
-            .into_iter()
-            .filter(|w| w.task == Some(task) && w.reason == WakeReason::Assigned)
-            .filter(|w| !matches!(w.receipt, Receipt::Refused(_)))
-            .map(|w| w.member)
-            .filter(|m| *m != t.dev)
-            .collect();
-        hq.tick().unwrap();
-        woken
-    };
-    assert_eq!(back(Some(p), "Fix the player"), [second]);
-    assert_eq!(back(None, "Fix the mail"), [t.lead, second], "every lead");
-    hq.pause(second, true).unwrap();
-    assert_eq!(
-        back(Some(p), "Fix the tuner"),
-        [t.lead],
-        "its lead is paused"
-    );
-}
-
 /// The names of the tools a turn is offered by HQ.
 fn offered_by_hq(hq: &Hq<'_>, context: &RunContext) -> Vec<String> {
     let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");

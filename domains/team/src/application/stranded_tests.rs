@@ -128,47 +128,6 @@ fn a_paused_member_is_not_woken_and_its_work_is_not_called_stuck() {
     assert_eq!(stuck(&hq, task), 0);
 }
 
-/// Work moved to review before the reviewer was woken for it (as task 661 was, live, before the
-/// reviewer path existed): in review, nothing queued for it, and nobody coming. Ten minutes
-/// on, the reviewer is woken to look at it, once; the task's owner is not.
-#[test]
-fn work_left_in_review_with_no_review_coming_wakes_the_reviewer() {
-    let clock = Hands(AtomicI64::new(NOON));
-    let (hq, dev, task) = stranded(&clock);
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
-    hq.store().claim(task, dev).unwrap();
-    hq.store()
-        .set_task_status(task, TaskStatus::InReview)
-        .unwrap();
-    later(&clock, STRANDED_AFTER_MS + 1_000);
-    hq.tick().unwrap();
-    let asked: Vec<_> = hq
-        .store()
-        .wakes()
-        .unwrap()
-        .into_iter()
-        .filter(|w| w.task == Some(task) && w.reason == WakeReason::ReviewRequested)
-        .collect();
-    assert_eq!(asked.len(), 1, "the reviewer is woken once");
-    assert_eq!(asked[0].member, dee);
-    assert!(
-        recoveries(&hq, task).is_empty(),
-        "the owner is not woken for work under review"
-    );
-    later(&clock, 1_000);
-    hq.tick().unwrap();
-    assert_eq!(
-        hq.store()
-            .wakes()
-            .unwrap()
-            .iter()
-            .filter(|w| w.task == Some(task) && w.reason == WakeReason::ReviewRequested)
-            .count(),
-        1,
-        "and only once"
-    );
-}
-
 /// Found by checking HQ against the design it borrows (2026-10-17): a task waiting on one
 /// that was dropped was released as if the wait were done, though the work it waited for
 /// never happened. A dropped wait releases nothing; the waiting task's member is told why in
