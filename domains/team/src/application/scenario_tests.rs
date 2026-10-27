@@ -789,10 +789,12 @@ fn a_chess_match_is_played_a_move_a_turn_with_its_illegal_moves_kept() {
         waiting.contains("not your move: this turn has ended"),
         "{waiting}"
     );
+    let illegal = play(&hq, &w, "e5").unwrap_err();
     assert!(
-        play(&hq, &w, "e5").unwrap_err().contains("e4"),
-        "illegal, with the legal moves"
+        illegal.contains("`e5` is not legal here") && !illegal.contains("e4"),
+        "illegal, and nothing about which moves are: {illegal}"
     );
+    assert!(!tool.to_string().contains("legal moves"), "{tool}");
     let woken_before = hq.store().wakes().unwrap().len();
     let moved = play(&hq, &w, "f3").unwrap();
     assert!(
@@ -1489,4 +1491,29 @@ fn a_league_side_is_played_only_by_a_member_who_may_think_with_its_brain() {
         let white = hq.store().task(game).unwrap().unwrap().assignee;
         assert_ne!(white, Some(researcher), "Sonnet is never a researcher's");
     }
+}
+
+// Live, a player in the league was briefed with "what this loop did lately": its opponent's own
+// words from its turns, legal moves and reasoning among them. A player in a match is told the
+// game and nothing any other turn in the league said.
+#[test]
+fn a_player_is_never_told_what_other_turns_in_its_league_said() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([_, white, black], project) = crew(&hq);
+    hq.set_model(white, "mac").unwrap();
+    hq.set_model(black, "local").unwrap();
+    let game = hq.start_chess(project, [white, black], 1).unwrap();
+    // White's words in its own task's thread, where black's briefing used to find them.
+    hq.post_as(
+        white,
+        game,
+        "My plan: answer every c5 with Nf3 and castle short",
+    )
+    .unwrap();
+    let [b] = <[RunContext; 1]>::try_from(turns(&hq, &[black]))
+        .ok()
+        .unwrap();
+    assert!(!b.told.contains("My plan"), "{}", b.told);
+    assert!(!b.told.contains("What this loop did lately"), "{}", b.told);
 }

@@ -168,7 +168,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The board for one of the players: who plays, whose move it is, the position drawn, its
-    /// notation, the last moves and, when it is their move, what they may play.
+    /// notation and the last moves.
     fn board_said(&self, game: &Game, me: MemberId) -> Done<String> {
         let names = self.names()?;
         let name = |id: MemberId| names.get(&id).cloned().unwrap_or_default();
@@ -177,7 +177,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let mine = game.to_move() == me;
         let opponent = game.opponent(me).map(name).unwrap_or_default();
-        let mut told = format!(
+        let told = format!(
             "Chess, game {}: {} (white) against {} (black). {}{}\n{}\nFEN: {}\nMoves: {}\n",
             game.id,
             name(game.white),
@@ -200,9 +200,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 game.move_text(Some(chess::LAST_MOVES))
             },
         );
-        if mine {
-            told.push_str(&format!("Legal moves: {}\n", view.legal.join(", ")));
-        }
         Ok(told)
     }
 

@@ -1,8 +1,8 @@
 //! A chess match as a scenario (the Holodeck plan, after phase 7): two members, white and
 //! black, play by the rules of [`super::chess`], a move a turn, and the world keeps every move
 //! tried, the illegal ones too. Nothing is stored but the moves: the board is the moves
-//! replayed. A match ends by the rules (mate, stalemate, repetition, too little material) or
-//! at the move limit, as a draw, so a match between two models always ends.
+//! replayed. A match ends by the standard rules alone: mate, stalemate, the same position a
+//! third time, fifty moves without a capture or a pawn move, or too little material to mate.
 
 use super::chess::{Game, Refused, Status};
 use super::work::MemberId;
@@ -12,9 +12,6 @@ pub const CHESS: &str = "chess";
 
 /// The rules' version: a trial compares matches of one version alone.
 pub const VERSION: u32 = 1;
-
-/// The most half-moves a match is played to: then it is drawn.
-pub const MOVE_LIMIT: usize = 60;
 
 /// Who stands for white and for black in the world's own game: the members are kept outside it.
 const WHITE: MemberId = MemberId(1);
@@ -132,10 +129,6 @@ impl Match {
                 ),
                 other => other.to_string(),
             })?;
-        if next.game.live() && next.game.moves.len() >= MOVE_LIMIT {
-            next.game.status = Status::Draw;
-            next.game.reason = format!("drawn at the move limit, {MOVE_LIMIT} half-moves");
-        }
         let said = match next.outcome() {
             Some((result, why)) => format!(
                 "{} played {}. The match is over: {result}, {why}.",
@@ -163,10 +156,9 @@ impl Match {
         })
     }
 
-    /// The board as a side sees it: the position, drawn, the last moves, whose move, and, for
-    /// the side to move, the legal moves.
+    /// The board as a side sees it: the position, drawn, the last moves and whose move.
     #[must_use]
-    pub fn look(&self, side: Option<Side>) -> String {
+    pub fn look(&self) -> String {
         let Some(view) = self.game.view() else {
             return "The board cannot be read.".to_owned();
         };
@@ -186,14 +178,10 @@ impl Match {
         }
         let to_move = self.to_move();
         said.push_str(&format!(
-            "{} to move{}; {} of {MOVE_LIMIT} half-moves played.",
+            "{} to move{}.",
             to_move.name(),
-            if view.check { ", in check" } else { "" },
-            self.game.moves.len()
+            if view.check { ", in check" } else { "" }
         ));
-        if side == Some(to_move) {
-            said.push_str(&format!(" Your legal moves: {}.", view.legal.join(", ")));
-        }
         said
     }
 
@@ -214,12 +202,11 @@ impl Match {
 #[must_use]
 pub fn brief(side: Side) -> String {
     format!(
-        "A chess match. You play {} against a teammate, by the rules, a move a turn, with the \
-         scenario tool: look shows the board, whose move it is and, on your move, your legal \
-         moves; move plays one in standard notation (san, such as e4, Nf3, exd5, O-O). An \
-         illegal move is refused and costs nothing, and is kept. After your move your turn \
-         ends, and you are woken when it is your move again. The match ends by the rules or at \
-         {MOVE_LIMIT} half-moves, as a draw; the world closes it.",
+        "A chess match. You play {} against a teammate, by the standard rules, a move a turn, \
+         with the scenario tool: look shows the board and whose move it is; move plays one in \
+         standard notation (san). An illegal move is refused, and is kept. After your move \
+         your turn ends, and you are woken when it is your move again. The match ends by the \
+         rules; the world closes it.",
         side.name()
     )
 }
@@ -239,16 +226,20 @@ mod tests {
             start.step(Side::Black, "e5").unwrap_err(),
             "it is white's move, not black's"
         );
-        let refused = start.step(Side::White, "e5").unwrap_err();
-        assert!(
-            refused.contains("e4"),
-            "the legal moves come with it: {refused}"
+        // Standard play: an illegal move is refused, and the legal moves are never told.
+        assert_eq!(
+            start.step(Side::White, "e5").unwrap_err(),
+            "`e5` is not legal here"
         );
         let (after, said) = start.step(Side::White, "e4").unwrap();
         assert_eq!(said, "white played e4. It is black's move.");
         assert_eq!((after.to_move(), start.moves().len()), (Side::Black, 0));
-        assert!(after.look(Some(Side::Black)).contains("Your legal moves:"));
-        assert!(!after.look(Some(Side::White)).contains("Your legal moves:"));
+        let seen = after.look();
+        assert!(seen.contains("black to move"), "{seen}");
+        assert!(!seen.contains("legal"), "{seen}");
+        for side in [Side::White, Side::Black] {
+            assert!(!brief(side).contains("legal moves"), "{}", brief(side));
+        }
     }
 
     #[test]
@@ -262,9 +253,20 @@ mod tests {
     }
 
     #[test]
-    fn a_match_that_runs_to_the_move_limit_is_drawn() {
-        // Knights out and back for ever: the rules draw it by repetition, or the limit does;
-        // either way it ends, drawn.
+    fn a_long_match_goes_on_and_only_the_rules_draw_it() {
+        // Sixty half-moves, as game 830 was played: no count ends it.
+        let long = played(&[
+            "e4", "e5", "Bc4", "Nf6", "Bxf7+", "Kxf7", "Qh5+", "Nxh5", "Nf3", "Qe7", "O-O", "Nf6",
+            "Nxe5+", "Qxe5", "Nc3", "Kg8", "Nb5", "Qxb5", "e5", "Qxe5", "d3", "Qxb2", "Bf4",
+            "Qxc2", "Bxc7", "Qxc7", "Rad1", "Qxh2+", "Kxh2", "Ng4+", "Kh3", "Nxf2+", "Kh2", "Nxd1",
+            "Rxf8+", "Kxf8", "g4", "Nf2", "g5", "Nxd3", "g6", "hxg6+", "Kg1", "Rh1+", "Kg2",
+            "Nf4+", "Kf2", "Nd3+", "Kg2", "Nf4+", "Kxh1", "Kg8", "a3", "Kh7", "Kh2", "Kg8", "a4",
+            "a5", "Kg1", "Kf7",
+        ]);
+        assert_eq!(long.moves().len(), 60);
+        assert_eq!(long.outcome(), None, "the game goes on");
+        assert!(!brief(Side::White).contains("half-moves"));
+        // Knights out and back for ever: the rules draw it, by repetition.
         let mut at = Match::new();
         let shuffle = ["Nf3", "Nf6", "Ng1", "Ng8", "Nc3", "Nc6", "Nb1", "Nb8"];
         let mut i = 0;
@@ -273,8 +275,10 @@ mod tests {
             at = at.step(side, shuffle[i % shuffle.len()]).unwrap().0;
             i += 1;
         }
-        assert_eq!(at.outcome().map(|(r, _)| r), Some("draw"));
-        assert!(at.moves().len() <= MOVE_LIMIT);
+        assert_eq!(
+            at.outcome(),
+            Some(("draw", "the same position a third time"))
+        );
         assert_eq!(at.score(), 50);
     }
 

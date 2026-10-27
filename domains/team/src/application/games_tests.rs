@@ -256,7 +256,7 @@ fn one_game_each_and_only_a_member_at_hand_can_be_challenged() {
 }
 
 #[test]
-fn the_board_shows_the_position_whose_turn_it_is_the_legal_moves_and_the_last_moves() {
+fn the_board_shows_the_position_whose_turn_it_is_and_the_last_moves_but_never_the_legal_moves() {
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock, true, false);
     let t = team(&hq);
@@ -277,12 +277,10 @@ fn the_board_shows_the_position_whose_turn_it_is_the_legal_moves_and_the_last_mo
         "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
         "8 r n b q k b n r 8",
         "1. e4 e5 2. Nf3",
-        "Legal moves:",
-        "Nc6",
-        "Nf6",
     ] {
         assert!(board.contains(said), "{said}\n---\n{board}");
     }
+    assert!(!board.contains("egal"), "{board}");
     // The opponent sees it is not their move, and is not shown legal moves to play.
     let ada = downtime_for(&hq, &clock, t.ada);
     let theirs = chess_tool(&hq, &ada, &json!({ "action": "board" })).unwrap();
@@ -303,10 +301,10 @@ fn a_move_is_played_only_on_your_turn_and_only_if_legal() {
     assert!(refused.contains("not your move"), "{refused}");
     hq.runner().finish(bo.run, true);
     let ada = downtime_for(&hq, &clock, t.ada);
-    // Not legal: refused, with the legal moves.
+    // Not legal: refused, saying only that.
     let illegal = chess_tool(&hq, &ada, &json!({ "action": "move", "san": "e5" })).unwrap_err();
     assert!(
-        illegal.contains("legal moves are") && illegal.contains("e4"),
+        illegal.contains("`e5` is not legal here") && !illegal.contains("e4"),
         "{illegal}"
     );
     let nonsense =

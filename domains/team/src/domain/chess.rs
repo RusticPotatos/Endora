@@ -62,12 +62,11 @@ pub enum Refused {
     NotYourTurn,
     /// What was written is not a move in standard notation.
     NotAMove(String),
-    /// A move in notation, but not legal here; the legal moves follow.
+    /// A move in notation, but not legal here. As in standard play, the player is not told
+    /// which moves are.
     Illegal {
         /// What was written.
         said: String,
-        /// The legal moves.
-        legal: Vec<String>,
     },
     /// The member is not in a game.
     NoGame,
@@ -92,11 +91,7 @@ impl fmt::Display for Refused {
                 f,
                 "`{said}` is not a move: write it in standard notation, such as e4, Nf3, O-O or exd5"
             ),
-            Self::Illegal { said, legal } => write!(
-                f,
-                "`{said}` is not legal here; the legal moves are: {}",
-                legal.join(", ")
-            ),
+            Self::Illegal { said } => write!(f, "`{said}` is not legal here"),
             Self::NoGame => f.write_str(
                 "you have no game of chess: challenge a member with `challenge` to start one",
             ),
@@ -147,8 +142,6 @@ pub struct View {
     /// Eight rows of eight letters from the eighth rank down (capitals white, a dot for an
     /// empty square), for the screen to draw.
     pub rows: Vec<String>,
-    /// The legal moves, in notation.
-    pub legal: Vec<String>,
     /// Whether it is white to move.
     pub white_to_move: bool,
     /// Whether the player to move is in check.
@@ -232,7 +225,8 @@ fn ending(board: &Board, seen: &[Board]) -> Option<(Status, String)> {
     None
 }
 
-/// The legal moves in notation, in order.
+/// The legal moves in notation, in order: for the tests, since no player is told them.
+#[cfg(test)]
 fn legal_moves(board: &Board) -> Vec<String> {
     let mut moves = Vec::new();
     board.generate_moves(|piece_moves| {
@@ -339,7 +333,7 @@ impl Game {
         }
     }
 
-    /// The board now: the position, drawn, and the legal moves. `None` only if the kept moves
+    /// The board now: the position, drawn. `None` only if the kept moves
     /// do not replay, which a game built here never does.
     #[must_use]
     pub fn view(&self) -> Option<View> {
@@ -361,11 +355,6 @@ impl Game {
             fen: board.to_string(),
             ascii,
             rows,
-            legal: if self.live() {
-                legal_moves(&board)
-            } else {
-                Vec::new()
-            },
             white_to_move: board.side_to_move() == Color::White,
             check: !board.checkers().is_empty(),
         })
@@ -397,7 +386,7 @@ impl Game {
     ///
     /// # Errors
     /// What is wrong with the move: [`Refused::Over`], [`Refused::NotYourTurn`],
-    /// [`Refused::NotAMove`] or [`Refused::Illegal`] with the legal moves.
+    /// [`Refused::NotAMove`] or [`Refused::Illegal`].
     pub fn play(&mut self, mover: MemberId, said: &str, now: Millis) -> Result<Moved, Refused> {
         if !self.live() {
             return Err(Refused::Over);
@@ -419,7 +408,6 @@ impl Game {
         let Ok(m) = parse_san_move(&played.board, &notation) else {
             return Err(Refused::Illegal {
                 said: said.to_owned(),
-                legal: legal_moves(&played.board),
             });
         };
         let written = display_san_move(&played.board, m).to_string();
@@ -553,16 +541,16 @@ mod tests {
                 "{said}: {board}"
             );
         }
-        // A pawn move to the last rank with no piece named is a legal promotion's shape, but
-        // the rules need the piece: it is refused, with the promotions among the legal moves.
+        // A pawn move to the last rank with no piece named is a promotion's shape, but the
+        // rules need the piece: it is refused, and nothing else is said.
         let mut g = game();
         play_all(&mut g, &to_the_edge);
-        match g.play(WHITE, "bxa8", 300) {
-            Err(Refused::Illegal { legal, .. }) => {
-                assert!(legal.iter().any(|m| m == "bxa8=Q"), "{legal:?}");
-            }
-            other => panic!("bxa8 with no piece: {other:?}"),
-        }
+        assert_eq!(
+            g.play(WHITE, "bxa8", 300),
+            Err(Refused::Illegal {
+                said: "bxa8".to_owned()
+            })
+        );
     }
 
     #[test]
@@ -572,8 +560,9 @@ mod tests {
             view.fen,
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
         );
-        assert_eq!(view.legal.len(), 20);
-        assert!(view.legal.contains(&"e4".to_owned()) && view.legal.contains(&"Nf3".to_owned()));
+        let legal = legal_moves(&position(&view.fen));
+        assert_eq!(legal.len(), 20);
+        assert!(legal.contains(&"e4".to_owned()) && legal.contains(&"Nf3".to_owned()));
         assert!(view.white_to_move && !view.check);
         assert_eq!(view.rows[0], "rnbqkbnr");
         assert_eq!(view.rows[7], "RNBQKBNR");
@@ -598,13 +587,17 @@ mod tests {
     }
 
     #[test]
-    fn an_illegal_move_is_refused_with_the_legal_ones_and_changes_nothing() {
+    fn an_illegal_move_is_refused_saying_only_that_and_changes_nothing() {
         let mut g = game();
-        let Err(Refused::Illegal { said, legal }) = g.play(WHITE, "e5", 1) else {
-            panic!("e5 is not a first move for white");
-        };
-        assert_eq!(said, "e5");
-        assert_eq!(legal.len(), 20);
+        let refused = g.play(WHITE, "e5", 1);
+        assert_eq!(
+            refused,
+            Err(Refused::Illegal {
+                said: "e5".to_owned()
+            })
+        );
+        // Standard play: the player is told the move is not legal, never which moves are.
+        assert_eq!(refused.unwrap_err().to_string(), "`e5` is not legal here");
         assert!(g.moves.is_empty());
         assert_eq!(g.last_move_at, 100);
         assert!(matches!(
@@ -670,7 +663,6 @@ mod tests {
         assert_eq!(g.reason, "checkmate");
         assert!(!g.live());
         assert_eq!(g.play(BLACK, "Ke7", 10), Err(Refused::Over));
-        assert!(g.view().unwrap().legal.is_empty());
         assert_eq!(
             result_said(&g, "Bo", "Dee"),
             "Bo beat Dee at chess by checkmate"

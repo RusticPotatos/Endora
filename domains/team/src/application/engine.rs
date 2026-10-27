@@ -2380,8 +2380,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let (_, memory) = self.memory(member, run)?;
         let mut told = self.briefing_body(member, run, &memory.text)?;
         told.push_str(&memory.omitted);
-        // In the loops: the map and what the loop did lately (ADR 0142).
-        if self.in_the_loops(member.id)? {
+        // In the loops: the map and what the loop did lately (ADR 0142). Never in a game: what
+        // other turns in a league said is the other side's thinking.
+        let in_a_game = match run.task {
+            Some(task) => self.in_a_scenario(task)?,
+            None => false,
+        };
+        if self.in_the_loops(member.id)? && !in_a_game {
             told.push_str(&self.loops_said(run)?);
         }
         // Decided last, once the briefing has recorded what it showed the turn: a turn is told

@@ -33,7 +33,7 @@ Feature: The open office
     And Ada challenges Bo to chess
     Then the activity feed says "Ada challenges Bo to chess"
     When Ada plays "e5" at chess
-    Then it is refused for "legal moves are"
+    Then it is refused for "is not legal here"
     When Ada plays "e4" at chess
     Then the chess moves are "e4"
     When Ada plays "d4" at chess

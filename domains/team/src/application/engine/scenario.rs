@@ -227,12 +227,12 @@ impl World {
         }
     }
 
-    /// Where things stand, as a member in `role` sees it.
-    fn look(&self, role: Option<&str>) -> String {
+    /// Where things stand: every side sees the same.
+    fn look(&self) -> String {
         match self {
             Self::Lighthouse(now) => now.look(),
             Self::Station(now) => now.look(),
-            Self::Chess(now) => now.look(role.and_then(Side::from_name)),
+            Self::Chess(now) => now.look(),
         }
     }
 
@@ -779,7 +779,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             };
             let now = self.world_at(&place)?;
             if let Some((name, done)) = now.end() {
-                self.scenario_ended(&place, name, done, &now.look(None))?;
+                self.scenario_ended(&place, name, done, &now.look())?;
                 continue;
             }
             self.wake_the_idle(&place, &now, &runs)?;
@@ -999,7 +999,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect();
         let mut shown = json!({ "task": place.world.0, "kind": place.kind.name(),
                                 "seed": place.seed, "end": now.end().map(|(name, _)| name),
-                                "elapsed": now.elapsed(), "said": now.look(None),
+                                "elapsed": now.elapsed(), "said": now.look(),
                                 "status": self.task(place.world)?.status.name(),
                                 "log": log });
         let over = now.end().is_some();
@@ -1195,7 +1195,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let now = self.world_at(&place)?;
         if action.trim() == "look" {
-            let seen = now.look(place.role);
+            let seen = now.look();
             // A side that looks on the other's move has nothing to do until it is woken.
             if now.to_move().is_some_and(|side| Some(side) != place.role) {
                 return Ok(format!(
