@@ -244,3 +244,18 @@ it). Nothing else in the plan waits on the owner.
   - Left for days 2–3: section stages and canon, stories and lessons, the world migration, and
     the dead Refusal variants and domain types.
 - **The team context is about 71,100 lines** (from about 96,300 before step 8).
+- **Found and fixed (4b869e9b):** work with no branch waited for a gate that never came, so
+  #855 could not pass. Now only work with a branch needs the gate.
+- **Step 8, part F, second cut, and the rest of the table (released 1429b0a5, no turn cut):**
+  - Gone: stories, lessons and the world's move-in; ping-pong's and pool's scores (the
+    animation stays); staffing offers, `request_staff` and `reports_to`; the guards' findings,
+    verdicts and precision; goal strategies and area reports; sub-task limits, "serves" on a
+    split and the "evidence already enough" nudge; the owner's furlough and recall (a retired
+    member keeps its column); hire requests, review rounds and canon cards on the desk; the
+    wing's seats; and the refusals nothing raises any more.
+  - In the loops, three turns that show nothing count as one of the item's failures.
+  - The wing's note (seeded, and the live goal's note) no longer names a tester and a lead:
+    the member one rank up reads the work.
+  - Kept: an approval still says which of its task's criteria it serves.
+  - The gate passed each commit; the last ran 3,125 tests.
+- **The team context is about 62,800 lines.**
