@@ -519,6 +519,17 @@ fn task_with(row: &rusqlite::Row<'_>, waits_on: Vec<TaskId>) -> rusqlite::Result
     })
 }
 
+/// An event from its row: id, time, kind and data (`null` when the data does not read).
+fn event_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
+    let data: String = r.get(3)?;
+    Ok(Event {
+        id: r.get(0)?,
+        at: r.get(1)?,
+        kind: r.get(2)?,
+        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+    })
+}
+
 const TASK_COLUMNS: &str = "id, goal, parent, title, description, owner, assignee, status, \
     priority, depth, nudged, project, criteria";
 
@@ -1875,15 +1886,7 @@ impl TeamStore for SqliteTeamStore {
             .query_row(
                 "SELECT id, at_ms, kind, data FROM events WHERE id = ?1",
                 [id],
-                |r| {
-                    let data: String = r.get(3)?;
-                    Ok(Event {
-                        id: r.get(0)?,
-                        at: r.get(1)?,
-                        kind: r.get(2)?,
-                        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-                    })
-                },
+                event_from,
             )
             .optional()
             .map_err(backend)
@@ -1894,17 +1897,7 @@ impl TeamStore for SqliteTeamStore {
         let mut stmt = conn
             .prepare("SELECT id, at_ms, kind, data FROM events WHERE id > ?1 ORDER BY id")
             .map_err(backend)?;
-        let rows = stmt
-            .query_map([id], |r| {
-                let data: String = r.get(3)?;
-                Ok(Event {
-                    id: r.get(0)?,
-                    at: r.get(1)?,
-                    kind: r.get(2)?,
-                    data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-                })
-            })
-            .map_err(backend)?;
+        let rows = stmt.query_map([id], event_from).map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
 
@@ -1916,15 +1909,10 @@ impl TeamStore for SqliteTeamStore {
             )
             .map_err(backend)?;
         let rows = stmt
-            .query_map(params![id, i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
-                let data: String = r.get(3)?;
-                Ok(Event {
-                    id: r.get(0)?,
-                    at: r.get(1)?,
-                    kind: r.get(2)?,
-                    data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-                })
-            })
+            .query_map(
+                params![id, i64::try_from(limit).unwrap_or(i64::MAX)],
+                event_from,
+            )
             .map_err(backend)?;
         let mut events: Vec<Event> = rows.collect::<rusqlite::Result<_>>().map_err(backend)?;
         events.reverse();
