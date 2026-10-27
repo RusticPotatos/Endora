@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, TeamStore};
 use crate::domain::money::DOLLAR;
-use crate::domain::{Brain, GoalId, MemberId, Priority, Role, TaskId, WakeReason};
+use crate::domain::{Brain, GoalId, MemberId, Priority, Role, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -386,6 +386,60 @@ fn work_in_review_goes_to_the_member_one_rank_up() {
     .unwrap();
     assert!(woken(&hq, f.bo, fix, WakeReason::SentBack));
     assert_eq!(hq.loop_failures(fix).unwrap(), 1);
+}
+
+/// The member one rank up passes work as it sends it back: with the review tool, on a reading
+/// of its own. Live, the tool asked for a tester's role, which no member has in the loops, so a
+/// reviewer could only send work back.
+///
+/// Given Bo's item in review, its gate passed,
+/// when Rae (one rank up) approves it on a reading of her own,
+/// then the item is done.
+#[test]
+fn the_member_one_rank_up_passes_work_in_review() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "The lint passes.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.record_gate(fix, true, "").unwrap();
+    hq.tell_mac(true, "ready");
+    let rae = turn_of(&hq, f.rae);
+    let mine = hq
+        .record_receipt(
+            &rae.token,
+            &super::engine::Called {
+                tool: "homelab_status".to_owned(),
+                args: String::new(),
+                excerpt: "lint: clean".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    use_tool(
+        &hq,
+        &rae,
+        "review",
+        &serde_json::json!({ "task": fix.0, "verdict": "approve", "notes": "The lint is clean.",
+                             "evidence": [format!("r{mine}")] }),
+    )
+    .unwrap();
+    assert_eq!(
+        hq.store().task(fix).unwrap().unwrap().status,
+        TaskStatus::Done
+    );
 }
 
 /// Three failures move an item up one rank; a failure at the top rank goes to the owner.

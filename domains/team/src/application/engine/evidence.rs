@@ -849,7 +849,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let turn = self.running(run)?;
         self.reach(&turn, task, true)?;
         let tester = self.member(turn.member)?;
-        if tester.role != Role::Reviewer {
+        // In the loops the member one rank up passes it (ADR 0142); otherwise, the tester.
+        let one_rank_up = self
+            .loop_reviewer_of(&current)?
+            .is_some_and(|r| r.id == tester.id);
+        if tester.role != Role::Reviewer && !one_rank_up {
             return Err(EngineError::Refused(Refusal::NotYours));
         }
         if current.status != TaskStatus::InReview {
@@ -888,6 +892,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &[],
         )?;
         self.mark_progress(tester.id, task)?;
+        if one_rank_up {
+            return self.close_checked(&current, tester.id);
+        }
         let lead = self.lead_for(&current)?.filter(|l| l.id != tester.id);
         if let Some(lead) = lead {
             self.wake_held_lock(lead.id, Some(task), WakeReason::AcceptanceAsked)?;
