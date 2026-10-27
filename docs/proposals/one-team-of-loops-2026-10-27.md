@@ -277,3 +277,17 @@ it). Nothing else in the plan waits on the owner.
   - What is left is the days 2–3 fold: the `Role` type, which still sets brains, budgets and
     effort; the CEO's branches that hang off it; the sections' stages and trust; and the tests
     that guard them.
+- **Chess reviewed (the owner, 27 Oct), released 389decc3 and 2c21cecb:**
+  - Every league move was legal and every win a real mate, checked by replaying the logs with
+    python-chess. All four draws were the 60-half-move limit with one side far ahead.
+  - No pawn ever reached the last rank, so no promotion came up. A new test shows the engine
+    promotes however a model writes it.
+  - Players were coached: every view and every refusal listed the legal moves. Worse, a game
+    turn was shown "what this loop did lately", which held the other side's reasoning.
+  - Now only the standard rules end a game (mate, stalemate, threefold repetition, fifty moves,
+    too little material); no legal move is told; a game turn gets no loop notes or map lines.
+  - The owner's reset: the league's 11 games set aside (kept), every brain at 1200 again. The
+    Holodeck queued its 11 scenarios again ("before the standard rules, 27 Oct"); a re-run no
+    longer queues old matches.
+  - Still in a game turn: the work-turn system prompt, the house, lab and team pages, and the
+    full tool list. A briefing of its own for games is the next fix.
