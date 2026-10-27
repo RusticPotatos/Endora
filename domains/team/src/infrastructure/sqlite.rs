@@ -319,15 +319,18 @@ const INTERRUPTION_COLUMNS: [(&str, &str); 1] =
 /// Gives every member two brains (ADR 0131), once. A member on the house's model or the Mac keeps
 /// it as its **work brain**, and a member on Claude gets the Mac to work with. A member that has
 /// no Claude to judge with (the house's model in its `brain`, or nothing it knows) is given the
-/// owner's cheap one, Haiku, or Sonnet for the CEO, who may not think with Haiku. Each statement
-/// touches only what is not yet so, so a second start changes nothing and the owner's later
-/// choice is never overwritten.
+/// owner's cheap one, Haiku, or Sonnet for the CEO, who may not think with Haiku. Only a member
+/// that has no work brain yet is touched, so a second start changes nothing and the owner's later
+/// choice is never overwritten: a member that is one model (ADR 0142) keeps it.
 fn give_two_brains(conn: &Connection) -> Stored<()> {
     conn.execute_batch(
-        "UPDATE members SET work_brain = CASE WHEN brain IN ('local', 'mac') THEN brain ELSE 'mac' END
-         WHERE work_brain IS NULL;
-         UPDATE members SET brain = CASE role WHEN 'ceo' THEN 'claude-sonnet-5-5' ELSE 'claude-haiku-5-5' END
-         WHERE brain NOT IN ('claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5');",
+        "UPDATE members SET
+             work_brain = CASE WHEN brain IN ('local', 'mac') THEN brain ELSE 'mac' END,
+             brain = CASE
+                 WHEN brain IN ('claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5') THEN brain
+                 WHEN role = 'ceo' THEN 'claude-sonnet-5-5'
+                 ELSE 'claude-haiku-5-5' END
+         WHERE work_brain IS NULL;",
     )
     .map_err(backend)
 }

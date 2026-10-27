@@ -764,3 +764,38 @@ fn in_the_loops_no_match_of_ping_pong_or_pool_is_played_or_recorded() {
     }
     assert!(hq.store().games().unwrap().is_empty(), "no tracked matches");
 }
+
+/// Production, 27 Oct: HQ restarted and a migration of ADR 0131's gave Bo and Rae back a Claude,
+/// taking them out of the loops. A member that is one model stays so across a restart.
+#[test]
+fn a_member_s_model_survives_a_restart() {
+    let dir = std::env::temp_dir().join(format!("endora-loops-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("hq.db");
+    let _ = std::fs::remove_file(&path);
+    let path = path.to_str().unwrap().to_owned();
+    let clock = Hands(AtomicI64::new(NOON));
+    let bo = {
+        let hq = Engine::new(
+            SqliteTeamStore::open(&path).unwrap(),
+            SimulatedRunner::new(2),
+            &clock,
+            Settings::default(),
+        );
+        let bo = hq.hire("Bo", Role::Developer, 10, 2, 0).unwrap();
+        hq.set_model(bo, "local").unwrap();
+        bo
+    };
+    let again = SqliteTeamStore::open(&path).unwrap();
+    let found = again
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == bo)
+        .unwrap();
+    assert_eq!(
+        (found.brain, found.work_brain),
+        (Brain::Local, Brain::Local)
+    );
+    let _ = std::fs::remove_file(&path);
+}
