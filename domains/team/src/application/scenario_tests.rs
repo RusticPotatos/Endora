@@ -1517,3 +1517,77 @@ fn a_player_is_never_told_what_other_turns_in_its_league_said() {
     assert!(!b.told.contains("My plan"), "{}", b.told);
     assert!(!b.told.contains("What this loop did lately"), "{}", b.told);
 }
+
+// The owner resets the league (2026-10-27, after the rules changed): every brain is rated
+// afresh, the game being played stops, the next pair sits down, and the games before are kept,
+// set aside, never deleted.
+#[test]
+fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (_, project) = crew(&hq);
+    hq.start_league(project, &["mac", "local"]).unwrap();
+    hq.tick().unwrap();
+    let first = TaskId(
+        hq.snapshot().unwrap()["holodeck"]["league"]["games"][0]["task"]
+            .as_i64()
+            .unwrap(),
+    );
+    let white = hq.store().task(first).unwrap().unwrap().assignee.unwrap();
+    let black = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.parent == Some(first))
+        .unwrap()
+        .assignee
+        .unwrap();
+    let [w, b] = <[RunContext; 2]>::try_from(turns(&hq, &[white, black]))
+        .ok()
+        .unwrap();
+    for (side, san) in [(&w, "f3"), (&b, "e5"), (&w, "g4"), (&b, "Qh4")] {
+        play(&hq, side, san).unwrap();
+    }
+    hq.tick().unwrap();
+    let live = TaskId(
+        hq.snapshot().unwrap()["holodeck"]["league"]["games"][1]["task"]
+            .as_i64()
+            .expect("the rematch started"),
+    );
+
+    let reset = hq.reset_league().unwrap();
+    assert_eq!(reset["set_aside"], 2, "{reset}");
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(league["games"], json!([]), "{league}");
+    assert!(
+        league["table"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["rating"] == 1200 && r["won"] == 0 && r["drawn"] == 0 && r["lost"] == 0),
+        "{league}"
+    );
+    // The game being played stops; the finished one and its moves stay in the record.
+    assert!(hq.store().task(live).unwrap().unwrap().status.finished());
+    assert_eq!(
+        hq.store().task(first).unwrap().unwrap().status,
+        crate::domain::TaskStatus::Done
+    );
+    assert!(
+        hq.store()
+            .setting("league_games_before_reset")
+            .unwrap()
+            .unwrap()
+            .contains(&first.0.to_string())
+    );
+    // And the league goes on: once the players' turns are over, the next pair sits down.
+    for c in [&w, &b] {
+        hq.runner().finish(c.run, true);
+    }
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(league["games"].as_array().unwrap().len(), 1, "{league}");
+    assert_ne!(league["games"][0]["task"], live.0);
+}

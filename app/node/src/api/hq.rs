@@ -795,6 +795,19 @@ pub(super) struct HqProjectTools {
 
 /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or takes
 /// the list away.
+/// The owner resets the model league, recorded in the audit log.
+pub(super) async fn hq_reset_league(State(state): State<AppState>) -> Answer {
+    let answer = ask(&state, "/v1/league/reset".to_owned(), Some(json!({}))).await?;
+    record(
+        &state,
+        &format!(
+            "you reset the model league: {} games set aside, {} stopped",
+            answer.0["set_aside"], answer.0["stopped"]
+        ),
+    );
+    Ok(answer)
+}
+
 /// The owner's cut-over to one team of loops (ADR 0142), recorded in the audit log.
 pub(super) async fn hq_one_team(State(state): State<AppState>) -> Answer {
     let answer = ask(&state, "/v1/one-team".to_owned(), Some(json!({}))).await?;
@@ -1518,6 +1531,35 @@ mod tests {
         assert!(
             audit.iter().any(|a| a
                 == "HQ: you ran the Holodeck again: 9 scenarios queued, the earlier round kept as \"round 1\""),
+            "{audit:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owners_league_reset_passes_through_and_is_recorded() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            let body = json!({ "set_aside": 12, "stopped": 2 });
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_reset_league(State(state.clone())).await.unwrap();
+        assert_eq!(answer.0["set_aside"], 12);
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/league/reset"]);
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a == "HQ: you reset the model league: 12 games set aside, 2 stopped"),
             "{audit:?}"
         );
     }

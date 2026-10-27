@@ -97,6 +97,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/scenarios", post(start_scenario))
         .route("/v1/scenarios/rerun", post(rerun_holodeck))
         .route("/v1/league", post(start_league))
+        .route("/v1/league/reset", post(reset_league))
         .route("/v1/scenarios/{task}", get(scenario_shown))
         // Trials (phase 7): one scenario under two conditions or more, compared.
         .route("/v1/trials", post(start_trial))
@@ -985,6 +986,12 @@ struct ProjectTools {
 
 /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or with
 /// `null` takes the list away.
+/// The owner resets the model league: its games set aside, every brain rated afresh.
+async fn reset_league(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || hq.reset_league()).await?))
+}
+
 /// The owner's cut-over to one team of loops (ADR 0142): what it did.
 async fn one_team(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
