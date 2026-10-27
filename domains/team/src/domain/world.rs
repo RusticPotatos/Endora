@@ -371,54 +371,6 @@ pub fn trust(
     }
 }
 
-/// Whom a story belongs to: the house, a lead's area, or one member.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Scope {
-    /// The whole house: the CEO's to keep.
-    House,
-    /// A lead's area: the lead, and whoever reports up to it (ADR 0120).
-    Area(MemberId),
-    /// One member's own: it follows the member across brains.
-    Member(MemberId),
-}
-
-impl Scope {
-    /// Its stable name: `house`, `area:3`, `member:5`.
-    #[must_use]
-    pub fn name(self) -> String {
-        match self {
-            Self::House => "house".to_owned(),
-            Self::Area(lead) => format!("area:{}", lead.0),
-            Self::Member(member) => format!("member:{}", member.0),
-        }
-    }
-
-    /// The scope with this [`name`](Self::name).
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        if name == "house" {
-            return Some(Self::House);
-        }
-        let (kind, id) = name.split_once(':')?;
-        let id = MemberId(id.parse().ok()?);
-        match kind {
-            "area" => Some(Self::Area(id)),
-            "member" => Some(Self::Member(id)),
-            _ => None,
-        }
-    }
-
-    /// How long a story in it stays confirmed without a fresh reading: the house's like the
-    /// house page's, an area's and a member's like the lab's.
-    #[must_use]
-    pub const fn horizon_days(self) -> i64 {
-        match self {
-            Self::House => HOUSE.horizon_days,
-            Self::Area(_) | Self::Member(_) => 30,
-        }
-    }
-}
-
 /// What a member says when it hands work on: what is done, what is not, what comes next and
 /// what to watch out for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -704,17 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn scopes_and_stages_keep_their_names() {
-        for scope in [
-            Scope::House,
-            Scope::Area(MemberId(3)),
-            Scope::Member(MemberId(5)),
-        ] {
-            assert_eq!(Scope::from_name(&scope.name()), Some(scope));
-        }
-        assert_eq!(Scope::from_name("garage:1"), None);
-        assert_eq!(Scope::Area(MemberId(1)).horizon_days(), 30);
-        assert_eq!(Scope::House.horizon_days(), 90);
+    fn stages_keep_their_names() {
         for stage in [
             Stage::Observation,
             Stage::FieldNote,
