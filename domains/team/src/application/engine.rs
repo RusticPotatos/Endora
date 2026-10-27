@@ -277,6 +277,16 @@ impl Drop for ForOwner<'_> {
     }
 }
 
+/// What the screen's task rows are read against; see [`Engine::board`].
+struct Board<'a> {
+    tasks: &'a [Task],
+    goals: &'a [crate::domain::Goal],
+    routines: &'a [crate::domain::Routine],
+    branches: Vec<crate::domain::wing::Branch>,
+    checks: Vec<crate::domain::wing::Check>,
+    posts: std::collections::HashMap<TaskId, usize>,
+}
+
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// An engine over a store, a runner and a clock.
     pub fn new(store: S, runner: W, clock: C, settings: Settings) -> Self {
@@ -3365,22 +3375,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .find(|t| t.id == id)
             .ok_or(EngineError::Unknown("task"))?;
         let goals = self.store.goals()?;
-        self.task_row(task, &tasks, &goals, &self.store.routines()?, true)
+        let routines = self.store.routines()?;
+        let board = self.board(&tasks, &goals, &routines)?;
+        self.task_row(task, &board, true)
+    }
+
+    /// What every task row is read against, read once for the whole board, not once a row.
+    fn board<'a>(
+        &self,
+        tasks: &'a [Task],
+        goals: &'a [crate::domain::Goal],
+        routines: &'a [crate::domain::Routine],
+    ) -> Done<Board<'a>> {
+        Ok(Board {
+            tasks,
+            goals,
+            routines,
+            branches: self.store.branches()?,
+            checks: self.store.checks()?,
+            posts: self.store.post_counts()?,
+        })
     }
 
     /// A task as the screen shows it. Finished work comes in brief, with no thread, evidence,
     /// documents, description or chain of why (those of 800 done tasks made the snapshot 1.6 MB on every poll); the
     /// owner's screen asks for it `whole` when it is opened.
-    fn task_row(
-        &self,
-        t: &Task,
-        tasks: &[Task],
-        goals: &[crate::domain::Goal],
-        routines: &[crate::domain::Routine],
-        whole: bool,
-    ) -> Done<serde_json::Value> {
-        let thread = self.store.thread(t.id)?;
-        let (documents, branches) = self.documents_shown(t.id)?;
+    fn task_row(&self, t: &Task, board: &Board<'_>, whole: bool) -> Done<serde_json::Value> {
         let mut row = json!({
             "id": t.id.0, "goal": t.goal.0, "project": t.project.map(|p| p.0),
             "parent": t.parent.map(|p| p.0), "title": t.title,
@@ -3389,10 +3409,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "priority": t.priority.name(), "depth": t.depth,
             "waits_on": t.waits_on.iter().map(|w| w.0).collect::<Vec<_>>(),
             "gate": self.store.gate(t.id)?,
-            "routine": routines.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
-            "posts": thread.len(), "brief": !whole,
+            "routine": board.routines.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
+            "posts": board.posts.get(&t.id).copied().unwrap_or(0), "brief": !whole,
             // The wing's branches on it (ADR 0115).
-            "branches": branches,
+            "branches": wing::branches_shown(t.id, &board.branches, &board.checks),
             // Why it closed, and what carries it on (ADR 0124).
             "closure": self.store.closure(t.id)?.map(|c| json!({
                 "why": c.closure.name(), "said": c.closure.plainly(),
@@ -3400,14 +3420,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "successor": c.successor.map(|s| s.0), "by": c.by, "at": c.at })),
         });
         if whole {
+            let thread = self.store.thread(t.id)?;
+            row["posts"] = json!(thread.len());
             row["description"] = json!(t.description);
             let mut chain = vec![t.title.clone()];
             let mut parent = t.parent;
-            while let Some(up) = parent.and_then(|id| tasks.iter().find(|x| x.id == id)) {
+            while let Some(up) = parent.and_then(|id| board.tasks.iter().find(|x| x.id == id)) {
                 chain.push(up.title.clone());
                 parent = up.parent;
             }
-            if let Some(goal) = goals.iter().find(|g| g.id == t.goal) {
+            if let Some(goal) = board.goals.iter().find(|g| g.id == t.goal) {
                 chain.push(format!("Goal: {}", goal.title));
             }
             row["why"] = json!(chain);
@@ -3422,7 +3444,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .collect();
             // What done means, and what was cited for it at each stage (ADR 0114).
             row["evidence"] = self.evidence_shown(t)?;
-            row["documents"] = documents;
+            row["documents"] = self.documents_shown(t.id)?;
         }
         Ok(row)
     }
@@ -3501,15 +3523,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }));
         }
         let routine_list = self.store.routines()?;
+        let board = self.board(&tasks, &goals, &routine_list)?;
         let mut task_rows = Vec::new();
         for t in &tasks {
-            task_rows.push(self.task_row(
-                t,
-                &tasks,
-                &goals,
-                &routine_list,
-                !t.status.finished(),
-            )?);
+            task_rows.push(self.task_row(t, &board, !t.status.finished())?);
         }
         // Spent is what turns reported using; held is what they have reserved and not yet
         // spent. Committed, the two together, is what the budget counts.
@@ -3647,7 +3664,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let reports = self.report_task_ids()?;
         let events: Vec<crate::domain::Event> = self
             .store
-            .events_after(0)?
+            .events_of(&scorecard::KINDS_READ)?
             .into_iter()
             .filter(|e| {
                 !e.data["task"]
@@ -3655,11 +3672,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .is_some_and(|t| reports.contains(&TaskId(t)))
             })
             .collect();
+        let kept_from = self.store.first_event_at()?;
         let record = scorecard::Record {
             runs,
             tasks,
             desk: &desk,
             events: &events,
+            kept_from,
         };
         let offset = self.settings.offset_minutes;
         Ok(json!({
@@ -3667,7 +3686,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "week": scorecard::score(&record, &scorecard::Window::days_ending(day, 7, offset)).json(),
             // What the work came to, over the last day and week: landed changes, what one cost,
             // talk against work, interruptions and what waits (ADR 0132).
-            "outcomes": self.outcomes_shown(runs, &events)?,
+            "outcomes": self.outcomes_shown(runs, &events, kept_from)?,
             // Today's pool: the base day and the owner's top-up (ADR 0113 rule 6).
             "pool": { "base": money::pool_a_day(self.settings.pool_per_month),
                       "topped_up": self.topup_of(day)? },

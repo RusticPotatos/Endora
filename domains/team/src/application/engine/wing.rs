@@ -1123,36 +1123,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(told)
     }
 
-    /// A task's documents and branches, as the HQ screen shows them.
-    pub(super) fn documents_shown(
-        &self,
-        task: TaskId,
-    ) -> Done<(serde_json::Value, serde_json::Value)> {
+    /// A task's documents, as the HQ screen shows them.
+    pub(super) fn documents_shown(&self, task: TaskId) -> Done<serde_json::Value> {
         let documents: Vec<serde_json::Value> = self
             .store
             .documents_of(task)?
             .iter()
             .map(|d| json!({ "id": d.id, "title": d.title, "at": d.at, "text": d.text }))
             .collect();
-        let checks = self.store.checks()?;
-        let branches: Vec<serde_json::Value> = self
-            .store
-            .branches()?
-            .iter()
-            .filter(|b| b.task == task)
-            .map(|b| {
-                let check = checks
-                    .iter()
-                    .filter(|c| c.branch == b.id)
-                    .max_by_key(|c| c.id);
-                json!({ "id": b.id, "name": b.name, "head": b.head, "files": b.files,
-                        "plus": b.plus, "minus": b.minus, "status": b.status, "at": b.at,
-                        "can_push": b.can_push,
-                        "check": check.map(|c| json!({ "id": c.id, "status": c.status,
-                                                        "ok": c.ok, "summary": c.summary })) })
-            })
-            .collect();
-        Ok((json!(documents), json!(branches)))
+        Ok(json!(documents))
     }
 
     /// The wing as the HQ screen shows it: its goal, its projects' leads and its members.
@@ -1168,4 +1147,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "members": wing.iter().map(|m| m.id.0).collect::<Vec<_>>(),
         }))
     }
+}
+
+/// A task's branches as the HQ screen shows them, each with its latest check, from the
+/// branches and checks read once for the whole board.
+pub(super) fn branches_shown(
+    task: TaskId,
+    branches: &[wing::Branch],
+    checks: &[wing::Check],
+) -> serde_json::Value {
+    let shown: Vec<serde_json::Value> = branches
+        .iter()
+        .filter(|b| b.task == task)
+        .map(|b| {
+            let check = checks
+                .iter()
+                .filter(|c| c.branch == b.id)
+                .max_by_key(|c| c.id);
+            json!({ "id": b.id, "name": b.name, "head": b.head, "files": b.files,
+                    "plus": b.plus, "minus": b.minus, "status": b.status, "at": b.at,
+                    "can_push": b.can_push,
+                    "check": check.map(|c| json!({ "id": c.id, "status": c.status,
+                                                    "ok": c.ok, "summary": c.summary })) })
+        })
+        .collect();
+    json!(shown)
 }

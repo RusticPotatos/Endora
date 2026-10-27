@@ -73,9 +73,24 @@ pub struct Record<'a> {
     pub tasks: &'a [Task],
     /// Every desk item, waiting or decided.
     pub desk: &'a [DeskItem],
-    /// Every event kept, oldest first.
+    /// The events kept of the [`KINDS_READ`], oldest first.
     pub events: &'a [Event],
+    /// When the kept feed begins, its oldest event of any kind: pruning drops the oldest.
+    pub kept_from: Option<Millis>,
 }
+
+/// The kinds of event the scorecard and its outcomes read. Only these are handed to them:
+/// ticks and the rest are most of the feed, and parsing them was most of the card's cost.
+/// A measure that reads another kind adds it here.
+pub const KINDS_READ: [&str; 7] = [
+    "task.changed",
+    "routine.fired",
+    "routine.posted",
+    "desk.added",
+    "branch.pushed",
+    "task.sent_back",
+    "record.asked",
+];
 
 /// One member's turns in a window, and what they cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,11 +245,7 @@ pub fn score(record: &Record<'_>, window: &Window) -> Scorecard {
     Scorecard {
         from: window.from,
         until: window.until,
-        since: record
-            .events
-            .first()
-            .map(|e| e.at)
-            .filter(|at| *at > window.from),
+        since: record.kept_from.filter(|at| *at > window.from),
         turns: with_done(turns(record.runs, window), record, window),
         review: review(record.events, window),
         finished: finished(record, window),
@@ -431,6 +442,12 @@ fn alarms(record: &Record<'_>, window: &Window) -> Alarms {
 
 fn desk(record: &Record<'_>, window: &Window) -> Desk {
     let mut desk = Desk::default();
+    let waiting: HashSet<i64> = record
+        .desk
+        .iter()
+        .filter(|d| d.status == "waiting")
+        .map(|d| d.id.0)
+        .collect();
     for event in record
         .events
         .iter()
@@ -444,11 +461,7 @@ fn desk(record: &Record<'_>, window: &Window) -> Desk {
             _ => desk.other += 1,
         }
         let item = event.data["item"].as_i64();
-        let waiting = record
-            .desk
-            .iter()
-            .any(|d| Some(d.id.0) == item && d.status == "waiting");
-        desk.waiting += usize::from(waiting);
+        desk.waiting += usize::from(item.is_some_and(|i| waiting.contains(&i)));
     }
     desk
 }

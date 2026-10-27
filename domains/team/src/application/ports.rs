@@ -441,6 +441,8 @@ pub trait TeamStore:
     fn cited(&self, task: TaskId) -> Stored<Vec<Cited>>;
     /// A task's thread, oldest first.
     fn thread(&self, task: TaskId) -> Stored<Vec<Post>>;
+    /// How many posts each task's thread holds, for every task with one, in one read.
+    fn post_counts(&self) -> Stored<std::collections::HashMap<TaskId, usize>>;
 
     /// Records a wake with its receipt.
     fn add_wake(
@@ -491,6 +493,10 @@ pub trait TeamStore:
     fn has_event(&self, id: i64) -> Stored<bool>;
     /// The events after `id`, oldest first.
     fn events_after(&self, id: i64) -> Stored<Vec<Event>>;
+    /// Every event of these kinds, oldest first.
+    fn events_of(&self, kinds: &[&str]) -> Stored<Vec<Event>>;
+    /// When the oldest event kept was, if there is one.
+    fn first_event_at(&self) -> Stored<Option<Millis>>;
     /// The latest `limit` events with an id below `id`, oldest first.
     fn events_before(&self, id: i64, limit: usize) -> Stored<Vec<Event>>;
 

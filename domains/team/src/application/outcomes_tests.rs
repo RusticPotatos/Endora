@@ -125,6 +125,7 @@ fn record<'a>(
         branches,
         checks,
         consults,
+        kept_from: events.first().map(|e| e.at),
     }
 }
 

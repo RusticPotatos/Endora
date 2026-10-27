@@ -467,10 +467,13 @@ impl SqliteTeamStore {
         }
         give_two_brains(&conn)?;
         // A project's month is read on every wake and turn about its work, each row with its
-        // turn's reservation: by run and by project, not by reading the whole ledger each time.
+        // turn's reservation: by run and by project, not by reading the whole ledger each time;
+        // the reservation itself by an index of the reserves alone.
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS ledger_by_run ON ledger(run);
-             CREATE INDEX IF NOT EXISTS ledger_by_project ON ledger(project);",
+             CREATE INDEX IF NOT EXISTS ledger_by_project ON ledger(project);
+             CREATE INDEX IF NOT EXISTS ledger_reserves ON ledger(run, at_ms)
+              WHERE kind = 'reserve';",
         )
         .map_err(backend)?;
         // Roles as an enforced RACI (ADR 0120): new tables only, made if missing, so a live
@@ -1383,6 +1386,22 @@ impl TeamStore for SqliteTeamStore {
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
 
+    fn post_counts(&self) -> Stored<std::collections::HashMap<TaskId, usize>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT task, COUNT(*) FROM posts GROUP BY task")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    TaskId(r.get(0)?),
+                    usize::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+                ))
+            })
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
     fn add_wake(
         &self,
         member: MemberId,
@@ -1607,6 +1626,29 @@ impl TeamStore for SqliteTeamStore {
             .map_err(backend)?;
         let rows = stmt.query_map([id], event_from).map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn events_of(&self, kinds: &[&str]) -> Stored<Vec<Event>> {
+        let conn = self.conn()?;
+        let marks = vec!["?"; kinds.len()].join(", ");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id, at_ms, kind, data FROM events WHERE kind IN ({marks}) ORDER BY id"
+            ))
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(kinds), event_from)
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn first_event_at(&self) -> Stored<Option<Millis>> {
+        self.conn()?
+            .query_row("SELECT at_ms FROM events ORDER BY id LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(backend)
     }
 
     fn events_before(&self, id: i64, limit: usize) -> Stored<Vec<Event>> {
@@ -2437,6 +2479,21 @@ CREATE TABLE IF NOT EXISTS check_backs (
             )
             .unwrap();
         assert_eq!(indexed, 2, "a project's month reads the ledger by index");
+        // Each of its rows finds its turn's reservation by the reserves' own index, not by
+        // walking every ledger row of that turn (twice).
+        let plan: Vec<String> = conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT SUM(l.amount) {PROJECTS_ROWS}"
+            ))
+            .unwrap()
+            .query_map(params![made.0, from, until], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("ledger_reserves")),
+            "{plan:?}"
+        );
     }
 
     /// The members table as it is on the live store before elastic staffing (ADR 0118).
@@ -2889,6 +2946,67 @@ CREATE TABLE IF NOT EXISTS projects (
         let second = store.add_run(a, Some(mine), wake, 0).unwrap();
         let of: Vec<RunId> = store.runs_of(mine).unwrap().iter().map(|r| r.id).collect();
         assert_eq!(of, [first, second]);
+    }
+
+    #[test]
+    fn events_are_read_by_kind_and_the_feed_says_where_it_begins() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        assert_eq!(store.first_event_at().unwrap(), None);
+        store.emit(10, "tick", &serde_json::json!({})).unwrap();
+        store
+            .emit(20, "task.changed", &serde_json::json!({ "task": 1 }))
+            .unwrap();
+        store
+            .emit(30, "guard.found", &serde_json::json!({ "said": "long" }))
+            .unwrap();
+        store
+            .emit(40, "desk.added", &serde_json::json!({}))
+            .unwrap();
+        let kept: Vec<(Millis, String)> = store
+            .events_of(&["task.changed", "desk.added"])
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.at, e.kind))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                (20, "task.changed".to_owned()),
+                (40, "desk.added".to_owned())
+            ]
+        );
+        // The feed begins at its oldest event, of whatever kind.
+        assert_eq!(store.first_event_at().unwrap(), Some(10));
+    }
+
+    #[test]
+    fn every_threads_posts_are_counted_in_one_read() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let goal = store
+            .add_goal("Ship it", "", GoalStatus::Active, None)
+            .unwrap();
+        let task = |title: &str| NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: title.to_owned(),
+            description: String::new(),
+            assignee: None,
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        };
+        let busy = store.add_task(&task("Busy"), 0).unwrap();
+        let quiet = store.add_task(&task("Quiet"), 0).unwrap();
+        let silent = store.add_task(&task("Silent"), 0).unwrap();
+        for n in 0..3 {
+            store.post(busy, "owner", &format!("busy {n}"), 0).unwrap();
+        }
+        store.post(quiet, "owner", "once", 0).unwrap();
+        let counts = store.post_counts().unwrap();
+        assert_eq!(counts.get(&busy), Some(&3));
+        assert_eq!(counts.get(&quiet), Some(&1));
+        // A task with no posts is not in the count; the screen reads it as none.
+        assert_eq!(counts.get(&silent), None);
     }
 
     #[test]

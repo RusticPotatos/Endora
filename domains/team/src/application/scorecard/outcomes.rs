@@ -28,8 +28,10 @@ use crate::domain::{Branch, Check, Event, Millis, RunStatus, desk, turns};
 pub struct OutcomeRecord<'a> {
     /// Every turn, ended or not.
     pub runs: &'a [Run],
-    /// Every event kept, oldest first.
+    /// The events kept of the scorecard's `KINDS_READ`, oldest first.
     pub events: &'a [Event],
+    /// When the kept feed begins, its oldest event of any kind: pruning drops the oldest.
+    pub kept_from: Option<Millis>,
     /// Every branch submitted.
     pub branches: &'a [Branch],
     /// Every check of a branch.
@@ -263,11 +265,7 @@ pub fn outcomes(record: &OutcomeRecord<'_>, window: &Window) -> Outcomes {
     Outcomes {
         from: window.from,
         until: window.until,
-        since: record
-            .events
-            .first()
-            .map(|e| e.at)
-            .filter(|at| *at > window.from),
+        since: record.kept_from.filter(|at| *at > window.from),
         landed: landed(record.events, window),
         submitted: record
             .branches

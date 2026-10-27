@@ -129,6 +129,7 @@ fn record<'a>(
         tasks,
         desk,
         events,
+        kept_from: events.first().map(|e| e.at),
     }
 }
 
@@ -426,6 +427,11 @@ fn a_record_shorter_than_the_window_says_where_it_starts() {
     let early = [changed(1, NOON - 10 * DAY_MS, 1, TaskStatus::Doing)];
     assert_eq!(score(&record(&[], &[], &[], &early), &week()).since, None);
     assert_eq!(score(&record(&[], &[], &[], &[]), &week()).since, None);
+    // The feed starts where it is kept from, though the kinds the card never reads (ticks,
+    // the guards' findings) are not handed to it.
+    let mut kept = record(&[], &[], &[], &late);
+    kept.kept_from = Some(NOON - 10 * DAY_MS);
+    assert_eq!(score(&kept, &week()).since, None);
 }
 
 #[test]
