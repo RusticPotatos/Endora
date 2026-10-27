@@ -261,7 +261,7 @@ fn downtime_is_work_on_the_nas_for_nothing_whatever_the_member_judges_with() {
 }
 
 #[test]
-fn downtime_does_not_count_as_a_turn_on_the_scorecard_nor_stop_the_idle_look() {
+fn downtime_does_not_count_as_a_turn_on_the_scorecard() {
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock);
     let t = team(&hq);
@@ -280,14 +280,4 @@ fn downtime_does_not_count_as_a_turn_on_the_scorecard_nor_stop_the_idle_look() {
         snap["scorecard"]["week"]["turns"]["total"], 0,
         "downtime is not work"
     );
-    // A week of downtime turns and nothing else: the developer is still offered for furlough.
-    let offers: Vec<_> = hq
-        .store()
-        .desk()
-        .unwrap()
-        .into_iter()
-        .filter(|d| d.kind == "furlough")
-        .filter_map(|d| d.member)
-        .collect();
-    assert!(offers.contains(&t.bo), "{offers:?}");
 }

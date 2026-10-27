@@ -78,20 +78,6 @@ Feature: Two brains per member
 
   # --- Work runs on the best free work brain it is allowed on ------------------------------
 
-  Scenario: Code work with the Mac busy waits and is never run on the house's model
-    Given Mara is the CEO
-    And the goal "Keep the home lab healthy"
-    And the engineering wing
-    And Kit's planning turn is over
-    And the node says the Mac is not ready: "owner active"
-    And Kit hands Rae the task "Tidy the deluge role" in the wing
-    When a tick passes
-    Then Rae's turn on "Tidy the deluge role" is waiting for the Mac: "owner active"
-    And Rae has no turn running
-    When the node says the Mac is ready
-    Then Rae's turn starts on "Tidy the deluge role"
-    And Rae's turn runs on "mac"
-
   Scenario: The wing's lead plans on the Mac or not at all
     Given Mara is the CEO
     And the goal "Keep the home lab healthy"
@@ -111,18 +97,6 @@ Feature: Two brains per member
     When Ada is handed the task "Read the lab's disk use"
     Then Ada's turn starts on "Read the lab's disk use"
     And Ada's turn runs on "local"
-
-  Scenario: Code work for a member who works on the house's model runs on the free Mac
-    Given Mara is the CEO
-    And the goal "Keep the home lab healthy"
-    And the engineering wing
-    And Kit's planning turn is over
-    And Rae works with the house's model
-    And the node says the Mac is ready
-    And Kit hands Rae the task "Tidy the deluge role" in the wing
-    When a tick passes
-    Then Rae's turn starts on "Tidy the deluge role"
-    And Rae's turn runs on "mac"
 
   Scenario: Reading the lab with the Mac busy runs on the house's model
     Given Sam is the researcher

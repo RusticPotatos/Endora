@@ -30,17 +30,6 @@ Feature: The engineering wing and the git flow
     When the owner hires Second as a ceo under Mara
     Then it is refused for "the team has one CEO already"
 
-  # Task 687: the Ops lead built and submitted a branch herself, could neither accept her own
-  # work nor hand it on, and the CEO was asked twice. Changing the lab is the wing's (ADR 0120):
-  # outside it a submission is refused, naming the wing's lead and how to ask for the change.
-  Scenario: The Ops lead's change to the lab is the wing's to build
-    Given Kit's planning turn is over
-    And Ada has the task "Add the drift check"
-    When Ada's turn starts
-    And Ada tries to submit the branch "hq/task-2-add-the-drift-check"
-    Then it is refused: "changing the lab is the engineering wing's: Kit leads it and its developers submit the branches. Ask for the change with propose_project, with its criteria and evidence; the CEO decides and the wing builds it"
-    And no branch is kept
-
   # The check after a deploy (ADR 0115, amended): the owner's Deployed hands the member of the
   # routine that takes the lab's alarms one turn to read the lab, with the lab's reads alone and
   # no shell. A healthy verdict rests on a reading of the turn's own, and comes back to the

@@ -58,9 +58,6 @@ fn team(hq: &Hq<'_>) -> Team {
     let bo = hq.hire("Bo", Role::Lead, 25, 2, 3).unwrap();
     let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
     let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
-    for member in [linus, dee] {
-        hq.set_reports_to(member, ada).unwrap();
-    }
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();

@@ -91,52 +91,6 @@ pub fn escalation(member: &Member, members: &[Member]) -> Option<MemberId> {
     None
 }
 
-/// Whether `member` may report to `to`: another member, never one that reports, however far
-/// up, to `member` itself; and never the CEO, who reports to the board.
-///
-/// # Errors
-/// [`Refusal::NotAManager`] otherwise.
-pub fn may_report(member: &Member, to: MemberId, members: &[Member]) -> Result<(), Refusal> {
-    if member.role == Role::Ceo || to == member.id {
-        return Err(Refusal::NotAManager);
-    }
-    let mut seen = Vec::new();
-    let mut at = members.iter().find(|m| m.id == to);
-    while let Some(up) = at {
-        if up.id == member.id || seen.contains(&up.id) {
-            return Err(Refusal::NotAManager);
-        }
-        seen.push(up.id);
-        at = manager(up, members).and_then(|id| members.iter().find(|m| m.id == id));
-    }
-    Ok(())
-}
-
-/// The questions in a thread (each post its author's name and its text, oldest first) asked of
-/// `to` that `to` has not answered yet: who asked, and what. A question is answered by the
-/// first post of `to`'s after it that is not itself a question up the chain or a draft for the
-/// board, so a lead who asks the CEO in turn still owes the developer its answer.
-#[must_use]
-pub fn unanswered(thread: &[(&str, &str)], to: &str) -> Vec<(String, String)> {
-    let asked = format!("{QUESTION_FOR}{to}: ");
-    let mut open = Vec::new();
-    for (i, (author, text)) in thread.iter().enumerate() {
-        let Some(question) = text.strip_prefix(asked.as_str()) else {
-            continue;
-        };
-        if *author == to {
-            continue;
-        }
-        let answered = thread[i + 1..].iter().any(|(by, said)| {
-            *by == to && !said.starts_with(QUESTION_FOR) && !said.starts_with(super::review::DRAFT)
-        });
-        if !answered {
-            open.push(((*author).to_owned(), question.to_owned()));
-        }
-    }
-    open
-}
-
 /// A decision the CEO puts to the board: what is to be decided, what it recommends, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decision {
@@ -275,83 +229,6 @@ mod tests {
         team[0].paused = true;
         assert_eq!(escalation(&team[2], &team), None, "nobody at work above");
         assert_eq!(escalation(&team[0], &team), None, "the CEO asks the board");
-    }
-
-    #[test]
-    fn a_member_never_reports_to_itself_or_in_a_circle_and_the_ceo_only_to_the_board() {
-        let team = [
-            member(1, Role::Ceo, None),
-            member(2, Role::Lead, Some(1)),
-            member(3, Role::Lead, Some(2)),
-            member(4, Role::Developer, Some(3)),
-        ];
-        assert!(may_report(&team[3], MemberId(2), &team).is_ok());
-        assert_eq!(
-            may_report(&team[3], MemberId(4), &team),
-            Err(Refusal::NotAManager),
-            "itself"
-        );
-        assert_eq!(
-            may_report(&team[1], MemberId(4), &team),
-            Err(Refusal::NotAManager),
-            "4 reports to 3, who reports to 2"
-        );
-        assert_eq!(
-            may_report(&team[0], MemberId(2), &team),
-            Err(Refusal::NotAManager),
-            "the CEO reports to the board"
-        );
-        // A circle already in the store ends the walk rather than looping.
-        let circle = [
-            member(5, Role::Lead, Some(6)),
-            member(6, Role::Lead, Some(5)),
-        ];
-        assert_eq!(escalation(&circle[0], &circle), Some(MemberId(6)));
-        let mut paused = circle.clone();
-        paused[1].paused = true;
-        assert_eq!(escalation(&paused[0], &paused), None);
-    }
-
-    #[test]
-    fn a_question_waits_until_the_one_asked_says_something_that_is_not_a_question() {
-        let thread = [
-            ("Linus", "Restarted sonarr; it fails again."),
-            ("Linus", "Question for Ada: may I raise its memory?"),
-            ("Ada", "Question for Mara: may Linus raise sonarr's memory?"),
-        ];
-        assert_eq!(
-            unanswered(&thread, "Ada"),
-            [("Linus".to_owned(), "may I raise its memory?".to_owned())]
-        );
-        assert_eq!(
-            unanswered(&thread, "Mara"),
-            [(
-                "Ada".to_owned(),
-                "may Linus raise sonarr's memory?".to_owned()
-            )]
-        );
-        let mut answered = thread.to_vec();
-        answered.push(("Mara", "Draft for the owner: Decision: …"));
-        assert_eq!(
-            unanswered(&answered, "Mara").len(),
-            1,
-            "a draft is no answer"
-        );
-        answered.push(("Mara", "Yes, to 2 GB."));
-        assert!(unanswered(&answered, "Mara").is_empty());
-        assert_eq!(
-            unanswered(&answered, "Ada").len(),
-            1,
-            "Ada still owes Linus"
-        );
-        answered.push(("Ada", "Yes: Mara agreed, 2 GB."));
-        assert!(unanswered(&answered, "Ada").is_empty());
-        assert!(unanswered(&answered, "Linus").is_empty());
-        assert_eq!(
-            question("Ada", "  may I? "),
-            "Question for Ada: may I?",
-            "as it is posted"
-        );
     }
 
     #[test]

@@ -32,9 +32,8 @@ fn canonical_team(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    let lead = hq.hire("Member 2", Role::Lead, 25, 2, 0).unwrap();
+    hq.hire("Member 2", Role::Lead, 25, 2, 0).unwrap();
     let dev = hq.hire("Member 3", Role::Developer, 40, 2, 0).unwrap();
-    hq.set_reports_to(dev, lead).unwrap();
     let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
     let task = hq
         .add_task(

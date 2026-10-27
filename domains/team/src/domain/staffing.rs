@@ -4,80 +4,20 @@
 //! hired. Both directions are the owner's to approve. The rules here are pure: the engine
 //! gathers the record and asks them.
 
-use super::work::{Member, MemberId, Millis, Refusal, Role};
+use super::work::{Member, MemberId, Millis, Role};
 
 /// How long a member has to have had nothing to do before it is offered for furlough.
 pub const IDLE_AFTER_MS: Millis = 7 * 24 * 60 * 60 * 1000;
 
-/// How long after the owner keeps a member before it is offered again.
-pub const KEPT_FOR_MS: Millis = 7 * 24 * 60 * 60 * 1000;
-
 /// How many open tasks of a project a request for staff must cite for each active developer
 /// the project already has.
 pub const BACKLOG_PER_DEVELOPER: usize = 2;
-
-/// Whether a member may be offered for furlough at all: not the CEO, not a lead, and not
-/// already on furlough.
-#[must_use]
-pub const fn may_be_offered(member: &Member) -> bool {
-    !matches!(member.role, Role::Ceo | Role::Lead) && !member.furloughed()
-}
-
-/// Since when a member has had nothing to do, if it has had nothing for a week: `baseline`
-/// is when the team first saw it (or when it was last recalled), `last_active` the latest
-/// moment it was woken, assigned something or took a turn. `None` when it is not idle.
-#[must_use]
-pub fn idle_since(baseline: Millis, last_active: Option<Millis>, now: Millis) -> Option<Millis> {
-    let since = last_active.map_or(baseline, |at| at.max(baseline));
-    (now - since >= IDLE_AFTER_MS).then_some(since)
-}
 
 /// How many open tasks of a project a request for staff must cite, given how many active
 /// developers the project has: [`BACKLOG_PER_DEVELOPER`] each, and at least one.
 #[must_use]
 pub fn backlog_needed(developers: usize) -> usize {
     (developers * BACKLOG_PER_DEVELOPER).max(1)
-}
-
-/// Whether `cited` open tasks of a project are backlog enough for it to have more staff.
-///
-/// # Errors
-/// [`Refusal::NoBacklog`], naming the count.
-pub fn may_ask(cited: usize, developers: usize) -> Result<(), Refusal> {
-    let needs = backlog_needed(developers);
-    if cited >= needs {
-        return Ok(());
-    }
-    Err(Refusal::NoBacklog {
-        cited,
-        developers,
-        needs,
-    })
-}
-
-/// The role a request for staff is for: a developer (the lead's backlog is of code).
-pub const STAFF_ROLE: Role = Role::Developer;
-
-/// The furloughed member a request for staff brings back, if there is one of the role: the
-/// lead's own first, else the one furloughed longest.
-#[must_use]
-pub fn to_recall(members: &[Member], role: Role, lead: MemberId) -> Option<MemberId> {
-    let mut out: Vec<&Member> = members
-        .iter()
-        .filter(|m| m.role == role && m.furloughed())
-        .collect();
-    out.sort_by_key(|m| (m.reports_to != Some(lead), m.furloughed_at, m.id));
-    out.first().map(|m| m.id)
-}
-
-/// The offer of a furlough, as it is written on the desk.
-#[must_use]
-pub fn offer_text(name: &str, since: &str) -> String {
-    format!(
-        "{name} has had nothing to do since {since}: furlough, or keep? Furloughed, {name} is \
-         never woken and costs nothing, and keeps its record, its name and its notebook; \
-         nobody is let go."
-    )
 }
 
 /// A recall a lead asks the owner for, as it is written on the desk and read back from it.
@@ -203,62 +143,6 @@ mod tests {
             furloughed_at: furloughed.then_some(5),
             recalled_at: None,
         }
-    }
-
-    #[test]
-    fn the_ceo_a_lead_and_a_member_already_out_are_never_offered() {
-        assert!(!may_be_offered(&member(1, Role::Ceo, None, false)));
-        assert!(!may_be_offered(&member(2, Role::Lead, Some(1), false)));
-        assert!(!may_be_offered(&member(3, Role::Developer, Some(2), true)));
-        assert!(may_be_offered(&member(3, Role::Developer, Some(2), false)));
-        assert!(may_be_offered(&member(4, Role::Reviewer, Some(2), false)));
-    }
-
-    #[test]
-    fn a_member_is_idle_after_a_week_of_nothing_counted_from_the_latest_thing() {
-        let day = 24 * 60 * 60 * 1000;
-        assert_eq!(idle_since(0, None, 7 * day), Some(0));
-        assert_eq!(idle_since(0, None, 7 * day - 1), None);
-        assert_eq!(idle_since(0, Some(3 * day), 9 * day), None);
-        assert_eq!(idle_since(0, Some(3 * day), 10 * day), Some(3 * day));
-        // A recall (the baseline) after the last turn starts the week again.
-        assert_eq!(idle_since(5 * day, Some(day), 9 * day), None);
-    }
-
-    #[test]
-    fn a_request_for_staff_cites_twice_the_developers_in_open_tasks() {
-        assert_eq!(backlog_needed(0), 1);
-        assert_eq!(backlog_needed(3), 6);
-        assert_eq!(may_ask(6, 3), Ok(()));
-        assert_eq!(
-            may_ask(5, 3),
-            Err(Refusal::NoBacklog {
-                cited: 5,
-                developers: 3,
-                needs: 6
-            })
-        );
-    }
-
-    #[test]
-    fn the_leads_own_furloughed_developer_comes_back_first() {
-        let team = [
-            member(1, Role::Ceo, None, false),
-            member(2, Role::Lead, Some(1), false),
-            member(3, Role::Lead, Some(1), false),
-            member(4, Role::Developer, Some(3), true),
-            member(5, Role::Developer, Some(2), true),
-            member(6, Role::Reviewer, Some(2), true),
-        ];
-        assert_eq!(
-            to_recall(&team, Role::Developer, MemberId(2)),
-            Some(MemberId(5))
-        );
-        assert_eq!(
-            to_recall(&team, Role::Developer, MemberId(3)),
-            Some(MemberId(4))
-        );
-        assert_eq!(to_recall(&team[..3], Role::Developer, MemberId(2)), None);
     }
 
     #[test]

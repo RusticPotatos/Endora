@@ -514,41 +514,6 @@ fn a_tester_reviews_on_claude_and_its_readings_of_a_check_need_the_mac() {
 }
 
 #[test]
-fn the_wings_lead_and_developers_need_the_mac_for_any_work_and_other_leads_read_on_the_nas() {
-    let clock = hands();
-    let hq = hq(&clock, 5);
-    let t = team(&hq);
-    let wing = hq.seed_wing().unwrap().unwrap();
-    let read = task(&hq, t.goal, "Read the disks");
-    // The Mac has not been heard from. Ada leads no wing: reading is the NAS's to do.
-    hq.wake(t.lead, Some(read), WakeReason::Mentioned).unwrap();
-    hq.tick().unwrap();
-    assert_eq!(latest(&hq, t.lead).brain, Some(Brain::Local));
-    // Kit, the wing's lead, was handed its first task when the wing was seeded: planning code
-    // is not for the small model, so its turn waits, and says for what.
-    let kits = latest(&hq, wing.lead);
-    assert_eq!(kits.status, RunStatus::Queued);
-    assert_eq!(
-        kits.end_reason,
-        "waiting for the Mac: the node has not said yet"
-    );
-    // The wing's developers likewise (on a task of their own: one turn at a time on a task).
-    let rae = wing.developers[0];
-    let memory = task(&hq, t.goal, "Read the memory");
-    hq.wake(rae, Some(memory), WakeReason::Mentioned).unwrap();
-    hq.tick().unwrap();
-    assert_eq!(latest(&hq, rae).status, RunStatus::Queued);
-    // When the Mac is free, the lead has it first, and the developer waits its turn.
-    hq.tell_mac(true, "ready");
-    hq.tick().unwrap();
-    assert_eq!(latest(&hq, wing.lead).brain, Some(Brain::Mac));
-    assert_eq!(
-        latest(&hq, rae).end_reason,
-        "waiting for the Mac: another turn is using the Mac"
-    );
-}
-
-#[test]
 fn an_alarm_out_of_budget_runs_at_once_on_a_house_model_and_the_owner_is_told_no_decision_is() {
     let clock = hands();
     let hq = hq(&clock, 1);

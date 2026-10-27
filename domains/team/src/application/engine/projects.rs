@@ -12,7 +12,6 @@ use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError, one_line};
 use crate::application::ports::{Clock, DeskItem, NewProject, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::chain;
 use crate::domain::projects::{self, Level, dollars};
 use crate::domain::{
     EventKind, Evidence, GoalId, GoalStatus, Member, MemberId, Micros, Millis, Pause, Priority,
@@ -164,25 +163,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     // ---- whom members report to -------------------------------------------------------------
-
-    /// The owner sets whom a member reports to: another member, never itself, never one that
-    /// reports to it however far up, and never for the CEO, who reports to the board.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotAManager`];
-    /// a store failure.
-    pub fn set_reports_to(&self, member: MemberId, to: MemberId) -> Done<()> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let manager = self.member(to)?;
-        chain::may_report(&found, to, &self.store.members()?).map_err(EngineError::Refused)?;
-        self.store.set_reports_to(member, Some(to))?;
-        self.emit(
-            EventKind::ReportsTo,
-            json!({ "member": member.0, "name": found.name, "reports_to": to.0,
-                    "manager": manager.name }),
-        )
-    }
 
     // ---- the owner's projects ------------------------------------------------------------
 
@@ -848,43 +828,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(project.status)
-    }
-
-    /// A turn of the CEO's proposes a goal to the board, with its reason and evidence from
-    /// HQ's record: a proposed goal on the owner's desk, as Endora's proposals are.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`]; [`Refusal::NoEvidence`] or
-    /// [`Refusal::NoSuchEvidence`]; [`EngineError::Unknown`] for no title or reason.
-    pub fn propose_goal(
-        &self,
-        run: RunId,
-        title: &str,
-        reason: &str,
-        tasks: &[TaskId],
-        events: &[i64],
-    ) -> Done<GoalId> {
-        let _held = self.held();
-        let (turn, ceo) = self.the_ceos_turn(run)?;
-        let (title, reason) = (one_line(title, 120), one_line(reason, 600));
-        if title.is_empty() || reason.is_empty() {
-            return Err(EngineError::Unknown("goal title and reason"));
-        }
-        let evidence = self.evidence(tasks, events)?;
-        let said: Vec<String> = evidence.iter().map(|e| e.said()).collect();
-        let goal = self.propose_goal_held_lock(
-            &title,
-            &reason,
-            Some(ceo.id),
-            &format!(
-                "A goal: {title}\nWhy: {reason}\nEvidence: {}",
-                said.join(", ")
-            ),
-        )?;
-        if let Some(task) = turn.task {
-            self.mark_progress(ceo.id, task)?;
-        }
-        Ok(goal)
     }
 
     // ---- at start -------------------------------------------------------------------------

@@ -886,30 +886,6 @@ pub(super) async fn hq_project_tools(
     Ok(answer)
 }
 
-#[derive(Deserialize)]
-pub(super) struct HqReportsTo {
-    to: i64,
-}
-
-/// The owner sets whom a member reports to; HQ refuses itself and circles.
-pub(super) async fn hq_reports_to(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Json(req): Json<HqReportsTo>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/members/{id}/reports_to"),
-        Some(json!({ "to": req.to })),
-    )
-    .await?;
-    record(
-        &state,
-        &format!("you set member {id} to report to member {}", req.to),
-    );
-    Ok(answer)
-}
-
 /// The owner puts a member on furlough (ADR 0118); HQ refuses the CEO and a member with open
 /// work.
 pub(super) async fn hq_furlough(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
@@ -1739,7 +1715,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owners_projects_and_reports_pass_through_signed_and_are_recorded() {
+    async fn the_owners_projects_pass_through_signed_and_are_recorded() {
         let (url, seen) = fake(Arc::new(|path, _| {
             let body = if path.ends_with("/cap") {
                 json!({ "project": 3, "cap": 12_500_000 })
@@ -1778,10 +1754,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(answer.0["cap"], 12_500_000);
-        let answer = hq_reports_to(State(state.clone()), Path(5), Json(HqReportsTo { to: 2 }))
-            .await
-            .unwrap();
-        assert_eq!(answer.0["reports_to"], 2);
         let sent: Vec<(String, serde_json::Value)> = seen
             .lock()
             .unwrap()
@@ -1794,7 +1766,6 @@ mod tests {
                 ("/v1/projects".to_owned(), made),
                 ("/v1/projects/3".to_owned(), json!({ "action": "pause" })),
                 ("/v1/projects/3/cap".to_owned(), json!({ "cap": "12.50" })),
-                ("/v1/members/5/reports_to".to_owned(), json!({ "to": 2 })),
             ]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
@@ -1806,7 +1777,6 @@ mod tests {
             "HQ: you made a project: Upkeep",
             "HQ: you set project 3 paused",
             "HQ: you capped project 3 at $12.50 a month",
-            "HQ: you set member 5 to report to member 2",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }

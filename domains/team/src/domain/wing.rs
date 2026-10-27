@@ -48,42 +48,6 @@ pub const FORK_RULES_LEAD: &str = "The fork's own AGENTS.md, when it exists, is 
     rules; propose one if missing. Until it exists it is the first branch to propose: the draft \
     is docs/drafts/ansible-nas-AGENTS.md in Endora's library (read_doc).\n";
 
-/// Whether a member changes the lab: submits a branch or asks for one to be checked again. That
-/// is the wing's (ADR 0120: changing the lab, the Eng lead accountable and its members doing):
-/// a lead or a developer in it. A tester reads a branch and submits none, and a lead outside the
-/// wing writes the criteria for a change, never its branch.
-#[must_use]
-pub fn changes_the_lab(member: &Member, leads: &[MemberId], members: &[Member]) -> bool {
-    matches!(member.role, Role::Lead | Role::Developer) && in_wing(member, leads, members)
-}
-
-/// Whether a member is in the wing: it leads one of the wing's projects (`leads`), or reports,
-/// however far up, to one who does. The CEO is never in the wing.
-#[must_use]
-pub fn in_wing(member: &Member, leads: &[MemberId], members: &[Member]) -> bool {
-    if member.role == Role::Ceo {
-        return false;
-    }
-    let mut seen = vec![member.id];
-    let mut at = member;
-    loop {
-        if leads.contains(&at.id) {
-            return true;
-        }
-        let Some(up) = super::chain::manager(at, members) else {
-            return false;
-        };
-        if seen.contains(&up) {
-            return false;
-        }
-        seen.push(up);
-        let Some(found) = members.iter().find(|m| m.id == up) else {
-            return false;
-        };
-        at = found;
-    }
-}
-
 /// Whether the wing has a seat for one more member in `role` thinking with `brain`, given who
 /// sits in it now: one lead (on Sonnet or the house's model), at most [`MOST_DEVELOPERS`]
 /// developers (on Haiku or the house's model), and no other role.
@@ -299,49 +263,6 @@ mod tests {
             member(5, "Rae", Role::Developer, Brain::Haiku, Some(4)),
             member(6, "Zed", Role::Developer, Brain::Haiku, Some(4)),
         ]
-    }
-
-    #[test]
-    fn the_wing_is_its_project_lead_and_whoever_reports_up_to_them() {
-        let team = team();
-        let leads = [MemberId(4)];
-        let names: Vec<&str> = team
-            .iter()
-            .filter(|m| in_wing(m, &leads, &team))
-            .map(|m| m.name.as_str())
-            .collect();
-        assert_eq!(names, ["Kit", "Rae", "Zed"]);
-        let mut circular = team.clone();
-        circular[1].reports_to = Some(MemberId(3));
-        circular[2].reports_to = Some(MemberId(2));
-        assert!(!in_wing(&circular[1], &leads, &circular), "a circle ends");
-        assert!(!in_wing(&team[0], &[MemberId(1)], &team), "never the CEO");
-    }
-
-    // Changing the lab is the wing's (ADR 0120): its lead and its developers. Not a tester in
-    // it, who reads; and nobody outside it, a lead included (task 687: the Ops lead built and
-    // submitted a branch herself, and could neither accept it nor hand it on).
-    #[test]
-    fn only_the_wings_lead_and_developers_change_the_lab() {
-        let team = team();
-        let leads = [MemberId(4)];
-        let names: Vec<&str> = team
-            .iter()
-            .filter(|m| changes_the_lab(m, &leads, &team))
-            .map(|m| m.name.as_str())
-            .collect();
-        assert_eq!(names, ["Kit", "Rae", "Zed"]);
-        let mut tester_in_the_wing = team.clone();
-        tester_in_the_wing[2].reports_to = Some(MemberId(4));
-        assert!(
-            !changes_the_lab(&tester_in_the_wing[2], &leads, &tester_in_the_wing),
-            "a tester reads a branch"
-        );
-        assert!(!changes_the_lab(&team[1], &leads, &team), "the Ops lead");
-        assert!(
-            !changes_the_lab(&team[4], &[], &team),
-            "no wing, no branches"
-        );
     }
 
     #[test]

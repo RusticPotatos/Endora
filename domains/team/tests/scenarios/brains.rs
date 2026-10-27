@@ -124,13 +124,6 @@ fn works_with_the_mac(w: &mut Office, name: String) {
         .expect("the Mac may be worked with");
 }
 
-#[given(expr = "{word} works with the house's model")]
-fn works_with_the_house_model(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    w.hq.set_work_brain(id, "local")
-        .expect("the house's model may be worked with");
-}
-
 /// Wakes `name` to decide `title`, as a lead's ladder or the CEO's direction does.
 #[given(expr = "{word} is woken to decide {string}")]
 #[when(expr = "{word} is woken to decide {string}")]

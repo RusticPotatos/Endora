@@ -471,75 +471,6 @@ fn a_check_that_passes_is_a_receipt_that_wakes_the_submitter() {
     );
 }
 
-/// Live (tasks 674 and 679): a check was queued only by submitting a branch from a sandbox that
-/// held it, which a later turn never did. A check that failed for the box's own reasons (tools
-/// missing, a collection absent) cost a recreated branch each time: task 674 existed only to
-/// check the same commit again, and 679's probe branch (no file in it) only to get a check run.
-/// A lead or a developer on the work now asks for the kept branch to be checked again.
-/// Task 687: the Ops lead built and submitted a branch herself; she could neither accept her own
-/// work nor hand it on, and the CEO was asked twice. Changing the lab is the wing's (ADR 0120):
-/// outside it a submission and a recheck are refused, naming the wing's lead and the way to ask
-/// for the change, and nothing is kept. The wing's own developer still submits.
-#[test]
-fn branch_work_outside_the_wing_is_refused_and_names_the_wings_lead() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let task = hq
-        .add_task_with(
-            Author::Owner,
-            NewTask {
-                goal: t.lab,
-                project: None,
-                parent: None,
-                title: "Add the drift check".to_owned(),
-                description: String::new(),
-                assignee: Some(t.ada),
-                priority: Priority::Normal,
-                waits_on: Vec::new(),
-            },
-            &[Criterion::new("The check is no worse than develop", false)],
-        )
-        .unwrap();
-    let ada = turn(&hq, t.ada);
-    let refused = hq
-        .record_branch(
-            &ada.token,
-            &Submission {
-                branch: format!("hq/task-{}-add-the-drift-check", task.0),
-                ..submission(true)
-            },
-        )
-        .unwrap_err();
-    assert_eq!(
-        refused,
-        super::EngineError::Refused(Refusal::BranchesAreTheWings {
-            lead: Some("Kit".to_owned())
-        })
-    );
-    let said = refused.to_string();
-    assert!(
-        said.contains("engineering wing")
-            && said.contains("Kit")
-            && said.contains("propose_project"),
-        "{said}"
-    );
-    assert!(hq.store().branches().unwrap().is_empty(), "nothing is kept");
-    assert!(hq.next_check().unwrap().is_none(), "nothing is checked");
-    let again = use_tool(
-        &hq,
-        &ada,
-        "recheck",
-        &json!({ "task": task.0, "why": "the check image has its tools now" }),
-    )
-    .unwrap_err();
-    assert!(again.contains("engineering wing"), "{again}");
-    all_turns_over(&hq);
-    // The wing's developer, on the wing's work, is not touched by it.
-    let (_, _, recorded) = submitted(&hq, &t, true);
-    assert!(recorded.check > 0);
-}
-
 #[test]
 fn a_kept_branch_is_checked_again_without_a_new_submission() {
     let clock = Hands(AtomicI64::new(OCT_17));
@@ -957,11 +888,11 @@ fn the_owner_hires_and_a_second_ceo_is_refused() {
         (hired.data["name"].as_str(), hired.data["by"].as_str()),
         (Some("Sam"), Some("owner"))
     );
-    // By default a developer reports to the earliest lead; a researcher may not think with Sonnet.
+    // Nobody reports to anyone unless the owner says so (ADR 0142).
     let lee = hq
         .hire_by_owner("Lee", Role::Researcher, "local", None)
         .unwrap();
-    assert_eq!(members_of(&hq, lee).reports_to, Some(t.ada));
+    assert_eq!(members_of(&hq, lee).reports_to, None);
     assert_eq!(
         hq.hire_by_owner("Second", Role::Ceo, "claude-opus-5-5", None),
         Err(super::EngineError::Refused(Refusal::OnlyOneCeo))
@@ -995,11 +926,8 @@ fn members_of(hq: &Hq<'_>, id: MemberId) -> crate::domain::Member {
 fn the_wing_is_seeded_once_and_an_old_team_keeps_what_it_had() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
-    let ceo = {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-        hq.set_brain(id, "claude-opus-5-5").unwrap();
-        id
-    };
+    let ceo = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+    hq.set_brain(ceo, "claude-opus-5-5").unwrap();
     hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
     let seeded = hq.seed_wing().unwrap().expect("seeded");
@@ -1007,13 +935,13 @@ fn the_wing_is_seeded_once_and_an_old_team_keeps_what_it_had() {
     let kit = members.iter().find(|m| m.name == "Kit").unwrap();
     assert_eq!(
         (kit.role, kit.brain, kit.reports_to),
-        (Role::Lead, Brain::Sonnet, Some(ceo))
+        (Role::Lead, Brain::Sonnet, None)
     );
     for name in ["Rae", "Zed"] {
         let dev = members.iter().find(|m| m.name == name).unwrap();
         assert_eq!(
             (dev.role, dev.brain, dev.reports_to),
-            (Role::Developer, Brain::Haiku, Some(kit.id))
+            (Role::Developer, Brain::Haiku, None)
         );
         assert!(seeded.developers.contains(&dev.id));
     }
@@ -1045,7 +973,8 @@ fn the_wing_is_seeded_once_and_an_old_team_keeps_what_it_had() {
     );
     assert_eq!(task.criteria.len(), 2);
     assert!(task.criteria[0].text.contains("by receipt"));
-    assert_eq!(hq.wing_members().unwrap().len(), 3);
+    // With nobody reporting to anyone (ADR 0142), the wing is its lead.
+    assert_eq!(hq.wing_members().unwrap(), [kit.id]);
     // Once: nothing is made twice, and a renamed or paused member stays as the owner left it.
     hq.rename(kit.id, "Kai").unwrap();
     assert_eq!(hq.seed_wing().unwrap(), None);
@@ -1068,62 +997,6 @@ fn the_wing_is_seeded_once_and_an_old_team_keeps_what_it_had() {
         other.store().members().unwrap().len(),
         4,
         "Mara, Kit, Rae, Zed"
-    );
-}
-
-#[test]
-fn the_wing_is_told_the_forks_agents_md_is_its_rules_and_its_lead_that_the_draft_comes_first() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let kit = turn(&hq, t.kit);
-    for said in [
-        "The team's standards: read_doc docs/standards.md",
-        "The fork's own AGENTS.md, when it exists, is the repo's rules; propose one if missing.",
-        "docs/drafts/ansible-nas-AGENTS.md",
-        "the first branch to propose",
-    ] {
-        assert!(kit.told.contains(said), "{said}\n---\n{}", kit.told);
-    }
-    raes_task(&hq, &t);
-    let rae = turn(&hq, t.rae);
-    assert!(
-        rae.told
-            .contains("The fork's own AGENTS.md, when it exists, is the repo's rules"),
-        "{}",
-        rae.told
-    );
-    assert!(
-        !rae.told.contains("the first branch to propose"),
-        "{}",
-        rae.told
-    );
-    hq.add_task_with(
-        Author::Owner,
-        NewTask {
-            goal: t.lab,
-            project: None,
-            parent: None,
-            title: "Check the home lab".to_owned(),
-            description: String::new(),
-            assignee: Some(t.ada),
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        },
-        &[Criterion::new("The lab's state is in the thread", false)],
-    )
-    .unwrap();
-    let ada = turn(&hq, t.ada);
-    assert!(
-        ada.told
-            .contains("The team's standards: read_doc docs/standards.md"),
-        "{}",
-        ada.told
-    );
-    assert!(
-        !ada.told.contains("AGENTS.md"),
-        "not the wing's: {}",
-        ada.told
     );
 }
 

@@ -200,14 +200,7 @@ fn read_doc_tool() -> Value {
 }
 
 /// What a downtime turn may not do: it makes no work.
-const MAKES_WORK: [&str; 6] = [
-    "create_task",
-    "hand_to",
-    "propose_project",
-    "propose_goal",
-    "request_hire",
-    "request_staff",
-];
+const MAKES_WORK: [&str; 1] = ["create_task"];
 
 /// The tools every member is offered (ADR 0142), as MCP lists them: name, what it does, and its
 /// input. There are no roles: the member one rank up is offered `review` in its review turn.

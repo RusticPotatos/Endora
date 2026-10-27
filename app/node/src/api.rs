@@ -402,7 +402,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/scenarios/{task}", get(hq_scenario))
         .route("/v1/hq/trials", post(hq_start_trial))
         .route("/v1/hq/trials/{name}", get(hq_trial))
-        .route("/v1/hq/members/{id}/reports_to", post(hq_reports_to))
         // Elastic staffing (ADR 0118): the owner furloughs and recalls; there is no route that
         // removes a member.
         .route("/v1/hq/members/{id}/furlough", post(hq_furlough))

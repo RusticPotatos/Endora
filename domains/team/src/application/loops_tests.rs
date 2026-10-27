@@ -495,6 +495,42 @@ fn work_with_no_branch_needs_no_gate_to_pass() {
     );
 }
 
+/// In the loops, turns that show nothing are one of the item's failures, not a model tier up
+/// for the same member or a hand-up to whom it reports (ADR 0142): three failures climb a rank.
+///
+/// Given Bo's item,
+/// when Bo takes three turns on it that show nothing,
+/// then the item has one failure, it is still Bo's, and nothing went a tier up.
+#[test]
+fn turns_that_show_nothing_are_one_of_the_items_failures() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tick().unwrap();
+    for _ in 0..3 {
+        clock.0.fetch_add(10 * 60_000, Ordering::SeqCst);
+        hq.wake(f.bo, Some(fix), WakeReason::OwnerReplied).unwrap();
+        let bo = turn_of(&hq, f.bo);
+        use_tool(
+            &hq,
+            &bo,
+            "post",
+            &serde_json::json!({ "task": fix.0, "text": "Looking." }),
+        )
+        .unwrap();
+        hq.runner().finish(bo.run, true);
+        hq.tick().unwrap();
+    }
+    assert_eq!(hq.loop_failures(fix).unwrap(), 1);
+    let now = hq.store().task(fix).unwrap().unwrap();
+    assert_eq!(now.owner.or(now.assignee), Some(f.bo));
+    assert!(!woken(&hq, f.bo, fix, WakeReason::Escalated));
+}
+
 /// Three failures move an item up one rank; a failure at the top rank goes to the owner.
 ///
 /// Given Bo's item,

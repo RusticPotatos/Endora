@@ -45,9 +45,8 @@ fn team(hq: &Hq<'_>) -> Team {
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    hq.set_reports_to(linus, ada).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();

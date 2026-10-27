@@ -381,7 +381,6 @@ function hqTell(e, live, older) {
     // Projects, their budgets, and whom members report to (ADR 0113).
     "project.changed": [d.status === "paused" || d.status === "dropped" ? "warn" : "you", `Project ${d.title} is ${d.status}: ${d.what || ""}${d.by && d.by !== "owner" ? ", by " + d.by : ""}`],
     "project.budget": [d.level === "spent" ? "bad" : "warn", `Project ${d.title} ${d.said || ""}`],
-    "member.reports_to": ["you", `${d.name} now reports to ${d.manager}`],
     // The engineering wing (ADR 0115): branches, their checks and the owner's pushes.
     "branch.submitted": ["run", `${name} submitted ${d.name} (${d.files} files) on ${key}: check c${d.check} queued`],
     "check.done": [d.ok ? "done" : "bad", `Check c${d.check} on ${d.branch}: ${d.summary || (d.ok ? "passed" : "failed")}`],
@@ -1652,7 +1651,7 @@ function hqRosterLine(m, members) {
   const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today of ${hqDollars(m.per_day)}`;
   const open = !!HQ.roster[m.id];
   const controls = open ? `<div class="hq-controls">
-      <p class="hq-who"><span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}${hqReports(m, members)}
+      <p class="hq-who"><span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button>${hqStaffing(m)}</div></div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
@@ -1851,16 +1850,6 @@ function hqDecision(c) {
 function hqProjectTitle(id) {
   const p = ((HQ.snap && HQ.snap.projects) || []).find((x) => x.id === id);
   return p ? p.title : "#" + id;
-}
-
-// Whom a member reports to (ADR 0113): the CEO reports to the board, which is the owner; any
-// other member to another, which the owner may change here. HQ refuses itself and circles.
-function hqReports(m, members) {
-  if (m.role === "ceo") return `<div class="hq-row"><span>Reports to the board: you.</span></div>`;
-  const others = members.filter((o) => o.id !== m.id)
-    .map((o) => `<option value="${o.id}"${o.id === m.reports_to ? " selected" : ""}>${esc(o.name)} (${esc(hqRole(o.role))})</option>`).join("");
-  return `<div class="hq-row"><label>Reports to <select id="hq-reports-${m.id}" aria-label="Whom ${esc(m.name)} reports to">${others}</select></label>
-    <button class="hq-btn" data-act="hq:reports:${m.id}:set">Set</button></div>`;
 }
 
 // Projects (ADR 0113), grouped by the goal each serves: its lead and status, and this month's
@@ -2465,14 +2454,6 @@ async function hqDispatch(verb, noun, id, arg) {
     if (!confirm(`Add ${hqDollars(micros)} to today's pool? It is gone tomorrow.`)) return true;
     try { await api("POST", "/v1/hq/pool/top-up", { amount_micros: micros }); flash(`Today's pool is up by ${hqDollars(micros)}.`, "ok"); }
     catch (e) { flash("Couldn't top the pool up: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
-  // Whom a member reports to.
-  if (noun === "reports") {
-    const box = document.getElementById(`hq-reports-${id}`), to = box ? Number(box.value) : 0;
-    if (!to) return true;
-    try { await api("POST", `/v1/hq/members/${id}/reports_to`, { to }); flash(`${hqName(Number(id))} reports to ${hqName(to)}.`, "ok"); }
-    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // Projects: make one, cap it, hand it work, or change where it is.

@@ -84,7 +84,6 @@ pub fn app(state: State) -> Router {
         .route("/v1/members/{id}/name", post(rename))
         .route("/v1/house", post(house_log))
         // Projects and whom members report to (ADR 0113): the owner's, through the node.
-        .route("/v1/members/{id}/reports_to", post(reports_to))
         // Elastic staffing (ADR 0118): the owner furloughs and recalls any member but the CEO.
         // There is no route that removes a member: nobody is ever fired.
         .route("/v1/members/{id}/furlough", post(furlough))
@@ -801,22 +800,6 @@ async fn add_routine(
     Ok(Json(json!({ "routine": id.0 })))
 }
 
-#[derive(Deserialize)]
-struct ReportsTo {
-    to: i64,
-}
-
-/// The owner sets whom a member reports to.
-async fn reports_to(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-    Json(req): Json<ReportsTo>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    blocking(move || hq.set_reports_to(MemberId(id), MemberId(req.to))).await?;
-    Ok(Json(json!({ "member": id, "reports_to": req.to })))
-}
-
 /// The owner puts a member on furlough: never woken, nothing held, nothing deleted.
 async fn furlough(
     Extract(state): Extract<State>,
@@ -1348,8 +1331,6 @@ mod tests {
                 None,
             )
             .unwrap();
-        let dev = st.hq.store().runs().unwrap()[0].member;
-        st.hq.set_reports_to(dev, lead).unwrap();
         (run, task)
     }
 
@@ -2136,9 +2117,8 @@ mod tests {
         assert_eq!(found["run"], turn.run.0);
         assert_eq!(found["cloud"], true);
         assert_eq!(found["brain"], "claude-sonnet-5-5");
-        // Changing the lab is the engineering wing's (ADR 0120); Ada leads no branch work, so
-        // the node neither offers nor runs a submission for her.
-        assert_eq!(found["wing"], false, "{found}");
+        // Any member at work may change the lab (ADR 0142).
+        assert_eq!(found["wing"], true, "{found}");
         let left = found["left"].as_i64().unwrap();
         assert_eq!(left, 400_000, "{found}");
         let spend = |micros: i64| {
@@ -3674,12 +3654,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_makes_caps_and_pauses_a_project_and_sets_whom_a_member_reports_to() {
+    async fn the_owner_makes_caps_and_pauses_a_project() {
         let st = state(false);
         let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        let other = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
-        let dev = st
-            .hq
+        st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        st.hq
             .hire("Richard Roe", Role::Developer, 40, 2, 0)
             .unwrap();
         let goal = st
@@ -3740,18 +3719,6 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        let (status, _) = post(
-            format!("/v1/members/{}/reports_to", dev.0),
-            json!({ "to": other.0 }).to_string(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let (status, _) = post(
-            format!("/v1/members/{}/reports_to", dev.0),
-            json!({ "to": dev.0 }).to_string(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "never itself");
         let snap = json_of(
             app.clone()
                 .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
@@ -3775,7 +3742,6 @@ mod tests {
             )
         );
         assert_eq!(snap["tasks"][0]["project"], id);
-        assert_eq!(snap["members"][2]["reports_to"], other.0);
     }
 
     #[tokio::test]

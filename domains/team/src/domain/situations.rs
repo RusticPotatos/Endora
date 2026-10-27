@@ -39,14 +39,6 @@ pub const ALL: [Situation; 6] = [
     Situation::Resumed,
 ];
 
-/// The situations a story is told whole in, unless its teller says otherwise.
-pub const TAUGHT_BY_DEFAULT: [Situation; 4] = [
-    Situation::Fresh,
-    Situation::Handover,
-    Situation::AfterGap,
-    Situation::Recalled,
-];
-
 impl Situation {
     /// Its stable name.
     #[must_use]

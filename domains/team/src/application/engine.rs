@@ -13,7 +13,7 @@ use super::ports::{
     WorkerAdapter,
 };
 use super::scorecard;
-use crate::domain::chain::{self, Decision};
+use crate::domain::chain::Decision;
 use crate::domain::cut::cut;
 use crate::domain::effort::{self, Effort};
 use crate::domain::guards::{GuardRefusal, Stopped};
@@ -536,7 +536,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<MemberId> {
         let _held = self.held();
         let members = self.store.members()?;
-        let manager = chain::manager_at_hire(role, &members);
         // No name given: the next free one (ADR 0142).
         let given = if name.trim().is_empty() {
             let taken: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
@@ -547,7 +546,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let id = self
             .store
             .add_member(&given, role, share_percent, slots, look)?;
-        self.store.set_reports_to(id, manager)?;
         Ok(id)
     }
 
@@ -1504,11 +1502,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let run = self.running(run)?;
         self.reach(&run, task, true)?;
         let member = self.member(run.member)?;
-        let askers = if !answers || text.trim_start().starts_with(chain::QUESTION_FOR) {
-            Vec::new()
-        } else {
-            self.askers_of(&member, task)?
-        };
         // Unsupported only when it states something of the member's own, cites nothing, and
         // its turn has no receipt (ADR 0114, amended). The worker's last word (`answers`
         // false) is what the model said as it stopped, never tagged.
@@ -1521,34 +1514,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             unsupported,
             InputOrigin::Run(run.id),
         )?;
-        for asker in askers {
-            if asker.id == member.id {
-                continue;
-            }
-            self.wake_held_lock(asker.id, Some(task), WakeReason::QuestionAnswered)?;
-        }
         Ok(())
-    }
-
-    /// The members whose questions up the chain to `member`, in `task`'s thread, it has not
-    /// answered yet.
-    fn askers_of(&self, member: &Member, task: TaskId) -> Done<Vec<Member>> {
-        let thread = self.store.thread(task)?;
-        let posts: Vec<(&str, &str)> = thread
-            .iter()
-            .map(|p| (p.author.as_str(), p.text.as_str()))
-            .collect();
-        let members = self.store.members()?;
-        let mut askers: Vec<Member> = Vec::new();
-        for (name, _) in chain::unanswered(&posts, &member.name) {
-            let Some(asker) = members.iter().find(|m| m.name == name) else {
-                continue;
-            };
-            if !askers.iter().any(|a| a.id == asker.id) {
-                askers.push(asker.clone());
-            }
-        }
-        Ok(askers)
     }
 
     /// Takes a task for `member`, outside any turn: the rules of claiming on their own, for
@@ -2649,9 +2615,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.fire_held_lock(routine, &Firing::Schedule)?;
             report.routines += 1;
         }
-        // Once a day, on the day's first tick: members with nothing to do are offered to the
-        // owner for furlough (ADR 0118).
-        self.idle_look()?;
         // Check-backs whose time came wake their member, while the task is still open.
         for back in self.store.check_backs()? {
             if back.status != CheckBackStatus::Pending || back.due_at > now {
@@ -3159,40 +3122,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(format!("{text}\nEvidence: {}", self.evidence_said(cited)?))
     }
 
-    /// Whether a turn is work, on the house's model, rather than judgment on Claude (ADR 0131).
-    fn on_work_turn(
-        &self,
-        turn: &crate::application::ports::Run,
-        member: &crate::domain::Member,
-    ) -> Done<bool> {
-        let reason = self.store.wake(turn.wake)?.map(|w| w.reason);
-        Ok(!reason.is_some_and(|r| {
-            crate::domain::turns::kind_of(r, member.role)
-                == crate::domain::turns::TurnKind::Judgment
-        }))
-    }
-
-    /// Counts one escalation of `task` a model tier up, if it has not escalated twice today
-    /// (ADR 0139: a problem cannot bounce between tiers). Whether it may. Never in a scenario:
-    /// the Holodeck measures the model a player plays on.
-    pub(super) fn take_a_tier_up(&self, task: TaskId) -> Done<bool> {
-        const MOST_A_DAY: u32 = 2;
-        if self.in_a_scenario(task)? {
-            return Ok(false);
-        }
-        let key = format!("escalated:{}:{}", task.0, self.today());
-        let done: u32 = self
-            .store
-            .setting(&key)?
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(0);
-        if done >= MOST_A_DAY {
-            return Ok(false);
-        }
-        self.store.set_setting(&key, &(done + 1).to_string())?;
-        Ok(true)
-    }
-
     /// Whether a question or an approval from `member` about `task` still waits on the desk.
     fn waiting_question(&self, member: MemberId, task: TaskId) -> Done<bool> {
         for d in self.store.desk()? {
@@ -3511,14 +3440,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // The check after a deploy (ADR 0115, amended): the owner's word that it is deployed.
             ("deploy", "deployed" | "not_deploying") => {
                 self.decide_deploy(found, decision == "deployed")?;
-            }
-            // Elastic staffing (ADR 0118): furlough an idle member or keep it, and bring a
-            // furloughed one back for a lead with a backlog.
-            ("furlough", "approve" | "decline") => {
-                self.decide_furlough(found, decision == "approve")?;
-            }
-            ("recall", "approve" | "decline") => {
-                self.decide_recall(found, decision == "approve")?;
             }
             // A guard's notice (ADR 0124): the owner's verdict on its finding.
             ("guard", "real" | "false_positive" | "not_enough" | "resolved" | "dismiss") => {
@@ -4234,8 +4155,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // On furlough (ADR 0118): when it began, and when it ended if it has.
                 "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,
                 "recalled_at": m.recalled_at,
-                // Whom it reports to (ADR 0113): null for the CEO, who reports to the board.
-                "reports_to": chain::manager(&m, &all_members).map(|r| r.0),
                 // What it thinks with, and what the owner may choose for its role (ADR 0109).
                 "brain": m.brain.name(),
                 "brains": Brain::choices(m.role).into_iter()
@@ -4486,7 +4405,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "pool": { "base": money::pool_a_day(self.settings.pool_per_month),
                       "topped_up": self.topup_of(day)? },
             // Each team's seats, at work and on furlough (ADR 0118).
-            "teams": self.teams_shown()?,
             // Each area's measures, today and the last seven days (ADR 0120).
         }))
     }

@@ -648,47 +648,6 @@ fn the_back_off_holds_turns_that_only_talk_and_not_those_that_read() {
 }
 
 #[test]
-fn turns_that_show_nothing_are_nudged_twice_and_then_go_a_model_tier_up_once() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq, false, false);
-    let task = owners_task(&hq, &t, t.dev, "Look at sonarr");
-    let first = turn(&hq, t.dev);
-    use_tool(&hq, &first, "claim", &json!({ "task": task.0 })).unwrap();
-    end(&hq, &clock, &first);
-    let mut told = Vec::new();
-    for _ in 0..3 {
-        hq.post(Author::Owner, task, "Next.").unwrap();
-        let linus = turn(&hq, t.dev);
-        told.push(linus.told.contains(NUDGE));
-        use_tool(
-            &hq,
-            &linus,
-            "post",
-            &json!({ "task": task.0, "text": "Looking." }),
-        )
-        .unwrap();
-        end(&hq, &clock, &linus);
-    }
-    assert_eq!(
-        told,
-        [false, true, true],
-        "a nudge after each of the first two"
-    );
-    // ADR 0139: the third takes it a model tier up, the same member on its Claude; the work
-    // is not handed up to whom Linus reports to.
-    let now = hq.store().task(task).unwrap().unwrap();
-    assert_eq!(now.owner.or(now.assignee), Some(t.dev), "it stays Linus's");
-    let said: Vec<String> = thread(&hq, task)
-        .into_iter()
-        .filter(|p| p.contains("a model tier up"))
-        .collect();
-    assert_eq!(said.len(), 1, "{said:?}");
-    assert!(said[0].starts_with("Linus took 3 turns on this that showed nothing"));
-    assert_eq!(last_wake(&hq), (t.dev, Some(task), WakeReason::Escalated));
-}
-
-#[test]
 fn the_same_reading_again_shows_nothing_but_the_first_reading_does() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);

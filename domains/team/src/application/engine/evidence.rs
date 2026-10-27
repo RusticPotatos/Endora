@@ -12,7 +12,6 @@ use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Cited, Clock, NewTask, Run, TeamStore, WorkerAdapter};
-use crate::domain::chain;
 use crate::domain::evidence::{
     self, AfterNothing, CallReceipt, Criterion, Found, Judged, Label, Ref, TurnFacts,
 };
@@ -623,57 +622,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.store.setting(&key)?.is_some() {
             return Ok(());
         }
-        let member = self.member(run.member)?;
-        // A model tier up before a person (ADR 0139): the same member, on its Claude.
-        if self.on_work_turn(run, &member)? && self.take_a_tier_up(task_id)? {
-            self.store.set_setting(&key, "1")?;
-            self.post_held_lock(
-                Author::Endora,
-                task_id,
-                &format!(
-                    "{} took {count} turns on this that showed nothing (talk only or empty), \
-                     after {} nudges: {} takes it a model tier up, on its Claude.",
-                    member.name,
-                    evidence::MOST_NUDGES,
-                    member.name
-                ),
-            )?;
-            self.wake_held_lock(member.id, Some(task_id), WakeReason::Escalated)?;
+        // In the loops (ADR 0142) the turns that showed nothing are one of the item's
+        // failures: three climb a rank. No model tier up, no hand-up to anyone.
+        if !self.loop_holds(&task)? {
             return Ok(());
         }
-        let members = self.store.members()?;
-        let Some(manager) = chain::manager(&member, &members)
-            .and_then(|id| members.iter().find(|m| m.id == id).cloned())
-            .filter(|m| m.id != member.id)
-        else {
-            return Ok(());
-        };
         self.store.set_setting(&key, "1")?;
+        let member = self.member(run.member)?;
         self.post_held_lock(
             Author::Endora,
             task_id,
             &format!(
-                "{} took {count} turns on this that showed nothing (talk only or empty), after \
-                 {} nudges: it goes to {}, whom {} reports to.",
+                "{} took {count} turns on this that showed nothing (talk only or empty), after {} \
+                 nudges: that is one of its failures.",
                 member.name,
-                evidence::MOST_NUDGES,
-                manager.name,
-                member.name
+                evidence::MOST_NUDGES
             ),
         )?;
-        self.store.release(task_id)?;
-        self.store.set_assignee(task_id, Some(manager.id))?;
-        if task.status != TaskStatus::Todo {
-            self.store.set_task_status(task_id, TaskStatus::Todo)?;
-            self.emit_status(&task, TaskStatus::Todo)?;
-        }
-        self.emit(
-            EventKind::TaskReleased,
-            json!({ "task": task_id.0, "member": member.id.0, "to": manager.id.0,
-                    "why": "showed nothing" }),
-        )?;
-        self.wake_held_lock(manager.id, Some(task_id), WakeReason::Assigned)?;
-        Ok(())
+        self.loop_failed(task_id)
     }
 
     /// A member's ended turns on a task, oldest first, each with whether it showed nothing:

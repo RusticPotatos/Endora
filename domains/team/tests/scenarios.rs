@@ -21,7 +21,7 @@ use endora_team::domain::money::{DAY_MS, DOLLAR};
 use endora_team::domain::routines::HOUR_MS;
 use endora_team::domain::{
     Criterion, DeskId, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus,
-    Receipt, Refused, Role, TaskId, WakeReason,
+    Receipt, Role, TaskId, WakeReason,
 };
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 use serde_json::json;
@@ -937,37 +937,6 @@ fn submits_branch(w: &mut Office, name: String, branch: String) {
     .expect("the node's receipt of the submission");
 }
 
-/// The member's turn hands the node a branch; HQ's word on it is kept, a refusal included.
-#[when(expr = "{word} tries to submit the branch {string}")]
-fn tries_to_submit(w: &mut Office, name: String, branch: String) {
-    let context = w.turn_of(&name);
-    let recorded = w.hq.record_branch(
-        &context.token,
-        &Submission {
-            branch,
-            head: SUBMITTED_HEAD.to_owned(),
-            base: SUBMITTED_BASE.to_owned(),
-            files: 1,
-            plus: 4,
-            minus: 1,
-            stat: " roles/stats/files/prometheus/alert_rules.yml | 5 ++--".to_owned(),
-            diff: "-old\n+new".to_owned(),
-            can_push: true,
-        },
-    );
-    w.note(recorded);
-}
-
-#[then("no branch is kept")]
-fn no_branch_kept(w: &mut Office) {
-    assert!(
-        w.hq.store()
-            .branches()
-            .expect("the store answers")
-            .is_empty()
-    );
-}
-
 // --- The check after a deploy (ADR 0115, amended) ----------------------------------------------
 
 /// The routine that takes the home lab's alarms, the member's, in a project it leads.
@@ -1239,80 +1208,6 @@ fn refused_for(w: &mut Office, why: String) {
 
 // --- Elastic staffing and notebooks (ADR 0118) ----------------------------------------------
 
-/// Days go by, with a tick before (the team is looked over once a day, and a member is first
-/// met then) and one after.
-#[given(regex = r"^(\d+) days pass$")]
-#[when(regex = r"^(\d+) days pass$")]
-fn days_pass(w: &mut Office, days: i64) {
-    w.tick();
-    w.clock.0.fetch_add(days * DAY_MS, Ordering::SeqCst);
-    w.tick();
-}
-
-#[then(expr = "the owner's desk offers to furlough {string}")]
-fn offers_furlough(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    assert!(
-        w.waiting_on_desk("furlough")
-            .iter()
-            .any(|d| d.member == Some(id)),
-        "no offer for {name}: {:?}",
-        w.waiting_on_desk("furlough")
-    );
-}
-
-#[when(expr = "the owner approves furloughing {string}")]
-fn approve_furlough(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    let item = w
-        .waiting_on_desk("furlough")
-        .into_iter()
-        .find(|d| d.member == Some(id))
-        .expect("the owner was offered it");
-    w.hq.decide(item.id, "approve").expect("the owner decides");
-}
-
-fn found(w: &Office, name: &str) -> endora_team::domain::Member {
-    let id = w.member(name);
-    w.hq.store()
-        .members()
-        .expect("the store answers")
-        .into_iter()
-        .find(|m| m.id == id)
-        .unwrap_or_else(|| panic!("{name} is no longer on the team"))
-}
-
-#[given(expr = "{word} is on furlough")]
-fn put_on_furlough(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    w.hq.furlough(id).expect("the owner furloughs");
-}
-
-#[then(expr = "{word} is on furlough")]
-fn is_on_furlough(w: &mut Office, name: String) {
-    assert!(found(w, &name).furloughed(), "{name} is at work");
-}
-
-#[then(expr = "{word} is at work")]
-fn is_at_work(w: &mut Office, name: String) {
-    assert!(!found(w, &name).furloughed(), "{name} is on furlough");
-}
-
-/// Nobody is ever fired: the member is still there, by name, with its record.
-#[then(expr = "{word} is still on the team")]
-fn still_on_the_team(w: &mut Office, name: String) {
-    assert_eq!(found(w, &name).name, name);
-}
-
-#[then(expr = "waking {word} is refused as furloughed")]
-fn waking_refused(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    let receipt =
-        w.hq.wake(id, None, WakeReason::Mentioned)
-            .expect("the wake is answered");
-    assert_eq!(receipt, Receipt::Refused(Refused::Furloughed));
-}
-
 /// cucumber's command line, less what `cargo test` passes every test binary (`--test-threads`,
 /// `--nocapture` and the like), which it would otherwise refuse. A bare word is a scenario
 /// name to run, as it is for libtest: `cargo test -p endora-team --test scenarios -- "One task"`.
@@ -1483,11 +1378,6 @@ fn tries_to_make_work(w: &mut Office, name: String) {
 
 // --- Games in the office (ADR 0121) ---------------------------------------------------------------
 
-#[given("the games are on")]
-fn games_on(w: &mut Office) {
-    w.hq.set_games(true);
-}
-
 #[given(regex = r"^(\d+) minutes pass$")]
 #[when(regex = r"^(\d+) minutes pass$")]
 fn minutes_pass(w: &mut Office, minutes: i64) {
@@ -1496,31 +1386,6 @@ fn minutes_pass(w: &mut Office, minutes: i64) {
 }
 
 impl Office {}
-
-#[then("no match woke anyone or ran a turn")]
-fn nobody_woken(w: &mut Office) {
-    // The only wake is chess's: white's move in the game HQ set free members (ADR 0121).
-    let players: Vec<_> =
-        w.hq.store()
-            .chess_games()
-            .expect("the store answers")
-            .iter()
-            .flat_map(|g| [g.white, g.black])
-            .collect();
-    assert!(
-        w.hq.wakes()
-            .expect("the store answers")
-            .iter()
-            .all(|wake| wake.reason == WakeReason::Downtime && players.contains(&wake.member))
-    );
-    assert!(
-        w.hq.store()
-            .runs()
-            .expect("the store answers")
-            .iter()
-            .all(|run| players.contains(&run.member))
-    );
-}
 
 #[when(regex = r"^(\w+) challenges (\w+) to chess$")]
 fn challenges_to_chess(w: &mut Office, name: String, other: String) {
