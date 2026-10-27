@@ -269,9 +269,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     assert_eq!(names.len(), 23, "{names:?}");
     assert!(names.contains(&"escalate".to_owned()));
     assert!(names.contains(&"recheck".to_owned()));
-    for tool in ["ask_record"] {
-        assert!(names.contains(&tool.to_owned()), "{tool}");
-    }
+    assert!(names.contains(&"ask_record".to_owned()));
     for tool in ["answer_quiz", "answer_consult"] {
         assert!(
             !names.contains(&tool.to_owned()),
