@@ -215,6 +215,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .map_or(0, Vec::len))
     }
 
+    /// The league games any reset set aside, by their world's task, so the owner's list can
+    /// show them as from before it.
+    pub(super) fn league_games_set_aside(&self) -> Done<Vec<TaskId>> {
+        let before: Vec<Value> = self
+            .store
+            .setting(BEFORE_RESET)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        Ok(before
+            .iter()
+            .filter_map(|r| r["games"].as_array())
+            .flatten()
+            .filter_map(|g| g[0].as_i64())
+            .map(TaskId)
+            .collect())
+    }
+
     /// On the tick: when the league is on, no world is being played, nothing waits to run
     /// again and two members are free, the next pair of brains sits down to a game, by two of
     /// the free members (who plays is the board's; which brain thinks is the league's).

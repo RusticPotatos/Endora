@@ -43,7 +43,7 @@ function hqHolodeck(s) {
     : `<div class="hq-row"><button class="hq-btn tall" data-act="hq:holo:rerun:all">Run every scenario again</button></div>`;
   const tried = trials.map((t) => hqLine(`hq:holo:trial:${esc(t.name)}`, esc(t.name), `${esc(hqHoloKind(t.kind))}, ${Number(t.runs)} runs · compare`)).join("");
   const open = HQ.holo && HQ.holo.what !== "replay" ? hqHoloDetail() : "";
-  const league = hqLeague(h && h.league);
+  const league = hqLeague(h && h.league, queued);
   return `<section class="hq-card"><h2>Holodeck</h2>
     <p class="hq-note">Scenarios the team plays in worlds that close themselves, and trials that compare who plays them. Nothing here touches the house.</p>
     ${again}
@@ -55,7 +55,7 @@ function hqHolodeck(s) {
 
 // The model league (ADR 0135, amended 2026-10-25): the brains ranked by their chess, one line
 // each, and its games, latest first, each opening its board.
-function hqLeague(l) {
+function hqLeague(l, queued) {
   if (!l || !(l.table || []).length) return "";
   const label = (name) => { const row = (l.table || []).find((r) => r.brain === name); return esc(row ? row.label : name); };
   const rows = l.table.map((r, i) => `<li>${i + 1}. ${esc(r.label)} <small>${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
@@ -63,8 +63,9 @@ function hqLeague(l) {
     `White: ${label(g.white)} · Black: ${label(g.black)}`, g.end ? hqChessEnd(g.end, label(g.white), label(g.black)) : "playing"));
   const list = hqMore("league", games, 3);
   const left = Number(l.pairs_left || 0);
+  const waiting = !(l.games || []).length && queued ? `<p class="hq-note">The first game starts once the queued scenarios are done.</p>` : "";
   return `<p class="hq-who">Model league</p><ul class="hq-lines">${rows}</ul>
-    <p class="hq-note">${left ? `${left} pair${left === 1 ? "" : "s"} still to meet; then the rematches, colours swapped.` : "Every pair has met; the rematches go on, colours swapped."}</p>
+    ${waiting}<p class="hq-note">${left ? `${left} pair${left === 1 ? "" : "s"} still to meet; then the rematches, colours swapped.` : "Every pair has met; the rematches go on, colours swapped."}</p>
     ${games.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : ""}`;
 }
 

@@ -2955,6 +2955,11 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   const league = html("hqHolodeck(HQ.snap)");
   if (!league.includes("Model league") || !/1\. Local[\s\S]*1216[\s\S]*1 won/.test(league) || !league.includes("2 pairs still to meet")) fail("holodeck: the league table is not shown: " + league);
   if (!league.includes('data-act="hq:holo:open:812"') || league.includes("<b>Haiku</b>")) fail("holodeck: a league game does not open, or a label is not escaped: " + league);
+  if (league.includes("first game starts")) fail("holodeck: a league with games says it has not started: " + league);
+  // A league with no games yet, behind queued scenarios, says why (owner, 2026-10-27).
+  runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: Object.assign({}, HQ.snap.holodeck, { queued: 3, league: Object.assign({}, HQ.snap.holodeck.league, { games: [] }) }) });`, context);
+  const waiting = html("hqHolodeck(HQ.snap)");
+  if (!waiting.includes("The first game starts once the queued scenarios are done.")) fail("holodeck: a league waiting on the queue does not say so: " + waiting);
   // Which side each brain played, and who won, in words rather than "black_won" (owner, 2026-10-26).
   const gameLine = league.replace(/<[^>]+>/g, "");
   if (!gameLine.includes("White: &lt;b&gt;Haiku&lt;/b&gt;") || !gameLine.includes("Black: Local") || !gameLine.includes("Local won") || gameLine.includes("black_won")) fail("holodeck: a league game does not say who played which colour and who won: " + league);

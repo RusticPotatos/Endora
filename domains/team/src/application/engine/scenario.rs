@@ -1103,6 +1103,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|t| t.parent.is_none() && t.project.is_some_and(|p| holding.contains(&p)))
             .collect();
         tasks.sort_by_key(|t| std::cmp::Reverse(t.id));
+        let set_aside = self.league_games_set_aside()?;
         let mut listed = Vec::new();
         for task in tasks {
             if listed.len() >= most {
@@ -1112,12 +1113,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 continue;
             };
             let now = self.world_at(&place)?;
+            let round = match self.store.setting(&round_key(task.id))? {
+                Some(round) => Some(round),
+                None if set_aside.contains(&task.id) => Some("before the league reset".to_owned()),
+                None => None,
+            };
             listed.push(
                 json!({ "task": task.id.0, "kind": place.kind.name(), "title": task.title,
                                 "status": task.status.name(),
                                 "end": now.end().map(|(name, _)| name),
                                 "elapsed": now.elapsed(),
-                                "round": self.store.setting(&round_key(task.id))? }),
+                                "round": round }),
             );
         }
         Ok(listed)
