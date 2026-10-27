@@ -7,6 +7,7 @@ use super::{Done, Engine};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::situations::{self, Briefed, Composed, Facts, Piece, Situation, Weight};
 use crate::domain::world::{HOUSE, Section, Stage};
+use crate::domain::world_migration::TimelineLine;
 use crate::domain::{Member, Millis, Role};
 
 /// The most characters of the house page's newest timeline lines a briefing carries while the
@@ -219,6 +220,63 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
+    /// One line of a page's timeline as a briefing shows it.
+    fn timeline_said(&self, l: &TimelineLine) -> String {
+        format!(
+            "- {}, {}: {}\n",
+            super::world::day_with_year(l.at, self.settings.offset_minutes),
+            l.by,
+            l.line
+        )
+    }
+
+    /// The house page while it has no sections: its newest timeline lines, and for the CEO,
+    /// who keeps the page, the ask to write what is true now from them (ADR 0122).
+    fn house_without_sections(&self, member: &Member, timeline: &[TimelineLine]) -> Vec<Piece> {
+        let mut pieces = Vec::new();
+        if timeline.is_empty() {
+            return vec![Piece::new(
+                "world:house",
+                "No sections yet.\n",
+                Weight::Core,
+            )];
+        }
+        let mut newest: Vec<String> = Vec::new();
+        let mut chars = 0;
+        for l in timeline.iter().rev() {
+            let said = self.timeline_said(l);
+            if !newest.is_empty() && chars + said.chars().count() > TIMELINE_CHARS {
+                break;
+            }
+            chars += said.chars().count();
+            newest.push(said);
+        }
+        let more = timeline.len() - newest.len();
+        // The house log's lines are on the timeline now (ADR 0122): the CEO, who keeps the
+        // page, is asked to write what is true now from them.
+        if member.role == Role::Ceo {
+            pieces.push(Piece::new(
+                "world:house",
+                "No sections yet: write what is true of the house now, from its timeline, \
+                 with write_world (as insights, on evidence).\n",
+                Weight::Core,
+            ));
+        }
+        let mut text = String::from("No sections yet. Its timeline, newest last:\n");
+        if more > 0 {
+            text.push_str(&format!(
+                "- and {more} earlier lines (read_world world:house)\n"
+            ));
+        }
+        text.extend(newest.into_iter().rev());
+        pieces.push(Piece::new(
+            "world:house timeline",
+            text,
+            Weight::Recommended,
+        ));
+        pieces
+    }
+
     /// The house page's pieces for a member: the CEO and the leads its current sections (canon
     /// first) and what its timeline gained since their last turn, or its newest lines while it
     /// has no sections; everyone else its canon, and in a fresh start its insights too.
@@ -282,56 +340,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(pieces);
         }
         let timeline = self.store.timeline(HOUSE.slug)?;
-        let line = |l: &crate::domain::world_migration::TimelineLine| {
-            format!(
-                "- {}, {}: {}\n",
-                super::world::day_with_year(l.at, self.settings.offset_minutes),
-                l.by,
-                l.line
-            )
-        };
+        let line = |l: &TimelineLine| self.timeline_said(l);
         if current.is_empty() {
-            if timeline.is_empty() {
-                pieces.push(Piece::new(
-                    "world:house",
-                    "No sections yet.\n",
-                    Weight::Core,
-                ));
-                return Ok(pieces);
-            }
-            let mut newest: Vec<String> = Vec::new();
-            let mut chars = 0;
-            for l in timeline.iter().rev() {
-                let said = line(l);
-                if !newest.is_empty() && chars + said.chars().count() > TIMELINE_CHARS {
-                    break;
-                }
-                chars += said.chars().count();
-                newest.push(said);
-            }
-            let more = timeline.len() - newest.len();
-            // The house log's lines are on the timeline now (ADR 0122): the CEO, who keeps the
-            // page, is asked to write what is true now from them.
-            if member.role == Role::Ceo {
-                pieces.push(Piece::new(
-                    "world:house",
-                    "No sections yet: write what is true of the house now, from its timeline, \
-                     with write_world (as insights, on evidence).\n",
-                    Weight::Core,
-                ));
-            }
-            let mut text = String::from("No sections yet. Its timeline, newest last:\n");
-            if more > 0 {
-                text.push_str(&format!(
-                    "- and {more} earlier lines (read_world world:house)\n"
-                ));
-            }
-            text.extend(newest.into_iter().rev());
-            pieces.push(Piece::new(
-                "world:house timeline",
-                text,
-                Weight::Recommended,
-            ));
+            pieces.extend(self.house_without_sections(member, &timeline));
             return Ok(pieces);
         }
         if let Some(last) = last {

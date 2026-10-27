@@ -469,29 +469,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         done.summary.clone_from(&summary);
         done.done_at = Some(now);
         self.store.save_check(&done)?;
-        // The check is the wing's gate (tests, lint and build, ADR 0114): code work closes only
-        // once it has passed, and the lab's own checks are what passes it. The gate is the
-        // newest head's: a check of an older head that reports late (two heads in flight) is
-        // recorded below, and sets nothing (ADR 0115, amended).
-        let newer = self
-            .store
-            .branches()?
-            .into_iter()
-            .filter(|b| b.task == check.task)
-            .max_by_key(|b| b.id)
-            .filter(|newest| newest.head != branch.head);
-        if newer.is_none() {
-            // In the loops a failed check is one of the item's failures (ADR 0142).
-            if !ok {
-                self.loop_failed(check.task)?;
-            }
-            self.store.set_gate(check.task, ok)?;
-            self.emit(
-                EventKind::GateResult,
-                json!({ "task": check.task.0, "passed": ok, "failed": if ok { "" } else { summary.as_str() },
-                        "check": check.id }),
-            )?;
-        }
+        let newer = self.gate_from(check, &branch, ok, &summary)?;
         // The turn that asked for the check: the member who submitted the branch, unless a lead
         // or another developer asked for it to be checked again.
         let asked = self
@@ -547,23 +525,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let task = self.task(check.task)?;
         if !ok && task.status == TaskStatus::InReview {
-            // A branch that fails its checks is sent back (ADR 0115): the tester need not read
-            // what the lab's own checks already refused.
-            self.store.set_task_status(task.id, TaskStatus::Doing)?;
-            self.post_held_lock(
-                Author::Endora,
-                task.id,
-                &format!(
-                    "Sent back: check c{} failed ({summary}). Read document d{document}, put it \
-                     right, submit the branch again and then the task. If the line says the \
-                     check box could not run, ask for the same branch to be checked again with \
-                     recheck, and submit nothing new.",
-                    check.id
-                ),
-            )?;
-            self.emit_status(&task, TaskStatus::Doing)?;
-            self.wake_held_lock(branch.member, Some(task.id), WakeReason::SentBack)?;
-            return Ok(());
+            return self.send_back_failed(&task, check, &branch, &summary, document);
         }
         if task.status.finished() {
             return Ok(());
@@ -585,6 +547,67 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         {
             self.wake_held_lock(tester.id, Some(task.id), WakeReason::CheckDone)?;
         }
+        Ok(())
+    }
+
+    /// The check is the wing's gate (tests, lint and build, ADR 0114): code work closes only
+    /// once it has passed, and the lab's own checks are what passes it. The gate is the newest
+    /// head's: a check of an older head that reports late (two heads in flight) is recorded,
+    /// and sets nothing (ADR 0115, amended). Returns the newer branch, if there is one.
+    fn gate_from(
+        &self,
+        check: &Check,
+        branch: &Branch,
+        ok: bool,
+        summary: &str,
+    ) -> Done<Option<Branch>> {
+        let newer = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| b.task == check.task)
+            .max_by_key(|b| b.id)
+            .filter(|newest| newest.head != branch.head);
+        if newer.is_some() {
+            return Ok(newer);
+        }
+        // In the loops a failed check is one of the item's failures (ADR 0142).
+        if !ok {
+            self.loop_failed(check.task)?;
+        }
+        self.store.set_gate(check.task, ok)?;
+        self.emit(
+            EventKind::GateResult,
+            json!({ "task": check.task.0, "passed": ok, "failed": if ok { "" } else { summary },
+                    "check": check.id }),
+        )?;
+        Ok(None)
+    }
+
+    /// A branch that fails its checks is sent back (ADR 0115): the tester need not read what
+    /// the lab's own checks already refused.
+    fn send_back_failed(
+        &self,
+        task: &crate::domain::Task,
+        check: &Check,
+        branch: &Branch,
+        summary: &str,
+        document: i64,
+    ) -> Done<()> {
+        self.store.set_task_status(task.id, TaskStatus::Doing)?;
+        self.post_held_lock(
+            Author::Endora,
+            task.id,
+            &format!(
+                "Sent back: check c{} failed ({summary}). Read document d{document}, put it \
+                 right, submit the branch again and then the task. If the line says the \
+                 check box could not run, ask for the same branch to be checked again with \
+                 recheck, and submit nothing new.",
+                check.id
+            ),
+        )?;
+        self.emit_status(task, TaskStatus::Doing)?;
+        self.wake_held_lock(branch.member, Some(task.id), WakeReason::SentBack)?;
         Ok(())
     }
 
@@ -958,34 +981,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.store.goal_note(goal)?.trim().is_empty() {
             self.set_goal_note(goal, WING_NOTE)?;
         }
-        let named = |name: &str| -> Done<Option<MemberId>> {
-            Ok(self
-                .store
-                .members()?
-                .into_iter()
-                .find(|m| m.name.eq_ignore_ascii_case(name))
-                .map(|m| m.id))
-        };
-        let lead = match named("Kit")? {
-            Some(id) => id,
-            None => {
-                let id = self.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)?;
-                self.set_brain(id, Brain::Sonnet.name())?;
-                id
-            }
-        };
-        let mut developers = Vec::new();
-        for (name, look) in [("Rae", 2), ("Zed", 4)] {
-            let id = match named(name)? {
-                Some(id) => id,
-                None => {
-                    let id = self.hire(name, Role::Developer, Role::Developer.share(), 2, look)?;
-                    self.set_brain(id, Brain::Haiku.name())?;
-                    id
-                }
-            };
-            developers.push(id);
-        }
+        let (lead, developers) = self.wing_staff()?;
         let project = match self
             .store
             .projects()?
@@ -1045,6 +1041,40 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             developers,
             task,
         }))
+    }
+
+    /// The wing's lead, Kit on Claude Sonnet, and its developers, Rae and Zed on Claude Haiku:
+    /// each hired unless one of that name is already on the team.
+    fn wing_staff(&self) -> Done<(MemberId, Vec<MemberId>)> {
+        let named = |name: &str| -> Done<Option<MemberId>> {
+            Ok(self
+                .store
+                .members()?
+                .into_iter()
+                .find(|m| m.name.eq_ignore_ascii_case(name))
+                .map(|m| m.id))
+        };
+        let lead = match named("Kit")? {
+            Some(id) => id,
+            None => {
+                let id = self.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)?;
+                self.set_brain(id, Brain::Sonnet.name())?;
+                id
+            }
+        };
+        let mut developers = Vec::new();
+        for (name, look) in [("Rae", 2), ("Zed", 4)] {
+            let id = match named(name)? {
+                Some(id) => id,
+                None => {
+                    let id = self.hire(name, Role::Developer, Role::Developer.share(), 2, look)?;
+                    self.set_brain(id, Brain::Haiku.name())?;
+                    id
+                }
+            };
+            developers.push(id);
+        }
+        Ok((lead, developers))
     }
 
     // ---- documents ---------------------------------------------------------------------

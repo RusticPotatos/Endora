@@ -222,22 +222,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.unclassified_message_input(run.id)?;
             told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
         }
-        let mut why = vec![task.title.clone()];
-        let mut parent = task.parent;
-        while let Some(id) = parent {
-            let up = self
-                .store
-                .task_inputs(id)?
-                .ok_or(EngineError::Unknown("parent task"))?;
-            self.inherit_authored_input(run.id, up.body_origin)?;
-            why.push(up.task.title.clone());
-            parent = up.task.parent;
-        }
-        if let Some(goal) = self.store.goal_input(task.goal)? {
-            self.inherit_authored_input(run.id, goal.origin)?;
-            why.push(format!("goal: {}", goal.goal.title));
-        }
-        told.push_str(&format!("Why it exists: {}\n", why.join(" ← ")));
+        told.push_str(&self.why_said(run, &task)?);
         let documents = self.documents_said(task.id)?;
         if !documents.is_empty() {
             self.documents_reached(run.id, task.id)?;
@@ -247,59 +232,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let waits: Vec<String> = task.waits_on.iter().map(|t| format!("#{t}")).collect();
             told.push_str(&format!("It waits on: {}\n", waits.join(", ")));
         }
-        let since = self
-            .store
-            .runs_of(task.id)?
-            .iter()
-            .filter(|r| r.member == member.id && r.id != run.id)
-            .filter_map(|r| r.started_at)
-            .max()
-            .unwrap_or(Millis::MIN);
-        for came_back in self.store.check_backs()?.iter().filter(|c| {
-            c.member == member.id
-                && c.task == task.id
-                && c.status == CheckBackStatus::Fired
-                && c.done_at.is_some_and(|at| at > since)
-        }) {
-            self.unclassified_message_input(run.id)?;
-            told.push_str(&format!(
-                "You said you would check back: {}\n",
-                came_back.why
-            ));
-        }
-        let members = self.store.members()?;
         // The thread with each post's recorded origin, read together.
         let thread = self.all_authored_posts(task.id)?;
-        let mut new = Vec::new();
-        for input in thread.iter().filter(|p| p.post.at > since) {
-            self.inherit_authored_input(run.id, input.origin)?;
-            let p = &input.post;
-            new.push(Self::post_line(&members, &p.author, &p.text, p.unsupported));
-        }
-        if new.is_empty() {
-            told.push_str("Nothing new in the thread since your last turn.\n");
-        } else {
-            told.push_str("New in the thread since your last turn:\n");
-            for line in new {
-                told.push_str(&format!("- {line}\n"));
-            }
-        }
+        told.push_str(&self.news_said(member, run, &task, &thread)?);
         if self.reason_for(run)? == WakeReason::ReviewRequested.name() {
-            for input in &thread {
-                self.inherit_authored_input(run.id, input.origin)?;
-            }
-            let asked = self.store.thread(task.id)?.into_iter().rev().find_map(|p| {
-                p.text.contains(" → in_review").then(|| {
-                    format!(
-                        "{} asks for your review.\n{}",
-                        p.author,
-                        review::REVIEW_WORK
-                    )
-                })
-            });
-            if let Some(asked) = asked {
-                told.push_str(&format!("{}\n", asked.trim_end()));
-            }
+            told.push_str(&self.review_asked_said(run, task.id, &thread)?);
         }
         // Checks' results have no lineage yet: shown, they fail closed.
         let untraced = self.checking_said(member, run, &task)?;
@@ -321,5 +258,97 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             names.join(", ")
         ));
         Ok(told)
+    }
+
+    /// Why the task exists: its title, its parents' and its goal's, each read with its lineage.
+    fn why_said(&self, run: &Run, task: &crate::domain::Task) -> Done<String> {
+        let mut why = vec![task.title.clone()];
+        let mut parent = task.parent;
+        while let Some(id) = parent {
+            let up = self
+                .store
+                .task_inputs(id)?
+                .ok_or(EngineError::Unknown("parent task"))?;
+            self.inherit_authored_input(run.id, up.body_origin)?;
+            why.push(up.task.title.clone());
+            parent = up.task.parent;
+        }
+        if let Some(goal) = self.store.goal_input(task.goal)? {
+            self.inherit_authored_input(run.id, goal.origin)?;
+            why.push(format!("goal: {}", goal.goal.title));
+        }
+        Ok(format!("Why it exists: {}\n", why.join(" ← ")))
+    }
+
+    /// What came since the member's last turn on the task: the check-backs it set that fired,
+    /// and the thread's new posts, each read with its lineage.
+    fn news_said(
+        &self,
+        member: &Member,
+        run: &Run,
+        task: &crate::domain::Task,
+        thread: &[crate::application::history_ports::PostInput],
+    ) -> Done<String> {
+        let mut said = String::new();
+        let since = self
+            .store
+            .runs_of(task.id)?
+            .iter()
+            .filter(|r| r.member == member.id && r.id != run.id)
+            .filter_map(|r| r.started_at)
+            .max()
+            .unwrap_or(Millis::MIN);
+        for came_back in self.store.check_backs()?.iter().filter(|c| {
+            c.member == member.id
+                && c.task == task.id
+                && c.status == CheckBackStatus::Fired
+                && c.done_at.is_some_and(|at| at > since)
+        }) {
+            self.unclassified_message_input(run.id)?;
+            said.push_str(&format!(
+                "You said you would check back: {}\n",
+                came_back.why
+            ));
+        }
+        let members = self.store.members()?;
+        let mut new = Vec::new();
+        for input in thread.iter().filter(|p| p.post.at > since) {
+            self.inherit_authored_input(run.id, input.origin)?;
+            let p = &input.post;
+            new.push(Self::post_line(&members, &p.author, &p.text, p.unsupported));
+        }
+        if new.is_empty() {
+            said.push_str("Nothing new in the thread since your last turn.\n");
+        } else {
+            said.push_str("New in the thread since your last turn:\n");
+            for line in new {
+                said.push_str(&format!("- {line}\n"));
+            }
+        }
+        Ok(said)
+    }
+
+    /// Who asks for this review, and how a review is done; the whole thread is read for it.
+    fn review_asked_said(
+        &self,
+        run: &Run,
+        task: crate::domain::TaskId,
+        thread: &[crate::application::history_ports::PostInput],
+    ) -> Done<String> {
+        for input in thread {
+            self.inherit_authored_input(run.id, input.origin)?;
+        }
+        let asked = self.store.thread(task)?.into_iter().rev().find_map(|p| {
+            p.text.contains(" → in_review").then(|| {
+                format!(
+                    "{} asks for your review.\n{}",
+                    p.author,
+                    review::REVIEW_WORK
+                )
+            })
+        });
+        Ok(asked
+            .map(|asked| format!("{}\n", asked.trim_end()))
+            .unwrap_or_default())
     }
 }

@@ -167,6 +167,74 @@ fn matched_by_time(e: &Event, run: &Run, name: Option<&str>, until: Millis) -> b
     }
 }
 
+/// The posts a turn made: each the one its event names (the latest by its author in that
+/// thread, at or before the event); an older turn's, its member's in its task's thread in its
+/// time.
+fn post_moments(
+    record: &Record<'_>,
+    run: &Run,
+    posted: &[&Event],
+    name: Option<&str>,
+    until: Millis,
+    tagged: bool,
+) -> Vec<Moment> {
+    let mut moments = Vec::new();
+    let mut used: HashSet<usize> = HashSet::new();
+    for e in posted {
+        let task = number(&e.data, "task");
+        let author = e.data.get("author").and_then(Value::as_str);
+        let found = record
+            .posts
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| {
+                !used.contains(i)
+                    && Some(p.task.0) == task
+                    && Some(p.post.author.as_str()) == author
+                    && p.post.at >= run.queued_at
+                    && p.post.at <= e.at
+            })
+            .max_by_key(|(_, p)| p.post.at);
+        if let Some((i, p)) = found {
+            used.insert(i);
+            moments.push(Moment {
+                at: p.post.at,
+                what: What::Posted(p.clone()),
+                by_time: number(&e.data, "run").is_none(),
+            });
+        }
+    }
+    if !tagged {
+        for (i, p) in record.posts.iter().enumerate() {
+            let theirs = Some(p.post.author.as_str()) == name && Some(p.task) == run.task;
+            if used.contains(&i) || !theirs || p.post.at < run.queued_at || p.post.at > until {
+                continue;
+            }
+            moments.push(Moment {
+                at: p.post.at,
+                what: What::Posted(p.clone()),
+                by_time: true,
+            });
+        }
+    }
+    moments
+}
+
+/// What the ledger holds of a turn.
+fn money_of(record: &Record<'_>, run: &Run) -> Money {
+    let mut money = Money::default();
+    for row in record.ledger.iter().filter(|l| l.run == run.id) {
+        match row.kind.as_str() {
+            "reserve" => money.reserved += row.amount,
+            "use" => money.used += row.amount,
+            "charge" => money.charged += row.amount,
+            "release" => money.released += row.amount,
+            _ => {}
+        }
+    }
+    money
+}
+
 /// A turn read back from the record.
 #[must_use]
 pub fn replay(record: &Record<'_>, run: &Run) -> RunReplay {
@@ -230,57 +298,15 @@ pub fn replay(record: &Record<'_>, run: &Run) -> RunReplay {
         );
     }
 
-    // The posts: each the one its event names (the latest by its author in that thread, at or
-    // before the event); an older turn's, its member's in its task's thread in its time.
-    let mut used: HashSet<usize> = HashSet::new();
-    for e in posted {
-        let task = number(&e.data, "task");
-        let author = e.data.get("author").and_then(Value::as_str);
-        let found = record
-            .posts
-            .iter()
-            .enumerate()
-            .filter(|(i, p)| {
-                !used.contains(i)
-                    && Some(p.task.0) == task
-                    && Some(p.post.author.as_str()) == author
-                    && p.post.at >= run.queued_at
-                    && p.post.at <= e.at
-            })
-            .max_by_key(|(_, p)| p.post.at);
-        if let Some((i, p)) = found {
-            used.insert(i);
-            add(
-                p.post.at,
-                What::Posted(p.clone()),
-                number(&e.data, "run").is_none(),
-            );
-        }
-    }
-    if !tagged {
-        for (i, p) in record.posts.iter().enumerate() {
-            let theirs = Some(p.post.author.as_str()) == name && Some(p.task) == run.task;
-            if used.contains(&i) || !theirs || p.post.at < run.queued_at || p.post.at > until {
-                continue;
-            }
-            add(p.post.at, What::Posted(p.clone()), true);
-        }
+    for m in post_moments(record, run, &posted, name, until, tagged) {
+        add(m.at, m.what, m.by_time);
     }
     if let (Some(at), false) = (run.ended_at, ended) {
         add(at, What::Ended, false);
     }
     moments.sort_by_key(|m| (m.at, rank(&m.what)));
 
-    let mut money = Money::default();
-    for row in record.ledger.iter().filter(|l| l.run == run.id) {
-        match row.kind.as_str() {
-            "reserve" => money.reserved += row.amount,
-            "use" => money.used += row.amount,
-            "charge" => money.charged += row.amount,
-            "release" => money.released += row.amount,
-            _ => {}
-        }
-    }
+    let money = money_of(record, run);
     let by_time = moments.iter().any(|m| m.by_time);
     RunReplay {
         run: run.clone(),

@@ -277,6 +277,45 @@ impl Drop for ForOwner<'_> {
     }
 }
 
+/// A live turn as the screen shows it.
+fn run_shown(r: &Run) -> serde_json::Value {
+    json!({
+        "id": r.id.0, "member": r.member.0, "task": r.task.map(|t| t.0),
+        "status": r.status.name(), "started_at": r.started_at, "reserved": r.reserved,
+        "spent": r.spent,
+        // Why its last attempt ended, for one waiting to be tried again.
+        "why": r.end_reason,
+        // The brain it runs or ran on (ADR 0131), once started.
+        "brain": r.brain.map(Brain::name),
+        "input_tokens": r.input_tokens + r.cache_read_tokens + r.cache_write_tokens,
+        "output_tokens": r.output_tokens,
+    })
+}
+
+/// A routine as the screen shows it, with whether the task it last made is still open.
+fn routine_shown(r: &crate::domain::Routine, tasks: &[Task]) -> serde_json::Value {
+    json!({
+        "id": r.id.0, "title": r.title, "description": r.description, "goal": r.goal.0,
+        "project": r.project.map(|p| p.0),
+        "assignee": r.assignee.0, "every_ms": r.every_ms,
+        "rhythm": routines::rhythm(r.every_ms), "next_due_at": r.next_due_at,
+        "enabled": r.enabled, "on_lab_trouble": r.on_lab_trouble,
+        "last_fired_at": r.last_fired_at, "last_task": r.last_task.map(|t| t.0),
+        "last_task_open": r.last_task
+            .and_then(|id| tasks.iter().find(|t| t.id == id))
+            .is_some_and(|t| !t.status.finished()),
+    })
+}
+
+/// Where a queued turn was placed, and what it reserves; see [`Engine::launch`].
+#[derive(Clone, Copy)]
+struct Placement {
+    brain: Brain,
+    amount: Micros,
+    kind: turns::TurnKind,
+    fell_back: bool,
+}
+
 /// What the screen's task rows are read against; see [`Engine::board`].
 struct Board<'a> {
     tasks: &'a [Task],
@@ -458,6 +497,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// models and reserves nothing. A project with a cap holds a turn to what is left of it this
     /// month, and to nothing while it is paused for its budget (ADR 0113).
     ///
+    /// What a queued turn may reserve, if it may: only judgment is paid for, and work on the
+    /// house's models reserves nothing. A league side is paid from the league's capped project
+    /// alone; it reserves nothing outside one.
+    fn reservable(
+        &self,
+        run: &Run,
+        member: &Member,
+        kind: turns::TurnKind,
+        league: bool,
+        project: Option<ProjectId>,
+    ) -> Done<Option<Micros>> {
+        match kind {
+            turns::TurnKind::Work => Ok(Some(0)),
+            turns::TurnKind::Judgment if league => match self.project_left(project)? {
+                Some(_) => self.affordable(member, project, true),
+                None => Ok(None),
+            },
+            turns::TurnKind::Judgment => self.affordable(member, project, run.asked_by_owner),
+        }
+    }
+
     /// A member's share is its first claim, not a wall (ADR 0113, amended): past it, the
     /// member borrows at most one more share of what the other paid members have not used
     /// today, so its day reaches twice its share and no more, the owner's allowance aside
@@ -1917,6 +1977,84 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
 
         // 1. Timers that are due raise their wakes; a late one fires once.
+        self.fire_due(now, &mut report)?;
+        // Check-backs whose time came wake their member, while the task is still open.
+        self.fire_check_backs(now, &mut report)?;
+        // Approvals nobody decided within a day go unrun, and the thread says so (ADR 0108).
+        self.expire_approvals(now)?;
+
+        // 2. Running turns: ended, failed, vanished, or too long.
+        self.settle_running(now, &mut report)?;
+
+        // A project paused for its budget goes on once the month turns (ADR 0113).
+        self.lift_budget_pauses()?;
+
+        // 3. Retries whose time has come are queued again.
+        self.requeue_retries(now, &mut report)?;
+
+        // 3b. One member with nothing to do is given a downtime turn (ADR 0119).
+        // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
+        // gets its page.
+        self.migrate_map_held()?;
+        // The team's history (ADR 0129): what is past its thirty days, or beyond the last five
+        // of a member on a task, is let go; handover notes and posts are not touched.
+        self.history_tick(now)?;
+        if self.settings.downtime {
+            self.downtime_look(now)?;
+        }
+        // Games (ADR 0121): free members play a match in code, and a game of chess nobody
+        // has moved in a week is adjourned. No model is asked.
+        self.games_tick(now)?;
+        // Scenarios (ADR 0135): a world that has ended with its tasks open is closed.
+        self.close_ended_scenarios()?;
+        // The owner's re-run of the Holodeck: the next scenario starts once none is running.
+        self.holodeck_rerun_tick()?;
+        // The model league: the next pair of brains sits down to chess once nothing is played.
+        self.league_tick(now)?;
+        // The loops hand out their plans' next items (ADR 0142).
+        self.loops_tick()?;
+
+        // 4. Queued turns start where a member has a free slot, budget can be reserved, and a
+        //    runner has room: urgent work first, then the oldest. The tripwire may stop the team
+        //    here (ADR 0133): then nothing else in this tick is done, as when the owner stops it.
+        report.started = self.start_queued(now)?;
+        // Work that waits long for the Mac is said in the owner's digest (Phase 0 audit, P5).
+        self.long_mac_waits(now)?;
+        if self.store.stopped()? {
+            return Ok(report);
+        }
+
+        let tasks = self.store.tasks()?;
+        let live: Vec<Option<TaskId>> = self.store.live_runs()?.iter().map(|r| r.task).collect();
+        // 5. Doing, with no turn: parked work (ADR 0124) gets one nudge, then climbs the
+        //    ladder; work held on purpose is left alone, and work HQ cannot tell about gets
+        //    one look from its area's lead.
+        self.stalled_work(&tasks, &live, &mut report)?;
+
+        // 5b. Open work handed to a member that nothing will bring it back to: no turn queued,
+        //     running or waiting to retry, and no wake held for it, for ten minutes. One
+        //     recovery wake for its member; still so ten minutes after, the owner's desk, once.
+        //     Never handed to anyone else.
+        let (stranded_nudged, stranded_stuck) = self.recover_stranded(&tasks, &live, now)?;
+        report.nudged += stranded_nudged;
+        report.stuck += stranded_stuck;
+        // 5c. The guards (ADR 0124): what is stuck and has moved again closes itself, and every
+        //     few minutes each project's process health is looked at.
+        self.guards_tick()?;
+        self.health_tick()?;
+
+        // 6. Tasks whose waits have all finished are woken, once.
+        self.wake_finished_waits(&tasks, &mut report)?;
+
+        self.emit(
+            EventKind::Tick,
+            json!({ "started": report.started, "ended": report.ended, "stuck": report.stuck }),
+        )?;
+        Ok(report)
+    }
+
+    /// Due timers raise their wakes and due routines fire, each once however late (tick step 1).
+    fn fire_due(&self, now: Millis, report: &mut TickReport) -> Done<()> {
         for timer in self.store.timers()? {
             if timer.due_at <= now {
                 self.wake_held_lock(timer.member, None, timer.reason)?;
@@ -1933,7 +2071,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.fire_held_lock(routine, &Firing::Schedule)?;
             report.routines += 1;
         }
-        // Check-backs whose time came wake their member, while the task is still open.
+        Ok(())
+    }
+
+    /// Check-backs whose time came wake their member, while the task is still open (tick step 1).
+    fn fire_check_backs(&self, now: Millis, report: &mut TickReport) -> Done<()> {
         for back in self.store.check_backs()? {
             if back.status != CheckBackStatus::Pending || back.due_at > now {
                 continue;
@@ -1971,7 +2113,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.wake_held_lock(back.member, Some(back.task), WakeReason::CheckBack)?;
             report.check_backs += 1;
         }
-        // Approvals nobody decided within a day go unrun, and the thread says so (ADR 0108).
+        Ok(())
+    }
+
+    /// Approvals nobody decided within a day go unrun, and the thread says so (ADR 0108).
+    fn expire_approvals(&self, now: Millis) -> Done<()> {
         for item in self.store.desk()? {
             if item.kind != "approval"
                 || item.status != "waiting"
@@ -1986,8 +2132,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             )?;
             self.settle_unrun(&item, "Nobody decided this within a day, so it was not run")?;
         }
+        Ok(())
+    }
 
-        // 2. Running turns: ended, failed, vanished, or too long.
+    /// Running turns that ended, failed, vanished or ran too long are settled (tick step 2).
+    fn settle_running(&self, now: Millis, report: &mut TickReport) -> Done<()> {
         for run in self.store.live_runs()? {
             if run.status != RunStatus::Running {
                 continue;
@@ -2035,11 +2184,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
             }
         }
+        Ok(())
+    }
 
-        // A project paused for its budget goes on once the month turns (ADR 0113).
-        self.lift_budget_pauses()?;
-
-        // 3. Retries whose time has come are queued again.
+    /// Retries whose time has come are queued again (tick step 3).
+    fn requeue_retries(&self, now: Millis, report: &mut TickReport) -> Done<()> {
         for mut run in self.store.live_runs()? {
             if run.status == RunStatus::RetryWaiting && run.retry_at.is_some_and(|due| due <= now) {
                 run.status = RunStatus::Queued;
@@ -2048,45 +2197,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 report.requeued += 1;
             }
         }
+        Ok(())
+    }
 
-        // 3b. One member with nothing to do is given a downtime turn (ADR 0119).
-        // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
-        // gets its page.
-        self.migrate_map_held()?;
-        // The team's history (ADR 0129): what is past its thirty days, or beyond the last five
-        // of a member on a task, is let go; handover notes and posts are not touched.
-        self.history_tick(now)?;
-        if self.settings.downtime {
-            self.downtime_look(now)?;
-        }
-        // Games (ADR 0121): free members play a match in code, and a game of chess nobody
-        // has moved in a week is adjourned. No model is asked.
-        self.games_tick(now)?;
-        // Scenarios (ADR 0135): a world that has ended with its tasks open is closed.
-        self.close_ended_scenarios()?;
-        // The owner's re-run of the Holodeck: the next scenario starts once none is running.
-        self.holodeck_rerun_tick()?;
-        // The model league: the next pair of brains sits down to chess once nothing is played.
-        self.league_tick(now)?;
-        // The loops hand out their plans' next items (ADR 0142).
-        self.loops_tick()?;
-
-        // 4. Queued turns start where a member has a free slot, budget can be reserved, and a
-        //    runner has room: urgent work first, then the oldest. The tripwire may stop the team
-        //    here (ADR 0133): then nothing else in this tick is done, as when the owner stops it.
-        report.started = self.start_queued(now)?;
-        // Work that waits long for the Mac is said in the owner's digest (Phase 0 audit, P5).
-        self.long_mac_waits(now)?;
-        if self.store.stopped()? {
-            return Ok(report);
-        }
-
-        // 5. Doing, with no turn: parked work (ADR 0124) gets one nudge, then climbs the
-        //    ladder; work held on purpose is left alone, and work HQ cannot tell about gets
-        //    one look from its area's lead.
-        let tasks = self.store.tasks()?;
-        let live: Vec<Option<TaskId>> = self.store.live_runs()?.iter().map(|r| r.task).collect();
-        for task in &tasks {
+    /// Doing work with no turn: nudged once, then marked stuck once it has sat long (tick step 5).
+    fn stalled_work(
+        &self,
+        tasks: &[Task],
+        live: &[Option<TaskId>],
+        report: &mut TickReport,
+    ) -> Done<()> {
+        for task in tasks {
             if task.status != TaskStatus::Doing || live.contains(&Some(task.id)) {
                 continue;
             }
@@ -2144,21 +2265,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             )?;
             report.stuck += 1;
         }
+        Ok(())
+    }
 
-        // 5b. Open work handed to a member that nothing will bring it back to: no turn queued,
-        //     running or waiting to retry, and no wake held for it, for ten minutes. One
-        //     recovery wake for its member; still so ten minutes after, the owner's desk, once.
-        //     Never handed to anyone else.
-        let (stranded_nudged, stranded_stuck) = self.recover_stranded(&tasks, &live, now)?;
-        report.nudged += stranded_nudged;
-        report.stuck += stranded_stuck;
-        // 5c. The guards (ADR 0124): what is stuck and has moved again closes itself, and every
-        //     few minutes each project's process health is looked at.
-        self.guards_tick()?;
-        self.health_tick()?;
-
-        // 6. Tasks whose waits have all finished are woken, once.
-        for task in &tasks {
+    /// Tasks whose waits have all finished are woken, once (tick step 6).
+    fn wake_finished_waits(&self, tasks: &[Task], report: &mut TickReport) -> Done<()> {
+        for task in tasks {
             if task.waits_on.is_empty() || task.status.finished() {
                 continue;
             }
@@ -2172,12 +2284,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.wake_held_lock(member, Some(task.id), WakeReason::WaitFinished)?;
             report.woken += 1;
         }
-
-        self.emit(
-            EventKind::Tick,
-            json!({ "started": report.started, "ended": report.ended, "stuck": report.stuck }),
-        )?;
-        Ok(report)
+        Ok(())
     }
 
     fn start_queued(&self, now: Millis) -> Done<usize> {
@@ -2205,17 +2312,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // 0133). A scripted team, the demo, has none.
         let mut starts = self.starts_read(now)?;
         let mut started = 0;
-        for mut run in queued {
-            // A turn queued for work that has since finished (dropped, or done) is ended, not
-            // started: nothing is left for it to do.
-            let over = run
-                .task
-                .and_then(|t| tasks.iter().find(|task| task.id == t))
-                .is_some_and(|t| t.status.finished());
-            if over {
-                self.end(run, RunStatus::Stopped, "its task is over")?;
+        for run in queued {
+            let Some(run) = self.task_still_open(run, &tasks)? else {
                 continue;
-            }
+            };
             let running: Vec<Run> = self
                 .store
                 .live_runs()?
@@ -2226,18 +2326,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 break;
             }
             let member = self.member(run.member)?;
+            let Some(mut run) = self.member_still_free(run, &member)? else {
+                continue;
+            };
             let busy = running.iter().filter(|r| r.member == member.id).count();
-            if member.furloughed() {
-                // Furloughed after its wake queued a turn: there is nothing for it to do.
-                self.end(run, RunStatus::Stopped, "its member is on furlough")?;
-                continue;
-            }
-            let downtime = self.reason_for(&run)? == WakeReason::Downtime.name();
-            if downtime && member.paused {
-                // Paused after its wake queued a turn: downtime is not kept waiting.
-                self.end(run, RunStatus::Stopped, "its member was paused")?;
-                continue;
-            }
             if busy >= usize::from(member.slots) || member.paused {
                 continue;
             }
@@ -2265,17 +2357,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Some(brain) => turns::Need::pinned(brain),
                 None => self.need_of_run(&run, &member, &wakes, &known),
             };
-            // Only judgment is paid for; work on the house's models reserves nothing.
-            let asked = match (need.kind, league) {
-                (turns::TurnKind::Work, _) => Some(0),
-                (turns::TurnKind::Judgment, Some(_)) => match self.project_left(project)? {
-                    Some(_) => self.affordable(&member, project, true)?,
-                    None => None,
-                },
-                (turns::TurnKind::Judgment, None) => {
-                    self.affordable(&member, project, run.asked_by_owner)?
-                }
-            };
+            let asked = self.reservable(&run, &member, need.kind, league.is_some(), project)?;
             let on_the_mac = running.iter().any(|r| r.brain == Some(Brain::Mac));
             let facts = turns::Facts {
                 work_brain: member.work_brain,
@@ -2309,50 +2391,98 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.trip(&ran)?;
                 return Ok(started);
             }
-            // The turn is briefed, told how hard to try and answered by the brain it runs on.
-            let on = Member {
-                brain,
-                ..member.clone()
-            };
-            run.brain = Some(brain);
-            run.told = self.briefing(&on, &run)?;
-            self.store
-                .reserve(run.id, member.id, self.today(), amount, now)?;
-            run.status = RunStatus::Running;
-            run.attempts = run.attempts.saturating_add(1);
-            run.started_at = Some(now);
-            run.reserved = amount;
-            if turns::is_waiting_words(&run.end_reason) {
-                run.end_reason.clear();
-            }
-            self.store.save_run(&run)?;
             starts.started(member.id, brain, now, in_a_world);
-            let context = RunContext {
-                run: run.id,
-                member: member.id,
-                task: run.task,
-                told: run.told.clone(),
-                token: self.store.issue_token(run.id)?,
-                effort: self.effort_of(&on),
+            let placed = Placement {
+                brain,
+                amount,
+                kind: need.kind,
+                fell_back,
             };
-            if let Err(why) = self.runner.start(&context) {
-                self.fail(run, &format!("could not start: {}", why.0), Fault::Worker)?;
-                continue;
+            if self.launch(run, &member, &placed, now)? {
+                started += 1;
             }
-            self.store
-                .set_wake(run.wake, Receipt::Started, Some(run.id))?;
-            self.emit(
-                EventKind::RunStarted,
-                json!({ "run": run.id.0, "member": member.id.0, "task": run.task.map(|t| t.0),
-                        "reserved": amount, "reason": self.reason_for(&run)?,
-                        "kind": need.kind.label(), "brain": brain.name() }),
-            )?;
-            if fell_back {
-                self.alarm_on_the_house(&run, &member, brain)?;
-            }
-            started += 1;
         }
         Ok(started)
+    }
+
+    /// A queued turn whose task has since finished (dropped, or done) is ended, not started:
+    /// nothing is left for it to do.
+    fn task_still_open(&self, run: Run, tasks: &[Task]) -> Done<Option<Run>> {
+        let over = run
+            .task
+            .and_then(|t| tasks.iter().find(|task| task.id == t))
+            .is_some_and(|t| t.status.finished());
+        if over {
+            self.end(run, RunStatus::Stopped, "its task is over")?;
+            return Ok(None);
+        }
+        Ok(Some(run))
+    }
+
+    /// A queued turn whose member went on furlough, or was paused before its downtime, since
+    /// its wake is ended, not kept waiting.
+    fn member_still_free(&self, run: Run, member: &Member) -> Done<Option<Run>> {
+        if member.furloughed() {
+            self.end(run, RunStatus::Stopped, "its member is on furlough")?;
+            return Ok(None);
+        }
+        let downtime = self.reason_for(&run)? == WakeReason::Downtime.name();
+        if downtime && member.paused {
+            self.end(run, RunStatus::Stopped, "its member was paused")?;
+            return Ok(None);
+        }
+        Ok(Some(run))
+    }
+
+    /// Starts a placed turn: briefed, told how hard to try and answered by the brain it runs
+    /// on, with its budget reserved. False when the runner could not start it.
+    fn launch(&self, mut run: Run, member: &Member, placed: &Placement, now: Millis) -> Done<bool> {
+        let Placement {
+            brain,
+            amount,
+            kind,
+            fell_back,
+        } = *placed;
+        let on = Member {
+            brain,
+            ..member.clone()
+        };
+        run.brain = Some(brain);
+        run.told = self.briefing(&on, &run)?;
+        self.store
+            .reserve(run.id, member.id, self.today(), amount, now)?;
+        run.status = RunStatus::Running;
+        run.attempts = run.attempts.saturating_add(1);
+        run.started_at = Some(now);
+        run.reserved = amount;
+        if turns::is_waiting_words(&run.end_reason) {
+            run.end_reason.clear();
+        }
+        self.store.save_run(&run)?;
+        let context = RunContext {
+            run: run.id,
+            member: member.id,
+            task: run.task,
+            told: run.told.clone(),
+            token: self.store.issue_token(run.id)?,
+            effort: self.effort_of(&on),
+        };
+        if let Err(why) = self.runner.start(&context) {
+            self.fail(run, &format!("could not start: {}", why.0), Fault::Worker)?;
+            return Ok(false);
+        }
+        self.store
+            .set_wake(run.wake, Receipt::Started, Some(run.id))?;
+        self.emit(
+            EventKind::RunStarted,
+            json!({ "run": run.id.0, "member": member.id.0, "task": run.task.map(|t| t.0),
+                    "reserved": amount, "reason": self.reason_for(&run)?,
+                    "kind": kind.label(), "brain": brain.name() }),
+        )?;
+        if fell_back {
+            self.alarm_on_the_house(&run, member, brain)?;
+        }
+        Ok(true)
     }
 
     // ---- the team protocol (spec section 6) ------------------------------------------------
@@ -3478,50 +3608,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         for g in &goals {
             notes.insert(g.id.0, self.store.goal_note(g.id)?);
         }
-        let mut members = Vec::new();
-        let paid = self.paid_weights()?;
         let pool_day = self.pool_day_today()?;
         let topped_up = self.topup_of(day)?;
         let all_members = self.store.members()?;
-        for m in all_members.clone() {
-            let committed = self.store.committed(Some(m.id), day)?;
-            let spent = self.store.spent(Some(m.id), day)?;
-            members.push(json!({
-                "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
-                "paused": m.paused, "slots": m.slots,
-                // On furlough (ADR 0118): when it began, and when it ended if it has.
-                "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,
-                "recalled_at": m.recalled_at,
-                // What it thinks with, and what the owner may choose for its role (ADR 0109).
-                "brain": m.brain.name(),
-                "brains": Brain::choices(m.role).into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
-                // Two brains (ADR 0131): what it does its work with (the Mac or the house's
-                // model), and the Claude it judges with, each with what the owner may choose.
-                "work_brain": m.work_brain.name(), "work_brain_label": m.work_brain.label(),
-                "rank": m.brain.rank(),
-                "work_brains": Brain::work_choices().into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
-                "judgment_brain": m.judgment_brain().name(),
-                "judgment_brain_label": m.judgment_brain().label(),
-                "judgment_brains": Brain::judgment_choices(m.role).into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
-                // What runs its turns (ADR 0117), and whether Claude Code may.
-                "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
-                "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
-                // Only its judgment is paid: the pool is shared by the members' claims.
-                "per_day": self.per_day(&m, paid, pool_day),
-                "committed": committed, "spent": spent, "held": (committed - spent).max(0),
-                "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
-                    .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
-                    .collect::<Vec<_>>(),
-                // How often the CEO reached into its work this week (ADR 0124); null when the
-                // pruned feed no longer holds the week, and HQ cannot tell.
-            }));
-        }
+        let members = self.members_shown(&all_members, &runs, day, pool_day)?;
         let routine_list = self.store.routines()?;
         let board = self.board(&tasks, &goals, &routine_list)?;
         let mut task_rows = Vec::new();
@@ -3581,28 +3671,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "parent": g.parent.map(|p| p.0), "note": notes.get(&g.id.0).cloned().unwrap_or_default(),
             })).collect::<Vec<_>>(),
             "tasks": task_rows,
-            "runs": runs.iter().map(|r| json!({
-                "id": r.id.0, "member": r.member.0, "task": r.task.map(|t| t.0),
-                "status": r.status.name(), "started_at": r.started_at, "reserved": r.reserved,
-                "spent": r.spent,
-                // Why its last attempt ended, for one waiting to be tried again.
-                "why": r.end_reason,
-                // The brain it runs or ran on (ADR 0131), once started.
-                "brain": r.brain.map(Brain::name),
-                "input_tokens": r.input_tokens + r.cache_read_tokens + r.cache_write_tokens,
-                "output_tokens": r.output_tokens,
-            })).collect::<Vec<_>>(),
-            "routines": routine_list.iter().map(|r| json!({
-                "id": r.id.0, "title": r.title, "description": r.description, "goal": r.goal.0,
-                "project": r.project.map(|p| p.0),
-                "assignee": r.assignee.0, "every_ms": r.every_ms,
-                "rhythm": routines::rhythm(r.every_ms), "next_due_at": r.next_due_at,
-                "enabled": r.enabled, "on_lab_trouble": r.on_lab_trouble,
-                "last_fired_at": r.last_fired_at, "last_task": r.last_task.map(|t| t.0),
-                "last_task_open": r.last_task
-                    .and_then(|id| tasks.iter().find(|t| t.id == id))
-                    .is_some_and(|t| !t.status.finished()),
-            })).collect::<Vec<_>>(),
+            "runs": runs.iter().map(run_shown).collect::<Vec<_>>(),
+            "routines": routine_list.iter().map(|r| routine_shown(r, &tasks)).collect::<Vec<_>>(),
             // What waits on the owner and needs their word (ADR 0132); the rest waits below.
             "desk": self.desk_shown()?,
             // "While you were away": stuck work, findings and notices, newest first (ADR 0132).
@@ -3629,6 +3699,59 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // The owner's Mac as the team sees it (ADR 0130).
             "mac": self.mac_shown(&runs, &all_members),
         }))
+    }
+
+    /// The members as the screen shows them: what each thinks with, may be given, holds of
+    /// the day's pool and is running now.
+    fn members_shown(
+        &self,
+        members: &[Member],
+        runs: &[Run],
+        day: i64,
+        pool_day: Micros,
+    ) -> Done<Vec<serde_json::Value>> {
+        let paid = self.paid_weights()?;
+        let mut shown = Vec::new();
+        for m in members {
+            let committed = self.store.committed(Some(m.id), day)?;
+            let spent = self.store.spent(Some(m.id), day)?;
+            shown.push(json!({
+                "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
+                "paused": m.paused, "slots": m.slots,
+                // On furlough (ADR 0118): when it began, and when it ended if it has.
+                "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,
+                "recalled_at": m.recalled_at,
+                // What it thinks with, and what the owner may choose for its role (ADR 0109).
+                "brain": m.brain.name(),
+                "brains": Brain::choices(m.role).into_iter()
+                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
+                    .collect::<Vec<_>>(),
+                // Two brains (ADR 0131): what it does its work with (the Mac or the house's
+                // model), and the Claude it judges with, each with what the owner may choose.
+                "work_brain": m.work_brain.name(), "work_brain_label": m.work_brain.label(),
+                "rank": m.brain.rank(),
+                "work_brains": Brain::work_choices().into_iter()
+                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
+                    .collect::<Vec<_>>(),
+                "judgment_brain": m.judgment_brain().name(),
+                "judgment_brain_label": m.judgment_brain().label(),
+                "judgment_brains": Brain::judgment_choices(m.role).into_iter()
+                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
+                    .collect::<Vec<_>>(),
+                // What runs its turns (ADR 0117), and whether Claude Code may.
+                "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
+                "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
+                // Only its judgment is paid: the pool is shared by the members' claims.
+                "per_day": self.per_day(m, paid, pool_day),
+                "committed": committed, "spent": spent, "held": (committed - spent).max(0),
+                "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
+                    .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
+                    .collect::<Vec<_>>(),
+                // How often the CEO reached into its work this week (ADR 0124); null when the
+                // pruned feed no longer holds the week, and HQ cannot tell.
+            }));
+        }
+        Ok(shown)
     }
 
     /// The owner's Mac as the team's screen reads it (ADR 0130): whether a turn may start on it

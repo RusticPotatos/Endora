@@ -500,22 +500,22 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
     }
 }
 
-fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
+/// Why this call is refused before any tool runs, if it is: whatever the model was told, these
+/// hold here.
+fn refusal<S: TeamStore, W: WorkerAdapter, C: Clock>(
     engine: &Engine<S, W, C>,
     run: &Run,
-    member: &Member,
     tool: &str,
     args: &Value,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     // A call that set out while the turn ran, and arrived after it ended, does nothing.
     let still = engine.store().run(run.id).map_err(|e| e.to_string())?;
     if still.is_none_or(|r| r.status != RunStatus::Running) {
-        return Err(Refusal::TurnOver.to_string());
+        return Ok(Some(Refusal::TurnOver.to_string()));
     }
-    let refused = |reason: String| -> Result<String, String> { Err(reason) };
     // Downtime makes no work (ADR 0119): the tools that would are refused in its turns.
     if MAKES_WORK.contains(&tool) && engine.in_downtime(run.id).map_err(|e| said(&e))? {
-        return refused(Refusal::InDowntime.to_string());
+        return Ok(Some(Refusal::InDowntime.to_string()));
     }
     // The check after a deploy reads the lab and closes its check, and nothing more (ADR 0115,
     // amended): refused here, whatever the model was told.
@@ -523,16 +523,29 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
         .deploy_check_refuses(run.id, tool, args)
         .map_err(|e| said(&e))?
     {
-        return refused(refusal);
+        return Ok(Some(refusal));
     }
     // A scenario is closed by its world, never by a member's word (the Holodeck plan's phase 5).
     if let Some(refusal) = engine.scenario_refuses(tool, args).map_err(|e| said(&e))? {
-        return refused(refusal);
+        return Ok(Some(refusal));
     }
     // A project that lists its tools gives its work those and the turn's own four (the
     // Holodeck plan's phase 4): refused here too, whatever the model was told.
     if let Some(refusal) = engine.project_refuses(run.id, tool).map_err(|e| said(&e))? {
-        return refused(refusal);
+        return Ok(Some(refusal));
+    }
+    Ok(None)
+}
+
+fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+    tool: &str,
+    args: &Value,
+) -> Result<String, String> {
+    if let Some(refusal) = refusal(engine, run, tool, args)? {
+        return Err(refusal);
     }
     // The team's world (ADR 0122), and asking the past (ADR 0129).
     if let Some(answer) = super::protocol_world::call(engine, run, member, tool, args) {
@@ -544,158 +557,15 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
     match tool {
         "chess" => super::chess_tool::call(engine, run, args),
         "scenario" => super::scenario_tool::call(engine, run, args),
-        "my_turn" => {
-            let mut out = run.told.clone();
-            if let Some(task) = run.task {
-                let thread = engine
-                    .latest_task_posts(run.id, task, 12)
-                    .map_err(|e| e.to_string())?;
-                let members = engine.store().members().map_err(|e| e.to_string())?;
-                if !thread.is_empty() {
-                    out.push_str("\n\nThe thread, newest last:\n");
-                    for input in &thread {
-                        let p = &input.post;
-                        let line = Engine::<S, W, C>::post_line(
-                            &members,
-                            &p.author,
-                            &p.text,
-                            p.unsupported,
-                        );
-                        out.push_str(&format!("- {line}\n"));
-                    }
-                }
-            }
-            Ok(out)
-        }
+        "my_turn" => tool_my_turn(engine, run),
         "claim" => {
             let task = task_arg(args)?;
             engine.claim_in(run.id, task).map_err(|e| said(&e))?;
             Ok(format!("Task {} is yours.", task.0))
         }
-        "post" => {
-            let task = task_arg(args)?;
-            let text = text_arg(args, "text")?;
-            if text.chars().count() > LONGEST_POST {
-                return Err(format!(
-                    "a post is at most {LONGEST_POST} characters: say it shorter, or in parts"
-                ));
-            }
-            // The worker's own last word for the model is marked so: posted, not progress.
-            if args["last_word"].as_bool() == Some(true) {
-                engine
-                    .last_word_in(run.id, task, text)
-                    .map_err(|e| said(&e))?;
-                return Ok("Posted.".to_owned());
-            }
-            let cited = evidence_flat(args)?;
-            // A handover note with the post (ADR 0134) is a wrap-up for a restart: the note is
-            // read, and refused, before anything is posted; the turn ends and keeps its task.
-            let wrap = super::protocol_world::handover_arg(args)?;
-            if wrap.is_some() && !engine.draining() {
-                return Err(Refusal::NoRestartComing.to_string());
-            }
-            engine
-                .post_citing(run.id, task, text, &cited)
-                .map_err(|e| said(&e))?;
-            let Some(note) = wrap else {
-                return Ok("Posted.".to_owned());
-            };
-            engine
-                .wrap_up_in(run.id, task, &note)
-                .map_err(|e| said(&e))?;
-            Ok("Posted, and your handover note is kept. This turn has ended: stop now. The task is still yours, and goes on after the restart with your note.".to_owned())
-        }
-        "set_status" => {
-            let task = task_arg(args)?;
-            let to = args["status"]
-                .as_str()
-                .and_then(TaskStatus::from_name)
-                .ok_or_else(|| {
-                    "`status` must be todo, doing, in_review, blocked, or done for a routine's check"
-                        .to_owned()
-                })?;
-            let reason = text_arg(args, "reason")?;
-            let cited = evidence_lists(args)?;
-            // Done says why when it is not "met its criteria" (ADR 0124): checked first, so a
-            // reason not in the set, a superseded that names no successor (or itself, or a task
-            // that is not there) changes nothing.
-            let why = match (to, args["why"].as_str()) {
-                (TaskStatus::Done, Some(w)) if w != "met_criteria" => {
-                    let (closure, successor) = closure_arg(args, TaskStatus::Done)?;
-                    crate::domain::closure::may_close(task, closure, successor)
-                        .map_err(|r| r.to_string())?;
-                    if let Some(next) = successor {
-                        let there = engine.store().task(next).map_err(|e| e.to_string())?;
-                        if there.is_none() {
-                            return Err(format!(
-                                "there is no task #{} to carry the work on",
-                                next.0
-                            ));
-                        }
-                    }
-                    Some((closure, successor))
-                }
-                _ => None,
-            };
-            engine
-                .set_status_citing(run.id, task, to, reason, &cited)
-                .map_err(|e| said(&e))?;
-            if let Some((closure, successor)) = why {
-                engine
-                    .done_because_in(run.id, task, closure, successor)
-                    .map_err(|e| said(&e))?;
-            }
-            Ok(format!("Task {} is {}.", task.0, to.name()))
-        }
-        "create_task" => {
-            let parent = run.task.ok_or_else(|| {
-                "a sub-task is created from your task, and this turn has none".to_owned()
-            })?;
-            let goal = engine
-                .store()
-                .task(parent)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "your task is gone".to_owned())?
-                .goal;
-            let assignee = match args["assignee"]
-                .as_str()
-                .map(str::trim)
-                .filter(|a| !a.is_empty())
-            {
-                None => None,
-                Some(name) => Some(
-                    engine
-                        .store()
-                        .members()
-                        .map_err(|e| e.to_string())?
-                        .into_iter()
-                        .find(|m| m.name.eq_ignore_ascii_case(name))
-                        .ok_or_else(|| format!("no member called {name}"))?
-                        .id,
-                ),
-            };
-            let waits_on = args["waits_on"]
-                .as_array()
-                .map(|a| a.iter().filter_map(Value::as_i64).map(TaskId).collect())
-                .unwrap_or_default();
-            let id = engine
-                .create_task_in(
-                    run.id,
-                    NewTask {
-                        goal,
-                        project: None,
-                        parent: Some(parent),
-                        title: text_arg(args, "title")?.to_owned(),
-                        description: text_arg(args, "description")?.to_owned(),
-                        assignee,
-                        priority: Priority::Normal,
-                        waits_on,
-                    },
-                    &criteria_arg(args),
-                )
-                .map_err(|e| said(&e))?;
-            Ok(format!("Created task {}.", id.0))
-        }
+        "post" => tool_post(engine, run, args),
+        "set_status" => tool_set_status(engine, run, args),
+        "create_task" => tool_create_task(engine, run, args),
         "read_doc" => {
             let path = text_arg(args, "path")?;
             let part = args["part"]
@@ -704,101 +574,15 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .unwrap_or(1);
             engine.read_doc(run.id, path, part).map_err(|e| said(&e))
         }
-        "read_document" => {
-            let id = match &args["document"] {
-                Value::Number(n) => n.as_i64(),
-                Value::String(s) => s.trim().trim_start_matches('d').parse().ok(),
-                _ => None,
-            }
-            .ok_or_else(|| {
-                "which document? Give its number as `document` (12 for d12)".to_owned()
-            })?;
-            let part = args["part"]
-                .as_u64()
-                .and_then(|p| usize::try_from(p).ok())
-                .unwrap_or(1);
-            engine.read_document(run.id, id, part).map_err(|e| said(&e))
-        }
-        "recheck" => {
-            let task = match args["task"].as_i64() {
-                Some(task) => TaskId(task),
-                None => run.task.ok_or_else(|| {
-                    "which task? Give its number as `task`: this turn has none".to_owned()
-                })?,
-            };
-            let why = text_arg(args, "why")?;
-            let check = engine.recheck_in(run.id, task, why).map_err(|e| said(&e))?;
-            Ok(format!(
-                "Check c{check} is queued again on the newest branch of task {}: no new \
-                 submission. The dev node's runner takes it; its result comes back as a \
-                 receipt in the task's thread, and you are woken when it does.",
-                task.0
-            ))
-        }
-        "ask_owner" => {
-            let text = text_arg(args, "text")?;
-            let cited = evidence_flat(args)?;
-            match engine
-                .ask_owner_citing(run.id, text, &cited)
-                .map_err(|e| said(&e))?
-            {
-                super::engine::Asked::Up(to) => {
-                    let to = engine
-                        .store()
-                        .members()
-                        .map_err(|e| e.to_string())?
-                        .into_iter()
-                        .find(|m| m.id == to)
-                        .map_or_else(|| "the one above you".to_owned(), |m| m.name);
-                    Ok(format!("It is with {to}, in the task's thread, and this turn has ended: stop now. You are woken when they answer."))
-                }
-                super::engine::Asked::Desk(_) => Ok("It is on the owner's desk, and this turn has ended: stop now. You are woken when they have seen it.".to_owned()),
-                super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the owner's desk, and this turn has ended: stop now. You are woken if it is sent back, or when the owner has seen it.".to_owned()),
-            }
-        }
-        "review" => {
-            let task = task_arg(args)?;
-            let approve = match args["verdict"].as_str() {
-                Some("approve") => true,
-                Some("send_back") => false,
-                _ => return Err("`verdict` must be approve or send_back".to_owned()),
-            };
-            let notes = text_arg(args, "notes")?;
-            if notes.chars().count() > LONGEST_POST {
-                return Err(format!("notes are at most {LONGEST_POST} characters"));
-            }
-            let reason = reason_arg(args, !approve)?;
-            let cited = evidence_lists(args)?;
-            match engine.test_in(run.id, task, approve, notes, &cited, reason) {
-                Ok(()) if approve => Ok(format!("Task {} is approved.", task.0)),
-                Ok(()) => Ok(format!(
-                    "Task {} is sent back to its owner, who is woken to put it right.",
-                    task.0
-                )),
-                Err(super::engine::EngineError::Refused(Refusal::GateNotPassed)) => Err(
-                    "this work needs the gate (tests, lint and build), which has not passed: it stays in review. Say so in its thread; the owner decides"
-                        .to_owned(),
-                ),
-                Err(e) => Err(said(&e)),
-            }
-        }
+        "read_document" => tool_read_document(engine, run, args),
+        "recheck" => tool_recheck(engine, run, args),
+        "ask_owner" => tool_ask_owner(engine, run, args),
+        "review" => tool_review(engine, run, args),
         "add_to_map" => {
             let line = text_arg(args, "line")?;
             engine.add_to_map(run.id, line).map_err(|e| said(&e))
         }
-        "check_back" => {
-            let minutes = args["minutes"]
-                .as_i64()
-                .ok_or_else(|| "how long? Give `minutes`, 5 to 720".to_owned())?;
-            let why = text_arg(args, "why")?;
-            engine
-                .check_back(run.id, minutes, why)
-                .map_err(|e| said(&e))?;
-            let waits = crate::domain::routines::check_back_minutes(minutes);
-            Ok(format!(
-                "You will be woken on this task in {waits} minutes, if it is still open: {why}"
-            ))
-        }
+        "check_back" => tool_check_back(engine, run, args),
         // The node's model relay charges every call a turn makes, as it makes it; a worker that
         // reported its own use too would pay twice. Kept as a word, not a tool, for a worker
         // that was told of it before.
@@ -808,4 +592,277 @@ fn call_tool<S: TeamStore, W: WorkerAdapter, C: Clock>(
         ),
         _ => Err(format!("there is no tool called `{tool}`")),
     }
+}
+
+fn tool_post<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    let task = task_arg(args)?;
+    let text = text_arg(args, "text")?;
+    if text.chars().count() > LONGEST_POST {
+        return Err(format!(
+            "a post is at most {LONGEST_POST} characters: say it shorter, or in parts"
+        ));
+    }
+    // The worker's own last word for the model is marked so: posted, not progress.
+    if args["last_word"].as_bool() == Some(true) {
+        engine
+            .last_word_in(run.id, task, text)
+            .map_err(|e| said(&e))?;
+        return Ok("Posted.".to_owned());
+    }
+    let cited = evidence_flat(args)?;
+    // A handover note with the post (ADR 0134) is a wrap-up for a restart: the note is
+    // read, and refused, before anything is posted; the turn ends and keeps its task.
+    let wrap = super::protocol_world::handover_arg(args)?;
+    if wrap.is_some() && !engine.draining() {
+        return Err(Refusal::NoRestartComing.to_string());
+    }
+    engine
+        .post_citing(run.id, task, text, &cited)
+        .map_err(|e| said(&e))?;
+    let Some(note) = wrap else {
+        return Ok("Posted.".to_owned());
+    };
+    engine
+        .wrap_up_in(run.id, task, &note)
+        .map_err(|e| said(&e))?;
+    Ok("Posted, and your handover note is kept. This turn has ended: stop now. The task is still yours, and goes on after the restart with your note.".to_owned())
+}
+
+fn tool_set_status<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    let task = task_arg(args)?;
+    let to = args["status"]
+        .as_str()
+        .and_then(TaskStatus::from_name)
+        .ok_or_else(|| {
+            "`status` must be todo, doing, in_review, blocked, or done for a routine's check"
+                .to_owned()
+        })?;
+    let reason = text_arg(args, "reason")?;
+    let cited = evidence_lists(args)?;
+    // Done says why when it is not "met its criteria" (ADR 0124): checked first, so a
+    // reason not in the set, a superseded that names no successor (or itself, or a task
+    // that is not there) changes nothing.
+    let why = match (to, args["why"].as_str()) {
+        (TaskStatus::Done, Some(w)) if w != "met_criteria" => {
+            let (closure, successor) = closure_arg(args, TaskStatus::Done)?;
+            crate::domain::closure::may_close(task, closure, successor)
+                .map_err(|r| r.to_string())?;
+            if let Some(next) = successor {
+                let there = engine.store().task(next).map_err(|e| e.to_string())?;
+                if there.is_none() {
+                    return Err(format!("there is no task #{} to carry the work on", next.0));
+                }
+            }
+            Some((closure, successor))
+        }
+        _ => None,
+    };
+    engine
+        .set_status_citing(run.id, task, to, reason, &cited)
+        .map_err(|e| said(&e))?;
+    if let Some((closure, successor)) = why {
+        engine
+            .done_because_in(run.id, task, closure, successor)
+            .map_err(|e| said(&e))?;
+    }
+    Ok(format!("Task {} is {}.", task.0, to.name()))
+}
+
+fn tool_create_task<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    let parent = run
+        .task
+        .ok_or_else(|| "a sub-task is created from your task, and this turn has none".to_owned())?;
+    let goal = engine
+        .store()
+        .task(parent)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "your task is gone".to_owned())?
+        .goal;
+    let assignee = match args["assignee"]
+        .as_str()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        None => None,
+        Some(name) => Some(
+            engine
+                .store()
+                .members()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|m| m.name.eq_ignore_ascii_case(name))
+                .ok_or_else(|| format!("no member called {name}"))?
+                .id,
+        ),
+    };
+    let waits_on = args["waits_on"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_i64).map(TaskId).collect())
+        .unwrap_or_default();
+    let id = engine
+        .create_task_in(
+            run.id,
+            NewTask {
+                goal,
+                project: None,
+                parent: Some(parent),
+                title: text_arg(args, "title")?.to_owned(),
+                description: text_arg(args, "description")?.to_owned(),
+                assignee,
+                priority: Priority::Normal,
+                waits_on,
+            },
+            &criteria_arg(args),
+        )
+        .map_err(|e| said(&e))?;
+    Ok(format!("Created task {}.", id.0))
+}
+
+fn tool_read_document<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    let id = match &args["document"] {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.trim().trim_start_matches('d').parse().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| "which document? Give its number as `document` (12 for d12)".to_owned())?;
+    let part = args["part"]
+        .as_u64()
+        .and_then(|p| usize::try_from(p).ok())
+        .unwrap_or(1);
+    engine.read_document(run.id, id, part).map_err(|e| said(&e))
+}
+
+fn tool_recheck<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    let task = match args["task"].as_i64() {
+        Some(task) => TaskId(task),
+        None => run.task.ok_or_else(|| {
+            "which task? Give its number as `task`: this turn has none".to_owned()
+        })?,
+    };
+    let why = text_arg(args, "why")?;
+    let check = engine.recheck_in(run.id, task, why).map_err(|e| said(&e))?;
+    Ok(format!(
+        "Check c{check} is queued again on the newest branch of task {}: no new \
+         submission. The dev node's runner takes it; its result comes back as a \
+         receipt in the task's thread, and you are woken when it does.",
+        task.0
+    ))
+}
+
+fn tool_ask_owner<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    let text = text_arg(args, "text")?;
+    let cited = evidence_flat(args)?;
+    match engine
+        .ask_owner_citing(run.id, text, &cited)
+        .map_err(|e| said(&e))?
+    {
+        super::engine::Asked::Up(to) => {
+            let to = engine
+                .store()
+                .members()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|m| m.id == to)
+                .map_or_else(|| "the one above you".to_owned(), |m| m.name);
+            Ok(format!("It is with {to}, in the task's thread, and this turn has ended: stop now. You are woken when they answer."))
+        }
+        super::engine::Asked::Desk(_) => Ok("It is on the owner's desk, and this turn has ended: stop now. You are woken when they have seen it.".to_owned()),
+        super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the owner's desk, and this turn has ended: stop now. You are woken if it is sent back, or when the owner has seen it.".to_owned()),
+    }
+}
+
+fn tool_review<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    let task = task_arg(args)?;
+    let approve = match args["verdict"].as_str() {
+        Some("approve") => true,
+        Some("send_back") => false,
+        _ => return Err("`verdict` must be approve or send_back".to_owned()),
+    };
+    let notes = text_arg(args, "notes")?;
+    if notes.chars().count() > LONGEST_POST {
+        return Err(format!("notes are at most {LONGEST_POST} characters"));
+    }
+    let reason = reason_arg(args, !approve)?;
+    let cited = evidence_lists(args)?;
+    match engine.test_in(run.id, task, approve, notes, &cited, reason) {
+        Ok(()) if approve => Ok(format!("Task {} is approved.", task.0)),
+        Ok(()) => Ok(format!(
+            "Task {} is sent back to its owner, who is woken to put it right.",
+            task.0
+        )),
+        Err(super::engine::EngineError::Refused(Refusal::GateNotPassed)) => Err(
+            "this work needs the gate (tests, lint and build), which has not passed: it stays in review. Say so in its thread; the owner decides"
+                .to_owned(),
+        ),
+        Err(e) => Err(said(&e)),
+    }
+}
+
+fn tool_check_back<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    args: &Value,
+) -> Result<String, String> {
+    let minutes = args["minutes"]
+        .as_i64()
+        .ok_or_else(|| "how long? Give `minutes`, 5 to 720".to_owned())?;
+    let why = text_arg(args, "why")?;
+    engine
+        .check_back(run.id, minutes, why)
+        .map_err(|e| said(&e))?;
+    let waits = crate::domain::routines::check_back_minutes(minutes);
+    Ok(format!(
+        "You will be woken on this task in {waits} minutes, if it is still open: {why}"
+    ))
+}
+
+fn tool_my_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+) -> Result<String, String> {
+    let mut out = run.told.clone();
+    if let Some(task) = run.task {
+        let thread = engine
+            .latest_task_posts(run.id, task, 12)
+            .map_err(|e| e.to_string())?;
+        let members = engine.store().members().map_err(|e| e.to_string())?;
+        if !thread.is_empty() {
+            out.push_str("\n\nThe thread, newest last:\n");
+            for input in &thread {
+                let p = &input.post;
+                let line =
+                    Engine::<S, W, C>::post_line(&members, &p.author, &p.text, p.unsupported);
+                out.push_str(&format!("- {line}\n"));
+            }
+        }
+    }
+    Ok(out)
 }

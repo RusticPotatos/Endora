@@ -57,67 +57,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         arms: &[Arm],
         seeds: &[u64],
     ) -> Done<Vec<TaskId>> {
-        if !trials::name_ok(name) {
-            return Err(refused(
-                "a trial's name is 1 to 40 lowercase letters, digits and dashes",
-            ));
-        }
-        if self.store.setting(&key(name))?.is_some() {
-            return Err(refused(format!("there is already a trial named {name}")));
-        }
-        if arms.len() < 2 {
-            return Err(refused("a trial compares two conditions or more"));
-        }
-        for (i, arm) in arms.iter().enumerate() {
-            if arm.label.trim().is_empty() || arms[..i].iter().any(|a| a.label == arm.label) {
-                return Err(refused("each condition has a label of its own"));
-            }
-        }
-        if seeds.is_empty() {
-            return Err(refused("a trial plays one seed or more"));
-        }
-        if arms.len() * seeds.len() > trials::MOST_RUNS {
-            return Err(refused(format!(
-                "a trial starts at most {} runs: {} conditions on {} seeds is {}",
-                trials::MOST_RUNS,
-                arms.len(),
-                seeds.len(),
-                arms.len() * seeds.len()
-            )));
-        }
-        let (players, version) = match kind {
-            scenario::LIGHTHOUSE => (1, scenario::VERSION),
-            station::SILENT_STATION => (3, station::VERSION),
-            chess_match::CHESS => (2, chess_match::VERSION),
-            _ => {
-                return Err(refused(
-                    "a trial's world is lighthouse, silent_station or chess",
-                ));
-            }
-        };
-        if arms.iter().any(|a| a.members.len() != players) {
-            return Err(refused(match players {
-                1 => "a lighthouse's condition names one member",
-                2 => "a match's condition names two members: white, then black",
-                _ => {
-                    "a mission's condition names three members: the captain, science and the \
-                     engineer"
-                }
-            }));
-        }
-        // A briefing is a condition's own: a mission's captain posts the plan first.
-        for arm in arms {
-            match arm.brief.as_deref() {
-                None => {}
-                Some("plan_first") if kind == station::SILENT_STATION => {}
-                Some(other) => {
-                    return Err(refused(format!(
-                        "no briefing {other:?} for {kind}: a mission's condition may be briefed \
-                         plan_first"
-                    )));
-                }
-            }
-        }
+        let version = self.check_trial(name, kind, arms, seeds)?;
         let mut names = self.trial_names()?;
         names.push(name.to_owned());
         self.store.set_setting(INDEX, &json!(names).to_string())?;
@@ -165,6 +105,73 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(started)
+    }
+
+    /// What starting a trial refuses before anything starts (see [`Self::start_trial`]).
+    /// Returns its world's version.
+    fn check_trial(&self, name: &str, kind: &str, arms: &[Arm], seeds: &[u64]) -> Done<u32> {
+        if !trials::name_ok(name) {
+            return Err(refused(
+                "a trial's name is 1 to 40 lowercase letters, digits and dashes",
+            ));
+        }
+        if self.store.setting(&key(name))?.is_some() {
+            return Err(refused(format!("there is already a trial named {name}")));
+        }
+        if arms.len() < 2 {
+            return Err(refused("a trial compares two conditions or more"));
+        }
+        for (i, arm) in arms.iter().enumerate() {
+            if arm.label.trim().is_empty() || arms[..i].iter().any(|a| a.label == arm.label) {
+                return Err(refused("each condition has a label of its own"));
+            }
+        }
+        if seeds.is_empty() {
+            return Err(refused("a trial plays one seed or more"));
+        }
+        if arms.len() * seeds.len() > trials::MOST_RUNS {
+            return Err(refused(format!(
+                "a trial starts at most {} runs: {} conditions on {} seeds is {}",
+                trials::MOST_RUNS,
+                arms.len(),
+                seeds.len(),
+                arms.len() * seeds.len()
+            )));
+        }
+        let (players, version): (usize, u32) = match kind {
+            scenario::LIGHTHOUSE => (1, scenario::VERSION),
+            station::SILENT_STATION => (3, station::VERSION),
+            chess_match::CHESS => (2, chess_match::VERSION),
+            _ => {
+                return Err(refused(
+                    "a trial's world is lighthouse, silent_station or chess",
+                ));
+            }
+        };
+        if arms.iter().any(|a| a.members.len() != players) {
+            return Err(refused(match players {
+                1 => "a lighthouse's condition names one member",
+                2 => "a match's condition names two members: white, then black",
+                _ => {
+                    "a mission's condition names three members: the captain, science and the \
+                     engineer"
+                }
+            }));
+        }
+        // A briefing is a condition's own: a mission's captain posts the plan first.
+        for arm in arms {
+            match arm.brief.as_deref() {
+                None => {}
+                Some("plan_first") if kind == station::SILENT_STATION => {}
+                Some(other) => {
+                    return Err(refused(format!(
+                        "no briefing {other:?} for {kind}: a mission's condition may be briefed \
+                         plan_first"
+                    )));
+                }
+            }
+        }
+        Ok(version)
     }
 
     /// The trials' names, in the order they started.
