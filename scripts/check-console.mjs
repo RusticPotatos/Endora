@@ -520,11 +520,7 @@ if (failures.length) {
   const fail = (what) => { console.error(what); process.exit(1); };
   // The members whose controls the checks below read are opened, as tapping their lines does.
   runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 }; HQ.roster = { 1: true, 2: true, 4: true, 5: true, 8: true };
-    // Two members' notebooks (ADR 0118), read when their panels opened: one note a member wrote
-    // (hostile on purpose), one the owner did.
-    HQ.notebooks = { 2: [{ id: 4, text: "<img src=n onerror=alert(9)> keep the VPN up", evidence: ["task 7", "r12"], from_owner: false, stale: true },
-                         { id: 5, text: "Never at night.", evidence: [], from_owner: true, stale: false }], 8: [] };
-    HQ.snap = { demo: true, stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
+    HQ.snap = { stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
@@ -539,35 +535,25 @@ if (failures.length) {
                 { id: 7, name: "Rae", role: "developer", look: 2, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [{ run: 30, task: 9 }], reports_to: 6, brain: "claude-haiku-5-5", brains: [] },
                 // Elastic staffing (ADR 0118): a developer on furlough, who keeps her place.
                 { id: 8, name: "Zed", role: "developer", look: 4, paused: false, furloughed: true, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], reports_to: 6, brain: "claude-haiku-5-5", brains: [] }],
-      wing: { goal: "Improve the lab", leads: [6], members: [6, 7], developers: 1, most_developers: 5, most_leads: 1 },
+      wing: { goal: "Improve the lab", leads: [6], members: [6, 7] },
       house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
-      // The team's world (ADR 0122): sections by stage, the timeline, the derived pages and
-      // the stories; every word a member's, so every word escaped.
+      // The team's world (ADR 0122): sections by stage, the timeline and the derived pages;
+      // every word a member's, so every word escaped.
       world: { migrated: false,
         pages: [{ slug: "house", title: "The house", derived: false, timeline: [{ at: 5, day: "17 Oct 2026", by: "Mara", line: "<img src=t onerror=alert(31)> moved" }] },
                 { slug: "lab", title: "How the lab is built", derived: true, lines: ["The home lab is managed by ansible-nas."] },
                 { slug: "team", title: "The team", derived: true, lines: ["Ada (lead, Claude Sonnet)"] }],
         sections: [{ address: "world:house#backups", heading: "<b>Backups</b>", headline: "<img src=w onerror=alert(32)> at 03:00", stage: "insight", said: "insight", revision: 2, written_by: "Mara", warrant: "read", why: "" },
                    { address: "world:house#disk", heading: "Disk", headline: "16 GB", stage: "canon", said: "canon", revision: 3, written_by: "the owner", warrant: "", why: "" }],
-        stories: [{ address: "story:closed-too-soon", handle: "closed-too-soon", stage: "insight", said: "unconfirmed since 17 Sep", unconfirmed_since: 1, instead: "<img src=y onerror=alert(33)> wait", to_retell: true, author: "Dee", whose: "Ada's area" }],
-        // The team's map (ADR 0126): pages by steward, proposals, gaps, broken roads and the
-        // nightly quiz; every word a member's, so every word escaped.
+        // The team's map (ADR 0126): pages by steward; every word a member's, so every word escaped.
         map: {
           pages: [
             { slug: "house", address: "world:house", kind: "house", title: "The house", derived: false, steward: "Mara, the CEO", steward_kind: "ceo", sections: 2, proposals: 0, quiz: null },
             { slug: "lab", address: "world:lab", kind: "lab", title: "How the lab is built", derived: true, steward: "HQ", steward_kind: "hq", sections: 0, proposals: 0, quiz: null },
             { slug: "area/2", address: "world:area/2", kind: "area", title: "<img src=m1 onerror=alert(40)>'s area", derived: false, steward: "Ada", steward_kind: "lead", sections: 1, proposals: 1, quiz: { slug: "area/2", passed: 0, asked: 3, flagged: true } },
             { slug: "role/developer", address: "world:role/developer", kind: "role", title: "The developer role", derived: false, steward: "the owner", steward_kind: "owner", sections: 0, proposals: 0, quiz: null }],
-          proposals: [
-            { id: 4, page: "area/2", page_title: "Ada's area", anchor: null, heading: "<img src=m2 onerror=alert(41)>", headline: "Backups run at 03:00", by: "Rae", status: "open", decided_by: "", why: "", day: "18 Oct 2026", evidence: [{ ref: "r12", said: "homelab_status" }] },
-            { id: 3, page: "area/2", page_title: "Ada's area", anchor: null, heading: "Restores", headline: "x", by: "Rae", status: "declined", decided_by: "Ada", why: "<img src=m3 onerror=alert(42)> too early", day: "17 Oct 2026", evidence: [] }],
-          gaps: [{ id: 1, what: "<img src=m4 onerror=alert(43)> the desk notice", where_looked: "world:lab", by: "Rae", to: "Ada", count: 2, open: true, how: "", closed_by: "", day: "18 Oct 2026" }],
-          roads: [{ from: "world:house#disk", to: "world:area/2#restores", why: "the section is retired (<img src=m5 onerror=alert(44)>)" }],
-          quiz: { enabled: true, nights: [{ night: 1, status: "answered", member: "Rae", passed: 4, asked: 6, why: "", day: "18 Oct 2026" }],
-                  pages: [{ slug: "area/2", title: "Ada's area", passed: 0, asked: 3, flagged: true }] } } },
-      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack",
-                strategy: { purpose: "</textarea><img src=s onerror=alert(12)> the house runs itself", success: "", measures: "unplanned outages over 10 min",
-                            bets: "", not_now: "", by: "Mara", updated_at: 5 } },
+        } },
+      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack" },
               { id: 3, title: "Improve the lab", status: "active", note: "" }],
       tasks: [{ id: 7, goal: 1, parent: null, title: "<img src=x onerror=alert(1)>", status: "doing", owner: 2, priority: "normal",
                 gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"],
@@ -602,9 +588,6 @@ if (failures.length) {
              { id: 22, kind: "hire", task: 9, text: "Hire Sam as developer on claude-haiku-5-5, reporting to member 6.\\nKit asks: two branches wait <b>with nobody free</b>\\nEvidence: task 9" },
              { id: 23, kind: "push", task: 9, text: "Push hq/task-9-tidy-the-deluge-role to your fork (1 file, checks passed). It is a1b2c3d4e5f6 on top of 0123456789ab." },
              { id: 24, kind: "push", task: 9, text: "Branch hq/task-9-other is accepted (1 file, checks passed), but pushing is not set up on the node (ENDORA_GIT_PUSH_KEY_FILE names no deploy key). Download its bundle from the node at /v1/hq/bundles/9/task-9-other and push it yourself." },
-             // Elastic staffing (ADR 0118): an idle member offered for furlough, and a recall.
-             { id: 25, kind: "furlough", member: 3, text: "Cy has had nothing to do since 3 Oct: furlough, or keep? <b>Nobody is let go.</b>" },
-             { id: 26, kind: "recall", task: 9, member: 6, text: "Recall member 8 to report to member 6.\\nZed is on furlough; Kit asks: four branches wait\\nEvidence: task 9" },
              // A member at twice its share (ADR 0113): an allowance for today, or wait.
              { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." },
              // A branch on the fork to merge (owner, 2026-10-26): it opens on GitHub from its card;
@@ -612,28 +595,11 @@ if (failures.length) {
              { id: 40, kind: "deploy", task: 9, text: "hq/task-9-docs is on your fork.", branch_url: "https://github.com/owner/ansible-nas/compare/develop...hq/task-9-docs" },
              { id: 41, kind: "deploy", task: 9, text: "hq/task-9-evil is on your fork.", branch_url: "javascript:alert(1)" },
              ],
-      // While you were away (ADR 0132): stuck work, a guard's finding (ADR 0124: the owner's
-      // verdict on it) and a notice. None needs a decision, so none is on the desk; each keeps the
-      // choices it has always had. Newest first, as HQ serves them.
-      digest: [{ id: 28, kind: "guard", task: 7, project: 1, at: 30, text: "Talk about work (finding 3): <b>Upkeep</b>: 14 coordination turns, 1 product change in 24 h",
-                 finding: { id: 3, guard: "ceremony", episodes: 2, seen_at: 31 } },
-               { id: 16, kind: "notice", task: 7, at: 20, text: "Linus restarted sonarr: it was unhealthy. It is now running." },
-               { id: 12, kind: "stuck", task: 7, at: 10, text: "Stuck: x", finding: { id: 4, guard: "stuck", episodes: 1, seen_at: 10 } }],
-      // The guards (ADR 0124): each one's precision, each project's talk against its work, and
-      // the findings, in words a member's work produced, so every word escaped.
-      // Caps on talk and runaway (ADR 0133): the budget of talk is a guard tried in shadow (it has
-      // a mode; the others only record and have none), work outside any project is listed by its
-      // tree with what its turns spent, and the caps are told beside the thresholds.
-      guards: { thresholds: { ceremony_ratio: 4, ceremony_least: 12, carousel_returns: 3, redundant_wakes: 3, fence_refusals_in_a_turn: 3,
-                              coordination_budget: 20, coordination_window_ms: 86400000, free_turns_a_day: 60, runaway_turns: 40, runaway_window_ms: 600000 },
-        precision: [{ guard: "ceremony", plainly: "Talk about work", rule: "r", fired: 3, open: 1, real: 1, resolved: 1, false_positive: 1, not_enough: 0, fixed: 1, fix_judged: 2, precision: 66 },
-                    { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null },
-                    { guard: "coordination", plainly: "Coordination over budget", rule: "r", fired: 1, open: 1, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null, mode: "shadow" }],
-        ceremony: [{ project: 1, title: "<u>Upkeep</u>", over: true, windows: [{ window: "24 h", said: "14 coordination turns, 1 product change in 24 h", over: true }] },
-                   { project: 2, title: "Backups", over: false, cannot_tell: true, windows: [{ window: "24 h", said: "11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read", over: false, verdict: "cannot_tell" }] },
-                   { project: null, title: "#12 <i>Plan the backups</i>", over: true, windows: [{ window: "24 h", said: "21 coordination turns, 0 product changes in 24 h", over: true, spent: 1230000 }] }],
-        findings: [{ id: 3, guard: "ceremony", plainly: "Talk about work", task: 7, project: 1, rule: "at least 12 coordination turns", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, seen_at: 5000, episodes: 3, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
-                   { id: 4, guard: "stuck", plainly: "Stuck work", task: 7, project: null, rule: "parked", evidence: "#7 x", opened_at: 2, seen_at: 2, episodes: 1, cleared_at: 3, verdict: null, fix_worked: null, judged_by: "" }] },
+      // While you were away (ADR 0132): stuck work and a notice. None needs a decision, so
+      // none is on the desk; each keeps the choices it has always had. Newest first, as HQ
+      // serves them.
+      digest: [{ id: 16, kind: "notice", task: 7, at: 20, text: "Linus restarted <b>Upkeep</b>: it was unhealthy. It is now running." },
+               { id: 12, kind: "stuck", task: 7, at: 10, text: "Stuck: x" }],
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
@@ -682,13 +648,7 @@ if (failures.length) {
             memory: { reinvented: 0, record_asked: 0, consults: { asked: 0, answered: 0, from_record: 0 } } },
           waiting: { budget: 2, mac: 1, cap: 0, oldest_ms: 540000 }, talk_at: 3600000 },
         // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
-        pool: { base: 2333333, topped_up: 2333333 },
-        teams: [{ lead: 6, name: "<u>Kit</u>", seats: 3, active: 2, furloughed: 1 }],
-        // Each area's measures (ADR 0120).
-        areas: [{ lead: 1, name: "Ada", members: [1, 2],
-                  today: { lab: { alarms: 2, outages: 1, closed_median_ms: 960000, repeats: 1 }, branches: null },
-                  week: { lab: { alarms: 5, outages: 2, closed_median_ms: 1200000, repeats: 3 }, branches: null } }] },
-      area_reports: [{ lead: 1, at: 7, moved: "#667 closed", stuck: "<img src=r onerror=alert(13)> gluetun", need: "", proposals: "pin gluetun" }],
+        pool: { base: 2333333, topped_up: 2333333 } },
       routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
                    on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false, project: 1 },
                  { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
@@ -707,7 +667,6 @@ if (failures.length) {
     hqTell({ id: 48, at: 0, kind: "member.hired", data: { member: 5, name: "Mara", role: "ceo", brain: "claude-opus-5-5", by: "endora" } }, false);
     hqTell({ id: 49, at: 0, kind: "house.noted", data: { by: "Mara", entry: "- 17 Oct: The NAS has 16 GB." } }, false);
     hqTell({ id: 50, at: 0, kind: "project.budget", data: { project: 1, title: "Upkeep", level: "spent", said: "spent its $0.50 cap for the month ($0.46): its Claude turns wait" } }, false);
-    hqTell({ id: 51, at: 0, kind: "member.reports_to", data: { member: 2, name: "Bo", reports_to: 1, manager: "Ada" } }, false);
     hqTell({ id: 52, at: 0, kind: "run.ended", data: { run: 10, member: 2, task: 7, result: "succeeded", label: "talk only" } }, false);
     hqTell({ id: 53, at: 0, kind: "huddle.called", data: { task: 7, lead: 1, members: [1, 2] } }, false);
     hqTell({ id: 54, at: 0, kind: "huddle.decided", data: { task: 7, lead: 1, decision: "hand_to" } }, false);
@@ -716,11 +675,8 @@ if (failures.length) {
     hqTell({ id: 61, at: 0, kind: "help.answered", data: { member: 2, expert: 1, task: 7, conversation: 4, request: 3, run: 11 } }, false);
     hqTell({ id: 62, at: 0, kind: "help.concluded", data: { member: 2, expert: 1, task: null, conversation: 4, request: 3, run: 12 } }, false);
     // Caps on talk and runaway (ADR 0133): a wake held for a task's budget of talk, the owner
-    // switching that guard, a lead narrowing what done means, and who stopped the team.
-    hqTell({ id: 56, at: 0, kind: "wake.held", data: { member: 2, task: 7, reason: "mentioned", why: "coordination_budget" } }, false);
+    // a lead narrowing what done means, and who stopped the team.
     hqTell({ id: 57, at: 0, kind: "wake.held", data: { member: 2, task: 7, reason: "mentioned" } }, false);
-    hqTell({ id: 58, at: 0, kind: "guard.mode", data: { guard: "coordination", mode: "on" } }, false);
-    hqTell({ id: 59, at: 0, kind: "guard.mode", data: { guard: "coordination", mode: "shadow" } }, false);
     hqTell({ id: 60, at: 0, kind: "task.criteria", data: { task: 7, by: 1, before: ["a"], after: ["The plan names three backups"], why: "too wide" } }, false);
     hqTell({ id: 61, at: 0, kind: "stopped", data: { by: "tripwire", why: "stopped by the runaway tripwire", turns: 40, window_ms: 600000, members: [{ member: 1, name: "Ada", turns: 22 }, { member: 2, name: "Bo", turns: 18 }] } }, false);
     hqTell({ id: 62, at: 0, kind: "stopped", data: { by: "owner", why: "trying it" } }, false);`, context);
@@ -741,15 +697,7 @@ if (failures.length) {
     if (!shut.includes("$0.46 of $0.50")) fail("hq: a shut project row does not say its money");
     if (!shut.includes('data-act="hq:more:goal1:toggle"') || shut.includes('data-act="hq:more:edit1:toggle"')) fail("hq: a goal is not a row to open");
   }
-  {
-    // Guards and findings are one line each until tapped, too (the owner, 2026-10-25).
-    const shut = runInContext("viewHQ()", context);
-    if (!shut.includes('data-act="hq:more:finding3:toggle"') || shut.includes('data-act="hq:rejudge:3:open"')) fail("hq: a finding is not a row to open");
-    if (!/data-act="hq:more:guard[\w-]+:toggle"/.test(shut)) fail("hq: a guard is not a row to open");
-  }
   runInContext(`HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true, goal1: true, goal2: true, goal3: true };
-    for (const p of (HQ.snap.guards || {}).precision || []) HQ.more["guard" + String(p.guard).replace(/[^\\w-]/g, "")] = true;
-    for (const f of (HQ.snap.guards || {}).findings || []) HQ.more["finding" + f.id] = true;
     for (let i = 0; i < 8; i++) { HQ.more["measure" + i] = true; HQ.more["outcome" + i] = true; }
     for (const m of HQ.snap.members || []) HQ.roster[m.id] = true;`, context);
   const office = runInContext("viewHQ()", context);
@@ -759,12 +707,9 @@ if (failures.length) {
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min",
     "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now judges with claude-sonnet-5-5", "Ada now works with the owner&#39;s Mac",
     "Mara joined the team as CEO", "Mara noted in the house log: - 17 Oct: The NAS has 16 GB.",
-    "Huddle on EL-7: Ada, Bo", "Ada decided EL-7: hand to",
     "Bo asked Ada for help (EL-7)", "Ada answered Bo (EL-7)", "Bo concluded from Ada&#39;s answer",
     // Caps on talk and runaway (ADR 0133).
-    "Bo waits: talk on EL-7 is over its budget, and its lead decides (mentioned)",
     "Bo waits: EL-7 is being worked (mentioned)",
-    "You switched the coordination guard on", "You put the coordination guard back in shadow",
     "Ada narrowed what done means for EL-7: The plan names three backups (too wide)",
     "The runaway tripwire stopped the team: 40 turns started in 10 minutes (Ada 22, Bo 18); nothing new starts until you resume",
     "You pulled the kill switch: every run stopped, nothing new starts"]) {
@@ -800,7 +745,7 @@ if (failures.length) {
     '<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">0 landed this week</span>']) {
     if (!office.includes(said)) fail(`hq: the outcomes do not say ${said}`);
   }
-  if (office.indexOf("<h3>Outcomes</h3>") > office.indexOf("<th>Today</th><th>7 days</th>")) fail("hq: the outcomes do not head the card");
+  if (office.indexOf("<h3>Outcomes</h3>") < 0 || office.indexOf("<h3>Outcomes</h3>") > office.indexOf("<h3>The team's turns</h3>")) fail("hq: the outcomes do not head the card");
   if (office.includes("$0.00 each")) fail("hq: nothing landed is shown as costing nothing");
   {
     const landed = runInContext(`(() => { const o = HQ.snap.scorecard.outcomes, kept = o.week.landed; o.week.landed = 3;
@@ -839,7 +784,6 @@ if (failures.length) {
     if (!spent.includes("pool $2.33<")) fail("hq: a day with no top-up says it has one");
   }
   if (office.includes("the record for the 7 days starts")) fail("hq: a week the record covers is said to start late");
-  if (!office.includes("Demo · scripted team")) fail("hq: demo mode is not labelled");
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
   // A live update redraws the screen; the activity log keeps its scroll through it.
   if (!office.includes('class="hq-log" data-keep-scroll="hq-log"')) fail("hq: the activity log loses its place on every update");
@@ -853,98 +797,25 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
-  // The guards (ADR 0124): a finding on the desk takes the owner's verdict; the Guards card
-  // shows each guard's precision and each project's talk, and its words stay text.
-  for (const act of ["hq:decide:28:real", "hq:decide:28:false_positive", "hq:decide:28:not_enough", "hq:decide:28:resolved",
-    "hq:rejudge:3:open", "hq:fixed:3:yes", "hq:fixed:3:no", "hq:verdict:4:real"]) {
-    if (!office.includes(`data-act="${act}"`)) fail(`hq: the guards do not offer ${act}`);
-  }
-  // Only the choices still open: a judged finding offers to change its verdict, not all four.
-  if (office.includes('data-act="hq:verdict:3:false_positive"')) fail("hq: a judged finding still offers every verdict");
-  if (office.includes('data-act="hq:fixed:4:yes"')) fail("hq: a finding nobody judged asks whether its fix worked");
-  // How often the CEO stepped into a member's work (ADR 0124), on the roster.
-  if (!office.includes("The CEO stepped in 2 times this week")) fail("hq: the roster does not count the CEO's rescues");
-  // HQ that cannot tell (the pruned feed lost part of the week) says so, and never says nought.
-  // (Once, for the one member whose count is null: a snapshot that says nothing of it says nothing.)
-  if (office.split("How often the CEO stepped in this week: HQ cannot tell").length - 1 !== 1) fail("hq: the roster does not say it cannot tell the CEO's rescues, once, for the one it cannot tell");
   // The same ask from another task is put with a card (ADR 0124), and the card says so.
   if (!office.includes('question · <button class="hq-link" data-act="hq:pick:task:7">EL-7</button> · also on <button class="hq-link" data-act="hq:pick:task:9">EL-9</button>: one answer reaches each')) fail("hq: a card does not say which other tasks share its ask, as links that open them");
-  for (const said of ["<h2>Guards</h2>", "<b>Talk about work</b> <small>3 found · 1 open</small>", "<span>3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2</span>",
-    "<b>Stuck work</b> <small>0 found · 0 open</small>", "<span>0 found · 0 open · not judged yet</span>", "&lt;u&gt;Upkeep&lt;/u&gt;: 14 coordination turns, 1 product change in 24 h · talking more than working",
-    "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep",
-    // A window HQ cannot tell the ceremony of says so, and is not marked as talking more.
-    "Backups: 11 coordination turns, 0 product changes in 24 h, 1 turn it cannot read · cannot tell whether it is talking more than working: some turns have no label"]) {
-    if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
-  }
-  if (office.includes("<img src=g") || office.includes("<u>Upkeep</u>")) fail("hq: a guard's finding became markup");
-  // The budget of talk is tried in shadow before it acts (ADR 0133): its row says which it is in
-  // and offers the other way; a guard that only records offers no switch. What a piece of work's
-  // turns spent is said beside them, for work outside any project too, and the caps are told
-  // beside the thresholds, but only when HQ serves them.
-  {
-    for (const said of ['<b>Coordination over budget</b> <small>shadow · 1 found · 1 open</small>', "<span>1 found · 1 open · not judged yet</span>",
-      "In shadow: it records what it would have held, and holds nothing, until you switch it on.",
-      'aria-pressed="false" data-act="hq:guardmode:coordination:on">Switch it on</button>',
-      "#12 &lt;i&gt;Plan the backups&lt;/i&gt;: 21 coordination turns, 0 product changes in 24 h ($1.23 spent) · talking more than working",
-      "a budget of 20 turns of talk a day on a task",
-      "Caps, always on: 60 turns a day for a member on the house&#39;s own models · the team is stopped when 40 turns start in 10 minutes."]) {
-      if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
-    }
-    if (office.includes("hq:guardmode:ceremony") || office.includes("hq:guardmode:stuck")) fail("hq: a guard that only records is offered a switch");
-    if (office.includes("<i>Plan the backups</i>")) fail("hq: the title of work outside a project became markup");
-    if (office.includes("14 coordination turns, 1 product change in 24 h (")) fail("hq: a window that spent nothing is given a cost");
-    // The same card with the guard switched on, with no mode served, and with no caps served.
-    const guardsWith = (change) => runInContext(`(() => { const g = HQ.snap.guards, kept = JSON.stringify([g.precision[2], g.thresholds]);
-      ${change}
-      const was = HQ.more; HQ.more = {}; for (const p of g.precision) HQ.more["guard" + String(p.guard).replace(/[^\\w-]/g, "")] = true;
-      const html = hqGuards(HQ.snap); HQ.more = was; [g.precision[2], g.thresholds] = JSON.parse(kept); return html; })()`, context);
-    const on = guardsWith('g.precision[2].mode = "on";');
-    for (const said of ['<b>Coordination over budget</b> <small>on · 1 found · 1 open</small>',
-      "On: it holds talk on a task over its budget, and asks the task's lead to decide it.",
-      'aria-pressed="true" data-act="hq:guardmode:coordination:shadow">Put it back in shadow</button>']) {
-      if (!on.includes(said)) fail(`hq: a guard switched on does not say ${said}`);
-    }
-    if (on.includes("In shadow:") || on.includes("hq:guardmode:coordination:on")) fail("hq: a guard switched on still offers to switch on");
-    if (guardsWith("delete g.precision[2].mode;").includes("guardmode")) fail("hq: a guard with no mode is offered a switch");
-    const older = guardsWith("delete g.thresholds.free_turns_a_day; delete g.thresholds.coordination_budget;");
-    if (older.includes("Caps, always on") || older.includes("a budget of") || older.includes("NaN")) fail("hq: an HQ that does not serve the caps has them shown");
-  }
-  // The switch itself: giving the guard authority is asked first, putting it back in shadow is
-  // not, and each goes to the node's route for that guard.
-  {
-    runInContext(`var __modeCalls = [], __modeSaved = [api, loadHQ, render, flash, confirm];
-      api = async (m, p, b) => { __modeCalls.push(m + " " + p + " " + JSON.stringify(b)); return {}; };
-      loadHQ = async () => {}; render = () => {}; flash = () => {};`, context);
-    await runInContext(`confirm = () => false; hqDispatch("hq", "guardmode", "coordination", "on")`, context);
-    await runInContext(`confirm = () => true; hqDispatch("hq", "guardmode", "coordination", "on")`, context);
-    await runInContext(`confirm = () => false; hqDispatch("hq", "guardmode", "coordination", "shadow")`, context);
-    const sent = JSON.stringify(runInContext("__modeCalls", context));
-    runInContext(`[api, loadHQ, render, flash, confirm] = __modeSaved;`, context);
-    if (sent !== JSON.stringify(['POST /v1/hq/guards/coordination/mode {"mode":"on"}', 'POST /v1/hq/guards/coordination/mode {"mode":"shadow"}'])) {
-      fail(`hq: the guard's switch asked the node ${sent}`);
-    }
-  }
-  // A finding seen again says when, and a finding opened again says how often (ADR 0132); one
-  // seen once, and found once, says neither.
-  if (!/<p>Finding 3 [^\n]*· seen again \d\d:\d\d · found 3 times<\/p>/.test(office)) fail("hq: a finding seen again does not say when and how often");
-  if (/<p>Finding 4 [^\n]*(seen again|found \d+ times)/.test(office)) fail("hq: a finding seen once claims to have been seen again");
-  // "While you were away" (ADR 0132): stuck work, a finding and a notice are one card at the top
+  // "While you were away" (ADR 0132): stuck work and a notice are one card at the top
   // of the Desk tab, newest first, with a count and the choices each always had; the desk's own
   // count is what needs the owner's word, and an empty digest shows no card.
   {
     const deskTab = office.split('id="hq-panel-now"')[1].split('role="tabpanel"')[0];
     const yours = deskTab.split("<h2>Your desk")[1].split("<h2>Looking at")[0];
     const digest = deskTab.split("<h2>While you were away")[1];
-    for (const said of ['<h2>While you were away <span class="hq-count">3</span></h2>', "Nothing here needs you before the team can go on",
-      "flagged 2 times", "hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry", "hq:decide:12:drop"]) {
+    for (const said of ['<h2>While you were away <span class="hq-count">2</span></h2>', "Nothing here needs you before the team can go on",
+      "hq:decide:16:seen", "hq:decide:12:retry", "hq:decide:12:drop"]) {
       if (!deskTab.includes(said)) fail(`hq: the digest does not say ${said}`);
     }
     // What needs the owner comes first; what can wait follows (the owner, 2026-10-25).
     if (deskTab.indexOf("<h2>Your desk") > deskTab.indexOf("While you were away")) fail("hq: the desk is not above the digest");
-    const order = ["hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
-    if (order.some((at) => at < 0) || order[0] > order[1] || order[1] > order[2]) fail(`hq: the digest is not newest first: ${order}`);
-    if (!yours.startsWith(` <span class="hq-count">17</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
-    for (const act of ["hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry"]) {
+    const order = ["hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
+    if (order.some((at) => at < 0) || order[0] > order[1]) fail(`hq: the digest is not newest first: ${order}`);
+    if (!yours.startsWith(` <span class="hq-count">15</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
+    for (const act of ["hq:decide:16:seen", "hq:decide:12:retry"]) {
       if (yours.includes(act)) fail(`hq: ${act} is on the desk as well as in the digest`);
     }
     if (digest.includes("<b>Upkeep</b>") || !digest.includes("&lt;b&gt;Upkeep&lt;/b&gt;")) fail("hq: a digest item's words became markup");
@@ -990,20 +861,6 @@ if (failures.length) {
     const tags = runInContext("HQ_DESK_HELP.tripwire", context);
     if (!tags.includes("Resume lets it work again") || !tags.includes("Seen leaves it stopped")) fail("hq: the tripwire's help does not say what its choices do");
   }
-  // Retract and sweep (ADR 0124): "Not true" on a note, a section and a story; what else says
-  // it is listed to tick and forget, its words text.
-  for (const act of ["hq:notebook:2:untrue-4", "hq:world:section:untrue-0", "hq:world:story:untrue-0"]) {
-    if (!office.includes(`data-act="${act}"`)) fail(`hq: "Not true" is not offered as ${act}`);
-  }
-  runInContext(`HQ.sweep = { retraction: 5, target: "note:4", built_on_it: ["note:9"],
-    sweep: [{ target: "note:7", text: "<img src=k onerror=alert(41)> the VPN must stay up", whose: "Ada's notebook", alike: 80 }] };`, context);
-  const swept = runInContext("viewHQ()", context);
-  for (const said of ["<h2>Said again</h2>", "Built on it: note:9.", "note:7 · Ada&#39;s notebook · 80% alike",
-    'data-act="hq:sweep:5:forget"', 'data-act="hq:sweep:5:close"', 'id="hq-sweep-0"']) {
-    if (!swept.includes(said) && !swept.includes(said.replace("&#39;", "'"))) fail(`hq: the sweep does not show ${said}`);
-  }
-  if (swept.includes("<img src=k")) fail("hq: a swept note became markup");
-  runInContext("HQ.sweep = null;", context);
   // "Try again" posts exactly the decision HQ takes for stuck work, and when HQ refuses it the
   // card says why and keeps saying it: a press that seems to do nothing is the worst answer.
   {
@@ -1118,25 +975,17 @@ if (failures.length) {
   if (!office.includes('<option value="2">&lt;s&gt;Backups&lt;/s&gt;</option>')) fail("hq: an active project is not offered to move into, as text");
   const moveTo = (office.match(/id="hq-move-7"[^>]*>([\s\S]*?)<\/select>/) || [])[1] || "";
   if (moveTo.includes('value="1"') || moveTo.includes('value="3"')) fail("hq: a paused or proposed project is offered to move into");
-  // Each goal's strategy (ADR 0120) and notes: shown as they read, with Edit to change them in
-  // place, and their words stay text either way.
+  // Each goal's notes: shown as they read, with Edit to change them in place, and their words
+  // stay text either way.
   if (!office.includes('data-act="hq:more:edit1:toggle"')) fail("hq: a goal cannot be edited");
   if (office.includes("<img src=z") || !office.includes("&lt;/textarea&gt;&lt;img src=z")) fail("hq: a goal's notes became markup");
-  if (office.includes("<img src=s") || !office.includes("&lt;/textarea&gt;&lt;img src=s")) fail("hq: a goal's strategy became markup");
-  if (!office.includes("No strategy yet")) fail("hq: a goal with no strategy does not say so");
   {
     runInContext('HQ.more = { goal1: true, edit1: true };', context);
     const editing = runInContext("viewHQ()", context);
     if (!editing.includes('id="hq-note-1"') || !editing.includes('data-act="hq:note:1:save"')) fail("hq: a goal's notes cannot be written");
-    if (!editing.includes('id="hq-strategy-1-purpose"') || !editing.includes('data-act="hq:strategy:1:save"')) fail("hq: a goal's strategy cannot be written");
-    if (editing.includes("<img src=z") || editing.includes("<img src=s")) fail("hq: a goal's words became markup while edited");
+    if (editing.includes("<img src=z")) fail("hq: a goal's words became markup while edited");
     runInContext('HQ.more = {};', context);
   }
-  // Each area's measures and its lead's latest report, the report's words text.
-  for (const said of ["Ada's area", "2 alarms · 1 outages over 10 min · closed in 16 min · 1 repeats within 24 h", "pin gluetun"]) {
-    if (!office.includes(said)) fail(`hq: the scorecard's areas do not say ${said}`);
-  }
-  if (office.includes("<img src=r") || !office.includes("&lt;img src=r")) fail("hq: a lead's report became markup");
   if (office.includes("hq:decide:16:approve") || office.includes('id="hq-answer-16"')) fail("hq: a notice was offered a decision");
   // The wing (ADR 0115): a hire request hires or declines; a push the node can make is approved
   // or declined; one it cannot is only seen, and offers the bundle; the hire form is there.
@@ -1152,18 +1001,6 @@ if (failures.length) {
   for (const id of ["hq-hire-name", "hq-hire-role", "hq-hire-work", "hq-hire-judgment", "hq-hire-to"]) {
     if (!office.includes(`id="${id}"`)) fail(`hq: the hire form lacks ${id}`);
   }
-  if (!office.includes("1 of 5 developer seats are taken")) fail("hq: the wing's seats are not said");
-  // Elastic staffing (ADR 0118): an idle member is offered for furlough (Furlough or Keep, never
-  // a way to let anyone go), a lead's recall is brought back or declined; each member's panel
-  // furloughs or recalls (never the CEO's), and the scorecard counts each team's seats.
-  for (const act of ["hq:decide:25:approve", "hq:decide:25:decline", "hq:decide:26:approve", "hq:decide:26:decline",
-    "hq:furlough:2", "hq:furlough:1", "hq:recall:8"]) {
-    if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk or a member's panel does not offer ${act}`);
-  }
-  if (office.includes('data-act="hq:furlough:5"') || office.includes('data-act="hq:recall:5"')) fail("hq: the CEO was offered a furlough");
-  if (office.includes('data-act="hq:furlough:8"') || office.includes('data-act="hq:recall:2"')) fail("hq: a furloughed member was offered a furlough, or a member at work a recall");
-  if (!office.includes(">Keep</button>") || !office.includes(">Bring back</button>")) fail("hq: the furlough cards are not worded as keep and bring back");
-  if (office.includes("<b>Nobody is let go.</b>")) fail("hq: a furlough offer became markup");
   // A member out for the day (ADR 0113): an allowance with an amount box, or tomorrow; the
   // text a model-free card shows is still text.
   for (const act of ["hq:decide:27:approve", "hq:decide:27:decline"]) {
@@ -1172,16 +1009,12 @@ if (failures.length) {
   if (!office.includes('id="hq-answer-27"') || !office.includes(">Wait for tomorrow</button>")) fail("hq: the out-for-the-day card has no amount box or no wait");
   if (office.includes("<b>$0.50</b>")) fail("hq: an out-for-the-day card became markup");
   if (!office.includes("on furlough · ")) fail("hq: the roster does not say who is on furlough");
-  if (!office.includes("3 seats · 2 at work · 1 on furlough") || !office.includes("&lt;u&gt;Kit&lt;/u&gt;")) fail("hq: the scorecard does not count a team's seats");
-  // The Office card (ADR 0119): the team's open proposals with their votes, the owner's veto on
-  // each, undo and reset (downtime costs nothing, so there is no allowance to set); and every
-  // word the team wrote (a proposal's reason, a vote's, a member's name) as text.
-  for (const said of ['<h2>Office <span class="hq-count">1</span></h2>', "7 things on the floor", "add a fish tank in the commons; move the &lt;u&gt;fern&lt;/u&gt; to the lounge",
-    "&lt;img src=w onerror=alert(10)&gt; the kitchen needs life", "yes 1, no 1", "&lt;i&gt;Dee&lt;/i&gt; yes", "Bo no (&lt;b&gt;too wet&lt;/b&gt;)", 'data-act="hq:office:veto:3"',
-    'data-act="hq:office:undo:go">Undo last change', 'data-act="hq:office:reset:go">Reset the office',
-    "applied: add a plant in the commons", "carried 2 to 0"]) {
+  // The Office card (ADR 0119, 0142): the floor and its games; the team no longer changes the
+  // floor, so there is nothing to veto, undo or reset.
+  for (const said of ["<h2>Office</h2>", "7 things on the floor"]) {
     if (!office.includes(said)) fail(`hq: the Office card does not say ${said}`);
   }
+  if (/hq:office:(veto|undo|reset)/.test(office)) fail("hq: the Office card still offers a landlord's veto, undo or reset");
   if (office.includes("hq:office:downtime") || office.includes("Paid members&#39; downtime")) fail("hq: the Office card offers an allowance for downtime, which costs nothing");
   for (const raw of ["<img src=w", "<u>fern</u>", "<b>too wet</b>", "<i>Dee</i> proposes", "<b>Dee</b>"]) {
     if (office.includes(raw)) fail(`hq: the Office card let a member's words become markup (${raw})`);
@@ -1190,9 +1023,7 @@ if (failures.length) {
     const none = runInContext(`(() => { const o = HQ.snap.office, keep = [o.proposals, o.can_undo];
       o.proposals = []; o.can_undo = false;
       const html = hqOffice(HQ.snap); [o.proposals, o.can_undo] = keep; return html; })()`, context);
-    for (const said of ["No proposals open.", 'data-act="hq:office:undo:go" disabled>']) {
-      if (!none.includes(said)) fail(`hq: the Office card with nothing open does not say ${said}`);
-    }
+    if (!none.includes("<h2>Office</h2>")) fail("hq: the Office card is gone with nothing open");
     const item = runInContext(`HQ.selected = { type: "item", id: 2 }; const looked = hqSelected(); HQ.selected = { type: "task", id: 7 }; looked`, context);
     // And the activity log and Replay say what the team did to the office, escaped like the rest.
     runInContext(`hqTell({ id: 70, at: 0, kind: "office.proposed", data: { proposal: 3, by: "Dee", text: "Dee proposes: add a fish tank in the commons \\u2014 '<b>life</b>'" } }, false);
@@ -1202,25 +1033,10 @@ if (failures.length) {
     if (runInContext(`replayEvent({ name: "office.changed", data: { text: "The office changed: add a plant" } })[1]`, context) !== "The office changed: add a plant") fail("hq: Replay does not say that the office changed");
     if (!item.includes("fish tank") || !item.includes("&lt;b&gt;Dee&lt;/b&gt;") || item.includes("<b>Dee</b>") || !item.includes("the commons")) fail("hq: tapping a thing does not say what it is and who put it there, as text");
   }
-  // A member's notebook (ADR 0118), in its panel: each note as text with its evidence, or marked
-  // as the owner's, Edit and Delete on each, and Add note; what a member wrote is never markup.
-  for (const act of ["hq:notebook:2:edit-4", "hq:notebook:2:del-4", "hq:notebook:2:edit-5", "hq:notebook:2:del-5",
-    "hq:notebook:2:add", "hq:notebook:8:add"]) {
-    if (!office.includes(`data-act="${act}"`)) fail(`hq: a member's notebook does not offer ${act}`);
-  }
-  for (const said of ["&lt;img src=n onerror=alert(9)&gt; keep the VPN up", "task 7, r12 · stale", "from the owner",
-    "Bo&#39;s notebook (2)", "No notes.", 'id="hq-note-new-2"', "Reading Mara"]) {
-    if (!office.includes(said) && !office.includes(said.replace("&#39;", "'"))) fail(`hq: the notebook does not say ${said}`);
-  }
-  if (office.includes("<img src=n")) fail("hq: a note a member wrote became markup");
   if (office.includes("<u>Kit</u>")) fail("hq: a lead's name became markup on the scorecard's seats");
   // A member's question can be answered on its card: the answer goes in the task's thread.
   if (!office.includes('id="hq-answer-15"')) fail("hq: a question cannot be answered from its card");
   if (office.includes('id="hq-answer-12"')) fail("hq: stuck work was offered an answer box");
-  if (!office.includes("Demo: Ready to merge: y") || !office.includes("no pull request behind this")) {
-    fail("hq: a demo card does not say it is a demo");
-  }
-  if (!office.includes("nothing is spent")) fail("hq: the demo's spend line reads as real money");
   if (office.includes("<img src=x") || office.includes("<b>Fix</b>")) fail("hq: a task's text became markup");
   // A wing task looked at: its branch with its check, and its documents, as text.
   const wingTask = runInContext('HQ.selected = { type: "task", id: 9 }; viewHQ()', context);
@@ -1254,9 +1070,8 @@ if (failures.length) {
   // The house log: readable and editable, and its text stays text.
   if (!office.includes('id="hq-house"') || !office.includes('data-act="hq:house:save"') || !office.includes("House log")) fail("hq: the house log cannot be read and edited");
   if (office.includes("<img src=h") || !office.includes("&lt;/textarea&gt;&lt;img src=h")) fail("hq: the house log became markup");
-  // The World card (ADR 0122): pages by stage, the owner's canon acts, the stories, the export.
-  for (const said of ["<h2>World</h2>", 'data-act="hq:world:section:promote-0"', 'data-act="hq:world:section:demote-1"',
-    'data-act="hq:world:story:promote-0"', 'data-act="hq:world:export:md"', "unconfirmed since 17 Sep", "to retell"]) {
+  // The World card (ADR 0122): its pages and the export.
+  for (const said of ["<h2>World</h2>", 'data-act="hq:world:export:md"']) {
     if (!office.includes(said)) fail(`hq: the World card does not show ${said}`);
   }
   {
@@ -1272,18 +1087,15 @@ if (failures.length) {
   for (const hostile of ["<img src=t", "<img src=w", "<img src=y", "<b>Backups</b>"]) {
     if (office.includes(hostile)) fail(`hq: the World card let markup through: ${hostile}`);
   }
-  // The team's map (ADR 0126): the pages with their stewards and quiz scores, the owner's word on
-  // a proposal, the gaps, the broken roads and last night's quiz; every word a member's. Read on
+  // The team's map (ADR 0126): the pages with their stewards; every word a member's. Read on
   // the page list with the owner's form open, and on an open page.
   runInContext("HQ_WORLD_VIEW.page = null; HQ_WORLD_VIEW.writing = true;", context);
   const mapViews = runInContext("viewHQ()", context) + office;
   runInContext('HQ_WORLD_VIEW.page = "house"; HQ_WORLD_VIEW.writing = false;', context);
-  for (const said of ['data-act="hq:world:proposal:accept-4"', 'data-act="hq:world:proposal:decline-4"', "Rae got 4 of 6",
-    "failed three nights running", "the desk notice", "world:area/2#restores", "quiz 0/3, failing", 'value="area/2"',
-    "kept by Ada", "Proposals to pages", "Broken roads", "Last night's map check"]) {
+  for (const said of ['value="area/2"', "kept by Ada"]) {
     if (!mapViews.includes(said)) fail(`hq: the World card's map does not show ${said}`);
   }
-  for (const hostile of ["<img src=m1", "<img src=m2", "<img src=m3", "<img src=m4", "<img src=m5"]) {
+  for (const hostile of ["<img src=m1"]) {
     if (mapViews.includes(hostile)) fail(`hq: the map on the World card let markup through: ${hostile}`);
   }
   // Once moved into the world, the old house log is read-only, and still escaped.
@@ -1307,16 +1119,16 @@ if (failures.length) {
   // whatever a member wrote stays text.
   for (const act of ["hq:project:1:resume", "hq:project:1:cap", "hq:project:1:drop", "hq:project:2:work", "hq:project:2:pause", "hq:project:2:tools",
     "hq:project:2:cap", "hq:project:2:drop", "hq:project:3:reopen", "hq:project:3:drop", "hq:project:new:add",
-    "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait", "hq:reports:1:set", "hq:reports:2:set"]) {
+    "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the projects card or the desk does not offer ${act}`);
   }
-  for (const wrong of ["hq:project:1:pause", "hq:project:2:resume", "hq:project:3:work", "hq:project:2:reopen", "hq:reports:5:set", "hq:decide:19:seen", "hq:decide:20:approve"]) {
+  for (const wrong of ["hq:project:1:pause", "hq:project:2:resume", "hq:project:3:work", "hq:project:2:reopen", "hq:decide:19:seen", "hq:decide:20:approve"]) {
     if (office.includes(`data-act="${wrong}"`)) fail(`hq: something offers ${wrong}, which its item does not take`);
   }
   for (const said of ["<h2>Projects</h2>", 'class="hq-gauge spent"', 'class="hq-gauge warned"', "$0.46 of $0.50 this month", "$0.00 this month · no cap",
     "paused: it spent its cap", "proposed by Ada, waits for the CEO", "asks $5.00 a month", "Evidence: task 7, event 40", 'id="hq-answer-19"', 'id="hq-answer-20"',
-    'id="hq-project-title"', 'id="hq-project-cap"', 'id="hq-project-lead"', 'id="hq-reports-1"', "Reports to the board: you.", "in Upkeep",
-    '<option value="5" selected>Mara (CEO)</option>', "Project Upkeep spent its $0.50 cap", "Bo now reports to Ada", "project Upkeep"]) {
+    'id="hq-project-title"', 'id="hq-project-cap"', 'id="hq-project-lead"', "in Upkeep",
+    "Project Upkeep spent its $0.50 cap", "project Upkeep"]) {
     if (!office.includes(said)) fail(`hq: the projects card does not show ${said}`);
   }
   if (office.includes("<s>Backups") || office.includes("<img src=p") || office.includes("<u>they")) fail("hq: a project's words became markup");
@@ -1357,11 +1169,11 @@ if (failures.length) {
     for (const id of [1, 2, 3, 4, 5, 6, 7]) {
       if (!roster.includes(`aria-expanded="false" data-act="hq:roster:${id}:toggle"`)) fail(`hq: member ${id}'s line does not open its controls`);
     }
-    for (const control of ["hq:brain:", "hq:rename:", 'id="hq-reports-', "hq:pick:member:"]) {
+    for (const control of ["hq:brain:", "hq:rename:", "hq:pick:member:"]) {
       if (roster.includes(control)) fail(`hq: a member's controls (${control}) show before its line is tapped`);
     }
     const opened = runInContext("hqDispatch('hq', 'roster', '7', 'toggle'); hqRoster(HQ.snap)", context);
-    for (const control of ['aria-expanded="true" data-act="hq:roster:7:toggle"', 'data-act="hq:rename:7"', 'id="hq-reports-7"', 'data-act="hq:pick:member:7"']) {
+    for (const control of ['aria-expanded="true" data-act="hq:roster:7:toggle"', 'data-act="hq:rename:7"', 'data-act="hq:pick:member:7"']) {
       if (!opened.includes(control)) fail(`hq: tapping a member's line does not show ${control}`);
     }
     if (opened.includes('data-act="hq:rename:6"')) fail("hq: tapping one member opened another's controls");
@@ -1515,9 +1327,10 @@ if (failures.length) {
         seats: Object.fromEntries(Object.entries(l.seats).map(([id, s]) => [id, { pod: s.pod, work: [s.work.cx, s.work.cy, s.work.dir] }])) };
     })()`, context);
     if (layout.pods.map((p) => p.label).join("|") !== "Ops · Ada|Engineering · Kit") fail(`hq: the pods are not the roster's teams: ${layout.pods.map((p) => p.label)}`);
-    // Cy and Dee have no lead above them but the CEO, so they join the first pod; Zed, on furlough, keeps the last desk.
+    // Cy and Dee have no lead above them but the CEO, so they join the first pod; Zed, retired
+    // (on furlough), leaves the floor (ADR 0142).
     if (layout.pods[0].desks.map((d) => d[2]).join() !== "1,2,3,4") fail(`hq: the first pod is not Ada, Bo, Cy and Dee: ${layout.pods[0].desks.map((d) => d[2])}`);
-    if (layout.pods[1].desks.map((d) => d[2]).join() !== "6,7,8") fail(`hq: the second pod is not Kit, Rae, then Zed on furlough: ${layout.pods[1].desks.map((d) => d[2])}`);
+    if (layout.pods[1].desks.map((d) => d[2]).join() !== "6,7") fail(`hq: the second pod is not Kit and Rae, with Zed retired: ${layout.pods[1].desks.map((d) => d[2])}`);
     if (layout.seats[5].pod !== -1) fail("hq: the CEO sits in a pod");
     const [podA, podB] = layout.pods;
     if (!(podA.x + podA.width < podB.x)) fail("hq: the pods are not side by side");
@@ -1564,8 +1377,8 @@ if (failures.length) {
         if (!written.includes(label)) fail(`hq: the office does not say ${label}`);
       }
       if (written.includes("WING")) fail("hq: the walled wing is still drawn");
-      // Zed is on furlough: no one stands at his desk, and a card on it says he is away.
-      if (!written.includes("AWAY")) fail("hq: a furloughed member's empty desk has no away card");
+      // Zed is retired (on furlough): his desk leaves the floor, so no away card (ADR 0142).
+      if (written.includes("AWAY")) fail("hq: a retired member's desk is still drawn");
       if (runInContext("HQ.people[8]", context) !== undefined) fail("hq: a member on furlough is walking about the office");
       if (!written.includes("<I>DEE</I>")) fail("hq: a member's name is not written on the canvas");
       // Everything on the floor is drawn from the snapshot's office: the tank's water where the
@@ -1716,8 +1529,10 @@ if (failures.length) {
         HQ.selected = null;`, context);
       const card = runInContext("hqOffice(HQ.snap)", context);
       // The latest three results show, the rest a tap away (the owner, 2026-10-25).
-      if (card.includes("Result 4") || !card.includes('data-act="hq:more:results:toggle"')) fail("hq: the Games section shows more than three results, or no way to the rest");
-      for (const want of ["<h3>Games</h3>", "Ping-pong", "Pool", "Chess", "W2", "L2", "Result 3", 'data-act="hq:pick:chess:0"', "&lt;i&gt;Dee&lt;/i&gt;", "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) {
+
+      // Ping-pong and pool are the animation alone (ADR 0142): chess is the one kept.
+      if (card.includes("<summary>Ping-pong") || card.includes("<summary>Pool") || card.includes("Result 1")) fail("hq: the Games section still keeps ping-pong or pool");
+      for (const want of ["<h3>Games</h3>", "Chess", 'data-act="hq:pick:chess:0"', "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) {
         if (!card.includes(want)) fail(`hq: the Office card's Games section lacks ${want}`);
       }
       if (["<i>Dee</i>", "<b>Bo</b>", "<u>x</u>"].some((raw) => card.includes(raw))) fail("hq: a name or result in the Games section is not escaped");
@@ -1787,8 +1602,8 @@ if (failures.length) {
     const panelOf = (html, id) => html.split(`id="hq-panel-${id}"`)[1].split('role="tabpanel"')[0];
     const where = { now: ["Your desk", "hq:decide:11:approve", "<h2>Activity</h2>", 'id="hq-log-end"'],
       team: ["<h2>Team</h2>", "<h2>Office", "<h2>World</h2>", "<h2>House log</h2>"],
-      work: ["<h2>Find a task</h2>", "<h2>Conversations</h2>", "<h2>Guards</h2>", "How the team is doing"],
-      manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Routines</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Strategy and notes for the team", "<h2>Hire</h2>", "hq:hire:new:add"] };
+      work: ["<h2>Find a task</h2>", "How the team is doing"],
+      manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Routines</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Notes for the team", "<h2>Hire</h2>", "hq:hire:new:add"] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
     }
@@ -1798,11 +1613,11 @@ if (failures.length) {
     for (const [id, folded] of [["manage", "<details"], ["work", "<h2>Projects</h2>"], ["team", "How the team is doing"], ["team", "What the team may do"], ["team", "hq:hire:new:add"]]) {
       if (panelOf(tabs, id).includes(folded)) fail(`hq: "${folded}" is on the ${id} tab`);
     }
-    // Badges: the desk's items on Now, and the guards' open findings on Work.
+    // Badges: the desk's items on Now.
     const badge = (html, id) => (html.match(new RegExp(`id="hq-tab-${id}"[^>]*>[^<]*<span class="hq-badge"[^>]*>(\\d+)</span>`)) || [])[1];
     const deskCount = runInContext("HQ.snap.desk.length", context);
     if (Number(badge(tabs, "now")) !== deskCount) fail(`hq: the Now badge is ${badge(tabs, "now")}, not ${deskCount}`);
-    if (badge(tabs, "work") !== "1") fail(`hq: the Work badge is ${badge(tabs, "work")}, not the one open finding`);
+    if (badge(tabs, "work") !== undefined) fail("hq: the Work tab has a badge with nothing to count");
     if (badge(tabs, "team") !== undefined) fail("hq: a tab with nothing to count has a badge");
     // The waiting chip goes to Now; the pool chip reads the snapshot; no Mac block, no Mac chip.
     if (!tabs.includes(`data-act="hq:tab:now:go">${deskCount} waiting on you</button>`)) fail("hq: no \"waiting on you\" chip to Now");
@@ -1873,8 +1688,6 @@ if (failures.length) {
       const card = desk.split(`<div class="hq-need ${kind}">`)[1].split('<div class="hq-row">')[0];
       if (!card.includes('class="hq-help"')) fail(`hq: a ${kind} desk item shows no help line`);
     }
-    const guardHelp = runInContext("HQ_DESK_HELP.guard", context);
-    for (const said of ["Real = the guard was right", "False positive", "Resolved = the cause is fixed"]) if (!guardHelp.includes(said)) fail(`hq: the guard help does not say ${said}`);
     if (!runInContext("HQ_DESK_HELP.canon", context).includes("Canon = settled truth only you can change")) fail("hq: the canon help is missing");
     if (!runInContext("HQ_DESK_HELP.out_for_day", context).includes("Give it today lets this member keep working today")) fail("hq: the out-for-the-day help is missing");
   }
@@ -1885,15 +1698,18 @@ if (failures.length) {
     if (runInContext("viewHQ()", context).includes('id="hq-work-title"')) fail("hq: the give-work form is open before it is asked for");
     await runInContext('dispatch("hq:work")', context);
     const form = runInContext("viewHQ()", context);
-    for (const said of ["What should the team do?", "What does done mean?", "Who leads it?", 'id="hq-work-title"', 'id="hq-work-done"', 'data-act="hq:work:send:go"', 'data-act="hq:work:cancel:go"', "live:"]) {
+    for (const said of ["What should the team do?", "What does done mean?", "Which loop?", 'id="hq-work-title"', 'id="hq-work-done"', 'data-act="hq:work:send:go"', 'data-act="hq:work:cancel:go"', "live:"]) {
       if (!form.includes(said)) fail(`hq: the give-work form does not show ${said}`);
     }
     // What done means is asked for, never optional (ADR 0124): the team starts from it.
     const giving = form.split('aria-label="Give the team work"')[1].split('hq:work:cancel:go')[0];
     if (giving.includes("(optional)")) fail("hq: the give-work form still calls what done means optional");
     if (!giving.includes("at least one line") || !/<textarea id="hq-work-done"[^>]*\brequired\b/.test(giving)) fail("hq: the give-work form does not require a line of what done means");
-    if (!form.includes('<option value="6" selected>Kit — Engineering</option>') || !form.includes('<option value="1">Ada — Ops</option>')) fail("hq: the leads are not offered by name and area, with Engineering's chosen");
-    const fields = { "hq-work-title": "Fix the <b>backups</b>", "hq-work-done": "backups run nightly; live: disk is under 80%\nreport sent\n\n", "hq-work-lead": "6" };
+    // One team of loops (ADR 0142): the work goes on a loop's plan, which hands it out; only
+    // active loops are offered, by name, escaped.
+    const loopSelect = form.split('<select id="hq-work-loop">')[1].split("</select>")[0];
+    if (!loopSelect.includes('<option value="2" selected>&lt;s&gt;Backups&lt;/s&gt;</option>') || loopSelect.includes('value="3"') || loopSelect.includes('value="1"')) fail("hq: the active loops are not offered by name: " + loopSelect);
+    const fields = { "hq-work-title": "Fix the <b>backups</b>", "hq-work-done": "backups run nightly; live: disk is under 80%\nreport sent\n\n", "hq-work-loop": "2" };
     const realGet = context.document.getElementById;
     context.document.getElementById = (id) => (id in fields ? { ...element(), value: fields[id] } : realGet(id));
     const sent = [];
@@ -1922,14 +1738,10 @@ if (failures.length) {
     const post = sent.find(([path]) => path === "/v1/hq/tasks");
     if (!post || post[1] !== "POST") fail(`hq: the form does not post a task: ${JSON.stringify(sent)}`);
     const body = JSON.parse(post[2]);
-    if (body.assignee !== 6 || body.title !== "Fix the <b>backups</b>") fail(`hq: the task goes to ${body.assignee} as ${body.title}`);
+    if (body.project !== 2 || body.goal !== 1 || "assignee" in body || body.title !== "Fix the <b>backups</b>") fail(`hq: the task goes to ${JSON.stringify(body)}`);
     if (JSON.stringify(body.criteria) !== JSON.stringify(["backups run nightly", "live: disk is under 80%", "report sent"])) fail(`hq: the done lines are ${JSON.stringify(body.criteria)}`);
     if (runInContext("HQ.working", context)) fail("hq: the form stays open after sending");
-    fields["hq-work-lead"] = "1";
-    await runInContext('dispatch("hq:work")', context);
-    await runInContext('dispatch("hq:work:send:go")', context);
-    const second = JSON.parse(sent.filter(([path]) => path === "/v1/hq/tasks")[1][2]);
-    if (second.assignee !== 1) fail("hq: choosing Ada does not send the work to Ada");
+
     await runInContext('dispatch("hq:work")', context);
     await runInContext('dispatch("hq:work:cancel:go")', context);
     if (runInContext("viewHQ()", context).includes('id="hq-work-title"')) fail("hq: Cancel leaves the form open");
@@ -1973,7 +1785,7 @@ if (failures.length) {
     const world = runInContext("viewHQ()", context).split('id="hq-panel-team"')[1].split('role="tabpanel"')[0];
     const top = world.split("<h3>Pages</h3>")[0];
     if (!top.includes('data-act="hq:world:paste:show">Paste Markdown</button>')) fail("hq: Paste Markdown is not a button at the top of the World card");
-    for (const said of ["field note", "observation", "insight", "canon", "Unconfirmed", "Edit rewrites", "Make canon settles", "Not true takes it out"]) {
+    for (const said of ["house page", "Edit rewrites"]) {
       if (!top.includes(said)) fail(`hq: the World legend does not say ${said}`);
     }
     await runInContext('dispatch("hq:world:paste:show")', context);
@@ -2047,7 +1859,7 @@ if (failures.length) {
 {
   const fail = (what) => { console.error(what); process.exit(1); };
   runInContext(`HQ.error = ""; HQ.selected = { type: "task", id: 7 };
-    HQ.snap = { demo: false, stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
+    HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
       members: [{ id: 2, name: "Bo", role: "developer", look: 4, running: [], brains: [] }],
       tasks: [{ id: 7, goal: 1, title: "Look at <b>sonarr</b>", status: "doing", owner: 2, why: [], thread: [] }],
       runs: [], recent_runs: [{ id: 2, member: 2, task: 7, status: "succeeded", label: "advanced" }] };`, context);
@@ -3059,11 +2871,18 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   // its pages first and folds nothing since 2026-10-25).
   runInContext('HQ_WORLD_VIEW.page = "house"; hqWorldDoc().open = true;', context);
   let card = runInContext("hqWorldCard(HQ.snap)", context);
-  for (const need of ['data-act="hq:world:edit:open-0"', 'data-act="hq:world:edit:open-1"', 'data-act="hq:world:section:promote-0"',
-      'data-act="hq:world:section:demote-1"', 'id="hq-wd-md"', 'data-act="hq:world:paste:preview"', 'autocapitalize="off"']) {
+  for (const need of ['data-act="hq:world:edit:open-0"', 'data-act="hq:world:edit:open-1"', 'id="hq-wd-md"', 'data-act="hq:world:paste:preview"', 'autocapitalize="off"']) {
     if (!card.includes(need)) fail(`the World card lost ${need}`);
   }
   if (card.includes("<img src=w") || card.includes("<b>Backups</b>")) fail("a section's words are not escaped");
+  // The map (ADR 0142): what members found, most confirmed first, the new ones marked, escaped.
+  runInContext(`HQ.snap = Object.assign({}, HQ.snap, { map_lines: [
+      { line: "The backup schedule is in <i>roles/backup/defaults/main.yml</i>", by: "Bo", at: Date.now() - 3600000, uses: 3 },
+      { line: "Sonarr's logs are in container_logs", by: "Rae", at: Date.now() - 20 * 86400000, uses: 1 }] });`, context);
+  const mapped = runInContext("hqWorldCard(HQ.snap)", context);
+  if (!mapped.includes("The map") || !/backup schedule[\s\S]*confirmed 3 times[\s\S]*Sonarr/.test(mapped)) fail("the World card does not show the map: " + mapped);
+  if (!/backup schedule[^<]*<\/span>[^<]*<span class="hq-tag">new<\/span>|new<\/span>[\s\S]*backup schedule/.test(mapped) && !mapped.includes('class="hq-tag">new')) fail("a line found this week is not marked new");
+  if (mapped.includes("<i>roles/backup")) fail("a map line is not escaped");
   if (card.includes('class="hq-btn ok"') || card.includes('class="hq-btn no"') || /class="hq-btn"/.test(card)) fail("a World button is not the tall kind");
   if (card.includes("hq-editor")) fail("the editor is open with nothing to edit");
 
@@ -3106,13 +2925,6 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (runInContext("HQ.worldEdit", context) !== null) fail("the editor stayed open after saving");
   runInContext(`hqWorldEditAct("open-1"); hqWorldEditAct("cancel")`, context);
   if (runInContext("HQ.worldEdit", context) !== null) fail("Cancel did not close the editor");
-  // The owner's word on a proposal to a page (ADR 0126): accepting posts the decision.
-  runInContext(`__calls.length = 0; await1 = hqProposalAct("accept-4")`, context);
-  await runInContext("await1", context);
-  const decided = JSON.parse(runInContext("JSON.stringify(__calls.filter((c) => c.startsWith('POST')))", context));
-  if (decided.length !== 1 || !decided[0].includes("/v1/hq/world/proposals/decide") || !decided[0].includes('"id":4') || !decided[0].includes('"accept":true')) {
-    fail("accepting a proposal did not post the owner's decision: " + decided.join("|"));
-  }
   runInContext(`[api, loadHQ, render, flash] = __saved; HQ.worldDoc = null; HQ.snap = null; document.getElementById = __getById;`, context);
   console.log("world editor: paste, preview, apply and the section editor behave");
 }
@@ -3171,21 +2983,14 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
                  { label: "<b>dee</b>", runs: 2, done: 2, not_done: 0, unfinished: 0, mean_score: 100, mean_elapsed: 25, refused: 0, unsafe_runs: 0, turns: 2, idle_turns: 0, spent: 0, brains: ["mac"] }],
     runs: [], markdown: "# Trial" } });
   if (!trial.includes("<table") || !trial.includes("mac") || trial.includes("<b>dee</b>")) fail("holodeck: a trial is not compared side by side, or not escaped: " + trial);
-  const replay = shown({ what: "replay", data: { id: 218, kind: "pool", players: ["Kit", "Bo"], score: [5, 8], winner: "Bo", matches: true,
-    steps: [{ step: "shot", by: "Kit", potted: false, balls: [0, 0] }, { step: "shot", by: "Bo", potted: true, balls: [0, 1] }, { step: "scratch", by: "Kit" }] } });
-  if (!replay.includes("Bo potted") || !replay.includes("Kit missed") || !replay.includes("scratch")) fail("holodeck: a game of pool is not replayed shot by shot: " + replay);
-  const pong = shown({ what: "replay", data: { id: 219, kind: "ping_pong", players: ["Bo", "Dee"], score: [11, 6], winner: "Bo", matches: true,
-    steps: [{ step: "rally", won_by: "Bo", score: [1, 0] }, { step: "rally", won_by: "Dee", score: [1, 1] }] } });
-  if (!pong.includes("1–0") || !pong.includes("1–1")) fail("holodeck: a game of ping-pong is not replayed rally by rally: " + pong);
-  // Tapping Open fetches the scenario and shows it; tapping Replay fetches the match.
+  // Tapping Open fetches the scenario and shows it; tapping a trial fetches the trial.
   runInContext(`__asked = []; api = async (method, path) => { __asked.push(method + " " + path); return { task: 708, kind: "chess", log: [] }; };`, context);
   await runInContext(`hqDispatch("hq", "holo", "open", "708")`, context);
-  await runInContext(`hqDispatch("hq", "holo", "replay", "218")`, context);
   await runInContext(`hqDispatch("hq", "holo", "trial", "bo-vs-dee")`, context);
   const asked = JSON.parse(runInContext("JSON.stringify(__asked)", context));
-  if (asked.join("|") !== "GET /v1/hq/scenarios/708|GET /v1/hq/games/218/replay|GET /v1/hq/trials/bo-vs-dee") fail("holodeck: the taps do not fetch what they open: " + asked.join("|"));
+  if (asked.join("|") !== "GET /v1/hq/scenarios/708|GET /v1/hq/trials/bo-vs-dee") fail("holodeck: the taps do not fetch what they open: " + asked.join("|"));
   runInContext(`[HQ.snap, HQ.holo, api, render, flash] = __keepHolo;`, context);
-  console.log("holodeck: scenarios, trials and match replays are listed and opened, escaped");
+  console.log("holodeck: scenarios and trials are listed and opened, escaped");
 }
 
 // Endora is HQ (ADR 0136): every device opens on HQ, the menu leads to HQ and the house's own
@@ -3272,171 +3077,6 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   console.log("sign-in: a password manager sees a username, a password and a one-time code");
 }
 
-{
-  const fixture = {members:[{id:1,name:"Member 1",role:"lead"},{id:2,name:"Member 2",role:"developer"}],
-    projects:[{id:1,title:"Fixture",status:"active"}]};
-  const loaded = {enabled:true,conversations:[{id:1,project:1,participants:[1,2],messages:2}],has_more:false};
-  const fail = (message) => { throw new Error(message); };
-  runInContext(`HQ_CHAT.manage = true; HQ_CHAT.loadedAt = Date.now(); HQ_CHAT.directory = ${JSON.stringify(loaded)}; HQ_CHAT.page = {conversation:{id:1},messages:[{id:1,member:1,text:'<img src=x onerror=bad()>',evidence:['r12'],run:7}],has_more:true,after:1}; HQ_CHAT.id = 1;`,context);
-  const html=runInContext(`hqConversations(${JSON.stringify(fixture)})`,context);
-  for (const wanted of ["Conversations","kept until you delete", "&lt;img", "Save this page", "Next page", "hq:conversations:delete:1", "Operation history"]) {
-    if (!html.includes(wanted)) fail("conversations: missing escaped history/control: "+wanted);
-  }
-  if (html.includes('<img src=x')) fail("conversations: message text became markup");
-  // Work is used from a phone: every conversation control is a fingertip's size, as the task history's are.
-  if (/<button class="hq-btn" data-act="hq:conversations:/.test(html)) fail("conversations: a control is smaller than a fingertip on a phone");
-  runInContext(`var conversationKeepApi = api, conversationKeepRender = render, conversationKeepConfirm = confirm, conversationCalls = [];
-    render = () => {}; confirm = () => true;
-    api = async (method,path,body) => { conversationCalls.push([method,path,body]);
-      if (path.includes("/operations")) return {operations:[{id:2,member:1,run:7,operation:"read",reason:"accepted",at:42}],has_more:false,after:2};
-      if (path.includes("/1?")) return {messages:[{id:2,member:2,text:"Next fixture",run:8,evidence:[]}],has_more:false,after:2};
-      return {enabled:false,conversations:[],has_more:false}; };`,context);
-  await runInContext('hqConversationAct("next","1")',context);
-  if (runInContext('HQ_CHAT.page.messages.length !== 1 || HQ_CHAT.page.messages[0].id !== 2 || HQ_CHAT.after !== 1',context)) fail("conversations: paging accumulated old messages or lost its cursor");
-  await runInContext('hqConversationAct("operations","first")',context);
-  if (!runInContext(`hqConversations(${JSON.stringify(fixture)})`,context).includes("it does not mean an agent acted")) fail("conversations: a read outcome was presented as completed work");
-  await runInContext('hqConversationAct("delete","1")',context);
-  if (runInContext('HQ_CHAT.page !== null || HQ_CHAT.operations !== null',context)) fail("conversations: deleted data stayed in the view");
-  const calls = runInContext('conversationCalls.map(c => c[0]+" "+c[1])',context);
-  if (JSON.stringify(calls) !== JSON.stringify(["GET /v1/hq/conversations/1?after=1","GET /v1/hq/conversations/operations?after=0","POST /v1/hq/conversations/1/delete","GET /v1/hq/conversations?after=0"])) fail("conversations: controls asked unexpected routes: "+JSON.stringify(calls));
-  runInContext("api = conversationKeepApi; render = conversationKeepRender; confirm = conversationKeepConfirm; HQ_CHAT.directory = null; HQ_CHAT.page = null; HQ_CHAT.operations = null; HQ_CHAT.id = null; HQ_CHAT.manage = false;",context);
-  console.log("conversations: bounded history is escaped, retained and inspectable in Work");
-}
-
-{
-  // ADR 0139: nothing to set up. Manage has no form to authorize a pair; a conversation starts
-  // itself when one member asks another.
-  const fixture = {members:[{id:1,name:"Member 1",role:"lead"},{id:2,name:"Member 2",role:"developer"}],
-    projects:[{id:1,title:"First",status:"active"}]};
-  const fail = (message) => { throw new Error(message); };
-  runInContext(`HQ_CHAT.manage = true; HQ_CHAT.loadedAt = Date.now(); HQ_CHAT.directory = {enabled:true,conversations:[],has_more:false};`, context);
-  const html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
-  if (html.includes("hq:conversations:create") || html.includes("hq-conversation-project") || html.includes("Authorize")) fail("conversations: Manage still asks the owner to authorize a pair");
-  if (!html.includes("nothing to set up") || !html.includes("Nobody has asked anyone yet")) fail("conversations: Manage does not say conversations start themselves: " + html);
-  runInContext(`HQ_CHAT.directory = null; HQ_CHAT.manage = false;`, context);
-  console.log("conversations: nothing to set up; a conversation starts itself");
-}
-
-{
-  // Watching the agents talk is the card's job: it loads itself, puts the latest activity first,
-  // opens messages and help requests in one tap, and keeps the owner's switches under Manage.
-  const fixture = {members:[{id:1,name:"Member 1",role:"lead"},{id:2,name:"Member 2",role:"developer"},{id:3,name:"Member 3",role:"researcher"}],
-    projects:[{id:1,title:"First",status:"active"}]};
-  const fail = (message) => { throw new Error(message); };
-  const listed = {enabled:true,has_more:false,after:2,conversations:[
-    {id:1,project:1,participants:[1,2],messages:1,latest:1000,at:10},
-    {id:2,project:1,participants:[2,3],messages:4,latest:5000,at:20},
-    {id:3,project:1,participants:[1,3],messages:0,latest:null,at:30}]};
-  runInContext(`var watchKeepApi = api, watchKeepRender = render, watchCalls = [];
-    render = () => {};
-    api = async (method, path) => { watchCalls.push(method + " " + path);
-      if (path.endsWith("/assistance?after=0")) return {conversation:2,requests:[],grants:[],has_more:false,after:0};
-      if (/conversations\\/2\\?/.test(path)) return {messages:[],has_more:false,after:0};
-      return ${JSON.stringify(listed)}; };
-    Object.assign(HQ_CHAT, {directory:null,page:null,assistance:null,operations:null,id:null,error:"",busy:false,manage:false,loadedAt:0});`, context);
-  let html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
-  if (html.includes("Load conversations")) fail("conversations: the card waits for a Load tap");
-  await new Promise((done) => setTimeout(done, 5));
-  if (!runInContext('watchCalls.includes("GET /v1/hq/conversations?after=0")', context)) fail("conversations: the card did not load itself");
-  html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
-  const order = [...html.matchAll(/data-act="hq:conversations:open:(\d+)"/g)].map((m) => m[1]).join(",");
-  if (order !== "2,1,3") fail("conversations: the latest activity is not first: " + order);
-  for (const hidden of ["Turn messaging off", "Operation history"]) {
-    if (html.includes(hidden)) fail("conversations: the owner's switches are not under Manage: " + hidden);
-  }
-  if (!html.includes('data-act="hq:conversations:manage:toggle"')) fail("conversations: no Manage control");
-  await runInContext('hqConversationAct("manage","toggle")', context);
-  html = runInContext(`hqConversations(${JSON.stringify(fixture)})`, context);
-  for (const shown of ["Turn messaging off", "Operation history"]) {
-    if (!html.includes(shown)) fail("conversations: Manage does not show " + shown);
-  }
-  await runInContext('hqConversationAct("open","2")', context);
-  if (!runInContext('watchCalls.includes("GET /v1/hq/conversations/2?after=0") && watchCalls.includes("GET /v1/hq/conversations/2/assistance?after=0")', context)) fail("conversations: opening one does not show its help requests too");
-  runInContext(`api = watchKeepApi; render = watchKeepRender; Object.assign(HQ_CHAT, {directory:null,page:null,assistance:null,operations:null,id:null,manage:false,loadedAt:0});`, context);
-  console.log("conversations: the card loads itself, latest first, with the owner's switches under Manage");
-}
-
-{
-  // A task shows the help its own turns asked for, where the work is read: who asked whom, the
-  // answer and the asker's conclusion, all escaped; and nothing at all when there was none.
-  const fail = (message) => { throw new Error(message); };
-  const exchange = {task:7,has_more:false,after:3,requests:[{id:3,conversation:2,requester:1,expert:2,status:"answered",
-    objective:"<img src=x onerror=bad()>Why 503?",answer:"<b>cache down</b>",finding:{run:9,text:"<i>Restoring it is unproven</i>",evidence:[],at:5}},
-    {id:4,conversation:2,requester:1,expert:2,status:"processing",objective:"Still waiting?",answer:null,finding:null}]};
-  runInContext(`var helpKeepApi = api, helpKeepRender = render, helpCalls = [];
-    render = () => {};
-    api = async (method, path) => { helpCalls.push(method + " " + path); return path.includes("/tasks/8/") ? {task:8,has_more:false,after:0,requests:[]} : ${JSON.stringify(exchange)}; };
-    HQ.snap = Object.assign({}, HQ.snap || {}, {members:[{id:1,name:"Member 1"},{id:2,name:"Member 2"}]});
-    Object.assign(HQ_TASK_HELP, {task:null,page:null,loadedAt:0});`, context);
-  runInContext("hqTaskHelp(7)", context);
-  await new Promise((done) => setTimeout(done, 5));
-  if (!runInContext('helpCalls.includes("GET /v1/hq/tasks/7/assistance?after=0")', context)) fail("task help: the task did not load its exchanges");
-  const html = runInContext("hqTaskHelp(7)", context);
-  for (const wanted of ["Help on this task", "Member 1", "Member 2", "&lt;img", "&lt;b&gt;cache down", "&lt;i&gt;Restoring it is unproven", "hq:conversations:open:2", "Still waiting?"]) {
-    if (!html.includes(wanted)) fail("task help: missing " + wanted);
-  }
-  if (html.includes("<img src=x") || html.includes("<b>cache") || html.includes("<i>Restoring")) fail("task help: peer text became markup");
-  runInContext("hqTaskHelp(8)", context);
-  await new Promise((done) => setTimeout(done, 5));
-  if (runInContext("hqTaskHelp(8)", context) !== "") fail("task help: a task with no exchanges shows an empty section");
-  runInContext(`api = helpKeepApi; render = helpKeepRender; Object.assign(HQ_TASK_HELP, {task:null,page:null,loadedAt:0});`, context);
-  console.log("task help: a task shows its own exchanges, escaped, and nothing when it has none");
-}
-
-{
-  const fixture={members:[{id:1,name:"Member 1",role:"developer"},{id:2,name:"Member 2",role:"researcher"}],projects:[]};
-  const assistance={conversation:1,requests:[{id:8,project:1,requester:1,expert:2,status:"answered",objective:"<img src=x onerror=bad()>",answer:"<b>Untrusted answer</b>",evidence:["d12"],answer_evidence:["d12"],notified:false,deadline_at:42},{id:9,project:1,requester:1,expert:2,status:"processing",objective:"Synthetic question",evidence:[],deadline_at:42}],grants:[{source:"d12",expires_at:42}],has_more:true,after:9};
-  assistance.requests[1].reason="<em>worker unavailable</em>";
-  assistance.requests[0].finding={run:12,text:"<strong>Requester conclusion</strong>",evidence:["<d12>"],at:42};
-  assistance.requests[1].retry_at=60000;
-  assistance.requests[1].run_status="retry_waiting";
-  assistance.requests[0].retry_at=60000;
-  assistance.requests[0].run_status="stopped";
-  runInContext(`HQ_CHAT.id=1; HQ_CHAT.page={messages:[]}; HQ_CHAT.assistance=${JSON.stringify(assistance)};`,context);
-  const html=runInContext(`hqConversations(${JSON.stringify(fixture)})`,context);
-  for(const required of ["&lt;img","&lt;b&gt;Untrusted answer","&lt;em&gt;worker unavailable","next attempt","Answer sources: d12","Waiting to notify requester","hq:conversations:cancel-request:9","hq:conversations:revoke-source:d12","Save this request page","Requester finding: &lt;strong&gt;Requester conclusion","Attributed claim", "replay:run:12", "result run 12","&lt;d12&gt;","No retained requester finding recorded."]) {
-    if(!html.includes(required)) throw new Error("assistance: missing escaped request/evidence/control: "+required);
-  }
-  if(html.includes("<img src=x") || html.includes("<b>Untrusted answer") || html.includes("<em>worker unavailable") || html.includes("<strong>Requester conclusion") || html.includes("<d12>")) throw new Error("assistance: peer testimony, requester finding or a failure cause became markup");
-  if((html.match(/next attempt/g)||[]).length!==1) throw new Error("assistance: a terminal result advertises a stale worker retry");
-  runInContext(`var assistanceKeepApi=api, assistanceKeepRender=render, assistanceCalls=[];
-    render=()=>{}; api=async(method,path,body)=>{assistanceCalls.push([method,path,body]);return {requests:[{id:10}],grants:[],has_more:false,after:10};};`,context);
-  await runInContext('hqConversationAct("assistance-next","1")',context);
-  if(runInContext('HQ_CHAT.assistance.requests.length!==1 || HQ_CHAT.assistance.requests[0].id!==10',context)) throw new Error("assistance: paging accumulated prior requests");
-  await runInContext('hqConversationAct("revoke-source","d12")',context);
-  await runInContext('hqConversationAct("cancel-request","9")',context);
-  const calls=runInContext('assistanceCalls.map(c=>c[0]+" "+c[1])',context);
-  const expected=["GET /v1/hq/conversations/1/assistance?after=9","POST /v1/hq/conversations/1/sources/revoke","GET /v1/hq/conversations/1/assistance?after=0","POST /v1/hq/conversations/1/assistance/9/cancel","GET /v1/hq/conversations/1/assistance?after=0"];
-  if(JSON.stringify(calls)!==JSON.stringify(expected)) throw new Error("assistance: controls asked unexpected routes: "+JSON.stringify(calls));
-  runInContext('api=assistanceKeepApi;render=assistanceKeepRender;HQ_CHAT.page=null;HQ_CHAT.assistance=null;HQ_CHAT.id=null;',context);
-  console.log("assistance: original evidence and peer testimony stay escaped, pages bounded, and owner cancel/revoke controls use fixed routes");
-}
-
-{
-  const first = {records:[
-    {id:"legacy-consult:1",legacy_id:1,requester:1,requester_run:8,expert:2,expert_run:9,question:"<img src=x onerror=bad()>",outcome:"answered",reason:"<em>old reason</em>",answer_post:3,answer:{author:"Member 2",text:"<b>retained answer</b>",unsupported:true,evidence:["task 7"]}},
-    {id:"legacy-consult:2",legacy_id:2,requester:1,requester_run:8,expert:2,question:"Missing association",outcome:"answered",answer:null,project:null}
-  ],after:9,has_more:true};
-  runInContext(`var pastKeepApi=api,pastKeepRender=render,pastKeepSnap=HQ.snap; var pastReply=${JSON.stringify(first)}; HQ.snap={members:[{id:1,name:"Member 1"},{id:2,name:"Member 2"}]}; HQ_PAST.task=7; HQ_PAST.page=pastReply; HQ_PAST.after=0; HQ_PAST.previous=[]; HQ_PAST.error="";`,context);
-  const html=runInContext('hqPastQuestions(7)',context);
-  for (const text of ["&lt;img", "&lt;b&gt;retained answer", "&lt;em&gt;old reason", "Saved answer unavailable", "hq:past-questions:7:next", "Save page", "replay:run:8"]) {
-    if (!html.includes(text)) throw new Error("past questions: missing escaped history or control: "+text);
-  }
-  if (html.includes('<img src=x') || html.includes('<b>retained answer')) throw new Error("past questions: history became markup");
-  runInContext(`var pastCalls=[]; render=()=>{}; api=async(method,path)=>{pastCalls.push(method+" "+path); return {...pastReply,records:[{...pastReply.records[0],id:"legacy-consult:12",legacy_id:12,question:"Only this page"}],after:12,has_more:false};};`,context);
-  await runInContext('hqPastQuestionsAct("7","next")',context);
-  if (runInContext('HQ_PAST.page.records.length!==1 || HQ_PAST.page.records[0].legacy_id!==12 || HQ_PAST.after!==9 || HQ_PAST.previous[0]!==0',context)) throw new Error("past questions: paging accumulated records or lost the original cursor");
-  if (JSON.stringify(runInContext('pastCalls',context))!==JSON.stringify(["GET /v1/hq/tasks/7/consultations?after=9"])) throw new Error("past questions: unexpected history route");
-  runInContext('api=async()=>{throw new Error("<img>failed history read");};',context);
-  await runInContext('hqPastQuestionsAct("7","previous")',context);
-  if (!runInContext('hqPastQuestions(7)',context).includes("&lt;img&gt;failed history read")) throw new Error("past questions: error was hidden or became markup");
-  if (runInContext('HQ_PAST.after!==9 || HQ_PAST.previous.length!==1',context)) throw new Error("past questions: a failed page changed navigation state");
-  runInContext('HQ_PAST.page.has_more=true;api=async(method,path)=>({...pastReply,records:[pastReply.records[0]],after:Number(path.split("after=")[1])+1,has_more:true});',context);
-  for (let page=0;page<70;page++) await runInContext('hqPastQuestionsAct("7","next")',context);
-  if (runInContext('HQ_PAST.previous.length>64 || HQ_PAST.page.records.length!==1',context)) throw new Error("past questions: page navigation grew retained history in memory");
-  runInContext('api=pastKeepApi;render=pastKeepRender;HQ.snap=pastKeepSnap;HQ_PAST.task=null;HQ_PAST.page=null;HQ_PAST.previous=[];HQ_PAST.error="";',context);
-  console.log("past questions: retained answers are escaped, unavailable links stay explicit, and paging replaces the current page");
-}
 
 {
   runInContext(`var clockKeep={fetch,soundTicket,soundReconnect,listening:SOUND.listening,mode:SOUND.mode,session:LIVE.session};

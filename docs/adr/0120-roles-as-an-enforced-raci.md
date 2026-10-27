@@ -2,6 +2,8 @@
 
 ## Status
 
+Superseded by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). Amended the same day
 by [0124](0124-guards-against-how-agent-teams-fail.md): the ladder climbs only for work the
 stopped diagnosis calls parked (held work waits for what will bring it back; work HQ cannot tell

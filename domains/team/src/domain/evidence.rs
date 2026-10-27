@@ -689,48 +689,6 @@ pub const fn after_nothing(count: usize) -> AfterNothing {
     AfterNothing::Nothing
 }
 
-/// Whether work sent back `sent_back` times goes to the owner on its next submission.
-#[must_use]
-pub const fn to_the_owner(sent_back: usize) -> bool {
-    sent_back >= MOST_ROUNDS
-}
-
-/// Who checks submitted work: the tester, then the lead; one alone when the other is missing
-/// or did the work; the owner when neither can (ADR 0114). A member never checks its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Checkers<M> {
-    /// The tester tests, then the lead accepts.
-    Both {
-        /// The tester.
-        tester: M,
-        /// The lead.
-        lead: M,
-    },
-    /// No other lead: the tester's pass closes it.
-    TesterAlone(M),
-    /// No other tester: the lead accepts alone.
-    LeadAlone(M),
-    /// Nobody else: the owner reads it.
-    Owner,
-}
-
-/// Who checks work done by `worker`, of the team's `tester` and the work's `lead`.
-#[must_use]
-pub fn checkers<M: PartialEq + Copy>(
-    worker: Option<M>,
-    tester: Option<M>,
-    lead: Option<M>,
-) -> Checkers<M> {
-    let tester = tester.filter(|t| Some(*t) != worker);
-    let lead = lead.filter(|l| Some(*l) != worker);
-    match (tester, lead) {
-        (Some(tester), Some(lead)) => Checkers::Both { tester, lead },
-        (Some(tester), None) => Checkers::TesterAlone(tester),
-        (None, Some(lead)) => Checkers::LeadAlone(lead),
-        (None, None) => Checkers::Owner,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,28 +1153,6 @@ mod tests {
         assert_eq!(after_nothing(2), AfterNothing::Nudge);
         assert_eq!(after_nothing(3), AfterNothing::HandUp);
         assert_eq!(after_nothing(4), AfterNothing::Nothing);
-        assert!(!to_the_owner(2) && to_the_owner(3));
-    }
-
-    #[test]
-    fn nobody_checks_its_own_work_and_the_fallbacks_say_who_does() {
-        let (dev, dee, ada) = (Some(1), Some(2), Some(3));
-        assert_eq!(
-            checkers(dev, dee, ada),
-            Checkers::Both { tester: 2, lead: 3 }
-        );
-        assert_eq!(checkers(dev, None, ada), Checkers::LeadAlone(3));
-        assert_eq!(
-            checkers(dee, dee, ada),
-            Checkers::LeadAlone(3),
-            "the tester's own"
-        );
-        assert_eq!(
-            checkers(ada, dee, ada),
-            Checkers::TesterAlone(2),
-            "the lead's own"
-        );
-        assert_eq!(checkers(dev, None, None), Checkers::Owner);
     }
 
     #[test]

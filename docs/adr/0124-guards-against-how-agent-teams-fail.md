@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-19 (proposed 2026-10-18). Prepared with AI assistance (Claude). Amends
 [0114](0114-evidence-acceptance-criteria-and-the-tester.md) (a tester's pass is bound to the
 criteria it judged; evidence already enough is submitted, not polished; re-checking it is talk

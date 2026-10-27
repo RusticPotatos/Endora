@@ -9,12 +9,6 @@ use endora_infrastructure::HqError;
 mod world;
 pub(super) use world::*;
 
-/// The guards (ADR 0124).
-mod guards;
-pub(super) use guards::*;
-mod conversations;
-pub(super) use conversations::*;
-
 fn client(
     state: &AppState,
 ) -> Result<Arc<endora_infrastructure::HqClient>, (StatusCode, Json<serde_json::Value>)> {
@@ -141,20 +135,6 @@ pub(super) async fn hq_task_consultations(
     ask(
         &state,
         format!("/v1/tasks/{id}/consultations?after={}", q.after.max(0)),
-        None,
-    )
-    .await
-}
-
-/// The help a task's own turns asked colleagues for, read through a fixed route (ADR 0138).
-pub(super) async fn hq_task_assistance(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Query(q): Query<HqAfter>,
-) -> Answer {
-    ask(
-        &state,
-        format!("/v1/tasks/{id}/assistance?after={}", q.after.max(0)),
         None,
     )
     .await
@@ -419,29 +399,6 @@ pub(super) async fn hq_goal_note(
     Ok(answer)
 }
 
-/// The owner writes a goal's strategy (ADR 0120): the parts given, passed on as they are; HQ
-/// holds them to their limits.
-pub(super) async fn hq_goal_strategy(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Json(req): Json<serde_json::Value>,
-) -> Answer {
-    let mut parts = serde_json::Map::new();
-    for key in ["purpose", "success", "measures", "bets", "not_now"] {
-        if let Some(text) = req[key].as_str() {
-            parts.insert(key.to_owned(), json!(text));
-        }
-    }
-    let answer = ask(
-        &state,
-        format!("/v1/goals/{id}/strategy"),
-        Some(serde_json::Value::Object(parts)),
-    )
-    .await?;
-    record(&state, &format!("you wrote the strategy for goal {id}"));
-    Ok(answer)
-}
-
 #[derive(Deserialize)]
 pub(super) struct HqBrain {
     brain: String,
@@ -490,6 +447,29 @@ pub(super) async fn hq_set_work_brain(
     // HQ answers with one of its own brains' names, never what was asked.
     let brain = answer.0["work_brain"].as_str().unwrap_or("").to_owned();
     record(&state, &format!("you set member {id} to work with {brain}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqModel {
+    model: String,
+}
+
+/// The owner sets a member's model (ADR 0142): every turn of its runs on it.
+pub(super) async fn hq_set_model(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqModel>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/model"),
+        Some(json!({ "model": req.model })),
+    )
+    .await?;
+    // HQ answers with one of its own brains' names, never what was asked.
+    let brain = answer.0["model"].as_str().unwrap_or("").to_owned();
+    record(&state, &format!("you set member {id}'s model to {brain}"));
     Ok(answer)
 }
 
@@ -797,11 +777,6 @@ pub(super) async fn hq_start_trial(
     Ok(answer)
 }
 
-/// A match of ping-pong or pool from the office, played again step by step.
-pub(super) async fn hq_game_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    ask(&state, format!("/v1/games/{id}/replay"), None).await
-}
-
 /// A trial compared: its conditions side by side, every run, and a report to keep.
 pub(super) async fn hq_trial(State(state): State<AppState>, Path(name): Path<String>) -> Answer {
     ask(&state, format!("/v1/trials/{name}"), None).await
@@ -820,6 +795,54 @@ pub(super) struct HqProjectTools {
 
 /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or takes
 /// the list away.
+/// The owner resets the model league, recorded in the audit log.
+pub(super) async fn hq_reset_league(State(state): State<AppState>) -> Answer {
+    let answer = ask(&state, "/v1/league/reset".to_owned(), Some(json!({}))).await?;
+    record(
+        &state,
+        &format!(
+            "you reset the model league: {} games set aside, {} stopped",
+            answer.0["set_aside"], answer.0["stopped"]
+        ),
+    );
+    Ok(answer)
+}
+
+/// The owner's cut-over to one team of loops (ADR 0142), recorded in the audit log.
+pub(super) async fn hq_one_team(State(state): State<AppState>) -> Answer {
+    let answer = ask(&state, "/v1/one-team".to_owned(), Some(json!({}))).await?;
+    record(
+        &state,
+        &format!("you made the team one team of loops: {}", answer.0),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqLoopRank {
+    rank: u8,
+}
+
+/// The owner sets the rank a loop's items start at (ADR 0142): 1 (Opus) to 5 (the house's
+/// model).
+pub(super) async fn hq_loop_rank(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqLoopRank>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/rank"),
+        Some(json!({ "rank": req.rank })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you set loop {id} to start at rank {}", req.rank),
+    );
+    Ok(answer)
+}
+
 pub(super) async fn hq_project_tools(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -850,79 +873,6 @@ pub(super) async fn hq_project_tools(
 }
 
 #[derive(Deserialize)]
-pub(super) struct HqReportsTo {
-    to: i64,
-}
-
-/// The owner sets whom a member reports to; HQ refuses itself and circles.
-pub(super) async fn hq_reports_to(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Json(req): Json<HqReportsTo>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/members/{id}/reports_to"),
-        Some(json!({ "to": req.to })),
-    )
-    .await?;
-    record(
-        &state,
-        &format!("you set member {id} to report to member {}", req.to),
-    );
-    Ok(answer)
-}
-
-/// The owner puts a member on furlough (ADR 0118); HQ refuses the CEO and a member with open
-/// work.
-pub(super) async fn hq_furlough(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/members/{id}/furlough"),
-        Some(json!({})),
-    )
-    .await?;
-    record(&state, &format!("you put member {id} on furlough"));
-    Ok(answer)
-}
-
-/// The owner brings a furloughed member back to work.
-pub(super) async fn hq_recall(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    let answer = ask(&state, format!("/v1/members/{id}/recall"), Some(json!({}))).await?;
-    record(
-        &state,
-        &format!("you brought member {id} back from furlough"),
-    );
-    Ok(answer)
-}
-
-/// The owner undoes the last change to the office (ADR 0119).
-pub(super) async fn hq_office_undo(State(state): State<AppState>) -> Answer {
-    let answer = ask(&state, "/v1/office/undo".to_owned(), Some(json!({}))).await?;
-    record(&state, "you undid the last change to the office");
-    Ok(answer)
-}
-
-/// The owner puts the office back as it began.
-pub(super) async fn hq_office_reset(State(state): State<AppState>) -> Answer {
-    let answer = ask(&state, "/v1/office/reset".to_owned(), Some(json!({}))).await?;
-    record(&state, "you reset the office");
-    Ok(answer)
-}
-
-/// The owner vetoes an open proposal for the office.
-pub(super) async fn hq_office_veto(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/office/proposals/{id}/veto"),
-        Some(json!({})),
-    )
-    .await?;
-    record(&state, &format!("you vetoed office proposal {id}"));
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
 pub(super) struct HqPoolTopUp {
     amount_micros: i64,
 }
@@ -945,73 +895,6 @@ pub(super) async fn hq_pool_top_up(
             req.amount_micros / 1_000_000,
             req.amount_micros % 1_000_000 / 10_000
         ),
-    );
-    Ok(answer)
-}
-
-/// A member's notebook, for the owner to read (ADR 0118).
-pub(super) async fn hq_notebook(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    ask(&state, format!("/v1/members/{id}/notebook"), None).await
-}
-
-#[derive(Deserialize)]
-pub(super) struct HqMemberNote {
-    text: String,
-}
-
-/// The owner adds a note to a member's notebook: no evidence, and it says it is theirs.
-pub(super) async fn hq_note_add(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Json(req): Json<HqMemberNote>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/members/{id}/notebook"),
-        Some(json!({ "text": req.text })),
-    )
-    .await?;
-    record(
-        &state,
-        &format!("you added a note to member {id}'s notebook"),
-    );
-    Ok(answer)
-}
-
-/// The owner rewrites a note in a member's notebook.
-pub(super) async fn hq_note_edit(
-    State(state): State<AppState>,
-    Path((id, note)): Path<(i64, i64)>,
-    Json(req): Json<HqMemberNote>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/members/{id}/notebook/{note}"),
-        Some(json!({ "text": req.text })),
-    )
-    .await?;
-    record(
-        &state,
-        &format!("you edited note {note} in member {id}'s notebook"),
-    );
-    Ok(answer)
-}
-
-/// The owner deletes a note from a member's notebook (HQ takes it as a POST: its client has
-/// no DELETE).
-pub(super) async fn hq_note_delete(
-    State(state): State<AppState>,
-    Path((id, note)): Path<(i64, i64)>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/members/{id}/notebook/{note}/delete"),
-        Some(json!({})),
-    )
-    .await?;
-    record(
-        &state,
-        &format!("you deleted note {note} from member {id}'s notebook"),
     );
     Ok(answer)
 }
@@ -1078,34 +961,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_tasks_help_exchanges_use_a_fixed_read_route_and_keep_the_page() {
-        let expected = json!({"task":7,"requests":[{"id":3,"objective":"<b>asked</b>","answer":"<i>said</i>"}],"after":3,"has_more":false});
-        let page = expected.clone();
-        let (url, seen) = fake(Arc::new(move |_, _| {
-            (200, "application/json", page.to_string())
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let received = hq_task_assistance(
-            State(state.clone()),
-            Path(7),
-            Query(HqAfter {
-                after: -1,
-                before: None,
-                limit: None,
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(received.0, expected);
-        assert_eq!(seen.lock().unwrap()[0].0, "/v1/tasks/7/assistance?after=0");
-        assert!(
-            endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
     async fn a_replay_is_read_from_hq_as_it_answers_and_records_nothing() {
         let (url, seen) = fake(Arc::new(|path, _| {
             (
@@ -1156,14 +1011,6 @@ mod tests {
         )
         .await
         .unwrap();
-        // A goal's strategy: only its parts pass, whatever else the screen sent.
-        let _ = hq_goal_strategy(
-            State(state.clone()),
-            Path(1),
-            Json(json!({ "purpose": "The house runs itself.", "by": "someone else" })),
-        )
-        .await
-        .unwrap();
         let sent: Vec<(String, serde_json::Value)> = seen
             .lock()
             .unwrap()
@@ -1181,10 +1028,6 @@ mod tests {
                     "/v1/goals/1/note".to_owned(),
                     json!({ "note": "The SSD is the owner's." })
                 ),
-                (
-                    "/v1/goals/1/strategy".to_owned(),
-                    json!({ "purpose": "The house runs itself." })
-                ),
             ]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
@@ -1195,7 +1038,6 @@ mod tests {
         for line in [
             "HQ: you replied on task 7",
             "HQ: you wrote the team's notes for goal 1",
-            "HQ: you wrote the strategy for goal 1",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
@@ -1504,78 +1346,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_furloughs_and_recalls_through_the_node_and_it_is_recorded() {
-        let (url, seen) = fake(Arc::new(|path, _| {
-            let furloughed = path.ends_with("/furlough");
-            (
-                200,
-                "application/json",
-                json!({ "member": 5, "furloughed": furloughed }).to_string(),
-            )
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let answer = hq_furlough(State(state.clone()), Path(5)).await.unwrap();
-        assert_eq!(answer.0["furloughed"], true);
-        let answer = hq_recall(State(state.clone()), Path(5)).await.unwrap();
-        assert_eq!(answer.0["furloughed"], false);
-        let sent: Vec<String> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(p, _, _)| p.clone())
-            .collect();
-        assert_eq!(sent, ["/v1/members/5/furlough", "/v1/members/5/recall"]);
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-            .unwrap()
-            .iter()
-            .map(|r| r.summary().to_owned())
-            .collect();
-        for line in [
-            "HQ: you put member 5 on furlough",
-            "HQ: you brought member 5 back from furlough",
-        ] {
-            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn the_owner_undoes_resets_and_vetoes_through_the_node_and_it_is_recorded() {
-        let (url, seen) = fake(Arc::new(|_, _| {
-            (200, "application/json", json!({}).to_string())
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let _ = hq_office_undo(State(state.clone())).await.unwrap();
-        let _ = hq_office_reset(State(state.clone())).await.unwrap();
-        let _ = hq_office_veto(State(state.clone()), Path(4)).await.unwrap();
-        let sent: Vec<(String, String)> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(p, _, b)| (p.clone(), b.clone()))
-            .collect();
-        assert_eq!(
-            sent.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
-            [
-                "/v1/office/undo",
-                "/v1/office/reset",
-                "/v1/office/proposals/4/veto"
-            ]
-        );
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-            .unwrap()
-            .iter()
-            .map(|r| r.summary().to_owned())
-            .collect();
-        for line in [
-            "HQ: you undid the last change to the office",
-            "HQ: you reset the office",
-            "HQ: you vetoed office proposal 4",
-        ] {
-            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
-        }
-    }
-
-    #[tokio::test]
     async fn the_owner_tops_the_pool_up_through_the_node_and_it_is_recorded() {
         let (url, seen) = fake(Arc::new(|_, _| {
             (200, "application/json", json!({}).to_string())
@@ -1611,66 +1381,6 @@ mod tests {
                 .any(|a| a == "HQ: you topped the pool up by $2.33 for today"),
             "{audit:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn the_owner_reads_and_writes_a_members_notebook_through_the_node_and_it_is_recorded() {
-        let (url, seen) = fake(Arc::new(|path, _| {
-            let body = if path.ends_with("/notebook") {
-                json!({ "member": 5, "notes": [] })
-            } else {
-                json!({ "member": 5, "note": 2 })
-            };
-            (200, "application/json", body.to_string())
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let answer = hq_notebook(State(state.clone()), Path(5)).await.unwrap();
-        assert_eq!(answer.0["notes"], json!([]));
-        let text = |t: &str| Json(HqMemberNote { text: t.to_owned() });
-        let _ = hq_note_add(State(state.clone()), Path(5), text("Never at night."))
-            .await
-            .unwrap();
-        let _ = hq_note_edit(
-            State(state.clone()),
-            Path((5, 2)),
-            text("Never at night, ever."),
-        )
-        .await
-        .unwrap();
-        let _ = hq_note_delete(State(state.clone()), Path((5, 2)))
-            .await
-            .unwrap();
-        let sent: Vec<(String, String)> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(p, _, b)| (p.clone(), b.clone()))
-            .collect();
-        assert_eq!(
-            sent.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
-            [
-                "/v1/members/5/notebook",
-                "/v1/members/5/notebook",
-                "/v1/members/5/notebook/2",
-                "/v1/members/5/notebook/2/delete"
-            ]
-        );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&sent[1].1).unwrap(),
-            json!({ "text": "Never at night." })
-        );
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-            .unwrap()
-            .iter()
-            .map(|r| r.summary().to_owned())
-            .collect();
-        for line in [
-            "HQ: you added a note to member 5's notebook",
-            "HQ: you edited note 2 in member 5's notebook",
-            "HQ: you deleted note 2 from member 5's notebook",
-        ] {
-            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
-        }
     }
 
     #[tokio::test]
@@ -1754,10 +1464,6 @@ mod tests {
         assert_eq!(matched.0["task"], 41);
         let shown = hq_scenario(State(state.clone()), Path(41)).await.unwrap();
         assert_eq!(shown.0["end"], "solved");
-        let replayed = hq_game_replay(State(state.clone()), Path(219))
-            .await
-            .unwrap();
-        assert_eq!(replayed.0["end"], "solved", "passed through as HQ said it");
         let sent: Vec<String> = seen
             .lock()
             .unwrap()
@@ -1771,7 +1477,6 @@ mod tests {
                 "/v1/scenarios",
                 "/v1/scenarios",
                 "/v1/scenarios/41",
-                "/v1/games/219/replay"
             ]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
@@ -1826,6 +1531,35 @@ mod tests {
         assert!(
             audit.iter().any(|a| a
                 == "HQ: you ran the Holodeck again: 9 scenarios queued, the earlier round kept as \"round 1\""),
+            "{audit:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owners_league_reset_passes_through_and_is_recorded() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            let body = json!({ "set_aside": 12, "stopped": 2 });
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_reset_league(State(state.clone())).await.unwrap();
+        assert_eq!(answer.0["set_aside"], 12);
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/league/reset"]);
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a == "HQ: you reset the model league: 12 games set aside, 2 stopped"),
             "{audit:?}"
         );
     }
@@ -1925,7 +1659,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owners_projects_and_reports_pass_through_signed_and_are_recorded() {
+    async fn the_owners_projects_pass_through_signed_and_are_recorded() {
         let (url, seen) = fake(Arc::new(|path, _| {
             let body = if path.ends_with("/cap") {
                 json!({ "project": 3, "cap": 12_500_000 })
@@ -1964,10 +1698,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(answer.0["cap"], 12_500_000);
-        let answer = hq_reports_to(State(state.clone()), Path(5), Json(HqReportsTo { to: 2 }))
-            .await
-            .unwrap();
-        assert_eq!(answer.0["reports_to"], 2);
         let sent: Vec<(String, serde_json::Value)> = seen
             .lock()
             .unwrap()
@@ -1980,7 +1710,6 @@ mod tests {
                 ("/v1/projects".to_owned(), made),
                 ("/v1/projects/3".to_owned(), json!({ "action": "pause" })),
                 ("/v1/projects/3/cap".to_owned(), json!({ "cap": "12.50" })),
-                ("/v1/members/5/reports_to".to_owned(), json!({ "to": 2 })),
             ]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
@@ -1992,7 +1721,6 @@ mod tests {
             "HQ: you made a project: Upkeep",
             "HQ: you set project 3 paused",
             "HQ: you capped project 3 at $12.50 a month",
-            "HQ: you set member 5 to report to member 2",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }

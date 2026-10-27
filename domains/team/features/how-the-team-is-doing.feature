@@ -16,13 +16,6 @@ Feature: How the team is doing
     And Linus's turn ends
     Then the scorecard counts 1 turn today, 1 of them showing nothing
 
-  Scenario: A send-back is counted against the submissions
-    Given Grace is the tester
-    And Linus has the task "Look at sonarr"
-    When Linus submits "Look at sonarr" for review
-    And Grace sends back "Look at sonarr" because "no reading of sonarr"
-    Then the scorecard counts 1 submission today, 1 of them sent back
-
   Scenario: What a dropped task cost is waste
     Given Linus has the task "Tidy the old stack"
     When Linus's turns on "Tidy the old stack" spend $0.10 and then $0.20

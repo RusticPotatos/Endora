@@ -62,7 +62,11 @@ fn claude_code_is_set_for_a_developer_and_refused_for_anyone_else() {
 fn the_pilot_puts_rae_on_claude_code_once_and_zed_stays_on_the_worker() {
     let hq = engine();
     assert_eq!(hq.seed_claude_code_pilot().unwrap(), None, "no Rae yet");
-    hq.seat_ceo("Mara").unwrap();
+    {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     hq.seed_wing().unwrap().expect("the wing is seeded");
     let named = |name: &str| {
         hq.store()

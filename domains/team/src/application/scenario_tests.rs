@@ -789,10 +789,12 @@ fn a_chess_match_is_played_a_move_a_turn_with_its_illegal_moves_kept() {
         waiting.contains("not your move: this turn has ended"),
         "{waiting}"
     );
+    let illegal = play(&hq, &w, "e5").unwrap_err();
     assert!(
-        play(&hq, &w, "e5").unwrap_err().contains("e4"),
-        "illegal, with the legal moves"
+        illegal.contains("`e5` is not legal here") && !illegal.contains("e4"),
+        "illegal, and nothing about which moves are: {illegal}"
     );
+    assert!(!tool.to_string().contains("legal moves"), "{tool}");
     let woken_before = hq.store().wakes().unwrap().len();
     let moved = play(&hq, &w, "f3").unwrap();
     assert!(
@@ -1275,14 +1277,15 @@ fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_ro
             .unwrap();
     }
     let before = hq.store().tasks().unwrap().len();
-    // Three distinct setups: the second mission is the first one's twin.
-    assert_eq!(hq.rerun_holodeck("round 1").unwrap(), 3);
+    // Two distinct setups: the second mission is the first one's twin, and the match is the
+    // league's, which is reset on its own.
+    assert_eq!(hq.rerun_holodeck("round 1").unwrap(), 2);
     assert!(
         hq.rerun_holodeck("round 2").is_err(),
         "one re-run at a time"
     );
     let listed = |hq: &Hq<'_>| hq.snapshot().unwrap()["holodeck"]["scenarios"].clone();
-    for world in [lit, mission, again, game] {
+    for world in [lit, mission, again] {
         assert!(
             listed(&hq)
                 .as_array()
@@ -1311,7 +1314,7 @@ fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_ro
         "the lighthouse first, its seed"
     );
     assert_eq!(first[0].assignee, Some(crew[0]));
-    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 2);
+    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 1);
     hq.tick().unwrap();
     assert_eq!(open(&hq).len(), 1, "the next waits for this one to end");
     hq.store()
@@ -1330,14 +1333,9 @@ fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_ro
         .set_task_status(second[0].id, TaskStatus::Dropped)
         .unwrap();
     hq.tick().unwrap();
-    let third = open(&hq);
-    assert_eq!(
-        hq.scenario_of(third[0].id).unwrap(),
-        Some(3),
-        "then the match"
-    );
-    assert_eq!(third[0].assignee, Some(crew[1]), "white as before");
+    assert!(open(&hq).is_empty(), "and no match: {:?}", open(&hq));
     assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 0);
+    let _ = game;
 }
 
 /// The owner, 2026-10-25: have every scenario play out again on the new engine, while a re-run
@@ -1489,4 +1487,127 @@ fn a_league_side_is_played_only_by_a_member_who_may_think_with_its_brain() {
         let white = hq.store().task(game).unwrap().unwrap().assignee;
         assert_ne!(white, Some(researcher), "Sonnet is never a researcher's");
     }
+}
+
+// Live, a player in the league was briefed with "what this loop did lately": its opponent's own
+// words from its turns, legal moves and reasoning among them. A player in a match is told the
+// game and nothing any other turn in the league said.
+#[test]
+fn a_player_is_never_told_what_other_turns_in_its_league_said() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([_, white, black], project) = crew(&hq);
+    hq.set_model(white, "mac").unwrap();
+    hq.set_model(black, "local").unwrap();
+    let game = hq.start_chess(project, [white, black], 1).unwrap();
+    // White's words in its own task's thread, where black's briefing used to find them.
+    hq.post_as(
+        white,
+        game,
+        "My plan: answer every c5 with Nf3 and castle short",
+    )
+    .unwrap();
+    let [b] = <[RunContext; 1]>::try_from(turns(&hq, &[black]))
+        .ok()
+        .unwrap();
+    assert!(!b.told.contains("My plan"), "{}", b.told);
+    assert!(!b.told.contains("What this loop did lately"), "{}", b.told);
+}
+
+// The owner resets the league (2026-10-27, after the rules changed): every brain is rated
+// afresh, the game being played stops, the next pair sits down, and the games before are kept,
+// set aside, never deleted.
+#[test]
+fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (_, project) = crew(&hq);
+    hq.start_league(project, &["mac", "local"]).unwrap();
+    hq.tick().unwrap();
+    let first = TaskId(
+        hq.snapshot().unwrap()["holodeck"]["league"]["games"][0]["task"]
+            .as_i64()
+            .unwrap(),
+    );
+    let white = hq.store().task(first).unwrap().unwrap().assignee.unwrap();
+    let black = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.parent == Some(first))
+        .unwrap()
+        .assignee
+        .unwrap();
+    let [w, b] = <[RunContext; 2]>::try_from(turns(&hq, &[white, black]))
+        .ok()
+        .unwrap();
+    for (side, san) in [(&w, "f3"), (&b, "e5"), (&w, "g4"), (&b, "Qh4")] {
+        play(&hq, side, san).unwrap();
+    }
+    hq.tick().unwrap();
+    let live = TaskId(
+        hq.snapshot().unwrap()["holodeck"]["league"]["games"][1]["task"]
+            .as_i64()
+            .expect("the rematch started"),
+    );
+
+    let reset = hq.reset_league().unwrap();
+    assert_eq!(reset["set_aside"], 2, "{reset}");
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(league["games"], json!([]), "{league}");
+    assert!(
+        league["table"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["rating"] == 1200 && r["won"] == 0 && r["drawn"] == 0 && r["lost"] == 0),
+        "{league}"
+    );
+    // The game being played stops; the finished one and its moves stay in the record.
+    assert!(hq.store().task(live).unwrap().unwrap().status.finished());
+    assert_eq!(
+        hq.store().task(first).unwrap().unwrap().status,
+        crate::domain::TaskStatus::Done
+    );
+    assert!(
+        hq.store()
+            .setting("league_games_before_reset")
+            .unwrap()
+            .unwrap()
+            .contains(&first.0.to_string())
+    );
+    // And the league goes on: once the players' turns are over, the next pair sits down.
+    for c in [&w, &b] {
+        hq.runner().finish(c.run, true);
+    }
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(league["games"].as_array().unwrap().len(), 1, "{league}");
+    assert_ne!(league["games"][0]["task"], live.0);
+}
+
+// Chess belongs to the league, which the owner resets on its own: running the Holodeck again
+// queues its scenarios and never an old match, which would be played outside the league.
+#[test]
+fn running_the_holodeck_again_queues_its_scenarios_and_no_chess_match() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([linus, zed, rae], project) = crew(&hq);
+    let lamp = hq.start_scenario(project, linus, 2).unwrap();
+    let game = hq.start_chess(project, [zed, rae], 1).unwrap();
+    for task in hq.store().tasks().unwrap() {
+        if [lamp, game].contains(&task.id) || task.parent == Some(game) {
+            hq.store()
+                .set_task_status(task.id, crate::domain::TaskStatus::Done)
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        hq.rerun_holodeck("before").unwrap(),
+        1,
+        "the lighthouse alone"
+    );
+    assert_eq!(hq.restart_holodeck("again").unwrap(), 1, "and again");
 }

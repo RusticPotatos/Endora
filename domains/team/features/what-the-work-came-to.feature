@@ -7,30 +7,6 @@ Feature: What the team's work came to
 
   # --- A change landed ---------------------------------------------------------------------
 
-  Scenario: A change has landed only once the node pushed what the owner approved
-    Given Mara is the CEO
-    And Ada is the lead
-    And Dee is the tester
-    And the goal "Keep the home lab healthy"
-    And the engineering wing
-    And Kit's planning turn is over
-    And Kit hands Rae the task "Tidy the deluge role" in the wing
-    When Rae's turn starts
-    And Rae submits the branch "hq/task-2-tidy-the-deluge-role"
-    And the check of "hq/task-2-tidy-the-deluge-role" passes
-    Then the outcomes say 0 changes landed this week
-    And the outcomes give no cost for a landed change
-    And the outcomes say 1 branch submitted and 1 check passed this week
-    When Rae submits "Tidy the deluge role" for review
-    And Dee passes "Tidy the deluge role" on the check and her own reading
-    And Kit accepts "Tidy the deluge role"
-    Then the owner's desk holds a push of "hq/task-2-tidy-the-deluge-role"
-    And the outcomes say 0 changes landed this week
-    When the owner approves the push
-    Then the outcomes say 0 changes landed this week
-    When the node says it pushed: "Pushed hq/task-2-tidy-the-deluge-role to the fork: merge it on GitHub."
-    Then the outcomes say 1 change landed this week
-
   Scenario: Money spent with nothing landed has no cost for a change
     Given Ada is the lead
     And Linus is the developer
@@ -42,16 +18,6 @@ Feature: What the team's work came to
     And the outcomes give no cost for a landed change
 
   # --- Talk against work -------------------------------------------------------------------
-
-  Scenario: Talk against work is counted as the ceremony guard counts it
-    Given Ada is the lead
-    And the goal "Keep the home lab healthy"
-    And the project "Home lab upkeep" led by Ada
-    And Ada has the task "Plan the backups" in the project "Home lab upkeep"
-    When Ada talks about "Plan the backups" for 12 turns and changes nothing
-    And HQ looks at how the team is doing
-    Then the outcomes say 12 turns of talk against 0 turns of work this week
-    And the guards card says "12 coordination turns, 0 product changes in 24 h"
 
   # --- What waits --------------------------------------------------------------------------
 
@@ -66,16 +32,6 @@ Feature: What the team's work came to
     Then 1 turn waits for budget and none for the Mac, the oldest for 20 minutes
 
   # --- Memory ------------------------------------------------------------------------------
-
-  Scenario: Work sent back because it already existed is counted as reinvented
-    Given Ada is the lead
-    And Grace is the tester
-    And Linus is the developer
-    And the goal "Keep the home lab healthy"
-    And Linus has the task "Restart the downloads"
-    When Linus submits "Restart the downloads" for review
-    And Grace sends back "Restart the downloads" because it already exists: "The restart job is in the media stack."
-    Then the outcomes count 1 piece of work reinvented this week
 
   Scenario: Asking the record and retained historical consultations are counted
     Given HQ keeps its team in a file

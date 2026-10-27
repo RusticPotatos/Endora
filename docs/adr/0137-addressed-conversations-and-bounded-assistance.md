@@ -2,6 +2,8 @@
 
 ## Status
 
+Superseded by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted for isolated implementation, 2026-10-21. Prepared with AI assistance.
 The owner authorized starting
 the [reviewed plan](../proposals/agent-collaboration-plan-reviewed-2026-10-21.md)

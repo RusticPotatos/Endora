@@ -5,7 +5,6 @@
 use std::sync::atomic::Ordering;
 
 use cucumber::{given, then, when};
-use endora_team::application::guard_ports::GuardStore as _;
 use endora_team::application::{Author, Engine, NewTask, TeamStore};
 use endora_team::domain::guards::Stopped;
 use endora_team::domain::money::{DAY_MS, DOLLAR, LEAST_A_TURN};
@@ -122,13 +121,6 @@ fn works_with_the_mac(w: &mut Office, name: String) {
     let id = w.member(&name);
     w.hq.set_work_brain(id, "mac")
         .expect("the Mac may be worked with");
-}
-
-#[given(expr = "{word} works with the house's model")]
-fn works_with_the_house_model(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    w.hq.set_work_brain(id, "local")
-        .expect("the house's model may be worked with");
 }
 
 /// Wakes `name` to decide `title`, as a lead's ladder or the CEO's direction does.
@@ -414,10 +406,7 @@ fn nobody_was_nudged(w: &mut Office, title: String) {
             let role = members.iter().find(|m| m.id == wake.member).map(|m| m.role);
             matches!(
                 wake.reason,
-                WakeReason::Recovery
-                    | WakeReason::AssignmentRecovery
-                    | WakeReason::Huddle
-                    | WakeReason::Guard
+                WakeReason::Recovery | WakeReason::AssignmentRecovery
             ) || (wake.reason == WakeReason::Decide && matches!(role, Some(Role::Lead | Role::Ceo)))
         })
         .collect();
@@ -433,14 +422,6 @@ fn nobody_was_nudged(w: &mut Office, title: String) {
         })
         .count();
     assert_eq!(climbed, 0, "the ladder was climbed for {title}");
-    let findings =
-        w.hq.store()
-            .findings()
-            .expect("the store answers")
-            .into_iter()
-            .filter(|f| f.task == Some(task.0))
-            .count();
-    assert_eq!(findings, 0, "{title} was found stuck");
 }
 
 #[then("the owner's desk holds no stuck work")]

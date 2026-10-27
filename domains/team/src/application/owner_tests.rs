@@ -150,7 +150,11 @@ fn a_goals_notes_from_the_owner_reach_every_briefing_under_it() {
         .iter()
         .position(|l| *l == format!("Notes from the owner for this goal: {note}"))
         .unwrap_or_else(|| panic!("{briefing}"));
-    assert!(at <= 4, "near the top: {briefing}");
+    let why = lines
+        .iter()
+        .position(|l| l.starts_with("Why it exists:"))
+        .unwrap_or(usize::MAX);
+    assert!(at < why, "with the task, before why it exists: {briefing}");
     let snap = hq.snapshot().unwrap();
     assert_eq!(snap["goals"][0]["note"], note);
     // Cleared, it is gone.

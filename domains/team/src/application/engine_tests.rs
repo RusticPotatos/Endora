@@ -4,7 +4,6 @@ use serde_json::json;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::engine::{Author, Engine, EngineError, Settings};
-use super::guard_ports::GuardStore;
 use super::ports::{Clock, NewTask, TeamStore};
 use crate::domain::money::MOST_A_TURN;
 use crate::domain::runs::{LONGEST_TURN_MS, RETRY_AFTER_MS};
@@ -121,11 +120,7 @@ fn an_assigned_task_queues_a_turn_and_the_tick_starts_it_with_its_why() {
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].member, t.dev);
     assert_eq!(started[0].task, Some(task));
-    assert!(
-        started[0]
-            .told
-            .contains("You are Linus, the team's developer.")
-    );
+    assert!(started[0].told.contains("You are Linus, rank "));
     assert!(
         started[0]
             .told
@@ -260,30 +255,6 @@ fn done_is_the_gate_and_a_different_reviewer_and_lands_on_the_desk() {
     );
     let desk = hq.store().desk().unwrap();
     assert_eq!(desk.last().unwrap().kind, "ready_to_merge");
-}
-
-#[test]
-fn work_doubted_is_handed_back_to_the_lead_not_dropped() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    let task = task_for(&hq, t.goal, None, "Rewrite everything");
-    hq.claim(t.dev, task).unwrap();
-    assert_eq!(
-        hq.set_status(t.dev, task, TaskStatus::Dropped, "pointless"),
-        Err(EngineError::Refused(Refusal::HandBack))
-    );
-    hq.set_status(t.dev, task, TaskStatus::Todo, "this would break the app")
-        .unwrap();
-    let now = hq.store().task(task).unwrap().unwrap();
-    assert_eq!((now.owner, now.status), (None, TaskStatus::Todo));
-    let woken: Vec<(MemberId, WakeReason)> = hq
-        .wakes()
-        .unwrap()
-        .iter()
-        .map(|w| (w.member, w.reason))
-        .collect();
-    assert!(woken.contains(&(t.lead, WakeReason::Assigned)), "{woken:?}");
 }
 
 #[test]
@@ -510,7 +481,6 @@ fn a_turn_the_platform_interrupted_is_tried_again_as_the_same_member_and_raises_
         Some(crate::domain::guards::Stopped::Working)
     );
     assert_eq!(hq.wakes().unwrap().len(), wakes, "nobody was woken");
-    assert!(hq.store().findings().unwrap().is_empty(), "no finding");
     assert!(
         hq.store().desk().unwrap().is_empty(),
         "nothing for the owner"
@@ -571,69 +541,6 @@ fn a_turn_that_goes_on_too_long_is_stopped_as_timed_out() {
     hq.tick().unwrap();
     assert_eq!(status_of(&hq, run.0), RunStatus::TimedOut);
     assert_eq!(hq.runner().stopped(), [run]);
-}
-
-#[test]
-fn doing_without_a_turn_gets_one_nudge_then_climbs_to_its_lead_never_the_desk() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    hq.runner().script(t.dev, Script::Succeeds);
-    let task = task_for(&hq, t.goal, None, "Pick a database");
-    hq.claim(t.dev, task).unwrap(); // doing, and no turn
-    let report = hq.tick().unwrap();
-    assert_eq!(report.nudged, 1);
-    let nudge = hq.wakes().unwrap();
-    assert_eq!(nudge.last().unwrap().reason, WakeReason::Recovery);
-    // The nudged turn starts and ends without moving the task; it sits ten minutes more.
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Doing,
-        "a lead woken to decide is a turn, never a reflex"
-    );
-    clock.forward(super::engine::STRANDED_AFTER_MS + 1);
-    hq.tick().unwrap();
-    let after = hq.store().task(task).unwrap().unwrap();
-    assert_eq!(after.status, TaskStatus::Blocked);
-    // Stuck work climbs the ladder (ADR 0120): first its member a model tier up (ADR 0139)...
-    assert!(hq.store().desk().unwrap().is_empty());
-    let asked = hq.wakes().unwrap().pop().unwrap();
-    assert_eq!(
-        (asked.member, asked.task, asked.reason),
-        (t.dev, Some(task), WakeReason::Escalated)
-    );
-    // ...and when that turn did not move it either, its area's lead decides; the desk is empty.
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    clock.forward(super::engine::STRANDED_AFTER_MS + 1);
-    hq.tick().unwrap();
-    assert!(hq.store().desk().unwrap().is_empty());
-    let asked = hq.wakes().unwrap().pop().unwrap();
-    assert_eq!(
-        (asked.member, asked.task, asked.reason),
-        (t.lead, Some(task), WakeReason::Decide)
-    );
-}
-
-#[test]
-fn with_no_lead_at_work_stuck_work_is_on_the_desk_as_before() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    hq.pause(t.lead, true).unwrap();
-    hq.runner().script(t.dev, Script::Succeeds);
-    let task = task_for(&hq, t.goal, None, "Pick a database");
-    hq.claim(t.dev, task).unwrap();
-    for _ in 0..3 {
-        hq.tick().unwrap();
-    }
-    assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Blocked
-    );
-    assert_eq!(hq.store().desk().unwrap().last().unwrap().kind, "stuck");
 }
 
 #[test]
@@ -1454,7 +1361,7 @@ fn the_snapshot_holds_what_is_on_screen_and_where_the_stream_resumes() {
 fn the_owner_decides_each_desk_item_once() {
     let clock = hands();
     let hq = hq(&clock, 4);
-    let t = team(&hq);
+    let _ = team(&hq);
     let proposed = hq
         .set_goal(
             "Tidy the home lab",
@@ -1478,72 +1385,6 @@ fn the_owner_decides_each_desk_item_once() {
             .unwrap()
             .is_empty()
     );
-
-    // Stuck work with no lead at work to climb to, tried again: back to its member with a
-    // fresh nudge.
-    hq.pause(t.lead, true).unwrap();
-    hq.runner().script(t.dev, Script::Succeeds);
-    let task = task_for(&hq, t.goal, None, "Pick a database");
-    hq.claim(t.dev, task).unwrap();
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    let stuck = hq.store().desk().unwrap().pop().unwrap();
-    assert_eq!(stuck.kind, "stuck");
-    assert_eq!(
-        hq.decide(stuck.id, "approve"),
-        Err(EngineError::Unknown("decision for this item"))
-    );
-    hq.decide(stuck.id, "retry").unwrap();
-    let now = hq.store().task(task).unwrap().unwrap();
-    assert_eq!(
-        (now.status, now.owner, now.nudged),
-        (TaskStatus::Todo, None, false)
-    );
-    let wake = hq.wakes().unwrap().pop().unwrap();
-    assert_eq!(
-        (wake.member, wake.reason),
-        (t.dev, WakeReason::ProposalDecided)
-    );
-}
-
-#[test]
-fn only_whole_work_reaches_the_desk_and_research_is_to_read() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    let researcher = hq.hire("Marie", Role::Researcher, 15, 2, 2).unwrap();
-    let whole = task_for(&hq, t.goal, None, "Find out why a container restarts");
-    let part = hq
-        .add_task(
-            Author::Owner,
-            NewTask {
-                goal: t.goal,
-                project: None,
-                parent: Some(whole),
-                title: "Read its logs".to_owned(),
-                description: String::new(),
-                assignee: None,
-                priority: Priority::Normal,
-                waits_on: Vec::new(),
-            },
-        )
-        .unwrap();
-    for (task, worker) in [(part, t.dev), (whole, researcher)] {
-        hq.claim(worker, task).unwrap();
-        hq.set_status(worker, task, TaskStatus::InReview, "ready")
-            .unwrap();
-        hq.record_gate(task, true, "").unwrap();
-        hq.approve(t.reviewer, task).unwrap();
-    }
-    let desk = hq.store().desk().unwrap();
-    assert_eq!(desk.len(), 1, "the part stayed with the team: {desk:?}");
-    assert_eq!(
-        (desk[0].kind.as_str(), desk[0].task),
-        ("ready_to_read", Some(whole))
-    );
-    assert!(desk[0].text.starts_with("Ready to read: "));
-    hq.decide(desk[0].id, "read").unwrap();
 }
 
 #[test]
@@ -1823,7 +1664,11 @@ fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
 fn a_members_daily_share_is_weighted_by_its_brains_price() {
     let clock = hands();
     let hq = hq(&clock, 8);
-    hq.seat_ceo("Mara").unwrap();
+    {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let on = |name: &str, role: Role, brain: &str| {
         let id = hq.hire(name, role, role.share(), 2, 0).unwrap();
         hq.set_brain(id, brain).unwrap();
@@ -2130,51 +1975,6 @@ fn a_top_up_is_above_nothing_and_at_most_three_pool_days_in_all_and_is_recorded(
     assert_eq!(hq.top_up_pool(3_000_000).unwrap(), 3_000_000);
 }
 
-/// A task gone stuck onto the owner's desk, with the member who had it. With its lead at
-/// work it would climb the ladder instead (ADR 0120), so the lead is paused.
-fn stuck_task(hq: &Hq<'_>, t: &Team) -> (TaskId, crate::domain::DeskId) {
-    hq.pause(t.lead, true).unwrap();
-    let task = task_for(hq, t.goal, None, "Pick a database");
-    hq.claim(t.dev, task).unwrap();
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    let stuck = hq.store().desk().unwrap().pop().unwrap();
-    assert_eq!(stuck.kind, "stuck");
-    (task, stuck.id)
-}
-
-#[test]
-fn trying_stuck_work_again_while_nobody_can_be_woken_says_so_and_changes_nothing() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    hq.runner().script(t.dev, Script::Succeeds);
-    let (task, item) = stuck_task(&hq, &t);
-    let wakes = hq.wakes().unwrap().len();
-
-    hq.stop_all("trying it").unwrap();
-    assert_eq!(
-        hq.decide(item, "retry"),
-        Err(EngineError::Refused(Refusal::NotWoken(Refused::KillSwitch)))
-    );
-    let still = hq.store().task(task).unwrap().unwrap();
-    assert_eq!(
-        (still.status, still.owner),
-        (TaskStatus::Blocked, Some(t.dev))
-    );
-    assert_eq!(hq.store().desk().unwrap().pop().unwrap().status, "waiting");
-    assert_eq!(hq.wakes().unwrap().len(), wakes, "no wake was even written");
-
-    // Resumed, the same button works.
-    hq.resume().unwrap();
-    hq.decide(item, "retry").unwrap();
-    assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Todo
-    );
-}
-
 #[test]
 fn the_snapshot_carries_only_the_tail_of_a_finished_tasks_thread() {
     let clock = hands();
@@ -2309,23 +2109,4 @@ fn what_the_desk_keeps_of_a_long_text_shows_where_it_was_cut() {
         .find(|d| d.id == short)
         .unwrap();
     assert_eq!(fits.text, "fits");
-}
-
-#[test]
-fn trying_stuck_work_again_for_a_paused_member_is_refused_in_words() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    hq.runner().script(t.dev, Script::Succeeds);
-    let (_, item) = stuck_task(&hq, &t);
-    hq.pause(t.dev, true).unwrap();
-    let refused = hq.decide(item, "retry").unwrap_err();
-    assert_eq!(
-        refused,
-        EngineError::Refused(Refusal::NotWoken(Refused::Paused))
-    );
-    assert!(
-        refused.to_string().contains("paused"),
-        "the owner is told why: {refused}"
-    );
 }

@@ -9,19 +9,16 @@ use crate::application::ports::{
     Wake,
 };
 use crate::application::ports::{LedgerRow, ThreadPost};
+use crate::domain::chess;
 use crate::domain::history::{InputOrigin, InputRef};
 use crate::domain::office;
 use crate::domain::{
     Brain, CheckBack, CheckBackStatus, DeskId, Event, Evidence, Goal, GoalId, GoalStatus, Member,
-    MemberId, Micros, Millis, Note, Pause, Priority, Project, ProjectId, ProjectStatus, Receipt,
-    Ref, Refused, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId, TaskStatus, WakeId,
-    WakeReason,
+    MemberId, Micros, Millis, Pause, Priority, Project, ProjectId, ProjectStatus, Receipt, Refused,
+    Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
 use crate::domain::{Branch, Check, Document};
-use crate::domain::{chess, games};
 
-mod assistance;
-mod conversations;
 mod guards;
 mod history;
 mod input_lineage;
@@ -185,51 +182,21 @@ CREATE TABLE IF NOT EXISTS branches (
     plus INTEGER NOT NULL, minus INTEGER NOT NULL, can_push INTEGER NOT NULL,
     status TEXT NOT NULL, at_ms INTEGER NOT NULL
 ) STRICT;
--- Each member's notebook (ADR 0118): short notes that rest on evidence from HQ's record. A
--- note is removed by the member that forgets it or by the owner; a member is never removed.
-CREATE TABLE IF NOT EXISTS notes (
-    id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
-    text TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '', from_owner INTEGER NOT NULL DEFAULT 0,
-    written_at INTEGER NOT NULL, written_in_run INTEGER REFERENCES runs(id),
-    last_used_at INTEGER NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS notes_by_member ON notes(member);
 CREATE TABLE IF NOT EXISTS checks (
     id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
     branch INTEGER NOT NULL REFERENCES branches(id), run INTEGER NOT NULL REFERENCES runs(id),
     token TEXT NOT NULL UNIQUE, status TEXT NOT NULL, ok INTEGER, summary TEXT NOT NULL DEFAULT '',
     queued_at INTEGER NOT NULL, started_at INTEGER, done_at INTEGER
 ) STRICT;
--- The office as data (ADR 0119): what stands on the floor, the proposals to change it and the
--- votes on them, and what it looked like before each change, for the owner's undo. Made only
--- if missing, so a store from before the open office gains them and keeps everything else.
+-- The office as data (ADR 0119): what stands on the floor. Made only if missing, so a store
+-- from before the open office gains it and keeps everything else.
 CREATE TABLE IF NOT EXISTS office_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL,
     placed_by TEXT NOT NULL, placed_at INTEGER NOT NULL
 ) STRICT;
-CREATE TABLE IF NOT EXISTS office_proposals (
-    id INTEGER PRIMARY KEY, proposer TEXT NOT NULL, changes TEXT NOT NULL, why TEXT NOT NULL,
-    at_ms INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open', outcome TEXT NOT NULL DEFAULT '',
-    decided_at INTEGER
-) STRICT;
-CREATE TABLE IF NOT EXISTS office_votes (
-    proposal INTEGER NOT NULL REFERENCES office_proposals(id), who TEXT NOT NULL,
-    yes INTEGER NOT NULL, why TEXT NOT NULL DEFAULT '', at_ms INTEGER NOT NULL,
-    PRIMARY KEY (proposal, who)
-) STRICT;
-CREATE TABLE IF NOT EXISTS office_history (
-    id INTEGER PRIMARY KEY, what TEXT NOT NULL, items_before TEXT NOT NULL, at_ms INTEGER NOT NULL
-) STRICT;
--- Games in the office (ADR 0121): the ping-pong and pool matches HQ's engine has played, and
--- the games of chess the members play in downtime (moves as standard notation, space between).
--- Made only if missing, so a store from before the games gains them and keeps everything else.
-CREATE TABLE IF NOT EXISTS games (
-    id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
-    player_a INTEGER NOT NULL REFERENCES members(id), player_b INTEGER NOT NULL REFERENCES members(id),
-    score_a INTEGER NOT NULL, score_b INTEGER NOT NULL,
-    winner INTEGER NOT NULL REFERENCES members(id), note TEXT NOT NULL DEFAULT '',
-    played_at INTEGER NOT NULL
-) STRICT;
+-- Games in the office (ADR 0121): the games of chess the members play in downtime (moves as
+-- standard notation, space between). Made only if missing, so a store from before the games
+-- gains them and keeps everything else.
 CREATE TABLE IF NOT EXISTS chess_games (
     id INTEGER PRIMARY KEY,
     white INTEGER NOT NULL REFERENCES members(id), black INTEGER NOT NULL REFERENCES members(id),
@@ -238,22 +205,9 @@ CREATE TABLE IF NOT EXISTS chess_games (
 ) STRICT;
 ";
 
-/// Roles as an enforced RACI (ADR 0120), kept apart from [`SCHEMA`]: each goal's strategy,
-/// the CEO's and the owner's to write; the leads' area reports; and which tasks are a lead's
-/// report or patterns turn rather than work on the board. Every table is made only if missing.
+/// Which tasks were a lead's report or patterns turn rather than work on the board (ADR 0120),
+/// kept so they stay off it: made only if missing.
 const RACI_SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS strategies (
-    goal INTEGER PRIMARY KEY REFERENCES goals(id), purpose TEXT NOT NULL DEFAULT '',
-    success TEXT NOT NULL DEFAULT '', measures TEXT NOT NULL DEFAULT '',
-    bets TEXT NOT NULL DEFAULT '', not_now TEXT NOT NULL DEFAULT '',
-    written_by TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS area_reports (
-    id INTEGER PRIMARY KEY, lead INTEGER NOT NULL REFERENCES members(id),
-    run INTEGER REFERENCES runs(id), task INTEGER REFERENCES tasks(id),
-    moved TEXT NOT NULL, stuck TEXT NOT NULL, need TEXT NOT NULL, proposals TEXT NOT NULL,
-    at_ms INTEGER NOT NULL
-) STRICT;
 CREATE TABLE IF NOT EXISTS report_tasks (
     task INTEGER PRIMARY KEY REFERENCES tasks(id), lead INTEGER NOT NULL REFERENCES members(id),
     kind TEXT NOT NULL
@@ -316,18 +270,62 @@ const TURN_COLUMNS: [(&str, &str); 2] = [("members", "work_brain TEXT"), ("runs"
 const INTERRUPTION_COLUMNS: [(&str, &str); 1] =
     [("runs", "interrupted INTEGER NOT NULL DEFAULT 0")];
 
+/// What the conversations and help requests kept (ADR 0137, 0138), the office's proposals,
+/// votes and undo history (ADR 0119), and the ladder's, huddles' and coordination guards' findings
+/// and settings (ADR 0120, 0124, 0133), retired by one team of loops
+/// (ADR 0142): the release before this one snapshotted the whole store, and that snapshot is the
+/// archive. Two things they also made are kept: documents are never rewritten, and a task's runs
+/// are found by index.
+const RETIRED_CONVERSATIONS: &str = "
+    CREATE TRIGGER IF NOT EXISTS documents_are_immutable BEFORE UPDATE ON documents
+     BEGIN SELECT RAISE(ABORT, 'an original document is never rewritten'); END;
+    CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task,id) WHERE task IS NOT NULL;
+    DROP TRIGGER IF EXISTS messages_are_immutable;
+    DROP TABLE IF EXISTS assistance_findings;
+    DROP TABLE IF EXISTS assistance_source_grants;
+    DROP TABLE IF EXISTS assistance_day_usage;
+    DROP TABLE IF EXISTS assistance_turn_usage;
+    DROP TABLE IF EXISTS assistance_requests;
+    DROP TABLE IF EXISTS conversation_messages;
+    DROP TABLE IF EXISTS conversation_operations;
+    DROP TABLE IF EXISTS conversation_ready_runs;
+    DROP TABLE IF EXISTS conversation_day_usage;
+    DROP TABLE IF EXISTS conversation_turn_usage;
+    DROP TABLE IF EXISTS conversations;
+    DROP TABLE IF EXISTS office_votes;
+    DROP TABLE IF EXISTS office_proposals;
+    DROP TABLE IF EXISTS office_history;
+    DROP TABLE IF EXISTS world_quizzes;
+    DROP TABLE IF EXISTS world_proposals;
+    DROP TABLE IF EXISTS world_gaps;
+    DROP TABLE IF EXISTS retractions;
+    DROP TABLE IF EXISTS note_parents;
+    DROP TABLE IF EXISTS notes;
+    DROP TABLE IF EXISTS games;
+    DROP TABLE IF EXISTS stories;
+    DROP TABLE IF EXISTS strategies;
+    DROP TABLE IF EXISTS area_reports;
+    DROP TABLE IF EXISTS findings;
+    DELETE FROM settings WHERE key LIKE 'ladder:%' OR key LIKE 'huddle:%'
+      OR key LIKE 'guard_mode:%' OR key LIKE 'coordination_since:%'
+      OR key LIKE 'coordination_asked:%' OR key = 'guards_ceremony';
+";
+
 /// Gives every member two brains (ADR 0131), once. A member on the house's model or the Mac keeps
 /// it as its **work brain**, and a member on Claude gets the Mac to work with. A member that has
 /// no Claude to judge with (the house's model in its `brain`, or nothing it knows) is given the
-/// owner's cheap one, Haiku, or Sonnet for the CEO, who may not think with Haiku. Each statement
-/// touches only what is not yet so, so a second start changes nothing and the owner's later
-/// choice is never overwritten.
+/// owner's cheap one, Haiku, or Sonnet for the CEO, who may not think with Haiku. Only a member
+/// that has no work brain yet is touched, so a second start changes nothing and the owner's later
+/// choice is never overwritten: a member that is one model (ADR 0142) keeps it.
 fn give_two_brains(conn: &Connection) -> Stored<()> {
     conn.execute_batch(
-        "UPDATE members SET work_brain = CASE WHEN brain IN ('local', 'mac') THEN brain ELSE 'mac' END
-         WHERE work_brain IS NULL;
-         UPDATE members SET brain = CASE role WHEN 'ceo' THEN 'claude-sonnet-5-5' ELSE 'claude-haiku-5-5' END
-         WHERE brain NOT IN ('claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5');",
+        "UPDATE members SET
+             work_brain = CASE WHEN brain IN ('local', 'mac') THEN brain ELSE 'mac' END,
+             brain = CASE
+                 WHEN brain IN ('claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5') THEN brain
+                 WHEN role = 'ceo' THEN 'claude-sonnet-5-5'
+                 ELSE 'claude-haiku-5-5' END
+         WHERE work_brain IS NULL;",
     )
     .map_err(backend)
 }
@@ -383,20 +381,17 @@ impl SqliteTeamStore {
         let conn = Self::before_the_world(conn)?;
         // The team's world (ADR 0122): new tables only, made if missing.
         conn.execute_batch(world::SCHEMA).map_err(backend)?;
-        // The guards (ADR 0124): new tables only, made if missing. The quieter desk (ADR 0132)
-        // adds three columns to the findings, each added only if the table lacks it.
+        // The guards (ADR 0124): new tables only, made if missing.
         conn.execute_batch(guards::SCHEMA).map_err(backend)?;
-        guards::gain_columns(&conn)?;
         // The team's map (ADR 0126): new tables only, made if missing.
         conn.execute_batch(map::SCHEMA).map_err(backend)?;
         // The team's history (ADR 0129): new tables only, made if missing. The full-text index
         // is made if this SQLite has FTS5; searching works without it.
         conn.execute_batch(history::SCHEMA).map_err(backend)?;
         conn.execute_batch(input_lineage::SCHEMA).map_err(backend)?;
+        conn.execute_batch(RETIRED_CONVERSATIONS).map_err(backend)?;
         input_lineage::accept_system_origin(&conn)?;
         let _ = conn.execute_batch(history::FULL_TEXT);
-        conn.execute_batch(conversations::SCHEMA).map_err(backend)?;
-        conn.execute_batch(assistance::SCHEMA).map_err(backend)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -697,20 +692,16 @@ impl TeamStore for SqliteTeamStore {
             .query_map([], |r| {
                 let role: String = r.get(2)?;
                 let role = Role::from_name(&role).unwrap_or(Role::Developer);
-                // What a member judges with is a Claude (ADR 0131). A member whose brain is
-                // the house's model, or one the store does not know, has none of its own yet,
-                // and judges with the cheap Claude its role may use, as the migration gives it.
+                // A member is its model (ADR 0142): the brain stored, whichever it is. One the
+                // store does not know is the cheap Claude its role may use.
                 let stored = Brain::from_name(&r.get::<_, String>(7)?);
-                let brain = stored
-                    .filter(|b| b.cloud())
-                    .unwrap_or(Brain::default_judgment(role));
-                // A member never given a work brain works with the house's brain it had, or
-                // the Mac when it was on Claude. Claude never does the work.
+                let brain = stored.unwrap_or(Brain::default_judgment(role));
+                // A member never given a work brain works with the house's brain it is, or the
+                // Mac.
                 let work_brain = r
                     .get::<_, Option<String>>(11)?
                     .as_deref()
                     .and_then(Brain::from_name)
-                    .filter(|b| b.house())
                     .or(stored.filter(|b| b.house()))
                     .unwrap_or(Brain::Mac);
                 Ok(Member {
@@ -762,84 +753,6 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
-    fn add_note(
-        &self,
-        member: MemberId,
-        text: &str,
-        evidence: &[Ref],
-        from_owner: bool,
-        run: Option<RunId>,
-        at: Millis,
-    ) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO notes (member, text, evidence, from_owner, written_at, written_in_run, last_used_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5)",
-            params![
-                member.0,
-                text,
-                Ref::kept(evidence),
-                from_owner,
-                at,
-                run.map(|r| r.0)
-            ],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn notes(&self, member: MemberId) -> Stored<Vec<Note>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, member, text, evidence, from_owner, written_at, written_in_run, \
-                 last_used_at FROM notes WHERE member = ?1 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([member.0], |r| {
-                Ok(Note {
-                    id: r.get(0)?,
-                    member: MemberId(r.get(1)?),
-                    text: r.get(2)?,
-                    evidence: Ref::read(&r.get::<_, String>(3)?),
-                    from_owner: r.get::<_, i64>(4)? != 0,
-                    written_at: r.get(5)?,
-                    written_in_run: r.get::<_, Option<i64>>(6)?.map(RunId),
-                    last_used_at: r.get(7)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn set_note_text(&self, note: i64, text: &str) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE notes SET text = ?2 WHERE id = ?1",
-                params![note, text],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn touch_note(&self, note: i64, at: Millis) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE notes SET last_used_at = ?2 WHERE id = ?1",
-                params![note, at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn delete_note(&self, note: i64) -> Stored<()> {
-        self.conn()?
-            .execute("DELETE FROM notes WHERE id = ?1", [note])
-            .map_err(backend)?;
-        Ok(())
-    }
-
     fn set_brain(&self, member: MemberId, brain: Brain) -> Stored<()> {
         // The brain named goes to the slot it belongs to (ADR 0131): a house model is the work
         // brain and a Claude the judgment brain, and each leaves the other as it is.
@@ -850,6 +763,16 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET brain = ?2, work_brain = COALESCE(work_brain, 'mac')
                  WHERE id = ?1",
+                params![member.0, brain.name()],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_model(&self, member: MemberId, brain: Brain) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET brain = ?2, work_brain = ?2 WHERE id = ?1",
                 params![member.0, brain.name()],
             )
             .map_err(backend)?;
@@ -898,6 +821,16 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET reports_to = ?2 WHERE id = ?1",
                 params![member.0, to.map(|t| t.0)],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_role(&self, member: MemberId, role: Role) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET role = ?2 WHERE id = ?1",
+                params![member.0, role.name()],
             )
             .map_err(backend)?;
         Ok(())
@@ -1647,9 +1580,7 @@ impl TeamStore for SqliteTeamStore {
                 &format!(
                     "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project, owner)
                      VALUES (?1, ?2, ?3, 'reserve', ?4, ?5,
-                        COALESCE((SELECT project FROM assistance_requests WHERE expert_run = ?1),
-                                 (SELECT project FROM assistance_requests WHERE notice_run = ?1),
-                                 {consult_project},
+                        COALESCE({consult_project},
                                  (SELECT t.project FROM runs r JOIN tasks t ON t.id = r.task WHERE r.id = ?1)),
                         {RUNS_OWNER})",consult_project=history::CONSULT_PROJECT_FOR_RUN
                 ),
@@ -2151,14 +2082,15 @@ impl TeamStore for SqliteTeamStore {
         self.conn()?
             .execute(
                 "UPDATE routines SET enabled = ?2, next_due_at = ?3, last_fired_at = ?4,
-                    last_task = ?5, project = ?6 WHERE id = ?1",
+                    last_task = ?5, project = ?6, assignee = ?7 WHERE id = ?1",
                 params![
                     routine.id.0,
                     routine.enabled,
                     routine.next_due_at,
                     routine.last_fired_at,
                     routine.last_task.map(|t| t.0),
-                    routine.project.map(|p| p.0)
+                    routine.project.map(|p| p.0),
+                    routine.assignee.0
                 ],
             )
             .map_err(backend)?;
@@ -2497,209 +2429,6 @@ impl TeamStore for SqliteTeamStore {
         tx.commit().map_err(backend)
     }
 
-    fn add_office_proposal(
-        &self,
-        by: &str,
-        changes: &[office::Change],
-        why: &str,
-        at: Millis,
-    ) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO office_proposals (proposer, changes, why, at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![by, office::Change::kept(changes), why, at],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn office_proposals(&self) -> Stored<Vec<office::Proposal>> {
-        let conn = self.conn()?;
-        let mut votes: std::collections::HashMap<i64, Vec<office::Vote>> =
-            std::collections::HashMap::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT proposal, who, yes, why, at_ms FROM office_votes ORDER BY at_ms, rowid",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    office::Vote {
-                        who: r.get(1)?,
-                        yes: r.get(2)?,
-                        why: r.get(3)?,
-                        at: r.get(4)?,
-                    },
-                ))
-            })
-            .map_err(backend)?;
-        for row in rows {
-            let (proposal, vote) = row.map_err(backend)?;
-            votes.entry(proposal).or_default().push(vote);
-        }
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, proposer, changes, why, at_ms, status, outcome FROM office_proposals \
-                 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
-                ))
-            })
-            .map_err(backend)?;
-        let mut all = Vec::new();
-        for row in rows {
-            let (id, by, changes, why, at, status, outcome) = row.map_err(backend)?;
-            all.push(office::Proposal {
-                id,
-                by,
-                changes: office::Change::read(&changes),
-                why,
-                at,
-                status: office::Status::from_name(&status)
-                    .ok_or_else(|| corrupt("a proposal's status"))?,
-                outcome,
-                votes: votes.remove(&id).unwrap_or_default(),
-            });
-        }
-        Ok(all)
-    }
-
-    fn set_office_proposal(
-        &self,
-        id: i64,
-        status: office::Status,
-        outcome: &str,
-        at: Millis,
-    ) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE office_proposals SET status = ?2, outcome = ?3, decided_at = ?4 \
-                 WHERE id = ?1",
-                params![id, status.name(), outcome, at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn add_office_vote(&self, proposal: i64, vote: &office::Vote) -> Stored<bool> {
-        let kept = self
-            .conn()?
-            .execute(
-                "INSERT OR IGNORE INTO office_votes (proposal, who, yes, why, at_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![proposal, vote.who, vote.yes, vote.why, vote.at],
-            )
-            .map_err(backend)?;
-        Ok(kept == 1)
-    }
-
-    fn push_office_history(&self, what: &str, before: &[office::Item], at: Millis) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO office_history (what, items_before, at_ms) VALUES (?1, ?2, ?3)",
-            params![what, items_kept(before), at],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn pop_office_history(&self) -> Stored<Option<(String, Vec<office::Item>)>> {
-        let conn = self.conn()?;
-        let newest: Option<(i64, String, String)> = conn
-            .query_row(
-                "SELECT id, what, items_before FROM office_history ORDER BY id DESC LIMIT 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((id, what, before)) = newest else {
-            return Ok(None);
-        };
-        conn.execute("DELETE FROM office_history WHERE id = ?1", [id])
-            .map_err(backend)?;
-        Ok(Some((what, items_read(&before)?)))
-    }
-
-    fn office_history_len(&self) -> Stored<i64> {
-        self.conn()?
-            .query_row("SELECT COUNT(*) FROM office_history", [], |r| r.get(0))
-            .map_err(backend)
-    }
-
-    fn add_game(&self, record: &games::Record) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO games (kind, player_a, player_b, score_a, score_b, winner, note, played_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                record.kind.name(),
-                record.a.0,
-                record.b.0,
-                record.score_a,
-                record.score_b,
-                record.winner.0,
-                record.note,
-                record.at
-            ],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn games(&self) -> Stored<Vec<games::Record>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, kind, player_a, player_b, score_a, score_b, winner, note, played_at \
-                 FROM games ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, u32>(4)?,
-                    r.get::<_, u32>(5)?,
-                    r.get::<_, i64>(6)?,
-                    r.get::<_, String>(7)?,
-                    r.get::<_, i64>(8)?,
-                ))
-            })
-            .map_err(backend)?;
-        let mut all = Vec::new();
-        for row in rows {
-            let (id, kind, a, b, score_a, score_b, winner, note, at) = row.map_err(backend)?;
-            all.push(games::Record {
-                id,
-                kind: games::Kind::from_name(&kind).ok_or_else(|| corrupt("a game's kind"))?,
-                a: MemberId(a),
-                b: MemberId(b),
-                score_a,
-                score_b,
-                winner: MemberId(winner),
-                note,
-                at,
-            });
-        }
-        Ok(all)
-    }
-
     fn add_chess_game(&self, white: MemberId, black: MemberId, at: Millis) -> Stored<i64> {
         let conn = self.conn()?;
         conn.execute(
@@ -2769,109 +2498,6 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
-    fn strategies(&self) -> Stored<Vec<crate::domain::areas::Strategy>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT goal, purpose, success, measures, bets, not_now, written_by, updated_at
-                 FROM strategies ORDER BY goal",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(crate::domain::areas::Strategy {
-                    goal: GoalId(r.get(0)?),
-                    purpose: r.get(1)?,
-                    success: r.get(2)?,
-                    measures: r.get(3)?,
-                    bets: r.get(4)?,
-                    not_now: r.get(5)?,
-                    by: r.get(6)?,
-                    updated_at: r.get(7)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn save_strategy(&self, s: &crate::domain::areas::Strategy) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "INSERT INTO strategies (goal, purpose, success, measures, bets, not_now,
-                     written_by, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(goal) DO UPDATE SET purpose = ?2, success = ?3, measures = ?4,
-                     bets = ?5, not_now = ?6, written_by = ?7, updated_at = ?8",
-                params![
-                    s.goal.0,
-                    s.purpose,
-                    s.success,
-                    s.measures,
-                    s.bets,
-                    s.not_now,
-                    s.by,
-                    s.updated_at
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn add_area_report(&self, report: &crate::domain::areas::AreaReport) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO area_reports (lead, run, task, moved, stuck, need, proposals, at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                report.lead.0,
-                report.run.map(|r| r.0),
-                report.task.map(|t| t.0),
-                report.moved,
-                report.stuck,
-                report.need,
-                report.proposals,
-                report.at
-            ],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn area_reports(&self) -> Stored<Vec<crate::domain::areas::AreaReport>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, lead, run, task, moved, stuck, need, proposals, at_ms
-                 FROM area_reports ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(crate::domain::areas::AreaReport {
-                    id: r.get(0)?,
-                    lead: MemberId(r.get(1)?),
-                    run: r.get::<_, Option<i64>>(2)?.map(RunId),
-                    task: r.get::<_, Option<i64>>(3)?.map(TaskId),
-                    moved: r.get(4)?,
-                    stuck: r.get(5)?,
-                    need: r.get(6)?,
-                    proposals: r.get(7)?,
-                    at: r.get(8)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn mark_report_task(&self, task: TaskId, lead: MemberId, kind: &str) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "INSERT OR REPLACE INTO report_tasks (task, lead, kind) VALUES (?1, ?2, ?3)",
-                params![task.0, lead.0, kind],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
     fn report_tasks(&self) -> Stored<Vec<(TaskId, MemberId, String)>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -2884,41 +2510,6 @@ impl TeamStore for SqliteTeamStore {
             .map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
-}
-
-/// Items as an undo keeps them.
-fn items_kept(items: &[office::Item]) -> String {
-    serde_json::Value::Array(
-        items
-            .iter()
-            .map(|i| {
-                serde_json::json!({ "id": i.id, "kind": i.kind.name(), "x": i.x, "y": i.y,
-                                    "by": i.placed_by, "at": i.placed_at })
-            })
-            .collect(),
-    )
-    .to_string()
-}
-
-/// The items an undo kept.
-fn items_read(kept: &str) -> Stored<Vec<office::Item>> {
-    let all: Vec<serde_json::Value> =
-        serde_json::from_str(kept).map_err(|_| corrupt("an undo's items"))?;
-    all.iter()
-        .map(|v| {
-            Ok(office::Item {
-                id: v["id"].as_i64().ok_or_else(|| corrupt("an undo's item"))?,
-                kind: v["kind"]
-                    .as_str()
-                    .and_then(office::Kind::from_name)
-                    .ok_or_else(|| corrupt("an undo's item"))?,
-                x: v["x"].as_i64().ok_or_else(|| corrupt("an undo's item"))?,
-                y: v["y"].as_i64().ok_or_else(|| corrupt("an undo's item"))?,
-                placed_by: v["by"].as_str().unwrap_or_default().to_owned(),
-                placed_at: v["at"].as_i64().unwrap_or_default(),
-            })
-        })
-        .collect()
 }
 
 const DOCUMENT_SELECT: &str = "SELECT id, task, run, title, text, at_ms FROM documents";
@@ -3089,57 +2680,6 @@ CREATE TABLE IF NOT EXISTS check_backs (
     }
 
     #[test]
-    fn a_store_made_before_the_open_office_gains_its_tables_and_keeps_everything_else() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        conn.execute_batch(SCHEMA_BEFORE_PROJECTS).unwrap();
-        conn.execute_batch(
-            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
-                (1, 'Ada', 'developer', 40, 2);
-             INSERT INTO settings (key, value) VALUES ('house_log', 'kept');",
-        )
-        .unwrap();
-        let store = SqliteTeamStore::over(conn).unwrap();
-        assert!(store.office_items().unwrap().is_empty());
-        assert!(store.office_proposals().unwrap().is_empty());
-        assert_eq!(store.office_history_len().unwrap(), 0);
-        assert_eq!(store.members().unwrap().len(), 1);
-        assert_eq!(store.setting("house_log").unwrap().as_deref(), Some("kept"));
-        // And they work: an item, a proposal with a vote, a change to undo.
-        let tank = store
-            .add_office_item(office::Kind::FishTank, 10, 3, "Ada", 5)
-            .unwrap();
-        let id = store
-            .add_office_proposal("Ada", &[office::Change::Remove { item: tank }], "gone", 6)
-            .unwrap();
-        let vote = office::Vote {
-            who: "Ada".to_owned(),
-            yes: true,
-            why: String::new(),
-            at: 6,
-        };
-        assert!(store.add_office_vote(id, &vote).unwrap());
-        assert!(!store.add_office_vote(id, &vote).unwrap(), "one vote each");
-        let kept = store.office_proposals().unwrap();
-        assert_eq!(kept[0].votes, [vote]);
-        assert_eq!(kept[0].changes, [office::Change::Remove { item: tank }]);
-        store
-            .push_office_history("remove the fish tank", &store.office_items().unwrap(), 7)
-            .unwrap();
-        store.remove_office_item(tank).unwrap();
-        let (what, before) = store.pop_office_history().unwrap().unwrap();
-        assert_eq!(what, "remove the fish tank");
-        store.replace_office_items(&before).unwrap();
-        assert_eq!(store.office_items().unwrap()[0].id, tank);
-        // A number is never used twice, even after a reset empties the floor.
-        store.replace_office_items(&[]).unwrap();
-        let next = store
-            .add_office_item(office::Kind::Plant, 8, 3, "endora", 9)
-            .unwrap();
-        assert!(next > tank, "{next} reuses a number");
-    }
-
-    #[test]
     fn a_store_made_before_the_games_gains_its_tables_and_keeps_everything_else() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -3151,24 +2691,9 @@ CREATE TABLE IF NOT EXISTS check_backs (
         )
         .unwrap();
         let store = SqliteTeamStore::over(conn).unwrap();
-        assert!(store.games().unwrap().is_empty());
         assert!(store.chess_games().unwrap().is_empty());
         assert_eq!(store.members().unwrap().len(), 2);
         assert_eq!(store.setting("house_log").unwrap().as_deref(), Some("kept"));
-        // A match is kept and read back whole.
-        let record = games::Record {
-            id: 0,
-            kind: games::Kind::Pool,
-            a: MemberId(1),
-            b: MemberId(2),
-            score_a: 7,
-            score_b: 5,
-            winner: MemberId(2),
-            note: "Ada scratched on the 8".to_owned(),
-            at: 9,
-        };
-        let id = store.add_game(&record).unwrap();
-        assert_eq!(store.games().unwrap(), [games::Record { id, ..record }]);
         // A game of chess is kept with its moves, and updated as it goes.
         let game = store.add_chess_game(MemberId(1), MemberId(2), 10).unwrap();
         let mut kept = store.chess_games().unwrap().remove(0);
@@ -3184,61 +2709,6 @@ CREATE TABLE IF NOT EXISTS check_backs (
         assert_eq!(back, kept);
         assert_eq!(back.moves, ["e4", "e5"]);
         assert_eq!((back.started_at, back.last_move_at), (10, 12));
-    }
-
-    /// A store whose findings were made by ADR 0124 (ADR 0132's migration): the three columns are
-    /// added if missing and nothing else changes; a finding is read as seen when it opened, on its
-    /// first episode, resting on nothing yet; and a second start is a no-op.
-    #[test]
-    fn a_store_from_before_the_quieter_desk_gains_the_finding_columns_once_and_loses_no_finding() {
-        use crate::application::guard_ports::GuardStore as _;
-        // Foreign keys are off while the old store is laid out (it has no `projects` table yet to
-        // point at); opening it turns them on.
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
-        conn.execute_batch(SCHEMA_BEFORE_PROJECTS).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE findings (
-                id INTEGER PRIMARY KEY, guard TEXT NOT NULL, key TEXT NOT NULL,
-                task INTEGER REFERENCES tasks(id), project INTEGER REFERENCES projects(id),
-                rule TEXT NOT NULL, evidence TEXT NOT NULL, opened_at INTEGER NOT NULL,
-                cleared_at INTEGER, verdict TEXT, fix_worked INTEGER,
-                judged_by TEXT NOT NULL DEFAULT '', judged_at INTEGER,
-                desk INTEGER REFERENCES desk(id)
-             ) STRICT;
-             CREATE UNIQUE INDEX findings_open_by_key ON findings(key) WHERE cleared_at IS NULL;
-             INSERT INTO findings (id, guard, key, rule, evidence, opened_at, verdict, judged_by)
-                VALUES (1, 'stuck', 'stuck:7', 'parked', '#7 Look', 500, 'real', 'owner'),
-                       (2, 'ceremony', 'ceremony:project:2', 'talk', '14 turns', 900, NULL, '');",
-        )
-        .unwrap();
-        let store = SqliteTeamStore::over(conn).unwrap();
-        let found = store.findings().unwrap();
-        assert_eq!(found.len(), 2);
-        assert_eq!(
-            (
-                found[0].opened_at,
-                found[0].seen_at,
-                found[0].episodes,
-                found[0].mark
-            ),
-            (500, 500, 1, 0),
-            "seen when it opened, on its first episode, resting on nothing yet"
-        );
-        assert_eq!(found[0].verdict, Some(crate::domain::guards::Verdict::Real));
-        assert_eq!(found[1].evidence, "14 turns");
-        // A second start finds the columns and changes nothing.
-        guards::gain_columns(&store.conn().unwrap()).unwrap();
-        assert_eq!(store.findings().unwrap(), found);
-        // The new columns are used: a finding is refreshed and opened again in place.
-        store
-            .refresh_finding(2, "16 turns", 1_000, Some(16))
-            .unwrap();
-        let seen = store.latest_finding("ceremony:project:2").unwrap().unwrap();
-        assert_eq!(
-            (seen.seen_at, seen.mark, seen.evidence.as_str()),
-            (1_000, 16, "16 turns")
-        );
     }
 
     #[test]
@@ -3330,16 +2800,6 @@ CREATE TABLE IF NOT EXISTS check_backs (
             Noon,
             crate::application::Settings::default(),
         );
-        // Whom each reports to, filled in as each would have been hired.
-        assert_eq!(hq.backfill_reports_to(), Ok(3));
-        let reports: Vec<Option<i64>> = hq
-            .store()
-            .members()
-            .unwrap()
-            .iter()
-            .map(|m| m.reports_to.map(|r| r.0))
-            .collect();
-        assert_eq!(reports, [None, Some(1), Some(2), Some(1)]);
         let made = hq.migrate_projects().unwrap().expect("made");
         assert_eq!(hq.migrate_projects(), Ok(None), "once");
         let projects = hq.store().projects().unwrap();
@@ -3463,49 +2923,6 @@ INSERT INTO members (id, name, role, share_percent, slots, brain, reports_to) VA
             (true, Some(120), None)
         );
         assert_eq!(store.members().unwrap().len(), 3);
-        // The notebook table came with the schema, and a furloughed member keeps its notes.
-        let note = store
-            .add_note(
-                MemberId(3),
-                "deluge needs the VPN up",
-                &[Ref::Task(TaskId(1)), Ref::Event(9)],
-                false,
-                None,
-                50,
-            )
-            .unwrap();
-        let owners = store
-            .add_note(MemberId(3), "never at night", &[], true, None, 60)
-            .unwrap();
-        let kept = store.notes(MemberId(3)).unwrap();
-        assert_eq!(
-            kept.iter().map(|n| n.id).collect::<Vec<_>>(),
-            [note, owners]
-        );
-        assert_eq!(
-            (
-                kept[0].evidence.clone(),
-                kept[0].written_in_run,
-                kept[0].last_used_at,
-                kept[1].from_owner
-            ),
-            (vec![Ref::Task(TaskId(1)), Ref::Event(9)], None, 50, true)
-        );
-        store.touch_note(note, 90).unwrap();
-        store.set_note_text(owners, "never at night, ever").unwrap();
-        let kept = store.notes(MemberId(3)).unwrap();
-        assert_eq!(
-            (kept[0].last_used_at, kept[1].text.as_str()),
-            (90, "never at night, ever")
-        );
-        assert!(store.notes(MemberId(2)).unwrap().is_empty());
-        store.delete_note(note).unwrap();
-        assert_eq!(store.notes(MemberId(3)).unwrap().len(), 1);
-        assert_eq!(
-            store.members().unwrap().len(),
-            3,
-            "a note goes, a member never does"
-        );
     }
 
     /// The schema as it was before evidence (ADR 0114): the live store was made with it.
@@ -3774,80 +3191,6 @@ CREATE TABLE IF NOT EXISTS projects (
         // Opened again, the column is there already and nothing changes.
         let again = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
         assert_eq!(again.members().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn a_store_made_before_the_raci_gains_its_tables_empty_and_keeps_its_rows() {
-        use crate::domain::areas::{AreaReport, Strategy, StrategyEdit};
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        // Today's schema and columns, before ADR 0120: what the live store has.
-        conn.execute_batch(SCHEMA).unwrap();
-        for (table, column) in PROJECT_COLUMNS
-            .into_iter()
-            .chain(EVIDENCE_COLUMNS)
-            .chain(OWNER_COLUMNS)
-            .chain(STAFFING_COLUMNS)
-            .chain(RUNTIME_COLUMNS)
-        {
-            add_column(&conn, table, column).unwrap();
-        }
-        conn.execute_batch(
-            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
-                (1, 'Jane Doe', 'lead', 25, 2);
-             INSERT INTO goals (id, title, reason, status) VALUES (3, 'Keep it up', '', 'active');
-             INSERT INTO tasks (id, goal, title, description, status, priority, depth) VALUES
-                (7, 3, 'State of my area', '', 'todo', 'normal', 0);",
-        )
-        .unwrap();
-        let store = SqliteTeamStore::over(conn).unwrap();
-        assert!(store.strategies().unwrap().is_empty());
-        assert!(store.area_reports().unwrap().is_empty());
-        assert!(store.report_tasks().unwrap().is_empty());
-        assert_eq!(store.tasks().unwrap().len(), 1, "no row changes");
-        let written = Strategy::empty(GoalId(3))
-            .edited(
-                &StrategyEdit {
-                    purpose: Some("The house runs itself.".to_owned()),
-                    ..StrategyEdit::default()
-                },
-                "owner",
-                9,
-            )
-            .unwrap();
-        store.save_strategy(&written).unwrap();
-        let again = written
-            .edited(
-                &StrategyEdit {
-                    bets: Some("Upkeep".to_owned()),
-                    ..StrategyEdit::default()
-                },
-                "Jane Doe",
-                10,
-            )
-            .unwrap();
-        store.save_strategy(&again).unwrap();
-        assert_eq!(store.strategies().unwrap(), [again]);
-        let report = AreaReport::new(
-            MemberId(1),
-            ["moved", "", "", ""],
-            None,
-            Some(TaskId(7)),
-            11,
-        )
-        .unwrap();
-        let id = store.add_area_report(&report).unwrap();
-        assert_eq!(store.area_reports().unwrap(), [AreaReport { id, ..report }]);
-        store
-            .mark_report_task(TaskId(7), MemberId(1), "report")
-            .unwrap();
-        assert_eq!(
-            store.report_tasks().unwrap(),
-            [(TaskId(7), MemberId(1), "report".to_owned())]
-        );
-        // Opened again, the tables are there already and nothing changes.
-        let reopened = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
-        assert_eq!(reopened.strategies().unwrap().len(), 1);
     }
 
     #[test]

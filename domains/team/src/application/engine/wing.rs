@@ -1,18 +1,17 @@
 //! The engineering wing and the git flow (ADR 0115): a submitted branch recorded with its
 //! document and a check job queued for the dev node; the check's result as a receipt that
-//! wakes the submitter and the tester (or sends failed work back); the owner's push offered on
-//! the desk once the lead accepts, and what came of it; hiring by the owner, a lead's request
-//! to hire within the wing's seats; the wing seeded once; and documents members read. Every
-//! rule is code: branch names, seats, roles, who is woken, what closes.
+//! wakes the submitter (or sends failed work back); the owner's push offered on the desk once
+//! the work passes review, and what came of it; hiring by the owner; the wing seeded once; and
+//! documents members read. Every rule is code: branch names, who is woken, what closes.
 
 use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, DeskItem, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::wing::{self, HireRequest, WING_GOAL, WING_NOTE, WING_PROJECT};
+use crate::domain::wing::{self, WING_GOAL, WING_NOTE, WING_PROJECT};
 use crate::domain::{
     Brain, Branch, CallReceipt, Check, Criterion, Document, EventKind, GoalId, GoalStatus,
-    MemberId, Priority, ProjectId, Ref, Refusal, Role, RunId, TaskId, TaskStatus, WakeReason,
+    MemberId, Priority, ProjectId, Refusal, Role, RunId, TaskId, TaskStatus, WakeReason,
 };
 
 /// Set once HQ has seeded the wing, so it is never seeded again.
@@ -134,8 +133,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .running(id)
             .map_err(|_| EngineError::Unknown("running turn with that token"))?;
         let task = run.task.ok_or(EngineError::Unknown("task"))?;
-        // Changing the lab is the wing's (ADR 0120): refused before anything is kept.
-        self.may_change_the_lab(&self.member(run.member)?)?;
         if !s.branch.starts_with(wing::BRANCH_PREFIX) || s.head.len() < 7 {
             return Err(EngineError::Unknown("branch under hq/"));
         }
@@ -248,7 +245,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !matches!(member.role, Role::Lead | Role::Developer) {
             return Err(EngineError::Refused(Refusal::NotYourToRecheck));
         }
-        self.may_change_the_lab(&member)?;
         let work = self.work_of(task)?;
         let Some(branch) = self
             .store
@@ -491,6 +487,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .max_by_key(|b| b.id)
             .filter(|newest| newest.head != branch.head);
         if newer.is_none() {
+            // In the loops a failed check is one of the item's failures (ADR 0142).
+            if !ok {
+                self.loop_failed(check.task)?;
+            }
             self.store.set_gate(check.task, ok)?;
             self.emit(
                 EventKind::GateResult,
@@ -868,10 +868,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 return Err(EngineError::Refused(Refusal::NotAManager));
             }
         }
-        let manager = match reports_to {
-            Some(to) => Some(to),
-            None => crate::domain::chain::manager_at_hire(role, &members),
-        };
+        let manager = reports_to;
         let look = u8::try_from(members.len() % 6).unwrap_or(0);
         let id = self.store.add_member(&name, role, role.share(), 2, look)?;
         for brain in named {
@@ -894,11 +891,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// A store failure.
     pub fn wing_members(&self) -> Done<Vec<MemberId>> {
-        let members = self.store.members()?;
+        // With nobody reporting to anyone (ADR 0142), the wing is its projects' leads.
         let leads = self.wing_leads()?;
-        Ok(members
+        Ok(self
+            .store
+            .members()?
             .iter()
-            .filter(|m| wing::in_wing(m, &leads, &members))
+            .filter(|m| m.role != Role::Ceo && leads.contains(&m.id))
             .map(|m| m.id)
             .collect())
     }
@@ -930,26 +929,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// A store failure.
     pub fn changes_the_lab(&self, member: MemberId) -> Done<bool> {
-        let leads = self.wing_leads()?;
-        let members = self.store.members()?;
-        Ok(members
-            .iter()
-            .find(|m| m.id == member)
-            .is_some_and(|m| wing::changes_the_lab(m, &leads, &members)))
-    }
-
-    /// Refuses a member outside the wing who would change the lab, naming the wing's lead.
-    fn may_change_the_lab(&self, member: &crate::domain::Member) -> Done<()> {
-        let leads = self.wing_leads()?;
-        let members = self.store.members()?;
-        if wing::changes_the_lab(member, &leads, &members) {
-            return Ok(());
-        }
-        let lead = leads
-            .first()
-            .and_then(|id| members.iter().find(|m| m.id == *id))
-            .map(|m| m.name.clone());
-        Err(EngineError::Refused(Refusal::BranchesAreTheWings { lead }))
+        // Any member at work may change the lab (ADR 0142): checks and review stop bad work.
+        Ok(self.member(member)?.at_work())
     }
 
     pub(super) fn wing_leads(&self) -> Done<Vec<MemberId>> {
@@ -967,149 +948,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|p| goals.contains(&p.goal))
             .map(|p| p.lead)
             .collect())
-    }
-
-    /// A lead asks the owner to hire (ADR 0115): a member in a role below its own, on a brain
-    /// that role may think with, reporting to the lead, for a reason and on evidence from
-    /// HQ's record. In the wing the seats are a rule: one lead, at most five developers, on
-    /// the brains the owner agreed. The request waits on the owner's desk, one at a time per
-    /// lead; approving hires.
-    ///
-    /// # Errors
-    /// [`Refusal::OnlyLeadsHire`], [`Refusal::NotBelowAsker`], [`Refusal::NotABrain`],
-    /// [`Refusal::NoEvidence`], [`Refusal::NoSuchEvidence`], [`Refusal::NoSeat`],
-    /// [`Refusal::WingBrain`], [`Refusal::AlreadyAsked`], [`Refusal::NotAName`].
-    pub fn request_hire(
-        &self,
-        run: RunId,
-        name: Option<&str>,
-        role: Role,
-        brain: &str,
-        why: &str,
-        cited: &[Ref],
-    ) -> Done<crate::domain::DeskId> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let asker = self.member(turn.member)?;
-        if asker.role != Role::Lead {
-            return Err(EngineError::Refused(Refusal::OnlyLeadsHire));
-        }
-        if role.rank() <= asker.role.rank() {
-            return Err(EngineError::Refused(Refusal::NotBelowAsker));
-        }
-        self.hire_asked(&turn, &asker, name, role, brain, why, cited)
-    }
-
-    /// A hire a lead asks for, on the owner's desk (the lock held, the lead and the role
-    /// already checked): the brain the role may use, evidence from HQ's record, the wing's
-    /// seats, one request at a time. [`Self::request_hire`] and a request for staff with no
-    /// furloughed member to bring back (ADR 0118) both come here.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn hire_asked(
-        &self,
-        turn: &crate::application::ports::Run,
-        asker: &crate::domain::Member,
-        name: Option<&str>,
-        role: Role,
-        brain: &str,
-        why: &str,
-        cited: &[Ref],
-    ) -> Done<crate::domain::DeskId> {
-        let brain = Brain::for_role(role, brain).map_err(EngineError::Refused)?;
-        if cited.is_empty() {
-            return Err(EngineError::Refused(Refusal::NoEvidence));
-        }
-        for group in self.look_up(None, &[cited.to_vec()])? {
-            for (r, found) in group {
-                if found == crate::domain::evidence::Found::Missing {
-                    return Err(EngineError::Refused(Refusal::NoSuchEvidence(r.said())));
-                }
-            }
-        }
-        let members = self.store.members()?;
-        let leads = self.wing_leads()?;
-        if wing::in_wing(asker, &leads, &members) {
-            let wing: Vec<&crate::domain::Member> = members
-                .iter()
-                .filter(|m| wing::in_wing(m, &leads, &members))
-                .collect();
-            wing::may_seat(role, brain, &wing).map_err(EngineError::Refused)?;
-        }
-        if self.store.desk()?.iter().any(|d| {
-            matches!(d.kind.as_str(), "hire" | "recall")
-                && d.status == "waiting"
-                && d.member == Some(asker.id)
-        }) {
-            return Err(EngineError::Refused(Refusal::AlreadyAsked));
-        }
-        let name = match name
-            .map(|n| super::one_line(n, 41))
-            .filter(|n| !n.is_empty())
-        {
-            Some(name) => {
-                if name.chars().count() > 40
-                    || members.iter().any(|m| m.name.eq_ignore_ascii_case(&name))
-                {
-                    return Err(EngineError::Refused(Refusal::NotAName));
-                }
-                name
-            }
-            None => wing::spare_name(&members),
-        };
-        let request = HireRequest {
-            name,
-            role,
-            brain,
-            reports_to: asker.id,
-            why: super::one_line(why, 400),
-        };
-        let evidence = self.evidence_said(cited)?;
-        let text = request.write(&asker.name, &evidence);
-        let item = self.store.add_desk(
-            "hire",
-            turn.task,
-            None,
-            Some(asker.id),
-            &text,
-            self.clock.now(),
-        )?;
-        self.emit(
-            EventKind::DeskAdded,
-            json!({ "item": item.0, "kind": "hire", "task": turn.task.map(|t| t.0),
-                    "member": asker.id.0, "name": request.name, "role": role.name() }),
-        )?;
-        Ok(item)
-    }
-
-    /// The owner's decision on a hire request (the lock held): approved, the member joins,
-    /// reporting to the lead who asked; either way the lead hears in the task's thread.
-    pub(super) fn decide_hire(&self, found: &DeskItem, approve: bool) -> Done<()> {
-        let request = HireRequest::read(&found.text).ok_or(EngineError::Unknown("hire request"))?;
-        let said = if approve {
-            let id = self.hire_held_lock(
-                &request.name,
-                request.role,
-                &[request.brain.name()],
-                Some(request.reports_to),
-                "owner, asked by a lead",
-            )?;
-            format!(
-                "The owner approved the hire: {} ({}) joins as {} on {}, reporting to you.",
-                request.name,
-                id,
-                request.role.name(),
-                request.brain.label()
-            )
-        } else {
-            format!("The owner declined hiring {}.", request.name)
-        };
-        if let Some(task) = found.task {
-            self.post_held_lock(Author::Owner, task, &said)?;
-            if let Some(asker) = found.member {
-                self.wake_held_lock(asker, Some(task), WakeReason::ProposalDecided)?;
-            }
-        }
-        Ok(())
     }
 
     // ---- the wing, seeded once (ADR 0115) --------------------------------------------------
@@ -1164,7 +1002,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 None => {
                     let id = self.hire(name, Role::Developer, Role::Developer.share(), 2, look)?;
                     self.set_brain(id, Brain::Haiku.name())?;
-                    self.set_reports_to(id, lead)?;
                     id
                 }
             };
@@ -1244,10 +1081,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(document) = self.store.document(id)? else {
             return Err(EngineError::Refused(Refusal::NotADocument));
         };
-        if self.check_assistance_source(run, crate::domain::assistance::SourceRef::Document(id))? {
-            self.inherit_input_from(run, document.run)?;
-            return Ok(document_part(&document, part));
-        }
         let mut reach = match turn.task {
             Some(task) => self.work_of(task)?,
             None => Vec::new(),
@@ -1343,22 +1176,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok((json!(documents), json!(branches)))
     }
 
-    /// The wing as the HQ screen shows it: its goal, its projects' leads, its members and the
-    /// agreed seats.
+    /// The wing as the HQ screen shows it: its goal, its projects' leads and its members.
     pub(super) fn wing_shown(&self) -> Done<serde_json::Value> {
         let members = self.store.members()?;
         let leads = self.wing_leads()?;
-        let wing: Vec<&crate::domain::Member> = members
-            .iter()
-            .filter(|m| wing::in_wing(m, &leads, &members))
-            .collect();
+        let ids = self.wing_members()?;
+        let wing: Vec<&crate::domain::Member> =
+            members.iter().filter(|m| ids.contains(&m.id)).collect();
         Ok(json!({
             "goal": WING_GOAL,
             "leads": leads.iter().map(|l| l.0).collect::<Vec<_>>(),
             "members": wing.iter().map(|m| m.id.0).collect::<Vec<_>>(),
-            "developers": wing.iter().filter(|m| m.role == Role::Developer).count(),
-            "most_developers": wing::MOST_DEVELOPERS,
-            "most_leads": wing::MOST_LEADS,
         }))
     }
 }

@@ -39,14 +39,6 @@ pub const ALL: [Situation; 6] = [
     Situation::Resumed,
 ];
 
-/// The situations a story is told whole in, unless its teller says otherwise.
-pub const TAUGHT_BY_DEFAULT: [Situation; 4] = [
-    Situation::Fresh,
-    Situation::Handover,
-    Situation::AfterGap,
-    Situation::Recalled,
-];
-
 impl Situation {
     /// Its stable name.
     #[must_use]
@@ -65,22 +57,6 @@ impl Situation {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         ALL.into_iter().find(|s| s.name() == name.trim())
-    }
-
-    /// The situations named in `kept`, comma-separated; the default ones for nothing.
-    #[must_use]
-    pub fn read_list(kept: &str) -> Vec<Self> {
-        let named: Vec<Self> = kept.split(',').filter_map(Self::from_name).collect();
-        if named.is_empty() {
-            return TAUGHT_BY_DEFAULT.to_vec();
-        }
-        named
-    }
-
-    /// The situations, comma-separated, as kept.
-    #[must_use]
-    pub fn keep_list(all: &[Self]) -> String {
-        all.iter().map(|s| s.name()).collect::<Vec<_>>().join(",")
     }
 
     /// Whether this situation costs more to brief: the rare ones that need the most.
@@ -527,15 +503,10 @@ mod tests {
     }
 
     #[test]
-    fn situations_keep_their_names_and_lists() {
+    fn situations_keep_their_names() {
         for s in ALL {
             assert_eq!(Situation::from_name(s.name()), Some(s));
         }
-        assert_eq!(Situation::read_list(""), TAUGHT_BY_DEFAULT.to_vec());
-        assert_eq!(
-            Situation::read_list(&Situation::keep_list(&[Situation::Continuing])),
-            vec![Situation::Continuing]
-        );
         assert!(Situation::Handover.dear() && !Situation::Fresh.dear());
     }
 }

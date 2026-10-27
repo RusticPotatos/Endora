@@ -6,7 +6,6 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::engine::{Author, Engine, EngineError, Fired, STRANDED_AFTER_MS, Settings};
-use super::guard_ports::GuardStore as _;
 use super::ports::{Clock, NewRoutine, NewTask, Run, TeamStore};
 use crate::domain::guards::Stopped;
 use crate::domain::money::{DOLLAR, MOST_A_TURN};
@@ -144,7 +143,11 @@ fn a_new_member_judges_with_haiku_and_works_with_the_mac_until_the_owner_says_ot
         (Brain::Haiku, Brain::Mac)
     );
     // The CEO, who may not think with Haiku, judges with Opus as it is seated.
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     assert_eq!(member(&hq, ceo).judgment_brain(), Brain::Opus);
     // The owner chooses each from its own list, and each keeps the other as it was.
     assert_eq!(
@@ -510,41 +513,6 @@ fn a_tester_reviews_on_claude_and_its_readings_of_a_check_need_the_mac() {
 }
 
 #[test]
-fn the_wings_lead_and_developers_need_the_mac_for_any_work_and_other_leads_read_on_the_nas() {
-    let clock = hands();
-    let hq = hq(&clock, 5);
-    let t = team(&hq);
-    let wing = hq.seed_wing().unwrap().unwrap();
-    let read = task(&hq, t.goal, "Read the disks");
-    // The Mac has not been heard from. Ada leads no wing: reading is the NAS's to do.
-    hq.wake(t.lead, Some(read), WakeReason::Mentioned).unwrap();
-    hq.tick().unwrap();
-    assert_eq!(latest(&hq, t.lead).brain, Some(Brain::Local));
-    // Kit, the wing's lead, was handed its first task when the wing was seeded: planning code
-    // is not for the small model, so its turn waits, and says for what.
-    let kits = latest(&hq, wing.lead);
-    assert_eq!(kits.status, RunStatus::Queued);
-    assert_eq!(
-        kits.end_reason,
-        "waiting for the Mac: the node has not said yet"
-    );
-    // The wing's developers likewise (on a task of their own: one turn at a time on a task).
-    let rae = wing.developers[0];
-    let memory = task(&hq, t.goal, "Read the memory");
-    hq.wake(rae, Some(memory), WakeReason::Mentioned).unwrap();
-    hq.tick().unwrap();
-    assert_eq!(latest(&hq, rae).status, RunStatus::Queued);
-    // When the Mac is free, the lead has it first, and the developer waits its turn.
-    hq.tell_mac(true, "ready");
-    hq.tick().unwrap();
-    assert_eq!(latest(&hq, wing.lead).brain, Some(Brain::Mac));
-    assert_eq!(
-        latest(&hq, rae).end_reason,
-        "waiting for the Mac: another turn is using the Mac"
-    );
-}
-
-#[test]
 fn an_alarm_out_of_budget_runs_at_once_on_a_house_model_and_the_owner_is_told_no_decision_is() {
     let clock = hands();
     let hq = hq(&clock, 1);
@@ -719,7 +687,11 @@ fn an_alarm_that_makes_the_routines_task_is_judged_on_claude_when_there_is_money
 fn work_whose_turn_waits_for_budget_is_held_never_stuck_and_nothing_climbs() {
     let clock = hands();
     let hq = hq(&clock, 1);
-    let ceo = hq.seat_ceo("Mara").unwrap().unwrap();
+    let ceo = {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
     let t = team(&hq);
     // Ada leads a project, so stuck work in it would climb to her, a huddle and the CEO.
     let project = hq
@@ -767,11 +739,7 @@ fn work_whose_turn_waits_for_budget_is_held_never_stuck_and_nothing_climbs() {
     assert!(
         after.iter().all(|w| !matches!(
             w.reason,
-            WakeReason::Recovery
-                | WakeReason::AssignmentRecovery
-                | WakeReason::Decide
-                | WakeReason::Huddle
-                | WakeReason::Guard
+            WakeReason::Recovery | WakeReason::AssignmentRecovery | WakeReason::Decide
         ) || w.task != Some(own)),
         "nothing woke anyone for it: {after:?}"
     );
@@ -787,10 +755,6 @@ fn work_whose_turn_waits_for_budget_is_held_never_stuck_and_nothing_climbs() {
         .filter(|d| d.kind == "stuck" || d.kind == "rounds")
         .collect();
     assert!(stuck.is_empty(), "{stuck:?}");
-    assert!(
-        hq.store().findings().unwrap().is_empty(),
-        "no finding of stuck work"
-    );
 }
 
 #[test]

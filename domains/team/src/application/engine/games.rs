@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::chess::{self, Game, Refused};
-use crate::domain::games::{self, Kind, Record, Rng};
+use crate::domain::games::{self, Rng};
 use crate::domain::{EventKind, Member, MemberId, Millis, Refusal, Role, RunId, WakeReason};
 
 /// The most results the office shows as the latest.
@@ -27,14 +27,11 @@ fn refused(why: Refused) -> EngineError {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
-    // ---- ping-pong and pool ---------------------------------------------------------------
-
-    /// What each tick does for the games (the lock held): free members play the matches that
-    /// are due, if the service allows it, and a game of chess nobody has moved in for a week
-    /// is adjourned.
+    /// What each tick does for chess (the lock held): free members set up and pick up a game,
+    /// if the service allows it, and a game nobody has moved in for a week is adjourned.
+    /// Ping-pong and pool are the browser's animation alone (ADR 0142).
     pub(super) fn games_tick(&self, now: Millis) -> Done<()> {
         if self.settings.games {
-            self.play_matches(now)?;
             self.chess_set(now)?;
             self.chess_picked_up(now)?;
         }
@@ -150,75 +147,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
-    /// Plays the matches that are due: at most one of each game every twenty minutes, between
-    /// two free members who have not just played. A match is played at once, in code, from a
-    /// seed made of the clock and the players, so it is the same match every time it is
-    /// replayed.
-    fn play_matches(&self, now: Millis) -> Done<()> {
-        let mut records = self.store.games()?;
-        let free = self.free_to_play(now)?;
-        for (n, kind) in Kind::ALL.into_iter().enumerate() {
-            if !games::due(kind, &records, now) {
-                continue;
-            }
-            let ready: Vec<&Member> = free
-                .iter()
-                .filter(|m| games::rested(m.id, &records, now))
-                .collect();
-            let ids: Vec<MemberId> = ready.iter().map(|m| m.id).collect();
-            let mut pick = Rng::new(games::seed(
-                now,
-                MemberId(0),
-                MemberId(n as i64 + 1),
-                records.len(),
-            ));
-            let Some((a, b)) = games::pick_two(&ids, &mut pick) else {
-                continue;
-            };
-            let name = |id: MemberId| {
-                ready
-                    .iter()
-                    .find(|m| m.id == id)
-                    .map_or_else(String::new, |m| m.name.clone())
-            };
-            let (name_a, name_b) = (name(a), name(b));
-            let mut rng = Rng::new(games::seed(now, a, b, records.len()));
-            let skill = |m: MemberId| games::skill(m, kind, games::played_by(m, kind, &records));
-            let played = match kind {
-                Kind::PingPong => games::play_ping_pong(skill(a), skill(b), &mut rng),
-                Kind::Pool => games::play_pool(skill(a), skill(b), (&name_a, &name_b), &mut rng),
-            };
-            let mut record = Record {
-                id: 0,
-                kind,
-                a,
-                b,
-                score_a: played.a,
-                score_b: played.b,
-                winner: if played.a_won { a } else { b },
-                note: played.note,
-                at: now,
-            };
-            record.id = self.store.add_game(&record)?;
-            let (winner, loser) = if played.a_won {
-                (&name_a, &name_b)
-            } else {
-                (&name_b, &name_a)
-            };
-            let (won, lost) = record.scores();
-            self.emit(
-                EventKind::GamePlayed,
-                json!({ "game": kind.name(), "id": record.id,
-                        "winner": winner, "winner_id": record.winner.0,
-                        "loser": loser, "loser_id": record.loser().0,
-                        "score": [won, lost], "note": record.note,
-                        "text": record.said(winner, loser) }),
-            )?;
-            records.push(record);
-        }
-        Ok(())
-    }
-
     // ---- chess ----------------------------------------------------------------------------
 
     /// The game a member is playing now, if it is in one.
@@ -240,7 +168,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The board for one of the players: who plays, whose move it is, the position drawn, its
-    /// notation, the last moves and, when it is their move, what they may play.
+    /// notation and the last moves.
     fn board_said(&self, game: &Game, me: MemberId) -> Done<String> {
         let names = self.names()?;
         let name = |id: MemberId| names.get(&id).cloned().unwrap_or_default();
@@ -249,7 +177,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let mine = game.to_move() == me;
         let opponent = game.opponent(me).map(name).unwrap_or_default();
-        let mut told = format!(
+        let told = format!(
             "Chess, game {}: {} (white) against {} (black). {}{}\n{}\nFEN: {}\nMoves: {}\n",
             game.id,
             name(game.white),
@@ -272,9 +200,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 game.move_text(Some(chess::LAST_MOVES))
             },
         );
-        if mine {
-            told.push_str(&format!("Legal moves: {}\n", view.legal.join(", ")));
-        }
         Ok(told)
     }
 
@@ -498,82 +423,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         })
     }
 
-    /// A kept match of ping-pong or pool played again, step by step, from what it was played
-    /// from (its seed and the players' skills then): every rally or shot with the score after
-    /// it, and whether the replay ends as the record does.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a match there is not; a store failure.
-    pub fn game_replay(&self, id: i64) -> Done<Value> {
-        let mut records = self.store.games()?;
-        records.sort_by_key(|r| r.id);
-        let at = records
-            .iter()
-            .position(|r| r.id == id)
-            .ok_or(EngineError::Unknown("match"))?;
-        let record = &records[at];
-        let again = games::replay(record, &records[..at]);
-        let names = self.names()?;
-        let name = |id: MemberId| names.get(&id).cloned().unwrap_or_default();
-        let player = |by: u8| {
-            if by == 0 {
-                name(record.a)
-            } else {
-                name(record.b)
-            }
-        };
-        let steps: Vec<Value> = again
-            .steps
-            .iter()
-            .map(|step| match *step {
-                games::Step::Rally { a_won, a, b } => json!({ "step": "rally",
-                    "won_by": player(u8::from(!a_won)), "score": [a, b] }),
-                games::Step::Shot { by, potted, a, b } => json!({ "step": "shot",
-                    "by": player(by), "potted": potted, "balls": [a, b] }),
-                games::Step::Scratch { by } => json!({ "step": "scratch", "by": player(by) }),
-            })
-            .collect();
-        Ok(json!({ "id": record.id, "kind": record.kind.name(),
-                   "players": [name(record.a), name(record.b)],
-                   "skills": [again.skills.0, again.skills.1], "seed": again.seed.to_string(),
-                   "score": [record.score_a, record.score_b], "winner": name(record.winner),
-                   "note": record.note, "at": record.at, "matches": again.matches,
-                   "steps": steps }))
-    }
-
-    /// The games as the HQ screen shows them: the leaderboards, the latest results, and the
-    /// games of chess being played and the last ones finished.
+    /// Chess as the HQ screen shows it: the leaderboard, the latest results, and the games
+    /// being played and the last ones finished.
     pub(super) fn games_shown(&self) -> Done<Value> {
         let names = self.names()?;
         let name = |id: MemberId| names.get(&id).cloned().unwrap_or_default();
-        let records = self.store.games()?;
         let chess_games = self.store.chess_games()?;
-        let board = |kind: Kind| -> Value {
-            let last = records.iter().rfind(|r| r.kind == kind).map(|r| {
-                let (won, lost) = r.scores();
-                json!({ "winner": name(r.winner), "loser": name(r.loser()),
-                        "score": [won, lost], "note": r.note, "at": r.at })
-            });
-            json!({
-                "label": kind.label(),
-                "last": last,
-                "leaderboard": games::standings(kind, &records).iter().map(|s| json!({
-                    "member": s.member.0, "name": name(s.member),
-                    "wins": s.wins, "losses": s.losses, "streak": s.streak,
-                })).collect::<Vec<_>>(),
-            })
-        };
-        let mut recent: Vec<(Millis, i64, Value)> = records
-            .iter()
-            .map(|r| {
-                let text = r.said(&name(r.winner), &name(r.loser()));
-                (
-                    r.at,
-                    r.id,
-                    json!({ "id": r.id, "game": r.kind.name(), "text": text, "at": r.at }),
-                )
-            })
-            .collect();
+        let mut recent: Vec<(Millis, i64, Value)> = Vec::new();
         recent.extend(chess_games.iter().filter(|g| !g.live()).map(|g| {
             let text = chess::result_said(g, &name(g.white), &name(g.black));
             (
@@ -592,8 +448,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .take(FINISHED_SHOWN),
         );
         Ok(json!({
-            "ping_pong": board(Kind::PingPong),
-            "pool": board(Kind::Pool),
             "chess": {
                 "label": "chess",
                 "leaderboard": chess::standings(&chess_games).iter().map(|s| json!({

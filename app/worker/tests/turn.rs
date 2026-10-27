@@ -2212,14 +2212,9 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
         "post",
         "set_status",
         "homelab_status",
-        // Asking a colleague is offered up front (ADR 0139-0140): the briefing names it, and a
-        // tool behind a search was never used in production.
-        "consult",
-        // So is the game a turn is woken to move in: behind a search, no move was ever made.
+        // The game a turn is woken to move in is offered up front: behind a search, no move was
+        // ever made.
         "chess",
-        // And the tool a special turn answers with: behind a search, a colleague's answer
-        // turn never answered, and both live requests were declined (2026-10-25).
-        "answer_assistance",
         "find_tools",
     ] {
         assert!(first.iter().any(|n| n == core), "{core} missing: {first:?}");

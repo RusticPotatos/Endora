@@ -60,14 +60,8 @@ pub const fn kind_of(reason: WakeReason, role: Role) -> TurnKind {
         | W::LeadReview
         | W::Alarm
         | W::ReviewRequested
-        | W::QuestionAsked
         | W::AcceptanceAsked
-        | W::Directed
-        | W::Decide
-        | W::Huddle
-        | W::Guard
-        | W::Escalated
-        | W::ConsultedUp => TurnKind::Judgment,
+        | W::Decide => TurnKind::Judgment,
         // Doing, reading, checking, drafting and picking work up again.
         W::Assigned
         | W::Mentioned
@@ -79,7 +73,6 @@ pub const fn kind_of(reason: WakeReason, role: Role) -> TurnKind {
         | W::OwnerReplied
         | W::AssignmentRecovery
         | W::SentBack
-        | W::QuestionAnswered
         | W::CheckDone
         | W::Downtime
         | W::WaitDropped
@@ -102,7 +95,7 @@ pub const fn allowed_for(reason: WakeReason, role: Role, in_the_wing: bool) -> A
         // on a deadline: it takes whichever house model is free, never waiting for the Mac (the
         // first one, production 2026-10-25, expired seventh in the Mac's queue).
         WakeReason::Downtime => Allowed::Local,
-        WakeReason::Consulted | WakeReason::ConsultedUp => Allowed::Either,
+        WakeReason::Consulted => Allowed::Either,
         // Reading what a check found in a submitted branch, and mending what a reviewer sent
         // back, are code work whoever does them.
         WakeReason::CheckDone | WakeReason::SentBack => Allowed::Mac,
@@ -322,7 +315,7 @@ mod tests {
     /// not the tester, how far down its work may go (a judgment turn never goes down at all,
     /// so its column says what its work would be). A reason added to the enum fails
     /// `every_reason_is_classified` until it is in this table.
-    const TABLE: [(WakeReason, TurnKind, Allowed); 27] = [
+    const TABLE: [(WakeReason, TurnKind, Allowed); 20] = [
         (W::Assigned, TurnKind::Work, Allowed::Either),
         (W::Mentioned, TurnKind::Work, Allowed::Either),
         (W::WaitFinished, TurnKind::Work, Allowed::Either),
@@ -337,20 +330,13 @@ mod tests {
         (W::AssignmentRecovery, TurnKind::Work, Allowed::Either),
         (W::ReviewRequested, TurnKind::Judgment, Allowed::Either),
         (W::SentBack, TurnKind::Work, Allowed::Mac),
-        (W::QuestionAsked, TurnKind::Judgment, Allowed::Either),
-        (W::QuestionAnswered, TurnKind::Work, Allowed::Either),
         (W::AcceptanceAsked, TurnKind::Judgment, Allowed::Either),
         (W::CheckDone, TurnKind::Work, Allowed::Mac),
         (W::Downtime, TurnKind::Work, Allowed::Local),
-        (W::Directed, TurnKind::Judgment, Allowed::Either),
         (W::Decide, TurnKind::Judgment, Allowed::Either),
-        (W::Huddle, TurnKind::Judgment, Allowed::Either),
-        (W::Guard, TurnKind::Judgment, Allowed::Either),
         (W::WaitDropped, TurnKind::Work, Allowed::Either),
         // ADR 0139: a colleague's answer is not forced onto the house's model.
         (W::Consulted, TurnKind::Work, Allowed::Either),
-        (W::Escalated, TurnKind::Judgment, Allowed::Either),
-        (W::ConsultedUp, TurnKind::Judgment, Allowed::Either),
     ];
 
     #[test]
@@ -399,7 +385,7 @@ mod tests {
                 }
                 // A colleague's answer is read-only and on a deadline: whichever house model is
                 // free (the owner, 2026-10-25: the first one expired behind the Mac's queue).
-                if matches!(reason, W::Consulted | W::ConsultedUp) {
+                if matches!(reason, W::Consulted) {
                     assert_eq!(allowed, Allowed::Either, "{reason:?} for {role:?}");
                     continue;
                 }
@@ -440,9 +426,7 @@ mod tests {
             W::Decide,
             W::AcceptanceAsked,
             W::ReviewRequested,
-            W::Huddle,
             W::Alarm,
-            W::Guard,
         ] {
             assert_eq!(
                 kind_of(judged, Role::Lead),
@@ -526,7 +510,7 @@ mod tests {
                 );
             }
         }
-        assert!(judged >= 40, "the table has judgment in it: {judged}");
+        assert!(judged >= 20, "the table has judgment in it: {judged}");
         // A lead's standing review is judgment whatever woke it, and it waits too.
         assert_eq!(
             place(Need::of(W::Assigned, Role::Lead, true, false), &broke),

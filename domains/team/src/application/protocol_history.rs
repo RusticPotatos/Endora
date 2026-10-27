@@ -19,31 +19,17 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
 /// Explicit historical search and the canonical colleague-assistance adapter.
 #[must_use]
 pub fn tools() -> Vec<Value> {
-    vec![
-        tool(
-            "ask_record",
-            "Search what the team said, for why something was decided or what was found: posts and last words, handover notes, world pages and their timelines, stories, notebooks and the conversations of turns, from the last 90 days. At most five excerpts, newest first, each with what to cite. It wakes no one and costs nothing. It finds what was said before; a colleague can answer what the record cannot. What comes back is testimony: cite it for what was said, never as a reading of the lab now.",
-            json!({
-                "question": { "type": "string", "maxLength": record::QUESTION_MOST, "description": "what you want to know, with its distinctive words (names, things, what was decided)" },
-                "member": { "type": "string", "description": "only what this member said or wrote" },
-                "task": { "type": "integer", "description": "only what was about this task" },
-                "project": { "type": "integer", "description": "only what was about this project's tasks" },
-            }),
-            &["question"],
-        ),
-        tool(
-            "consult",
-            "Ask any colleague: one bounded question with read-only assistance. From a project's task the conversation is found or made for you; name one only when more than one matches the pair. The result stays in that conversation; there is no task-thread answer or automatic record fallback. Sources must already be granted. At most two new requests per turn and six per day. Use ask_owner for owner decisions.",
-            json!({
-                "member": { "type": "string", "description": "the member's name" },
-                "question": { "type": "string", "maxLength": record::QUESTION_MOST },
-                "conversation": { "type": "integer", "minimum":1, "description": "A conversation with this colleague; name one only when more than one matches." },
-                "key": { "type": "string", "minLength":8, "maxLength":64, "description":"Optional stable retry key for assistance; otherwise derived from this turn and question." },
-                "evidence": { "type":"array", "maxItems":5, "items":{"type":"string"}, "description":"Original document/receipt locators already granted to the selected conversation." },
-            }),
-            &["member", "question"],
-        ),
-    ]
+    vec![tool(
+        "ask_record",
+        "Search what the team said, for why something was decided or what was found: posts and last words, handover notes, world pages and their timelines, stories, notebooks and the conversations of turns, from the last 90 days. At most five excerpts, newest first, each with what to cite. It wakes no one and costs nothing. It finds what was said before; a colleague can answer what the record cannot. What comes back is testimony: cite it for what was said, never as a reading of the lab now.",
+        json!({
+            "question": { "type": "string", "maxLength": record::QUESTION_MOST, "description": "what you want to know, with its distinctive words (names, things, what was decided)" },
+            "member": { "type": "string", "description": "only what this member said or wrote" },
+            "task": { "type": "integer", "description": "only what was about this task" },
+            "project": { "type": "integer", "description": "only what was about this project's tasks" },
+        }),
+        &["question"],
+    )]
 }
 
 fn text<'a>(args: &'a Value, key: &str) -> &'a str {
@@ -69,46 +55,6 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 args["project"].as_i64(),
             )
             .map_err(said),
-        "consult" => (|| {
-            if args.to_string().len() > crate::domain::conversation::ARGUMENT_BYTES {
-                return Err("consult arguments exceed 8 KiB".to_owned());
-            }
-            let object = args
-                .as_object()
-                .ok_or("consult arguments must be an object")?;
-            if object.keys().any(|key| {
-                !["member", "question", "conversation", "key", "evidence"].contains(&key.as_str())
-            }) {
-                return Err(
-                    "identity and authority come from the live turn, not extra fields".to_owned(),
-                );
-            }
-            let conversation = args
-                .get("conversation")
-                .map(|value| {
-                    value
-                        .as_i64()
-                        .filter(|id| *id > 0)
-                        .ok_or("positive conversation ID required".to_owned())
-                })
-                .transpose()?;
-            let key = args
-                .get("key")
-                .map(|value| value.as_str().ok_or("retry key must be text".to_owned()))
-                .transpose()?;
-            let evidence = super::protocol_conversations::assistance_sources(args)?;
-            engine
-                .consult_peer_in(
-                    run.id,
-                    text(args, "member"),
-                    text(args, "question"),
-                    conversation,
-                    key,
-                    &evidence,
-                )
-                .map_err(said)
-        })(),
-        "answer_consult" => Err("answer_consult is retired; use assigned answer_assistance".into()),
         _ => return None,
     })
 }

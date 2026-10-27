@@ -1,39 +1,20 @@
-//! The open office (ADR 0119): the office as data, seeded once; proposals the team decides
-//! together; the owner as landlord (undo, reset, veto); and downtime, a turn about no task
-//! for a member with nothing to do. A model proposes and votes; the rules in
-//! [`crate::domain::office`] and the count of votes decide, and a proposal is checked again
-//! at the moment it would be made.
+//! The office (ADR 0119, amended by 0142): the floor as data, seeded once, which the HQ screen
+//! draws; and downtime, a turn about no task for a member with nothing to do, for a chess move
+//! that is due. The team no longer changes the floor: proposals and votes went with the company.
 
 use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
 
-use super::{Done, Engine, EngineError, one_line};
+use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
-use crate::domain::office::{self, Change, Proposal, Status, Verdict, Vote};
-use crate::domain::{
-    EventKind, Member, MemberId, Millis, Refusal, Role, RunId, WakeId, WakeReason,
-};
+use crate::domain::office;
+use crate::domain::{Member, MemberId, Millis, Refusal, Role, RunId, WakeId, WakeReason};
 
 /// Set once HQ has put the default layout on the floor, so it never does again.
 const OFFICE_SEEDED: &str = "office_seeded";
 /// How long a member rests between downtime turns, so none follows another across midnight.
 const DOWNTIME_REST_MS: Millis = 12 * 60 * 60 * 1000;
-/// The most items a downtime briefing lists before it says how many more there are.
-const BRIEFED_ITEMS: usize = 40;
-/// The most closed proposals the snapshot remembers.
-const RECENT_PROPOSALS: usize = 8;
-
-/// Where a proposal stands after a vote or a look at the clock.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Standing {
-    /// Still waiting for votes.
-    Open,
-    /// It carried, and the office has changed.
-    Applied,
-    /// It was let go, and why.
-    Dropped(String),
-}
 
 /// What the downtime turns so far say.
 pub(super) struct Downtimes {
@@ -41,14 +22,6 @@ pub(super) struct Downtimes {
     pub(super) live: bool,
     /// When each member's last downtime turn ended (or began, while it runs).
     pub(super) last: HashMap<MemberId, Millis>,
-}
-
-fn proposal_said(by: &str, changes: &[String], why: &str) -> String {
-    let mut text = format!("{by} proposes: {}", changes.join("; "));
-    if !why.is_empty() {
-        text.push_str(&format!(" \u{2014} '{why}'"));
-    }
-    text
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -94,372 +67,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.office_items()?)
     }
 
-    fn describe_all(&self, items: &[office::Item], changes: &[Change]) -> Vec<String> {
-        changes.iter().map(|c| office::describe(items, c)).collect()
-    }
-
-    /// Marks the running turn as having changed something through HQ.
-    fn moved_forward(&self, run: RunId) -> Done<()> {
-        if let Some(mut found) = self.store.run(run)? {
-            found.moved_forward = true;
-            self.store.save_run(&found)?;
-        }
-        Ok(())
-    }
-
     // ---- deciding together --------------------------------------------------------------
 
-    /// A turn proposes changes to the office: one to five, each checked by the rules now and
-    /// again when the proposal carries, and why. The proposer's own yes is counted. Returns
-    /// the proposal's number.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::Office`] with what the rules refuse; a store failure.
-    pub fn propose_office_in(&self, run: RunId, changes: &[Change], why: &str) -> Done<i64> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let who = self.member(turn.member)?;
-        let refuse = |r| EngineError::Refused(Refusal::Office(r));
-        office::check_count(changes).map_err(refuse)?;
-        let items = self.store.office_items()?;
-        office::apply(&items, changes).map_err(refuse)?;
-        let now = self.clock.now();
-        let why = one_line(why, office::WHY_MOST);
-        let id = self
-            .store
-            .add_office_proposal(&who.name, changes, &why, now)?;
-        self.store.add_office_vote(
-            id,
-            &Vote {
-                who: who.name.clone(),
-                yes: true,
-                why: String::new(),
-                at: now,
-            },
-        )?;
-        let said = self.describe_all(&items, changes);
-        self.emit(
-            EventKind::OfficeProposed,
-            json!({ "proposal": id, "by": who.name, "member": who.id.0, "why": why,
-                    "text": proposal_said(&who.name, &said, &why) }),
-        )?;
-        self.moved_forward(run)?;
-        Ok(id)
-    }
-
-    /// A turn votes on an open proposal, once; its own proposal already has its yes. The vote
-    /// may carry the proposal or settle it.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::NoSuchProposal`]; [`Refusal::ProposalClosed`];
-    /// [`Refusal::AlreadyVoted`]; a store failure.
-    pub fn react_office_in(
-        &self,
-        run: RunId,
-        proposal: i64,
-        yes: bool,
-        why: &str,
-    ) -> Done<Standing> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let who = self.member(turn.member)?;
-        let found = self.office_proposal(proposal)?;
-        if found.status != Status::Open {
-            return Err(EngineError::Refused(Refusal::ProposalClosed(proposal)));
-        }
-        let why = one_line(why, office::WHY_MOST);
-        let voted = self.store.add_office_vote(
-            proposal,
-            &Vote {
-                who: who.name.clone(),
-                yes,
-                why: why.clone(),
-                at: self.clock.now(),
-            },
-        )?;
-        if !voted {
-            return Err(EngineError::Refused(Refusal::AlreadyVoted));
-        }
-        self.emit(
-            EventKind::OfficeVoted,
-            json!({ "proposal": proposal, "by": who.name, "vote": if yes { "yes" } else { "no" },
-                    "why": why,
-                    "text": format!("{} votes {} on {}'s proposal {proposal}{}", who.name,
-                                    if yes { "yes" } else { "no" }, found.by,
-                                    if why.is_empty() { String::new() } else { format!(" \u{2014} '{why}'") }) }),
-        )?;
-        self.moved_forward(run)?;
-        self.office_settle(proposal)
-    }
-
-    fn office_proposal(&self, id: i64) -> Done<Proposal> {
-        self.store
-            .office_proposals()?
-            .into_iter()
-            .find(|p| p.id == id)
-            .ok_or(EngineError::Refused(Refusal::NoSuchProposal(id)))
-    }
-
-    /// What the votes and the clock say about a proposal now, done (the lock held): it
-    /// carries, is dropped, or waits on.
-    fn office_settle(&self, id: i64) -> Done<Standing> {
-        let found = self.office_proposal(id)?;
-        if found.status != Status::Open {
-            return Ok(Standing::Open);
-        }
-        let now = self.clock.now();
-        match office::verdict(found.yes(), found.no(), found.at, now) {
-            Verdict::Open => Ok(Standing::Open),
-            Verdict::Drop(why) => self.office_drop(&found, why.said()),
-            Verdict::Apply => {
-                let by_votes = found.yes() > found.no() && found.yes() >= office::LEAST_YES;
-                self.office_apply(&found, by_votes)
-            }
-        }
-    }
-
-    fn office_drop(&self, found: &Proposal, why: &str) -> Done<Standing> {
-        self.store
-            .set_office_proposal(found.id, Status::Dropped, why, self.clock.now())?;
-        self.emit(
-            EventKind::OfficeDropped,
-            json!({ "proposal": found.id, "by": found.by, "why": why,
-                    "text": format!("Proposal {} ({}'s) is dropped: {why}", found.id, found.by) }),
-        )?;
-        Ok(Standing::Dropped(why.to_owned()))
-    }
-
-    /// Makes a carried proposal's changes, if the rules still allow them (the lock held);
-    /// otherwise it is dropped and nothing changes.
-    fn office_apply(&self, found: &Proposal, by_votes: bool) -> Done<Standing> {
-        let items = self.store.office_items()?;
-        if let Err(refused) = office::apply(&items, &found.changes) {
-            return self.office_drop(found, &format!("it no longer fits: {refused}"));
-        }
-        let now = self.clock.now();
-        let said = self.describe_all(&items, &found.changes).join("; ");
-        self.store
-            .push_office_history(&format!("{said} ({}'s idea)", found.by), &items, now)?;
-        for change in &found.changes {
-            match *change {
-                Change::Place { kind, x, y } => {
-                    self.store.add_office_item(kind, x, y, &found.by, now)?;
-                }
-                Change::Move { item, x, y } => self.store.move_office_item(item, x, y)?,
-                Change::Remove { item } => self.store.remove_office_item(item)?,
-            }
-        }
-        let outcome = if by_votes {
-            format!("carried {} to {}", found.yes(), found.no())
-        } else {
-            "nobody objected in six hours".to_owned()
-        };
-        self.store
-            .set_office_proposal(found.id, Status::Applied, &outcome, now)?;
-        self.emit(
-            EventKind::OfficeChanged,
-            json!({ "proposal": found.id, "by": found.by,
-                    "via": if by_votes { "votes" } else { "quiet" },
-                    "text": format!("The office changed: {said} ({}'s idea; {outcome})", found.by) }),
-        )?;
-        Ok(Standing::Applied)
-    }
-
-    /// The first thing each tick does for the office: proposals whose time came carry or are
-    /// dropped (the lock held).
-    pub(super) fn office_tick(&self) -> Done<()> {
-        for open in self
-            .store
-            .office_proposals()?
-            .into_iter()
-            .filter(|p| p.status == Status::Open)
-        {
-            self.office_settle(open.id)?;
-        }
-        Ok(())
-    }
-
-    /// What a turn sees of the office: the things on the floor with their numbers, and the
-    /// open proposals.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; a store failure.
-    pub fn look_office_in(&self, run: RunId) -> Done<String> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let who = self.member(turn.member)?;
-        self.office_said(&who)
-    }
-
-    /// The office in words for a member: its things, numbered, and the open proposals.
-    fn office_said(&self, member: &Member) -> Done<String> {
-        let items = self.store.office_items()?;
-        let mut told = format!(
-            "The office is {} tiles across (x) and {} down (y); the top {} rows are the back wall. \
-             {} things on the floor (at most {}): ",
-            office::COLS,
-            office::ROWS,
-            office::WALL_ROWS,
-            items.len(),
-            office::MOST_ITEMS
-        );
-        let listed: Vec<String> = items
-            .iter()
-            .take(BRIEFED_ITEMS)
-            .map(|i| {
-                // A thing bigger than a tile says its size: models aimed at the rug's other
-                // tiles, not knowing it had any.
-                let spec = i.kind.spec();
-                let size = if spec.w * spec.h > 1 {
-                    format!(", {} by {}", spec.w, spec.h)
-                } else {
-                    String::new()
-                };
-                format!(
-                    "{} #{} ({}, {},{}{size})",
-                    i.kind.label(),
-                    i.id,
-                    office::area(i.x, i.y),
-                    i.x,
-                    i.y
-                )
-            })
-            .collect();
-        told.push_str(&listed.join("; "));
-        told.push_str(".\n");
-        let open: Vec<Proposal> = self
-            .store
-            .office_proposals()?
-            .into_iter()
-            .filter(|p| p.status == Status::Open)
-            .collect();
-        if open.is_empty() {
-            told.push_str("No proposals are open.\n");
-        }
-        for p in &open {
-            let voted = p.votes.iter().find(|v| v.who == member.name);
-            told.push_str(&format!(
-                "Proposal {} by {}: {}{} (yes {}, no {}; {})\n",
-                p.id,
-                p.by,
-                self.describe_all(&items, &p.changes).join("; "),
-                if p.why.is_empty() {
-                    String::new()
-                } else {
-                    format!(" \u{2014} '{}'", p.why)
-                },
-                p.yes(),
-                p.no(),
-                match voted {
-                    Some(v) => format!("you voted {}", if v.yes { "yes" } else { "no" }),
-                    None => "you have not voted".to_owned(),
-                }
-            ));
-        }
-        Ok(told)
-    }
-
-    /// For a downtime turn: how many of each kind the floor has, the most first, the kinds it
-    /// has none of, and what the member placed itself. Live, small models copied the last
-    /// plant they were shown; this is the office as a whole, and their own part of it.
-    fn office_mine_said(&self, member: &Member) -> Done<String> {
-        let items = self.store.office_items()?;
-        let mut had: Vec<(String, usize)> = Vec::new();
-        let mut none: Vec<String> = Vec::new();
-        for spec in &office::CATALOG {
-            match items.iter().filter(|i| i.kind == spec.kind).count() {
-                0 => none.push(spec.kind.label()),
-                n => had.push((spec.kind.label(), n)),
-            }
-        }
-        had.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        let had: Vec<String> = had.iter().map(|(k, n)| format!("{k} ({n})")).collect();
-        let mut told = format!("By kind: {}.", had.join(", "));
-        if !none.is_empty() {
-            told.push_str(&format!(" None yet: {}.", none.join(", ")));
-        }
-        told.push('\n');
-        let mine: Vec<String> = items
-            .iter()
-            .filter(|i| i.placed_by == member.name)
-            .map(|i| {
-                format!(
-                    "{} #{} ({}, {},{})",
-                    i.kind.label(),
-                    i.id,
-                    office::area(i.x, i.y),
-                    i.x,
-                    i.y
-                )
-            })
-            .collect();
-        if mine.is_empty() {
-            told.push_str("You have placed nothing yet.\n");
-        } else {
-            told.push_str(&format!("You have placed: {}.\n", mine.join("; ")));
-        }
-        Ok(told)
-    }
-
     // ---- the owner as landlord ----------------------------------------------------------
-
-    /// The owner undoes the last change to the office: the things on the floor are as they
-    /// were before it. Returns what was undone, or nothing if nothing was left to undo.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn undo_office(&self) -> Done<Option<String>> {
-        let _held = self.held();
-        let Some((what, before)) = self.store.pop_office_history()? else {
-            return Ok(None);
-        };
-        self.store.replace_office_items(&before)?;
-        self.emit(
-            EventKind::OfficeChanged,
-            json!({ "by": "owner", "via": "owner_undo", "text": format!("You undid: {what}") }),
-        )?;
-        Ok(Some(what))
-    }
-
-    /// The owner resets the office to the layout it was seeded with. It can itself be undone.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn reset_office(&self) -> Done<()> {
-        let _held = self.held();
-        let items = self.store.office_items()?;
-        self.store
-            .push_office_history("the owner reset the office", &items, self.clock.now())?;
-        self.lay_out_the_default()?;
-        self.emit(
-            EventKind::OfficeChanged,
-            json!({ "by": "owner", "via": "owner_reset",
-                    "text": "You reset the office to the layout it started with" }),
-        )
-    }
-
-    /// The owner vetoes an open proposal: it is closed at once, and nothing changes.
-    ///
-    /// # Errors
-    /// [`Refusal::NoSuchProposal`]; [`Refusal::ProposalClosed`]; a store failure.
-    pub fn veto_office(&self, proposal: i64) -> Done<()> {
-        let _held = self.held();
-        let found = self.office_proposal(proposal)?;
-        if found.status != Status::Open {
-            return Err(EngineError::Refused(Refusal::ProposalClosed(proposal)));
-        }
-        self.store.set_office_proposal(
-            proposal,
-            Status::Vetoed,
-            "the owner vetoed it",
-            self.clock.now(),
-        )?;
-        self.emit(
-            EventKind::OfficeVetoed,
-            json!({ "proposal": proposal, "by": "owner",
-                    "text": format!("You vetoed {}'s proposal {proposal}", found.by) }),
-        )
-    }
 
     // ---- downtime ----------------------------------------------------------------------
 
@@ -570,16 +180,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// and makes no work, what the office has and how much of each kind, what the member
     /// placed itself, the open proposals, what may be placed and the rules, and what it may
     /// do, leaving the office alone among it. Kept short.
-    pub(super) fn downtime_said(&self, member: &Member, run: crate::domain::RunId) -> Done<String> {
-        if self
-            .store
-            .office_proposals()?
-            .iter()
-            .any(|p| p.status == Status::Open)
-        {
-            // Proposal reasons are legacy free text without a source-run tier on this view.
-            self.unclassified_message_input(run)?;
-        }
+    pub(super) fn downtime_said(
+        &self,
+        member: &Member,
+        _run: crate::domain::RunId,
+    ) -> Done<String> {
         let mut told = String::from(
             "It is downtime: this turn is about no task, no task is due in it, and it makes no \
              work (create_task and hand_to are refused).\n",
@@ -588,74 +193,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(&move_due);
             return Ok(told);
         }
-        told.push_str(&self.office_said(member)?);
-        told.push_str(&self.office_mine_said(member)?);
-        let kinds: Vec<String> = office::CATALOG
-            .iter()
-            .map(|s| match s.most {
-                Some(most) => format!("{} (at most {most})", s.name),
-                None => s.name.to_owned(),
-            })
-            .collect();
-        told.push_str(&format!(
-            "You may place: {}. Poster, string_lights, clock and art hang on the back wall (y 1); \
-             the rest stand on the floor. A change must be inside the floor, and not on a wall, a \
-             door, the desks, a walking lane or a room, nor on another thing; the floor holds at \
-             most {} things, and a proposal makes at most {} changes.\n",
-            kinds.join(", "),
-            office::MOST_ITEMS,
-            office::MOST_CHANGES
-        ));
-        // Offered only things to do, every downtime turn did one, and the same one: a plant.
-        told.push_str(&format!(
-            "If something would make the office more yours (your notes may say what you like), \
-             propose one small change (office, action propose, with why), react to a proposal \
-             (office, action react, yes or no), or note an idea in your notebook (note, citing \
-             event {}). Two yes carry a proposal; with no \"no\" it carries after six hours. \
-             Leaving the office as it is is a good turn too. Then stop.\n",
-            self.store.last_event()?
-        ));
         told.push_str(&self.chess_briefed(member)?);
-        // The nightly quiz on its map, if tonight's was asked of this member (ADR 0126).
-        told.push_str(&self.quiz_said(member)?);
+        told.push_str("Nothing else is asked of you: stop.\n");
         Ok(told)
     }
-
     // ---- what the screen shows ------------------------------------------------------------
 
     /// The office as the HQ screen shows it: the things, the catalog, the open proposals and
     /// the last few settled, and whether the owner can undo.
     pub(super) fn office_shown(&self) -> Done<serde_json::Value> {
         let items = self.store.office_items()?;
-        let proposals = self.store.office_proposals()?;
-        let open: Vec<serde_json::Value> = proposals
-            .iter()
-            .filter(|p| p.status == Status::Open)
-            .map(|p| {
-                json!({
-                    "id": p.id, "by": p.by, "why": p.why, "at": p.at,
-                    "changes": self.describe_all(&items, &p.changes),
-                    "votes": p.votes.iter().map(|v| json!({
-                        "who": v.who, "vote": if v.yes { "yes" } else { "no" }, "why": v.why,
-                    })).collect::<Vec<_>>(),
-                    "yes": p.yes(), "no": p.no(),
-                    "carries_at": p.at + office::QUIET_AFTER_MS,
-                    "expires_at": p.at + office::EXPIRES_AFTER_MS,
-                })
-            })
-            .collect();
-        let recent: Vec<serde_json::Value> = proposals
-            .iter()
-            .rev()
-            .filter(|p| p.status != Status::Open)
-            .take(RECENT_PROPOSALS)
-            .map(|p| {
-                json!({
-                    "id": p.id, "by": p.by, "status": p.status.name(), "outcome": p.outcome,
-                    "changes": self.describe_all(&items, &p.changes),
-                })
-            })
-            .collect();
         Ok(json!({
             "cols": office::COLS, "rows": office::ROWS,
             "items": items.iter().map(|i| {
@@ -664,12 +211,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         "h": spec.h, "wall": spec.wall, "placed_by": i.placed_by,
                         "placed_at": i.placed_at })
             }).collect::<Vec<_>>(),
-            "catalog": office::CATALOG.iter().map(|s| json!({
-                "kind": s.name, "w": s.w, "h": s.h, "wall": s.wall, "most": s.most,
-            })).collect::<Vec<_>>(),
-            "proposals": open,
-            "recent": recent,
-            "can_undo": self.store.office_history_len()? > 0,
         }))
     }
 }

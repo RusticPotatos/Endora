@@ -95,9 +95,7 @@ mod tests {
     fn the_ceo_thinks_low_on_ordinary_turns_medium_on_its_reviews_and_high_on_decisions() {
         let ordinary = |r| ceo_weight(r, false, false, false);
         for reason in [
-            WakeReason::QuestionAsked,
             WakeReason::Assigned,
-            WakeReason::QuestionAnswered,
             WakeReason::CheckBack,
             WakeReason::Recovery,
             WakeReason::Retry,

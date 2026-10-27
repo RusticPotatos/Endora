@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
 [0124](0124-guards-against-how-agent-teams-fail.md) (2026-10-18): the owner may say a note is
 not true, which forgets it, sweeps up the notes that say the same, and refuses it written again;

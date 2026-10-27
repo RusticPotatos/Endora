@@ -3,6 +3,7 @@
 use core::fmt;
 use std::time::Duration;
 
+use crate::domain::chess;
 use crate::domain::office;
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{CallReceipt, Criterion, Label, Ref};
@@ -14,7 +15,6 @@ use crate::domain::{
     RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
 use crate::domain::{Evidence, ProjectId, ProjectStatus};
-use crate::domain::{chess, games};
 
 /// A store that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,7 +283,6 @@ pub trait TeamStore:
     + super::guard_ports::GuardStore
     + super::map_ports::MapStore
     + super::history_ports::HistoryStore
-    + super::conversation_ports::ConversationStore
 {
     /// Adds a member.
     ///
@@ -318,39 +317,6 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()>;
-    /// Adds a note to a member's notebook (ADR 0118), written at `at` (and last used then).
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn add_note(
-        &self,
-        member: MemberId,
-        text: &str,
-        evidence: &[Ref],
-        from_owner: bool,
-        run: Option<RunId>,
-        at: Millis,
-    ) -> Stored<i64>;
-    /// A member's notes, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn notes(&self, member: MemberId) -> Stored<Vec<crate::domain::Note>>;
-    /// Rewrites a note's words.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn set_note_text(&self, note: i64, text: &str) -> Stored<()>;
-    /// Says a note was used at `at`.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn touch_note(&self, note: i64, at: Millis) -> Stored<()>;
-    /// Removes a note from its notebook.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn delete_note(&self, note: i64) -> Stored<()>;
     /// Sets a brain of a member's (ADR 0131), the one named going to the slot it belongs to: a
     /// Claude is the brain it judges with, a house model the brain it works with. The other
     /// slot is left as it is.
@@ -358,6 +324,11 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
+    /// Sets a member's model (ADR 0142): both its brains, so every turn runs on it.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_model(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
     /// Sets what a member does its work with (ADR 0131): the Mac or the house's own model.
     ///
     /// # Errors
@@ -384,6 +355,11 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_reports_to(&self, member: MemberId, to: Option<MemberId>) -> Stored<()>;
+    /// Sets a member's role (ADR 0142's cut-over makes every member a plain one).
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_role(&self, member: MemberId, role: Role) -> Stored<()>;
 
     /// Adds a goal.
     ///
@@ -987,36 +963,6 @@ pub trait TeamStore:
 
     // ---- roles as an enforced RACI (ADR 0120) ------------------------------------------
 
-    /// Every goal's strategy that has been written.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn strategies(&self) -> Stored<Vec<crate::domain::areas::Strategy>>;
-
-    /// Keeps a goal's strategy, replacing what it had.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn save_strategy(&self, strategy: &crate::domain::areas::Strategy) -> Stored<()>;
-
-    /// Keeps a lead's area report; returns its id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn add_area_report(&self, report: &crate::domain::areas::AreaReport) -> Stored<i64>;
-
-    /// Every area report, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn area_reports(&self) -> Stored<Vec<crate::domain::areas::AreaReport>>;
-
-    /// Marks a task as a lead's report (`report` or `patterns`): not work on the board.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn mark_report_task(&self, task: TaskId, lead: MemberId, kind: &str) -> Stored<()>;
-
     /// Every task marked as a lead's report: the task, its lead, and its kind.
     ///
     /// # Errors
@@ -1057,67 +1003,8 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn replace_office_items(&self, items: &[office::Item]) -> Stored<()>;
-    /// Keeps a proposal, open; returns its number.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn add_office_proposal(
-        &self,
-        by: &str,
-        changes: &[office::Change],
-        why: &str,
-        at: Millis,
-    ) -> Stored<i64>;
-    /// Every proposal with its votes, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn office_proposals(&self) -> Stored<Vec<office::Proposal>>;
-    /// Closes a proposal, or reopens none: its status and how it ended.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn set_office_proposal(
-        &self,
-        id: i64,
-        status: office::Status,
-        outcome: &str,
-        at: Millis,
-    ) -> Stored<()>;
-    /// Records a vote; `false` when the member had voted already (the vote is kept as it was).
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn add_office_vote(&self, proposal: i64, vote: &office::Vote) -> Stored<bool>;
-    /// Keeps what the office was before a change, for the owner's undo.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn push_office_history(&self, what: &str, before: &[office::Item], at: Millis) -> Stored<i64>;
-    /// Takes the newest of those back: what the change was, and the office before it.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn pop_office_history(&self) -> Stored<Option<(String, Vec<office::Item>)>>;
-    /// How many changes the owner could undo.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn office_history_len(&self) -> Stored<i64>;
-
     // ---- games in the office (ADR 0121) ---------------------------------------------------
 
-    /// Keeps a ping-pong or pool match that was played (the record's own number is ignored);
-    /// returns the number it was given.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn add_game(&self, record: &games::Record) -> Stored<i64>;
-    /// Every match played, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn games(&self) -> Stored<Vec<games::Record>>;
     /// Starts a game of chess, white to move; returns its number.
     ///
     /// # Errors

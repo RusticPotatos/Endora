@@ -62,6 +62,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let item = self
             .store
             .add_desk("notice", None, None, None, &text, now)?;
+        self.quiet_in_the_loops(item)?;
         self.store
             .set_setting(mac::LONG_WAIT_SAID, &now.to_string())?;
         self.emit(

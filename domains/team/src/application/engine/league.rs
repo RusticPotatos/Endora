@@ -18,6 +18,9 @@ const LEAGUE: &str = "league";
 /// Where its games are kept, in the order they started: `[task, white, black]`.
 const GAMES: &str = "league_games";
 
+/// Where the games each reset set aside are kept: `[{at, games: [[task, white, black]]}]`.
+const BEFORE_RESET: &str = "league_games_before_reset";
+
 /// Where the brain a league game's side is pinned to is kept, by the side's task.
 fn side_key(task: TaskId) -> String {
     format!("league_side:{}", task.0)
@@ -150,6 +153,66 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .setting(&side_key(task))?
             .and_then(|name| Brain::from_name(&name)))
+    }
+
+    /// The owner resets the league: its games are set aside under
+    /// [`BEFORE_RESET`], kept and never deleted, so every brain is rated afresh and every pair
+    /// plays again; a game still being played stops, dropped. The brains and the project stay.
+    /// Returns how many games were set aside and how many stopped.
+    ///
+    /// # Errors
+    /// [`Refusal::Scenario`] when no league was started; a store failure.
+    pub fn reset_league(&self) -> Done<Value> {
+        let live: Vec<TaskId> = {
+            let _held = self.held();
+            if self.league()?.is_none() {
+                return Err(refused("no league has been started"));
+            }
+            let kept = self.league_kept()?;
+            let mut before: Vec<Value> = self
+                .store
+                .setting(BEFORE_RESET)?
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            before.push(json!({
+                "at": self.clock.now(),
+                "games": kept.iter().map(|(t, w, b)| json!([t.0, w.name(), b.name()]))
+                    .collect::<Vec<_>>(),
+            }));
+            self.store
+                .set_setting(BEFORE_RESET, &Value::Array(before).to_string())?;
+            self.store.set_setting(GAMES, "[]")?;
+            let mut live = Vec::new();
+            for (game, _, _) in &kept {
+                for task in self.store.tasks()? {
+                    if (task.id == *game || task.parent == Some(*game)) && !task.status.finished() {
+                        live.push(task.id);
+                    }
+                }
+            }
+            self.emit(
+                crate::domain::EventKind::WorldChanged,
+                json!({ "what": "league reset", "set_aside": kept.len(), "by": "owner" }),
+            )?;
+            live
+        };
+        for task in &live {
+            self.drop_task(*task)?;
+        }
+        Ok(json!({ "set_aside": self.league_set_aside()?, "stopped": live.len() }))
+    }
+
+    /// How many games the last reset set aside.
+    fn league_set_aside(&self) -> Done<usize> {
+        let before: Vec<Value> = self
+            .store
+            .setting(BEFORE_RESET)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        Ok(before
+            .last()
+            .and_then(|r| r["games"].as_array())
+            .map_or(0, Vec::len))
     }
 
     /// On the tick: when the league is on, no world is being played, nothing waits to run

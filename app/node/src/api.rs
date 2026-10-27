@@ -338,41 +338,6 @@ pub fn app(state: AppState) -> Router {
         .route("/hq-art/{*file}", get(hq_art))
         .route("/v1/hq", get(hq_snapshot))
         .route("/v1/hq/events", get(hq_events))
-        .route(
-            "/v1/hq/conversations",
-            get(hq_conversations)
-                .post(hq_conversation_create)
-                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
-        )
-        .route(
-            "/v1/hq/conversations/enabled",
-            post(hq_conversation_enable).layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
-        )
-        .route("/v1/hq/conversations/{id}", get(hq_conversation_page))
-        .route(
-            "/v1/hq/conversations/{id}/assistance/{request}/cancel",
-            post(hq_assistance_cancel),
-        )
-        .route(
-            "/v1/hq/conversations/{id}/sources",
-            post(hq_conversation_source_grant),
-        )
-        .route(
-            "/v1/hq/conversations/{id}/sources/revoke",
-            post(hq_conversation_source_revoke),
-        )
-        .route(
-            "/v1/hq/conversations/{id}/assistance",
-            get(hq_conversation_assistance),
-        )
-        .route(
-            "/v1/hq/conversations/operations",
-            get(hq_conversation_operations),
-        )
-        .route(
-            "/v1/hq/conversations/{id}/delete",
-            post(hq_conversation_delete),
-        )
         // Replay: a turn, or a task's turns, read back in full (the owner's only).
         .route("/v1/hq/runs/{id}/replay", get(hq_run_replay))
         .route("/v1/hq/tasks/{id}/replay", get(hq_task_replay))
@@ -380,7 +345,6 @@ pub fn app(state: AppState) -> Router {
             "/v1/hq/tasks/{id}/consultations",
             get(hq_task_consultations),
         )
-        .route("/v1/hq/tasks/{id}/assistance", get(hq_task_assistance))
         .route("/v1/hq/goals", post(hq_goal))
         .route("/v1/hq/tasks", post(hq_task))
         .route("/v1/hq/desk/{id}", post(hq_decide))
@@ -388,10 +352,9 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/tasks/{id}/post", post(hq_reply))
         .route("/v1/hq/tasks/{id}/project", post(hq_task_project))
         .route("/v1/hq/goals/{id}/note", post(hq_goal_note))
-        // A goal's strategy, the owner's edit of the CEO's (ADR 0120).
-        .route("/v1/hq/goals/{id}/strategy", post(hq_goal_strategy))
         // What a member thinks with (ADR 0109).
         .route("/v1/hq/members/{id}/brain", post(hq_set_brain))
+        .route("/v1/hq/members/{id}/model", post(hq_set_model))
         .route("/v1/hq/members/{id}/work-brain", post(hq_set_work_brain))
         .route(
             "/v1/hq/members/{id}/judgment-brain",
@@ -408,20 +371,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/world/export.md", get(hq_world_export))
         .route("/v1/hq/world/section", post(hq_world_section))
         .route("/v1/hq/world/timeline", post(hq_world_timeline))
-        .route("/v1/hq/world/promote", post(hq_world_promote))
-        .route("/v1/hq/world/demote", post(hq_world_demote))
-        .route("/v1/hq/world/proposals/decide", post(hq_world_proposal))
-        // The guards (ADR 0124): the owner's verdict on a finding.
-        .route(
-            "/v1/hq/guards/findings/{id}/verdict",
-            post(hq_finding_verdict),
-        )
-        // A guard that is tried in shadow before it acts (ADR 0133): on, or back in shadow.
-        .route("/v1/hq/guards/{guard}/mode", post(hq_guard_mode))
-        // Retract and sweep (ADR 0124): "Not true", what else says it, and forgetting it.
-        .route("/v1/hq/retractions", post(hq_retract))
-        .route("/v1/hq/retractions/{id}/sweep", get(hq_sweep))
-        .route("/v1/hq/retractions/{id}/forget", post(hq_forget_swept))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
         // The owner's routines (ADR 0107).
@@ -434,34 +383,17 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/projects/{id}", post(hq_change_project))
         .route("/v1/hq/projects/{id}/cap", post(hq_project_cap))
         .route("/v1/hq/projects/{id}/tools", post(hq_project_tools))
+        .route("/v1/hq/projects/{id}/rank", post(hq_loop_rank))
+        .route("/v1/hq/one-team", post(hq_one_team))
         .route("/v1/hq/scenarios", post(hq_start_scenario))
         .route("/v1/hq/scenarios/rerun", post(hq_rerun_holodeck))
         .route("/v1/hq/league", post(hq_start_league))
+        .route("/v1/hq/league/reset", post(hq_reset_league))
         .route("/v1/hq/scenarios/{task}", get(hq_scenario))
         .route("/v1/hq/trials", post(hq_start_trial))
         .route("/v1/hq/trials/{name}", get(hq_trial))
-        .route("/v1/hq/games/{id}/replay", get(hq_game_replay))
-        .route("/v1/hq/members/{id}/reports_to", post(hq_reports_to))
-        // Elastic staffing (ADR 0118): the owner furloughs and recalls; there is no route that
-        // removes a member.
-        .route("/v1/hq/members/{id}/furlough", post(hq_furlough))
-        .route("/v1/hq/members/{id}/recall", post(hq_recall))
-        // The owner as landlord of the office (ADR 0119): only these three routes. (Downtime is
-        // work on the house's own model and costs nothing, so there is no allowance, ADR 0131.)
-        .route("/v1/hq/office/undo", post(hq_office_undo))
-        .route("/v1/hq/office/reset", post(hq_office_reset))
-        .route("/v1/hq/office/proposals/{id}/veto", post(hq_office_veto))
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/hq/pool/top-up", post(hq_pool_top_up))
-        // A member's notebook (ADR 0118): the owner reads it and writes, edits and deletes notes.
-        .route(
-            "/v1/hq/members/{id}/notebook",
-            get(hq_notebook).post(hq_note_add),
-        )
-        .route(
-            "/v1/hq/members/{id}/notebook/{note}",
-            post(hq_note_edit).delete(hq_note_delete),
-        )
         // The owner hires (ADR 0115), and downloads a branch's bundle when the node cannot push.
         .route("/v1/hq/members", post(hq_hire))
         .route(

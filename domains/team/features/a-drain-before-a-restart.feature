@@ -37,7 +37,6 @@ Feature: A drain before every restart
     Then Zed's turn on "Cap sonarr's memory" waits to be tried again
     And Zed still has "Cap sonarr's memory"
     And no turn is running, and the restart can go ahead
-    And no finding is open
     And the owner's desk is empty
     When the owner calls the restart off
     And a minute passes

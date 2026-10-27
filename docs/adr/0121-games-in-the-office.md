@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). Extends
 [0119](0119-the-open-office.md) (the office as data, downtime, the Office card). Built: the
 simulated ping-pong and pool, the chess table and the `chess` tool, the `games` and

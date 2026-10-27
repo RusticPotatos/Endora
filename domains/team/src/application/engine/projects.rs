@@ -12,7 +12,6 @@ use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError, one_line};
 use crate::application::ports::{Clock, DeskItem, NewProject, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::chain;
 use crate::domain::projects::{self, Level, dollars};
 use crate::domain::{
     EventKind, Evidence, GoalId, GoalStatus, Member, MemberId, Micros, Millis, Pause, Priority,
@@ -164,69 +163,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     // ---- whom members report to -------------------------------------------------------------
-
-    /// The owner sets whom a member reports to: another member, never itself, never one that
-    /// reports to it however far up, and never for the CEO, who reports to the board.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotAManager`];
-    /// a store failure.
-    pub fn set_reports_to(&self, member: MemberId, to: MemberId) -> Done<()> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let manager = self.member(to)?;
-        chain::may_report(&found, to, &self.store.members()?).map_err(EngineError::Refused)?;
-        self.store.set_reports_to(member, Some(to))?;
-        self.emit(
-            EventKind::ReportsTo,
-            json!({ "member": member.0, "name": found.name, "reports_to": to.0,
-                    "manager": manager.name }),
-        )
-    }
-
-    /// Gives every member hired before members reported to anyone the manager it would have
-    /// been given at hire: the lead the CEO, everyone else the earliest lead, or the CEO.
-    /// Returns how many it set. Run at every start; it changes nothing once each has one.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn backfill_reports_to(&self) -> Done<usize> {
-        let _held = self.held();
-        let members = self.store.members()?;
-        let mut set = 0;
-        for member in &members {
-            if member.reports_to.is_some() || member.role == Role::Ceo {
-                continue;
-            }
-            let Some(manager) = chain::manager(member, &members) else {
-                continue;
-            };
-            self.store.set_reports_to(member.id, Some(manager))?;
-            set += 1;
-        }
-        Ok(set)
-    }
-
-    /// Who is woken when `member` hands `task` back: its project's lead, while at work; every
-    /// other lead when the task is in no project, or its lead is paused or the one handing it
-    /// back.
-    pub(super) fn leads_to_wake(&self, task: &Task, member: MemberId) -> Done<Vec<MemberId>> {
-        let members = self.store.members()?;
-        if let Some(project) = task.project {
-            let lead = self.project(project)?.lead;
-            let at_work = members
-                .iter()
-                .any(|m| m.id == lead && !m.paused && m.id != member);
-            if at_work {
-                return Ok(vec![lead]);
-            }
-        }
-        Ok(members
-            .iter()
-            .filter(|m| m.role == Role::Lead && m.id != member)
-            .map(|m| m.id)
-            .collect())
-    }
 
     // ---- the owner's projects ------------------------------------------------------------
 
@@ -894,43 +830,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(project.status)
     }
 
-    /// A turn of the CEO's proposes a goal to the board, with its reason and evidence from
-    /// HQ's record: a proposed goal on the owner's desk, as Endora's proposals are.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`]; [`Refusal::NoEvidence`] or
-    /// [`Refusal::NoSuchEvidence`]; [`EngineError::Unknown`] for no title or reason.
-    pub fn propose_goal(
-        &self,
-        run: RunId,
-        title: &str,
-        reason: &str,
-        tasks: &[TaskId],
-        events: &[i64],
-    ) -> Done<GoalId> {
-        let _held = self.held();
-        let (turn, ceo) = self.the_ceos_turn(run)?;
-        let (title, reason) = (one_line(title, 120), one_line(reason, 600));
-        if title.is_empty() || reason.is_empty() {
-            return Err(EngineError::Unknown("goal title and reason"));
-        }
-        let evidence = self.evidence(tasks, events)?;
-        let said: Vec<String> = evidence.iter().map(|e| e.said()).collect();
-        let goal = self.propose_goal_held_lock(
-            &title,
-            &reason,
-            Some(ceo.id),
-            &format!(
-                "A goal: {title}\nWhy: {reason}\nEvidence: {}",
-                said.join(", ")
-            ),
-        )?;
-        if let Some(task) = turn.task {
-            self.mark_progress(ceo.id, task)?;
-        }
-        Ok(goal)
-    }
-
     // ---- at start -------------------------------------------------------------------------
 
     /// Once, on a store made before projects: the home lab's routines and their open work go
@@ -1014,7 +913,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }));
         }
         self.store.set_task_project(task, Some(to))?;
-        self.off_the_ladder(task)?;
         if found.status == crate::domain::TaskStatus::Blocked {
             self.store
                 .set_task_status(task, crate::domain::TaskStatus::Todo)?;
@@ -1041,86 +939,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     // ---- what members and the screen are told ----------------------------------------------
-
-    /// A project in one line: `#3 Home lab upkeep (active, led by Ada): $1.20 of $10.00 this
-    /// month`.
-    pub(super) fn project_line(&self, project: &Project, members: &[Member]) -> Done<String> {
-        let spent = self.spent_this_month(project.id)?;
-        let lead = members
-            .iter()
-            .find(|m| m.id == project.lead)
-            .map_or("nobody", |m| m.name.as_str());
-        let status = match project.pause {
-            Some(Pause::Budget) => "paused for its budget".to_owned(),
-            Some(Pause::Owner) => "paused by the owner".to_owned(),
-            None => project.status.name().to_owned(),
-        };
-        let money = match project.cap {
-            Some(cap) => format!("{} of {} this month", dollars(spent), dollars(cap)),
-            None => format!("{} this month, no cap", dollars(spent)),
-        };
-        Ok(format!(
-            "#{} {} ({status}, led by {lead}): {money}",
-            project.id, project.title
-        ))
-    }
-
-    /// The lead's projects, for its briefing; empty when it leads none.
-    pub(super) fn projects_led(&self, lead: &Member) -> Done<String> {
-        let members = self.store.members()?;
-        let mut lines = String::new();
-        for project in self.store.projects()? {
-            if project.lead != lead.id || !project.status.holds_its_cap() {
-                continue;
-            }
-            lines.push_str(&format!("- {}\n", self.project_line(&project, &members)?));
-        }
-        if lines.is_empty() {
-            return Ok(lines);
-        }
-        Ok(format!(
-            "Your projects (you lead them; the sub-tasks of their tasks stay in them; \
-             propose_project for one more, with evidence):\n{lines}\
-             Your projects' plans are yours to decide: hand their parts on with create_task, \
-             and close a task of your own in them as done yourself (set_status done, on \
-             evidence). Inside an approved project you need nobody's leave, the CEO's included.\n"
-        ))
-    }
-
-    /// The projects at 80% of their cap or past it this month, for the CEO; empty when none.
-    pub(super) fn projects_past_warning(&self) -> Done<String> {
-        let members = self.store.members()?;
-        let mut lines = String::new();
-        for project in self.store.projects()? {
-            let Some(cap) = project.cap else {
-                continue;
-            };
-            if !project.status.takes_work() {
-                continue;
-            }
-            if projects::level(self.spent_this_month(project.id)?, cap) == Level::Under {
-                continue;
-            }
-            lines.push_str(&format!("- {}\n", self.project_line(&project, &members)?));
-        }
-        if lines.is_empty() {
-            return Ok(lines);
-        }
-        Ok(format!(
-            "Projects at {}% of their cap or more this month (the owner was told):\n{lines}",
-            projects::WARN_PERCENT
-        ))
-    }
-
-    /// How many projects wait for the CEO's decision.
-    pub(super) fn proposals_waiting(&self) -> Done<usize> {
-        Ok(self
-            .store
-            .projects()?
-            .iter()
-            .filter(|p| p.status == ProjectStatus::Proposed)
-            .count())
-    }
 
     /// The projects as the screen shows them, with this month's money.
     pub(super) fn projects_shown(&self, tasks: &[Task]) -> Done<serde_json::Value> {

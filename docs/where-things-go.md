@@ -41,6 +41,10 @@ Settings.
 - A model, wherever it runs → **AI**. A secret → **Vault**. An outside service → **Connections**.
 - One thing, one home. If two screens need it, one owns it and the other shows a line and a link.
 - A new top-level menu entry needs a reason the existing ones cannot hold it, in its ADR.
+- The team is one team of loops ([ADR 0142](adr/0142-one-team-of-loops.md)): members are ranked
+  models with no roles, and each loop is a project with a plan, checks and a starting rank. A
+  loop's plan and progress go in Work; its notes and the map go with what the team knows, in
+  Team. Nothing new goes in for roles, reporting lines, conversations or office votes.
 - Inside HQ, use its four tabs (2026-10-25), and add no fifth without a reason none of them can
   hold: **Now** (your desk, the digest of what happened while you were away, then the live
   activity), **Team** (the people, the Mac, the office with its games, and what the team knows:
@@ -69,7 +73,6 @@ Settings.
 | `crates/` | The orchestration layer and infrastructure adapters shared by several contexts |
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
 | `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js` |
-| `app/node/src/web/js/47e-hq-conversations.js` | HQ Work's bounded conversation inspection and owner controls, including retained questions in the existing task inspector; no new top-level screen |
 | `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
 | `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |

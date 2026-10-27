@@ -25,24 +25,6 @@ Feature: The team's history
     And Zed's turn ends
     Then the replay of Zed's turn is cut, and still starts with "START" and ends with "END"
 
-  Scenario: After thirty days only the handover notes and the last words remain
-    Given Zed has the task "Cap sonarr's memory"
-    When Zed's turn starts
-    And Zed's worker tells the node what the turn said: "I will cap sonarr at 512M."
-    And Zed says "Capped sonarr at 512M." as the last word
-    And Zed's turn ends
-    Given Ada has the task "Plan the week"
-    Then Ada's turn starts on "Plan the week"
-    When Ada hands "Cap sonarr's memory" to Rae, saying done "The cap is written.", not done "The restart.", next "Restart after 22:00.", watch out "The VPN drops for a minute."
-    And Ada's turn ends
-    Then the replay of Zed's turn shows "I will cap sonarr at 512M."
-    When Rae's turn starts
-    And Rae's turn ends
-    And 31 days pass
-    Then the replay of Zed's turn shows no conversation
-    And "Capped sonarr at 512M." is still in the thread of "Cap sonarr's memory"
-    And the handover note on "Cap sonarr's memory" still says "Restart after 22:00."
-
   Scenario: Asking why the team capped sonarr's memory finds the post and the turn, and wakes no one
     Given Zed has the task "Cap sonarr's memory"
     When Zed's turn starts

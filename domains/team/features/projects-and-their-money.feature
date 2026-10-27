@@ -12,20 +12,6 @@ Feature: Projects, their caps and their money
     And Linus is the developer
     And the goal "Keep the home lab healthy"
 
-  Scenario: A project's cap is the owner's
-    Given Ada has the task "Look over the lab"
-    And Mara has the task "Weigh the proposals"
-    When Ada proposes the project "Backups" with a cap of $5 a month
-    Then the project "Backups" is proposed
-    And the project "Backups" has no cap
-    And the owner's desk is empty
-    When Mara accepts the project "Backups" because "backups failed three times"
-    Then the project "Backups" is active
-    And the project "Backups" has no cap
-    And the owner's desk holds a cap request for "Backups" of $5.00 a month
-    When the owner grants the cap at $4
-    Then the project "Backups" has a cap of $4.00
-
   Scenario: A spent cap holds a project's decisions, never its work
     Given the project "Upkeep" led by Ada with a cap of $0.50 a month
     And Ada has the task "Look at sonarr" in the project "Upkeep"

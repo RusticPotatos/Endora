@@ -10,47 +10,34 @@ use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::map::{self, PageKey, Steward, steward_of};
 use crate::domain::situations::Weight;
 use crate::domain::world::{self, Section, WorldRefusal};
-use crate::domain::{EventKind, GoalStatus, Member, ProjectStatus, Refusal, Role, TaskId};
+use crate::domain::{EventKind, GoalStatus, Member, ProjectStatus, Refusal, TaskId};
 
 fn refused(r: WorldRefusal) -> EngineError {
     EngineError::Refused(Refusal::World(r))
 }
 
-/// Every role, for the pages of how each works here.
-pub(super) const ROLES: [Role; 5] = [
-    Role::Ceo,
-    Role::Lead,
-    Role::Developer,
-    Role::Researcher,
-    Role::Reviewer,
-];
-
 /// How many pages of each kind a migration made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MapMigrated {
-    /// Pages of leads' areas.
-    pub areas: usize,
     /// Pages of projects.
     pub projects: usize,
     /// Pages of goals.
     pub goals: usize,
-    /// Pages of roles.
-    pub roles: usize,
 }
 
 impl MapMigrated {
     /// How many pages were made in all.
     #[must_use]
     pub const fn total(&self) -> usize {
-        self.areas + self.projects + self.goals + self.roles
+        self.projects + self.goals
     }
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the pages ------------------------------------------------------------------------
 
-    /// Makes the pages the team's shape calls for, once each: an area for every lead, a page for
-    /// every project and goal that is not given up, and one for every role. Nothing is changed or
+    /// Makes the pages the team's shape calls for, once each: a page for every project and goal
+    /// that is not given up. Nothing is changed or
     /// deleted, so a second start makes none, and a lead hired later gets its page the next
     /// time. Returns how many of each were made.
     ///
@@ -73,11 +60,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Ok(usize::from(self.store.add_world_page(&slug, now)?))
         };
         let mut made = MapMigrated::default();
-        for m in self.store.members()? {
-            if m.role == Role::Lead {
-                made.areas += make(PageKey::Area(m.id))?;
-            }
-        }
         for p in self.store.projects()? {
             if p.status != ProjectStatus::Dropped {
                 made.projects += make(PageKey::Project(p.id))?;
@@ -88,29 +70,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 made.goals += make(PageKey::Goal(g.id))?;
             }
         }
-        for role in ROLES {
-            made.roles += make(PageKey::Role(role))?;
-        }
         if made.total() > 0 {
             self.emit(
                 EventKind::WorldChanged,
-                json!({ "what": "pages made", "areas": made.areas, "projects": made.projects,
-                        "goals": made.goals, "roles": made.roles, "by": "Endora" }),
+                json!({ "what": "pages made", "projects": made.projects, "goals": made.goals,
+                        "by": "Endora" }),
             )?;
         }
         Ok(made)
-    }
-
-    /// What a role's page says until the owner writes it: what the role is for, from the roles'
-    /// own definitions, as a default HQ shows and never stores, so it cannot go stale or pass
-    /// for a confirmation.
-    pub(super) fn role_default(role: Role) -> String {
-        let (headline, body) = map::role_seed(role);
-        format!(
-            "How a {} works here (Endora's default, until the owner writes this page): \
-             {headline} {body} The team's standards: read_doc docs/standards.md.\n",
-            role.title().to_lowercase()
-        )
     }
 
     /// Whether the world has a page for `key`: the house and the derived pages always do.
@@ -143,44 +110,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(key)
     }
 
-    /// Who stewards a page, from the record.
-    pub(super) fn steward(&self, key: PageKey) -> Done<Steward> {
-        Ok(steward_of(
-            key,
-            &self.store.members()?,
-            &self.store.projects()?,
-        ))
-    }
-
-    /// Who keeps the page at `page`, by name.
-    ///
-    /// # Errors
-    /// [`WorldRefusal::NotAnAddress`]; [`WorldRefusal::NoSuchPage`].
-    pub fn page_steward_said(&self, page: &str) -> Done<String> {
-        let key = self.page_there(&Self::slug_said(page))?;
-        self.steward_called(self.steward(key)?)
-    }
-
-    /// A steward by name, for a person to read.
-    pub(super) fn steward_called(&self, steward: Steward) -> Done<String> {
-        Ok(steward.said(&self.store.members()?))
-    }
-
     /// A page's title, from the data it is about.
     pub(super) fn page_title(&self, key: PageKey) -> Done<String> {
         Ok(match key {
             PageKey::House => world::HOUSE.title.to_owned(),
             PageKey::Lab => world::LAB.title.to_owned(),
             PageKey::Team => world::TEAM.title.to_owned(),
-            PageKey::Area(lead) => self
-                .store
-                .members()?
-                .iter()
-                .find(|m| m.id == lead)
-                .map_or_else(
-                    || "A former lead's area".to_owned(),
-                    |m| format!("{}'s area", m.name),
-                ),
             PageKey::Project(id) => self
                 .store
                 .projects()?
@@ -194,7 +129,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 || format!("Goal {}", id.0),
                 |g| format!("Goal: {}", g.title),
             ),
-            PageKey::Role(role) => format!("The {} role", role.title().to_lowercase()),
         })
     }
 
@@ -205,16 +139,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(match key {
             PageKey::House => "what the team knows about the house".to_owned(),
             PageKey::Lab => "how the lab is built".to_owned(),
-            PageKey::Team => "who is on the team, and whom each reports to".to_owned(),
-            PageKey::Area(lead) => {
-                let name = self
-                    .store
-                    .members()?
-                    .iter()
-                    .find(|m| m.id == lead)
-                    .map_or_else(|| "a former lead".to_owned(), |m| m.name.clone());
-                format!("how {name}'s area works, and what its team has learned")
-            }
+            PageKey::Team => "who is on the team".to_owned(),
             PageKey::Project(id) => {
                 let title = self
                     .store
@@ -229,31 +154,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .store
                     .goal(id)?
                     .map_or_else(|| id.0.to_string(), |g| g.title);
-                format!("why the goal \"{title}\" exists, and what the CEO decided about it")
+                format!("why the goal \"{title}\" exists")
             }
-            PageKey::Role(role) => format!("how a {} works here", role.title().to_lowercase()),
         })
     }
 
     /// A page as a fact of a map.
     fn page_fact(&self, key: PageKey, weight: Weight) -> Done<map::Fact> {
-        let steward = self.steward(key)?;
-        let members = self.store.members()?;
         Ok(map::Fact::page(
             key,
             &self.page_title(key)?,
             &self.page_topic(key)?,
-            steward.said(&members),
-            steward.answers(&members),
+            steward_of(key).said().to_owned(),
             weight,
         ))
     }
 
-    /// What a member's map is made of: the pages that matter to its role and its task, then the
-    /// others a line each, with the best of each page's sections after it. The facts are the
-    /// map's and the nightly quiz's alike.
-    pub(super) fn map_facts(&self, member: &Member, task: Option<TaskId>) -> Done<Vec<map::Fact>> {
-        let members = self.store.members()?;
+    /// What a member's map is made of: the pages that matter to its task, then the others a line
+    /// each, with the best of each page's sections after it.
+    pub(super) fn map_facts(&self, task: Option<TaskId>) -> Done<Vec<map::Fact>> {
         let projects = self.store.projects()?;
         let mut facts: Vec<map::Fact> = Vec::new();
         let add = |this: &Self,
@@ -294,62 +213,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Ok(())
         };
         let task_project = self.project_of(task)?;
-        let lead = crate::domain::staffing::lead_of(member, &members);
-        add(self, PageKey::Role(member.role), Weight::Core, &mut facts)?;
-        if let Some(lead) = lead {
-            add(self, PageKey::Area(lead), Weight::Core, &mut facts)?;
-        }
         if let Some(project) = task_project {
             add(self, PageKey::Project(project), Weight::Core, &mut facts)?;
         }
         add(self, PageKey::House, Weight::Core, &mut facts)?;
-        if member.role == Role::Lead {
-            for p in projects.iter().filter(|p| p.lead == member.id) {
-                if map::project_is_current(p.status) {
-                    add(self, PageKey::Project(p.id), Weight::Core, &mut facts)?;
-                }
-            }
-        }
-        let leads_or_ceo = matches!(member.role, Role::Ceo | Role::Lead);
-        add(
-            self,
-            PageKey::Lab,
-            if leads_or_ceo {
-                Weight::Core
-            } else {
-                Weight::Recommended
-            },
-            &mut facts,
-        )?;
+        add(self, PageKey::Lab, Weight::Recommended, &mut facts)?;
         add(self, PageKey::Team, Weight::Recommended, &mut facts)?;
         if let Some(task) = task {
             let goal = self.task(task)?.goal;
             add(self, PageKey::Goal(goal), Weight::Recommended, &mut facts)?;
         }
-        // The rest of the team's pages, a line each: the CEO's to look over, others' to know of.
-        let wide = if member.role == Role::Ceo {
-            Weight::Recommended
-        } else {
-            Weight::Optional
-        };
-        for m in members.iter().filter(|m| m.role == Role::Lead) {
-            add(self, PageKey::Area(m.id), wide, &mut facts)?;
-        }
+        // The rest of the projects' pages, a line each, to know of.
         for p in projects
             .iter()
             .filter(|p| map::project_is_current(p.status))
         {
-            add(self, PageKey::Project(p.id), wide, &mut facts)?;
-        }
-        if member.role == Role::Ceo {
-            for g in self.store.goals()? {
-                if g.status == GoalStatus::Active {
-                    add(self, PageKey::Goal(g.id), Weight::Optional, &mut facts)?;
-                }
-            }
-            for role in ROLES {
-                add(self, PageKey::Role(role), Weight::Optional, &mut facts)?;
-            }
+            add(self, PageKey::Project(p.id), Weight::Optional, &mut facts)?;
         }
         Ok(facts)
     }
@@ -359,7 +238,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn map_for(&self, member: &Member, run: &Run) -> Done<map::MapText> {
         let cap = map::chars_for(member.brain);
         let entries = self
-            .map_facts(member, run.task)?
+            .map_facts(run.task)?
             .iter()
             .map(map::Fact::entry)
             .collect();
@@ -379,19 +258,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(composed)
     }
 
-    /// The map as the World card shows it: every page with its steward and what is on it, the
-    /// proposals waiting (and the last few decided), the gaps, the broken roads, and the nightly
-    /// quiz with each page's score.
+    /// The map as the World card shows it: every page with its steward and what is on it.
     ///
     /// # Errors
     /// A store failure.
     pub fn map_shown(&self) -> Done<serde_json::Value> {
-        let members = self.store.members()?;
-        let projects = self.store.projects()?;
-        let off = self.settings.offset_minutes;
         let sections = self.store.sections()?;
-        let proposals = self.store.proposals()?;
-        let quiz = self.quiz_shown()?;
         let mut slugs: Vec<String> = vec![
             PageKey::House.slug(),
             PageKey::Lab.slug(),
@@ -403,93 +275,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(key) = PageKey::parse(&slug) else {
                 continue;
             };
-            let steward = steward_of(key, &members, &projects);
-            let scored = quiz["pages"]
-                .as_array()
-                .and_then(|all| all.iter().find(|p| p["slug"] == slug.as_str()))
-                .cloned();
+            let steward = steward_of(key);
             pages.push(json!({
                 "slug": slug, "address": format!("world:{slug}"), "kind": key.kind(),
                 "title": self.page_title(key)?, "derived": key.derived(),
-                "steward": steward.said(&members),
-                "steward_kind": match steward {
-                    Steward::Ceo => "ceo", Steward::Lead(_) => "lead",
-                    Steward::Owner => "owner", Steward::Hq => "hq",
-                },
+                "steward": steward.said(),
+                "steward_kind": match steward { Steward::Owner => "owner", Steward::Hq => "hq" },
                 "horizon_days": key.horizon_days(),
                 "sections": sections.iter().filter(|s| s.page == slug && s.stage.current()).count(),
-                "proposals": proposals.iter().filter(|p| p.page == slug
-                    && p.status == map::ProposalStatus::Open).count(),
-                "quiz": scored,
             }));
         }
-        let mut proposed = Vec::new();
-        for p in proposals.iter().rev().take(30) {
-            let by = members
-                .iter()
-                .find(|m| m.id == p.by)
-                .map_or_else(|| "a member".to_owned(), |m| m.name.clone());
-            let page_title = PageKey::parse(&p.page)
-                .map(|k| self.page_title(k))
-                .transpose()?
-                .unwrap_or_else(|| p.page.clone());
-            proposed.push(json!({
-                "id": p.id, "page": p.page, "page_title": page_title, "anchor": p.anchor,
-                "heading": p.heading, "headline": p.headline, "body": p.body, "by": by,
-                "status": p.status.name(), "decided_by": p.decided_by, "why": p.why,
-                "at": p.at, "day": super::world::day_with_year(p.at, off),
-                "evidence": p.evidence.iter().map(|e| json!({ "ref": e.cited.said(), "said": e.said })).collect::<Vec<_>>(),
-            }));
-        }
-        let mut gaps = Vec::new();
-        for g in self.store.gaps()?.iter().rev().take(30) {
-            let by = members
-                .iter()
-                .find(|m| m.id == g.by)
-                .map_or_else(|| "a member".to_owned(), |m| m.name.clone());
-            let to = match g.steward {
-                Some(lead) => Steward::Lead(lead),
-                None => Steward::Ceo,
-            }
-            .said(&members);
-            gaps.push(json!({
-                "id": g.id, "what": g.what, "where_looked": g.where_looked, "by": by, "to": to,
-                "count": g.count, "open": g.closed_at.is_none(), "how": g.how,
-                "closed_by": g.closed_by, "day": super::world::day_with_year(g.opened_at, off),
-            }));
-        }
-        let roads: Vec<serde_json::Value> = self
-            .broken_roads()?
-            .iter()
-            .map(|r| json!({ "from": r.from, "to": r.to, "why": r.why }))
-            .collect();
-        Ok(
-            json!({ "pages": pages, "proposals": proposed, "gaps": gaps, "roads": roads,
-                   "quiz": quiz }),
-        )
-    }
-
-    /// Whether `who` may write the page directly: its steward may; anyone else proposes.
-    pub(super) fn may_write_page(&self, who: &Member, key: PageKey) -> Done<()> {
-        let steward = self.steward(key)?;
-        if steward.is(who) {
-            return Ok(());
-        }
-        Err(refused(WorldRefusal::ProposeInstead {
-            what: self.page_title(key)?,
-            steward: self.steward_called(steward)?,
-        }))
-    }
-
-    /// Whether `who` stewards the page, for confirming and retiring what is on it.
-    pub(super) fn may_steward_page(&self, who: &Member, key: PageKey) -> Done<()> {
-        let steward = self.steward(key)?;
-        if steward.is(who) {
-            return Ok(());
-        }
-        Err(refused(WorldRefusal::NotYours {
-            what: self.page_title(key)?,
-            steward: self.steward_called(steward)?,
-        }))
+        Ok(json!({ "pages": pages }))
     }
 }

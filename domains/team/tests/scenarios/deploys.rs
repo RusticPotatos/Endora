@@ -3,7 +3,6 @@
 
 use cucumber::then;
 use endora_team::application::TeamStore;
-use endora_team::application::guard_ports::GuardStore as _;
 use endora_team::application::ports::Run;
 use endora_team::domain::runs::own_attempts;
 use endora_team::domain::{RunStatus, WakeReason};
@@ -72,18 +71,6 @@ fn only_the_first_is_free(w: &mut Office, name: String) {
         1,
         "the first loss was free and the second counts: {turn:?}"
     );
-}
-
-#[then("no finding is open")]
-fn no_finding_is_open(w: &mut Office) {
-    let open: Vec<_> =
-        w.hq.store()
-            .findings()
-            .expect("the store answers")
-            .into_iter()
-            .filter(|f| f.cleared_at.is_none())
-            .collect();
-    assert!(open.is_empty(), "findings are open: {open:?}");
 }
 
 #[then(expr = "{word} was not nudged about {string}")]

@@ -53,6 +53,19 @@ impl Brain {
         }
     }
 
+    /// Its rank on the team (ADR 0142): 1 is the most able. An item that fails its checks climbs
+    /// from the house's model to Opus.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Opus => 1,
+            Self::Sonnet => 2,
+            Self::Haiku => 3,
+            Self::Mac => 4,
+            Self::Local => 5,
+        }
+    }
+
     /// What the owner reads on the member's card.
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -68,7 +81,14 @@ impl Brain {
     /// The brain with this [`name`](Self::name), if there is one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        ALL.into_iter().find(|b| b.name() == name)
+        // Its stored name, or the short one the owner says ("sonnet").
+        ALL.into_iter().find(|b| {
+            b.name() == name
+                || b.name()
+                    .split('-')
+                    .nth(1)
+                    .is_some_and(|short| short == name)
+        })
     }
 
     /// Whether what the member reads leaves the house: every brain but the house's own two (the

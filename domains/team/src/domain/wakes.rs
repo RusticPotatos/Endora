@@ -39,11 +39,6 @@ pub enum WakeReason {
     ReviewRequested,
     /// The reviewer sent the member's draft back: something in it did not hold.
     SentBack,
-    /// A member below asked this one a question about its task, up the chain of command
-    /// (ADR 0111): it is in the task's thread, "Question for <name>: …".
-    QuestionAsked,
-    /// The one this member asked up the chain answered in the task's thread.
-    QuestionAnswered,
     /// Work the tester passed (or that nobody else tests) waits for its lead to accept it
     /// against its criteria, or send it back (ADR 0114).
     AcceptanceAsked,
@@ -52,28 +47,14 @@ pub enum WakeReason {
     CheckDone,
     /// Nothing to do: a turn about no task, for the office and the notebook (ADR 0119).
     Downtime,
-    /// The CEO gave the lead of the task's area a direction (ADR 0120): the lead decides what
-    /// to do with it.
-    Directed,
     /// Stuck work climbed the ladder to this member (ADR 0120): the area's lead, to decide;
     /// or the CEO, when the lead said it needs the CEO.
     Decide,
-    /// A huddle on stuck work asks this member for its view, in one short turn (ADR 0120).
-    Huddle,
-    /// A guard asks the lead of the work's area to look (ADR 0124): at work HQ cannot tell is
-    /// stopped by accident, or at a finding in its area.
-    Guard,
     /// A task its task waits on was dropped (ADR 0124): the wait will not end by itself.
     WaitDropped,
     /// A colleague consults this member (ADR 0129): one short turn, about no task, to answer a
     /// question from what it knows and the record. A member who cannot be woken is not.
     Consulted,
-    /// The member's own turn on the house's model was stuck and took the problem a model tier
-    /// up (ADR 0139): the same member, on its Claude, with why in the task's thread.
-    Escalated,
-    /// A colleague consults this member from a turn on Claude (ADR 0139: an answer on a tier
-    /// at least the asker's): as [`Self::Consulted`], but judged, on the member's Claude.
-    ConsultedUp,
 }
 
 impl WakeReason {
@@ -95,19 +76,12 @@ impl WakeReason {
             Self::AssignmentRecovery => "assignment_recovery",
             Self::ReviewRequested => "review_requested",
             Self::SentBack => "sent_back",
-            Self::QuestionAsked => "question_asked",
-            Self::QuestionAnswered => "question_answered",
             Self::AcceptanceAsked => "acceptance_asked",
             Self::CheckDone => "check_done",
             Self::Downtime => "downtime",
-            Self::Directed => "directed",
             Self::Decide => "decide",
-            Self::Huddle => "huddle",
-            Self::Guard => "guard",
             Self::WaitDropped => "wait_dropped",
             Self::Consulted => "consulted",
-            Self::Escalated => "escalated",
-            Self::ConsultedUp => "consulted_up",
         }
     }
 
@@ -120,44 +94,6 @@ impl WakeReason {
             self,
             Self::Recovery | Self::AssignmentRecovery | Self::Retry | Self::LeadReview
         )
-    }
-
-    /// Whether the wake only asks members to talk to each other (ADR 0133): a mention, a review
-    /// or an acceptance asked for, a question up the chain and its answer. A task that has had
-    /// its budget of talk with nothing changed holds these; every other wake still reaches it:
-    /// the owner's word, a decision, a check-back, work handed on, a guard's look. The match has
-    /// no wildcard: a new reason does not compile until it is classified here.
-    #[must_use]
-    pub const fn is_talk(self) -> bool {
-        match self {
-            Self::Mentioned
-            | Self::ReviewRequested
-            | Self::AcceptanceAsked
-            | Self::QuestionAsked
-            | Self::QuestionAnswered => true,
-            Self::Assigned
-            | Self::WaitFinished
-            | Self::SubtasksFinished
-            | Self::ProposalDecided
-            | Self::LeadReview
-            | Self::Retry
-            | Self::Recovery
-            | Self::CheckBack
-            | Self::Alarm
-            | Self::OwnerReplied
-            | Self::AssignmentRecovery
-            | Self::SentBack
-            | Self::CheckDone
-            | Self::Downtime
-            | Self::Directed
-            | Self::Decide
-            | Self::Huddle
-            | Self::Guard
-            | Self::WaitDropped
-            | Self::Consulted
-            | Self::Escalated
-            | Self::ConsultedUp => false,
-        }
     }
 
     /// Whether the wake comes from a clock rather than from someone: a timer, a check-back or
@@ -178,13 +114,8 @@ impl WakeReason {
             Self::OwnerReplied
                 | Self::ProposalDecided
                 | Self::SentBack
-                | Self::QuestionAsked
-                | Self::QuestionAnswered
                 | Self::CheckDone
-                | Self::Directed
                 | Self::Decide
-                | Self::Huddle
-                | Self::Guard
         )
     }
 
@@ -208,7 +139,7 @@ impl WakeReason {
     /// be added here too, and classified in [`super::turns`], whose table test fails until it
     /// is.
     #[must_use]
-    pub const fn all() -> [Self; 27] {
+    pub const fn all() -> [Self; 20] {
         [
             Self::Assigned,
             Self::Mentioned,
@@ -224,19 +155,12 @@ impl WakeReason {
             Self::AssignmentRecovery,
             Self::ReviewRequested,
             Self::SentBack,
-            Self::QuestionAsked,
-            Self::QuestionAnswered,
             Self::AcceptanceAsked,
             Self::CheckDone,
             Self::Downtime,
-            Self::Directed,
             Self::Decide,
-            Self::Huddle,
-            Self::Guard,
             Self::WaitDropped,
             Self::Consulted,
-            Self::Escalated,
-            Self::ConsultedUp,
         ]
     }
 
@@ -413,10 +337,6 @@ pub struct WakeSituation {
     /// Whether the wake brings nothing new, to a member whose last turns on the task showed
     /// nothing, again and again (ADR 0124): it is not woken for nothing once more.
     pub woken_for_nothing: bool,
-    /// Whether the wake only asks for talk ([`WakeReason::is_talk`]) on a task that has had more
-    /// than its budget of it with nothing changed, the guard is on, and its lead can decide it
-    /// (ADR 0133): what would start a turn is held instead, not lost.
-    pub coordination_held: bool,
 }
 
 /// What to do with a wake.
@@ -483,15 +403,6 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
         }
         return WakeDecision::Hold;
     }
-    // Talk on a task that has had its budget of it, with nothing changing, is held, not started
-    // (ADR 0133): it waits as a wake behind a live turn waits, and the first one stands for the
-    // rest.
-    if situation.coordination_held {
-        if situation.already_held {
-            return WakeDecision::Refuse(Refused::Duplicate);
-        }
-        return WakeDecision::Hold;
-    }
     WakeDecision::Queue
 }
 
@@ -512,7 +423,6 @@ mod tests {
             project_paused: false,
             furloughed: false,
             woken_for_nothing: false,
-            coordination_held: false,
         }
     }
 
@@ -528,75 +438,6 @@ mod tests {
         assert_eq!(Refused::from_name("redundant"), Some(Refused::Redundant));
     }
     const OTHER: MemberId = MemberId(2);
-
-    /// The wakes that only ask members to talk (ADR 0133), by name: everything else reaches a
-    /// task that has had its budget of talk, the owner's word and the lead's look first.
-    #[test]
-    fn a_mention_a_review_an_acceptance_and_a_question_with_its_answer_are_talk_and_nothing_else_is()
-     {
-        use WakeReason as W;
-        let talk = [
-            W::Mentioned,
-            W::ReviewRequested,
-            W::AcceptanceAsked,
-            W::QuestionAsked,
-            W::QuestionAnswered,
-        ];
-        for reason in WakeReason::all() {
-            assert_eq!(reason.is_talk(), talk.contains(&reason), "{reason:?}");
-        }
-        // The ways out of a spinning task must reach it.
-        for reason in [
-            W::OwnerReplied,
-            W::ProposalDecided,
-            W::Guard,
-            W::Decide,
-            W::Directed,
-        ] {
-            assert!(!reason.is_talk(), "{reason:?}");
-        }
-    }
-
-    /// A talk wake that would start a turn on a task over its budget is held, a second from the
-    /// same member is the duplicate of the first, and a member already on the task takes it into
-    /// its turn as ever (ADR 0133).
-    #[test]
-    fn talk_over_its_budget_is_held_instead_of_started() {
-        let over = WakeSituation {
-            coordination_held: true,
-            ..quiet()
-        };
-        assert_eq!(decide(ME, &over), WakeDecision::Hold);
-        let again = WakeSituation {
-            already_held: true,
-            ..over.clone()
-        };
-        assert_eq!(decide(ME, &again), WakeDecision::Refuse(Refused::Duplicate));
-        let on_it = WakeSituation {
-            live: vec![LiveTurn {
-                run: RunId(7),
-                member: ME,
-                foldable: true,
-            }],
-            ..over.clone()
-        };
-        assert_eq!(decide(ME, &on_it), WakeDecision::Fold(RunId(7)));
-        let other = WakeSituation {
-            live: vec![LiveTurn {
-                run: RunId(8),
-                member: OTHER,
-                foldable: true,
-            }],
-            ..over
-        };
-        assert_eq!(
-            decide(ME, &other),
-            WakeDecision::Hold,
-            "behind its turn, as ever"
-        );
-        // The guard being off, or the wake not being talk, nothing is held.
-        assert_eq!(decide(ME, &quiet()), WakeDecision::Queue);
-    }
 
     #[test]
     fn a_wake_on_a_free_task_is_queued() {
@@ -734,8 +575,6 @@ mod tests {
             WakeDecision::Refuse(Refused::NotForTheCeo)
         );
         for reaches in [
-            WakeReason::QuestionAsked,
-            WakeReason::QuestionAnswered,
             WakeReason::ProposalDecided,
             WakeReason::OwnerReplied,
             WakeReason::Assigned,
@@ -752,10 +591,6 @@ mod tests {
             WakeReason::ReviewRequested,
         ] {
             assert!(!not.reaches_the_ceo(), "{not:?}");
-        }
-        for asked in [WakeReason::QuestionAsked, WakeReason::QuestionAnswered] {
-            assert!(asked.brings_news() && asked.reaches_work_in_review());
-            assert_eq!(WakeReason::from_name(asked.name()), Some(asked));
         }
         assert_eq!(
             Refused::from_name("not_for_the_ceo"),

@@ -1,8 +1,7 @@
 
 // ---- Endora HQ: the team's world (ADR 0122) -------------------------------------------------
-// What the team knows, by stage: the house page's sections (canon first), its dated timeline,
-// the lab and team pages HQ derives, and the stories. Only the owner makes something canon or
-// demotes it, here or from a proposal on the desk. Every word is a member's or the record's, so
+// What the team knows: the house page's sections, its dated timeline, and the lab and team
+// pages HQ derives. Every word is a member's or the record's, so
 // all of it is escaped. The whole world downloads as one Markdown file.
 
 const HQ_STAGE_ORDER = { canon: 0, insight: 1, observation: 2, field_note: 3, superseded: 4, retired: 5 };
@@ -89,41 +88,9 @@ function hqStageTag(p) {
   return `<span class="hq-tag stage-${esc(shown)}">${esc(p.said || p.stage || "")}</span>`;
 }
 
-// The owner's two acts on a piece: make it canon, or demote canon saying why.
-function hqWorldActs(kind, i, p) {
-  const edit = kind === "section" ? `<button class="hq-btn tall" data-act="hq:world:edit:open-${Number(i)}">Edit</button>` : "";
-  if (p.stage === "retired" || p.stage === "superseded") return edit;
-  // "Not true" (ADR 0124): retracted, its claim refused if written again, and what else says it found.
-  const untrue = `<button class="hq-btn tall no" data-act="hq:world:${kind}:untrue-${Number(i)}">Not true</button>`;
-  if (p.stage === "canon") return edit + `<button class="hq-btn tall no" data-act="hq:world:${kind}:demote-${Number(i)}">Demote\u2026</button>` + untrue;
-  return edit + `<button class="hq-btn tall ok" data-act="hq:world:${kind}:promote-${Number(i)}">Make canon</button>` + untrue;
-}
-
-// The owner says a note, a section or a story is not true (ADR 0124): HQ takes it out, and
-// answers with what else says the same, kept here for the owner to forget at once.
-async function hqRetract(target) {
-  if (!confirm(`Say ${target} is not true? It is taken out, and the team may not write it again.`)) return true;
-  try {
-    HQ.sweep = await api("POST", "/v1/hq/retractions", { target });
-    const n = (HQ.sweep.sweep || []).length;
-    if (n) hqSetTab("desk");
-    flash(n ? `Retracted. ${n} more say the same: see "Said again" on the Desk.` : "Retracted. Nothing else says it.", "ok");
-  } catch (e) { flash("Couldn't retract it: " + e.message, "err"); }
-  await loadHQ(); render(); return true;
-}
-
-// What else says a retracted claim, each to tick and forget at once.
-function hqSweep() {
-  const r = HQ.sweep;
-  if (!r || !(r.sweep || []).length) return "";
-  const rows = r.sweep.map((s, i) => `<li><label><input type="checkbox" id="hq-sweep-${i}" checked />
-      <span>${esc(s.text)}</span></label><small> ${esc(s.target)} · ${esc(s.whose)} · ${Number(s.alike)}% alike</small></li>`).join("");
-  const built = (r.built_on_it || []).length ? `<p class="hq-note">Built on it: ${r.built_on_it.map(esc).join(", ")}.</p>` : "";
-  return `<section class="hq-card"><h2>Said again</h2>
-    <p class="hq-note">You said ${esc(r.target)} is not true. These say the same:</p>
-    <ul class="hq-team">${rows}</ul>${built}
-    <div class="hq-row"><button class="hq-btn no" data-act="hq:sweep:${Number(r.retraction)}:forget">Forget the ticked</button>
-      <button class="hq-btn" data-act="hq:sweep:${Number(r.retraction)}:close">Keep them</button></div></section>`;
+// The owner's act on a section: edit it.
+function hqWorldActs(kind, i) {
+  return kind === "section" ? `<button class="hq-btn tall" data-act="hq:world:edit:open-${Number(i)}">Edit</button>` : "";
 }
 
 // The paste editor and its preview: tick what to apply, then one Apply.
@@ -166,21 +133,18 @@ function hqWorldEditor() {
 const HQ_WORLD_VIEW = { page: null, writing: false };
 
 // The world's pages as a list (ADR 0122, 0126): the house, the pages from the record, and one
-// for every area, project, goal and role, each with its steward, its sections and its quiz score.
+// for every project and goal, each with its steward and its sections.
 // Everything in them is a member's, so all of it is escaped.
 function hqWorldPageList(w) {
   const mapped = ((w.map || {}).pages || []);
   const pages = mapped.length ? mapped : [{ slug: "house", address: "world:house", title: "The house", steward: "the CEO", sections: (w.sections || []).length }];
   const rows = pages.map((pg) => {
-    const q = pg.quiz;
-    const score = q ? ` <span class="hq-tag ${q.flagged ? "stage-retired" : "stage-insight"}">quiz ${Number(q.passed)}/${Number(q.asked)}${q.flagged ? ", failing" : ""}</span>` : "";
-    const proposed = Number(pg.proposals) ? ` · ${Number(pg.proposals)} proposed` : "";
     const count = Number(pg.sections) || 0;
-    const what = pg.derived ? "from the record" : `kept by ${esc(pg.steward)} · ${count} section${count === 1 ? "" : "s"}${proposed}`;
-    return `<li><button class="hq-link" data-act="hq:world:page:${esc(pg.slug)}">${esc(pg.title)}</button>${score} <small>${esc(pg.address || "")} · ${what}</small></li>`;
+    const what = pg.derived ? "from the record" : `kept by ${esc(pg.steward)} · ${count} section${count === 1 ? "" : "s"}`;
+    return `<li><button class="hq-link" data-act="hq:world:page:${esc(pg.slug)}">${esc(pg.title)}</button> <small>${esc(pg.address || "")} · ${what}</small></li>`;
   });
   const listed = hqMore("pages", rows, 6);
-  return `<h3>Pages</h3><p class="hq-note">One for the house and every area, project, goal and role. Its steward writes it; anyone else proposes. Open one to read and edit it.</p>
+  return `<h3>Pages</h3><p class="hq-note">One for the house, the lab and every project and goal. Open one to read and edit it.</p>
     <ul class="hq-team hq-world">${listed.shown}</ul>${listed.more}`;
 }
 
@@ -213,65 +177,16 @@ function hqWorldPageOptions(w) {
   return list.map((pg) => `<option value="${esc(pg.slug)}">${esc(pg.title)}</option>`).join("");
 }
 
-// What the map has for someone to do: proposals to decide, gaps members reported, roads that
-// lead nowhere, and last night's quiz. A gap is knowledge missing; a road is a way broken.
-function hqMapWatch(w) {
-  const m = w.map || {};
-  const pageOf = (slug) => (m.pages || []).find((pg) => pg.slug === slug) || {};
-  const proposals = m.proposals || [];
-  const open = proposals.filter((p) => p.status === "open");
-  const decided = proposals.filter((p) => p.status !== "open").slice(0, 5);
-  const openRows = open.map((p) => `<li><b>${esc(p.heading)}</b> <small>on ${esc(p.page_title)} (world:${esc(p.page)}), kept by ${esc(pageOf(p.page).steward || "its steward")} · from ${esc(p.by)}, ${esc(p.day)}</small>
-      <span>${esc(p.headline)}</span>${(p.evidence || []).length ? `<small> rests on: ${p.evidence.map((e) => esc(e.ref)).join(", ")}</small>` : ""}
-      <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:world:proposal:accept-${Number(p.id)}">Accept</button>
-        <button class="hq-btn tall no" data-act="hq:world:proposal:decline-${Number(p.id)}">Decline…</button></div></li>`).join("");
-  const decidedRows = decided.map((p) => `<li>${esc(p.heading)} on ${esc(p.page_title)}: ${esc(p.status)} by ${esc(p.decided_by)}${p.why ? ` — ${esc(p.why)}` : ""}</li>`).join("");
-  const gaps = (m.gaps || []).filter((g) => g.open);
-  const gapRows = gaps.map((g) => `<li><b>${esc(g.what)}</b> <small>looked in ${esc(g.where_looked)} · reported by ${esc(g.by)}${Number(g.count) > 1 ? ` and ${Number(g.count) - 1} more time${Number(g.count) === 2 ? "" : "s"}` : ""} · with ${esc(g.to)}, ${esc(g.day)}</small></li>`).join("");
-  const roadRows = (m.roads || []).map((r) => `<li><code>${esc(r.from)}</code> cites <code>${esc(r.to)}</code>: ${esc(r.why)}.</li>`).join("");
-  const quiz = m.quiz || {};
-  const last = (quiz.nights || [])[0];
-  let night = "No quiz has run yet.";
-  if (last) {
-    const day = last.day ? `${esc(last.day)}: ` : "";
-    if (last.status === "answered") night = `${day}${esc(last.member)} got ${Number(last.passed)} of ${Number(last.asked)}.`;
-    else if (last.status === "asked") night = `${day}asked of ${esc(last.member)}, waiting for the answers.`;
-    else if (last.status === "unanswered") night = `${day}${esc(last.member)} did not answer in time.`;
-    else night = `Skipped: ${esc(last.why)}.`;
-  }
-  const failing = (quiz.pages || []).filter((pg) => pg.flagged).map((pg) => `<li><code>world:${esc(pg.slug)}</code> (${esc(pg.title)}) failed three nights running; its steward is told.</li>`).join("");
-  // Only what has something in it gets a heading (the owner, 2026-10-25: too long to read);
-  // the rest is one line saying there is nothing.
-  const none = [];
-  if (!openRows) none.push("no proposals to pages");
-  if (!gapRows) none.push("no gaps");
-  if (!roadRows) none.push("no broken roads");
-  return `${openRows ? `<h3>Proposals to pages</h3><ul class="hq-team hq-world">${openRows}</ul>` : ""}
-    ${decidedRows ? `<h4>Decided lately</h4><ul>${decidedRows}</ul>` : ""}
-    ${gapRows ? `<h3>Gaps</h3><p class="hq-note">Something a member looked for on its map and did not find. It goes to its lead, not your desk.</p>
-    <ul class="hq-team hq-world">${gapRows}</ul>` : ""}
-    ${roadRows ? `<h3>Broken roads</h3><p class="hq-note">An address a page cites that leads nowhere, found by HQ.</p>
-    <ul class="hq-team hq-world">${roadRows}</ul>` : ""}
-    ${none.length ? `<p class="hq-empty">Nothing waiting: ${none.join(", ")}.</p>` : ""}
-    <p><b>Last night's map check:</b> ${night}</p>${failing ? `<ul class="hq-team hq-world">${failing}</ul>` : ""}`;
-}
-
-// The owner's word on a proposal to a page: written as theirs, or declined, saying why.
-async function hqProposalAct(what) {
-  const [op, n] = String(what || "").split("-");
-  const id = Number(n);
-  if (!id) return true;
-  try {
-    if (op === "accept") {
-      await api("POST", "/v1/hq/world/proposals/decide", { id, accept: true, why: "" });
-      flash("Written as your word.", "ok");
-    } else {
-      const why = (prompt("Why not?") || "").trim(); if (!why) return true;
-      await api("POST", "/v1/hq/world/proposals/decide", { id, accept: false, why });
-      flash("Declined; the member is told why.", "ok");
-    }
-  } catch (e) { flash("Couldn't decide it: " + e.message, "err"); }
-  await loadHQ(); render(); return true;
+// The map (ADR 0142): one line each where a member found something, the most confirmed first;
+// what was found this week is marked new, and nobody's confirming for 30 days lets a line go.
+function hqMapLines(s) {
+  const lines = s.map_lines || [];
+  if (!lines.length) return "";
+  const week = Date.now() - 7 * 86400000;
+  const row = (l) => `<li><span>${esc(l.line)}</span>${Number(l.at) > week ? ` <span class="hq-tag">new</span>` : ""}
+      <small> ${esc(l.by || "")} · confirmed ${Number(l.uses) || 1} time${Number(l.uses) === 1 ? "" : "s"}</small></li>`;
+  return `<h3>The map</h3><p class="hq-note">Where things are, as the team found them: the most confirmed first.</p>
+    <ul class="hq-lines">${lines.map(row).join("")}</ul>`;
 }
 
 function hqWorldCard(s) {
@@ -282,17 +197,14 @@ function hqWorldCard(s) {
   const sectionRow = ({ p, i }) => `<li><b>${esc(p.heading)}</b> ${hqStageTag(p)}
       <span>${esc(p.headline)}</span>
       <small> ${esc(p.address)} · revision ${Number(p.revision) || 1}, ${esc(p.written_by || "")}${p.warrant ? ` · warrant: ${esc(p.warrant)}` : ""}${p.why ? ` · ${esc(p.why)}` : ""}</small>
-      <div class="hq-row">${hqWorldActs("section", i, p)}</div></li>`;
+      <div class="hq-row">${hqWorldActs("section", i)}</div></li>`;
   const open = HQ_WORLD_VIEW.page;
-  const stories = (w.stories || []).map((p, i) => `<li><b>${esc(p.handle)}</b> ${hqStageTag(p)}${p.to_retell ? ` <span class="hq-tag">to retell</span>` : ""}
-      <span>${p.moment ? `When ${esc(p.moment)} ` : ""}${p.reflex ? `Tempting: ${esc(p.reflex)} ` : ""}Instead: ${esc(p.instead)}${p.because ? ` Because: ${esc(p.because)}` : ""}</span>
-      <small> ${esc(p.whose || p.scope || "")} · told by ${esc(p.author || "")}${p.why ? ` · ${esc(p.why)}` : ""}</small>
-      <div class="hq-row">${hqWorldActs("story", i, p)}</div></li>`).join("");
   return `<section class="hq-card"><h2>World</h2>
-    ${hqClamp("worldintro", "What the team knows, by stage: field note, then observation, then insight, then canon (settled truth only you can set). Unconfirmed is an insight nobody confirmed in time. Edit rewrites a section; Make canon settles it; Not true takes it out and the team may not write it again.", "hq-note")}
+    ${hqClamp("worldintro", "What the team knows: the house page's sections and timeline, and the lab and team pages HQ works out from the record. Edit rewrites a section.", "hq-note")}
     <div class="hq-row"><button class="hq-btn tall ok" aria-expanded="${hqWorldDoc().md || hqWorldDoc().open ? "true" : "false"}" data-act="hq:world:paste:show">Paste Markdown</button>
       <button class="hq-btn tall" data-act="hq:world:export:md">Download the world (Markdown)</button></div>
     ${hqWorldPaste()}
+    ${hqMapLines(s)}
     ${open ? hqWorldPageBody(w, open, sections, sectionRow) : hqWorldPageList(w)}
     <div class="hq-row"><button class="hq-btn tall" aria-expanded="${HQ_WORLD_VIEW.writing ? "true" : "false"}" data-act="hq:world:writing:toggle">Write a section</button></div>
     ${HQ_WORLD_VIEW.writing ? `<h3>Write as the owner</h3>
@@ -303,8 +215,6 @@ function hqWorldCard(s) {
       <textarea id="hq-w-text" rows="4" autocapitalize="off" maxlength="1200" aria-label="Section text (first line is its headline)"></textarea>
       <div class="hq-row"><button class="hq-btn tall ok" data-act="hq:world:write:section">Write the section</button>
         <button class="hq-btn tall" data-act="hq:world:write:timeline">Add to the timeline</button></div>` : ""}
-    ${hqMapWatch(w)}
-    ${stories ? `<h3>Stories</h3><ul class="hq-team hq-world">${stories}</ul>` : `<p class="hq-empty">No stories yet.</p>`}
     ${hqWorldEditor()}</section>`;
 }
 
@@ -324,7 +234,6 @@ async function hqWorldAct(kind, what) {
   }
   if (kind === "page") { HQ_WORLD_VIEW.page = what === "all" ? null : what; render(); return true; }
   if (kind === "writing") { HQ_WORLD_VIEW.writing = !HQ_WORLD_VIEW.writing; render(); return true; }
-  if (kind === "proposal") return hqProposalAct(what);
   if (kind === "paste") return hqWorldPasteAct(what);
   if (kind === "edit") return hqWorldEditAct(what);
   if (kind === "write") {
@@ -345,23 +254,7 @@ async function hqWorldAct(kind, what) {
     } catch (e) { flash("Couldn't write it: " + e.message, "err"); return true; }
     await loadHQ(); render(); return true;
   }
-  const [op, n] = String(what || "").split("-");
-  const list = kind === "story" ? (w.stories || []) : (w.sections || []);
-  const p = list[Number(n)];
-  if (!p) return true;
-  if (op === "untrue") return hqRetract(p.address);
-  try {
-    if (op === "promote") {
-      if (!confirm(`Make "${p.headline || p.handle}" canon? The team will treat it as established.`)) return true;
-      await api("POST", "/v1/hq/world/promote", { address: p.address, why: "" });
-      flash("It is canon.", "ok");
-    } else if (op === "demote") {
-      const why = (prompt("Why is it no longer canon?") || "").trim(); if (!why) return true;
-      await api("POST", "/v1/hq/world/demote", { address: p.address, to: "insight", why });
-      flash("Demoted to an insight; the feed and the page say why.", "ok");
-    }
-  } catch (e) { flash("Couldn't change it: " + e.message, "err"); }
-  await loadHQ(); render(); return true;
+  return true;
 }
 
 // Keeps what is typed in the paste box and the editor across a redraw.

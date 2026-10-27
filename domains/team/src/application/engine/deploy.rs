@@ -14,6 +14,11 @@ use crate::domain::{Branch, EventKind, Priority, RunId, TaskId, TaskStatus};
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The card that asks the owner to say when a pushed branch is deployed.
     pub(super) fn offer_deploy(&self, task: TaskId, branch: &Branch) -> Done<()> {
+        // In the loops there is no Deployed card (ADR 0142): the owner merges and runs the
+        // playbook, and the lab's recurring health check is the check.
+        if !self.loop_members()?.is_empty() {
+            return Ok(());
+        }
         let item = self.store.add_desk(
             "deploy",
             Some(task),
@@ -127,9 +132,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// A store failure.
     pub fn lab_tools_of(&self, run: RunId) -> Done<Option<Vec<String>>> {
-        if self.in_assistance_flow(run)? {
-            return Ok(Some(Vec::new()));
-        }
         if self.in_deploy_check(run)? {
             return Ok(Some(
                 deploy::LAB_READS.iter().map(|t| (*t).to_owned()).collect(),
@@ -145,7 +147,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// A store failure.
     pub fn may_use_a_shell(&self, run: RunId) -> Done<bool> {
-        if self.in_assistance_flow(run)? || self.in_deploy_check(run)? {
+        if self.in_deploy_check(run)? {
             return Ok(false);
         }
         Ok(self

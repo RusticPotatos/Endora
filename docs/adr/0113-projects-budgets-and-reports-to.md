@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
 [0120](0120-roles-as-an-enforced-raci.md) (2026-10-18): only a lead proposes a project, and the
 CEO decides (yes, no, not now) and proposes none; the CEO's planning shows strategy, the week's

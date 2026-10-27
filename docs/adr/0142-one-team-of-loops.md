@@ -1,0 +1,89 @@
+# 0142 - One team of loops
+
+## Status
+
+Accepted, 2026-10-27, by the owner. AI-assisted (Claude). Supersedes
+[0110](0110-the-teams-rings.md), [0111](0111-the-ceo-and-the-chain-of-command.md),
+[0120](0120-roles-as-an-enforced-raci.md),
+[0137](0137-addressed-conversations-and-bounded-assistance.md) and
+[0138](0138-one-conversation-and-assistance-lifecycle.md). Amends
+[0113](0113-projects-budgets-and-reports-to.md) (projects become loops; no reporting lines),
+[0114](0114-evidence-acceptance-criteria-and-the-tester.md) (checks replace the tester),
+[0115](0115-the-engineering-wing-and-the-git-flow.md) (no wing; a public PR is reviewed one
+rank up), [0118](0118-elastic-staffing-and-notebooks.md) (no staffing or notebooks),
+[0119](0119-the-open-office.md) (no office proposals or votes),
+[0121](0121-games-in-the-office.md) (ping-pong and pool are animation only),
+[0122](0122-the-teams-world-stages-stories-and-situations.md) and
+[0126](0126-the-teams-map.md) (the house and lab pages, loop notes and a self-growing map
+remain), [0124](0124-guards-against-how-agent-teams-fail.md) (only the safety caps remain),
+[0132](0132-outcomes-and-a-desk-that-interrupts-only-for-decisions.md) (five kinds of card) and
+[0139](0139-one-team-escalate-by-tier.md) (escalation by model tier is the only escalation).
+The full plan and its evidence:
+[one team of loops](../proposals/one-team-of-loops-2026-10-27.md).
+
+## Context
+
+Each of the decisions above added a role, a rule or a guard against what the one before it
+caused. On the record:
+- talk outweighed work (80 turns to 46 in a day);
+- #796 went round the chain of command for a day without reaching the owner;
+- no help request was ever answered;
+- of the memory tools, only reading a page and searching history were used;
+- about 3 of 20 desk decisions in a day needed the owner.
+
+The team context had grown to about 104,000 lines. The owner wants it boring under the hood
+and fun to watch, and every line of code is another bug.
+
+The design borrows from Ralph (Huntley; snarktank/ralph):
+- a loop takes the most important unfinished item from its plan;
+- it does one thing, runs the checks, and commits or reverts;
+- it writes down what it learned, and goes round again.
+
+Checks push back on bad work, not reviewers, and a loop is steered by a line in its plan rather
+than by a new role.
+
+## Decision
+
+- **Members are models, ranked:** Mara (Opus), Kit (Sonnet), Ada (Haiku), Rae (the Mac's
+  model), Bo (the NAS's local model). A title is a name only. The eight names are fixed; a
+  generator names any members past eight, and every name is unique. There are no roles, chain
+  of command, testers, conversations, help requests, stuck ladder or huddles.
+- **A loop is a project with a plan (its ordered task list), its checks and a starting rank.**
+  A free member takes the top unfinished item. One turn at a time per member; the local
+  members work whenever there is work.
+- **Escalation is by rank only.** Three failed checks (a failed check, or a send-back) move an
+  item up one rank. A failure at the top rank goes to the owner's desk.
+- **A branch for a public PR is reviewed by the member one rank up** (Mara's by Kit). Then it
+  reaches the owner's desk as a ready PR. Playbook runs stay the owner's; container restarts
+  stay capped and announced.
+- **The owner's desk holds five kinds of card:** money, credentials, accepting a risk,
+  anything irreversible, and taste. Plus ready PRs. Notices clear themselves. HQ sees merges
+  itself.
+- **Memory:**
+  - the house page and the lab page;
+  - one notes page per loop, appended each turn;
+  - history search;
+  - a map that members add one line to when they find where something lives. Unread lines fade
+    after 30 days; used lines rise.
+- **What stays:** the safety caps (runaway, free turns, pool and per-loop caps, kill switch,
+  drain), "models propose, code authorizes", confidentiality tiers and the record.
+- **What leaves the code:** everything listed under "What goes" in the plan. Retired tables
+  are backed up and archived before they are dropped.
+
+## Consequences
+
+- The team context falls to about 55,000–60,000 lines within a day, and under 50,000 after.
+- Fewer cards reach the owner; those that do are the owner's by nature.
+- A member may now do anything its loop's tools allow. The checks, not a colleague, are what
+  stop bad work, so a loop without good checks (the lab) needs them built before it is trusted.
+- Endora working on its own code, and loops running the playbook, wait for evidence from the
+  Holodeck and the league.
+
+## Alternatives considered
+
+- **Keep the structure and add rules for what reaches the owner.** Rejected: each rule so far
+  bred another, which is how the structure grew.
+- **Literal Ralph: bash loops calling a cloud CLI.** Rejected: every turn would be paid, and
+  nothing would gate a model's actions on the house.
+- **A week's pilot beside the team.** Rejected by the owner: cut straight over, with the
+  `before-loops` image and snapshots as the way back.

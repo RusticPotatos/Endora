@@ -7,16 +7,11 @@
 //! composed within its size, how an address cited in a page is found, and the shapes of a
 //! proposal and a gap.
 
+use super::ProjectStatus;
 use super::brain::Brain;
 use super::situations::Weight;
-use super::work::{GoalId, Member, MemberId, Millis, ProjectId, Role, RunId};
-use super::world::{DAY_MS, Snapshot};
-use super::{Project, ProjectStatus};
+use super::work::{GoalId, ProjectId};
 
-/// The most characters of a gap's `what` and `where_looked`.
-pub const GAP_MOST: usize = 200;
-/// The most proposals a member may have open at once.
-pub const PROPOSALS_OPEN_MOST: usize = 5;
 /// The most characters of a map's lines for a turn on the NAS's model.
 pub const MAP_CHARS_LOCAL: usize = 1_400;
 /// The most characters of a map's lines for a turn on the owner's Mac.
@@ -41,53 +36,32 @@ pub const MAP_SECTIONS_PER_PAGE: usize = 3;
 /// The line that ends a map in a briefing; the Claude Code worker gives the block back to a
 /// turn whose conversation was compacted.
 pub const MAP_END: &str = "(End of your map.)";
-/// How long a quiz stays open for its member to answer.
-pub const QUIZ_OPEN_MS: Millis = 12 * 60 * 60 * 1000;
-/// How many nights running a page must fail the quiz to be flagged to its steward.
-pub const FAILING_NIGHTS: usize = 3;
 
 /// A page of the world, by the data it is about. Its slug is its address: `world:<slug>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageKey {
-    /// What the team knows about the house; the CEO's.
+    /// What the team knows about the house; the owner's.
     House,
     /// How the lab is built, derived from code.
     Lab,
     /// Who is on the team, derived from the record.
     Team,
-    /// A lead's area.
-    Area(MemberId),
     /// A project.
     Project(ProjectId),
     /// A goal.
     Goal(GoalId),
-    /// How a role works here.
-    Role(Role),
-}
-
-/// The slug of a role's page: the tester is what the owner reads for the reviewer.
-const fn role_slug(role: Role) -> &'static str {
-    match role {
-        Role::Ceo => "ceo",
-        Role::Lead => "lead",
-        Role::Developer => "developer",
-        Role::Researcher => "researcher",
-        Role::Reviewer => "tester",
-    }
 }
 
 impl PageKey {
-    /// Its slug: `house`, `lab`, `area/3`, `project/2`, `goal/1`, `role/developer`.
+    /// Its slug: `house`, `lab`, `team`, `project/2`, `goal/1`.
     #[must_use]
     pub fn slug(self) -> String {
         match self {
             Self::House => "house".to_owned(),
             Self::Lab => "lab".to_owned(),
             Self::Team => "team".to_owned(),
-            Self::Area(lead) => format!("area/{}", lead.0),
             Self::Project(p) => format!("project/{}", p.0),
             Self::Goal(g) => format!("goal/{}", g.0),
-            Self::Role(role) => format!("role/{}", role_slug(role)),
         }
     }
 
@@ -104,20 +78,8 @@ impl PageKey {
             Some((kind, rest)) => {
                 let number = || rest.parse::<i64>().ok();
                 match kind {
-                    "area" => Self::Area(MemberId(number()?)),
                     "project" => Self::Project(ProjectId(number()?)),
                     "goal" => Self::Goal(GoalId(number()?)),
-                    "role" => Self::Role(
-                        [
-                            Role::Ceo,
-                            Role::Lead,
-                            Role::Developer,
-                            Role::Researcher,
-                            Role::Reviewer,
-                        ]
-                        .into_iter()
-                        .find(|r| role_slug(*r) == rest)?,
-                    ),
                     _ => return None,
                 }
             }
@@ -132,10 +94,8 @@ impl PageKey {
             Self::House => "house",
             Self::Lab => "lab",
             Self::Team => "team",
-            Self::Area(_) => "area",
             Self::Project(_) => "project",
             Self::Goal(_) => "goal",
-            Self::Role(_) => "role",
         }
     }
 
@@ -145,104 +105,45 @@ impl PageKey {
         matches!(self, Self::Lab | Self::Team)
     }
 
-    /// How long an insight or canon on it stays confirmed without a fresh reading: an area's
-    /// thirty days, the others' ninety.
+    /// How long an insight or canon on it stays confirmed without a fresh reading: ninety days,
+    /// and none for a derived page.
     #[must_use]
     pub const fn horizon_days(self) -> i64 {
         match self {
-            Self::Area(_) => 30,
             Self::Lab | Self::Team => 0,
-            Self::House | Self::Project(_) | Self::Goal(_) | Self::Role(_) => 90,
+            Self::House | Self::Project(_) | Self::Goal(_) => 90,
         }
     }
 }
 
-/// Who stewards a page (ADR 0120's RACI): writes it directly, decides what is proposed to it,
-/// and answers for it.
+/// Who keeps a page (ADR 0142): the owner writes the written pages, and HQ's code derives the
+/// rest; nobody else writes the world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Steward {
-    /// The CEO.
-    Ceo,
-    /// A lead.
-    Lead(MemberId),
-    /// The owner, who is the board.
+    /// The owner.
     Owner,
     /// HQ's code, which derives the page: nobody writes it.
     Hq,
 }
 
 impl Steward {
-    /// Whether `member` is the steward.
+    /// For a person to read: `the owner`, `HQ`.
     #[must_use]
-    pub fn is(self, member: &Member) -> bool {
+    pub const fn said(self) -> &'static str {
         match self {
-            Self::Ceo => member.role == Role::Ceo,
-            Self::Lead(id) => member.id == id,
-            Self::Owner | Self::Hq => false,
-        }
-    }
-
-    /// By name for a person to read: `Ada`, `Mara, the CEO`, `the owner`, `HQ`.
-    #[must_use]
-    pub fn said(self, members: &[Member]) -> String {
-        match self {
-            Self::Ceo => members
-                .iter()
-                .find(|m| m.role == Role::Ceo)
-                .map_or_else(|| "the CEO".to_owned(), |m| format!("{}, the CEO", m.name)),
-            Self::Lead(id) => members
-                .iter()
-                .find(|m| m.id == id)
-                .map_or_else(|| "its lead".to_owned(), |m| m.name.clone()),
-            Self::Owner => "the owner".to_owned(),
-            Self::Hq => "HQ".to_owned(),
-        }
-    }
-
-    /// The names a person might answer with when asked who it is: for the quiz.
-    #[must_use]
-    pub fn answers(self, members: &[Member]) -> Vec<String> {
-        match self {
-            Self::Ceo => {
-                let mut all = vec!["ceo".to_owned()];
-                all.extend(
-                    members
-                        .iter()
-                        .filter(|m| m.role == Role::Ceo)
-                        .map(|m| m.name.to_lowercase()),
-                );
-                all
-            }
-            Self::Lead(id) => members
-                .iter()
-                .filter(|m| m.id == id)
-                .map(|m| m.name.to_lowercase())
-                .collect(),
-            Self::Owner => vec!["owner".to_owned(), "board".to_owned()],
-            Self::Hq => vec!["hq".to_owned(), "code".to_owned()],
+            Self::Owner => "the owner",
+            Self::Hq => "HQ",
         }
     }
 }
 
-/// Who stewards a page, from the data: the house and every goal the CEO; an area its lead; a
-/// project its lead (the CEO when the CEO leads it, or the lead is gone); a role the owner; a
-/// derived page nobody. Never by a name written down: move a project's lead and the stewardship
-/// moves with it.
+/// Who keeps a page: HQ the derived ones, the owner every other.
 #[must_use]
-pub fn steward_of(key: PageKey, members: &[Member], projects: &[Project]) -> Steward {
-    let lead = |id: MemberId| match members.iter().find(|m| m.id == id) {
-        Some(m) if m.role == Role::Lead => Steward::Lead(m.id),
-        _ => Steward::Ceo,
-    };
-    match key {
-        PageKey::House | PageKey::Goal(_) => Steward::Ceo,
-        PageKey::Area(id) => lead(id),
-        PageKey::Project(p) => projects
-            .iter()
-            .find(|project| project.id == p)
-            .map_or(Steward::Ceo, |project| lead(project.lead)),
-        PageKey::Role(_) => Steward::Owner,
-        PageKey::Lab | PageKey::Team => Steward::Hq,
+pub const fn steward_of(key: PageKey) -> Steward {
+    if key.derived() {
+        Steward::Hq
+    } else {
+        Steward::Owner
     }
 }
 
@@ -323,9 +224,7 @@ pub fn compose(entries: Vec<Entry>, cap: usize) -> MapText {
                 off.join(", ")
             ));
         }
-        text.push_str(
-            "Looked and it is not here? Say so with report_gap; do not build it again.\n",
-        );
+        text.push_str("Found where something lives that is not here? Add it with add_to_map.\n");
         text.push_str(MAP_END);
         text.push('\n');
         text
@@ -391,7 +290,7 @@ pub fn map_block(briefing: &str) -> Option<String> {
 /// questions the nightly quiz asks of it, which code scores against these same facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fact {
-    /// `world:area/3`, or `world:area/3#backups` for a section.
+    /// `world:house`, or `world:house#backups` for a section.
     pub address: String,
     /// The page's slug.
     pub page: String,
@@ -401,8 +300,6 @@ pub struct Fact {
     pub topic: String,
     /// Who keeps it, by name.
     pub steward: String,
-    /// What a person might answer to "who keeps it?", lowercase.
-    pub answers: Vec<String>,
     /// Whether it is a section, not a page.
     pub section: bool,
     /// The line a map shows of it.
@@ -414,14 +311,7 @@ pub struct Fact {
 impl Fact {
     /// A page.
     #[must_use]
-    pub fn page(
-        key: PageKey,
-        title: &str,
-        topic: &str,
-        steward: String,
-        answers: Vec<String>,
-        weight: Weight,
-    ) -> Self {
+    pub fn page(key: PageKey, title: &str, topic: &str, steward: String, weight: Weight) -> Self {
         Self {
             address: format!("world:{}", key.slug()),
             page: key.slug(),
@@ -429,7 +319,6 @@ impl Fact {
             topic: topic.to_owned(),
             line: format!("{title}: {topic}. Kept by {steward}."),
             steward,
-            answers,
             section: false,
             weight,
         }
@@ -451,7 +340,6 @@ impl Fact {
             title: heading.to_owned(),
             topic: headline.to_owned(),
             steward: String::new(),
-            answers: Vec::new(),
             section: true,
             line: format!("{heading}: {headline} [{stage}]"),
             weight,
@@ -462,38 +350,6 @@ impl Fact {
     #[must_use]
     pub fn entry(&self) -> Entry {
         Entry::new(self.address.clone(), &self.line, self.weight)
-    }
-}
-
-/// What a role's page starts from: a headline and a body in a few words, until the owner writes
-/// it fully. Never more than what the role is for, from the roles' own definitions.
-#[must_use]
-pub const fn role_seed(role: Role) -> (&'static str, &'static str) {
-    match role {
-        Role::Ceo => (
-            "Runs the team for the owner, who is the board.",
-            "Decides what the leads ask, reviews the house once a day, delegates to leads and \
-             never to the weeds, and puts to the board only what the owner alone decides.",
-        ),
-        Role::Lead => (
-            "Plans an area's work, hands its parts on and accepts tested work.",
-            "Keeps its area's page, decides stuck work in its area, and accepts or sends back \
-             what the tester passed, against the task's criteria.",
-        ),
-        Role::Developer => (
-            "Writes and changes code in the fork, on a branch, and submits it with evidence.",
-            "Claims a task, reads before it writes, tests, and submits for review with the \
-             readings that show each criterion holds. Pushes only through the gateway.",
-        ),
-        Role::Researcher => (
-            "Finds things out and writes them up on evidence from HQ's record.",
-            "Reads, compares and reports; makes no change to the lab.",
-        ),
-        Role::Reviewer => (
-            "Re-checks submitted work with a reading of her own; passes it or sends it back.",
-            "Never makes work and never reviews her own. Sending back names exactly what does \
-             not hold; a story's handle can stand in for the paragraph.",
-        ),
     }
 }
 
@@ -536,134 +392,7 @@ pub fn cited(text: &str) -> Vec<String> {
     found.into_iter().map(|(_, w)| w).collect()
 }
 
-/// A road that does not lead where it says.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Road {
-    /// The section that cites it.
-    pub from: String,
-    /// The address it cites.
-    pub to: String,
-    /// Why it does not resolve, in words.
-    pub why: String,
-}
-
 // ---- proposals and gaps -------------------------------------------------------------------
-
-/// Where a proposal to a page stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProposalStatus {
-    /// Waiting for the steward.
-    Open,
-    /// The steward wrote it.
-    Accepted,
-    /// The steward declined it, with a reason.
-    Declined,
-}
-
-impl ProposalStatus {
-    /// Its stable name.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Accepted => "accepted",
-            Self::Declined => "declined",
-        }
-    }
-
-    /// The status with this [`name`](Self::name).
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Open, Self::Accepted, Self::Declined]
-            .into_iter()
-            .find(|s| s.name() == name)
-    }
-}
-
-/// A change a member proposes to a page it does not steward: a section, new or revised, that the
-/// steward writes or declines.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PageProposal {
-    /// Its row; 0 before it is kept.
-    pub id: i64,
-    /// The page's slug.
-    pub page: String,
-    /// The section it would revise, by anchor.
-    pub anchor: Option<String>,
-    /// The section's heading.
-    pub heading: String,
-    /// What a briefing shows of it.
-    pub headline: String,
-    /// The rest of it.
-    pub body: String,
-    /// What it rests on.
-    pub evidence: Vec<Snapshot>,
-    /// Who proposed it.
-    pub by: MemberId,
-    /// The turn it was proposed in.
-    pub run: Option<RunId>,
-    /// When.
-    pub at: Millis,
-    /// Where it stands.
-    pub status: ProposalStatus,
-    /// Who decided it: a name, or `the owner`.
-    pub decided_by: String,
-    /// Why it was declined (or a word on accepting).
-    pub why: String,
-    /// When it was decided.
-    pub decided_at: Option<Millis>,
-    /// Whether the proposer has been told how it went.
-    pub told: bool,
-}
-
-/// A thing a member looked for on the map and did not find. Kept apart from a broken road,
-/// which is a road code finds: this is knowledge that is missing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Gap {
-    /// Its row; 0 before it is kept.
-    pub id: i64,
-    /// What was looked for.
-    pub what: String,
-    /// Where the member looked.
-    pub where_looked: String,
-    /// What makes two reports the same gap.
-    pub key: String,
-    /// The steward it goes to; `None` for the CEO.
-    pub steward: Option<MemberId>,
-    /// Who reported it first.
-    pub by: MemberId,
-    /// The turn it was first reported in.
-    pub run: Option<RunId>,
-    /// How many times it was reported.
-    pub count: i64,
-    /// When it was first reported.
-    pub opened_at: Millis,
-    /// When it was last reported.
-    pub last_at: Millis,
-    /// When it was closed, if it was.
-    pub closed_at: Option<Millis>,
-    /// Who closed it.
-    pub closed_by: String,
-    /// How: what was written, or why not.
-    pub how: String,
-}
-
-/// What makes two reports of a gap the same: the first ten words of letters and digits.
-#[must_use]
-pub fn gap_key(what: &str) -> String {
-    what.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .take(10)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Midnight-free day number of `at`: the quiz's night.
-#[must_use]
-pub const fn night_of(at: Millis, offset_minutes: i64) -> i64 {
-    (at + offset_minutes * 60_000).div_euclid(DAY_MS)
-}
 
 #[cfg(test)]
 mod tests {
@@ -680,107 +409,30 @@ mod tests {
         }
     }
 
-    fn member(id: i64, name: &str, role: Role) -> Member {
-        Member {
-            id: MemberId(id),
-            name: name.to_owned(),
-            role,
-            share_percent: 10,
-            slots: 2,
-            look: 0,
-            paused: false,
-            brain: Brain::Haiku,
-            work_brain: Brain::Mac,
-            reports_to: None,
-            furloughed_at: None,
-            recalled_at: None,
-        }
-    }
-
     #[test]
     fn a_page_has_one_slug_and_reads_back() {
         for key in [
             PageKey::House,
             PageKey::Lab,
             PageKey::Team,
-            PageKey::Area(MemberId(3)),
             PageKey::Project(ProjectId(2)),
             PageKey::Goal(GoalId(1)),
-            PageKey::Role(Role::Developer),
-            PageKey::Role(Role::Reviewer),
         ] {
             assert_eq!(PageKey::parse(&key.slug()), Some(key), "{}", key.slug());
         }
-        assert_eq!(PageKey::Role(Role::Reviewer).slug(), "role/tester");
         for wrong in [
             "",
-            "area",
-            "area/x",
-            "area/03",
-            "role/janitor",
+            "area/3",
+            "role/developer",
+            "project/x",
+            "project/03",
             "garage",
             "house/1",
         ] {
             assert_eq!(PageKey::parse(wrong), None, "{wrong}");
         }
         assert!(PageKey::Lab.derived() && PageKey::Team.derived() && !PageKey::House.derived());
-        assert_eq!(PageKey::Area(MemberId(1)).horizon_days(), 30);
         assert_eq!(PageKey::Project(ProjectId(1)).horizon_days(), 90);
-    }
-
-    #[test]
-    fn a_pages_steward_comes_from_the_data_never_from_a_name() {
-        let members = vec![
-            member(1, "Mara", Role::Ceo),
-            member(2, "Ada", Role::Lead),
-            member(3, "Bo", Role::Lead),
-            member(4, "Cy", Role::Developer),
-        ];
-        let project = |id: i64, lead: i64| Project {
-            id: ProjectId(id),
-            goal: GoalId(1),
-            title: "p".to_owned(),
-            reason: String::new(),
-            lead: MemberId(lead),
-            status: ProjectStatus::Active,
-            pause: None,
-            cap: None,
-            asked_cap: None,
-            created_by: "owner".to_owned(),
-            proposer: None,
-            proposed_in: None,
-            evidence: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-        };
-        let projects = vec![project(1, 2), project(2, 1), project(3, 9)];
-        let of = |key| steward_of(key, &members, &projects);
-        assert_eq!(of(PageKey::House), Steward::Ceo);
-        assert_eq!(of(PageKey::Goal(GoalId(1))), Steward::Ceo);
-        assert_eq!(of(PageKey::Area(MemberId(3))), Steward::Lead(MemberId(3)));
-        assert_eq!(of(PageKey::Area(MemberId(4))), Steward::Ceo, "not a lead");
-        assert_eq!(
-            of(PageKey::Project(ProjectId(1))),
-            Steward::Lead(MemberId(2))
-        );
-        assert_eq!(
-            of(PageKey::Project(ProjectId(2))),
-            Steward::Ceo,
-            "CEO leads"
-        );
-        assert_eq!(
-            of(PageKey::Project(ProjectId(3))),
-            Steward::Ceo,
-            "its lead is gone"
-        );
-        assert_eq!(of(PageKey::Role(Role::Developer)), Steward::Owner);
-        assert_eq!(of(PageKey::Lab), Steward::Hq);
-        assert!(Steward::Ceo.is(&members[0]) && !Steward::Ceo.is(&members[1]));
-        assert!(Steward::Lead(MemberId(2)).is(&members[1]));
-        assert!(!Steward::Owner.is(&members[0]));
-        assert_eq!(Steward::Ceo.said(&members), "Mara, the CEO");
-        assert_eq!(Steward::Lead(MemberId(2)).said(&members), "Ada");
-        assert_eq!(Steward::Lead(MemberId(2)).answers(&members), ["ada"]);
     }
 
     #[test]
@@ -799,7 +451,7 @@ mod tests {
         assert!(whole.left_off.is_empty() && whole.kept.len() == 6);
         assert!(whole.text.starts_with("Your map of the team's world"));
         assert!(whole.text.trim_end().ends_with(MAP_END));
-        assert!(whole.text.contains("report_gap"));
+        assert!(whole.text.contains("add_to_map"));
         assert!(!whole.text.contains("Left off"));
         let tight = compose(entries.clone(), whole.text.chars().count() - 40);
         assert_eq!(
@@ -843,16 +495,5 @@ mod tests {
             .map(str::to_owned)
         );
         assert!(cited("nothing here, not even world: alone").is_empty());
-    }
-
-    #[test]
-    fn two_reports_of_one_gap_share_a_key() {
-        assert_eq!(
-            gap_key("How backups are  verified?"),
-            gap_key("how backups are verified")
-        );
-        assert_ne!(gap_key("how backups run"), gap_key("how restores run"));
-        assert_eq!(night_of(1_792_324_800_000, 0), 20_744);
-        assert_eq!(night_of(1_792_324_800_000, 12 * 60), 20_745);
     }
 }

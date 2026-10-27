@@ -40,10 +40,13 @@ pub(super) fn engine(clock: &Hands) -> Hq<'_> {
 
 /// Mara the CEO, Ada the lead and Linus the developer under her, all on the house's model.
 fn team(hq: &Hq<'_>) -> Team {
-    hq.seat_ceo("Mara").unwrap().unwrap();
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    {
+        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.set_brain(id, "claude-opus-5-5").unwrap();
+        id
+    };
+    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    hq.set_reports_to(linus, ada).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
@@ -102,7 +105,6 @@ fn retained_task_questions_are_owner_readable_in_bounded_pages_without_peer_enab
         hq.wakes().unwrap().len(),
         hq.store().runs().unwrap().len(),
     );
-    assert!(!hq.conversations_enabled().unwrap());
     let first = hq.legacy_task_conversations(task, -1).unwrap();
     assert_eq!(first["records"].as_array().unwrap().len(), 50);
     assert_eq!(first["records"][0]["id"], "legacy-consult:1");

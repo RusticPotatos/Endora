@@ -1,14 +1,12 @@
 //! The team's application layer: the engine and the ports it needs.
 
 mod chess_tool;
-pub mod conversation_ports;
 pub mod engine;
 pub mod guard_ports;
 pub mod history_ports;
 pub mod map_ports;
 pub mod ports;
 pub mod protocol;
-mod protocol_conversations;
 pub mod protocol_history;
 pub mod protocol_world;
 pub mod replay;
@@ -17,7 +15,7 @@ pub mod scorecard;
 pub mod world_ports;
 
 pub use engine::{
-    Asked, Author, Engine, EngineError, Fired, KeptBranch, Proposal, Recorded, Settings, Standing,
+    Asked, Author, Engine, EngineError, Fired, KeptBranch, Proposal, Recorded, Settings,
     Submission, TickReport, WingSeeded,
 };
 pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
@@ -68,12 +66,6 @@ mod wing_tests;
 mod replay_tests;
 
 #[cfg(test)]
-mod staffing_tests;
-
-#[cfg(test)]
-mod notebook_tests;
-
-#[cfg(test)]
 mod runtime_tests;
 
 #[cfg(test)]
@@ -86,19 +78,10 @@ mod games_tests;
 mod scenario_tests;
 
 #[cfg(test)]
-mod raci_tests;
-
-#[cfg(test)]
-mod ladder_tests;
-
-#[cfg(test)]
 mod world_tests;
 
 #[cfg(test)]
 mod guards_tests;
-
-#[cfg(test)]
-mod budget_tests;
 
 #[cfg(test)]
 mod caps_tests;
@@ -110,19 +93,13 @@ mod drain_tests;
 mod map_tests;
 
 #[cfg(test)]
-mod quiz_tests;
-
-#[cfg(test)]
 mod history_tests;
 
 #[cfg(test)]
 mod asking_tests;
 
 #[cfg(test)]
-mod conversation_tests;
-
-#[cfg(test)]
-mod assistance_resilience_tests;
-
-#[cfg(test)]
 mod turn_kinds_tests;
+
+#[cfg(test)]
+mod loops_tests;

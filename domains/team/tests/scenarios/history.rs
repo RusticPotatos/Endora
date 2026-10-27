@@ -56,12 +56,6 @@ fn replay_shows(w: &mut Office, name: String, text: String) {
     assert!(said.contains(&text), "the replay holds: {shown}");
 }
 
-#[then(expr = "the replay of {word}'s turn shows no conversation")]
-fn replay_shows_none(w: &mut Office, name: String) {
-    let shown = w.replay_of(&name);
-    assert!(shown["transcript"].is_null(), "the replay holds: {shown}");
-}
-
 #[then(regex = r"^the replay of (\w+)'s turn says it is kept for (\d+) days$")]
 fn replay_says_kept_for(w: &mut Office, name: String, days: i64) {
     assert_eq!(days, KEPT_DAYS, "the owner's rule is thirty days");
@@ -79,24 +73,6 @@ fn replay_is_cut(w: &mut Office, name: String, start: String, end: String) {
     assert_eq!(shown["transcript"]["cut"], true, "{shown}");
     assert!(said.len() <= TRANSCRIPT_MOST);
     assert!(said.starts_with(&start) && said.ends_with(&end));
-}
-
-#[then(expr = "the handover note on {string} still says {string}")]
-fn handover_still_says(w: &mut Office, title: String, text: String) {
-    use endora_team::application::world_ports::WorldStore as _;
-    let task = w.task(&title);
-    let notes = w.hq.store().handovers(task).expect("the store answers");
-    assert!(
-        notes.iter().any(|h| h.note.next.contains(&text)),
-        "{notes:?}"
-    );
-}
-
-#[then(expr = "{string} is still in the thread of {string}")]
-fn still_in_thread(w: &mut Office, text: String, title: String) {
-    let task = w.task(&title);
-    let thread = w.hq.store().thread(task).expect("the store answers");
-    assert!(thread.iter().any(|p| p.text.contains(&text)), "{thread:?}");
 }
 
 // --- Asking the past (ADR 0129) -----------------------------------------------------------
@@ -119,12 +95,6 @@ fn asks_the_record(w: &mut Office, name: String, question: String) {
 fn answer_says(w: &mut Office, text: String) {
     let answer = w.answer.clone().expect("the record was asked");
     assert!(answer.contains(&text), "the record said:\n{answer}");
-}
-
-#[then("the answer holds nothing")]
-fn answer_holds_nothing(w: &mut Office) {
-    let answer = w.answer.clone().expect("the record was asked");
-    assert!(answer.starts_with("Nothing in HQ's record"), "{answer}");
 }
 
 #[then(expr = "the answer links {word}'s turn")]
@@ -211,13 +181,6 @@ fn consult_answer_count(w: &mut Office, title: String, expected: usize) {
             .count(),
         expected
     );
-}
-
-#[then(expr = "the thread of {string} says {string}")]
-fn thread_says(w: &mut Office, title: String, text: String) {
-    let task = w.task(&title);
-    let thread = w.hq.store().thread(task).expect("the store answers");
-    assert!(thread.iter().any(|p| p.text.contains(&text)), "{thread:?}");
 }
 
 #[when(expr = "{word} reads the lab and sees something Confidential")]
