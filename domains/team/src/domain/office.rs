@@ -218,10 +218,6 @@ pub enum Refused {
     },
     /// No such item.
     NoSuchItem(i64),
-    /// A proposal makes at least one change.
-    NoChanges,
-    /// A proposal makes at most this many.
-    TooManyChanges(usize),
 }
 
 impl fmt::Display for Refused {
@@ -255,8 +251,6 @@ impl fmt::Display for Refused {
                 write!(f, "the floor holds at most {most} {}s", kind.label())
             }
             Self::NoSuchItem(item) => write!(f, "there is no item {item}"),
-            Self::NoChanges => f.write_str("a proposal changes something"),
-            Self::TooManyChanges(most) => write!(f, "a proposal makes at most {most} changes"),
         }
     }
 }

@@ -621,20 +621,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// lab's state fourteen turns in a row to no effect; and on #667 a lead re-read only the
     /// status its turn before had read, four times). A first reading always shows something.
     pub(super) fn shown_nothing(&self, member: MemberId, task: TaskId) -> Done<Vec<(RunId, bool)>> {
-        // A huddle's short turn is the member's view, not its work on the task (ADR 0120).
-        let huddles: Vec<crate::domain::WakeId> = self
-            .store
-            .wakes()?
-            .into_iter()
-            .filter(|w| w.reason == WakeReason::Huddle)
-            .map(|w| w.id)
-            .collect();
         let mut runs: Vec<Run> = self
             .store
             .runs()?
             .into_iter()
             .filter(|r| r.member == member && r.task == Some(task) && r.label.is_some())
-            .filter(|r| !huddles.contains(&r.wake))
             .collect();
         runs.sort_by_key(|r| r.id);
         let mut shown = Vec::new();

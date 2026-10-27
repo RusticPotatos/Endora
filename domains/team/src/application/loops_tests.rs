@@ -82,7 +82,7 @@ fn a_member_is_its_model_whatever_woke_it() {
     assert_eq!(hq.set_model(kit, "sonnet").unwrap(), Brain::Sonnet);
     let asked = task(&hq, g, "A question for Bo");
     let given = task(&hq, g, "Work for Kit");
-    hq.wake(bo, Some(asked), WakeReason::QuestionAsked).unwrap();
+    hq.wake(bo, Some(asked), WakeReason::Mentioned).unwrap();
     hq.wake(kit, Some(given), WakeReason::Assigned).unwrap();
     hq.tell_mac(true, "ready");
     hq.tick().unwrap();
@@ -528,7 +528,6 @@ fn turns_that_show_nothing_are_one_of_the_items_failures() {
     assert_eq!(hq.loop_failures(fix).unwrap(), 1);
     let now = hq.store().task(fix).unwrap().unwrap();
     assert_eq!(now.owner.or(now.assignee), Some(f.bo));
-    assert!(!woken(&hq, f.bo, fix, WakeReason::Escalated));
 }
 
 /// Three failures move an item up one rank; a failure at the top rank goes to the owner.

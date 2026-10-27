@@ -525,10 +525,6 @@ pub enum WorldRefusal {
     Derived(String),
     /// No page of the world is called that.
     NoSuchPage(String),
-    /// No proposal has that number.
-    NoSuchProposal(i64),
-    /// The proposal was decided already.
-    ProposalDecided(i64),
 }
 
 impl fmt::Display for WorldRefusal {
@@ -566,8 +562,6 @@ impl fmt::Display for WorldRefusal {
                 )
             }
             Self::NoSuchPage(said) => write!(f, "there is no page {said} in the world"),
-            Self::NoSuchProposal(id) => write!(f, "there is no proposal {id}"),
-            Self::ProposalDecided(id) => write!(f, "proposal {id} is decided already"),
         }
     }
 }

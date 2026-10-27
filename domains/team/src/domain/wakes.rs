@@ -39,11 +39,6 @@ pub enum WakeReason {
     ReviewRequested,
     /// The reviewer sent the member's draft back: something in it did not hold.
     SentBack,
-    /// A member below asked this one a question about its task, up the chain of command
-    /// (ADR 0111): it is in the task's thread, "Question for <name>: …".
-    QuestionAsked,
-    /// The one this member asked up the chain answered in the task's thread.
-    QuestionAnswered,
     /// Work the tester passed (or that nobody else tests) waits for its lead to accept it
     /// against its criteria, or send it back (ADR 0114).
     AcceptanceAsked,
@@ -52,28 +47,14 @@ pub enum WakeReason {
     CheckDone,
     /// Nothing to do: a turn about no task, for the office and the notebook (ADR 0119).
     Downtime,
-    /// The CEO gave the lead of the task's area a direction (ADR 0120): the lead decides what
-    /// to do with it.
-    Directed,
     /// Stuck work climbed the ladder to this member (ADR 0120): the area's lead, to decide;
     /// or the CEO, when the lead said it needs the CEO.
     Decide,
-    /// A huddle on stuck work asks this member for its view, in one short turn (ADR 0120).
-    Huddle,
-    /// A guard asks the lead of the work's area to look (ADR 0124): at work HQ cannot tell is
-    /// stopped by accident, or at a finding in its area.
-    Guard,
     /// A task its task waits on was dropped (ADR 0124): the wait will not end by itself.
     WaitDropped,
     /// A colleague consults this member (ADR 0129): one short turn, about no task, to answer a
     /// question from what it knows and the record. A member who cannot be woken is not.
     Consulted,
-    /// The member's own turn on the house's model was stuck and took the problem a model tier
-    /// up (ADR 0139): the same member, on its Claude, with why in the task's thread.
-    Escalated,
-    /// A colleague consults this member from a turn on Claude (ADR 0139: an answer on a tier
-    /// at least the asker's): as [`Self::Consulted`], but judged, on the member's Claude.
-    ConsultedUp,
 }
 
 impl WakeReason {
@@ -95,19 +76,12 @@ impl WakeReason {
             Self::AssignmentRecovery => "assignment_recovery",
             Self::ReviewRequested => "review_requested",
             Self::SentBack => "sent_back",
-            Self::QuestionAsked => "question_asked",
-            Self::QuestionAnswered => "question_answered",
             Self::AcceptanceAsked => "acceptance_asked",
             Self::CheckDone => "check_done",
             Self::Downtime => "downtime",
-            Self::Directed => "directed",
             Self::Decide => "decide",
-            Self::Huddle => "huddle",
-            Self::Guard => "guard",
             Self::WaitDropped => "wait_dropped",
             Self::Consulted => "consulted",
-            Self::Escalated => "escalated",
-            Self::ConsultedUp => "consulted_up",
         }
     }
 
@@ -140,13 +114,8 @@ impl WakeReason {
             Self::OwnerReplied
                 | Self::ProposalDecided
                 | Self::SentBack
-                | Self::QuestionAsked
-                | Self::QuestionAnswered
                 | Self::CheckDone
-                | Self::Directed
                 | Self::Decide
-                | Self::Huddle
-                | Self::Guard
         )
     }
 
@@ -170,7 +139,7 @@ impl WakeReason {
     /// be added here too, and classified in [`super::turns`], whose table test fails until it
     /// is.
     #[must_use]
-    pub const fn all() -> [Self; 27] {
+    pub const fn all() -> [Self; 20] {
         [
             Self::Assigned,
             Self::Mentioned,
@@ -186,19 +155,12 @@ impl WakeReason {
             Self::AssignmentRecovery,
             Self::ReviewRequested,
             Self::SentBack,
-            Self::QuestionAsked,
-            Self::QuestionAnswered,
             Self::AcceptanceAsked,
             Self::CheckDone,
             Self::Downtime,
-            Self::Directed,
             Self::Decide,
-            Self::Huddle,
-            Self::Guard,
             Self::WaitDropped,
             Self::Consulted,
-            Self::Escalated,
-            Self::ConsultedUp,
         ]
     }
 
@@ -613,8 +575,6 @@ mod tests {
             WakeDecision::Refuse(Refused::NotForTheCeo)
         );
         for reaches in [
-            WakeReason::QuestionAsked,
-            WakeReason::QuestionAnswered,
             WakeReason::ProposalDecided,
             WakeReason::OwnerReplied,
             WakeReason::Assigned,
@@ -631,10 +591,6 @@ mod tests {
             WakeReason::ReviewRequested,
         ] {
             assert!(!not.reaches_the_ceo(), "{not:?}");
-        }
-        for asked in [WakeReason::QuestionAsked, WakeReason::QuestionAnswered] {
-            assert!(asked.brings_news() && asked.reaches_work_in_review());
-            assert_eq!(WakeReason::from_name(asked.name()), Some(asked));
         }
         assert_eq!(
             Refused::from_name("not_for_the_ceo"),

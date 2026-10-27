@@ -406,10 +406,7 @@ fn nobody_was_nudged(w: &mut Office, title: String) {
             let role = members.iter().find(|m| m.id == wake.member).map(|m| m.role);
             matches!(
                 wake.reason,
-                WakeReason::Recovery
-                    | WakeReason::AssignmentRecovery
-                    | WakeReason::Huddle
-                    | WakeReason::Guard
+                WakeReason::Recovery | WakeReason::AssignmentRecovery
             ) || (wake.reason == WakeReason::Decide && matches!(role, Some(Role::Lead | Role::Ceo)))
         })
         .collect();

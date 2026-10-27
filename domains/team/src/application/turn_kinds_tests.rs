@@ -739,11 +739,7 @@ fn work_whose_turn_waits_for_budget_is_held_never_stuck_and_nothing_climbs() {
     assert!(
         after.iter().all(|w| !matches!(
             w.reason,
-            WakeReason::Recovery
-                | WakeReason::AssignmentRecovery
-                | WakeReason::Decide
-                | WakeReason::Huddle
-                | WakeReason::Guard
+            WakeReason::Recovery | WakeReason::AssignmentRecovery | WakeReason::Decide
         ) || w.task != Some(own)),
         "nothing woke anyone for it: {after:?}"
     );

@@ -561,8 +561,6 @@ pub enum Refusal {
     /// A scenario refuses an action, or its world is not a model's to close (the Holodeck
     /// plan's phase 5): the world's own words.
     Scenario(String),
-    /// There is no such proposal for the office.
-    NoSuchProposal(i64),
     /// A downtime turn makes no work: it is for the office and the notebook.
     InDowntime,
     /// Stuck work was to be tried again, but nobody can be woken for it now: nothing was
@@ -744,7 +742,6 @@ impl fmt::Display for Refusal {
             Self::Office(refused) => refused.fmt(f),
             Self::Chess(refused) => refused.fmt(f),
             Self::Scenario(why) => f.write_str(why),
-            Self::NoSuchProposal(id) => write!(f, "there is no proposal {id} for the office"),
             Self::InDowntime => f.write_str(
                 "this is a downtime turn: it makes no work. React to a proposal, propose a small \
                  change to the office, or note an idea in your notebook",

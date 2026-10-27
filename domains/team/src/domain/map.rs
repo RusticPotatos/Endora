@@ -394,37 +394,6 @@ pub fn cited(text: &str) -> Vec<String> {
 
 // ---- proposals and gaps -------------------------------------------------------------------
 
-/// Where a proposal to a page stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProposalStatus {
-    /// Waiting for the steward.
-    Open,
-    /// The steward wrote it.
-    Accepted,
-    /// The steward declined it, with a reason.
-    Declined,
-}
-
-impl ProposalStatus {
-    /// Its stable name.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Accepted => "accepted",
-            Self::Declined => "declined",
-        }
-    }
-
-    /// The status with this [`name`](Self::name).
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Open, Self::Accepted, Self::Declined]
-            .into_iter()
-            .find(|s| s.name() == name)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

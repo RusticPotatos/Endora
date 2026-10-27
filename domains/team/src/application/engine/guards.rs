@@ -20,11 +20,7 @@ use crate::domain::{
 
 /// The wakes that are HQ's own recovery, left out of what a nudge "saw": a nudge must not make
 /// itself new.
-const OWN_WAKES: [WakeReason; 3] = [
-    WakeReason::Recovery,
-    WakeReason::AssignmentRecovery,
-    WakeReason::Guard,
-];
+const OWN_WAKES: [WakeReason; 2] = [WakeReason::Recovery, WakeReason::AssignmentRecovery];
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the stopped diagnosis ----------------------------------------------------------------
