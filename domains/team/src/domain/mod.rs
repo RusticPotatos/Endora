@@ -28,6 +28,7 @@ pub mod lessons;
 pub mod mac;
 pub mod map;
 pub mod money;
+pub mod names;
 pub mod notebook;
 pub mod office;
 pub mod projects;

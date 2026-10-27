@@ -358,6 +358,11 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
+    /// Sets a member's model (ADR 0142): both its brains, so every turn runs on it.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_model(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
     /// Sets what a member does its work with (ADR 0131): the Mac or the house's own model.
     ///
     /// # Errors

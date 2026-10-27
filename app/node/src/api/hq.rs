@@ -494,6 +494,29 @@ pub(super) async fn hq_set_work_brain(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqModel {
+    model: String,
+}
+
+/// The owner sets a member's model (ADR 0142): every turn of its runs on it.
+pub(super) async fn hq_set_model(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqModel>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/model"),
+        Some(json!({ "model": req.model })),
+    )
+    .await?;
+    // HQ answers with one of its own brains' names, never what was asked.
+    let brain = answer.0["model"].as_str().unwrap_or("").to_owned();
+    record(&state, &format!("you set member {id}'s model to {brain}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqJudgmentBrain {
     judgment_brain: String,
 }

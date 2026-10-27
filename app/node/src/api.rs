@@ -392,6 +392,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/goals/{id}/strategy", post(hq_goal_strategy))
         // What a member thinks with (ADR 0109).
         .route("/v1/hq/members/{id}/brain", post(hq_set_brain))
+        .route("/v1/hq/members/{id}/model", post(hq_set_model))
         .route("/v1/hq/members/{id}/work-brain", post(hq_set_work_brain))
         .route(
             "/v1/hq/members/{id}/judgment-brain",

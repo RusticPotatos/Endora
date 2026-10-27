@@ -89,6 +89,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/goals/{id}/strategy", post(goal_strategy))
         // What a member thinks with (ADR 0109): the owner's, through the node.
         .route("/v1/members/{id}/brain", post(set_brain))
+        .route("/v1/members/{id}/model", post(set_model))
         .route("/v1/members/{id}/work-brain", post(set_work_brain))
         .route("/v1/members/{id}/judgment-brain", post(set_judgment_brain))
         // What runs a member's turns (ADR 0117): the worker, or Claude Code for a developer.
@@ -712,6 +713,22 @@ async fn set_brain(
     let hq = state.hq.clone();
     let brain = blocking(move || hq.set_brain(MemberId(id), &req.brain)).await?;
     Ok(Json(json!({ "member": id, "brain": brain.name() })))
+}
+
+#[derive(Deserialize)]
+struct ModelAsked {
+    model: String,
+}
+
+/// The owner sets a member's model (ADR 0142): every turn of its runs on it.
+async fn set_model(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<ModelAsked>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let brain = blocking(move || hq.set_model(MemberId(id), &req.model)).await?;
+    Ok(Json(json!({ "member": id, "model": brain.name() })))
 }
 
 #[derive(Deserialize)]

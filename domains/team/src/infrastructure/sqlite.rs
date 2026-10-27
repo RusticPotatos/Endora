@@ -697,20 +697,16 @@ impl TeamStore for SqliteTeamStore {
             .query_map([], |r| {
                 let role: String = r.get(2)?;
                 let role = Role::from_name(&role).unwrap_or(Role::Developer);
-                // What a member judges with is a Claude (ADR 0131). A member whose brain is
-                // the house's model, or one the store does not know, has none of its own yet,
-                // and judges with the cheap Claude its role may use, as the migration gives it.
+                // A member is its model (ADR 0142): the brain stored, whichever it is. One the
+                // store does not know is the cheap Claude its role may use.
                 let stored = Brain::from_name(&r.get::<_, String>(7)?);
-                let brain = stored
-                    .filter(|b| b.cloud())
-                    .unwrap_or(Brain::default_judgment(role));
-                // A member never given a work brain works with the house's brain it had, or
-                // the Mac when it was on Claude. Claude never does the work.
+                let brain = stored.unwrap_or(Brain::default_judgment(role));
+                // A member never given a work brain works with the house's brain it is, or the
+                // Mac.
                 let work_brain = r
                     .get::<_, Option<String>>(11)?
                     .as_deref()
                     .and_then(Brain::from_name)
-                    .filter(|b| b.house())
                     .or(stored.filter(|b| b.house()))
                     .unwrap_or(Brain::Mac);
                 Ok(Member {
@@ -850,6 +846,16 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET brain = ?2, work_brain = COALESCE(work_brain, 'mac')
                  WHERE id = ?1",
+                params![member.0, brain.name()],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_model(&self, member: MemberId, brain: Brain) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET brain = ?2, work_brain = ?2 WHERE id = ?1",
                 params![member.0, brain.name()],
             )
             .map_err(backend)?;

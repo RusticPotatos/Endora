@@ -581,10 +581,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         look: u8,
     ) -> Done<MemberId> {
         let _held = self.held();
-        let manager = chain::manager_at_hire(role, &self.store.members()?);
+        let members = self.store.members()?;
+        let manager = chain::manager_at_hire(role, &members);
+        // No name given: the next free one (ADR 0142).
+        let given = if name.trim().is_empty() {
+            let taken: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
+            crate::domain::names::next_free(&taken)
+        } else {
+            name.to_owned()
+        };
         let id = self
             .store
-            .add_member(name, role, share_percent, slots, look)?;
+            .add_member(&given, role, share_percent, slots, look)?;
         self.store.set_reports_to(id, manager)?;
         Ok(id)
     }
@@ -612,6 +620,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let found = self.member(member)?;
         let brain = Brain::for_role(found.role, brain).map_err(EngineError::Refused)?;
         self.brain_set_held_lock(&found, brain)?;
+        Ok(brain)
+    }
+
+    /// The owner sets a member's model (ADR 0142), by its name: every turn of the member's runs
+    /// on it, whatever woke it. Any member may be any model; a title is a name only.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
+    /// a name that is not a model Endora has; a store failure.
+    pub fn set_model(&self, member: MemberId, brain: &str) -> Done<Brain> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        let brain = Brain::from_name(brain).ok_or_else(|| {
+            EngineError::Refused(Refusal::NotABrain {
+                role: found.role,
+                asked: brain.to_owned(),
+            })
+        })?;
+        self.store.set_model(found.id, brain)?;
+        self.emit(
+            EventKind::BrainSet,
+            json!({ "member": found.id.0, "name": found.name, "brain": brain.name(),
+                    "slot": "model" }),
+        )?;
         Ok(brain)
     }
 
@@ -3638,7 +3670,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // the one exception, and acts at once.
             // A side of a league game is pinned to its brain, whoever plays it, and a Claude
             // side is paid from the league's capped project alone.
-            let pinned = self.league_brain_of(run.task)?;
+            let league = self.league_brain_of(run.task)?;
+            // A member is its model (ADR 0142): every turn of its runs there, whatever woke it.
+            // A member still split between a Claude and a house model is placed as before.
+            let pinned = league.or((member.brain == member.work_brain).then_some(member.brain));
             // A scenario's turn is bounded by its world, not its player's day (ADR 0133, amended).
             let in_a_world = match run.task {
                 Some(task) => self.in_a_scenario(task)?,
@@ -3649,7 +3684,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 None => self.need_of_run(&run, &member, &wakes, &known),
             };
             // Only judgment is paid for; work on the house's models reserves nothing.
-            let asked = match (need.kind, pinned) {
+            let asked = match (need.kind, league) {
                 (turns::TurnKind::Work, _) => Some(0),
                 (turns::TurnKind::Judgment, Some(_)) => match self.project_left(project)? {
                     Some(_) => self.affordable(&member, project, true)?,
@@ -5321,6 +5356,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // Two brains (ADR 0131): what it does its work with (the Mac or the house's
                 // model), and the Claude it judges with, each with what the owner may choose.
                 "work_brain": m.work_brain.name(), "work_brain_label": m.work_brain.label(),
+                "rank": m.brain.rank(),
                 "work_brains": Brain::work_choices().into_iter()
                     .map(|b| json!({ "name": b.name(), "label": b.label() }))
                     .collect::<Vec<_>>(),
