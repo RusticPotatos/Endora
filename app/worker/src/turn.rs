@@ -184,7 +184,9 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     let lessons = offered.iter().any(|t| t["name"] == "tell_story");
     // A local model reads every definition on every call, slowly: past a dozen tools, it starts
     // with its core and finds the rest (Anthropic's and OpenAI's advice, 2026-10-25). Claude
-    // keeps them all, cached.
+    // does the same with Anthropic's own tool search (2026-10-27): its cache lasts minutes and
+    // its turns come half an hour apart, so every turn paid to write all the definitions.
+    let claude_searches = setup.api == Api::Anthropic && offered.len() > DEFER_PAST;
     let mut deferred = if setup.api == Api::OpenAi && offered.len() > DEFER_PAST {
         let (now, later): (Vec<Value>, Vec<Value>) = offered
             .into_iter()
@@ -227,7 +229,16 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             deferred.len()
         ));
     }
+    if claude_searches {
+        told.push_str(&format!(
+            "\n\nMore tools are yours than are loaded: search for them with {CLAUDE_SEARCH}, \
+             saying what you want to do."
+        ));
+    }
     let mut talk = Talk::new(setup.api, told, briefing, &offered);
+    if claude_searches {
+        talk.search_for_all_but(&ALWAYS);
+    }
     talk.effort.clone_from(&setup.effort);
     // One loop whichever API the relay speaks: the rounds limit, the repeat guard, the line
     // saying what the turn did, and the ends of a turn are the same for every brain.
@@ -342,6 +353,9 @@ const ALWAYS: [&str; 13] = [
     "container_logs",
     "restart_container",
 ];
+
+/// Anthropic's tool search, by natural-language query, as Claude's turns use it.
+const CLAUDE_SEARCH: &str = "tool_search_tool_bm25";
 
 /// How many tools one search brings in.
 const FOUND_AT_MOST: usize = 5;
@@ -885,6 +899,21 @@ impl Talk {
                 effort: None,
             },
         }
+    }
+
+    /// Claude's tools other than `core` held back behind Anthropic's tool search: each still
+    /// sent, marked `defer_loading`, and loaded only when a search finds it. The tools stay the
+    /// same every call, so the cached prompt holds (the search's finds go in the conversation).
+    fn search_for_all_but(&mut self, core: &[&str]) {
+        for tool in &mut self.tools {
+            if !tool["name"].as_str().is_some_and(|n| core.contains(&n)) {
+                tool["defer_loading"] = json!(true);
+            }
+        }
+        self.tools.insert(
+            0,
+            json!({ "type": "tool_search_tool_bm25_20251119", "name": CLAUDE_SEARCH }),
+        );
     }
 
     /// Tools found mid-turn, offered from the next call on.

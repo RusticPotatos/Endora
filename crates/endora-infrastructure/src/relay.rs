@@ -334,6 +334,13 @@ const METERED_FIELDS: [&str; 15] = [
     "cache_control",
 ];
 
+/// Anthropic's tool search, the one server tool passed on: it costs nothing and reaches nothing
+/// outside, only picking from the tools the call itself sent (held back with `defer_loading`).
+pub const TOOL_SEARCH: [&str; 2] = [
+    "tool_search_tool_bm25_20251119",
+    "tool_search_tool_regex_20251119",
+];
+
 /// Why a call cannot be metered, if it cannot: a field not in [`METERED_FIELDS`], a tool that
 /// runs on Anthropic's side (web search and fetch, code execution, MCP: each with fees of its
 /// own, and each a way out to the internet), content Anthropic would fetch from a URL or
@@ -356,8 +363,10 @@ pub fn unmetered(call: &Value) -> Option<String> {
             return Some("`tools` is not a list".to_owned());
         };
         let server_side = tools.iter().find(|t| {
-            t.get("type")
-                .is_some_and(|kind| kind.as_str() != Some("custom"))
+            t.get("type").is_some_and(|kind| {
+                kind.as_str() != Some("custom")
+                    && !kind.as_str().is_some_and(|k| TOOL_SEARCH.contains(&k))
+            })
         });
         if let Some(tool) = server_side {
             return Some(format!(
@@ -1089,6 +1098,45 @@ mod tests {
             assert!(refused(change.clone()).is_some(), "{change}");
         }
         assert!(unmetered(&json!([])).is_some(), "a call is an object");
+    }
+
+    /// Tool search runs on Anthropic's side but costs nothing and reaches nothing outside: it
+    /// only picks from the tools the call sent. So it passes, with tools held back behind it,
+    /// and the blocks it answers with go back in the conversation; no other server tool does.
+    #[test]
+    fn tool_search_passes_and_no_other_server_tool() {
+        let searching = json!({ "model": "claude-sonnet-5-5", "max_tokens": 10,
+            "tools": [
+                { "type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25" },
+                { "name": "post", "input_schema": { "type": "object" } },
+                { "name": "sonarr_queue", "input_schema": { "type": "object" }, "defer_loading": true },
+            ],
+            "messages": [
+                { "role": "user", "content": "Look at Sonarr." },
+                { "role": "assistant", "content": [
+                    { "type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25",
+                      "input": { "query": "sonarr queue" } },
+                    { "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_1",
+                      "content": { "type": "tool_search_tool_search_result",
+                        "tool_references": [{ "type": "tool_reference", "tool_name": "sonarr_queue" }] } },
+                    { "type": "tool_use", "id": "toolu_1", "name": "sonarr_queue", "input": {} },
+                ] },
+                { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "toolu_1", "content": "empty" }] },
+            ] });
+        assert_eq!(unmetered(&searching), None);
+        let mut regex = searching.clone();
+        regex["tools"][0] =
+            json!({ "type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex" });
+        assert_eq!(unmetered(&regex), None);
+        let mut beside = searching;
+        beside["tools"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "type": "web_search_20260209", "name": "web_search" }));
+        assert!(
+            unmetered(&beside).is_some(),
+            "web search does not ride along"
+        );
     }
 
     #[test]

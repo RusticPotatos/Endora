@@ -2240,6 +2240,78 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
     );
 }
 
+/// Live, 27 Oct 2026: a Claude turn's opening call sent about 26,000 tokens, nearly all tool
+/// definitions it never used, and wrote them to the cache afresh every turn ($0.066 on Sonnet).
+/// With many tools, a Claude turn now loads its core and leaves the rest to Anthropic's tool
+/// search: every definition is still sent, the rest marked `defer_loading`, and the search's
+/// own blocks go back in the conversation as Claude said them, so the cached prompt holds.
+#[test]
+fn a_claude_turn_with_many_tools_loads_its_core_and_searches_for_the_rest() {
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node(many_contracts(), None);
+    let searched = json!({ "type": "message", "role": "assistant", "model": "claude-sonnet-5-5",
+        "content": [
+            { "type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25",
+              "input": { "query": "sonarr queue" } },
+            { "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_1",
+              "content": { "type": "tool_search_tool_search_result",
+                "tool_references": [{ "type": "tool_reference", "tool_name": "sonarr_queue" }] } },
+            { "type": "tool_use", "id": "toolu_1", "name": "sonarr_queue", "input": {} },
+        ],
+        "stop_reason": "tool_use", "usage": { "input_tokens": 1000, "output_tokens": 100 } });
+    let (relay_url, to_relay) = model(vec![
+        (200, searched.clone()),
+        (200, claude("Read the queue.", &[])),
+    ]);
+    let out = worker(&on_claude(&hq_url, &relay_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let to_relay = to_relay.lock().unwrap().clone();
+    let tools = to_relay[0].body["tools"].as_array().unwrap().clone();
+    let named = |name: &str| tools.iter().find(|t| t["name"] == name).cloned();
+    assert_eq!(
+        named("tool_search_tool_bm25"),
+        Some(json!({ "type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25" }))
+    );
+    for core in [
+        "my_turn",
+        "claim",
+        "post",
+        "set_status",
+        "homelab_status",
+        "chess",
+    ] {
+        let tool = named(core).unwrap_or_else(|| panic!("{core} missing"));
+        assert!(
+            tool.get("defer_loading").is_none(),
+            "{core} is loaded: {tool}"
+        );
+    }
+    for later in ["sonarr_queue", "ha_lights", "web_search", "plex_sessions"] {
+        let tool = named(later).unwrap_or_else(|| panic!("{later} is still sent"));
+        assert_eq!(tool["defer_loading"], true, "{later}");
+    }
+    assert!(
+        !tools.iter().any(|t| t["name"] == "find_tools"),
+        "Claude searches with Anthropic's tool, not the worker's"
+    );
+    assert_eq!(
+        to_relay[1].body["tools"], to_relay[0].body["tools"],
+        "the same tools every call, so the cached prompt holds"
+    );
+    let second = &to_relay[1].body["messages"];
+    assert_eq!(
+        second[1]["content"], searched["content"],
+        "the search goes back as said"
+    );
+    assert_eq!(second[2]["content"][0]["tool_use_id"], "toolu_1");
+    assert_eq!(
+        second[2]["content"].as_array().unwrap().len(),
+        1,
+        "a result for the tool it ran, none for the search"
+    );
+}
+
 /// A turn with few tools is offered all of them, as before: deferring would only cost a call.
 #[test]
 fn a_local_turn_with_few_tools_is_offered_them_all() {
