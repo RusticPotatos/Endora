@@ -22,18 +22,3 @@ Feature: Elastic staffing and notebooks
     And Rae is still on the team
     And waking Rae is refused as furloughed
     But Zed is at work
-
-  Scenario: A furloughed member keeps its notes
-    Given Kit's planning turn is over
-    And Rae noted "The proxy restarts clean." resting on the wing's first task
-    When the owner furloughs Rae
-    And 2 days pass
-    And the owner recalls Rae
-    Then Rae's notebook holds 1 note
-    # While the wing sat idle Kit was woken about his plan; the Mac takes one turn at a time.
-    When Kit's turn starts
-    And Kit's turn ends
-    Given Kit hands Rae the task "Look at the proxy" in the wing
-    When Rae's turn starts
-    Then Rae's briefing says "You were furloughed from 17 Oct to 19 Oct; read your notes first."
-    And Rae's briefing says "The proxy restarts clean."

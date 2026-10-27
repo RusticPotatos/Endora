@@ -13,9 +13,8 @@ use crate::domain::history::{InputOrigin, InputRef};
 use crate::domain::office;
 use crate::domain::{
     Brain, CheckBack, CheckBackStatus, DeskId, Event, Evidence, Goal, GoalId, GoalStatus, Member,
-    MemberId, Micros, Millis, Note, Pause, Priority, Project, ProjectId, ProjectStatus, Receipt,
-    Ref, Refused, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId, TaskStatus, WakeId,
-    WakeReason,
+    MemberId, Micros, Millis, Pause, Priority, Project, ProjectId, ProjectStatus, Receipt, Refused,
+    Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
 use crate::domain::{Branch, Check, Document};
 use crate::domain::{chess, games};
@@ -183,15 +182,6 @@ CREATE TABLE IF NOT EXISTS branches (
     plus INTEGER NOT NULL, minus INTEGER NOT NULL, can_push INTEGER NOT NULL,
     status TEXT NOT NULL, at_ms INTEGER NOT NULL
 ) STRICT;
--- Each member's notebook (ADR 0118): short notes that rest on evidence from HQ's record. A
--- note is removed by the member that forgets it or by the owner; a member is never removed.
-CREATE TABLE IF NOT EXISTS notes (
-    id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
-    text TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '', from_owner INTEGER NOT NULL DEFAULT 0,
-    written_at INTEGER NOT NULL, written_in_run INTEGER REFERENCES runs(id),
-    last_used_at INTEGER NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS notes_by_member ON notes(member);
 CREATE TABLE IF NOT EXISTS checks (
     id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
     branch INTEGER NOT NULL REFERENCES branches(id), run INTEGER NOT NULL REFERENCES runs(id),
@@ -325,6 +315,12 @@ const RETIRED_CONVERSATIONS: &str = "
     DROP TABLE IF EXISTS office_votes;
     DROP TABLE IF EXISTS office_proposals;
     DROP TABLE IF EXISTS office_history;
+    DROP TABLE IF EXISTS world_quizzes;
+    DROP TABLE IF EXISTS world_proposals;
+    DROP TABLE IF EXISTS world_gaps;
+    DROP TABLE IF EXISTS retractions;
+    DROP TABLE IF EXISTS note_parents;
+    DROP TABLE IF EXISTS notes;
     DELETE FROM findings WHERE guard NOT IN ('stuck', 'same_ask');
     DELETE FROM settings WHERE key LIKE 'ladder:%' OR key LIKE 'huddle:%'
       OR key LIKE 'guard_mode:%' OR key LIKE 'coordination_since:%'
@@ -771,84 +767,6 @@ impl TeamStore for SqliteTeamStore {
                 "UPDATE members SET recalled_at = ?2 WHERE id = ?1 AND furloughed_at IS NOT NULL",
                 params![member.0, at],
             )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn add_note(
-        &self,
-        member: MemberId,
-        text: &str,
-        evidence: &[Ref],
-        from_owner: bool,
-        run: Option<RunId>,
-        at: Millis,
-    ) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO notes (member, text, evidence, from_owner, written_at, written_in_run, last_used_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5)",
-            params![
-                member.0,
-                text,
-                Ref::kept(evidence),
-                from_owner,
-                at,
-                run.map(|r| r.0)
-            ],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn notes(&self, member: MemberId) -> Stored<Vec<Note>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, member, text, evidence, from_owner, written_at, written_in_run, \
-                 last_used_at FROM notes WHERE member = ?1 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([member.0], |r| {
-                Ok(Note {
-                    id: r.get(0)?,
-                    member: MemberId(r.get(1)?),
-                    text: r.get(2)?,
-                    evidence: Ref::read(&r.get::<_, String>(3)?),
-                    from_owner: r.get::<_, i64>(4)? != 0,
-                    written_at: r.get(5)?,
-                    written_in_run: r.get::<_, Option<i64>>(6)?.map(RunId),
-                    last_used_at: r.get(7)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn set_note_text(&self, note: i64, text: &str) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE notes SET text = ?2 WHERE id = ?1",
-                params![note, text],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn touch_note(&self, note: i64, at: Millis) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE notes SET last_used_at = ?2 WHERE id = ?1",
-                params![note, at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn delete_note(&self, note: i64) -> Stored<()> {
-        self.conn()?
-            .execute("DELETE FROM notes WHERE id = ?1", [note])
             .map_err(backend)?;
         Ok(())
     }
@@ -3259,49 +3177,6 @@ INSERT INTO members (id, name, role, share_percent, slots, brain, reports_to) VA
             (true, Some(120), None)
         );
         assert_eq!(store.members().unwrap().len(), 3);
-        // The notebook table came with the schema, and a furloughed member keeps its notes.
-        let note = store
-            .add_note(
-                MemberId(3),
-                "deluge needs the VPN up",
-                &[Ref::Task(TaskId(1)), Ref::Event(9)],
-                false,
-                None,
-                50,
-            )
-            .unwrap();
-        let owners = store
-            .add_note(MemberId(3), "never at night", &[], true, None, 60)
-            .unwrap();
-        let kept = store.notes(MemberId(3)).unwrap();
-        assert_eq!(
-            kept.iter().map(|n| n.id).collect::<Vec<_>>(),
-            [note, owners]
-        );
-        assert_eq!(
-            (
-                kept[0].evidence.clone(),
-                kept[0].written_in_run,
-                kept[0].last_used_at,
-                kept[1].from_owner
-            ),
-            (vec![Ref::Task(TaskId(1)), Ref::Event(9)], None, 50, true)
-        );
-        store.touch_note(note, 90).unwrap();
-        store.set_note_text(owners, "never at night, ever").unwrap();
-        let kept = store.notes(MemberId(3)).unwrap();
-        assert_eq!(
-            (kept[0].last_used_at, kept[1].text.as_str()),
-            (90, "never at night, ever")
-        );
-        assert!(store.notes(MemberId(2)).unwrap().is_empty());
-        store.delete_note(note).unwrap();
-        assert_eq!(store.notes(MemberId(3)).unwrap().len(), 1);
-        assert_eq!(
-            store.members().unwrap().len(),
-            3,
-            "a note goes, a member never does"
-        );
     }
 
     /// The schema as it was before evidence (ADR 0114): the live store was made with it.

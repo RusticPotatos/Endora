@@ -10,9 +10,7 @@ use super::engine::{Engine, EngineError};
 use super::ports::{Clock, NewTask, Run, TeamStore, WorkerAdapter};
 use crate::domain::drain;
 use crate::domain::review::SendBackReason;
-use crate::domain::{
-    Criterion, Member, Priority, Ref, Refusal, Role, RunStatus, TaskId, TaskStatus,
-};
+use crate::domain::{Criterion, Member, Priority, Ref, Refusal, RunStatus, TaskId, TaskStatus};
 
 /// A send-back's `reason` parameter (ADR 0132): the kind of failure HQ counts, so that a fall in
 /// it shows the memory builds working.
@@ -272,11 +270,7 @@ pub fn tools() -> Value {
         list.push(read_document_tool());
         list.push(read_doc_tool());
         list.push(super::chess_tool::tool());
-        list.extend(
-            super::protocol_world::tools(Role::Developer)
-                .into_iter()
-                .filter(|t| t["name"] == "read_world"),
-        );
+        list.push(super::protocol_world::read_world_tool());
         // Asking the past (ADR 0129).
         list.extend(super::protocol_history::tools());
         list.push(tool(
@@ -314,9 +308,6 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     let Some(list) = all.as_array_mut() else {
         return all;
     };
-    if engine.in_quiz(run.id).unwrap_or(false) {
-        list.push(super::protocol_world::quiz_tool());
-    }
     // In the loops, the member one rank up reviews (ADR 0142): its review turn has the tool.
     let reviewing = engine
         .store()

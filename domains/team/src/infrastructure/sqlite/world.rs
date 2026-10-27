@@ -688,9 +688,7 @@ mod tests {
                 (1, 'Keep the home lab healthy', '', 'active');
              INSERT INTO goal_notes (goal, note) VALUES
                 (1, '- Closed too soon: the alarm came back. (Dee, 11 Oct)');
-             INSERT INTO settings (key, value) VALUES ('house_log', '- 17 Oct: The NAS has 16 GB.');
-             INSERT INTO notes (member, text, evidence, written_at, last_used_at) VALUES
-                (1, 'deluge needs the VPN', 'task 1', 1, 1);",
+             INSERT INTO settings (key, value) VALUES ('house_log', '- 17 Oct: The NAS has 16 GB.');",
         )
         .unwrap();
         SqliteTeamStore::over(conn).unwrap()
@@ -726,7 +724,6 @@ mod tests {
             store.setting("house_log").unwrap().as_deref(),
             Some("- 17 Oct: The NAS has 16 GB.")
         );
-        assert_eq!(store.notes(MemberId(1)).unwrap().len(), 1);
         assert!(
             store
                 .goal_note(crate::domain::GoalId(1))
@@ -761,7 +758,6 @@ mod tests {
                 .unwrap()
                 .contains("Closed too soon")
         );
-        assert_eq!(store.notes(MemberId(1)).unwrap().len(), 1);
         assert_eq!(store.setting(MIGRATED).unwrap().as_deref(), Some("9"));
     }
 

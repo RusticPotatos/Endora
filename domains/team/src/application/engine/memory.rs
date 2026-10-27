@@ -6,7 +6,7 @@
 use super::{Done, Engine};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::situations::{self, Briefed, Composed, Facts, Piece, Situation, Weight};
-use crate::domain::world::{HOUSE, Scope, Section, Stage, Story};
+use crate::domain::world::{HOUSE, Section, Stage};
 use crate::domain::{Member, Millis, Role};
 
 /// The most characters of the house page's newest timeline lines a briefing carries while the
@@ -92,13 +92,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     && !matches!(
                         piece.name.as_str(),
                         // HQ's own words, or classified where they are read.
-                        "map"
-                            | "your notebook"
-                            | "tidy"
-                            | "furlough"
-                            | "world:lab"
-                            | "world:house"
-                            | "stories"
+                        "map" | "furlough" | "world:lab" | "world:house"
                     )
             })
             .map(|piece| piece.name.clone())
@@ -116,14 +110,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect();
         if !briefed.is_empty() {
             let sections = self.store.sections()?;
-            let stories = self.store.stories()?;
             for name in briefed {
                 let wrote = if name.as_str() == "world:house timeline" {
                     self.house_timeline_runs(member, run, &sections)?
                 } else if let Some(section) = sections.iter().find(|s| &s.address() == name) {
                     vec![section.written_in_run]
-                } else if let Some(story) = stories.iter().find(|s| &s.address() == name) {
-                    vec![story.written_in_run]
                 } else {
                     vec![None]
                 };
@@ -145,18 +136,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             over_budget: composed.over_budget,
             at: self.clock.now(),
         })?;
-        if composed.briefed.iter().any(|b| b == "tidy") {
-            self.tidy_asked(member.id)?;
-        }
-        if composed.briefed.iter().any(|b| b == "your proposals") {
-            self.proposals_told(member)?;
-        }
-        if composed.briefed.iter().any(|b| b == "retell") {
-            self.store.set_setting(
-                &super::world::retell_key(member.id),
-                &self.clock.now().to_string(),
-            )?;
-        }
         Ok((situation, composed))
     }
 
@@ -172,7 +151,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The pieces a situation needs, in the order they are told: what the situation is about
-    /// first (core), then the house page, the lab, the team, the stories and the notebook.
+    /// first (core), then the house page and the lab.
     fn pieces(&self, member: &Member, run: &Run, situation: Situation) -> Done<Vec<Piece>> {
         // The map opens it: the pages that matter to this member, by address (ADR 0126).
         let mut pieces = vec![Piece::new(
@@ -208,62 +187,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Weight::Core,
             ));
         }
-        // Proposals to pages it keeps, and how its own went (ADR 0126).
-        pieces.push(Piece::new(
-            "proposals to decide",
-            self.proposals_to_decide(member)?,
-            Weight::Core,
-        ));
-        pieces.push(Piece::new(
-            "your proposals",
-            self.proposals_decided(member)?,
-            Weight::Core,
-        ));
-        // The two ways the map fails, to those who keep the pages: what members looked for and
-        // did not find, and the roads that lead nowhere (ADR 0126).
-        pieces.push(Piece::new(
-            "gaps",
-            self.gaps_to_answer(member)?,
-            Weight::Core,
-        ));
-        pieces.push(Piece::new(
-            "broken roads",
-            self.roads_to_mend(member)?,
-            Weight::Core,
-        ));
-        pieces.push(Piece::new(
-            "failing pages",
-            self.quiz_flags_for(member)?,
-            Weight::Core,
-        ));
         pieces.extend(self.house_pieces(member, situation, last)?);
-        // How the lab is built, for those who read the house log it was seeded in: a lead on
-        // every turn, the CEO (whose briefings are held short) when it starts afresh or comes
-        // back to its work.
-        let wide = situation == Situation::Fresh || situation.dear();
-        if member.role == Role::Lead || (member.role == Role::Ceo && wide) {
-            pieces.push(Piece::new(
-                "world:lab",
-                self.lab_said(),
-                Weight::Recommended,
-            ));
-        }
-        pieces.extend(self.story_pieces(member, situation)?);
-        if member.role == Role::Lead {
-            pieces.push(Piece::new(
-                "retell",
-                self.retell_said(member)?,
-                Weight::Recommended,
-            ));
-        }
-        let (notes, tidy) = self.notebook_said(member, run.id)?;
-        let notes_weight = if situation == Situation::Recalled || member.role == Role::Ceo {
-            Weight::Core
-        } else {
-            Weight::Recommended
-        };
-        pieces.push(Piece::new("your notebook", notes, notes_weight));
-        pieces.push(Piece::new("tidy", tidy, Weight::Recommended));
+        // How the lab is built, for every member (ADR 0142).
+        pieces.push(Piece::new(
+            "world:lab",
+            self.lab_said(),
+            Weight::Recommended,
+        ));
         Ok(pieces)
     }
 
@@ -419,76 +349,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(pieces)
     }
 
-    /// The stories a member is told: whole when its situation is one they are taught in, else
-    /// one short line; current ones only, of the house, its area and its own.
-    fn story_pieces(&self, member: &Member, situation: Situation) -> Done<Vec<Piece>> {
-        let members = self.store.members()?;
-        let seen = self.scopes_seen(member, &members);
-        let mut pieces = Vec::new();
-        for s in self.store.stories()? {
-            if !seen.contains(&s.scope) || !s.stage.current() {
-                continue;
-            }
-            let trust = self.story_trust(&s)?;
-            let whole = !s.to_retell && s.taught.contains(&situation);
-            let (text, weight) = if whole {
-                (s.told(), Weight::Recommended)
-            } else {
-                (s.short(), Weight::Optional)
-            };
-            let mark = if matches!(s.stage, Stage::Canon | Stage::Insight) {
-                format!(" [{}]", self.stage_said(trust))
-            } else {
-                String::new()
-            };
-            pieces.push(Piece::new(
-                s.address(),
-                format!("- Story {text}{mark}\n"),
-                weight,
-            ));
-        }
-        if !pieces.is_empty() {
-            pieces.insert(
-                0,
-                Piece::new(
-                    "stories",
-                    "Stories: cite one by its handle (story:<handle>) instead of retelling it.\n",
-                    Weight::Core,
-                ),
-            );
-        }
-        Ok(pieces)
-    }
-
-    /// A lead's ask, at most once a day, to retell up to three of its area's lessons as stories.
-    fn retell_said(&self, lead: &Member) -> Done<String> {
-        let asked = self
-            .store
-            .setting(&super::world::retell_key(lead.id))?
-            .and_then(|at| at.parse::<Millis>().ok());
-        if asked.is_some_and(|at| self.clock.now() - at < crate::domain::world::DAY_MS) {
-            return Ok(String::new());
-        }
-        let due: Vec<Story> = self
-            .store
-            .stories()?
-            .into_iter()
-            .filter(|s| s.to_retell && s.scope == Scope::Area(lead.id))
-            .take(super::world::RETELL_AT_ONCE)
-            .collect();
-        if due.is_empty() {
-            return Ok(String::new());
-        }
-        let mut said = String::from(
-            "Lessons of your area to retell as stories (tell_story with the same handle: when \
-             it matters, the tempting move, what to do instead, and why, on evidence):\n",
-        );
-        for s in due {
-            said.push_str(&format!("- {}: {}\n", s.handle, s.instead));
-        }
-        Ok(said)
-    }
-
     /// The handover note a member is handed with its task, or that it is new to work others
     /// took turns on.
     fn handover_said(&self, member: &Member, run: &Run) -> Done<String> {
@@ -561,5 +421,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         said.extend(lines.into_iter().skip(earlier));
         Ok(said)
+    }
+
+    /// The furlough a member is back from, `(from, to)`, if this is its first turn since its
+    /// recall.
+    pub(super) fn back_from_furlough(
+        &self,
+        member: &Member,
+        run: &Run,
+    ) -> Done<Option<(Millis, Millis)>> {
+        let (Some(from), Some(to)) = (member.furloughed_at, member.recalled_at) else {
+            return Ok(None);
+        };
+        let since_back = self.store.runs()?.iter().any(|r| {
+            r.member == member.id && r.id != run.id && r.started_at.is_some_and(|s| s >= to)
+        });
+        Ok((!since_back).then_some((from, to)))
+    }
+
+    /// The line a briefing opens with for a member back from a furlough.
+    pub(super) fn furlough_said(&self, from: Millis, to: Millis) -> String {
+        format!(
+            "You were furloughed from {} to {}.\n",
+            self.said_day(from),
+            self.said_day(to)
+        )
     }
 }

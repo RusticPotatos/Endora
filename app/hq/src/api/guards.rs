@@ -3,7 +3,7 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State as Extract};
-use axum::routing::{get, post};
+use axum::routing::post;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -14,52 +14,7 @@ use super::{Failed, State, blocking};
 
 /// The guards' routes, signed by the node like the rest of the owner's.
 pub(super) fn routes() -> Router<State> {
-    Router::new()
-        .route("/v1/guards/findings/{id}/verdict", post(verdict))
-        .route("/v1/retractions", post(retract))
-        .route("/v1/retractions/{id}/sweep", get(sweep))
-        .route("/v1/retractions/{id}/forget", post(forget))
-}
-
-#[derive(Deserialize)]
-struct Retract {
-    target: String,
-}
-
-/// The owner says a note, section or story is not true: it is taken out, and what else says
-/// the same comes back as its sweep.
-async fn retract(
-    Extract(state): Extract<State>,
-    Json(req): Json<Retract>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    Ok(Json(blocking(move || hq.retract(&req.target)).await?))
-}
-
-/// What else says what a retraction said, now.
-async fn sweep(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let swept = blocking(move || hq.sweep(id)).await?;
-    Ok(Json(json!({ "retraction": id, "sweep": swept })))
-}
-
-#[derive(Deserialize)]
-struct Forget {
-    targets: Vec<String>,
-}
-
-/// The owner forgets, at once, what of a sweep they ticked.
-async fn forget(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-    Json(req): Json<Forget>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let forgot = blocking(move || hq.forget_swept(id, &req.targets)).await?;
-    Ok(Json(json!({ "retraction": id, "forgot": forgot })))
+    Router::new().route("/v1/guards/findings/{id}/verdict", post(verdict))
 }
 
 #[derive(Deserialize)]
@@ -142,11 +97,6 @@ mod tests {
             post(&s, path, r#"{"verdict":"maybe"}"#, true).await,
             StatusCode::NOT_FOUND,
             "no such verdict"
-        );
-        assert_eq!(
-            post(&s, "/v1/retractions", r#"{"target":"note:5"}"#, true).await,
-            StatusCode::BAD_REQUEST,
-            "nothing to retract there"
         );
         assert_eq!(
             post(&s, "/v1/retractions/7/forget", r#"{"targets":[]}"#, true).await,

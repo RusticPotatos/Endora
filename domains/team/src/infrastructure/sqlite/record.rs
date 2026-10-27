@@ -93,7 +93,6 @@ impl SqliteTeamStore {
         let mut found = Vec::new();
         found.extend(posts(&conn, q)?);
         found.extend(handovers(&conn, q)?);
-        found.extend(notes(&conn, q)?);
         found.extend(conversations(&conn, q)?);
         // What is not about a task or a project, or one member's: the pages and the stories.
         if q.task.is_none() && q.project.is_none() {
@@ -169,43 +168,6 @@ fn handovers(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
             source: Source::Handover,
             locator: format!("handover {}", text(&r[0])),
             by: text(&r[2]),
-            at: int(&r[4]).unwrap_or(0),
-            task: int(&r[1]).map(TaskId),
-            run: int(&r[5]).map(RunId),
-            tier: tier(&r[6]),
-            indexed: false,
-            text: text(&r[3]),
-        })
-        .collect())
-}
-
-fn notes(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
-    let mut args = vec![Value::Integer(q.since)];
-    let task = "(SELECT r.task FROM runs r WHERE r.id = n.written_in_run)";
-    let mut sql = format!(
-        "SELECT n.id, {task}, m.name, n.text, n.written_at, n.written_in_run, {}, n.from_owner
-         FROM notes n JOIN members m ON m.id = n.member
-         WHERE n.written_at >= ? AND {}",
-        read_secrets("n.written_in_run"),
-        like_any("n.text", &q.terms, &mut args)
-    );
-    if let Some(member) = &q.member {
-        args.push(Value::Text(member.clone()));
-        sql.push_str(" AND m.name = ?");
-    }
-    sql.push_str(&about(task, q, &mut args));
-    sql.push_str(" ORDER BY n.written_at DESC LIMIT ?");
-    limit(&mut args);
-    Ok(run_of(conn, &sql, &args)?
-        .iter()
-        .map(|r| Passage {
-            source: Source::Note,
-            locator: format!("n{} in the notebook of {}", text(&r[0]), text(&r[2])),
-            by: if int(&r[7]) == Some(1) {
-                "the owner".to_owned()
-            } else {
-                text(&r[2])
-            },
             at: int(&r[4]).unwrap_or(0),
             task: int(&r[1]).map(TaskId),
             run: int(&r[5]).map(RunId),

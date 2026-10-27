@@ -9,7 +9,6 @@ use crate::application::guard_ports::GuardStore;
 use crate::application::ports::Stored;
 use crate::domain::closure::{Closed, Closure};
 use crate::domain::guards::{Finding, Guard, Verdict};
-use crate::domain::retraction::{self, Retraction};
 use crate::domain::{MemberId, Millis, TaskId, TaskStatus};
 
 pub(super) const SCHEMA: &str = "
@@ -34,18 +33,6 @@ CREATE TABLE IF NOT EXISTS closures (
     duplicate_of INTEGER REFERENCES tasks(id), successor INTEGER REFERENCES tasks(id),
     by TEXT NOT NULL, at_ms INTEGER NOT NULL
 ) STRICT;
-CREATE TABLE IF NOT EXISTS retractions (
-    id INTEGER PRIMARY KEY, target TEXT NOT NULL, text TEXT NOT NULL, fingerprint TEXT NOT NULL,
-    at_ms INTEGER NOT NULL
-) STRICT;
-CREATE TRIGGER IF NOT EXISTS retractions_are_kept_update
-    BEFORE UPDATE ON retractions BEGIN SELECT RAISE(ABORT, 'a retraction is kept as made'); END;
-CREATE TRIGGER IF NOT EXISTS retractions_are_kept_delete
-    BEFORE DELETE ON retractions BEGIN SELECT RAISE(ABORT, 'a retraction is kept as made'); END;
-CREATE TABLE IF NOT EXISTS note_parents (
-    note INTEGER NOT NULL, parent INTEGER NOT NULL, PRIMARY KEY (note, parent)
-) STRICT;
-CREATE INDEX IF NOT EXISTS note_parents_by_parent ON note_parents(parent);
 CREATE TABLE IF NOT EXISTS desk_attached (
     desk INTEGER NOT NULL REFERENCES desk(id), task INTEGER NOT NULL REFERENCES tasks(id),
     member INTEGER REFERENCES members(id), PRIMARY KEY (desk, task)
@@ -302,45 +289,6 @@ impl GuardStore for SqliteTeamStore {
         }))
     }
 
-    fn add_retraction(&self, r: &Retraction) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO retractions (target, text, fingerprint, at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![r.target, r.text, retraction::kept(&r.fingerprint), r.at],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn retractions(&self) -> Stored<Vec<Retraction>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT id, target, text, fingerprint, at_ms FROM retractions ORDER BY id")
-            .map_err(backend)?;
-        stmt.query_map([], |r| {
-            Ok(Retraction {
-                id: r.get(0)?,
-                target: r.get(1)?,
-                text: r.get(2)?,
-                fingerprint: retraction::read(&r.get::<_, String>(3)?),
-                at: r.get(4)?,
-            })
-        })
-        .map_err(backend)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(backend)
-    }
-
-    fn add_note_parent(&self, note: i64, parent: i64) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "INSERT OR IGNORE INTO note_parents (note, parent) VALUES (?1, ?2)",
-                params![note, parent],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
     fn attach_to_desk(&self, desk: i64, task: TaskId, member: Option<MemberId>) -> Stored<()> {
         self.conn()?
             .execute(
@@ -362,17 +310,6 @@ impl GuardStore for SqliteTeamStore {
         .map_err(backend)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(backend)
-    }
-
-    fn note_children(&self, parent: i64) -> Stored<Vec<i64>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT note FROM note_parents WHERE parent = ?1 ORDER BY note")
-            .map_err(backend)?;
-        stmt.query_map([parent], |r| r.get(0))
-            .map_err(backend)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(backend)
     }
 }
 

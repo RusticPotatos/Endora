@@ -97,12 +97,6 @@ fn answer_says(w: &mut Office, text: String) {
     assert!(answer.contains(&text), "the record said:\n{answer}");
 }
 
-#[then("the answer holds nothing")]
-fn answer_holds_nothing(w: &mut Office) {
-    let answer = w.answer.clone().expect("the record was asked");
-    assert!(answer.starts_with("Nothing in HQ's record"), "{answer}");
-}
-
 #[then(expr = "the answer links {word}'s turn")]
 fn answer_links_turn(w: &mut Office, name: String) {
     let run = w.turns.get(&name).expect("the turn started").run;
@@ -187,13 +181,6 @@ fn consult_answer_count(w: &mut Office, title: String, expected: usize) {
             .count(),
         expected
     );
-}
-
-#[then(expr = "the thread of {string} says {string}")]
-fn thread_says(w: &mut Office, title: String, text: String) {
-    let task = w.task(&title);
-    let thread = w.hq.store().thread(task).expect("the store answers");
-    assert!(thread.iter().any(|p| p.text.contains(&text)), "{thread:?}");
 }
 
 #[when(expr = "{word} reads the lab and sees something Confidential")]

@@ -21,7 +21,7 @@ use endora_team::domain::money::{DAY_MS, DOLLAR};
 use endora_team::domain::routines::HOUR_MS;
 use endora_team::domain::{
     Criterion, DeskId, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus,
-    Receipt, Ref, Refused, Role, TaskId, WakeReason,
+    Receipt, Refused, Role, TaskId, WakeReason,
 };
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 use serde_json::json;
@@ -33,10 +33,6 @@ mod world;
 /// The guards (ADR 0124), in their own file.
 #[path = "scenarios/guards.rs"]
 mod guards;
-
-/// The team's map (ADR 0126), in its own file.
-#[path = "scenarios/map.rs"]
-mod map;
 
 /// The team's history (ADR 0129), in its own file.
 #[path = "scenarios/history.rs"]
@@ -490,14 +486,6 @@ fn recovered(w: &mut Office, said: String) {
     w.hq.recovered(&said).expect("the node's news is taken");
 }
 
-#[when(expr = "{word} is woken about {string}")]
-fn woken_about(w: &mut Office, name: String, title: String) {
-    let member = w.member(&name);
-    let task = w.task(&title);
-    w.hq.wake(member, Some(task), WakeReason::Assigned)
-        .expect("a wake has a receipt");
-}
-
 #[then(regex = r"^the team (?:still )?has (\d+) tasks?$")]
 fn task_count(w: &mut Office, count: usize) {
     assert_eq!(
@@ -779,17 +767,6 @@ fn submits(w: &mut Office, name: String, title: String) {
     turn_ends(w, name);
 }
 
-#[when(expr = "{word} sends back {string} because {string}")]
-fn sends_back(w: &mut Office, name: String, title: String, notes: String) {
-    let task = w.task(&title);
-    w.use_tool(
-        &name,
-        "review",
-        &json!({ "task": task.0, "verdict": "send_back", "notes": notes }),
-    )
-    .expect("the tester sends it back");
-}
-
 #[when(expr = "the owner drops the task {string}")]
 fn owner_drops(w: &mut Office, title: String) {
     let task = w.task(&title);
@@ -802,13 +779,6 @@ fn scorecard_turns(w: &mut Office, turns: usize, nothing: usize) {
     assert_eq!(card["turns"]["total"], json!(turns), "{card}");
     assert_eq!(card["turns"]["nothing"], json!(nothing), "{card}");
     assert_eq!(card["turns"]["unlabelled"], json!(0), "{card}");
-}
-
-#[then(regex = r"^the scorecard counts (\d+) submissions? today, (\d+) of them sent back$")]
-fn scorecard_review(w: &mut Office, submissions: usize, sent_back: usize) {
-    let card = w.scorecard_today();
-    assert_eq!(card["review"]["submissions"], json!(submissions), "{card}");
-    assert_eq!(card["review"]["sent_back"], json!(sent_back), "{card}");
 }
 
 #[then(regex = r"^the scorecard puts \$(\d+(?:\.\d+)?) of today's spend on dropped tasks$")]
@@ -1318,20 +1288,6 @@ fn put_on_furlough(w: &mut Office, name: String) {
     w.hq.furlough(id).expect("the owner furloughs");
 }
 
-#[when(expr = "the owner furloughs {word}")]
-fn owner_furloughs(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    let done = w.hq.furlough(id);
-    w.note(done);
-}
-
-#[when(expr = "the owner recalls {word}")]
-fn owner_recalls(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    let done = w.hq.recall(id);
-    w.note(done);
-}
-
 #[then(expr = "{word} is on furlough")]
 fn is_on_furlough(w: &mut Office, name: String) {
     assert!(found(w, &name).furloughed(), "{name} is at work");
@@ -1355,21 +1311,6 @@ fn waking_refused(w: &mut Office, name: String) {
         w.hq.wake(id, None, WakeReason::Mentioned)
             .expect("the wake is answered");
     assert_eq!(receipt, Receipt::Refused(Refused::Furloughed));
-}
-
-#[given(regex = r#"^(\w+) noted "(.+)" resting on the wing's first task$"#)]
-fn noted_before(w: &mut Office, name: String, text: String) {
-    let (id, plan) = (w.member(&name), wing(w).task);
-    let now = w.clock.now();
-    w.hq.store()
-        .add_note(id, &text, &[Ref::Task(plan)], false, None, now)
-        .expect("the store answers");
-}
-
-#[then(regex = r"^(\w+)'s notebook holds (\d+) notes?$")]
-fn notebook_holds(w: &mut Office, name: String, count: usize) {
-    let id = w.member(&name);
-    assert_eq!(w.hq.notebook(id).expect("the member exists").len(), count);
 }
 
 /// cucumber's command line, less what `cargo test` passes every test binary (`--test-threads`,
@@ -1493,13 +1434,6 @@ fn office_seeded(w: &mut Office) {
     assert!(w.hq.seed_office().expect("HQ seeds the office"));
 }
 
-#[given(regex = r"^(\d+) hours pass$")]
-#[when(regex = r"^(\d+) hours pass$")]
-fn hours_pass(w: &mut Office, hours: i64) {
-    w.clock.0.fetch_add(hours * HOUR_MS, Ordering::SeqCst);
-    w.tick();
-}
-
 #[then(expr = "the activity feed says {string}")]
 fn feed_says(w: &mut Office, said: String) {
     let feed: Vec<String> =
@@ -1511,21 +1445,6 @@ fn feed_says(w: &mut Office, said: String) {
             .collect();
     assert!(
         feed.iter().any(|t| t.contains(&said)),
-        "the feed: {feed:#?}"
-    );
-}
-
-#[then(expr = "the activity feed does not say {string}")]
-fn feed_does_not_say(w: &mut Office, said: String) {
-    let feed: Vec<String> =
-        w.hq.store()
-            .events_after(0)
-            .expect("the store answers")
-            .into_iter()
-            .filter_map(|e| e.data["text"].as_str().map(str::to_owned))
-            .collect();
-    assert!(
-        !feed.iter().any(|t| t.contains(&said)),
         "the feed: {feed:#?}"
     );
 }

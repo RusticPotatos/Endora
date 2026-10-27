@@ -375,7 +375,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/world/timeline", post(hq_world_timeline))
         .route("/v1/hq/world/promote", post(hq_world_promote))
         .route("/v1/hq/world/demote", post(hq_world_demote))
-        .route("/v1/hq/world/proposals/decide", post(hq_world_proposal))
         // The guards (ADR 0124): the owner's verdict on a finding.
         .route(
             "/v1/hq/guards/findings/{id}/verdict",
@@ -383,9 +382,6 @@ pub fn app(state: AppState) -> Router {
         )
         // A guard that is tried in shadow before it acts (ADR 0133): on, or back in shadow.
         // Retract and sweep (ADR 0124): "Not true", what else says it, and forgetting it.
-        .route("/v1/hq/retractions", post(hq_retract))
-        .route("/v1/hq/retractions/{id}/sweep", get(hq_sweep))
-        .route("/v1/hq/retractions/{id}/forget", post(hq_forget_swept))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
         // The owner's routines (ADR 0107).
@@ -414,15 +410,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/members/{id}/recall", post(hq_recall))
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/hq/pool/top-up", post(hq_pool_top_up))
-        // A member's notebook (ADR 0118): the owner reads it and writes, edits and deletes notes.
-        .route(
-            "/v1/hq/members/{id}/notebook",
-            get(hq_notebook).post(hq_note_add),
-        )
-        .route(
-            "/v1/hq/members/{id}/notebook/{note}",
-            post(hq_note_edit).delete(hq_note_delete),
-        )
         // The owner hires (ADR 0115), and downloads a branch's bundle when the node cannot push.
         .route("/v1/hq/members", post(hq_hire))
         .route(

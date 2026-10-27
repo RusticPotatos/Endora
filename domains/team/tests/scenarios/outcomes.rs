@@ -2,7 +2,7 @@
 //! screen's "How the team is doing" card, as the snapshot serves it, read after the owner, the
 //! node and the members have done what the scenario says.
 
-use cucumber::{then, when};
+use cucumber::then;
 use serde_json::json;
 
 use super::{Office, micros};
@@ -55,26 +55,6 @@ fn turns_wait(w: &mut Office, budget: u64, mac: String, minutes: u64) {
     assert_eq!(waiting["budget"], json!(budget), "{waiting}");
     assert_eq!(waiting["mac"], json!(mac), "{waiting}");
     assert_eq!(waiting["oldest_ms"], json!(minutes * 60_000), "{waiting}");
-}
-
-/// The tester sends the work back, saying it already existed: the reason the memory builds are
-/// measured by, kept apart from her notes.
-#[when(expr = "{word} sends back {string} because it already exists: {string}")]
-fn sends_back_as_a_repeat(w: &mut Office, name: String, title: String, notes: String) {
-    let task = w.task(&title);
-    w.use_tool(
-        &name,
-        "review",
-        &json!({ "task": task.0, "verdict": "send_back", "reason": "exists_already",
-                 "notes": notes }),
-    )
-    .expect("the tester sends it back");
-}
-
-#[then(regex = r"^the outcomes count (\d+) pieces? of work reinvented this week$")]
-fn work_reinvented(w: &mut Office, count: u64) {
-    let week = w.outcomes_this_week();
-    assert_eq!(week["memory"]["reinvented"], json!(count), "{week}");
 }
 
 #[then(

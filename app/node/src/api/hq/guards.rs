@@ -34,59 +34,6 @@ pub(in crate::api) async fn hq_finding_verdict(
     Ok(answer)
 }
 
-#[derive(Deserialize)]
-pub(in crate::api) struct HqRetract {
-    target: String,
-}
-
-/// The owner says a note, a section or a story is not true (ADR 0124): HQ takes it out and
-/// answers with what else says the same.
-pub(in crate::api) async fn hq_retract(
-    State(state): State<AppState>,
-    Json(req): Json<HqRetract>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        "/v1/retractions".to_owned(),
-        Some(json!({ "target": req.target })),
-    )
-    .await?;
-    record(&state, &format!("you said {} is not true", req.target));
-    Ok(answer)
-}
-
-/// What else says what a retraction said.
-pub(in crate::api) async fn hq_sweep(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    ask(&state, format!("/v1/retractions/{id}/sweep"), None).await
-}
-
-#[derive(Deserialize)]
-pub(in crate::api) struct HqForget {
-    targets: Vec<String>,
-}
-
-/// The owner forgets, at once, what of a retraction's sweep they ticked.
-pub(in crate::api) async fn hq_forget_swept(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Json(req): Json<HqForget>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/retractions/{id}/forget"),
-        Some(json!({ "targets": req.targets })),
-    )
-    .await?;
-    record(
-        &state,
-        &format!(
-            "you forgot what said retracted claim {id} again: {}",
-            req.targets.join(", ")
-        ),
-    );
-    Ok(answer)
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::super::relay::tests::{fake, node};

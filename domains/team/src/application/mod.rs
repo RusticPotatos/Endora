@@ -69,9 +69,6 @@ mod replay_tests;
 mod staffing_tests;
 
 #[cfg(test)]
-mod notebook_tests;
-
-#[cfg(test)]
 mod runtime_tests;
 
 #[cfg(test)]
@@ -97,9 +94,6 @@ mod drain_tests;
 
 #[cfg(test)]
 mod map_tests;
-
-#[cfg(test)]
-mod quiz_tests;
 
 #[cfg(test)]
 mod history_tests;

@@ -3,8 +3,6 @@
 
 use super::ports::Stored;
 use crate::domain::Millis;
-use crate::domain::map::{Gap, PageProposal};
-use crate::domain::quiz::Quiz;
 
 /// The map's part of HQ's store.
 pub trait MapStore {
@@ -19,42 +17,4 @@ pub trait MapStore {
     /// # Errors
     /// [`super::ports::StoreError`] if the store fails.
     fn add_world_page(&self, slug: &str, at: Millis) -> Stored<bool>;
-
-    /// Every proposal to a page, oldest first.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails.
-    fn proposals(&self) -> Stored<Vec<PageProposal>>;
-
-    /// Keeps a proposal: a new one when its id is 0 (its id is returned), else its new standing.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails.
-    fn save_proposal(&self, proposal: &PageProposal) -> Stored<i64>;
-
-    /// Every gap, oldest first.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails.
-    fn gaps(&self) -> Stored<Vec<Gap>>;
-
-    /// Keeps a gap: a new one when its id is 0 (its id is returned), else its new count and
-    /// closing.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails.
-    fn save_gap(&self, gap: &Gap) -> Stored<i64>;
-
-    /// Every night's quiz, oldest first.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails.
-    fn quizzes(&self) -> Stored<Vec<Quiz>>;
-
-    /// Keeps a quiz: a new one when its id is 0 (its id is returned; one a night), else its new
-    /// standing, answers and grades.
-    ///
-    /// # Errors
-    /// [`super::ports::StoreError`] if the store fails, or the night already has a quiz.
-    fn save_quiz(&self, quiz: &Quiz) -> Stored<i64>;
 }

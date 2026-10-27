@@ -94,17 +94,6 @@ pub fn app(state: State) -> Router {
         // come through the worker's door.
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/pool/top-up", post(pool_top_up))
-        // A member's notebook (ADR 0118): the owner reads it, and writes, edits and deletes
-        // notes in it (the node maps its DELETE to the last route).
-        .route(
-            "/v1/members/{id}/notebook",
-            get(notebook).post(notebook_add),
-        )
-        .route("/v1/members/{id}/notebook/{note}", post(notebook_edit))
-        .route(
-            "/v1/members/{id}/notebook/{note}/delete",
-            post(notebook_delete),
-        )
         // The owner hires (ADR 0115): a name, a role, a brain, whom it reports to.
         .route("/v1/members", post(hire))
         .route("/v1/projects", post(add_project))
@@ -863,54 +852,6 @@ async fn pool_top_up(
     let hq = state.hq.clone();
     let total = blocking(move || hq.top_up_pool(req.amount_micros)).await?;
     Ok(Json(json!({ "topped_up_today": total })))
-}
-
-#[derive(Deserialize)]
-struct NoteText {
-    text: String,
-}
-
-/// A member's notebook, for the owner to read.
-async fn notebook(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    Ok(Json(
-        blocking(move || hq.notebook_shown(MemberId(id))).await?,
-    ))
-}
-
-/// The owner adds a note to a member's notebook: no evidence, and it says it is theirs.
-async fn notebook_add(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-    Json(req): Json<NoteText>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let note = blocking(move || hq.owner_note(MemberId(id), &req.text)).await?;
-    Ok(Json(json!({ "member": id, "note": note })))
-}
-
-/// The owner rewrites a note in a member's notebook.
-async fn notebook_edit(
-    Extract(state): Extract<State>,
-    Path((id, note)): Path<(i64, i64)>,
-    Json(req): Json<NoteText>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    blocking(move || hq.owner_edit_note(MemberId(id), note, &req.text)).await?;
-    Ok(Json(json!({ "member": id, "note": note })))
-}
-
-/// The owner deletes a note from a member's notebook.
-async fn notebook_delete(
-    Extract(state): Extract<State>,
-    Path((id, note)): Path<(i64, i64)>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    blocking(move || hq.owner_delete_note(MemberId(id), note)).await?;
-    Ok(Json(json!({ "member": id, "note": note, "deleted": true })))
 }
 
 /// A monthly cap as the screen sends it: dollars, as a number or as text; nothing for none.
@@ -3967,81 +3908,6 @@ mod tests {
                 .any(|l| removes.iter().any(|r| l.contains(r.as_str()))),
             "a route that removes a member"
         );
-    }
-
-    #[tokio::test]
-    async fn the_owner_reads_adds_edits_and_deletes_a_members_notes_through_the_node() {
-        let st = state(false);
-        let dev = st
-            .hq
-            .hire("Richard Roe", Role::Developer, 40, 2, 0)
-            .unwrap();
-        let other = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
-        let app = app(st.clone());
-        let send = |method: &'static str, uri: String, body: String| {
-            let app = app.clone();
-            async move {
-                let res = app
-                    .oneshot(call(method, &uri, Some(TOKEN), &body))
-                    .await
-                    .unwrap();
-                (res.status(), json_of(res).await)
-            }
-        };
-        let book = format!("/v1/members/{}/notebook", dev.0);
-        let (status, empty) = send("GET", book.clone(), String::new()).await;
-        assert_eq!(
-            (status, empty["notes"].clone()),
-            (StatusCode::OK, json!([]))
-        );
-        let (status, made) = send(
-            "POST",
-            book.clone(),
-            json!({ "text": "Never at night." }).to_string(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{made}");
-        let note = made["note"].as_i64().unwrap();
-        let (status, _) = send("POST", book.clone(), json!({ "text": "  " }).to_string()).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let (status, _) = send(
-            "POST",
-            format!("{book}/{note}"),
-            json!({ "text": "Never at night, ever." }).to_string(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let (_, shown) = send("GET", book.clone(), String::new()).await;
-        let first = &shown["notes"][0];
-        assert_eq!(
-            (
-                first["text"].clone(),
-                first["from_owner"].clone(),
-                first["stale"].clone(),
-                first["evidence"].clone()
-            ),
-            (
-                json!("Never at night, ever."),
-                json!(true),
-                json!(false),
-                json!([])
-            )
-        );
-        // A note is reached through its own member's notebook only.
-        let (status, _) = send(
-            "POST",
-            format!("/v1/members/{}/notebook/{note}/delete", other.0),
-            "{}".to_owned(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let (status, _) = send("POST", format!("{book}/{note}/delete"), "{}".to_owned()).await;
-        assert_eq!(status, StatusCode::OK);
-        let (_, gone) = send("GET", book, String::new()).await;
-        assert_eq!(gone["notes"], json!([]));
-        let (status, _) = send("GET", "/v1/members/999/notebook".to_owned(), String::new()).await;
-        assert_ne!(status, StatusCode::OK);
-        assert_eq!(st.hq.store().members().unwrap().len(), 2);
     }
 
     #[tokio::test]

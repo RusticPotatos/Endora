@@ -194,8 +194,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(told);
         }
         told.push_str(&self.chess_briefed(member)?);
-        // The nightly quiz on its map, if tonight's was asked of this member (ADR 0126).
-        told.push_str(&self.quiz_said(member)?);
         told.push_str("Nothing else is asked of you: stop.\n");
         Ok(told)
     }

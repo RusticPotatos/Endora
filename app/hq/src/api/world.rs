@@ -22,27 +22,6 @@ pub(super) fn routes() -> Router<State> {
         .route("/v1/world/timeline", post(add_to_timeline))
         .route("/v1/world/promote", post(promote))
         .route("/v1/world/demote", post(demote))
-        .route("/v1/world/proposals/decide", post(decide_proposal))
-}
-
-#[derive(Deserialize)]
-struct DecideProposal {
-    id: i64,
-    accept: bool,
-    #[serde(default)]
-    why: String,
-}
-
-/// The owner decides a proposal to any page (ADR 0126): accepted, it is written as the owner's
-/// word; declined, it says why.
-async fn decide_proposal(
-    Extract(state): Extract<State>,
-    Json(req): Json<DecideProposal>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let written =
-        blocking(move || hq.decide_proposal_as_owner(req.id, req.accept, &req.why)).await?;
-    Ok(Json(json!({ "section": written })))
 }
 
 /// The world as the HQ screen shows it.
@@ -297,87 +276,5 @@ mod tests {
             said["error"].as_str().unwrap().contains("say why"),
             "{said}"
         );
-    }
-
-    #[tokio::test]
-    async fn the_owner_decides_a_proposal_to_a_page_and_a_decided_one_stays_decided() {
-        use endora_team::application::map_ports::MapStore;
-        use endora_team::domain::map::{PageProposal, ProposalStatus};
-
-        let st = state();
-        st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
-        let dev = st.hq.hire("John Doe", Role::Developer, 40, 2, 4).unwrap();
-        st.hq.migrate_map().unwrap();
-        let proposal = PageProposal {
-            id: 0,
-            page: "role/developer".to_owned(),
-            anchor: None,
-            heading: "Branches".to_owned(),
-            headline: "Branch, test, push.".to_owned(),
-            body: String::new(),
-            evidence: Vec::new(),
-            by: dev,
-            run: None,
-            at: 0,
-            status: ProposalStatus::Open,
-            decided_by: String::new(),
-            why: String::new(),
-            decided_at: None,
-            told: false,
-        };
-        let id = st.hq.store().save_proposal(&proposal).unwrap();
-        let app = app(st.clone());
-        let decide = json!({ "id": id, "accept": true });
-        // Only the node is answered.
-        let (status, _) = send(
-            &app,
-            "POST",
-            "/v1/world/proposals/decide",
-            None,
-            decide.clone(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-        // A decline says why.
-        let (status, said) = send(
-            &app,
-            "POST",
-            "/v1/world/proposals/decide",
-            Some(TOKEN),
-            json!({ "id": id, "accept": false }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{said}");
-        assert!(
-            said["error"].as_str().unwrap().contains("say why"),
-            "{said}"
-        );
-        // An accept writes it as the owner's word.
-        let (status, said) = send(
-            &app,
-            "POST",
-            "/v1/world/proposals/decide",
-            Some(TOKEN),
-            decide.clone(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        assert_eq!(said["section"], "world:role/developer#branches");
-        let (status, said) = send(
-            &app,
-            "POST",
-            "/v1/world/proposals/decide",
-            Some(TOKEN),
-            decide,
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{said}");
-        assert!(
-            said["error"].as_str().unwrap().contains("decided already"),
-            "{said}"
-        );
-        let (_, world) = send(&app, "GET", "/v1/world", Some(TOKEN), json!(null)).await;
-        assert_eq!(world["map"]["proposals"][0]["status"], "accepted");
-        assert_eq!(world["sections"][0]["written_by"], "the owner");
     }
 }

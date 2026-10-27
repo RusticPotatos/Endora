@@ -54,15 +54,11 @@ mod long_waits;
 mod loops;
 mod map;
 mod memory;
-mod notebook;
 mod office;
 mod outcomes;
 mod projects;
-mod proposals;
-mod quiz;
 mod record_search;
 mod replay;
-mod retract;
 mod runaway;
 mod runtime;
 mod scenario;
@@ -75,9 +71,7 @@ pub use evidence::Called;
 pub use gaps::GapReported;
 pub use history::TranscriptKept;
 pub use map::MapMigrated;
-pub use notebook::note_number;
 pub use projects::{LAB_UPKEEP, Proposal};
-pub use proposals::PageProposing;
 pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
 pub use world::{RETELL_AT_ONCE, StoryTelling, WorldWrite};
 
@@ -2468,12 +2462,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Downtime has no task to brief: a chess move, or nothing (ADR 0119).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
             told.push_str(&self.downtime_said(member, run.id)?);
-            told.push_str("Your tools at HQ: my_turn, chess, read_doc, read_world");
-            told.push_str(if self.in_quiz(run.id)? {
-                ", answer_quiz.\n"
-            } else {
-                ".\n"
-            });
+            told.push_str("Your tools at HQ: my_turn, chess, read_doc, read_world.\n");
             return Ok(told);
         }
         told.push_str(STANDARDS);
@@ -2784,10 +2773,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // The team's history (ADR 0129): what is past its thirty days, or beyond the last five
         // of a member on a task, is let go; handover notes and posts are not touched.
         self.history_tick(now)?;
-        // The nightly quiz on the map (ADR 0126) takes a free member's downtime first.
-        if self.settings.quiz {
-            self.quiz_look(now)?;
-        }
         if self.settings.downtime {
             self.downtime_look(now)?;
         }

@@ -520,10 +520,6 @@ if (failures.length) {
   const fail = (what) => { console.error(what); process.exit(1); };
   // The members whose controls the checks below read are opened, as tapping their lines does.
   runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 }; HQ.roster = { 1: true, 2: true, 4: true, 5: true, 8: true };
-    // Two members' notebooks (ADR 0118), read when their panels opened: one note a member wrote
-    // (hostile on purpose), one the owner did.
-    HQ.notebooks = { 2: [{ id: 4, text: "<img src=n onerror=alert(9)> keep the VPN up", evidence: ["task 7", "r12"], from_owner: false, stale: true },
-                         { id: 5, text: "Never at night.", evidence: [], from_owner: true, stale: false }], 8: [] };
     HQ.snap = { stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
@@ -550,21 +546,14 @@ if (failures.length) {
         sections: [{ address: "world:house#backups", heading: "<b>Backups</b>", headline: "<img src=w onerror=alert(32)> at 03:00", stage: "insight", said: "insight", revision: 2, written_by: "Mara", warrant: "read", why: "" },
                    { address: "world:house#disk", heading: "Disk", headline: "16 GB", stage: "canon", said: "canon", revision: 3, written_by: "the owner", warrant: "", why: "" }],
         stories: [{ address: "story:closed-too-soon", handle: "closed-too-soon", stage: "insight", said: "unconfirmed since 17 Sep", unconfirmed_since: 1, instead: "<img src=y onerror=alert(33)> wait", to_retell: true, author: "Dee", whose: "Ada's area" }],
-        // The team's map (ADR 0126): pages by steward, proposals, gaps, broken roads and the
-        // nightly quiz; every word a member's, so every word escaped.
+        // The team's map (ADR 0126): pages by steward; every word a member's, so every word escaped.
         map: {
           pages: [
             { slug: "house", address: "world:house", kind: "house", title: "The house", derived: false, steward: "Mara, the CEO", steward_kind: "ceo", sections: 2, proposals: 0, quiz: null },
             { slug: "lab", address: "world:lab", kind: "lab", title: "How the lab is built", derived: true, steward: "HQ", steward_kind: "hq", sections: 0, proposals: 0, quiz: null },
             { slug: "area/2", address: "world:area/2", kind: "area", title: "<img src=m1 onerror=alert(40)>'s area", derived: false, steward: "Ada", steward_kind: "lead", sections: 1, proposals: 1, quiz: { slug: "area/2", passed: 0, asked: 3, flagged: true } },
             { slug: "role/developer", address: "world:role/developer", kind: "role", title: "The developer role", derived: false, steward: "the owner", steward_kind: "owner", sections: 0, proposals: 0, quiz: null }],
-          proposals: [
-            { id: 4, page: "area/2", page_title: "Ada's area", anchor: null, heading: "<img src=m2 onerror=alert(41)>", headline: "Backups run at 03:00", by: "Rae", status: "open", decided_by: "", why: "", day: "18 Oct 2026", evidence: [{ ref: "r12", said: "homelab_status" }] },
-            { id: 3, page: "area/2", page_title: "Ada's area", anchor: null, heading: "Restores", headline: "x", by: "Rae", status: "declined", decided_by: "Ada", why: "<img src=m3 onerror=alert(42)> too early", day: "17 Oct 2026", evidence: [] }],
-          gaps: [{ id: 1, what: "<img src=m4 onerror=alert(43)> the desk notice", where_looked: "world:lab", by: "Rae", to: "Ada", count: 2, open: true, how: "", closed_by: "", day: "18 Oct 2026" }],
-          roads: [{ from: "world:house#disk", to: "world:area/2#restores", why: "the section is retired (<img src=m5 onerror=alert(44)>)" }],
-          quiz: { enabled: true, nights: [{ night: 1, status: "answered", member: "Rae", passed: 4, asked: 6, why: "", day: "18 Oct 2026" }],
-                  pages: [{ slug: "area/2", title: "Ada's area", passed: 0, asked: 3, flagged: true }] } } },
+        } },
       goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack",
                 strategy: { purpose: "</textarea><img src=s onerror=alert(12)> the house runs itself", success: "", measures: "unplanned outages over 10 min",
                             bets: "", not_now: "", by: "Mara", updated_at: 5 } },
@@ -926,20 +915,6 @@ if (failures.length) {
     const tags = runInContext("HQ_DESK_HELP.tripwire", context);
     if (!tags.includes("Resume lets it work again") || !tags.includes("Seen leaves it stopped")) fail("hq: the tripwire's help does not say what its choices do");
   }
-  // Retract and sweep (ADR 0124): "Not true" on a note, a section and a story; what else says
-  // it is listed to tick and forget, its words text.
-  for (const act of ["hq:notebook:2:untrue-4", "hq:world:section:untrue-0", "hq:world:story:untrue-0"]) {
-    if (!office.includes(`data-act="${act}"`)) fail(`hq: "Not true" is not offered as ${act}`);
-  }
-  runInContext(`HQ.sweep = { retraction: 5, target: "note:4", built_on_it: ["note:9"],
-    sweep: [{ target: "note:7", text: "<img src=k onerror=alert(41)> the VPN must stay up", whose: "Ada's notebook", alike: 80 }] };`, context);
-  const swept = runInContext("viewHQ()", context);
-  for (const said of ["<h2>Said again</h2>", "Built on it: note:9.", "note:7 · Ada&#39;s notebook · 80% alike",
-    'data-act="hq:sweep:5:forget"', 'data-act="hq:sweep:5:close"', 'id="hq-sweep-0"']) {
-    if (!swept.includes(said) && !swept.includes(said.replace("&#39;", "'"))) fail(`hq: the sweep does not show ${said}`);
-  }
-  if (swept.includes("<img src=k")) fail("hq: a swept note became markup");
-  runInContext("HQ.sweep = null;", context);
   // "Try again" posts exactly the decision HQ takes for stuck work, and when HQ refuses it the
   // card says why and keeps saying it: a press that seems to do nothing is the worst answer.
   {
@@ -1128,17 +1103,6 @@ if (failures.length) {
     if (runInContext(`replayEvent({ name: "office.changed", data: { text: "The office changed: add a plant" } })[1]`, context) !== "The office changed: add a plant") fail("hq: Replay does not say that the office changed");
     if (!item.includes("fish tank") || !item.includes("&lt;b&gt;Dee&lt;/b&gt;") || item.includes("<b>Dee</b>") || !item.includes("the commons")) fail("hq: tapping a thing does not say what it is and who put it there, as text");
   }
-  // A member's notebook (ADR 0118), in its panel: each note as text with its evidence, or marked
-  // as the owner's, Edit and Delete on each, and Add note; what a member wrote is never markup.
-  for (const act of ["hq:notebook:2:edit-4", "hq:notebook:2:del-4", "hq:notebook:2:edit-5", "hq:notebook:2:del-5",
-    "hq:notebook:2:add", "hq:notebook:8:add"]) {
-    if (!office.includes(`data-act="${act}"`)) fail(`hq: a member's notebook does not offer ${act}`);
-  }
-  for (const said of ["&lt;img src=n onerror=alert(9)&gt; keep the VPN up", "task 7, r12 · stale", "from the owner",
-    "Bo&#39;s notebook (2)", "No notes.", 'id="hq-note-new-2"', "Reading Mara"]) {
-    if (!office.includes(said) && !office.includes(said.replace("&#39;", "'"))) fail(`hq: the notebook does not say ${said}`);
-  }
-  if (office.includes("<img src=n")) fail("hq: a note a member wrote became markup");
   if (office.includes("<u>Kit</u>")) fail("hq: a lead's name became markup on the scorecard's seats");
   // A member's question can be answered on its card: the answer goes in the task's thread.
   if (!office.includes('id="hq-answer-15"')) fail("hq: a question cannot be answered from its card");
@@ -1194,18 +1158,15 @@ if (failures.length) {
   for (const hostile of ["<img src=t", "<img src=w", "<img src=y", "<b>Backups</b>"]) {
     if (office.includes(hostile)) fail(`hq: the World card let markup through: ${hostile}`);
   }
-  // The team's map (ADR 0126): the pages with their stewards and quiz scores, the owner's word on
-  // a proposal, the gaps, the broken roads and last night's quiz; every word a member's. Read on
+  // The team's map (ADR 0126): the pages with their stewards; every word a member's. Read on
   // the page list with the owner's form open, and on an open page.
   runInContext("HQ_WORLD_VIEW.page = null; HQ_WORLD_VIEW.writing = true;", context);
   const mapViews = runInContext("viewHQ()", context) + office;
   runInContext('HQ_WORLD_VIEW.page = "house"; HQ_WORLD_VIEW.writing = false;', context);
-  for (const said of ['data-act="hq:world:proposal:accept-4"', 'data-act="hq:world:proposal:decline-4"', "Rae got 4 of 6",
-    "failed three nights running", "the desk notice", "world:area/2#restores", "quiz 0/3, failing", 'value="area/2"',
-    "kept by Ada", "Proposals to pages", "Broken roads", "Last night's map check"]) {
+  for (const said of ['value="area/2"', "kept by Ada"]) {
     if (!mapViews.includes(said)) fail(`hq: the World card's map does not show ${said}`);
   }
-  for (const hostile of ["<img src=m1", "<img src=m2", "<img src=m3", "<img src=m4", "<img src=m5"]) {
+  for (const hostile of ["<img src=m1"]) {
     if (mapViews.includes(hostile)) fail(`hq: the map on the World card let markup through: ${hostile}`);
   }
   // Once moved into the world, the old house log is read-only, and still escaped.
@@ -1897,7 +1858,7 @@ if (failures.length) {
     const world = runInContext("viewHQ()", context).split('id="hq-panel-team"')[1].split('role="tabpanel"')[0];
     const top = world.split("<h3>Pages</h3>")[0];
     if (!top.includes('data-act="hq:world:paste:show">Paste Markdown</button>')) fail("hq: Paste Markdown is not a button at the top of the World card");
-    for (const said of ["field note", "observation", "insight", "canon", "Unconfirmed", "Edit rewrites", "Make canon settles", "Not true takes it out"]) {
+    for (const said of ["field note", "observation", "insight", "canon", "Unconfirmed", "Edit rewrites", "Make canon settles"]) {
       if (!top.includes(said)) fail(`hq: the World legend does not say ${said}`);
     }
     await runInContext('dispatch("hq:world:paste:show")', context);
@@ -3038,13 +2999,6 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (runInContext("HQ.worldEdit", context) !== null) fail("the editor stayed open after saving");
   runInContext(`hqWorldEditAct("open-1"); hqWorldEditAct("cancel")`, context);
   if (runInContext("HQ.worldEdit", context) !== null) fail("Cancel did not close the editor");
-  // The owner's word on a proposal to a page (ADR 0126): accepting posts the decision.
-  runInContext(`__calls.length = 0; await1 = hqProposalAct("accept-4")`, context);
-  await runInContext("await1", context);
-  const decided = JSON.parse(runInContext("JSON.stringify(__calls.filter((c) => c.startsWith('POST')))", context));
-  if (decided.length !== 1 || !decided[0].includes("/v1/hq/world/proposals/decide") || !decided[0].includes('"id":4') || !decided[0].includes('"accept":true')) {
-    fail("accepting a proposal did not post the owner's decision: " + decided.join("|"));
-  }
   runInContext(`[api, loadHQ, render, flash] = __saved; HQ.worldDoc = null; HQ.snap = null; document.getElementById = __getById;`, context);
   console.log("world editor: paste, preview, apply and the section editor behave");
 }

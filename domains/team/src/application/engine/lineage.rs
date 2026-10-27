@@ -4,7 +4,6 @@
 
 use super::{Done, Engine};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
-use crate::domain::notebook::Note;
 use crate::domain::{ProjectId, RunId};
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -17,16 +16,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         if confidential {
             self.store.mark_confidential_input(run)?;
-        }
-        Ok(())
-    }
-
-    /// A returned notebook contains every listed note, including model-written history.
-    pub(super) fn inherit_notebook_inputs(&self, run: RunId, notes: &[Note]) -> Done<()> {
-        for note in notes {
-            if !note.from_owner {
-                self.inherit_input_from(run, note.written_in_run)?;
-            }
         }
         Ok(())
     }
