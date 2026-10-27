@@ -74,3 +74,17 @@ A failed step stops and rolls back to the previous release. The loop stops when 
   (8 doc lines, 6 others), and most of them carry a reason or an incident, so they stay. The
   boilerplate was 171 `# Errors` sections saying only that the store can fail, which the return
   type says: cut, 509 lines. Not the 1,000 the exit asked; nothing else met the rule.
+- **Step 6, recorded (37ba25a3 live).** The baseline measured again:
+
+  | Measure | Before | After |
+  |---|---|---|
+  | Team Rust, all of it | 61,584 | 61,313 |
+  | Code without tests | about 33,300 | about 32,910 |
+  | Whole-table turn reads / task reads | 39 / 26 | 14 / 27 (two queries each, was 873) |
+  | `TeamStore` methods / lines in `engine.rs` | 117 / 4,374 | 93 / 3,703 |
+  | JSON settings parses / event row mappings | 7 / 3 | 1 / 1 |
+  | HQ snapshot size / time (five calls) | 1.6 MB / 941–1,588 ms | 442 KB / 698–1,576 ms |
+
+  The lines went down by 271 net: the cuts (509 doc lines, the duplicate mappings and filters)
+  paid for two store traits, two query methods, the opened-task route and their tests. The time
+  is now mostly HQ building the snapshot, not sending it.
