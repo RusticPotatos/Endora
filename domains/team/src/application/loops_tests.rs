@@ -736,3 +736,31 @@ fn a_loop_turn_is_told_what_the_loop_did_lately() {
     let next = turn_of(&hq, f.bo);
     assert!(next.told.contains("yamllint line lengths"), "{}", next.told);
 }
+
+/// The office in the loops (ADR 0142): ping-pong and pool are an animation in the browser, so
+/// HQ plays and records no matches of them; chess goes on.
+#[test]
+fn in_the_loops_no_match_of_ping_pong_or_pool_is_played_or_recorded() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings {
+            pool_per_month: 30 * DOLLAR,
+            games: true,
+            ..Settings::default()
+        },
+    );
+    let _f = five(&hq);
+    for _ in 0..20 {
+        clock
+            .0
+            .fetch_add(crate::domain::games::GAP_MS + 60_000, Ordering::SeqCst);
+        hq.tick().unwrap();
+        for started in hq.runner().started() {
+            hq.runner().finish(started.run, true);
+        }
+    }
+    assert!(hq.store().games().unwrap().is_empty(), "no tracked matches");
+}

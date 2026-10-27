@@ -1515,9 +1515,10 @@ if (failures.length) {
         seats: Object.fromEntries(Object.entries(l.seats).map(([id, s]) => [id, { pod: s.pod, work: [s.work.cx, s.work.cy, s.work.dir] }])) };
     })()`, context);
     if (layout.pods.map((p) => p.label).join("|") !== "Ops · Ada|Engineering · Kit") fail(`hq: the pods are not the roster's teams: ${layout.pods.map((p) => p.label)}`);
-    // Cy and Dee have no lead above them but the CEO, so they join the first pod; Zed, on furlough, keeps the last desk.
+    // Cy and Dee have no lead above them but the CEO, so they join the first pod; Zed, retired
+    // (on furlough), leaves the floor (ADR 0142).
     if (layout.pods[0].desks.map((d) => d[2]).join() !== "1,2,3,4") fail(`hq: the first pod is not Ada, Bo, Cy and Dee: ${layout.pods[0].desks.map((d) => d[2])}`);
-    if (layout.pods[1].desks.map((d) => d[2]).join() !== "6,7,8") fail(`hq: the second pod is not Kit, Rae, then Zed on furlough: ${layout.pods[1].desks.map((d) => d[2])}`);
+    if (layout.pods[1].desks.map((d) => d[2]).join() !== "6,7") fail(`hq: the second pod is not Kit and Rae, with Zed retired: ${layout.pods[1].desks.map((d) => d[2])}`);
     if (layout.seats[5].pod !== -1) fail("hq: the CEO sits in a pod");
     const [podA, podB] = layout.pods;
     if (!(podA.x + podA.width < podB.x)) fail("hq: the pods are not side by side");
@@ -1564,8 +1565,8 @@ if (failures.length) {
         if (!written.includes(label)) fail(`hq: the office does not say ${label}`);
       }
       if (written.includes("WING")) fail("hq: the walled wing is still drawn");
-      // Zed is on furlough: no one stands at his desk, and a card on it says he is away.
-      if (!written.includes("AWAY")) fail("hq: a furloughed member's empty desk has no away card");
+      // Zed is retired (on furlough): his desk leaves the floor, so no away card (ADR 0142).
+      if (written.includes("AWAY")) fail("hq: a retired member's desk is still drawn");
       if (runInContext("HQ.people[8]", context) !== undefined) fail("hq: a member on furlough is walking about the office");
       if (!written.includes("<I>DEE</I>")) fail("hq: a member's name is not written on the canvas");
       // Everything on the floor is drawn from the snapshot's office: the tank's water where the
@@ -1716,8 +1717,10 @@ if (failures.length) {
         HQ.selected = null;`, context);
       const card = runInContext("hqOffice(HQ.snap)", context);
       // The latest three results show, the rest a tap away (the owner, 2026-10-25).
-      if (card.includes("Result 4") || !card.includes('data-act="hq:more:results:toggle"')) fail("hq: the Games section shows more than three results, or no way to the rest");
-      for (const want of ["<h3>Games</h3>", "Ping-pong", "Pool", "Chess", "W2", "L2", "Result 3", 'data-act="hq:pick:chess:0"', "&lt;i&gt;Dee&lt;/i&gt;", "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) {
+
+      // Ping-pong and pool are the animation alone (ADR 0142): chess is the one kept.
+      if (card.includes("<summary>Ping-pong") || card.includes("<summary>Pool") || card.includes("Result 1")) fail("hq: the Games section still keeps ping-pong or pool");
+      for (const want of ["<h3>Games</h3>", "Chess", 'data-act="hq:pick:chess:0"', "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) {
         if (!card.includes(want)) fail(`hq: the Office card's Games section lacks ${want}`);
       }
       if (["<i>Dee</i>", "<b>Bo</b>", "<u>x</u>"].some((raw) => card.includes(raw))) fail("hq: a name or result in the Games section is not escaped");

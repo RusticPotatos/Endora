@@ -33,8 +33,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// are due, if the service allows it, and a game of chess nobody has moved in for a week
     /// is adjourned.
     pub(super) fn games_tick(&self, now: Millis) -> Done<()> {
+        // In the loops ping-pong and pool are the browser's animation alone (ADR 0142).
+        let in_the_loops = !self.loop_members()?.is_empty();
         if self.settings.games {
-            self.play_matches(now)?;
+            if !in_the_loops {
+                self.play_matches(now)?;
+            }
             self.chess_set(now)?;
             self.chess_picked_up(now)?;
         }

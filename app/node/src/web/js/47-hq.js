@@ -486,6 +486,8 @@ function hqTeamLabel(lead, wingLeads) {
 // furlough, whose desks stay and are drawn empty. With no lead at all there is one team.
 function hqTeams(members) {
   const wingLeads = ((HQ.snap && HQ.snap.wing) || {}).leads || [];
+  // One team of loops (ADR 0142): the retired leave the floor, and the rest sit by rank.
+  members = members.filter((m) => !m.furloughed).slice().sort((a, b) => (Number(a.rank) || 9) - (Number(b.rank) || 9));
   const leads = members.filter((m) => m.role === "lead");
   const rest = members.filter((m) => m.role !== "ceo" && m.role !== "lead");
   if (!leads.length) return rest.length ? [{ lead: null, label: "Team", people: rest }] : [];
@@ -1023,6 +1025,20 @@ function hqPong() { return hqPair("pong", ["L", "R"]); }
 function hqPool() { return hqPair("pool", ["L", "R"]); }
 function hqChessPair() { return hqPair("chess", ["W", "B"]); }
 
+// Now and then two idle members play ping-pong or pool, for fun (ADR 0142): the browser makes
+// up the score, and nothing is recorded.
+function hqIdlePlay(dt) {
+  HQ.idlePlayT = (HQ.idlePlayT || 0) + dt;
+  if (HQ.idlePlayT < 120) return;
+  HQ.idlePlayT = 0;
+  const idle = Object.values(HQ.people).filter((p) => !p.working && !p.errand && !p.path.length);
+  if (idle.length < 2) return;
+  const [a, b] = idle.sort(() => Math.random() - 0.5);
+  const pool = Math.random() < 0.5;
+  const won = pool ? 8 : 11, lost = Math.floor(Math.random() * (won - 1));
+  hqPlayMatch({ game: pool ? "pool" : "ping_pong", winner_id: a.id, loser_id: b.id, score: [won, lost] });
+}
+
 // A match was played in the engine (ADR 0121): the two walk to that game's table, the winner
 // says the score and the other says good game. Nobody walks for someone who asks for calm, or
 // who is at work.
@@ -1226,6 +1242,7 @@ function hqLoop() {
       p.frame += dt * 8;
     }
     HQ.envelopes.forEach((e) => (e.t += dt)); HQ.envelopes = HQ.envelopes.filter((e) => e.t < 0.9);
+    hqIdlePlay(dt);
     hqDraw();
     requestAnimationFrame(step);
   };
@@ -1804,18 +1821,15 @@ function hqTablePanel(id) {
 function hqGames(s) {
   const g = s.games;
   if (!g) return "";
-  // A match of pool or ping-pong plays again, step by step, a tap away (ADR 0121).
-  const recentList = hqMore("results", (g.recent || []).map((r) => `<li>${esc(r.text)}${r.game === "pool" || r.game === "ping_pong"
-    ? ` <button class="hq-btn" data-act="hq:holo:replay:${Number(r.id)}">Replay</button>` : ""}</li>`), 3);
+  // Ping-pong and pool are the office's animation alone (ADR 0142): only chess is kept.
+  const recentList = hqMore("results", (g.recent || []).filter((r) => r.game === "chess").map((r) => `<li>${esc(r.text)}</li>`), 3);
   const recent = recentList.shown;
   const replay = HQ.holo && HQ.holo.what === "replay" ? hqHoloDetail() : "";
   const playing = (((g.chess || {}).games) || []).filter((c) => c.status === "in_progress")
     .map((c) => `<li>${esc(c.white)} against ${esc(c.black)}: ${esc(c.to_move)} to move, ${(c.moves || []).length} moves
       <button class="hq-btn" data-act="hq:pick:chess:0">Look at the board</button></li>`).join("");
   return `<h3>Games</h3>
-    <p class="hq-note">Ping-pong and pool are played by the office on its own, for nothing; chess is played by the members, a move in each downtime turn.</p>
-    <details><summary>Ping-pong</summary>${hqLeaderboard(g.ping_pong, false)}</details>
-    <details><summary>Pool</summary>${hqLeaderboard(g.pool, false)}</details>
+    <p class="hq-note">Idle members play ping-pong and pool for fun, and nothing is kept; chess is played by the members, a move in each downtime turn, and the model league plays in the Holodeck.</p>
     <details><summary>Chess</summary>${hqLeaderboard(g.chess, true)}</details>
     ${playing ? `<p class="hq-who">Playing now</p><ul class="hq-team">${playing}</ul>` : ""}
     ${recent ? `<p class="hq-who">Latest results</p><ul class="hq-team">${recent}</ul>${recentList.more}` : `<p class="hq-empty">No results yet.</p>`}

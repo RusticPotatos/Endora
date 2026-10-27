@@ -268,6 +268,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The first thing each tick does for the office: proposals whose time came carry or are
     /// dropped (the lock held).
     pub(super) fn office_tick(&self) -> Done<()> {
+        // In the loops there are no office proposals to carry or drop (ADR 0142).
+        if !self.loop_members()?.is_empty() {
+            return Ok(());
+        }
         for open in self
             .store
             .office_proposals()?
