@@ -809,13 +809,13 @@ fn the_map_grows_from_what_members_find_and_fades_what_nobody_confirms() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
     let f = five(&hq);
-    let first = item(&hq, &f, "Find the gluetun switch", Priority::Normal);
+    let first = item(&hq, &f, "Find the backup schedule", Priority::Normal);
     let bo = turn_of(&hq, f.bo);
     let said = use_tool(
         &hq,
         &bo,
         "add_to_map",
-        &serde_json::json!({ "line": "The gluetun restart's switch is in group_vars/nas.yml" }),
+        &serde_json::json!({ "line": "The backup schedule is in roles/backup/defaults/main.yml" }),
     )
     .unwrap();
     assert!(said.contains("map"), "{said}");
@@ -823,7 +823,7 @@ fn the_map_grows_from_what_members_find_and_fades_what_nobody_confirms() {
         &hq,
         &bo,
         "add_to_map",
-        &serde_json::json!({ "line": "the GLUETUN restart's switch is in group_vars/nas.yml " }),
+        &serde_json::json!({ "line": "the BACKUP schedule is in roles/backup/defaults/main.yml " }),
     )
     .unwrap();
     let lines = hq.snapshot().unwrap()["map_lines"].clone();
@@ -837,7 +837,7 @@ fn the_map_grows_from_what_members_find_and_fades_what_nobody_confirms() {
     item(&hq, &f, "Turn the timer off", Priority::Normal);
     let next = turn_of(&hq, f.bo);
     assert!(
-        next.told.contains("group_vars/nas.yml"),
+        next.told.contains("roles/backup/defaults/main.yml"),
         "the next briefing shows the map: {}",
         next.told
     );

@@ -2877,12 +2877,12 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (card.includes("<img src=w") || card.includes("<b>Backups</b>")) fail("a section's words are not escaped");
   // The map (ADR 0142): what members found, most confirmed first, the new ones marked, escaped.
   runInContext(`HQ.snap = Object.assign({}, HQ.snap, { map_lines: [
-      { line: "The gluetun switch is in <i>group_vars/nas.yml</i>", by: "Bo", at: Date.now() - 3600000, uses: 3 },
+      { line: "The backup schedule is in <i>roles/backup/defaults/main.yml</i>", by: "Bo", at: Date.now() - 3600000, uses: 3 },
       { line: "Sonarr's logs are in container_logs", by: "Rae", at: Date.now() - 20 * 86400000, uses: 1 }] });`, context);
   const mapped = runInContext("hqWorldCard(HQ.snap)", context);
-  if (!mapped.includes("The map") || !/gluetun switch[\s\S]*confirmed 3 times[\s\S]*Sonarr/.test(mapped)) fail("the World card does not show the map: " + mapped);
-  if (!/gluetun switch[^<]*<\/span>[^<]*<span class="hq-tag">new<\/span>|new<\/span>[\s\S]*gluetun/.test(mapped) && !mapped.includes('class="hq-tag">new')) fail("a line found this week is not marked new");
-  if (mapped.includes("<i>group_vars")) fail("a map line is not escaped");
+  if (!mapped.includes("The map") || !/backup schedule[\s\S]*confirmed 3 times[\s\S]*Sonarr/.test(mapped)) fail("the World card does not show the map: " + mapped);
+  if (!/backup schedule[^<]*<\/span>[^<]*<span class="hq-tag">new<\/span>|new<\/span>[\s\S]*backup schedule/.test(mapped) && !mapped.includes('class="hq-tag">new')) fail("a line found this week is not marked new");
+  if (mapped.includes("<i>roles/backup")) fail("a map line is not escaped");
   if (card.includes('class="hq-btn ok"') || card.includes('class="hq-btn no"') || /class="hq-btn"/.test(card)) fail("a World button is not the tall kind");
   if (card.includes("hq-editor")) fail("the editor is open with nothing to edit");
 
