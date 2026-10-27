@@ -1829,20 +1829,21 @@ mod tests {
         // note, forget, read and check. Every member shapes the office (ADR 0119). And it
         // reports on its area, decides its area's stuck work, and gives its view in a huddle
         // (ADR 0120). It reads the world, tells stories (a lesson is one now), confirms and
-        // retires what it stewards, and proposes canon (ADR 0122). And it may play chess (ADR 0121).
+        // retires what it stewards, and proposes canon (ADR 0122). It may play chess (ADR 0121),
+        // and no longer shapes the office (ADR 0142).
         // And it judges the guards' findings in its area (ADR 0124), and writes the pages it
         // keeps (ADR 0126). It asks the record; peer help is absent while disabled.
         // The quiz's answer belongs only to its own turn (ADR 0131, amended). And it
         // asks for a kept branch to be checked again (ADR 0115). And it narrows what done means
         // for work in its area (ADR 0133). On a work turn, it may take a stuck problem a model
         // tier up (ADR 0139).
-        assert_eq!(names.len(), 38, "{names:?}");
+        assert_eq!(names.len(), 37, "{names:?}");
         assert!(names.contains(&"escalate"));
         assert!(!names.contains(&"consult") && !names.contains(&"answer_consult"));
         assert!(names.contains(&"recheck"));
         assert!(names.contains(&"judge_finding"));
         assert!(names.contains(&"narrow_criteria"));
-        assert!(names.contains(&"office"), "every member shapes the office");
+        assert!(!names.contains(&"office"), "the office is no longer shaped");
         assert!(names.contains(&"chess"), "every member may play chess");
         assert!(names.contains(&"tell_story") && names.contains(&"propose_project"));
         assert!(!names.contains(&"note_lesson"));
