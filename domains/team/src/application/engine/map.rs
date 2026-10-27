@@ -186,11 +186,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             let slug = key.slug();
             let mut sections: Vec<(Section, world::Trust)> = Vec::new();
-            for s in this.store.sections()? {
-                if s.page == slug && s.stage.current() {
-                    let trust = this.section_trust(&s)?;
-                    sections.push((s, trust));
-                }
+            let on_page = this.store.sections()?.into_iter();
+            for s in on_page.filter(|s| s.page == slug && s.stage.current()) {
+                let trust = this.section_trust(&s)?;
+                sections.push((s, trust));
             }
             sections.sort_by_key(|(s, t)| (std::cmp::Reverse(t.stage), std::cmp::Reverse(s.id)));
             for (s, trust) in sections.into_iter().take(map::MAP_SECTIONS_PER_PAGE) {

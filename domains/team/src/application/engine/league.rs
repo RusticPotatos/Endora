@@ -174,14 +174,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store
                 .set_setting(BEFORE_RESET, &Value::Array(before).to_string())?;
             self.store.set_setting(GAMES, "[]")?;
-            let mut live = Vec::new();
-            for (game, _, _) in &kept {
-                for task in self.store.tasks()? {
-                    if (task.id == *game || task.parent == Some(*game)) && !task.status.finished() {
-                        live.push(task.id);
-                    }
-                }
-            }
+            let tasks = self.store.tasks()?;
+            let live: Vec<TaskId> = kept
+                .iter()
+                .flat_map(|(game, _, _)| {
+                    tasks.iter().filter(move |t| {
+                        (t.id == *game || t.parent == Some(*game)) && !t.status.finished()
+                    })
+                })
+                .map(|t| t.id)
+                .collect();
             self.emit(
                 crate::domain::EventKind::WorldChanged,
                 json!({ "what": "league reset", "set_aside": kept.len(), "by": "owner" }),

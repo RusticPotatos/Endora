@@ -8,7 +8,7 @@ use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::situations::{self, Briefed, Composed, Facts, Piece, Situation, Weight};
 use crate::domain::world::{HOUSE, Section, Stage};
 use crate::domain::world_migration::TimelineLine;
-use crate::domain::{Member, Millis, Role};
+use crate::domain::{Member, Millis, ProjectId, Role, RunId};
 
 /// The most characters of the house page's newest timeline lines a briefing carries while the
 /// page has no sections yet.
@@ -57,16 +57,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 None => false,
             };
         let first_in_project = match self.project_of(run.task)? {
-            Some(project) => {
-                let mut seen = false;
-                for r in &mine {
-                    if self.project_of(r.task)? == Some(project) {
-                        seen = true;
-                        break;
-                    }
-                }
-                !seen
-            }
+            Some(project) => !self.any_in_project(&mine, project)?,
             None => false,
         };
         Ok(situations::decide(&Facts {
@@ -79,6 +70,52 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             last_turn: mine.iter().filter_map(|r| r.started_at).max(),
             now: self.clock.now(),
         }))
+    }
+
+    /// The turn inherits the lineage of each piece it was briefed: from the turns that wrote
+    /// it, or unclassified where none is known.
+    fn inherit_briefed(&self, member: &Member, run: &Run, briefed: &[&String]) -> Done<()> {
+        if briefed.is_empty() {
+            return Ok(());
+        }
+        let sections = self.store.sections()?;
+        for name in briefed {
+            for by in self.piece_written_in(member, run, name, &sections)? {
+                match by {
+                    Some(source) => self.inherit_input_from(run.id, Some(source))?,
+                    None => self.unclassified_message_input(run.id)?,
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether any of these turns was on work in `project`.
+    fn any_in_project(&self, runs: &[&Run], project: ProjectId) -> Done<bool> {
+        for r in runs {
+            if self.project_of(r.task)? == Some(project) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The turns that wrote a briefed piece: the house timeline's lines by theirs, a section by
+    /// its own; none known for any other piece.
+    fn piece_written_in(
+        &self,
+        member: &Member,
+        run: &Run,
+        name: &str,
+        sections: &[Section],
+    ) -> Done<Vec<Option<RunId>>> {
+        if name == "world:house timeline" {
+            return self.house_timeline_runs(member, run, sections);
+        }
+        Ok(match sections.iter().find(|s| s.address() == name) {
+            Some(section) => vec![section.written_in_run],
+            None => vec![None],
+        })
     }
 
     /// What of the world a member is told at the start of `run`, and its situation, composed
@@ -109,24 +146,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .iter()
             .filter(|name| composed.briefed.contains(name))
             .collect();
-        if !briefed.is_empty() {
-            let sections = self.store.sections()?;
-            for name in briefed {
-                let wrote = if name.as_str() == "world:house timeline" {
-                    self.house_timeline_runs(member, run, &sections)?
-                } else if let Some(section) = sections.iter().find(|s| &s.address() == name) {
-                    vec![section.written_in_run]
-                } else {
-                    vec![None]
-                };
-                for by in wrote {
-                    match by {
-                        Some(source) => self.inherit_input_from(run.id, Some(source))?,
-                        None => self.unclassified_message_input(run.id)?,
-                    }
-                }
-            }
-        }
+        self.inherit_briefed(member, run, &briefed)?;
         self.store.save_briefed(&Briefed {
             run: run.id,
             situation,

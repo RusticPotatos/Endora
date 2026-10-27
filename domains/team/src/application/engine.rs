@@ -1127,12 +1127,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         if let Some(own) = run.task {
-            let mut at = Some(target.id);
-            while let Some(id) = at {
-                if id == own {
-                    return Ok(());
-                }
-                at = self.task(id)?.parent;
+            if self.under(target.id, own)? {
+                return Ok(());
             }
             if writing && self.task(own)?.parent == Some(target.id) {
                 return Ok(());
@@ -2138,51 +2134,50 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Running turns that ended, failed, vanished or ran too long are settled (tick step 2).
     fn settle_running(&self, now: Millis, report: &mut TickReport) -> Done<()> {
         for run in self.store.live_runs()? {
-            if run.status != RunStatus::Running {
-                continue;
+            if run.status == RunStatus::Running {
+                self.settle_one(run, now, report)?;
             }
-            if run
-                .started_at
-                .is_some_and(|started| now - started > LONGEST_TURN_MS)
-            {
-                self.runner.stop(run.id, self.settings.grace);
-                self.end(run, RunStatus::TimedOut, "took longer than a turn may")?;
-                report.ended += 1;
-                continue;
+        }
+        Ok(())
+    }
+
+    fn settle_one(&self, run: Run, now: Millis, report: &mut TickReport) -> Done<()> {
+        if run
+            .started_at
+            .is_some_and(|started| now - started > LONGEST_TURN_MS)
+        {
+            self.runner.stop(run.id, self.settings.grace);
+            self.end(run, RunStatus::TimedOut, "took longer than a turn may")?;
+            report.ended += 1;
+            return Ok(());
+        }
+        let retrying = match self.runner.status(run.id) {
+            Liveness::Running => return Ok(()),
+            Liveness::Finished { succeeded: true } => {
+                self.end(run, RunStatus::Succeeded, "ended its turn")?;
+                false
             }
-            match self.runner.status(run.id) {
-                Liveness::Running => {}
-                Liveness::Finished { succeeded: true } => {
-                    self.end(run, RunStatus::Succeeded, "ended its turn")?;
-                    report.ended += 1;
-                }
-                Liveness::Finished { succeeded: false } => {
-                    // The runner's words when it gave them: the worker's exit code's meaning
-                    // and its last words, which would otherwise be lost with its container.
-                    let why = self
-                        .runner
-                        .why_ended(run.id)
-                        .unwrap_or_else(|| "the turn failed".to_owned());
-                    // Whose it was: a container the runner found gone, or killed from outside
-                    // before its full time, was cut short by the platform (ADR 0124, amended).
-                    let ran = run.started_at.map_or(0, |started| now - started);
-                    let fault = runs::fault_of(self.runner.exit_of(run.id), ran);
-                    if self.fail(run, &why, fault)? {
-                        report.retrying += 1;
-                    } else {
-                        report.ended += 1;
-                    }
-                }
-                // HQ lost the turn: it restarted, and with it the memory of what the runner
-                // was handed. Nothing its member did.
-                Liveness::Gone => {
-                    if self.fail(run, "its container is gone", Fault::Platform)? {
-                        report.retrying += 1;
-                    } else {
-                        report.ended += 1;
-                    }
-                }
+            Liveness::Finished { succeeded: false } => {
+                // The runner's words when it gave them: the worker's exit code's meaning and
+                // its last words, which would otherwise be lost with its container.
+                let why = self
+                    .runner
+                    .why_ended(run.id)
+                    .unwrap_or_else(|| "the turn failed".to_owned());
+                // Whose it was: a container the runner found gone, or killed from outside
+                // before its full time, was cut short by the platform (ADR 0124, amended).
+                let ran = run.started_at.map_or(0, |started| now - started);
+                let fault = runs::fault_of(self.runner.exit_of(run.id), ran);
+                self.fail(run, &why, fault)?
             }
+            // HQ lost the turn: it restarted, and with it the memory of what the runner was
+            // handed. Nothing its member did.
+            Liveness::Gone => self.fail(run, "its container is gone", Fault::Platform)?,
+        };
+        if retrying {
+            report.retrying += 1;
+        } else {
+            report.ended += 1;
         }
         Ok(())
     }
@@ -2208,63 +2203,59 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         report: &mut TickReport,
     ) -> Done<()> {
         for task in tasks {
-            if task.status != TaskStatus::Doing || live.contains(&Some(task.id)) {
-                continue;
+            if task.status == TaskStatus::Doing && !live.contains(&Some(task.id)) {
+                self.stalled_one(task, report)?;
             }
-            let Some(owner) = task.owner else {
-                continue;
-            };
-            // A scenario's world wakes its players (ADR 0135): waiting for it is no stall.
-            if self.in_a_scenario(task.id)? {
-                continue;
-            }
-            // Its member said when it comes back, or it waits on open work: that is its plan,
-            // not a stall (live, #667 was woken every ten seconds while its check-back waited).
-            let Some(found) = self.diagnosis(task.id)? else {
-                continue;
-            };
-            // In the loops (ADR 0142) a stall is nudged once, then each further stall is one
-            // of the item's failures: three climb a rank. No ladder, no desk.
-            if self.loop_holds(task)? {
-                if matches!(found.stopped, Stopped::Working | Stopped::Held) {
-                    continue;
-                }
-                if !task.nudged {
-                    self.store.set_nudged(task.id, true)?;
-                    if self.nudge_once(task, owner, WakeReason::Recovery)? {
-                        report.nudged += 1;
-                    }
-                    continue;
-                }
-                if self.idle_for(task.id, STRANDED_AFTER_MS)? {
-                    self.loop_stalled(task)?;
-                    report.stuck += 1;
-                }
-                continue;
-            }
-            match found.stopped {
-                Stopped::Working | Stopped::Held | Stopped::Indeterminate => continue,
-                Stopped::Parked => {}
-            }
-            if !task.nudged {
-                self.store.set_nudged(task.id, true)?;
-                if self.nudge_once(task, owner, WakeReason::Recovery)? {
-                    report.nudged += 1;
-                }
-                continue;
-            }
-            // It is marked stuck once it has sat as long as stranded work does: never a reflex.
-            if !self.idle_for(task.id, STRANDED_AFTER_MS)? {
-                continue;
-            }
-            self.store.set_task_status(task.id, TaskStatus::Blocked)?;
-            self.emit(
-                EventKind::TaskChanged,
-                json!({ "task": task.id.0, "goal": task.goal.0, "owner": owner.0,
-                        "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
-            )?;
-            report.stuck += 1;
         }
+        Ok(())
+    }
+
+    fn stalled_one(&self, task: &Task, report: &mut TickReport) -> Done<()> {
+        let Some(owner) = task.owner else {
+            return Ok(());
+        };
+        // A scenario's world wakes its players (ADR 0135): waiting for it is no stall.
+        if self.in_a_scenario(task.id)? {
+            return Ok(());
+        }
+        // Its member said when it comes back, or it waits on open work: that is its plan, not
+        // a stall (live, #667 was woken every ten seconds while its check-back waited).
+        let Some(found) = self.diagnosis(task.id)? else {
+            return Ok(());
+        };
+        // In the loops (ADR 0142) any stall but work and holds counts, is nudged once, then
+        // each further stall is one of the item's failures: three climb a rank. No ladder, no
+        // desk. Outside them only parked work does (ADR 0124).
+        let looped = self.loop_holds(task)?;
+        let stalled = if looped {
+            !matches!(found.stopped, Stopped::Working | Stopped::Held)
+        } else {
+            found.stopped == Stopped::Parked
+        };
+        if !stalled {
+            return Ok(());
+        }
+        if !task.nudged {
+            self.store.set_nudged(task.id, true)?;
+            if self.nudge_once(task, owner, WakeReason::Recovery)? {
+                report.nudged += 1;
+            }
+            return Ok(());
+        }
+        // It is marked stuck once it has sat as long as stranded work does: never a reflex.
+        if !self.idle_for(task.id, STRANDED_AFTER_MS)? {
+            return Ok(());
+        }
+        report.stuck += 1;
+        if looped {
+            return self.loop_stalled(task);
+        }
+        self.store.set_task_status(task.id, TaskStatus::Blocked)?;
+        self.emit(
+            EventKind::TaskChanged,
+            json!({ "task": task.id.0, "goal": task.goal.0, "owner": owner.0,
+                    "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
+        )?;
         Ok(())
     }
 
@@ -2376,11 +2367,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 turns::Placed::On(brain) => (brain, asked.unwrap_or(0), false),
                 turns::Placed::Fallback(brain) => (brain, 0, true),
                 turns::Placed::Waits(wait) => {
-                    let said = wait.words();
-                    if run.end_reason != said {
-                        run.end_reason = said;
-                        self.store.save_run(&run)?;
-                    }
+                    self.say_why_it_waits(&mut run, wait.words())?;
                     continue;
                 }
             };
@@ -2871,6 +2858,50 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
+    /// Stranded work's one nudge: what it waited on and was dropped is said in its thread;
+    /// work in review asks its review again, other work wakes its member, recorded before it
+    /// is sent and never sent again unchanged (ADR 0124). True when a nudge went out.
+    fn nudge_stranded(&self, task: &Task, member: MemberId, dropped: Option<&Task>) -> Done<bool> {
+        self.store.set_nudged(task.id, true)?;
+        if let Some(gone) = dropped {
+            self.post_held_lock(
+                Author::Endora,
+                task.id,
+                &format!(
+                    "#{} ({}), which this waited on, was dropped: decide whether this still \
+                     needs doing, and say so here, or ask.",
+                    gone.id, gone.title
+                ),
+            )?;
+        }
+        if task.status == TaskStatus::InReview {
+            self.review_asked(task)?;
+            return Ok(true);
+        }
+        self.nudge_once(task, member, WakeReason::AssignmentRecovery)
+    }
+
+    /// Whether `task` is `own` or sits under it.
+    fn under(&self, task: TaskId, own: TaskId) -> Done<bool> {
+        let mut at = Some(task);
+        while let Some(id) = at {
+            if id == own {
+                return Ok(true);
+            }
+            at = self.task(id)?.parent;
+        }
+        Ok(false)
+    }
+
+    /// A turn that has nowhere it may run says why, once.
+    fn say_why_it_waits(&self, run: &mut Run, said: String) -> Done<()> {
+        if run.end_reason == said {
+            return Ok(());
+        }
+        run.end_reason = said;
+        Ok(self.store.save_run(run)?)
+    }
+
     /// The tick's step 5b: open work with a member and nothing that will bring it back, for
     /// [`STRANDED_AFTER_MS`]. `doing` work is step 5's. Work left `in_review` with no review
     /// coming wakes the reviewer instead of its owner (whose turns wait while it is reviewed).
@@ -2937,27 +2968,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             let dropped = self.dropped_wait(&task.waits_on)?;
             if !task.nudged {
-                self.store.set_nudged(task.id, true)?;
-                if let Some(gone) = &dropped {
-                    self.post_held_lock(
-                        Author::Endora,
-                        task.id,
-                        &format!(
-                            "#{} ({}), which this waited on, was dropped: decide whether this \
-                             still needs doing, and say so here, or ask.",
-                            gone.id, gone.title
-                        ),
-                    )?;
-                }
-                if task.status == TaskStatus::InReview {
-                    nudged += 1;
-                    self.review_asked(task)?;
-                    continue;
-                }
-                // Recorded before it is sent, and never sent again unchanged (ADR 0124).
-                if self.nudge_once(task, member, WakeReason::AssignmentRecovery)? {
-                    nudged += 1;
-                }
+                nudged += usize::from(self.nudge_stranded(task, member, dropped.as_ref())?);
                 continue;
             }
             // In the loops (ADR 0142) stranded work is one of the item's failures.

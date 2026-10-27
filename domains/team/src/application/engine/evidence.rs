@@ -192,11 +192,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if !run.task.is_some_and(|t| work.contains(&t)) {
                 continue;
             }
-            for receipt in self.store.call_receipts_of(run.id)? {
-                if receipt.ok && receipt.act && receipt.tool != "push" {
-                    latest = latest.max(Some(receipt.at));
-                }
-            }
+            let acts = self.store.call_receipts_of(run.id)?;
+            let acted = acts.iter().filter(|r| r.ok && r.act && r.tool != "push");
+            latest = latest.max(acted.map(|r| r.at).max());
         }
         for event in self.store.events_after(0)? {
             let alarm = (event.kind == "routine.fired" && event.data["firing"] == "alarm")
@@ -822,13 +820,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let mut refs = Vec::new();
             for r in &c.refs {
                 let mut shown = json!({ "ref": r.said() });
-                if let Ref::Receipt(id) = r {
-                    if let Some(found) = self.store.call_receipt(*id)? {
-                        shown["tool"] = json!(found.tool);
-                        shown["at"] = json!(found.at);
-                        shown["excerpt"] = json!(found.excerpt);
-                        shown["ok"] = json!(found.ok);
-                    }
+                let found = match r {
+                    Ref::Receipt(id) => self.store.call_receipt(*id)?,
+                    _ => None,
+                };
+                if let Some(found) = found {
+                    shown["tool"] = json!(found.tool);
+                    shown["at"] = json!(found.at);
+                    shown["excerpt"] = json!(found.excerpt);
+                    shown["ok"] = json!(found.ok);
                 }
                 refs.push(shown);
             }

@@ -7,7 +7,7 @@
 use serde_json::{Value, json};
 
 use super::{Done, Engine, EngineError};
-use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
+use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::trials::{self, Arm};
 use crate::domain::{ProjectId, Refusal, TaskId, chess_match, scenario, station};
 
@@ -220,13 +220,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .iter()
                 .filter(|r| r.task.is_some_and(|t| facts.tasks.contains(&t)))
                 .collect();
-            let mut brains: Vec<String> = Vec::new();
-            for brain in turns.iter().filter_map(|r| r.brain) {
-                let brain = brain.name().to_owned();
-                if !brains.contains(&brain) {
-                    brains.push(brain);
-                }
-            }
+            let brains = brains_of(&turns);
             let counted = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
             let one = trials::Run {
                 condition: run["condition"].as_str().unwrap_or_default().to_owned(),
@@ -272,4 +266,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                    "conditions": conditions, "runs": shown,
                    "markdown": trials::report(name, kind, version, &summed) }))
     }
+}
+
+/// The brains a run's turns ran on, each once, in the order first used.
+fn brains_of(turns: &[&Run]) -> Vec<String> {
+    let mut brains: Vec<String> = Vec::new();
+    for brain in turns.iter().filter_map(|r| r.brain) {
+        let brain = brain.name().to_owned();
+        if !brains.contains(&brain) {
+            brains.push(brain);
+        }
+    }
+    brains
 }

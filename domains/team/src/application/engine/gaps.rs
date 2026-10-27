@@ -4,6 +4,8 @@
 //! road** is a way that leads nowhere: a section cites an address that does not resolve, found by
 //! code each time it is looked for, and shown to the steward of the page that cites it.
 
+use std::ops::ControlFlow;
+
 use super::{Done, Engine};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::map::{self, PageKey};
@@ -28,6 +30,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- broken roads ----------------------------------------------------------------------
 
+    /// One step along a section's chain: why it does not resolve (or `None` when it does), or
+    /// the address that superseded it, to follow next.
+    fn section_hop(&self, page: &str, anchor: &str) -> Done<ControlFlow<Option<String>, String>> {
+        let there = PageKey::parse(page)
+            .map(|k| self.page_exists(k))
+            .transpose()?;
+        if there != Some(true) {
+            return Ok(ControlFlow::Break(Some("there is no such page".to_owned())));
+        }
+        let Some(s) = self.section_at(page, anchor)? else {
+            return Ok(ControlFlow::Break(Some(
+                "nothing is written there".to_owned(),
+            )));
+        };
+        Ok(match (s.stage, s.superseded_by) {
+            (Stage::Retired, _) => {
+                ControlFlow::Break(Some(format!("the section is retired ({})", s.why)))
+            }
+            (Stage::Superseded, Some(next)) => ControlFlow::Continue(next),
+            (Stage::Superseded, None) => {
+                ControlFlow::Break(Some("the section is superseded, naming nothing".to_owned()))
+            }
+            _ => ControlFlow::Break(None),
+        })
+    }
+
     /// Why `address` does not resolve, or `None` when it does: the page or section is there and
     /// current, or it was superseded by something that is.
     fn unresolved(&self, address: &str) -> Done<Option<String>> {
@@ -43,29 +71,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         .transpose()?;
                     return Ok((there != Some(true)).then(|| "there is no such page".to_owned()));
                 }
-                Address::Section { page, anchor } => {
-                    let there = PageKey::parse(&page)
-                        .map(|k| self.page_exists(k))
-                        .transpose()?;
-                    if there != Some(true) {
-                        return Ok(Some("there is no such page".to_owned()));
-                    }
-                    let Some(s) = self.section_at(&page, &anchor)? else {
-                        return Ok(Some("nothing is written there".to_owned()));
-                    };
-                    match (s.stage, s.superseded_by) {
-                        (Stage::Retired, _) => {
-                            return Ok(Some(format!("the section is retired ({})", s.why)));
-                        }
-                        (Stage::Superseded, Some(next)) => at = next,
-                        (Stage::Superseded, None) => {
-                            return Ok(Some(
-                                "the section is superseded, naming nothing".to_owned(),
-                            ));
-                        }
-                        _ => return Ok(None),
-                    }
-                }
+                Address::Section { page, anchor } => match self.section_hop(&page, &anchor)? {
+                    ControlFlow::Continue(next) => at = next,
+                    ControlFlow::Break(why) => return Ok(why),
+                },
             }
         }
         Ok(Some(

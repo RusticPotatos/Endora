@@ -105,22 +105,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         && (t.owner == Some(member.id) || t.assignee == Some(member.id))
                 })
                 .collect();
-            let mut in_a_game = false;
-            for task in &held {
-                if self.in_a_scenario(task.id)? {
-                    in_a_game = true;
-                }
-            }
-            if in_a_game {
+            if self.any_in_a_scenario(&held)? {
                 playing.push(member.name.clone());
                 continue;
             }
             for task in held {
-                self.store.release(task.id)?;
-                self.store.set_assignee(task.id, None)?;
-                if task.status == TaskStatus::Doing {
-                    self.store.set_task_status(task.id, TaskStatus::Todo)?;
-                }
+                self.let_go(task)?;
             }
             self.store.furlough_member(member.id, now)?;
             retired.push(member.name.clone());
@@ -310,6 +300,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
+    /// Whether any of these tasks is a scenario's.
+    fn any_in_a_scenario(&self, tasks: &[&Task]) -> Done<bool> {
+        for task in tasks {
+            if self.in_a_scenario(task.id)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// A retired member's task is let go: unclaimed, unassigned, and back to todo if begun.
+    fn let_go(&self, task: &Task) -> Done<()> {
+        self.store.release(task.id)?;
+        self.store.set_assignee(task.id, None)?;
+        if task.status == TaskStatus::Doing {
+            self.store.set_task_status(task.id, TaskStatus::Todo)?;
+        }
+        Ok(())
+    }
+
     /// What a turn in the loops is told besides its task (ADR 0142): the map, most confirmed
     /// first, and what its loop did lately. Both are members' words, so the turn's input is
     /// marked as of unknown origin.
@@ -322,13 +332,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "The map, where things are (add_to_map when you find one; the same line again \
                  confirms it):\n",
             );
-            for l in &lines {
-                let said = format!("- {}\n", l["line"].as_str().unwrap_or(""));
-                if told.len() + said.len() > MAP_SAID_MOST {
-                    break;
-                }
-                told.push_str(&said);
-            }
+            map_lines_within(&mut told, &lines);
         }
         let Some(task) = run.task else {
             return Ok(told);
@@ -342,19 +346,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if other.project != Some(project) || other.id == task {
                 continue;
             }
-            for post in self.store.thread(other.id)? {
-                if names.contains(&post.author) {
-                    lately.push((
-                        post.at,
-                        format!(
-                            "- {} on #{}: {}\n",
-                            post.author,
-                            other.id.0,
-                            super::one_line(&post.text, 200)
-                        ),
-                    ));
-                }
-            }
+            let theirs = self.store.thread(other.id)?.into_iter();
+            lately.extend(theirs.filter(|p| names.contains(&p.author)).map(|post| {
+                let said = super::one_line(&post.text, 200);
+                (
+                    post.at,
+                    format!("- {} on #{}: {said}\n", post.author, other.id.0),
+                )
+            }));
         }
         if lately.is_empty() {
             return Ok(told);
@@ -490,5 +489,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.wake_held_lock(member.id, Some(top.id), WakeReason::Assigned)?;
         }
         Ok(())
+    }
+}
+
+/// The map's lines, most confirmed first, as many as fit in [`MAP_SAID_MOST`].
+fn map_lines_within(told: &mut String, lines: &[serde_json::Value]) {
+    for l in lines {
+        let said = format!("- {}\n", l["line"].as_str().unwrap_or(""));
+        if told.len() + said.len() > MAP_SAID_MOST {
+            return;
+        }
+        told.push_str(&said);
     }
 }

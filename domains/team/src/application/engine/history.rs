@@ -41,20 +41,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 return Ok(stopped);
             }
             for id in batch.runs {
-                let Some(run) = self.store.run(id)?.filter(|run| run.status.live()) else {
-                    continue;
-                };
-                if run.status == crate::domain::RunStatus::Running {
-                    self.runner.stop(id, std::time::Duration::from_secs(5));
-                }
-                self.end(
-                    run,
-                    crate::domain::RunStatus::Stopped,
-                    "legacy peer help retired at protocol v2 cutover",
-                )?;
-                stopped += 1;
+                stopped += usize::from(self.retire_legacy_run(id)?);
             }
         }
+    }
+
+    /// Ends one legacy peer turn, stopping it first if it runs. False when it was over.
+    fn retire_legacy_run(&self, id: crate::domain::RunId) -> Done<bool> {
+        let Some(run) = self.store.run(id)?.filter(|run| run.status.live()) else {
+            return Ok(false);
+        };
+        if run.status == crate::domain::RunStatus::Running {
+            self.runner.stop(id, std::time::Duration::from_secs(5));
+        }
+        self.end(
+            run,
+            crate::domain::RunStatus::Stopped,
+            "legacy peer help retired at protocol v2 cutover",
+        )?;
+        Ok(true)
     }
 
     /// Owner inspection of retained task questions, independent of current peer permissions.

@@ -651,12 +651,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 continue;
             };
             if !task.status.finished() {
-                for world in std::iter::once(task.id).chain(place.parts.iter().copied()) {
-                    if !self.task(world)?.status.finished() {
-                        self.store
-                            .set_task_status(world, crate::domain::TaskStatus::Dropped)?;
-                    }
-                }
+                self.drop_world(task.id, &place)?;
             }
             if self.store.setting(&round_key(task.id))?.is_none() {
                 self.store.set_setting(&round_key(task.id), &round)?;
@@ -668,6 +663,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         self.store.set_setting(RERUN_QUEUE, &setups.join(";"))?;
         Ok(setups.len())
+    }
+
+    /// A world and each of its parts still open are dropped.
+    fn drop_world(&self, world: TaskId, place: &Place) -> Done<()> {
+        for part in std::iter::once(world).chain(place.parts.iter().copied()) {
+            if !self.task(part)?.status.finished() {
+                self.store
+                    .set_task_status(part, crate::domain::TaskStatus::Dropped)?;
+            }
+        }
+        Ok(())
     }
 
     /// A scenario's setup, as the re-run queue keeps it: `kind:seed:project:plan:players`.

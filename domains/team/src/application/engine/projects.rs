@@ -257,11 +257,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 if from != ProjectStatus::Paused {
                     return refuse();
                 }
-                if let Some(cap) = project.cap {
-                    let spent = self.spent_this_month(id)?;
-                    if level_spent(spent, cap) {
-                        return Err(EngineError::Refused(Refusal::CapNotAboveSpend { spent }));
-                    }
+                let spent = self.spent_this_month(id)?;
+                if project.cap.is_some_and(|cap| level_spent(spent, cap)) {
+                    return Err(EngineError::Refused(Refusal::CapNotAboveSpend { spent }));
                 }
                 project.status = ProjectStatus::Active;
                 project.pause = None;
@@ -438,15 +436,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn set_project_tools(&self, id: ProjectId, tools: Option<Vec<String>>) -> Done<()> {
         let _held = self.held();
         let project = self.project(id)?;
-        let tools = tools.map(|all| {
-            let mut kept: Vec<String> = Vec::new();
-            for name in all.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
-                if !kept.iter().any(|k| k == name) {
-                    kept.push(name.to_owned());
-                }
-            }
-            kept
-        });
+        let tools = tools.map(|all| each_once(&all));
         self.store
             .set_setting(&projects::tools_key(id), &json!(tools).to_string())?;
         self.emit(
@@ -621,10 +611,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if project.status != ProjectStatus::Paused || project.pause != Some(Pause::Budget) {
                 continue;
             }
-            if let Some(cap) = project.cap {
-                if level_spent(self.spent_this_month(project.id)?, cap) {
-                    continue;
-                }
+            let under = match project.cap {
+                Some(cap) => !level_spent(self.spent_this_month(project.id)?, cap),
+                None => true,
+            };
+            if !under {
+                continue;
             }
             project.status = ProjectStatus::Active;
             project.pause = None;
@@ -959,6 +951,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 }
 
 /// Whether `spent` is all of `cap`, as a budget pause judges it.
+/// Tool names trimmed, each once, in the order given.
+fn each_once(all: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for name in all.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        if !kept.iter().any(|k| k == name) {
+            kept.push(name.to_owned());
+        }
+    }
+    kept
+}
+
 const fn level_spent(spent: Micros, cap: Micros) -> bool {
     matches!(projects::level(spent, cap), Level::Spent)
 }
