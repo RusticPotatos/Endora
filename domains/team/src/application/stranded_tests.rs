@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::engine::{Author, Engine, STRANDED_AFTER_MS, Settings};
 use super::ports::{Clock, NewTask, TeamStore};
+use crate::application::desk_ports::DeskStore;
 use crate::domain::{MemberId, Priority, Receipt, Role, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 

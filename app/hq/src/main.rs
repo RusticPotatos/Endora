@@ -47,6 +47,7 @@ pub(crate) fn seed_routine(
     hq: &Hq,
 ) -> Result<Option<endora_team::domain::RoutineId>, endora_team::application::EngineError> {
     use endora_team::application::ports::{NewRoutine, TeamStore as _};
+    use endora_team::application::schedule_ports::ScheduleStore;
     use endora_team::domain::{GoalStatus, Role};
     let store = hq.store();
     let members = store.members()?;

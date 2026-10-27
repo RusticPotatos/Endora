@@ -9,6 +9,7 @@ use crate::application::run_ports::RunStore;
 
 use super::engine::{Author, Engine, EngineError, Fired, STRANDED_AFTER_MS, Settings};
 use super::ports::{Clock, NewRoutine, NewTask, Run, TeamStore};
+use crate::application::desk_ports::DeskStore;
 use crate::domain::guards::Stopped;
 use crate::domain::money::{DOLLAR, MOST_A_TURN};
 use crate::domain::{
@@ -798,6 +799,7 @@ fn work_whose_turn_waits_for_the_mac_is_held_the_same_way() {
 /// and begun again. The work still waits for the Mac: it is never moved to another brain.
 #[test]
 fn work_that_waits_long_for_the_mac_is_said_once_in_the_owners_digest() {
+    use crate::application::desk_ports::DeskStore;
     use crate::domain::mac::LONG_WAIT_MS;
     const MINUTE: i64 = 60_000;
     let clock = hands();

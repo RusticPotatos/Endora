@@ -1,7 +1,9 @@
 //! The team's application layer: the engine and the ports it needs.
 
 mod chess_tool;
+pub mod desk_ports;
 pub mod engine;
+pub mod event_ports;
 pub mod guard_ports;
 pub mod history_ports;
 pub mod map_ports;
@@ -10,10 +12,13 @@ pub mod ports;
 pub mod protocol;
 pub mod protocol_history;
 pub mod protocol_world;
+pub mod receipt_ports;
 pub mod replay;
 pub mod run_ports;
 mod scenario_tool;
+pub mod schedule_ports;
 pub mod scorecard;
+pub mod wing_ports;
 pub mod world_ports;
 
 pub use engine::{

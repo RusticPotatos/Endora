@@ -8,6 +8,7 @@ use serde_json::json;
 use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, NewTask, TeamStore};
 use super::protocol::call;
+use crate::application::event_ports::EventStore;
 use crate::domain::{
     GoalId, MemberId, Priority, Receipt, Refusal, Role, TaskId, TaskStatus, WakeReason,
 };

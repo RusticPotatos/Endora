@@ -15,6 +15,8 @@ use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 use serde_json::json;
 
 use super::Office;
+use endora_team::application::desk_ports::DeskStore;
+use endora_team::application::event_ports::EventStore;
 
 impl Office {
     /// An HQ with the settings this scenario has now, over its file if it keeps one.

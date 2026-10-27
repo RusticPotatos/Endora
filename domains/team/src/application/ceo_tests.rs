@@ -12,6 +12,7 @@ use serde_json::json;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::call;
+use crate::application::event_ports::EventStore;
 use crate::domain::money::{CEO_MOST_A_TURN, MOST_A_TURN};
 use crate::domain::{GoalId, MemberId, Priority, Refusal, Role, TaskId, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};

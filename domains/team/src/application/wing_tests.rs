@@ -12,6 +12,10 @@ use serde_json::{Value, json};
 use super::engine::{Author, Engine, Settings, Submission};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::call;
+use crate::application::desk_ports::DeskStore;
+use crate::application::receipt_ports::ReceiptStore;
+use crate::application::schedule_ports::ScheduleStore;
+use crate::application::wing_ports::WingStore;
 use crate::domain::wing::{WING_GOAL, WING_PROJECT};
 use crate::domain::{
     Brain, Criterion, GoalId, MemberId, Priority, Refusal, Role, TaskId, TaskStatus, WakeReason,

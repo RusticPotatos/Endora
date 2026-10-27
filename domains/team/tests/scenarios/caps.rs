@@ -11,6 +11,7 @@ use endora_team::domain::{RunStatus, WakeReason};
 use serde_json::json;
 
 use super::Office;
+use endora_team::application::event_ports::EventStore;
 
 #[when(regex = r#"^(\w+) is asked to talk about "(.+)" again$"#)]
 fn asked_to_talk(w: &mut Office, name: String, title: String) {

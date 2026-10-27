@@ -9,6 +9,8 @@ use crate::application::run_ports::RunStore;
 
 use super::engine::{Author, Engine, EngineError, Fired, Settings};
 use super::ports::{Clock, NewRoutine, NewTask, TeamStore};
+use crate::application::event_ports::EventStore;
+use crate::application::schedule_ports::ScheduleStore;
 use crate::domain::routines::{HOUR_MS, MINUTE_MS};
 use crate::domain::{
     CheckBackStatus, GoalId, MemberId, Priority, Receipt, Refusal, Refused, Role, RoutineId, RunId,

@@ -3,6 +3,9 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::application::desk_ports::DeskStore;
+use crate::application::schedule_ports::ScheduleStore;
+
 use crate::application::run_ports::RunStore;
 
 use super::engine::{Author, Engine, Settings};

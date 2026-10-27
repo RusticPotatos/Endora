@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools};
+use crate::application::event_ports::EventStore;
 use crate::domain::chess::{self, Status};
 use crate::domain::{MemberId, Role, RunStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};

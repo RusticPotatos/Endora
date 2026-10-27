@@ -12,6 +12,8 @@ use super::engine::{Author, Engine, EngineError, Settings};
 use super::guard_ports::GuardStore as _;
 use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools_in};
+use crate::application::event_ports::EventStore;
+use crate::application::receipt_ports::ReceiptStore;
 use crate::domain::closure::{Closure, DoneWhy, DropWhy};
 use crate::domain::scenario::{Action, Cause, Lighthouse, Part};
 use crate::domain::station::{Action as StationAction, Anomaly, Station};

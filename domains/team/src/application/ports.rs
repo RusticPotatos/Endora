@@ -3,16 +3,13 @@
 use core::fmt;
 use std::time::Duration;
 
-use crate::domain::{Branch, Check, Document};
-use crate::domain::{CallReceipt, Criterion, Label, Ref};
+use crate::domain::{Criterion, Label, Ref};
+use crate::domain::{Evidence, ProjectId, ProjectStatus};
+use crate::domain::{Exit, Goal, Liveness, Project};
 use crate::domain::{
-    CheckBack, CheckBackStatus, Exit, Goal, Liveness, Project, Routine, RoutineId,
-};
-use crate::domain::{
-    Event, GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, Role, RunId,
+    GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, Role, RunId,
     RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
-use crate::domain::{Evidence, ProjectId, ProjectStatus};
 
 /// A store that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,7 +274,12 @@ pub struct Timer {
 /// HQ's own store (spec section 14). Every change the engine makes goes through it, and the
 /// engine is its only writer, one change at a time.
 pub trait TeamStore:
-    super::world_ports::WorldStore
+    super::receipt_ports::ReceiptStore
+    + super::wing_ports::WingStore
+    + super::schedule_ports::ScheduleStore
+    + super::desk_ports::DeskStore
+    + super::event_ports::EventStore
+    + super::world_ports::WorldStore
     + super::guard_ports::GuardStore
     + super::map_ports::MapStore
     + super::history_ports::HistoryStore
@@ -425,20 +427,6 @@ pub trait TeamStore:
     ) -> Stored<()>;
     /// Hands a task to a member, or to nobody.
     fn set_assignee(&self, task: TaskId, member: Option<MemberId>) -> Stored<()>;
-    /// Records a receipt the node wrote (its `id` is ignored) and returns its id.
-    fn add_call_receipt(&self, receipt: &CallReceipt) -> Stored<i64>;
-    /// A receipt, by its id.
-    fn call_receipt(&self, id: i64) -> Stored<Option<CallReceipt>>;
-    /// A turn's receipts, oldest first.
-    fn call_receipts_of(&self, run: RunId) -> Stored<Vec<CallReceipt>>;
-    /// Adds an action to a scenario's log (its `id` is ignored) and returns its id.
-    fn add_scenario_action(&self, action: &ScenarioAction) -> Stored<i64>;
-    /// A scenario's log, oldest first.
-    fn scenario_actions(&self, task: TaskId) -> Stored<Vec<ScenarioAction>>;
-    /// Records evidence cited for a criterion.
-    fn add_cited(&self, cited: &Cited) -> Stored<()>;
-    /// The evidence cited on a task, oldest first.
-    fn cited(&self, task: TaskId) -> Stored<Vec<Cited>>;
     /// A task's thread, oldest first.
     fn thread(&self, task: TaskId) -> Stored<Vec<Post>>;
     /// How many posts each task's thread holds, for every task with one, in one read.
@@ -473,50 +461,6 @@ pub trait TeamStore:
     fn projects(&self) -> Stored<Vec<Project>>;
     /// Saves a project's changes: its lead, status, pause, cap and asked cap, and when.
     fn save_project(&self, project: &Project) -> Stored<()>;
-    /// Says what a desk item is about, when that is a project.
-    fn set_desk_project(&self, id: crate::domain::DeskId, project: ProjectId) -> Stored<()>;
-
-    /// Appends an event to the feed and returns its id.
-    fn emit(&self, at: Millis, kind: &str, data: &serde_json::Value) -> Stored<i64>;
-    /// The id of the latest event, 0 when there is none.
-    fn last_event(&self) -> Stored<i64>;
-    /// How many events of a kind there are, and when the latest was.
-    fn count_events(&self, kind: &str) -> Stored<(i64, Option<Millis>)>;
-    /// Deletes all but the newest `keep` events that are not ticks, and every tick not among the
-    /// newest `keep` of all: the feed is for display, and a reader that fell that far behind
-    /// starts again from a snapshot. The ticks do not count, or the heartbeat pushes out the
-    /// week the guards read. Endora's audit log is the record.
-    fn prune_events(&self, keep: i64) -> Stored<usize>;
-    /// The event with this id, if the feed still has it.
-    fn event(&self, id: i64) -> Stored<Option<Event>>;
-    /// Whether the feed still has the event with this id.
-    fn has_event(&self, id: i64) -> Stored<bool>;
-    /// The events after `id`, oldest first.
-    fn events_after(&self, id: i64) -> Stored<Vec<Event>>;
-    /// Every event of these kinds, oldest first.
-    fn events_of(&self, kinds: &[&str]) -> Stored<Vec<Event>>;
-    /// When the oldest event kept was, if there is one.
-    fn first_event_at(&self) -> Stored<Option<Millis>>;
-    /// The latest `limit` events with an id below `id`, oldest first.
-    fn events_before(&self, id: i64, limit: usize) -> Stored<Vec<Event>>;
-
-    /// Puts something on the owner's desk, about a task or a goal, from a member or not.
-    fn add_desk(
-        &self,
-        kind: &str,
-        task: Option<TaskId>,
-        goal: Option<GoalId>,
-        from: Option<MemberId>,
-        text: &str,
-        at: Millis,
-    ) -> Stored<crate::domain::DeskId>;
-    /// Records how the owner decided a desk item.
-    fn set_desk_status(&self, id: crate::domain::DeskId, status: &str) -> Stored<()>;
-    /// Rewords a desk item that still waits: a finding seen again says what it fired on now
-    /// (ADR 0132). An item the owner has decided keeps the words it was decided on.
-    fn set_desk_text(&self, id: crate::domain::DeskId, text: &str) -> Stored<()>;
-    /// Everything on the desk, oldest first.
-    fn desk(&self) -> Stored<Vec<DeskItem>>;
 
     /// Whether the kill switch is on.
     fn stopped(&self) -> Stored<bool>;
@@ -526,65 +470,6 @@ pub trait TeamStore:
     fn setting(&self, key: &str) -> Stored<Option<String>>;
     /// Sets one of HQ's own settings.
     fn set_setting(&self, key: &str, value: &str) -> Stored<()>;
-
-    /// Adds a timer.
-    fn add_timer(
-        &self,
-        member: MemberId,
-        reason: WakeReason,
-        due_at: Millis,
-        every_ms: Millis,
-    ) -> Stored<i64>;
-    /// Every timer.
-    fn timers(&self) -> Stored<Vec<Timer>>;
-    /// Moves a timer to its next time.
-    fn set_timer_due(&self, id: i64, due_at: Millis) -> Stored<()>;
-
-    /// Adds a routine, on, first due at `next_due_at`.
-    fn add_routine(&self, routine: &NewRoutine, next_due_at: Millis) -> Stored<RoutineId>;
-    /// Every routine, oldest first.
-    fn routines(&self) -> Stored<Vec<Routine>>;
-    /// Saves a routine's changes: on or off, when it is next due, when it last fired, its
-    /// last task, and its project.
-    fn save_routine(&self, routine: &Routine) -> Stored<()>;
-
-    /// Adds a pending check-back.
-    fn add_check_back(
-        &self,
-        member: MemberId,
-        task: TaskId,
-        why: &str,
-        due_at: Millis,
-        at: Millis,
-    ) -> Stored<i64>;
-    /// Every check-back, oldest first.
-    fn check_backs(&self) -> Stored<Vec<CheckBack>>;
-    /// Records what became of a check-back, and when.
-    fn set_check_back(&self, id: i64, status: CheckBackStatus, at: Millis) -> Stored<()>;
-
-    /// Adds a document to a task (ADR 0115; its `id` is ignored) and returns its id.
-    fn add_document(&self, document: &Document) -> Stored<i64>;
-    /// A document, by its id.
-    fn document(&self, id: i64) -> Stored<Option<Document>>;
-    /// A task's documents, oldest first.
-    fn documents_of(&self, task: TaskId) -> Stored<Vec<Document>>;
-    /// Records a submitted branch (its `id` is ignored) and returns its id.
-    fn add_branch(&self, branch: &Branch) -> Stored<i64>;
-    /// Every submitted branch, oldest first.
-    fn branches(&self) -> Stored<Vec<Branch>>;
-    /// Saves a branch's status.
-    fn save_branch(&self, branch: &Branch) -> Stored<()>;
-    /// Queues a check of a branch (its `id` and `token` are ignored): returns its id and the
-    /// job's own token, made by the store.
-    fn add_check(&self, check: &Check) -> Stored<(i64, String)>;
-    /// Every check, oldest first.
-    fn checks(&self) -> Stored<Vec<Check>>;
-    /// Saves a check's status, result and times.
-    fn save_check(&self, check: &Check) -> Stored<()>;
-
-    /// Every post in a task's thread with the evidence it cited, oldest first: what Replay
-    /// reads back.
-    fn thread_cited(&self, task: TaskId) -> Stored<Vec<ThreadPost>>;
 
     // ---- roles as an enforced RACI (ADR 0120) ------------------------------------------
 

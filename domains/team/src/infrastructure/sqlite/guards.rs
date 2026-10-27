@@ -130,6 +130,7 @@ impl GuardStore for SqliteTeamStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::desk_ports::DeskStore;
     use crate::application::ports::TeamStore;
     use crate::domain::Role;
 

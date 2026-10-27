@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Cited, Clock, LedgerRow, NewTask, Post, Run, TeamStore, ThreadPost, Wake};
 use super::replay::{Moment, Record, What, replay, replay_all};
+use crate::application::event_ports::EventStore;
 use crate::domain::{
     Brain, CallReceipt, Event, Label, Member, MemberId, Priority, Receipt, Ref, Role, RunId,
     RunStatus, TaskId, TaskStatus, WakeId, WakeReason,
