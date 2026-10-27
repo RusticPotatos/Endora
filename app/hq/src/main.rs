@@ -266,13 +266,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not seed the house log: {e}"),
         }
-        // The team's map (ADR 0126): a page for every area, project, goal and role, made once
-        // each from the team as it stands. Nothing is changed or deleted.
+        // The team's map (ADR 0126): a page for every project and goal, made once each from the
+        // team as it stands. Nothing is changed or deleted.
         match hq.migrate_map() {
             Ok(made) if made.total() == 0 => {}
             Ok(made) => println!(
-                "hq: made the map's pages: {} areas, {} projects, {} goals, {} roles",
-                made.areas, made.projects, made.goals, made.roles
+                "hq: made the map's pages: {} projects, {} goals",
+                made.projects, made.goals
             ),
             Err(e) => eprintln!("hq: could not make the map's pages: {e}"),
         }

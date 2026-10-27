@@ -1,14 +1,12 @@
-//! The team's world (ADR 0122): the house page and its timeline, the derived lab and team
-//! pages, stories, the owner's canon, handover notes, and the one-time move of the house log
-//! and the lessons into it. Models propose and code decides: a member writes only what its role
-//! stewards, at a stage its evidence warrants, and only the owner makes something canon.
+//! The team's world (ADR 0122, amended by ADR 0142): the house page and its timeline, the
+//! derived lab and team pages, and handover notes. Members read it; the owner writes it.
 
 use serde_json::{Value, json};
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::evidence::Found;
-use crate::domain::map::PageKey;
+use crate::domain::map::{self, PageKey};
 use crate::domain::world::{
     self, Address, HOUSE, HandoverNote, Section, Snapshot, Stage, Trust, WorldRefusal,
 };
@@ -245,7 +243,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut said = format!(
             "{} (world:{page}):\nKept by {}.\n",
             self.page_title(key)?,
-            self.steward_called(self.steward(key)?)?
+            map::steward_of(key).said()
         );
         let sections: Vec<Section> = self
             .store
@@ -255,9 +253,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect();
         if sections.is_empty() {
             said.push_str("No sections yet.\n");
-        }
-        if let (PageKey::Role(role), true) = (key, sections.is_empty()) {
-            said.push_str(&Self::role_default(role));
         }
         for s in &sections {
             let trust = self.section_trust(s)?;
@@ -600,7 +595,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             HOUSE.title
         );
         md.push_str(&self.written_page_markdown(HOUSE.slug)?);
-        // The pages of areas, projects, goals and roles (ADR 0126), each with its steward.
+        // The pages of projects and goals (ADR 0126), each with its steward.
         for slug in self.store.world_pages()? {
             let Some(key) = PageKey::parse(&slug) else {
                 continue;
@@ -612,7 +607,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             md.push_str(&format!(
                 "## {} (world:{slug})\n\nKept by {}.\n\n{kept}",
                 self.page_title(key)?,
-                self.steward_called(self.steward(key)?)?
+                map::steward_of(key).said()
             ));
         }
         // A derived page: its heading, then its lines (its first line is the heading).

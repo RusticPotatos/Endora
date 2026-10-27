@@ -583,8 +583,7 @@ mod tests {
             ("House#Backups", "world:house#backups"),
             ("world:lab", "world:lab"),
             ("team", "world:team"),
-            ("World:Area/3#Backups", "world:area/3#backups"),
-            ("role/tester", "world:role/tester"),
+            ("World:Project/3#Backups", "world:project/3#backups"),
             ("project/2", "world:project/2"),
         ] {
             assert_eq!(
