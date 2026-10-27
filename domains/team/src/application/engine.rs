@@ -4835,6 +4835,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &text,
             self.clock.now(),
         )?;
+        self.quiet_in_the_loops(desk)?;
         self.emit(
             EventKind::DeskAdded,
             json!({ "item": desk.0, "kind": "notice", "task": task.map(|t| t.0) }),
@@ -5336,6 +5337,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let desk = self
             .store
             .add_desk("notice", Some(task), None, Some(member.id), &text, now)?;
+        self.quiet_in_the_loops(desk)?;
         self.emit(
             EventKind::DeskAdded,
             json!({ "item": desk.0, "kind": "notice", "task": task.0 }),

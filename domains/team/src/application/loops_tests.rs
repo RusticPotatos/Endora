@@ -623,3 +623,38 @@ fn a_stalled_loop_item_counts_failures_instead_of_climbing_the_ladder() {
         "no desk card for a stall"
     );
 }
+
+/// The owner's desk in the loops holds only what is the owner's (ADR 0142): a notice is told
+/// in the feed and kept, but never waits on the desk.
+#[test]
+fn in_the_loops_a_notice_never_waits_on_the_desk() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let _f = five(&hq);
+    let id = hq.notice(None, "A restart cut 1 turn.").unwrap();
+    let found = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.id == id)
+        .unwrap();
+    assert_ne!(found.status, "waiting", "{found:?}");
+}
+
+/// Outside the loops a notice waits, as before.
+#[test]
+fn outside_the_loops_a_notice_waits() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    hq.hire("Ada", Role::Lead, 10, 2, 0).unwrap();
+    let id = hq.notice(None, "A restart cut 1 turn.").unwrap();
+    let found = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.id == id)
+        .unwrap();
+    assert_eq!(found.status, "waiting");
+}

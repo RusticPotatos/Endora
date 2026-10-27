@@ -106,6 +106,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &cut(&text, 600),
             self.clock.now(),
         )?;
+        self.quiet_in_the_loops(desk)?;
         self.emit(
             EventKind::DeskAdded,
             json!({ "item": desk.0, "kind": "notice", "task": run.task.map(|t| t.0) }),

@@ -14,6 +14,11 @@ use crate::domain::{Branch, EventKind, Priority, RunId, TaskId, TaskStatus};
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The card that asks the owner to say when a pushed branch is deployed.
     pub(super) fn offer_deploy(&self, task: TaskId, branch: &Branch) -> Done<()> {
+        // In the loops there is no Deployed card (ADR 0142): the owner merges and runs the
+        // playbook, and the lab's recurring health check is the check.
+        if !self.loop_members()?.is_empty() {
+            return Ok(());
+        }
         let item = self.store.add_desk(
             "deploy",
             Some(task),

@@ -123,6 +123,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// offered to the owner for furlough. One item a member; not again for a week after the
     /// owner keeps it. Returns how many were offered.
     pub(super) fn idle_look(&self) -> Done<usize> {
+        // In the loops nobody is furloughed for being idle (ADR 0142): idle members play.
+        if !self.loop_members()?.is_empty() {
+            return Ok(0);
+        }
         let day = self.today();
         if self.store.setting(IDLE_CHECKED_DAY)?.as_deref() == Some(day.to_string().as_str()) {
             return Ok(0);

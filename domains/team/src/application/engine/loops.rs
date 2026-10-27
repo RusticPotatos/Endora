@@ -214,6 +214,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
+    /// A notice made while the loops run is kept and told, but never waits on the owner's desk
+    /// (ADR 0142): the desk is for what only the owner decides.
+    pub(super) fn quiet_in_the_loops(&self, desk: crate::domain::DeskId) -> Done<()> {
+        if !self.loop_members()?.is_empty() {
+            self.store.set_desk_status(desk, "seen")?;
+        }
+        Ok(())
+    }
+
     /// An item's failures at its present rank.
     ///
     /// # Errors
