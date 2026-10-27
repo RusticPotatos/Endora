@@ -38,15 +38,16 @@ Feature: Projects, their caps and their money
     Then the pool shows $0.40 spent today
     And Ada's share shows $0.00 spent today
 
-  # Borrowing stops at one more share; then the decision waits for the owner's word.
+  # Borrowing stops at one more share; then the decision waits for the owner's word. Less
+  # than an opening call on her Claude ($0.08 on Sonnet) left is as good as none.
   Scenario: A member may borrow one more share, then asks the owner
-    Given Ada has spent $1.18 of her share today
+    Given Ada has spent $1.10 of her share today
     When Ada is woken to decide "Look at sonarr"
     Then Ada's turn starts on "Look at sonarr"
-    When Ada's turn on "Look at sonarr" spends $0.025
+    When Ada's turn on "Look at sonarr" spends $0.10
     And Ada is woken to decide "Look at radarr"
     And a tick passes
     Then Ada's turn on "Look at radarr" is waiting for budget
     And the owner's desk holds one request about Ada being out for the day
-    When the owner gives Ada $0.05 more today
+    When the owner gives Ada $0.08 more today
     Then Ada's turn starts on "Look at radarr"

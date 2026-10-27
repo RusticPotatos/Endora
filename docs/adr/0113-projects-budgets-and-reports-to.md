@@ -174,7 +174,11 @@ offered. Borrowing is now limited, and the item is built.
    cap left, and `s + min(s, o) - u + allowance` (`money::may_draw`, `Engine::affordable`).
    `o` is read at the moment of the turn, so the limit moves as the others spend. Owner-asked
    turns stay outside it, charged to the pool's day alone; members on the house's model stay out
-   of it. The pool's day is the hard ceiling for everyone.
+   of it. The pool's day is the hard ceiling for everyone. *Amended 2026-10-27:* a turn's money
+   is at least what its opening call costs on the Claude it is paid on, its prompt of about
+   32,000 tokens written to the cache (`money::least_a_turn`: $0.08 on Sonnet, $0.16 on Opus,
+   and never under $0.01). Live, Kit on Sonnet was started on $0.023 twice an hour and the relay
+   refused each opening call ($0.066); with less than that it now waits and is out for today.
 5. **"Out for today".** The first time a paid member is turned away because it reached that
    limit while the pool's day (and its project's month) still has at least a turn's money, one
    desk item (`out_for_day`) is put for that member for the owner's day, and no more that day:

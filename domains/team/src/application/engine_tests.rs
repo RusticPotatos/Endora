@@ -1725,6 +1725,31 @@ fn dollar_a_day(clock: &Hands) -> Hq<'_> {
     )
 }
 
+/// HQ with $2 a day for the team: enough that, with Linus out, the pool's day still has an
+/// opening call on Sonnet left ($0.12; [`crate::domain::money::least_a_turn`]).
+fn two_dollars_a_day(clock: &Hands) -> Hq<'_> {
+    Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(8),
+        clock,
+        Settings {
+            pool_per_month: 60 * crate::domain::money::DOLLAR,
+            ..Settings::default()
+        },
+    )
+}
+
+/// Linus spends what he may today, turn after turn, until a turn gets less than the most a
+/// turn may spend: on $2 a day, twice his share of $0.94.
+fn linus_spends_all_he_may(hq: &Hq<'_>, t: &Team, work: TaskId) {
+    loop {
+        let run = own_turn_spends(hq, t.dev, work, MOST_A_TURN);
+        if hq.store().run(run).unwrap().unwrap().spent < MOST_A_TURN {
+            return;
+        }
+    }
+}
+
 /// What is waiting on the owner's desk about a member being out for the day.
 fn out_for_day_items(hq: &Hq<'_>) -> Vec<super::ports::DeskItem> {
     hq.store()
@@ -1768,11 +1793,11 @@ fn a_member_past_its_share_borrows_one_more_share_and_no_further() {
 #[test]
 fn a_member_at_twice_its_share_asks_the_owner_once_while_the_pool_has_money() {
     let clock = hands();
-    let hq = dollar_a_day(&clock);
+    let hq = two_dollars_a_day(&clock);
     let t = team(&hq);
     all_paid(&hq);
     let work = endoras_task(&hq, t.goal, "Add a list");
-    linus_spends_twice_his_share(&hq, &t, work);
+    linus_spends_all_he_may(&hq, &t, work);
     assert!(
         out_for_day_items(&hq).is_empty(),
         "nobody has been refused yet"
@@ -1785,25 +1810,48 @@ fn a_member_at_twice_its_share_asks_the_owner_once_while_the_pool_has_money() {
     assert_eq!(items[0].member, Some(t.dev));
     let text = &items[0].text;
     assert!(text.contains("Linus is out for today"), "{text}");
-    assert!(text.contains("$0.94 spent"), "{text}");
-    assert!(text.contains("share $0.47"), "{text}");
-    assert!(text.contains("borrowed $0.47"), "{text}");
-    assert!(text.contains("pool has $0.06 left today"), "{text}");
+    assert!(text.contains("$1.88 spent"), "{text}");
+    assert!(text.contains("share $0.94"), "{text}");
+    assert!(text.contains("borrowed $0.94"), "{text}");
+    assert!(text.contains("pool has $0.12 left today"), "{text}");
     // Tomorrow it may ask again: the decision that waited starts with the new day.
     clock.forward(24 * 60 * 60 * 1000);
-    linus_spends_twice_his_share(&hq, &t, work);
+    linus_spends_all_he_may(&hq, &t, work);
     assert!(waits_for_budget(&hq, t.dev, work));
     assert_eq!(out_for_day_items(&hq).len(), 2);
 }
 
+/// Live, 27 Oct 2026: Kit on Sonnet had $0.023 of its day left, less than its opening call
+/// costs, and was started anyway, twice an hour; the relay refused each turn before it began.
 #[test]
-fn approving_lets_the_member_spend_the_allowance_today_and_not_tomorrow() {
+fn a_member_with_less_than_an_opening_call_left_waits_and_the_owner_is_asked() {
     let clock = hands();
     let hq = dollar_a_day(&clock);
     let t = team(&hq);
     all_paid(&hq);
     let work = endoras_task(&hq, t.goal, "Add a list");
-    linus_spends_twice_his_share(&hq, &t, work);
+    // Twice his share is 941_176: he leaves $0.05 of it, more than a cent, less than Sonnet's
+    // opening call.
+    own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
+    own_turn_spends(&hq, t.dev, work, 91_176);
+    assert!(
+        waits_for_budget(&hq, t.dev, work),
+        "not started on $0.05 of Sonnet"
+    );
+    let items = out_for_day_items(&hq);
+    assert_eq!(items.len(), 1, "the owner is asked once");
+    assert_eq!(items[0].member, Some(t.dev));
+}
+
+#[test]
+fn approving_lets_the_member_spend_the_allowance_today_and_not_tomorrow() {
+    let clock = hands();
+    let hq = two_dollars_a_day(&clock);
+    let t = team(&hq);
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    linus_spends_all_he_may(&hq, &t, work);
     assert!(waits_for_budget(&hq, t.dev, work));
     let item = out_for_day_items(&hq)[0].id;
     // More than the pool's day has left is refused; the item stays.
@@ -1812,11 +1860,11 @@ fn approving_lets_the_member_spend_the_allowance_today_and_not_tomorrow() {
         Err(EngineError::Refused(_))
     ));
     assert_eq!(out_for_day_items(&hq)[0].status, "waiting");
-    hq.decide_saying(item, "approve", "0.05").unwrap();
+    hq.decide_saying(item, "approve", "0.1").unwrap();
     let run = own_turn_spends(&hq, t.dev, work, MOST_A_TURN);
     assert_eq!(
         hq.store().run(run).unwrap().unwrap().spent,
-        50_000,
+        100_000,
         "the allowance, not more"
     );
     assert!(
@@ -1826,18 +1874,19 @@ fn approving_lets_the_member_spend_the_allowance_today_and_not_tomorrow() {
     assert_eq!(out_for_day_items(&hq).len(), 1);
     // Tomorrow the allowance is gone: twice his share again, no more.
     clock.forward(24 * 60 * 60 * 1000);
-    let last = linus_spends_twice_his_share(&hq, &t, work);
-    assert_eq!(last, 141_176);
+    linus_spends_all_he_may(&hq, &t, work);
+    let day = crate::domain::money::day_of(NOON + 24 * 60 * 60 * 1000, 0);
+    assert_eq!(hq.store().share_committed(t.dev, day).unwrap(), 1_882_352);
 }
 
 #[test]
 fn declining_changes_nothing_and_the_owners_own_turns_ignore_the_cap() {
     let clock = hands();
-    let hq = dollar_a_day(&clock);
+    let hq = two_dollars_a_day(&clock);
     let t = team(&hq);
     all_paid(&hq);
     let work = endoras_task(&hq, t.goal, "Add a list");
-    linus_spends_twice_his_share(&hq, &t, work);
+    linus_spends_all_he_may(&hq, &t, work);
     assert!(waits_for_budget(&hq, t.dev, work));
     let item = out_for_day_items(&hq)[0].id;
     hq.decide(item, "decline").unwrap();
@@ -1855,7 +1904,7 @@ fn declining_changes_nothing_and_the_owners_own_turns_ignore_the_cap() {
     assert_eq!((run.task, run.status), (Some(asked), RunStatus::Running));
     assert!(run.asked_by_owner);
     assert!(
-        run.reserved > 0 && run.reserved <= 58_824,
+        run.reserved > 0 && run.reserved <= 117_648,
         "{}",
         run.reserved
     );

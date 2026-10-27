@@ -492,6 +492,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
+    /// The Claude a turn's judgment is paid on (its pinned brain if that is a Claude, or the
+    /// member's), and what it may reserve there ([`Self::reservable`]).
+    fn paid_on(
+        &self,
+        run: &Run,
+        member: &Member,
+        (kind, pinned): (turns::TurnKind, Option<Brain>),
+        league: bool,
+        project: Option<ProjectId>,
+    ) -> Done<(Brain, Option<Micros>)> {
+        let brain = pinned
+            .filter(|b| b.cloud())
+            .unwrap_or_else(|| member.judgment_brain());
+        let asked = self.reservable(run, member, (kind, brain), league, project)?;
+        Ok((brain, asked))
+    }
+
     /// What a member could have reserved for a turn of judgment now, on work in `project` if
     /// any, if anything. Only a turn of judgment is asked (ADR 0131): work runs on the house's
     /// models and reserves nothing. A project with a cap holds a turn to what is left of it this
@@ -499,22 +516,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ///
     /// What a queued turn may reserve, if it may: only judgment is paid for, and work on the
     /// house's models reserves nothing. A league side is paid from the league's capped project
-    /// alone; it reserves nothing outside one.
+    /// alone; it reserves nothing outside one. Judgment is paid on `brain`, and needs at least
+    /// what its opening call costs there.
     fn reservable(
         &self,
         run: &Run,
         member: &Member,
-        kind: turns::TurnKind,
+        (kind, brain): (turns::TurnKind, Brain),
         league: bool,
         project: Option<ProjectId>,
     ) -> Done<Option<Micros>> {
+        let least = money::least_a_turn(brain);
         match kind {
             turns::TurnKind::Work => Ok(Some(0)),
             turns::TurnKind::Judgment if league => match self.project_left(project)? {
-                Some(_) => self.affordable(member, project, true),
+                Some(_) => self.affordable(member, project, true, least),
                 None => Ok(None),
             },
-            turns::TurnKind::Judgment => self.affordable(member, project, run.asked_by_owner),
+            turns::TurnKind::Judgment => {
+                self.affordable(member, project, run.asked_by_owner, least)
+            }
         }
     }
 
@@ -530,6 +551,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         member: &Member,
         project: Option<ProjectId>,
         for_owner: bool,
+        least: Micros,
     ) -> Done<Option<Micros>> {
         let day = self.today();
         let pool_left = self.pool_left_today()?;
@@ -538,7 +560,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             most = most.min(left);
         }
         if for_owner {
-            return Ok(money::reservation(pool_left, pool_left, most));
+            return Ok(money::reservation(pool_left, pool_left, most, least));
         }
         let paid = self.paid_weights()?;
         let pool_day = self.pool_day_today()?;
@@ -555,14 +577,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let allowance = self.allowance_of(member.id, day)?;
         let draw = money::may_draw(share, spent, others, allowance);
-        let amount = money::reservation(draw, pool_left, most);
+        let amount = money::reservation(draw, pool_left, most, least);
         // Turned away at twice its share while the pool's day and the project's month have
         // money: the owner is asked, once a day (ADR 0113, amended).
         let out_for_the_day = share > 0
             && !member.furloughed()
-            && draw < money::LEAST_A_TURN
-            && pool_left >= money::LEAST_A_TURN
-            && most >= money::LEAST_A_TURN;
+            && draw < least
+            && pool_left >= least
+            && most >= least;
         if amount.is_none() && out_for_the_day {
             self.ask_about_the_day(member, day, share, spent, pool_left)?;
         }
@@ -2348,13 +2370,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Some(brain) => turns::Need::pinned(brain),
                 None => self.need_of_run(&run, &member, &wakes, &known),
             };
-            let asked = self.reservable(&run, &member, need.kind, league.is_some(), project)?;
+            let (judgment_brain, asked) = self.paid_on(
+                &run,
+                &member,
+                (need.kind, pinned),
+                league.is_some(),
+                project,
+            )?;
             let on_the_mac = running.iter().any(|r| r.brain == Some(Brain::Mac));
             let facts = turns::Facts {
                 work_brain: member.work_brain,
-                judgment_brain: pinned
-                    .filter(|b| b.cloud())
-                    .unwrap_or_else(|| member.judgment_brain()),
+                judgment_brain,
                 mac_waits: mac::wait_for(self.mac_facts().as_ref(), now, on_the_mac),
                 can_afford: asked.is_some(),
                 free_turns_today: if in_a_world {

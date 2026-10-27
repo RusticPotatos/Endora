@@ -24,6 +24,23 @@ pub const MOST_A_TURN: Micros = 400_000;
 pub const CEO_MOST_A_TURN: Micros = DOLLAR;
 /// Less than this left for today, and a member cannot start a turn.
 pub const LEAST_A_TURN: Micros = 10_000;
+/// The prompt a turn's opening call writes to Anthropic's cache, in tokens: the runtime's own
+/// instructions, the tools and the briefing. Measured live on 27 Oct 2026 at about 26,000.
+pub const OPENING_PROMPT: i64 = 32_000;
+
+/// The least a turn on `brain` can start with: what its opening call's prompt costs written to
+/// the cache (Opus $5, Sonnet $2.50, Haiku $0.125 a million, in [`Brain::price_class`]'s
+/// ratios), and never under [`LEAST_A_TURN`]. With less, the relay refuses the first call and
+/// the turn ends having done nothing.
+#[must_use]
+pub const fn least_a_turn(brain: Brain) -> Micros {
+    let opening = OPENING_PROMPT * brain.price_class() * 5 / 1_000;
+    if opening > LEAST_A_TURN {
+        opening
+    } else {
+        LEAST_A_TURN
+    }
+}
 
 /// One day, in milliseconds.
 pub const DAY_MS: Millis = 86_400_000;
@@ -126,12 +143,17 @@ pub fn may_draw(
 }
 
 /// What one turn can have reserved, before it starts: the per-turn cap (`most`, the role's),
-/// or what is left of the member's day or the pool's day if that is less. `None` when less
-/// than a turn is left.
+/// or what is left of the member's day or the pool's day if that is less. `None` when that is
+/// under `least`, the least a turn on its brain can start with ([`least_a_turn`]).
 #[must_use]
-pub fn reservation(member_left: Micros, pool_left: Micros, most: Micros) -> Option<Micros> {
+pub fn reservation(
+    member_left: Micros,
+    pool_left: Micros,
+    most: Micros,
+    least: Micros,
+) -> Option<Micros> {
     let amount = most.min(member_left).min(pool_left);
-    (amount >= LEAST_A_TURN).then_some(amount)
+    (amount >= least).then_some(amount)
 }
 
 /// Whether a running turn has gone past what it may spend: what it reserved.
@@ -197,11 +219,20 @@ mod tests {
     fn a_turn_reserves_at_most_its_roles_cap_and_never_more_than_is_left() {
         let most = most_a_turn(Role::Lead);
         assert_eq!(most, MOST_A_TURN);
-        assert_eq!(reservation(933_333, 2_333_333, most), Some(MOST_A_TURN));
-        assert_eq!(reservation(120_000, 2_333_333, most), Some(120_000));
-        assert_eq!(reservation(933_333, 50_000, most), Some(50_000));
         assert_eq!(
-            reservation(9_999, 2_333_333, most),
+            reservation(933_333, 2_333_333, most, LEAST_A_TURN),
+            Some(MOST_A_TURN)
+        );
+        assert_eq!(
+            reservation(120_000, 2_333_333, most, LEAST_A_TURN),
+            Some(120_000)
+        );
+        assert_eq!(
+            reservation(933_333, 50_000, most, LEAST_A_TURN),
+            Some(50_000)
+        );
+        assert_eq!(
+            reservation(9_999, 2_333_333, most, LEAST_A_TURN),
             None,
             "less than a turn is left"
         );
@@ -211,8 +242,36 @@ mod tests {
             assert_eq!(most_a_turn(role), MOST_A_TURN);
         }
         assert_eq!(
-            reservation(1_361_110, 2_333_333, most_a_turn(Role::Ceo)),
+            reservation(1_361_110, 2_333_333, most_a_turn(Role::Ceo), LEAST_A_TURN),
             Some(DOLLAR)
+        );
+    }
+
+    #[test]
+    fn a_turn_on_claude_needs_at_least_what_its_opening_call_costs() {
+        // Live, 27 Oct 2026: Kit on Sonnet was given $0.023, its downtime turn's opening call
+        // (about 26,000 tokens written to the cache) cost $0.066, and the relay refused every
+        // turn, twice an hour, until the day was over.
+        assert_eq!(least_a_turn(Brain::Sonnet), 80_000, "$0.08");
+        assert_eq!(least_a_turn(Brain::Opus), 160_000, "$0.16");
+        assert_eq!(
+            least_a_turn(Brain::Haiku),
+            LEAST_A_TURN,
+            "its opening call is under a cent"
+        );
+        assert_eq!(least_a_turn(Brain::Local), LEAST_A_TURN);
+        let most = most_a_turn(Role::Lead);
+        assert_eq!(
+            reservation(22_962, 2_333_333, most, least_a_turn(Brain::Sonnet)),
+            None
+        );
+        assert_eq!(
+            reservation(80_000, 2_333_333, most, least_a_turn(Brain::Sonnet)),
+            Some(80_000)
+        );
+        assert_eq!(
+            reservation(22_962, 2_333_333, most, least_a_turn(Brain::Haiku)),
+            Some(22_962)
         );
     }
 
@@ -235,11 +294,21 @@ mod tests {
         // And what it may draw is still held to the turn's cap and the pool's day.
         let most = most_a_turn(Role::Lead);
         assert_eq!(
-            reservation(may_draw(500_000, 550_000, [2_000_000], 0), 2_333_333, most),
+            reservation(
+                may_draw(500_000, 550_000, [2_000_000], 0),
+                2_333_333,
+                most,
+                LEAST_A_TURN
+            ),
             Some(most)
         );
         assert_eq!(
-            reservation(may_draw(500_000, 550_000, [2_000_000], 0), 5_000, most),
+            reservation(
+                may_draw(500_000, 550_000, [2_000_000], 0),
+                5_000,
+                most,
+                LEAST_A_TURN
+            ),
             None
         );
     }
