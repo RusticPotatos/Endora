@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). The first of three
 builds of the team's memory and history; the map (areas, addresses, routes and probes) and
 asking the past (transcripts, searching the record, consulting a member) come after. Amends

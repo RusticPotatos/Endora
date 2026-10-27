@@ -2,6 +2,8 @@
 
 ## Status
 
+Superseded by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
 [0122](0122-the-teams-world-stages-stories-and-situations.md) (2026-10-18): **the house log is
 the house page** of the team's world. Its lines moved, once, into the house page's dated

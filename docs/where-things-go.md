@@ -41,6 +41,10 @@ Settings.
 - A model, wherever it runs → **AI**. A secret → **Vault**. An outside service → **Connections**.
 - One thing, one home. If two screens need it, one owns it and the other shows a line and a link.
 - A new top-level menu entry needs a reason the existing ones cannot hold it, in its ADR.
+- The team is one team of loops ([ADR 0142](adr/0142-one-team-of-loops.md)): members are ranked
+  models with no roles, and each loop is a project with a plan, checks and a starting rank. A
+  loop's plan and progress go in Work; its notes and the map go with what the team knows, in
+  Team. Nothing new goes in for roles, reporting lines, conversations or office votes.
 - Inside HQ, use its four tabs (2026-10-25), and add no fifth without a reason none of them can
   hold: **Now** (your desk, the digest of what happened while you were away, then the live
   activity), **Team** (the people, the Mac, the office with its games, and what the team knows:

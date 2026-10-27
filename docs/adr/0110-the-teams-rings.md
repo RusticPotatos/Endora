@@ -2,6 +2,8 @@
 
 ## Status
 
+Superseded by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-17, by the owner, and revised by the owner the same day. Prepared with AI
 assistance (Claude). Amends [0102](0102-endora-hq.md) (the Pi becomes a runner, reaching HQ
 through the node), [0106](0106-team-contracts.md) and [0108](0108-the-bridge.md) (the contracts

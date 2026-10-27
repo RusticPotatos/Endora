@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
 [0106](0106-team-contracts.md) (two more contracts, `repo_checkout` and `repo_submit`, for a
 lead or a developer on any brain), [0110](0110-the-teams-rings.md) (the check job is the first

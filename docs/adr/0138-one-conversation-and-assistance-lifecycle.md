@@ -2,6 +2,8 @@
 
 ## Status
 
+Superseded by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted target and definition of done, 2026-10-23. AI-assisted planning.
 The owner explicitly selected full replacement of the old conversation framework,
 retaining readable UI history, and allowed dropping legacy behavior that does not

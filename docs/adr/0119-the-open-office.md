@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). Amends
 [0118](0118-elastic-staffing-and-notebooks.md) (downtime, and what a downtime turn may write in a
 notebook) and [0102](0102-endora-hq.md)'s office view (the walled wing and the four anonymous

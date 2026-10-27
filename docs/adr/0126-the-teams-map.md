@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-18. Prepared with AI assistance (Claude). The second of three builds of the
 team's memory and history, agreed with the owner when [0122](0122-the-teams-world-stages-stories-and-situations.md)
 was accepted; asking the past (transcripts, searching the record, consulting a member) comes

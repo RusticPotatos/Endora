@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-19. Prepared with AI assistance (Claude), from the owner's review of HQ's record
 of 17 and 18 October and the brief that followed it. Amends
 [0124](0124-guards-against-how-agent-teams-fail.md): the "while you were away" digest it deferred

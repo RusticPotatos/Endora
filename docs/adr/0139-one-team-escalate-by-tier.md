@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-25, by the owner. AI-assisted. Amends
 [0137](0137-addressed-conversations-and-bounded-assistance.md) and
 [0138](0138-one-conversation-and-assistance-lifecycle.md) (who may ask whom), and the

@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended 2026-10-19 by
 [0124](0124-guards-against-how-agent-teams-fail.md): **the owner's work says what done means
 too** (at least one criterion, or Give work is refused), a routine's task carries criteria from
