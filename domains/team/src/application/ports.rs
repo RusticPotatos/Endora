@@ -963,36 +963,6 @@ pub trait TeamStore:
 
     // ---- roles as an enforced RACI (ADR 0120) ------------------------------------------
 
-    /// Every goal's strategy that has been written.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn strategies(&self) -> Stored<Vec<crate::domain::areas::Strategy>>;
-
-    /// Keeps a goal's strategy, replacing what it had.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn save_strategy(&self, strategy: &crate::domain::areas::Strategy) -> Stored<()>;
-
-    /// Keeps a lead's area report; returns its id.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn add_area_report(&self, report: &crate::domain::areas::AreaReport) -> Stored<i64>;
-
-    /// Every area report, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn area_reports(&self) -> Stored<Vec<crate::domain::areas::AreaReport>>;
-
-    /// Marks a task as a lead's report (`report` or `patterns`): not work on the board.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn mark_report_task(&self, task: TaskId, lead: MemberId, kind: &str) -> Stored<()>;
-
     /// Every task marked as a lead's report: the task, its lead, and its kind.
     ///
     /// # Errors

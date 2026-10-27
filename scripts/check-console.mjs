@@ -553,9 +553,7 @@ if (failures.length) {
             { slug: "area/2", address: "world:area/2", kind: "area", title: "<img src=m1 onerror=alert(40)>'s area", derived: false, steward: "Ada", steward_kind: "lead", sections: 1, proposals: 1, quiz: { slug: "area/2", passed: 0, asked: 3, flagged: true } },
             { slug: "role/developer", address: "world:role/developer", kind: "role", title: "The developer role", derived: false, steward: "the owner", steward_kind: "owner", sections: 0, proposals: 0, quiz: null }],
         } },
-      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack",
-                strategy: { purpose: "</textarea><img src=s onerror=alert(12)> the house runs itself", success: "", measures: "unplanned outages over 10 min",
-                            bets: "", not_now: "", by: "Mara", updated_at: 5 } },
+      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack" },
               { id: 3, title: "Improve the lab", status: "active", note: "" }],
       tasks: [{ id: 7, goal: 1, parent: null, title: "<img src=x onerror=alert(1)>", status: "doing", owner: 2, priority: "normal",
                 gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"],
@@ -981,18 +979,15 @@ if (failures.length) {
   if (!office.includes('<option value="2">&lt;s&gt;Backups&lt;/s&gt;</option>')) fail("hq: an active project is not offered to move into, as text");
   const moveTo = (office.match(/id="hq-move-7"[^>]*>([\s\S]*?)<\/select>/) || [])[1] || "";
   if (moveTo.includes('value="1"') || moveTo.includes('value="3"')) fail("hq: a paused or proposed project is offered to move into");
-  // Each goal's strategy (ADR 0120) and notes: shown as they read, with Edit to change them in
-  // place, and their words stay text either way.
+  // Each goal's notes: shown as they read, with Edit to change them in place, and their words
+  // stay text either way.
   if (!office.includes('data-act="hq:more:edit1:toggle"')) fail("hq: a goal cannot be edited");
   if (office.includes("<img src=z") || !office.includes("&lt;/textarea&gt;&lt;img src=z")) fail("hq: a goal's notes became markup");
-  if (office.includes("<img src=s") || !office.includes("&lt;/textarea&gt;&lt;img src=s")) fail("hq: a goal's strategy became markup");
-  if (!office.includes("No strategy yet")) fail("hq: a goal with no strategy does not say so");
   {
     runInContext('HQ.more = { goal1: true, edit1: true };', context);
     const editing = runInContext("viewHQ()", context);
     if (!editing.includes('id="hq-note-1"') || !editing.includes('data-act="hq:note:1:save"')) fail("hq: a goal's notes cannot be written");
-    if (!editing.includes('id="hq-strategy-1-purpose"') || !editing.includes('data-act="hq:strategy:1:save"')) fail("hq: a goal's strategy cannot be written");
-    if (editing.includes("<img src=z") || editing.includes("<img src=s")) fail("hq: a goal's words became markup while edited");
+    if (editing.includes("<img src=z")) fail("hq: a goal's words became markup while edited");
     runInContext('HQ.more = {};', context);
   }
   if (office.includes("hq:decide:16:approve") || office.includes('id="hq-answer-16"')) fail("hq: a notice was offered a decision");
@@ -1626,7 +1621,7 @@ if (failures.length) {
     const where = { now: ["Your desk", "hq:decide:11:approve", "<h2>Activity</h2>", 'id="hq-log-end"'],
       team: ["<h2>Team</h2>", "<h2>Office", "<h2>World</h2>", "<h2>House log</h2>"],
       work: ["<h2>Find a task</h2>", "How the team is doing"],
-      manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Routines</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Strategy and notes for the team", "<h2>Hire</h2>", "hq:hire:new:add"] };
+      manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Routines</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Notes for the team", "<h2>Hire</h2>", "hq:hire:new:add"] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
     }

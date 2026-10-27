@@ -399,29 +399,6 @@ pub(super) async fn hq_goal_note(
     Ok(answer)
 }
 
-/// The owner writes a goal's strategy (ADR 0120): the parts given, passed on as they are; HQ
-/// holds them to their limits.
-pub(super) async fn hq_goal_strategy(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Json(req): Json<serde_json::Value>,
-) -> Answer {
-    let mut parts = serde_json::Map::new();
-    for key in ["purpose", "success", "measures", "bets", "not_now"] {
-        if let Some(text) = req[key].as_str() {
-            parts.insert(key.to_owned(), json!(text));
-        }
-    }
-    let answer = ask(
-        &state,
-        format!("/v1/goals/{id}/strategy"),
-        Some(serde_json::Value::Object(parts)),
-    )
-    .await?;
-    record(&state, &format!("you wrote the strategy for goal {id}"));
-    Ok(answer)
-}
-
 #[derive(Deserialize)]
 pub(super) struct HqBrain {
     brain: String,
@@ -1044,14 +1021,6 @@ mod tests {
         )
         .await
         .unwrap();
-        // A goal's strategy: only its parts pass, whatever else the screen sent.
-        let _ = hq_goal_strategy(
-            State(state.clone()),
-            Path(1),
-            Json(json!({ "purpose": "The house runs itself.", "by": "someone else" })),
-        )
-        .await
-        .unwrap();
         let sent: Vec<(String, serde_json::Value)> = seen
             .lock()
             .unwrap()
@@ -1069,10 +1038,6 @@ mod tests {
                     "/v1/goals/1/note".to_owned(),
                     json!({ "note": "The SSD is the owner's." })
                 ),
-                (
-                    "/v1/goals/1/strategy".to_owned(),
-                    json!({ "purpose": "The house runs itself." })
-                ),
             ]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
@@ -1083,7 +1048,6 @@ mod tests {
         for line in [
             "HQ: you replied on task 7",
             "HQ: you wrote the team's notes for goal 1",
-            "HQ: you wrote the strategy for goal 1",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }

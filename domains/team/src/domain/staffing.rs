@@ -6,10 +6,6 @@
 
 use super::work::{Member, MemberId, Role};
 
-/// How many open tasks of a project a request for staff must cite for each active developer
-/// the project already has.
-pub const BACKLOG_PER_DEVELOPER: usize = 2;
-
 /// A recall a lead asks the owner for, as it is written on the desk and read back from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecallRequest {

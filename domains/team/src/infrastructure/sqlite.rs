@@ -205,22 +205,9 @@ CREATE TABLE IF NOT EXISTS chess_games (
 ) STRICT;
 ";
 
-/// Roles as an enforced RACI (ADR 0120), kept apart from [`SCHEMA`]: each goal's strategy,
-/// the CEO's and the owner's to write; the leads' area reports; and which tasks are a lead's
-/// report or patterns turn rather than work on the board. Every table is made only if missing.
+/// Which tasks were a lead's report or patterns turn rather than work on the board (ADR 0120),
+/// kept so they stay off it: made only if missing.
 const RACI_SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS strategies (
-    goal INTEGER PRIMARY KEY REFERENCES goals(id), purpose TEXT NOT NULL DEFAULT '',
-    success TEXT NOT NULL DEFAULT '', measures TEXT NOT NULL DEFAULT '',
-    bets TEXT NOT NULL DEFAULT '', not_now TEXT NOT NULL DEFAULT '',
-    written_by TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS area_reports (
-    id INTEGER PRIMARY KEY, lead INTEGER NOT NULL REFERENCES members(id),
-    run INTEGER REFERENCES runs(id), task INTEGER REFERENCES tasks(id),
-    moved TEXT NOT NULL, stuck TEXT NOT NULL, need TEXT NOT NULL, proposals TEXT NOT NULL,
-    at_ms INTEGER NOT NULL
-) STRICT;
 CREATE TABLE IF NOT EXISTS report_tasks (
     task INTEGER PRIMARY KEY REFERENCES tasks(id), lead INTEGER NOT NULL REFERENCES members(id),
     kind TEXT NOT NULL
@@ -316,6 +303,8 @@ const RETIRED_CONVERSATIONS: &str = "
     DROP TABLE IF EXISTS notes;
     DROP TABLE IF EXISTS games;
     DROP TABLE IF EXISTS stories;
+    DROP TABLE IF EXISTS strategies;
+    DROP TABLE IF EXISTS area_reports;
     DROP TABLE IF EXISTS findings;
     DELETE FROM settings WHERE key LIKE 'ladder:%' OR key LIKE 'huddle:%'
       OR key LIKE 'guard_mode:%' OR key LIKE 'coordination_since:%'
@@ -2509,109 +2498,6 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
-    fn strategies(&self) -> Stored<Vec<crate::domain::areas::Strategy>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT goal, purpose, success, measures, bets, not_now, written_by, updated_at
-                 FROM strategies ORDER BY goal",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(crate::domain::areas::Strategy {
-                    goal: GoalId(r.get(0)?),
-                    purpose: r.get(1)?,
-                    success: r.get(2)?,
-                    measures: r.get(3)?,
-                    bets: r.get(4)?,
-                    not_now: r.get(5)?,
-                    by: r.get(6)?,
-                    updated_at: r.get(7)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn save_strategy(&self, s: &crate::domain::areas::Strategy) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "INSERT INTO strategies (goal, purpose, success, measures, bets, not_now,
-                     written_by, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(goal) DO UPDATE SET purpose = ?2, success = ?3, measures = ?4,
-                     bets = ?5, not_now = ?6, written_by = ?7, updated_at = ?8",
-                params![
-                    s.goal.0,
-                    s.purpose,
-                    s.success,
-                    s.measures,
-                    s.bets,
-                    s.not_now,
-                    s.by,
-                    s.updated_at
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn add_area_report(&self, report: &crate::domain::areas::AreaReport) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO area_reports (lead, run, task, moved, stuck, need, proposals, at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                report.lead.0,
-                report.run.map(|r| r.0),
-                report.task.map(|t| t.0),
-                report.moved,
-                report.stuck,
-                report.need,
-                report.proposals,
-                report.at
-            ],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn area_reports(&self) -> Stored<Vec<crate::domain::areas::AreaReport>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, lead, run, task, moved, stuck, need, proposals, at_ms
-                 FROM area_reports ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(crate::domain::areas::AreaReport {
-                    id: r.get(0)?,
-                    lead: MemberId(r.get(1)?),
-                    run: r.get::<_, Option<i64>>(2)?.map(RunId),
-                    task: r.get::<_, Option<i64>>(3)?.map(TaskId),
-                    moved: r.get(4)?,
-                    stuck: r.get(5)?,
-                    need: r.get(6)?,
-                    proposals: r.get(7)?,
-                    at: r.get(8)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn mark_report_task(&self, task: TaskId, lead: MemberId, kind: &str) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "INSERT OR REPLACE INTO report_tasks (task, lead, kind) VALUES (?1, ?2, ?3)",
-                params![task.0, lead.0, kind],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
     fn report_tasks(&self) -> Stored<Vec<(TaskId, MemberId, String)>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -3305,80 +3191,6 @@ CREATE TABLE IF NOT EXISTS projects (
         // Opened again, the column is there already and nothing changes.
         let again = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
         assert_eq!(again.members().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn a_store_made_before_the_raci_gains_its_tables_empty_and_keeps_its_rows() {
-        use crate::domain::areas::{AreaReport, Strategy, StrategyEdit};
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        // Today's schema and columns, before ADR 0120: what the live store has.
-        conn.execute_batch(SCHEMA).unwrap();
-        for (table, column) in PROJECT_COLUMNS
-            .into_iter()
-            .chain(EVIDENCE_COLUMNS)
-            .chain(OWNER_COLUMNS)
-            .chain(STAFFING_COLUMNS)
-            .chain(RUNTIME_COLUMNS)
-        {
-            add_column(&conn, table, column).unwrap();
-        }
-        conn.execute_batch(
-            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
-                (1, 'Jane Doe', 'lead', 25, 2);
-             INSERT INTO goals (id, title, reason, status) VALUES (3, 'Keep it up', '', 'active');
-             INSERT INTO tasks (id, goal, title, description, status, priority, depth) VALUES
-                (7, 3, 'State of my area', '', 'todo', 'normal', 0);",
-        )
-        .unwrap();
-        let store = SqliteTeamStore::over(conn).unwrap();
-        assert!(store.strategies().unwrap().is_empty());
-        assert!(store.area_reports().unwrap().is_empty());
-        assert!(store.report_tasks().unwrap().is_empty());
-        assert_eq!(store.tasks().unwrap().len(), 1, "no row changes");
-        let written = Strategy::empty(GoalId(3))
-            .edited(
-                &StrategyEdit {
-                    purpose: Some("The house runs itself.".to_owned()),
-                    ..StrategyEdit::default()
-                },
-                "owner",
-                9,
-            )
-            .unwrap();
-        store.save_strategy(&written).unwrap();
-        let again = written
-            .edited(
-                &StrategyEdit {
-                    bets: Some("Upkeep".to_owned()),
-                    ..StrategyEdit::default()
-                },
-                "Jane Doe",
-                10,
-            )
-            .unwrap();
-        store.save_strategy(&again).unwrap();
-        assert_eq!(store.strategies().unwrap(), [again]);
-        let report = AreaReport::new(
-            MemberId(1),
-            ["moved", "", "", ""],
-            None,
-            Some(TaskId(7)),
-            11,
-        )
-        .unwrap();
-        let id = store.add_area_report(&report).unwrap();
-        assert_eq!(store.area_reports().unwrap(), [AreaReport { id, ..report }]);
-        store
-            .mark_report_task(TaskId(7), MemberId(1), "report")
-            .unwrap();
-        assert_eq!(
-            store.report_tasks().unwrap(),
-            [(TaskId(7), MemberId(1), "report".to_owned())]
-        );
-        // Opened again, the tables are there already and nothing changes.
-        let reopened = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
-        assert_eq!(reopened.strategies().unwrap().len(), 1);
     }
 
     #[test]

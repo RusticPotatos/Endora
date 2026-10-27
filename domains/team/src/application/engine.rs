@@ -4116,16 +4116,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let runs: Vec<Run> = every_run.into_iter().filter(|r| r.status.live()).collect();
         let goals = self.store.goals()?;
         let mut notes = std::collections::HashMap::new();
-        let mut strategies = std::collections::HashMap::new();
         for g in &goals {
             notes.insert(g.id.0, self.store.goal_note(g.id)?);
-            let s = self.strategy_of(g.id)?;
-            strategies.insert(
-                g.id.0,
-                json!({ "purpose": s.purpose, "success": s.success, "measures": s.measures,
-                        "bets": s.bets, "not_now": s.not_now, "by": s.by,
-                        "updated_at": (s.updated_at > 0).then_some(s.updated_at) }),
-            );
         }
         let mut members = Vec::new();
         let paid = self.paid_weights()?;
@@ -4277,10 +4269,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "goals": goals.iter().map(|g| json!({
                 "id": g.id.0, "title": g.title, "reason": g.reason, "status": g.status.name(),
                 "parent": g.parent.map(|p| p.0), "note": notes.get(&g.id.0).cloned().unwrap_or_default(),
-                // The CEO's strategy for it (ADR 0120).
-                "strategy": strategies.get(&g.id.0).cloned().unwrap_or_default(),
             })).collect::<Vec<_>>(),
-            // Each lead's latest report on its area (ADR 0120).
             "tasks": task_rows,
             "runs": runs.iter().map(|r| json!({
                 "id": r.id.0, "member": r.member.0, "task": r.task.map(|t| t.0),

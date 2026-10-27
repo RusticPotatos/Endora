@@ -402,8 +402,6 @@ function hqTell(e, live, older) {
     "chess.started": ["run", d.text || ""],
     "chess.moved": ["run", d.text || ""],
     "chess.ended": ["done", d.text || ""],
-    // Roles as an enforced RACI (ADR 0120): strategy, the leads' reports and the ladder.
-    "goal.strategy": ["you", `Goal ${d.goal}'s strategy was written by ${d.by === "owner" ? "you" : d.by}`],
     "area.reported": ["run", `${hqName(d.lead)} reported on their area`],
   }[e.kind];
   if (said) {
@@ -2114,50 +2112,28 @@ function hqContracts(c) {
 
 // Each active goal's notes from the owner: standing facts every member working towards it reads
 // near the top of each briefing. Escaped like everything a person typed.
-// Each goal's strategy (ADR 0120): the CEO's, which the owner may edit here. Every part is the
-// CEO's or the owner's words, so all of it is escaped.
-const HQ_STRATEGY_PARTS = [["purpose", "Purpose: the goal of the goal"], ["success", "What success looks like"],
-  ["measures", "Measures, one a line"], ["bets", "Current bets: the active projects, and why"], ["not_now", "Not now"]];
-
-function hqStrategy(g) {
-  const st = g.strategy || {};
-  const written = HQ_STRATEGY_PARTS.some(([k]) => st[k]);
-  const fields = HQ_STRATEGY_PARTS.map(([k, label]) => `<label>${esc(label)}
-      <textarea id="hq-strategy-${g.id}-${k}" rows="2" maxlength="800">${esc(st[k] || "")}</textarea></label>`).join("");
-  // The fields show what is written and edit it in place: nothing is folded away.
-  const by = written
-    ? `<p class="hq-note">Written by ${esc(st.by || "nobody")}${st.updated_at ? ` · ${esc(new Date(st.updated_at).toLocaleString())}` : ""}</p>`
-    : `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`;
-  return `${by}${fields}
-      <div class="hq-row"><button class="hq-btn ok" data-act="hq:strategy:${g.id}:save">Save the strategy</button></div>`;
-}
 
 function hqNotes(s) {
   const goals = (s.goals || []).filter((g) => g.status === "active");
   const set = `<div class="hq-row"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" aria-label="A new goal for the team" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div>`;
   if (!goals.length) return `<section class="hq-card"><h2>Goals</h2>${set}</section>`;
-  // Each goal's strategy and notes are shown as they read, with Edit to change them in place
-  // (the owner's direction: every setting visible as a value, and short enough to read).
-  // Each goal is one line until tapped (the owner, 2026-10-25); open, it shows its strategy
-  // and notes as they read, with Edit to change them in place.
+  // Each goal is one line until tapped (the owner, 2026-10-25); open, it shows its notes as
+  // they read, with Edit to change them in place.
   const goalRows = goals.map((g) => {
     const editing = !!HQ.more[`edit${g.id}`];
     const edit = `<div class="hq-row"><button class="hq-btn" aria-expanded="${editing}" data-act="hq:more:edit${g.id}:toggle">${editing ? "Done" : "Edit"}</button></div>`;
-    const st = g.strategy || {};
-    const written = HQ_STRATEGY_PARTS.filter(([k]) => st[k]);
-    const meta = `${written.length ? `strategy${st.by ? ` by ${esc(st.by)}` : ""}` : "no strategy yet"} · ${g.note ? "notes" : "no notes"}`;
+    const meta = g.note ? "notes" : "no notes";
     const body = editing
-      ? `${edit}${hqStrategy(g)}
+      ? `${edit}
       <textarea id="hq-note-${g.id}" rows="3" maxlength="2000" aria-label="Notes for the team on ${esc(g.title)}"
         placeholder="What every member working on this should know">${esc(g.note || "")}</textarea>
       <div class="hq-row"><button class="hq-btn ok" data-act="hq:note:${g.id}:save">Save notes</button></div>`
-      : `${edit}${written.map(([k, label]) => `<p class="hq-who">${esc(label)}</p>${hqClamp(`st${g.id}${k}`, st[k])}`).join("")
-        || `<p class="hq-empty">No strategy yet: the CEO writes it in its daily review, or you write it here.</p>`}
+      : `${edit}
       <p class="hq-who">Notes for the team</p>${g.note ? hqClamp(`note${g.id}`, g.note) : `<p class="hq-empty">None.</p>`}`;
     return hqOpenRow(`goal${g.id}`, esc(g.title), meta, body);
   });
   const listed = hqMore("goals", goalRows, 5);
-  return `<section class="hq-card"><h2>Goals</h2>${set}<p class="hq-note">Strategy and notes for the team: every member working on a goal reads them near the top of its briefing.</p><ul class="hq-team">${listed.shown}</ul>${listed.more}</section>`;
+  return `<section class="hq-card"><h2>Goals</h2>${set}<p class="hq-note">Notes for the team: every member working on a goal reads them in its briefing.</p><ul class="hq-team">${listed.shown}</ul>${listed.more}</section>`;
 }
 
 // Routines (ADR 0107): work that comes round again, each a task for one member. Each shows
@@ -2434,17 +2410,7 @@ async function hqDispatch(verb, noun, id, arg) {
     catch (e) { flash("Couldn't save it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
-  // A goal's strategy (ADR 0120): every part as written, an empty one cleared.
-  if (noun === "strategy") {
-    const body = {};
-    for (const [k] of HQ_STRATEGY_PARTS) {
-      const box = document.getElementById(`hq-strategy-${id}-${k}`);
-      if (box) body[k] = box.value.trim();
-    }
-    try { await api("POST", `/v1/hq/goals/${id}/strategy`, body); flash("Strategy saved.", "ok"); }
-    catch (e) { flash("Couldn't save it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
+
   // A goal's notes for the team; empty clears them.
   if (noun === "note") {
     const box = document.getElementById(`hq-note-${id}`), note = box ? box.value.trim() : "";

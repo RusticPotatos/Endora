@@ -101,9 +101,6 @@ impl HireRequest {
     }
 }
 
-/// The names a hire is given when its request names none, the first not taken.
-pub const SPARE_NAMES: [&str; 6] = ["Sam", "Lee", "Max", "Ash", "Rio", "Val"];
-
 /// A document on a task (ADR 0115): a branch's diff, a check's report. Read by the tester,
 /// the lead and the owner; never changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
