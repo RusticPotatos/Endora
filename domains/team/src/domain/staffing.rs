@@ -13,7 +13,7 @@ pub fn lead_of(member: &Member, members: &[Member]) -> Option<MemberId> {
     let mut seen = vec![member.id];
     let mut at = member;
     loop {
-        let up = super::chain::manager(at, members)?;
+        let up = at.reports_to.filter(|to| *to != at.id)?;
         if seen.contains(&up) {
             return None;
         }

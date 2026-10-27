@@ -1,8 +1,7 @@
 
 // ---- Endora HQ: the team's world (ADR 0122) -------------------------------------------------
-// What the team knows, by stage: the house page's sections (canon first), its dated timeline,
-// the lab and team pages HQ derives. Only the owner makes something canon or
-// demotes it, here. Every word is a member's or the record's, so
+// What the team knows: the house page's sections, its dated timeline, and the lab and team
+// pages HQ derives. Every word is a member's or the record's, so
 // all of it is escaped. The whole world downloads as one Markdown file.
 
 const HQ_STAGE_ORDER = { canon: 0, insight: 1, observation: 2, field_note: 3, superseded: 4, retired: 5 };
@@ -89,12 +88,9 @@ function hqStageTag(p) {
   return `<span class="hq-tag stage-${esc(shown)}">${esc(p.said || p.stage || "")}</span>`;
 }
 
-// The owner's two acts on a piece: make it canon, or demote canon saying why.
-function hqWorldActs(kind, i, p) {
-  const edit = kind === "section" ? `<button class="hq-btn tall" data-act="hq:world:edit:open-${Number(i)}">Edit</button>` : "";
-  if (p.stage === "retired" || p.stage === "superseded") return edit;
-  if (p.stage === "canon") return edit + `<button class="hq-btn tall no" data-act="hq:world:${kind}:demote-${Number(i)}">Demote\u2026</button>`;
-  return edit + `<button class="hq-btn tall ok" data-act="hq:world:${kind}:promote-${Number(i)}">Make canon</button>`;
+// The owner's act on a section: edit it.
+function hqWorldActs(kind, i) {
+  return kind === "section" ? `<button class="hq-btn tall" data-act="hq:world:edit:open-${Number(i)}">Edit</button>` : "";
 }
 
 // The paste editor and its preview: tick what to apply, then one Apply.
@@ -201,10 +197,10 @@ function hqWorldCard(s) {
   const sectionRow = ({ p, i }) => `<li><b>${esc(p.heading)}</b> ${hqStageTag(p)}
       <span>${esc(p.headline)}</span>
       <small> ${esc(p.address)} · revision ${Number(p.revision) || 1}, ${esc(p.written_by || "")}${p.warrant ? ` · warrant: ${esc(p.warrant)}` : ""}${p.why ? ` · ${esc(p.why)}` : ""}</small>
-      <div class="hq-row">${hqWorldActs("section", i, p)}</div></li>`;
+      <div class="hq-row">${hqWorldActs("section", i)}</div></li>`;
   const open = HQ_WORLD_VIEW.page;
   return `<section class="hq-card"><h2>World</h2>
-    ${hqClamp("worldintro", "What the team knows, by stage: field note, then observation, then insight, then canon (settled truth only you can set). Unconfirmed is an insight nobody confirmed in time. Edit rewrites a section; Make canon settles it.", "hq-note")}
+    ${hqClamp("worldintro", "What the team knows: the house page's sections and timeline, and the lab and team pages HQ works out from the record. Edit rewrites a section.", "hq-note")}
     <div class="hq-row"><button class="hq-btn tall ok" aria-expanded="${hqWorldDoc().md || hqWorldDoc().open ? "true" : "false"}" data-act="hq:world:paste:show">Paste Markdown</button>
       <button class="hq-btn tall" data-act="hq:world:export:md">Download the world (Markdown)</button></div>
     ${hqWorldPaste()}
@@ -258,22 +254,7 @@ async function hqWorldAct(kind, what) {
     } catch (e) { flash("Couldn't write it: " + e.message, "err"); return true; }
     await loadHQ(); render(); return true;
   }
-  const [op, n] = String(what || "").split("-");
-  const list = w.sections || [];
-  const p = list[Number(n)];
-  if (!p) return true;
-  try {
-    if (op === "promote") {
-      if (!confirm(`Make "${p.headline || p.handle}" canon? The team will treat it as established.`)) return true;
-      await api("POST", "/v1/hq/world/promote", { address: p.address, why: "" });
-      flash("It is canon.", "ok");
-    } else if (op === "demote") {
-      const why = (prompt("Why is it no longer canon?") || "").trim(); if (!why) return true;
-      await api("POST", "/v1/hq/world/demote", { address: p.address, to: "insight", why });
-      flash("Demoted to an insight; the feed and the page say why.", "ok");
-    }
-  } catch (e) { flash("Couldn't change it: " + e.message, "err"); }
-  await loadHQ(); render(); return true;
+  return true;
 }
 
 // Keeps what is typed in the paste box and the editor across a redraw.

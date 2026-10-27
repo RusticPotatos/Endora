@@ -72,7 +72,6 @@ pub use history::TranscriptKept;
 pub use map::MapMigrated;
 pub use projects::{LAB_UPKEEP, Proposal};
 pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
-pub use world::{RETELL_AT_ONCE, StoryTelling, WorldWrite};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
 /// member is woken once, and again before it goes on the owner's desk as stuck.

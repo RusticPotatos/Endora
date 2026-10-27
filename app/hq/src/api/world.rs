@@ -1,6 +1,5 @@
 //! The team's world for the owner (ADR 0122), through the node: read it, download it as
-//! Markdown, and make something canon or demote it. Nothing here is a member's: canon is the
-//! owner's alone.
+//! Markdown, and write a section or a line on a timeline.
 
 use axum::Json;
 use axum::Router;
@@ -8,8 +7,6 @@ use axum::extract::State as Extract;
 use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::json;
-
-use endora_team::domain::world::Stage;
 
 use super::{Failed, State, blocking};
 
@@ -20,8 +17,6 @@ pub(super) fn routes() -> Router<State> {
         .route("/v1/world/export", get(export))
         .route("/v1/world/section", post(write_section))
         .route("/v1/world/timeline", post(add_to_timeline))
-        .route("/v1/world/promote", post(promote))
-        .route("/v1/world/demote", post(demote))
 }
 
 /// The world as the HQ screen shows it.
@@ -75,43 +70,6 @@ async fn add_to_timeline(
     Ok(Json(json!({ "added": true })))
 }
 
-#[derive(Deserialize)]
-struct Promote {
-    address: String,
-    #[serde(default)]
-    why: String,
-}
-
-/// The owner makes a section or a story canon.
-async fn promote(
-    Extract(state): Extract<State>,
-    Json(req): Json<Promote>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let address = req.address.clone();
-    blocking(move || hq.promote(&req.address, &req.why)).await?;
-    Ok(Json(json!({ "canon": address })))
-}
-
-#[derive(Deserialize)]
-struct Demote {
-    address: String,
-    to: String,
-    why: String,
-}
-
-/// The owner demotes canon, saying why: to an insight, an observation, or retired.
-async fn demote(
-    Extract(state): Extract<State>,
-    Json(req): Json<Demote>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let address = req.address.clone();
-    let to = Stage::from_name(&req.to).unwrap_or(Stage::Canon);
-    blocking(move || hq.demote(&req.address, to, &req.why)).await?;
-    Ok(Json(json!({ "demoted": address, "to": to.name() })))
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -119,7 +77,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use endora_team::application::engine::{Engine, Settings};
-    use endora_team::domain::Role;
     use endora_team::infrastructure::{RemoteRunner, Runner, SqliteTeamStore};
     use http_body_util::BodyExt as _;
     use serde_json::json;
@@ -229,55 +186,5 @@ mod tests {
         );
         let (_, world) = send(&app, "GET", "/v1/world", Some(TOKEN), json!(null)).await;
         assert_eq!(world["sections"][0]["written_by"], "the owner");
-    }
-
-    #[tokio::test]
-    async fn the_owner_reads_downloads_promotes_and_demotes_the_world_through_the_node() {
-        let st = state();
-        st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
-        let app = app(st.clone());
-        // Only the node is answered.
-        let (status, _) = send(&app, "GET", "/v1/world", None, json!(null)).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-        let (status, world) = send(&app, "GET", "/v1/world", Some(TOKEN), json!(null)).await;
-        assert_eq!(status, StatusCode::OK, "{world}");
-        assert_eq!(world["pages"][0]["slug"], "house");
-        assert!(
-            world.get("stories").is_none(),
-            "stories went with the world's curation"
-        );
-        let (status, export) =
-            send(&app, "GET", "/v1/world/export", Some(TOKEN), json!(null)).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(
-            export["markdown"]
-                .as_str()
-                .unwrap()
-                .starts_with("# The team's world"),
-            "{export}"
-        );
-        // Nothing at the address: refused, and nothing changes.
-        let (status, said) = send(
-            &app,
-            "POST",
-            "/v1/world/promote",
-            Some(TOKEN),
-            json!({ "address": "world:house#backups" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{said}");
-        let (status, said) = send(
-            &app,
-            "POST",
-            "/v1/world/demote",
-            Some(TOKEN),
-            json!({ "address": "world:house#backups", "to": "insight", "why": "" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{said}");
-        assert!(
-            said["error"].as_str().unwrap().contains("say why"),
-            "{said}"
-        );
     }
 }

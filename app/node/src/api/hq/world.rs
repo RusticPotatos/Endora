@@ -85,56 +85,6 @@ pub(in crate::api) async fn hq_world_timeline(
     Ok(answer)
 }
 
-#[derive(Deserialize)]
-pub(in crate::api) struct HqPromote {
-    address: String,
-    #[serde(default)]
-    why: String,
-}
-
-/// The owner makes a section or a story canon.
-pub(in crate::api) async fn hq_world_promote(
-    State(state): State<AppState>,
-    Json(req): Json<HqPromote>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        "/v1/world/promote".to_owned(),
-        Some(json!({ "address": req.address, "why": req.why })),
-    )
-    .await?;
-    record(&state, &format!("you made {} canon", req.address));
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
-pub(in crate::api) struct HqDemote {
-    address: String,
-    to: String,
-    why: String,
-}
-
-/// The owner demotes canon, saying why.
-pub(in crate::api) async fn hq_world_demote(
-    State(state): State<AppState>,
-    Json(req): Json<HqDemote>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        "/v1/world/demote".to_owned(),
-        Some(json!({ "address": req.address, "to": req.to, "why": req.why })),
-    )
-    .await?;
-    record(
-        &state,
-        &format!(
-            "you demoted {} from canon to {}: {}",
-            req.address, req.to, req.why
-        ),
-    );
-    Ok(answer)
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::super::relay::tests::{fake, node};
@@ -180,25 +130,6 @@ mod tests {
         )
         .await
         .unwrap();
-        let _ = hq_world_promote(
-            State(state.clone()),
-            Json(HqPromote {
-                address: "world:house#backups".to_owned(),
-                why: String::new(),
-            }),
-        )
-        .await
-        .unwrap();
-        let _ = hq_world_demote(
-            State(state.clone()),
-            Json(HqDemote {
-                address: "world:house#backups".to_owned(),
-                to: "insight".to_owned(),
-                why: "it moved to 04:00".to_owned(),
-            }),
-        )
-        .await
-        .unwrap();
         let sent: Vec<String> = seen
             .lock()
             .unwrap()
@@ -211,9 +142,7 @@ mod tests {
                 "/v1/world",
                 "/v1/world/export",
                 "/v1/world/section",
-                "/v1/world/timeline",
-                "/v1/world/promote",
-                "/v1/world/demote"
+                "/v1/world/timeline"
             ]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
@@ -224,14 +153,12 @@ mod tests {
         for line in [
             "HQ: you wrote \"The NAS\" on world:house",
             "HQ: you added to the timeline of world:house",
-            "HQ: you made world:house#backups canon",
-            "HQ: you demoted world:house#backups from canon to insight: it moved to 04:00",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }
         assert_eq!(
             audit.len(),
-            4,
+            2,
             "reading and downloading record nothing: {audit:?}"
         );
     }

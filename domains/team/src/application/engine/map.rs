@@ -404,16 +404,4 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         Ok(json!({ "pages": pages }))
     }
-
-    /// Whether `who` may write the page directly: its steward may; anyone else proposes.
-    pub(super) fn may_write_page(&self, who: &Member, key: PageKey) -> Done<()> {
-        let steward = self.steward(key)?;
-        if steward.is(who) {
-            return Ok(());
-        }
-        Err(refused(WorldRefusal::ProposeInstead {
-            what: self.page_title(key)?,
-            steward: self.steward_called(steward)?,
-        }))
-    }
 }

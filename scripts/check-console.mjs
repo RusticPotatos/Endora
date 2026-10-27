@@ -1070,9 +1070,8 @@ if (failures.length) {
   // The house log: readable and editable, and its text stays text.
   if (!office.includes('id="hq-house"') || !office.includes('data-act="hq:house:save"') || !office.includes("House log")) fail("hq: the house log cannot be read and edited");
   if (office.includes("<img src=h") || !office.includes("&lt;/textarea&gt;&lt;img src=h")) fail("hq: the house log became markup");
-  // The World card (ADR 0122): pages by stage, the owner's canon acts, the export.
-  for (const said of ["<h2>World</h2>", 'data-act="hq:world:section:promote-0"', 'data-act="hq:world:section:demote-1"',
-    'data-act="hq:world:export:md"']) {
+  // The World card (ADR 0122): its pages and the export.
+  for (const said of ["<h2>World</h2>", 'data-act="hq:world:export:md"']) {
     if (!office.includes(said)) fail(`hq: the World card does not show ${said}`);
   }
   {
@@ -1786,7 +1785,7 @@ if (failures.length) {
     const world = runInContext("viewHQ()", context).split('id="hq-panel-team"')[1].split('role="tabpanel"')[0];
     const top = world.split("<h3>Pages</h3>")[0];
     if (!top.includes('data-act="hq:world:paste:show">Paste Markdown</button>')) fail("hq: Paste Markdown is not a button at the top of the World card");
-    for (const said of ["field note", "observation", "insight", "canon", "Unconfirmed", "Edit rewrites", "Make canon settles"]) {
+    for (const said of ["house page", "Edit rewrites"]) {
       if (!top.includes(said)) fail(`hq: the World legend does not say ${said}`);
     }
     await runInContext('dispatch("hq:world:paste:show")', context);
@@ -2872,8 +2871,7 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   // its pages first and folds nothing since 2026-10-25).
   runInContext('HQ_WORLD_VIEW.page = "house"; hqWorldDoc().open = true;', context);
   let card = runInContext("hqWorldCard(HQ.snap)", context);
-  for (const need of ['data-act="hq:world:edit:open-0"', 'data-act="hq:world:edit:open-1"', 'data-act="hq:world:section:promote-0"',
-      'data-act="hq:world:section:demote-1"', 'id="hq-wd-md"', 'data-act="hq:world:paste:preview"', 'autocapitalize="off"']) {
+  for (const need of ['data-act="hq:world:edit:open-0"', 'data-act="hq:world:edit:open-1"', 'id="hq-wd-md"', 'data-act="hq:world:paste:preview"', 'autocapitalize="off"']) {
     if (!card.includes(need)) fail(`the World card lost ${need}`);
   }
   if (card.includes("<img src=w") || card.includes("<b>Backups</b>")) fail("a section's words are not escaped");

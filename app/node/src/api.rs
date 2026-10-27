@@ -371,8 +371,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/world/export.md", get(hq_world_export))
         .route("/v1/hq/world/section", post(hq_world_section))
         .route("/v1/hq/world/timeline", post(hq_world_timeline))
-        .route("/v1/hq/world/promote", post(hq_world_promote))
-        .route("/v1/hq/world/demote", post(hq_world_demote))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
         // The owner's routines (ADR 0107).

@@ -16,7 +16,7 @@
 
 use core::fmt;
 
-use super::evidence::{Found, Ref};
+use super::evidence::Ref;
 use super::work::{MemberId, Millis, RunId};
 
 /// A day, in milliseconds.
@@ -28,14 +28,10 @@ pub const HEADING_MOST: usize = 80;
 pub const HEADLINE_MOST: usize = 120;
 /// The most characters of a section's body.
 pub const BODY_MOST: usize = 1_200;
-/// The most characters of a warrant: why a piece is believed, in one line.
-pub const WARRANT_MOST: usize = 300;
 /// The most characters of one line of a page's timeline.
 pub const TIMELINE_LINE_MOST: usize = 500;
 /// The most characters of a whole handover note.
 pub const HANDOVER_MOST: usize = 1_200;
-/// The most characters of a reason for a stage change.
-pub const WHY_MOST: usize = 300;
 
 /// How established a piece of knowledge is, from a single reading to what the house treats as
 /// settled; and the two ways a piece stops being current.
@@ -375,53 +371,6 @@ pub fn trust(
     }
 }
 
-/// What a writer's evidence must be for the stage it asks: an observation rests on at least one
-/// reference in the record; an insight also on a one-line warrant, and on references from at
-/// least two different turns (`turns_behind` counts them) or a reading the node witnessed in
-/// this turn (`this_turn`). Canon is never written: the owner makes it.
-///
-/// # Errors
-/// [`WorldRefusal::NeedsEvidence`]; [`super::work::Refusal::NoSuchEvidence`] naming the first
-/// missing reference; [`WorldRefusal::NeedsWarrant`]; [`WorldRefusal::NotAnInsight`];
-/// [`WorldRefusal::CanonIsTheOwners`]; [`WorldRefusal::NotAWritableStage`].
-pub fn warranted(
-    stage: Stage,
-    found: &[(Ref, Found)],
-    turns_behind: usize,
-    warrant: &str,
-    this_turn: RunId,
-) -> Result<(), super::work::Refusal> {
-    use super::work::Refusal;
-    match stage {
-        Stage::Canon => return Err(Refusal::World(WorldRefusal::CanonIsTheOwners)),
-        Stage::Observation | Stage::Insight => {}
-        other => {
-            return Err(Refusal::World(WorldRefusal::NotAWritableStage(
-                other.name().to_owned(),
-            )));
-        }
-    }
-    if found.is_empty() {
-        return Err(Refusal::World(WorldRefusal::NeedsEvidence));
-    }
-    if let Some((missing, _)) = found.iter().find(|(_, f)| *f == Found::Missing) {
-        return Err(Refusal::NoSuchEvidence(missing.said()));
-    }
-    if stage == Stage::Observation {
-        return Ok(());
-    }
-    if warrant.trim().is_empty() {
-        return Err(Refusal::World(WorldRefusal::NeedsWarrant));
-    }
-    let witnessed_now = found.iter().any(|(_, f)| {
-        matches!(f, Found::Receipt { run, ok: true, witnessed: true, .. } if *run == this_turn)
-    });
-    if witnessed_now || (found.len() >= 2 && turns_behind >= 2) {
-        return Ok(());
-    }
-    Err(Refusal::World(WorldRefusal::NotAnInsight))
-}
-
 /// Whom a story belongs to: the house, a lead's area, or one member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scope {
@@ -562,43 +511,18 @@ pub enum WorldRefusal {
         /// Whose it is.
         steward: String,
     },
-    /// No evidence was cited.
-    NeedsEvidence,
-    /// An insight without a warrant.
-    NeedsWarrant,
-    /// An insight on too little evidence.
-    NotAnInsight,
-    /// Only the owner makes something canon, or changes what is.
-    CanonIsTheOwners,
-    /// A stage nobody writes directly.
-    NotAWritableStage(String),
     /// A section with no heading.
     NeedsHeading,
     /// A section's body with a heading of its own inside.
     HeadingInBody,
     /// Longer than it may be.
     TooLong(usize),
-    /// Retiring, or demoting, needs the reason.
-    NeedsWhy,
     /// Work handed on with no handover note.
     HandoverNeeded,
     /// The house log is the house page's timeline now.
     HouseLogRetired,
-    /// Only a trusted insight is proposed for canon.
-    NotReadyForCanon(String),
-    /// Something that is not canon cannot be demoted from it; something canon is already.
-    NotCanon(String),
-    /// Already canon.
-    AlreadyCanon(String),
     /// A derived page is HQ's to write.
     Derived(String),
-    /// A page that is someone else's to write: propose the change instead (ADR 0126).
-    ProposeInstead {
-        /// The page.
-        what: String,
-        /// Whose it is.
-        steward: String,
-    },
     /// No page of the world is called that.
     NoSuchPage(String),
     /// No proposal has that number.
@@ -622,31 +546,11 @@ impl fmt::Display for WorldRefusal {
                 "{what} is {steward}'s to write: tell them what you found, with its evidence, \
                  in a post"
             ),
-            Self::NeedsEvidence => f.write_str(
-                "it rests on evidence from HQ's record: cite at least one receipt, task or event",
-            ),
-            Self::NeedsWarrant => {
-                f.write_str("an insight says why it is believed, in one line: give a warrant")
-            }
-            Self::NotAnInsight => f.write_str(
-                "an insight rests on evidence from at least two different turns, or on a reading \
-                 the node witnessed in this turn: write it as an observation, or cite more",
-            ),
-            Self::CanonIsTheOwners => f.write_str(
-                "only the owner makes something canon, or changes it once it is: propose it with \
-                 propose_canon",
-            ),
-            Self::NotAWritableStage(stage) => write!(
-                f,
-                "`{stage}` is not written directly: write an observation or an insight (retire \
-                 or supersede with retire_world)"
-            ),
             Self::NeedsHeading => f.write_str("a section has a heading"),
             Self::HeadingInBody => f.write_str(
                 "a section is one piece: no `#` or `##` heading inside its body (`###` is fine)",
             ),
             Self::TooLong(most) => write!(f, "at most {most} characters"),
-            Self::NeedsWhy => f.write_str("say why"),
             Self::HandoverNeeded => f.write_str(
                 "handing work on needs a handover note: handover { done, not_done, next, \
                  watch_out }, each said",
@@ -655,23 +559,12 @@ impl fmt::Display for WorldRefusal {
                 "the house log is now the house page (world:house): note_house adds a dated line \
                  to its timeline, and write_world writes a section of it",
             ),
-            Self::NotReadyForCanon(address) => write!(
-                f,
-                "{address} is not a trusted insight: confirm it (verify_world) before proposing it"
-            ),
-            Self::NotCanon(address) => write!(f, "{address} is not canon"),
-            Self::AlreadyCanon(address) => write!(f, "{address} is canon already"),
             Self::Derived(address) => {
                 write!(
                     f,
                     "{address} is derived by HQ from the record: nobody writes it"
                 )
             }
-            Self::ProposeInstead { what, steward } => write!(
-                f,
-                "{what} is kept by {steward}: propose the change with propose_world, and \
-                 they decide"
-            ),
             Self::NoSuchPage(said) => write!(f, "there is no page {said} in the world"),
             Self::NoSuchProposal(id) => write!(f, "there is no proposal {id}"),
             Self::ProposalDecided(id) => write!(f, "proposal {id} is decided already"),
@@ -682,7 +575,6 @@ impl fmt::Display for WorldRefusal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::work::{Refusal, TaskId};
 
     #[test]
     fn an_address_reads_as_members_write_it_and_says_itself_back() {
@@ -776,66 +668,6 @@ mod tests {
         assert_eq!(
             trust(Stage::Retired, 0, 30, now, true).stage,
             Stage::Retired
-        );
-    }
-
-    #[test]
-    fn an_insight_rests_on_two_turns_or_a_fresh_witnessed_reading_and_canon_is_never_written() {
-        let me = RunId(9);
-        let receipt = |run: i64, witnessed: bool| Found::Receipt {
-            run: RunId(run),
-            ok: true,
-            in_work: true,
-            witnessed,
-        };
-        let task = (Ref::Task(TaskId(3)), Found::Other { in_work: true });
-        let r1 = (Ref::Receipt(1), receipt(4, true));
-        let r2 = (Ref::Receipt(2), receipt(5, true));
-        let mine = (Ref::Receipt(3), receipt(9, true));
-        let sandboxed = (Ref::Receipt(4), receipt(9, false));
-        assert_eq!(
-            warranted(Stage::Observation, &[task], 0, "", me),
-            Ok(()),
-            "an observation needs one reference"
-        );
-        assert_eq!(
-            warranted(Stage::Observation, &[], 0, "", me),
-            Err(Refusal::World(WorldRefusal::NeedsEvidence))
-        );
-        assert_eq!(
-            warranted(
-                Stage::Observation,
-                &[task, (Ref::Event(7), Found::Missing)],
-                0,
-                "",
-                me
-            ),
-            Err(Refusal::NoSuchEvidence("event 7".to_owned()))
-        );
-        assert_eq!(
-            warranted(Stage::Insight, &[r1, r2], 2, "", me),
-            Err(Refusal::World(WorldRefusal::NeedsWarrant))
-        );
-        assert_eq!(
-            warranted(Stage::Insight, &[r1, r2], 2, "seen twice", me),
-            Ok(())
-        );
-        assert_eq!(
-            warranted(Stage::Insight, &[r1, task], 1, "seen once", me),
-            Err(Refusal::World(WorldRefusal::NotAnInsight))
-        );
-        assert_eq!(
-            warranted(Stage::Insight, &[mine], 1, "read now", me),
-            Ok(())
-        );
-        assert_eq!(
-            warranted(Stage::Insight, &[sandboxed], 1, "my sandbox says", me),
-            Err(Refusal::World(WorldRefusal::NotAnInsight)),
-            "the sandbox's word is not a witnessed reading"
-        );
-        assert_eq!(
-            warranted(Stage::Canon, &[r1, r2], 2, "w", me),
-            Err(Refusal::World(WorldRefusal::CanonIsTheOwners))
         );
     }
 
