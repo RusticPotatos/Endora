@@ -1976,7 +1976,7 @@ fn a_top_up_is_above_nothing_and_at_most_three_pool_days_in_all_and_is_recorded(
 }
 
 #[test]
-fn the_snapshot_carries_only_the_tail_of_a_finished_tasks_thread() {
+fn the_snapshot_carries_finished_work_in_brief_and_a_task_opens_whole() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
@@ -2001,19 +2001,29 @@ fn the_snapshot_carries_only_the_tail_of_a_finished_tasks_thread() {
             .unwrap()
             .clone()
     };
-    // Open work keeps its whole thread; finished work only what its card shows, each post
-    // with its place in the whole thread, which the activity log reads it by.
-    let open = row(open);
-    assert_eq!(open["thread"].as_array().unwrap().len(), 5);
-    assert_eq!(open["posts"], 5);
-    let closed = row(closed);
-    let tail = closed["thread"].as_array().unwrap();
-    assert_eq!(closed["posts"], 5);
-    assert_eq!(tail.len(), 3);
-    assert_eq!(tail[0]["n"], 2);
-    assert_eq!(tail[0]["text"], "closed 2");
-    assert_eq!(tail[2]["n"], 4);
-    assert_eq!(tail[2]["text"], "closed 4");
+    // Open work comes whole; finished work in brief, with no thread, evidence or documents:
+    // those of 800 done tasks made the snapshot 1.6 MB on every poll.
+    let open_row = row(open);
+    assert_eq!(open_row["thread"].as_array().unwrap().len(), 5);
+    assert_eq!(open_row["posts"], 5);
+    assert!(open_row["evidence"].is_object(), "{open_row}");
+    assert_eq!(open_row["brief"], false);
+    let brief = row(closed);
+    assert_eq!(brief["posts"], 5);
+    assert_eq!(brief["brief"], true);
+    for left_out in ["thread", "evidence", "documents"] {
+        assert!(brief.get(left_out).is_none(), "{left_out}: {brief}");
+    }
+    // Opened, a finished task comes whole, each post with its place in the thread.
+    let whole = hq.task_shown(closed).unwrap();
+    assert_eq!(whole["brief"], false);
+    let thread = whole["thread"].as_array().unwrap();
+    assert_eq!(thread.len(), 5);
+    assert_eq!(thread[4]["n"], 4);
+    assert_eq!(thread[4]["text"], "closed 4");
+    assert!(whole["evidence"].is_object(), "{whole}");
+    assert_eq!(whole["title"], brief["title"]);
+    assert!(hq.task_shown(TaskId(9_999)).is_err());
 }
 
 #[test]

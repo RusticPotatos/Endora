@@ -81,9 +81,6 @@ pub const STRANDED_AFTER_MS: Millis = 10 * 60 * 1000;
 pub const GOAL_NOTE_MOST: usize = 2_000;
 /// The most events one read of the past returns.
 pub const MOST_EVENTS_BEFORE: usize = 200;
-/// The posts of a finished task's thread the snapshot carries: the last few, what its card
-/// shows.
-pub const THREAD_TAIL: usize = 3;
 
 /// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
 pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
@@ -1064,9 +1061,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<Vec<LiveTurn>> {
         Ok(self
             .store
-            .runs()?
+            .live_runs()?
             .into_iter()
-            .filter(|run| run.status.live())
             .filter(|run| match task {
                 Some(_) => run.task == task,
                 // A wake about no task joins only the member's own turn about no task.
@@ -1245,9 +1241,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn empty_turns(&self, task: TaskId) -> Done<usize> {
         let mut ended: Vec<Run> = self
             .store
-            .runs()?
+            .runs_of(task)?
             .into_iter()
-            .filter(|r| r.task == Some(task) && !r.status.live() && r.started_at.is_some())
+            .filter(|r| !r.status.live() && r.started_at.is_some())
             .collect();
         ended.sort_by_key(|r| core::cmp::Reverse(r.id));
         // A turn's label says whether it did something (ADR 0114). A turn with none (from
@@ -1270,9 +1266,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let last_ended = self
             .store
-            .runs()?
+            .runs_of(task)?
             .iter()
-            .filter(|r| r.member == member && r.task == Some(task))
+            .filter(|r| r.member == member)
             .filter_map(|r| r.ended_at)
             .max();
         let gap = last_ended.map_or(0, |at| {
@@ -1314,7 +1310,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Brings a task's waiting turn forward, to start on the next tick.
     fn bring_forward(&self, task: TaskId) -> Done<()> {
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.task != Some(task) || run.status != RunStatus::RetryWaiting {
                 continue;
             }
@@ -1366,7 +1362,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- what members do -------------------------------------------------------------------
 
     fn mark_progress(&self, member: MemberId, task: TaskId) -> Done<()> {
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.member == member && run.task == Some(task) && run.status == RunStatus::Running {
                 run.moved_forward = true;
                 self.store.save_run(&run)?;
@@ -2220,10 +2216,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             "the runaway tripwire"
         };
-        for run in self.store.runs()? {
-            if !run.status.live() {
-                continue;
-            }
+        for run in self.store.live_runs()? {
             if run.status == RunStatus::Running {
                 self.runner.stop(run.id, self.settings.grace);
             }
@@ -2484,9 +2477,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let since = self
             .store
-            .runs()?
+            .runs_of(task.id)?
             .iter()
-            .filter(|r| r.member == member.id && r.task == run.task && r.id != run.id)
+            .filter(|r| r.member == member.id && r.id != run.id)
             .filter_map(|r| r.started_at)
             .max()
             .unwrap_or(Millis::MIN);
@@ -2650,7 +2643,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
 
         // 2. Running turns: ended, failed, vanished, or too long.
-        for run in self.store.runs()? {
+        for run in self.store.live_runs()? {
             if run.status != RunStatus::Running {
                 continue;
             }
@@ -2702,7 +2695,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.lift_budget_pauses()?;
 
         // 3. Retries whose time has come are queued again.
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.status == RunStatus::RetryWaiting && run.retry_at.is_some_and(|due| due <= now) {
                 run.status = RunStatus::Queued;
                 run.retry_at = None;
@@ -2747,13 +2740,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         //    ladder; work held on purpose is left alone, and work HQ cannot tell about gets
         //    one look from its area's lead.
         let tasks = self.store.tasks()?;
-        let live: Vec<Option<TaskId>> = self
-            .store
-            .runs()?
-            .iter()
-            .filter(|r| r.status.live())
-            .map(|r| r.task)
-            .collect();
+        let live: Vec<Option<TaskId>> = self.store.live_runs()?.iter().map(|r| r.task).collect();
         for task in &tasks {
             if task.status != TaskStatus::Doing || live.contains(&Some(task.id)) {
                 continue;
@@ -2861,7 +2848,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let mut queued: Vec<Run> = self
             .store
-            .runs()?
+            .live_runs()?
             .into_iter()
             .filter(|r| r.status == RunStatus::Queued)
             .collect();
@@ -2886,7 +2873,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             let running: Vec<Run> = self
                 .store
-                .runs()?
+                .live_runs()?
                 .into_iter()
                 .filter(|r| r.status == RunStatus::Running)
                 .collect();
@@ -4039,6 +4026,77 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- what the office shows ------------------------------------------------------------
 
+    /// One task whole, as the owner opens it: its whole thread, evidence and documents.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for no such task; a store failure.
+    pub fn task_shown(&self, id: TaskId) -> Done<serde_json::Value> {
+        let tasks = self.store.tasks()?;
+        let task = tasks
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or(EngineError::Unknown("task"))?;
+        let goals = self.store.goals()?;
+        self.task_row(task, &tasks, &goals, &self.store.routines()?, true)
+    }
+
+    /// A task as the screen shows it. Finished work comes in brief, with no thread, evidence
+    /// or documents (those of 800 done tasks made the snapshot 1.6 MB on every poll); the
+    /// owner's screen asks for it `whole` when it is opened.
+    fn task_row(
+        &self,
+        t: &Task,
+        tasks: &[Task],
+        goals: &[crate::domain::Goal],
+        routines: &[crate::domain::Routine],
+        whole: bool,
+    ) -> Done<serde_json::Value> {
+        let mut chain = vec![t.title.clone()];
+        let mut parent = t.parent;
+        while let Some(up) = parent.and_then(|id| tasks.iter().find(|x| x.id == id)) {
+            chain.push(up.title.clone());
+            parent = up.parent;
+        }
+        if let Some(goal) = goals.iter().find(|g| g.id == t.goal) {
+            chain.push(format!("Goal: {}", goal.title));
+        }
+        let thread = self.store.thread(t.id)?;
+        let (documents, branches) = self.documents_shown(t.id)?;
+        let mut row = json!({
+            "id": t.id.0, "goal": t.goal.0, "project": t.project.map(|p| p.0),
+            "parent": t.parent.map(|p| p.0), "title": t.title,
+            "description": t.description, "owner": t.owner.map(|o| o.0),
+            "assignee": t.assignee.map(|a| a.0), "status": t.status.name(),
+            "priority": t.priority.name(), "depth": t.depth,
+            "waits_on": t.waits_on.iter().map(|w| w.0).collect::<Vec<_>>(),
+            "gate": self.store.gate(t.id)?, "why": chain,
+            "routine": routines.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
+            "posts": thread.len(), "brief": !whole,
+            // The wing's branches on it (ADR 0115).
+            "branches": branches,
+            // Why it closed, and what carries it on (ADR 0124).
+            "closure": self.store.closure(t.id)?.map(|c| json!({
+                "why": c.closure.name(), "said": c.closure.plainly(),
+                "duplicate_of": c.closure.duplicate_of().map(|d| d.0),
+                "successor": c.successor.map(|s| s.0), "by": c.by, "at": c.at })),
+        });
+        if whole {
+            // Each post with its place in the thread, which the activity log finds it by.
+            row["thread"] = thread
+                .iter()
+                .enumerate()
+                .map(|(n, p)| {
+                    json!({ "n": n, "author": p.author, "text": p.text,
+                                      "at": p.at, "unsupported": p.unsupported })
+                })
+                .collect();
+            // What done means, and what was cited for it at each stage (ADR 0114).
+            row["evidence"] = self.evidence_shown(t)?;
+            row["documents"] = documents;
+        }
+        Ok(row)
+    }
+
     /// Everything on screen now (spec section 12), and the id of the last event in it: the
     /// event stream resumes after that id, so nothing is shown twice or missed.
     ///
@@ -4115,60 +4173,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // pruned feed no longer holds the week, and HQ cannot tell.
             }));
         }
-        let why = |task: &Task| {
-            let mut chain = vec![task.title.clone()];
-            let mut parent = task.parent;
-            while let Some(id) = parent {
-                let Some(up) = tasks.iter().find(|t| t.id == id) else {
-                    break;
-                };
-                chain.push(up.title.clone());
-                parent = up.parent;
-            }
-            if let Some(goal) = goals.iter().find(|g| g.id == task.goal) {
-                chain.push(format!("Goal: {}", goal.title));
-            }
-            chain
-        };
         let routine_list = self.store.routines()?;
         let mut task_rows = Vec::new();
         for t in &tasks {
-            // Finished work carries only the posts its card shows: whole threads of hundreds
-            // of done tasks made the snapshot over a megabyte, on every poll. Each post keeps
-            // its place in the whole thread, which the activity log finds it by.
-            let thread = self.store.thread(t.id)?;
-            let posts = thread.len();
-            let from = if t.status.finished() {
-                posts.saturating_sub(THREAD_TAIL)
-            } else {
-                0
-            };
-            let (documents, branches) = self.documents_shown(t.id)?;
-            task_rows.push(json!({
-                "id": t.id.0, "goal": t.goal.0, "project": t.project.map(|p| p.0),
-                "parent": t.parent.map(|p| p.0), "title": t.title,
-                "description": t.description, "owner": t.owner.map(|o| o.0),
-                "assignee": t.assignee.map(|a| a.0), "status": t.status.name(),
-                "priority": t.priority.name(), "depth": t.depth,
-                "waits_on": t.waits_on.iter().map(|w| w.0).collect::<Vec<_>>(),
-                "gate": self.store.gate(t.id)?, "why": why(t),
-                "routine": routine_list.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
-                "posts": posts,
-                "thread": thread.iter().enumerate().skip(from)
-                    .map(|(n, p)| json!({ "n": n, "author": p.author, "text": p.text,
-                                          "at": p.at, "unsupported": p.unsupported }))
-                    .collect::<Vec<_>>(),
-                // What done means, and what was cited for it at each stage (ADR 0114).
-                "evidence": self.evidence_shown(t)?,
-                // The wing's documents and branches on it (ADR 0115).
-                "documents": documents,
-                "branches": branches,
-                // Why it closed, and what carries it on (ADR 0124).
-                "closure": self.store.closure(t.id)?.map(|c| json!({
-                    "why": c.closure.name(), "said": c.closure.plainly(),
-                    "duplicate_of": c.closure.duplicate_of().map(|d| d.0),
-                    "successor": c.successor.map(|s| s.0), "by": c.by, "at": c.at })),
-            }));
+            task_rows.push(self.task_row(
+                t,
+                &tasks,
+                &goals,
+                &routine_list,
+                !t.status.finished(),
+            )?);
         }
         // Spent is what turns reported using; held is what they have reserved and not yet
         // spent. Committed, the two together, is what the budget counts.

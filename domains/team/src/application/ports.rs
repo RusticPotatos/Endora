@@ -630,6 +630,16 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn runs(&self) -> Stored<Vec<Run>>;
+    /// The turns queued, running or waiting to retry, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn live_runs(&self) -> Stored<Vec<Run>>;
+    /// A task's turns, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn runs_of(&self, task: TaskId) -> Stored<Vec<Run>>;
     /// Saves a turn's changes.
     ///
     /// # Errors

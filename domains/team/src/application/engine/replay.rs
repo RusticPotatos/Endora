@@ -66,12 +66,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn replay_task(&self, task: TaskId) -> Done<Vec<RunReplay>> {
         let _held = self.held();
         self.task(task)?;
-        let runs: Vec<_> = self
-            .store
-            .runs()?
-            .into_iter()
-            .filter(|r| r.task == Some(task))
-            .collect();
+        let runs: Vec<_> = self.store.runs_of(task)?;
         self.replayed(&runs)
     }
 

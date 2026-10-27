@@ -88,7 +88,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !games.iter().any(Game::live) {
             return Ok(());
         }
-        let runs = self.store.runs()?;
+        let runs = self.store.live_runs()?;
         let wakes = self.store.wakes()?;
         for game in games.iter().filter(|g| g.live()) {
             let mover = game.to_move();
@@ -96,7 +96,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if !member.at_work() {
                 continue;
             }
-            let busy = runs.iter().any(|r| r.member == mover && r.status.live())
+            let busy = runs.iter().any(|r| r.member == mover)
                 || wakes
                     .iter()
                     .any(|w| w.member == mover && w.receipt == crate::domain::Receipt::Held);
@@ -122,7 +122,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// queued, no open task and no routine due.
     pub(super) fn free_to_play(&self, now: Millis) -> Done<Vec<Member>> {
         let tasks = self.store.tasks()?;
-        let runs = self.store.runs()?;
+        let runs = self.store.live_runs()?;
         let routines = self.store.routines()?;
         let wakes = self.store.wakes()?;
         Ok(self
@@ -132,7 +132,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|m| m.role != Role::Ceo && m.at_work())
             .filter(|m| {
                 // A wake held behind another member's turn is work coming (ADR 0120): not idle.
-                let busy = runs.iter().any(|r| r.member == m.id && r.status.live())
+                let busy = runs.iter().any(|r| r.member == m.id)
                     || wakes
                         .iter()
                         .any(|w| w.member == m.id && w.receipt == crate::domain::Receipt::Held);

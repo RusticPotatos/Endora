@@ -1865,6 +1865,17 @@ if (failures.length) {
       runs: [], recent_runs: [{ id: 2, member: 2, task: 7, status: "succeeded", label: "advanced" }] };`, context);
   const office = runInContext("viewHQ()", context);
   if (!office.includes('data-act="replay:run:2"')) fail("replay: a run line does not open its replay");
+  // A finished task comes in brief; opened, it is asked of HQ whole, once, and its thread shown.
+  runInContext(`__keepBrief = [api, render]; __askedWhole = []; render = () => {};
+    api = async (m, p) => { __askedWhole.push(m + " " + p); return { id: 8, brief: false, thread: [{ n: 0, author: "Bo", text: "the <i>whole</i> post" }], evidence: {}, documents: [] }; };
+    HQ.snap.tasks.push({ id: 8, goal: 1, title: "Long done", status: "done", owner: 2, why: [], brief: true, posts: 1 });
+    HQ.selected = { type: "task", id: 8 }; viewHQ(); viewHQ();`, context);
+  await new Promise((done) => setTimeout(done, 0));
+  const whole = runInContext("viewHQ()", context);
+  const askedWhole = JSON.parse(runInContext("JSON.stringify(__askedWhole)", context));
+  if (askedWhole.join("|") !== "GET /v1/hq/tasks/8") fail("hq: an opened finished task is not asked whole, once: " + askedWhole.join("|"));
+  if (!whole.includes("the &lt;i&gt;whole&lt;/i&gt; post")) fail("hq: an opened finished task does not show its thread, escaped");
+  runInContext(`[api, render] = __keepBrief; HQ.snap.tasks.pop(); HQ.whole = {}; HQ.selected = { type: "task", id: 7 };`, context);
   if (!office.includes('data-act="replay:task:7"') || !office.includes("Replay this task")) fail("replay: a task card does not open its replay");
   // Opening it goes to its own screen and asks the node for the task's turns.
   const asked = [];

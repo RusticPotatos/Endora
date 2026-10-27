@@ -352,8 +352,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.after_closing(task.id)?;
         }
         let ids: Vec<TaskId> = open.iter().map(|t| t.id).collect();
-        for run in self.store.runs()? {
-            if !run.status.live() || !run.task.is_some_and(|t| ids.contains(&t)) {
+        for run in self.store.live_runs()? {
+            if !run.task.is_some_and(|t| ids.contains(&t)) {
                 continue;
             }
             if run.status == RunStatus::Running {

@@ -27,8 +27,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// What the diagnosis reads of `task`, from the record now.
     fn task_facts(&self, task: &Task) -> Done<TaskFacts> {
-        let runs = self.store.runs()?;
-        let on_it: Vec<&Run> = runs.iter().filter(|r| r.task == Some(task.id)).collect();
+        let runs = self.store.runs_of(task.id)?;
+        let on_it: Vec<&Run> = runs.iter().collect();
         let holder = task.owner.or(task.assignee);
         let members = self.store.members()?;
         let holder_at_work = holder.map(|h| members.iter().any(|m| m.id == h && m.at_work()));
@@ -122,12 +122,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .count();
         let cited = self.store.cited(task.id)?.len();
         let mut receipt = 0;
-        for run in self
-            .store
-            .runs()?
-            .iter()
-            .filter(|r| r.task == Some(task.id))
-        {
+        for run in self.store.runs_of(task.id)? {
             for r in self.store.call_receipts_of(run.id)? {
                 receipt = receipt.max(r.id);
             }

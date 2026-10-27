@@ -783,6 +783,11 @@ pub(super) async fn hq_trial(State(state): State<AppState>, Path(name): Path<Str
 }
 
 /// A scenario as the owner's screen shows it: where it stands and its log, step by step.
+/// One task whole, as the owner opens it: the snapshot carries finished work in brief.
+pub(super) async fn hq_task_shown(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    ask(&state, format!("/v1/tasks/{id}"), None).await
+}
+
 pub(super) async fn hq_scenario(State(state): State<AppState>, Path(task): Path<i64>) -> Answer {
     ask(&state, format!("/v1/scenarios/{task}"), None).await
 }
@@ -1533,6 +1538,27 @@ mod tests {
                 == "HQ: you ran the Holodeck again: 9 scenarios queued, the earlier round kept as \"round 1\""),
             "{audit:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_opened_task_is_asked_of_hq_whole() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            (
+                200,
+                "application/json",
+                json!({ "id": 7, "thread": [] }).to_string(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_task_shown(State(state), Path(7)).await.unwrap();
+        assert_eq!(answer.0["id"], 7);
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/tasks/7"]);
     }
 
     #[tokio::test]

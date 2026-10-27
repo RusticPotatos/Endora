@@ -60,11 +60,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Whether nothing (a turn queued, started or ended, or a wake) has happened on `task` for
     /// longer than `ms`.
     pub(super) fn idle_for(&self, task: TaskId, ms: Millis) -> Done<bool> {
-        let runs = self.store.runs()?;
         let wakes = self.store.wakes()?;
-        let last = runs
+        let last = self
+            .store
+            .runs_of(task)?
             .iter()
-            .filter(|r| r.task == Some(task))
             .flat_map(|r| [Some(r.queued_at), r.started_at, r.ended_at])
             .flatten()
             .chain(wakes.iter().filter(|w| w.task == Some(task)).map(|w| w.at))

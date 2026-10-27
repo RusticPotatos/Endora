@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS runs (
 -- Cutover recovery scans live taskless turns without visiting completed history.
 CREATE INDEX IF NOT EXISTS runs_live_taskless ON runs(id)
  WHERE task IS NULL AND status IN ('queued','running','retry_waiting');
+-- The live turns, read on every tick, without visiting the ended ones.
+CREATE INDEX IF NOT EXISTS runs_live ON runs(id)
+ WHERE status IN ('queued','running','retry_waiting');
 -- A turn's token for the team protocol: its worker's only credential, valid while it runs.
 CREATE TABLE IF NOT EXISTS run_tokens (
     run INTEGER PRIMARY KEY REFERENCES runs(id), token TEXT NOT NULL UNIQUE
@@ -490,6 +493,12 @@ fn task_from(conn: &Connection, row: &rusqlite::Row<'_>) -> rusqlite::Result<Tas
     let waits_on = waits
         .query_map([id], |r| r.get::<_, i64>(0).map(TaskId))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    task_with(row, waits_on)
+}
+
+/// A task from its row, given what it waits on.
+fn task_with(row: &rusqlite::Row<'_>, waits_on: Vec<TaskId>) -> rusqlite::Result<Task> {
+    let id: i64 = row.get(0)?;
     let status: String = row.get(7)?;
     let priority: String = row.get(8)?;
     Ok(Task {
@@ -1007,8 +1016,24 @@ impl TeamStore for SqliteTeamStore {
         let mut stmt = conn
             .prepare(&format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY id"))
             .map_err(backend)?;
+        // What every task waits on, in one read rather than one a task.
+        let mut waits: std::collections::HashMap<i64, Vec<TaskId>> =
+            std::collections::HashMap::new();
+        let mut all = conn
+            .prepare_cached("SELECT task, waits_on FROM task_waits ORDER BY task, waits_on")
+            .map_err(backend)?;
+        let pairs = all
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, TaskId(r.get(1)?))))
+            .map_err(backend)?;
+        for pair in pairs {
+            let (task, on) = pair.map_err(backend)?;
+            waits.entry(task).or_default().push(on);
+        }
         let rows = stmt
-            .query_map([], |r| task_from(&conn, r))
+            .query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                task_with(r, waits.remove(&id).unwrap_or_default())
+            })
             .map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
@@ -1479,6 +1504,29 @@ impl TeamStore for SqliteTeamStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(&format!("SELECT {RUN_COLUMNS} FROM runs ORDER BY id"))
+            .map_err(backend)?;
+        let rows = stmt.query_map([], run_from).map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn runs_of(&self, task: TaskId) -> Stored<Vec<Run>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare_cached(&format!(
+                "SELECT {RUN_COLUMNS} FROM runs WHERE task = ?1 ORDER BY id"
+            ))
+            .map_err(backend)?;
+        let rows = stmt.query_map([task.0], run_from).map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn live_runs(&self) -> Stored<Vec<Run>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare_cached(&format!(
+                "SELECT {RUN_COLUMNS} FROM runs \
+                 WHERE status IN ('queued','running','retry_waiting') ORDER BY id"
+            ))
             .map_err(backend)?;
         let rows = stmt.query_map([], run_from).map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
@@ -3265,6 +3313,61 @@ CREATE TABLE IF NOT EXISTS projects (
         // Opened again, the column is there already and nothing changes.
         let again = SqliteTeamStore::over(store.conn.into_inner().unwrap()).unwrap();
         assert_eq!(again.run(RunId(1)).unwrap().unwrap().interrupted, 1);
+    }
+
+    #[test]
+    fn the_live_turns_are_read_without_the_ended_ones() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
+        let wake = store
+            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .unwrap();
+        let mut ids = Vec::new();
+        for status in [
+            RunStatus::Succeeded,
+            RunStatus::Running,
+            RunStatus::Failed,
+            RunStatus::Queued,
+            RunStatus::RetryWaiting,
+        ] {
+            let id = store.add_run(a, None, wake, 0).unwrap();
+            let mut run = store.run(id).unwrap().unwrap();
+            run.status = status;
+            store.save_run(&run).unwrap();
+            ids.push(id);
+        }
+        let live: Vec<RunId> = store.live_runs().unwrap().iter().map(|r| r.id).collect();
+        assert_eq!(live, [ids[1], ids[3], ids[4]]);
+    }
+
+    #[test]
+    fn a_tasks_turns_are_read_without_the_others() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
+        let goal = store
+            .add_goal("Ship it", "", GoalStatus::Active, None)
+            .unwrap();
+        let task = |title: &str| NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: title.to_owned(),
+            description: String::new(),
+            assignee: None,
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        };
+        let mine = store.add_task(&task("Mine"), 0).unwrap();
+        let other = store.add_task(&task("Other"), 0).unwrap();
+        let wake = store
+            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .unwrap();
+        let first = store.add_run(a, Some(mine), wake, 0).unwrap();
+        store.add_run(a, Some(other), wake, 0).unwrap();
+        store.add_run(a, None, wake, 0).unwrap();
+        let second = store.add_run(a, Some(mine), wake, 0).unwrap();
+        let of: Vec<RunId> = store.runs_of(mine).unwrap().iter().map(|r| r.id).collect();
+        assert_eq!(of, [first, second]);
     }
 
     #[test]

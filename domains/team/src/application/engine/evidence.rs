@@ -623,9 +623,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn shown_nothing(&self, member: MemberId, task: TaskId) -> Done<Vec<(RunId, bool)>> {
         let mut runs: Vec<Run> = self
             .store
-            .runs()?
+            .runs_of(task)?
             .into_iter()
-            .filter(|r| r.member == member && r.task == Some(task) && r.label.is_some())
+            .filter(|r| r.member == member && r.label.is_some())
             .collect();
         runs.sort_by_key(|r| r.id);
         let mut shown = Vec::new();
@@ -869,7 +869,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         task: TaskId,
         mark: &dyn Fn(&mut Run),
     ) -> Done<()> {
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.member == member && run.task == Some(task) && run.status == RunStatus::Running {
                 mark(&mut run);
                 self.store.save_run(&run)?;

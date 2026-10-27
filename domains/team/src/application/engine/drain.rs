@@ -35,7 +35,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn running_turns(&self) -> Done<Vec<Run>> {
         Ok(self
             .store
-            .runs()?
+            .live_runs()?
             .into_iter()
             .filter(|r| r.status == RunStatus::Running)
             .collect())
@@ -152,7 +152,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // What waited for the restart waits for nothing now: a turn that is still held back for
         // another reason says that when it is next looked at.
         let said = crate::domain::turns::Wait::Restart.words();
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.status == RunStatus::Queued && run.end_reason == said {
                 run.end_reason.clear();
                 self.store.save_run(&run)?;
@@ -191,7 +191,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(false);
         }
         let said = crate::domain::turns::Wait::Restart.words();
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.status != RunStatus::Queued || run.end_reason == said {
                 continue;
             }

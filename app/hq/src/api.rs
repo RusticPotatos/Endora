@@ -61,6 +61,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/events", get(events))
         // Replay: a turn, or a task's turns, read back in full for the owner's screen.
         .route("/v1/runs/{id}/replay", get(run_replay))
+        .route("/v1/tasks/{id}", get(task_shown))
         .route("/v1/tasks/{id}/replay", get(task_replay))
         .route("/v1/tasks/{id}/consultations", get(task_consultations))
         .route("/v1/goals", post(set_goal))
@@ -968,6 +969,15 @@ async fn trial_report(
 }
 
 /// A scenario, its state and its log step by step.
+/// One task whole, as the owner opens it.
+async fn task_shown(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || hq.task_shown(TaskId(id))).await?))
+}
+
 async fn scenario_shown(
     Extract(state): Extract<State>,
     Path(task): Path<i64>,
@@ -2013,7 +2023,21 @@ mod tests {
         )
         .await;
         assert_eq!(all["runs"][0]["run"], turn.run.0);
-        for missing in ["/v1/runs/999999/replay", "/v1/tasks/999999/replay"] {
+        // The owner opens the task whole.
+        let opened = json_of(
+            app.clone()
+                .oneshot(call("GET", &format!("/v1/tasks/{task}"), Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(opened["id"], task);
+        assert!(opened["thread"].is_array(), "{opened}");
+        for missing in [
+            "/v1/runs/999999/replay",
+            "/v1/tasks/999999/replay",
+            "/v1/tasks/999999",
+        ] {
             let res = app
                 .clone()
                 .oneshot(call("GET", missing, Some(TOKEN), ""))

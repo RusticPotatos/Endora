@@ -17,7 +17,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn long_mac_waits(&self, now: Millis) -> Done<()> {
         let waiting: Vec<_> = self
             .store
-            .runs()?
+            .live_runs()?
             .into_iter()
             .filter(|r| r.status == RunStatus::Queued && mac::is_waiting_words(&r.end_reason))
             .collect();

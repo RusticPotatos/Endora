@@ -697,7 +697,7 @@ mod tests {
         assert!(measurements[1].1 < 1_000);
         // The same query loses the bound when its live-run indexes are removed.
         let conn = store.conn().unwrap();
-        conn.execute_batch("DROP INDEX runs_live_taskless;")
+        conn.execute_batch("DROP INDEX runs_live_taskless; DROP INDEX runs_live;")
             .unwrap();
         let mut unindexed = conn.prepare(LEGACY_LIVE_RUNS).unwrap();
         assert_eq!(

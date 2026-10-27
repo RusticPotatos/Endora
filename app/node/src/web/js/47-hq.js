@@ -28,6 +28,7 @@ const HQ = {
   logDone: false,      // HQ has nothing older to give
   logBusy: false,      // older lines are being fetched
   allTurns: {},        // "task-N" / "member-N" → every turn shown, not only the last five
+  whole: {},           // task id → a finished task opened whole (the snapshot has it in brief), or "asking"
   pods: [],            // one pod of desks per team, laid out from the snapshot (ADR 0119)
   seats: {},           // member id → its desk, where it works and where a visitor stands
   world: null,         // the cells nobody walks through, and the walls between cells
@@ -180,7 +181,18 @@ function hqTyping() {
 }
 
 function hqMember(id) { return ((HQ.snap && HQ.snap.members) || []).find((m) => m.id === id); }
-function hqTask(id) { return ((HQ.snap && HQ.snap.tasks) || []).find((t) => t.id === id); }
+function hqTask(id) {
+  const t = ((HQ.snap && HQ.snap.tasks) || []).find((x) => x.id === id), whole = HQ.whole[id];
+  return t && whole && whole !== "asking" ? Object.assign({}, t, whole, { status: t.status }) : t;
+}
+// A finished task comes in brief in the snapshot; opened, it is asked of HQ whole, once.
+async function hqAskWhole(id) {
+  if (HQ.whole[id]) return;
+  HQ.whole[id] = "asking";
+  try { HQ.whole[id] = await api("GET", `/v1/hq/tasks/${Number(id)}`); }
+  catch (e) { delete HQ.whole[id]; flash("Couldn't open the task: " + e.message, "err"); return; }
+  render();
+}
 function hqName(id) { const m = hqMember(id); return m ? m.name : "someone"; }
 
 // A task's key, as the office writes it: EL-7.
@@ -297,8 +309,8 @@ function hqTurns(match, key) {
 }
 
 // A line of the activity log in full: a post is read whole from its task's thread when the
-// snapshot has it, and is otherwise its preview, which says "…" where it was cut. A finished
-// task's thread is only its last posts, each with its place in the whole thread (`n`).
+// screen has it, and is otherwise its preview, which says "…" where it was cut. A finished
+// task's thread is there only once the task is opened, each post with its place (`n`).
 const HQ_LONG_LINE = 240;
 function hqLogText(l) {
   const w = l.whole, t = w && hqTask(w.task), p = t && (t.thread || []).find((q, i) => (q.n ?? i) === w.post);
@@ -2162,6 +2174,7 @@ function hqSelected() {
       <p class="hq-note">The team moves what stands here by proposing it together; the Office card below lets you undo, reset or veto.</p>`;
   }
   const t = hqTask(sel.id); if (!t) return "";
+  if (t.brief) hqAskWhole(t.id);
   const runner =((HQ.snap && HQ.snap.runs) || []).find((r) => r.task === t.id && r.status === "running");
   const thread = (t.thread || []).slice(-3).map((p) => `<li>${esc(p.author)}${p.unsupported ? ` <span class="hq-unsupported">unsupported</span>` : ""}: ${esc(p.text)}</li>`).join("");
   return `<div class="hq-sel">${hqKey(t.id)} · ${esc(t.title)}</div><dl class="hq-kv">
