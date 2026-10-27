@@ -259,3 +259,21 @@ it). Nothing else in the plan waits on the owner.
   - Kept: an approval still says which of its task's criteria it serves.
   - The gate passed each commit; the last ran 3,125 tests.
 - **The team context is about 62,800 lines.**
+- **Step 8, the last cuts (released bf823895, no turn cut):**
+  - Gone: the member's write path to the world (no member has a tool that writes it) and the
+    owner's canon (promote, demote and their buttons). The owner writes the written pages;
+    HQ derives the rest.
+  - The map's area and role pages and their stewards are gone. A member's map holds the house,
+    the lab, the team, its goal and the projects.
+  - Also gone: dead events, proposal states, seven wake reasons nothing raises, and the
+    stories' scope.
+  - Found and fixed: every map still told members to use the retired `report_gap`. It now
+    points at `add_to_map`.
+  - Zed's league game had ended, so the cut-over ran again and retired Zed. Five members are
+    at work: Mara, Kit, Ada, Rae and Bo.
+- **Step 8's exit check, as measured:** the gate passed after every part (3,118 tests at the
+  last). The team context (`domains/team`, Rust) is **61,330 lines**, from 104,000; that is
+  2% over the 60,000 aimed for.
+  - What is left is the days 2–3 fold: the `Role` type, which still sets brains, budgets and
+    effort; the CEO's branches that hang off it; the sections' stages and trust; and the tests
+    that guard them.
