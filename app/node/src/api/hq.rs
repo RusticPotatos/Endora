@@ -1527,43 +1527,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_undoes_resets_and_vetoes_through_the_node_and_it_is_recorded() {
-        let (url, seen) = fake(Arc::new(|_, _| {
-            (200, "application/json", json!({}).to_string())
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let _ = hq_office_undo(State(state.clone())).await.unwrap();
-        let _ = hq_office_reset(State(state.clone())).await.unwrap();
-        let _ = hq_office_veto(State(state.clone()), Path(4)).await.unwrap();
-        let sent: Vec<(String, String)> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(p, _, b)| (p.clone(), b.clone()))
-            .collect();
-        assert_eq!(
-            sent.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
-            [
-                "/v1/office/undo",
-                "/v1/office/reset",
-                "/v1/office/proposals/4/veto"
-            ]
-        );
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-            .unwrap()
-            .iter()
-            .map(|r| r.summary().to_owned())
-            .collect();
-        for line in [
-            "HQ: you undid the last change to the office",
-            "HQ: you reset the office",
-            "HQ: you vetoed office proposal 4",
-        ] {
-            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
-        }
-    }
-
-    #[tokio::test]
     async fn the_owner_tops_the_pool_up_through_the_node_and_it_is_recorded() {
         let (url, seen) = fake(Arc::new(|_, _| {
             (200, "application/json", json!({}).to_string())

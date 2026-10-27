@@ -4,15 +4,10 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use serde_json::{Value, json};
-
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
-use super::protocol::{call, tools};
-use crate::domain::office::{self, Kind};
-use crate::domain::{
-    GoalId, MemberId, Priority, Receipt, Refused, Role, RunStatus, WakeReason, money,
-};
+use crate::domain::office;
+use crate::domain::{GoalId, MemberId, Priority, Receipt, Refused, Role, WakeReason, money};
 use crate::infrastructure::simulated::Script;
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -71,33 +66,6 @@ fn run_of(hq: &Hq<'_>, context: &RunContext) -> crate::application::ports::Run {
     hq.store().run(context.run).unwrap().unwrap()
 }
 
-fn use_tool(hq: &Hq<'_>, context: &RunContext, tool: &str, args: &Value) -> Result<String, String> {
-    let (run, who) = hq.turn_of(&context.token).unwrap().expect("a running turn");
-    call(hq, &run, &who, tool, args)
-}
-
-/// A turn of `member`'s about no task, started by a mention, ready for tool calls. The tester's
-/// work is the Mac's (ADR 0131), so for the tester the node says it is free; the others read on
-/// the NAS, and leave the Mac to her.
-fn mention_turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
-    let tester = hq
-        .store()
-        .members()
-        .unwrap()
-        .iter()
-        .any(|m| m.id == member && m.role == Role::Reviewer);
-    if tester {
-        hq.tell_mac(true, "ready");
-    }
-    hq.wake(member, None, WakeReason::Mentioned).unwrap();
-    hq.tick().unwrap();
-    hq.runner()
-        .started()
-        .into_iter()
-        .rfind(|c| c.member == member)
-        .expect("a turn")
-}
-
 /// Ends every turn the runner has running, as a worker finishing.
 fn end_all(hq: &Hq<'_>) {
     for context in hq.runner().started() {
@@ -106,40 +74,8 @@ fn end_all(hq: &Hq<'_>) {
     hq.tick().unwrap();
 }
 
-fn propose(hq: &Hq<'_>, context: &RunContext, changes: Value, why: &str) -> Result<String, String> {
-    use_tool(
-        hq,
-        context,
-        "office",
-        &json!({ "action": "propose", "changes": changes, "why": why }),
-    )
-}
-
-fn react(hq: &Hq<'_>, context: &RunContext, proposal: i64, vote: &str) -> Result<String, String> {
-    use_tool(
-        hq,
-        context,
-        "office",
-        &json!({ "action": "react", "proposal": proposal, "vote": vote, "why": "fine" }),
-    )
-}
-
 fn items(hq: &Hq<'_>) -> Vec<office::Item> {
     hq.store().office_items().unwrap()
-}
-
-fn events(hq: &Hq<'_>, kind: &str) -> Vec<Value> {
-    hq.store()
-        .events_after(0)
-        .unwrap()
-        .into_iter()
-        .filter(|e| e.kind == kind)
-        .map(|e| e.data)
-        .collect()
-}
-
-fn fish_tank() -> Value {
-    json!([{ "op": "place", "kind": "fish_tank", "x": 10, "y": 3 }])
 }
 
 // ---- the office as data ------------------------------------------------------------------

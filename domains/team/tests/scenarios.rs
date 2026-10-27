@@ -2292,23 +2292,6 @@ fn give_allowance(w: &mut Office, _name: String, dollars: String) {
 // --- The open office (ADR 0119) ------------------------------------------------------------------
 
 impl Office {
-    /// Makes sure `member` has a turn about no task running, as a mention would.
-    fn office_turn(&mut self, member: &str) {
-        let id = self.member(member);
-        let live = self
-            .hq
-            .store()
-            .runs()
-            .expect("the store answers")
-            .iter()
-            .any(|r| r.member == id && r.status.live());
-        if !live {
-            self.hq
-                .wake(id, None, WakeReason::Mentioned)
-                .expect("the member is woken");
-        }
-    }
-
     fn office_items(&self) -> Vec<endora_team::domain::office::Item> {
         self.hq.store().office_items().expect("the store answers")
     }

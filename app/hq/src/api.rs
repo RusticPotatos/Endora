@@ -3924,86 +3924,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_is_the_offices_landlord_and_the_snapshot_carries_the_office() {
-        use endora_team::domain::office::{Change, Kind};
+    async fn the_snapshot_carries_the_office_and_the_office_routes_are_gone() {
         let st = state(false);
         st.hq.seed_office().unwrap();
         let seeded = st.hq.store().office_items().unwrap().len();
-        let app = app(st.clone());
-        let send = |uri: String, body: String, signed: Option<&'static str>| {
-            let app = app.clone();
-            async move {
-                let res = app
-                    .oneshot(call("POST", &uri, signed, &body))
-                    .await
-                    .unwrap();
-                (res.status(), json_of(res).await)
-            }
-        };
-        // The node signs; nobody else may.
-        let (status, _) = send("/v1/office/reset".to_owned(), "{}".to_owned(), None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-        // Nothing to undo yet.
-        let (status, said) = send("/v1/office/undo".to_owned(), "{}".to_owned(), Some(TOKEN)).await;
-        assert_eq!(
-            (status, said["undone"].clone()),
-            (StatusCode::OK, json!(null))
-        );
-        // A proposal open, and the owner vetoes it.
-        let id = st
-            .hq
-            .store()
-            .add_office_proposal(
-                "Jane Doe",
-                &[Change::Place {
-                    kind: Kind::FishTank,
-                    x: 10,
-                    y: 3,
-                }],
-                "life",
-                1,
-            )
+        let res = app(st.clone())
+            .oneshot(call("POST", "/v1/office/reset", Some(TOKEN), "{}"))
+            .await
             .unwrap();
-        let (status, said) = send(
-            format!("/v1/office/proposals/{id}/veto"),
-            "{}".to_owned(),
-            Some(TOKEN),
-        )
-        .await;
-        assert_eq!(
-            (status, said["vetoed"].clone()),
-            (StatusCode::OK, json!(true))
-        );
-        let (status, _) = send(
-            format!("/v1/office/proposals/{id}/veto"),
-            "{}".to_owned(),
-            Some(TOKEN),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "a closed proposal");
-        let (status, _) = send(
-            "/v1/office/proposals/99/veto".to_owned(),
-            "{}".to_owned(),
-            Some(TOKEN),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        // Reset puts the seeded layout back. Downtime is work on the house's own model, so there
-        // is no allowance to set (ADR 0131).
-        st.hq.store().remove_office_item(1).unwrap();
-        let (status, _) = send("/v1/office/reset".to_owned(), "{}".to_owned(), Some(TOKEN)).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(st.hq.store().office_items().unwrap().len(), seeded);
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "the office is not run");
         let snap = st.hq.snapshot().unwrap();
         assert_eq!(snap["office"]["items"].as_array().unwrap().len(), seeded);
-        assert!(
-            snap["office"].get("downtime_paid_cents_per_day").is_none(),
-            "nothing to allow"
-        );
-        assert_eq!(snap["office"]["can_undo"], true, "a reset can be undone");
-        let (status, said) = send("/v1/office/undo".to_owned(), "{}".to_owned(), Some(TOKEN)).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(said["undone"].as_str().unwrap().contains("reset"), "{said}");
     }
 
     #[tokio::test]
