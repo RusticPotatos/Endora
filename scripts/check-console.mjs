@@ -1173,15 +1173,12 @@ if (failures.length) {
   if (office.includes("<b>$0.50</b>")) fail("hq: an out-for-the-day card became markup");
   if (!office.includes("on furlough · ")) fail("hq: the roster does not say who is on furlough");
   if (!office.includes("3 seats · 2 at work · 1 on furlough") || !office.includes("&lt;u&gt;Kit&lt;/u&gt;")) fail("hq: the scorecard does not count a team's seats");
-  // The Office card (ADR 0119): the team's open proposals with their votes, the owner's veto on
-  // each, undo and reset (downtime costs nothing, so there is no allowance to set); and every
-  // word the team wrote (a proposal's reason, a vote's, a member's name) as text.
-  for (const said of ['<h2>Office <span class="hq-count">1</span></h2>', "7 things on the floor", "add a fish tank in the commons; move the &lt;u&gt;fern&lt;/u&gt; to the lounge",
-    "&lt;img src=w onerror=alert(10)&gt; the kitchen needs life", "yes 1, no 1", "&lt;i&gt;Dee&lt;/i&gt; yes", "Bo no (&lt;b&gt;too wet&lt;/b&gt;)", 'data-act="hq:office:veto:3"',
-    'data-act="hq:office:undo:go">Undo last change', 'data-act="hq:office:reset:go">Reset the office',
-    "applied: add a plant in the commons", "carried 2 to 0"]) {
+  // The Office card (ADR 0119, 0142): the floor and its games; the team no longer changes the
+  // floor, so there is nothing to veto, undo or reset.
+  for (const said of ["<h2>Office</h2>", "7 things on the floor"]) {
     if (!office.includes(said)) fail(`hq: the Office card does not say ${said}`);
   }
+  if (/hq:office:(veto|undo|reset)/.test(office)) fail("hq: the Office card still offers a landlord's veto, undo or reset");
   if (office.includes("hq:office:downtime") || office.includes("Paid members&#39; downtime")) fail("hq: the Office card offers an allowance for downtime, which costs nothing");
   for (const raw of ["<img src=w", "<u>fern</u>", "<b>too wet</b>", "<i>Dee</i> proposes", "<b>Dee</b>"]) {
     if (office.includes(raw)) fail(`hq: the Office card let a member's words become markup (${raw})`);
@@ -1190,9 +1187,7 @@ if (failures.length) {
     const none = runInContext(`(() => { const o = HQ.snap.office, keep = [o.proposals, o.can_undo];
       o.proposals = []; o.can_undo = false;
       const html = hqOffice(HQ.snap); [o.proposals, o.can_undo] = keep; return html; })()`, context);
-    for (const said of ["No proposals open.", 'data-act="hq:office:undo:go" disabled>']) {
-      if (!none.includes(said)) fail(`hq: the Office card with nothing open does not say ${said}`);
-    }
+    if (!none.includes("<h2>Office</h2>")) fail("hq: the Office card is gone with nothing open");
     const item = runInContext(`HQ.selected = { type: "item", id: 2 }; const looked = hqSelected(); HQ.selected = { type: "task", id: 7 }; looked`, context);
     // And the activity log and Replay say what the team did to the office, escaped like the rest.
     runInContext(`hqTell({ id: 70, at: 0, kind: "office.proposed", data: { proposal: 3, by: "Dee", text: "Dee proposes: add a fish tank in the commons \\u2014 '<b>life</b>'" } }, false);

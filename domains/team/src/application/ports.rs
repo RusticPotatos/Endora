@@ -1066,54 +1066,6 @@ pub trait TeamStore:
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn replace_office_items(&self, items: &[office::Item]) -> Stored<()>;
-    /// Keeps a proposal, open; returns its number.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn add_office_proposal(
-        &self,
-        by: &str,
-        changes: &[office::Change],
-        why: &str,
-        at: Millis,
-    ) -> Stored<i64>;
-    /// Every proposal with its votes, oldest first.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn office_proposals(&self) -> Stored<Vec<office::Proposal>>;
-    /// Closes a proposal, or reopens none: its status and how it ended.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn set_office_proposal(
-        &self,
-        id: i64,
-        status: office::Status,
-        outcome: &str,
-        at: Millis,
-    ) -> Stored<()>;
-    /// Records a vote; `false` when the member had voted already (the vote is kept as it was).
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn add_office_vote(&self, proposal: i64, vote: &office::Vote) -> Stored<bool>;
-    /// Keeps what the office was before a change, for the owner's undo.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn push_office_history(&self, what: &str, before: &[office::Item], at: Millis) -> Stored<i64>;
-    /// Takes the newest of those back: what the change was, and the office before it.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn pop_office_history(&self) -> Stored<Option<(String, Vec<office::Item>)>>;
-    /// How many changes the owner could undo.
-    ///
-    /// # Errors
-    /// [`StoreError`] if the store fails.
-    fn office_history_len(&self) -> Stored<i64>;
-
     // ---- games in the office (ADR 0121) ---------------------------------------------------
 
     /// Keeps a ping-pong or pool match that was played (the record's own number is ignored);

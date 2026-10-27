@@ -195,3 +195,17 @@ it). Nothing else in the plan waits on the owner.
     after 30 days; shown in briefings and in the World card.
   - Each loop's latest lines go into its turns' briefings.
   - "Give work" now asks which loop, not which lead.
+- **Released cef31e89 (steps 5–7).** Checked at 375 px:
+  - the desk empty, the floor without the retired, no sideways scroll;
+  - the league on its rematches (Mac against Local, game 851).
+- **Found and fixed (c3d724dd, live):** the restart for steps 5–7 ran an ADR 0131 migration on
+  every start. It gave Bo and Rae a Claude again, which took them out of the loops, and #855 fell
+  to the old stuck path. The migration now touches only members with no work brain yet, as it
+  was meant to. The cut-over ran again (both seated), and #855 went back on Bo's plan.
+  - On the record, Bo's two turns on the local model claimed #855 and did nothing. The loops'
+    answer to that is three stalls climbing to Rae.
+- **Step 8, part A, conversations and help requests deleted** (gated next): the conversation
+  and help-request code, routes, screens, features and tests, and the canonical briefing.
+  - The input lineage stays, always on.
+  - The tables go after the release snapshot, which is their archive.
+  - The team context is about 96,300 lines.

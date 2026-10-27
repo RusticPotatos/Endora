@@ -1741,27 +1741,13 @@ function hqAreaOf(it) {
   return "the open floor";
 }
 
-// The Office card (ADR 0119): what the team proposes to change, who has voted how, and the
-// owner's say as landlord: veto any open proposal, undo the last change, and reset to how the
-// office started. Downtime is work on the house's own model and costs nothing (ADR 0131). The
-// proposals are the team's own words, so every one is escaped.
+// The Office card (ADR 0119, 0142): the floor and its games. The team no longer changes the
+// floor; the members work and, in their downtime, play.
 function hqOffice(s) {
   const o = s.office;
   if (!o) return "";
-  const open = o.proposals || [], recent = (o.recent || []).slice(0, 3);
-  const proposals = open.map((p) => {
-    const votes = (p.votes || []).map((v) => `${esc(v.who)} ${esc(v.vote)}${v.why ? ` (${esc(v.why)})` : ""}`).join(", ");
-    return `<li><b>${esc(p.by)}</b> proposes: ${(p.changes || []).map((c) => esc(c)).join("; ")}${p.why ? ` — <i>${esc(p.why)}</i>` : ""}
-      <small> yes ${Number(p.yes)}, no ${Number(p.no)} · ${votes} · carries on a second yes, or at ${esc(hqClock(p.carries_at))} if nobody objects</small>
-      <button class="hq-btn no" data-act="hq:office:veto:${Number(p.id)}">Veto</button></li>`;
-  }).join("");
-  const done = recent.map((r) => `<li>${esc(r.status)}: ${(r.changes || []).map((c) => esc(c)).join("; ")}${r.outcome ? ` <small>(${esc(r.outcome)})</small>` : ""}</li>`).join("");
-  return `<section class="hq-card hq-office-card"><h2>Office <span class="hq-count">${open.length}</span></h2>
-    <p class="hq-note">${(o.items || []).length} things on the floor. The team decides what to change together, in its downtime, which costs nothing; you can veto, undo or reset.</p>
-    ${proposals ? `<ul class="hq-team">${proposals}</ul>` : `<p class="hq-empty">No proposals open.</p>`}
-    ${done ? `<details><summary>Lately</summary><ul class="hq-team">${done}</ul></details>` : ""}
-    <div class="hq-row"><button class="hq-btn" data-act="hq:office:undo:go"${o.can_undo ? "" : " disabled"}>Undo last change</button>
-      <button class="hq-btn no" data-act="hq:office:reset:go">Reset the office</button></div>
+  return `<section class="hq-card hq-office-card"><h2>Office</h2>
+    <p class="hq-note">${(o.items || []).length} things on the floor. Downtime costs nothing: it is work on the house's own model.</p>
     ${hqGames(s)}
   </section>`;
 }
@@ -2579,22 +2565,6 @@ async function hqDispatch(verb, noun, id, arg) {
     if (!confirm(`Add ${hqDollars(micros)} to today's pool? It is gone tomorrow.`)) return true;
     try { await api("POST", "/v1/hq/pool/top-up", { amount_micros: micros }); flash(`Today's pool is up by ${hqDollars(micros)}.`, "ok"); }
     catch (e) { flash("Couldn't top the pool up: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
-  // The owner as the office's landlord (ADR 0119): undo the last change, reset the office to how
-  // it started, and veto an open proposal.
-  if (noun === "office") {
-    try {
-      if (id === "undo") {
-        const done = await api("POST", "/v1/hq/office/undo", {});
-        flash(done.undone ? `Undone: ${done.undone}` : "Nothing to undo.", "ok");
-      } else if (id === "reset") {
-        if (!confirm("Put the office back as it started? The team's changes go; you can undo the reset.")) return true;
-        await api("POST", "/v1/hq/office/reset", {}); flash("The office is back as it started.", "ok");
-      } else if (id === "veto") {
-        await api("POST", `/v1/hq/office/proposals/${Number(arg)}/veto`, {}); flash("Vetoed.", "ok");
-      }
-    } catch (e) { flash("Couldn't change the office: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // Whom a member reports to.

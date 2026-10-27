@@ -104,9 +104,6 @@ pub fn app(state: State) -> Router {
         // The owner as landlord of the office (ADR 0119): undo the last change, reset it to the
         // layout it began with, and veto an open proposal. The team's own proposals and votes
         // come through the worker's door.
-        .route("/v1/office/undo", post(office_undo))
-        .route("/v1/office/reset", post(office_reset))
-        .route("/v1/office/proposals/{id}/veto", post(office_veto))
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/pool/top-up", post(pool_top_up))
         // A member's notebook (ADR 0118): the owner reads it, and writes, edits and deletes
@@ -863,30 +860,6 @@ async fn recall(
     let hq = state.hq.clone();
     blocking(move || hq.recall(MemberId(id))).await?;
     Ok(Json(json!({ "member": id, "furloughed": false })))
-}
-
-/// The owner undoes the last change to the office; nothing happens if there is none.
-async fn office_undo(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let undone = blocking(move || hq.undo_office()).await?;
-    Ok(Json(json!({ "undone": undone })))
-}
-
-/// The owner puts the office back as it began.
-async fn office_reset(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    blocking(move || hq.reset_office()).await?;
-    Ok(Json(json!({ "reset": true })))
-}
-
-/// The owner vetoes an open proposal for the office.
-async fn office_veto(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    blocking(move || hq.veto_office(id)).await?;
-    Ok(Json(json!({ "proposal": id, "vetoed": true })))
 }
 
 #[derive(Deserialize)]

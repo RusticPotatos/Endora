@@ -938,32 +938,6 @@ pub(super) async fn hq_recall(State(state): State<AppState>, Path(id): Path<i64>
     Ok(answer)
 }
 
-/// The owner undoes the last change to the office (ADR 0119).
-pub(super) async fn hq_office_undo(State(state): State<AppState>) -> Answer {
-    let answer = ask(&state, "/v1/office/undo".to_owned(), Some(json!({}))).await?;
-    record(&state, "you undid the last change to the office");
-    Ok(answer)
-}
-
-/// The owner puts the office back as it began.
-pub(super) async fn hq_office_reset(State(state): State<AppState>) -> Answer {
-    let answer = ask(&state, "/v1/office/reset".to_owned(), Some(json!({}))).await?;
-    record(&state, "you reset the office");
-    Ok(answer)
-}
-
-/// The owner vetoes an open proposal for the office.
-pub(super) async fn hq_office_veto(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/office/proposals/{id}/veto"),
-        Some(json!({})),
-    )
-    .await?;
-    record(&state, &format!("you vetoed office proposal {id}"));
-    Ok(answer)
-}
-
 #[derive(Deserialize)]
 pub(super) struct HqPoolTopUp {
     amount_micros: i64,

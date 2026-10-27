@@ -191,7 +191,7 @@ fn answer_quiz_is_offered_in_the_quiz_turn_and_in_no_other() {
     let names = offered(&hq, &context);
     assert!(names.contains(&"answer_quiz".to_owned()), "{names:?}");
     // It has what its role has beside it.
-    for kept in ["my_turn", "read_world", "office", "note"] {
+    for kept in ["my_turn", "read_world", "note"] {
         assert!(names.contains(&kept.to_owned()), "{kept} in {names:?}");
     }
     // Another member's turn, on an ordinary task, is not offered it, nor is a role's list.

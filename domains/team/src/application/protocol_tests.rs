@@ -266,7 +266,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     // again (ADR 0115). A quiz's answer is that turn's tool alone (ADR 0131, amended), and
     // answer_consult is retired (ADR 0138). A stuck member takes its problem a model tier up
     // with escalate (ADR 0139).
-    assert_eq!(names.len(), 23, "{names:?}");
+    assert_eq!(names.len(), 22, "{names:?}");
     assert!(names.contains(&"escalate".to_owned()));
     assert!(names.contains(&"recheck".to_owned()));
     assert!(names.contains(&"ask_record".to_owned()));
@@ -278,7 +278,10 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     }
     assert!(names.contains(&"read_world".to_owned()) && names.contains(&"tell_story".to_owned()));
     assert!(names.contains(&"huddle_view".to_owned()));
-    assert!(names.contains(&"office".to_owned()));
+    assert!(
+        !names.contains(&"office".to_owned()),
+        "office proposals went (ADR 0142)"
+    );
     assert!(names.contains(&"chess".to_owned()));
     assert!(names.contains(&"read_document".to_owned()));
     // Every role keeps a notebook of its own (ADR 0118).
@@ -303,7 +306,7 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
         .collect();
     // With the office (ADR 0119), a huddle's view (ADR 0120), chess (ADR 0121) and the world
     // (ADR 0122), and escalate (ADR 0139).
-    assert_eq!(reviewers.len(), 22, "{reviewers:?}");
+    assert_eq!(reviewers.len(), 21, "{reviewers:?}");
     assert!(
         !reviewers.contains(&"create_task".to_owned()),
         "the tester passes or sends back, and never makes work"

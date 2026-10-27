@@ -22,14 +22,6 @@ pub const WALL_ROW: i64 = 1;
 pub const MOST_ITEMS: usize = 40;
 /// The most changes one proposal makes.
 pub const MOST_CHANGES: usize = 5;
-/// Yes votes a proposal needs to carry on votes, the proposer's included.
-pub const LEAST_YES: usize = 2;
-/// How long a proposal nobody objected to waits before it carries on the proposer's word.
-pub const QUIET_AFTER_MS: Millis = 6 * 60 * 60 * 1000;
-/// How long a proposal that has not carried lives before it is dropped.
-pub const EXPIRES_AFTER_MS: Millis = 48 * 60 * 60 * 1000;
-/// The most characters of a proposal's reason, or a vote's.
-pub const WHY_MOST: usize = 200;
 
 /// What the team may put in the office.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -456,20 +448,6 @@ pub fn apply(items: &[Item], changes: &[Change]) -> Result<Vec<Item>, Refused> {
     Ok(now)
 }
 
-/// Whether a proposal makes a sensible number of changes.
-///
-/// # Errors
-/// [`Refused::NoChanges`] or [`Refused::TooManyChanges`].
-pub fn check_count(changes: &[Change]) -> Result<(), Refused> {
-    if changes.is_empty() {
-        return Err(Refused::NoChanges);
-    }
-    if changes.len() > MOST_CHANGES {
-        return Err(Refused::TooManyChanges(MOST_CHANGES));
-    }
-    Ok(())
-}
-
 /// The office as it was before the team changed anything: the plants, the cactus, the shelf,
 /// the lamp and the whiteboard on the commons and the margins, the posters, the clock and the
 /// picture on the back wall, and the couches and the coffee machine in the lounge. Ping-pong,
@@ -499,32 +477,6 @@ pub fn default_layout() -> Vec<Change> {
         place(Kind::StringLights, 29, 1),
         place(Kind::Poster, 31, 1),
     ]
-}
-
-/// A change in words, for the feed and the thread: `move the fern to the lounge`.
-#[must_use]
-pub fn describe(items: &[Item], change: &Change) -> String {
-    let named = |id: i64| {
-        items
-            .iter()
-            .find(|i| i.id == id)
-            .map(|i| format!("the {}", i.kind.label()))
-    };
-    let a = |kind: Kind| match kind.label().chars().next() {
-        Some('a' | 'e' | 'i' | 'o' | 'u') => format!("an {}", kind.label()),
-        _ => format!("a {}", kind.label()),
-    };
-    match *change {
-        Change::Place { kind, x, y } => format!("add {} in {}", a(kind), area(x, y)),
-        Change::Move { item, x, y } => match named(item) {
-            Some(it) => format!("move {it} to {}", area(x, y)),
-            None => format!("move item {item} to {}", area(x, y)),
-        },
-        Change::Remove { item } => match named(item) {
-            Some(it) => format!("remove {it}"),
-            None => format!("remove item {item}"),
-        },
-    }
 }
 
 impl Change {
@@ -576,141 +528,6 @@ impl Change {
             }),
             _ => None,
         }
-    }
-}
-
-/// Where a proposal stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Status {
-    /// Waiting for votes.
-    Open,
-    /// Carried, and made.
-    Applied,
-    /// Let go, and why is in its outcome.
-    Dropped,
-    /// The owner said no.
-    Vetoed,
-}
-
-impl Status {
-    /// Its stored name.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Applied => "applied",
-            Self::Dropped => "dropped",
-            Self::Vetoed => "vetoed",
-        }
-    }
-
-    /// The status with this name.
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Open, Self::Applied, Self::Dropped, Self::Vetoed]
-            .into_iter()
-            .find(|s| s.name() == name)
-    }
-}
-
-/// Why a proposal was let go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Dropped {
-    /// More said no than yes.
-    Outvoted,
-    /// It lived [`EXPIRES_AFTER_MS`] without carrying.
-    Expired,
-}
-
-impl Dropped {
-    /// In words.
-    #[must_use]
-    pub const fn said(self) -> &'static str {
-        match self {
-            Self::Outvoted => "more said no than yes",
-            Self::Expired => "nobody carried it in two days",
-        }
-    }
-}
-
-/// What the votes and the clock say about an open proposal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
-    /// Still waiting.
-    Open,
-    /// It carries: make the changes.
-    Apply,
-    /// It is let go.
-    Drop(Dropped),
-}
-
-/// What becomes of a proposal with `yes` and `no` votes, `age` after it was made, the
-/// proposer's own yes among them: it carries on more yes than no with at least
-/// [`LEAST_YES`], or, with no "no" at all, once it has been quiet for [`QUIET_AFTER_MS`]; it
-/// is dropped on more no than yes, or after [`EXPIRES_AFTER_MS`].
-#[must_use]
-pub fn verdict(yes: usize, no: usize, made_at: Millis, now: Millis) -> Verdict {
-    let age = now - made_at;
-    if yes > no && yes >= LEAST_YES {
-        return Verdict::Apply;
-    }
-    if no > yes {
-        return Verdict::Drop(Dropped::Outvoted);
-    }
-    if no == 0 && age >= QUIET_AFTER_MS {
-        return Verdict::Apply;
-    }
-    if age >= EXPIRES_AFTER_MS {
-        return Verdict::Drop(Dropped::Expired);
-    }
-    Verdict::Open
-}
-
-/// One vote on a proposal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Vote {
-    /// Who: a member's name.
-    pub who: String,
-    /// Yes or no.
-    pub yes: bool,
-    /// Why, if said.
-    pub why: String,
-    /// When.
-    pub at: Millis,
-}
-
-/// A proposal to change the office, as stored.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Proposal {
-    /// Its number.
-    pub id: i64,
-    /// Who made it: a member's name.
-    pub by: String,
-    /// What it changes, at most [`MOST_CHANGES`].
-    pub changes: Vec<Change>,
-    /// Why, in the proposer's words.
-    pub why: String,
-    /// When it was made.
-    pub at: Millis,
-    /// Where it stands.
-    pub status: Status,
-    /// How it ended, once it has.
-    pub outcome: String,
-    /// The votes, the proposer's yes first.
-    pub votes: Vec<Vote>,
-}
-
-impl Proposal {
-    /// How many said yes.
-    #[must_use]
-    pub fn yes(&self) -> usize {
-        self.votes.iter().filter(|v| v.yes).count()
-    }
-
-    /// How many said no.
-    #[must_use]
-    pub fn no(&self) -> usize {
-        self.votes.iter().filter(|v| !v.yes).count()
     }
 }
 
@@ -1046,67 +863,5 @@ mod tests {
         let kept = Change::kept(&changes);
         assert_eq!(Change::read(&kept), changes);
         assert!(Change::read("not json").is_empty());
-    }
-
-    #[test]
-    fn a_change_is_said_in_words_with_a_rough_place() {
-        let items = [item(4, Kind::Fern, 8, 3), item(5, Kind::Poster, 26, 1)];
-        assert_eq!(
-            describe(
-                &items,
-                &Change::Move {
-                    item: 4,
-                    x: 18,
-                    y: 18
-                }
-            ),
-            "move the fern to the lounge"
-        );
-        assert_eq!(
-            describe(&items, &place(Kind::FishTank, 26, 18)),
-            "add a fish tank in the kitchen"
-        );
-        assert_eq!(
-            describe(&items, &Change::Remove { item: 5 }),
-            "remove the poster"
-        );
-        assert_eq!(
-            describe(&items, &Change::Remove { item: 99 }),
-            "remove item 99"
-        );
-        assert_eq!(area(8, 3), "the commons");
-        assert_eq!(area(0, 9), "the open floor");
-        assert_eq!(area(30, 8), "the open floor");
-    }
-
-    #[test]
-    fn a_proposal_applies_on_a_majority_of_two_yes_or_a_quiet_six_hours() {
-        let hour = 60 * 60 * 1000;
-        // The proposer's own yes alone is not enough at first.
-        assert_eq!(verdict(1, 0, 0, hour), Verdict::Open);
-        // Two yes and more yes than no.
-        assert_eq!(verdict(2, 0, 0, hour), Verdict::Apply);
-        assert_eq!(verdict(3, 1, 0, hour), Verdict::Apply);
-        // A tie waits.
-        assert_eq!(verdict(2, 2, 0, hour), Verdict::Open);
-        // Six quiet hours, no "no": the proposer's yes is enough.
-        assert_eq!(verdict(1, 0, 0, 6 * hour), Verdict::Apply);
-        assert_eq!(verdict(1, 0, 0, 6 * hour - 1), Verdict::Open);
-    }
-
-    #[test]
-    fn a_proposal_is_dropped_on_a_majority_of_no_or_after_two_days() {
-        let hour = 60 * 60 * 1000;
-        assert_eq!(verdict(1, 2, 0, hour), Verdict::Drop(Dropped::Outvoted));
-        // One no against the proposer's yes is a tie, and it is not quiet any more.
-        assert_eq!(verdict(1, 1, 0, 7 * hour), Verdict::Open);
-        assert_eq!(verdict(1, 1, 0, 48 * hour), Verdict::Drop(Dropped::Expired));
-        assert_eq!(
-            verdict(1, 0, 0, 48 * hour),
-            Verdict::Apply,
-            "quiet for six hours applied it long before"
-        );
-        // Votes that carried it win over the clock.
-        assert_eq!(verdict(2, 1, 0, 60 * hour), Verdict::Apply);
     }
 }

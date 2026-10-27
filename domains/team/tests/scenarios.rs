@@ -2313,16 +2313,6 @@ impl Office {
         self.hq.store().office_items().expect("the store answers")
     }
 
-    /// The newest proposal for the office.
-    fn newest_proposal(&self) -> endora_team::domain::office::Proposal {
-        self.hq
-            .store()
-            .office_proposals()
-            .expect("the store answers")
-            .pop()
-            .expect("somebody proposed something")
-    }
-
     /// `member`'s downtime turns, as the record has them.
     fn downtime_turns(&self, member: &str) -> Vec<endora_team::application::ports::Run> {
         let id = self.member(member);
@@ -2340,65 +2330,11 @@ impl Office {
             })
             .collect()
     }
-
-    fn proposes(&mut self, name: &str, kind: &str, x: i64, y: i64, why: &str) {
-        self.office_turn(name);
-        self.use_tool(
-            name,
-            "office",
-            &json!({ "action": "propose", "why": why,
-                     "changes": [{ "op": "place", "kind": kind, "x": x, "y": y }] }),
-        );
-    }
-
-    fn votes(&mut self, name: &str, vote: &str) {
-        let proposal = self.newest_proposal().id;
-        self.office_turn(name);
-        self.use_tool(
-            name,
-            "office",
-            &json!({ "action": "react", "proposal": proposal, "vote": vote }),
-        );
-    }
 }
 
 #[given("the office has its default layout")]
 fn office_seeded(w: &mut Office) {
     assert!(w.hq.seed_office().expect("HQ seeds the office"));
-}
-
-#[when(regex = r#"^(\w+) proposes to add a "(.+)" at (\d+), (\d+) because "(.*)"$"#)]
-fn proposes_because(w: &mut Office, name: String, kind: String, x: i64, y: i64, why: String) {
-    w.proposes(&name, &kind, x, y, &why);
-}
-
-#[when(regex = r#"^(\w+) proposes to add a "(.+)" at (\d+), (\d+)$"#)]
-fn proposes_plainly(w: &mut Office, name: String, kind: String, x: i64, y: i64) {
-    w.proposes(&name, &kind, x, y, "");
-}
-
-#[when(regex = r"^(\w+) votes (yes|no) on the proposal$")]
-fn votes_on_it(w: &mut Office, name: String, vote: String) {
-    w.votes(&name, &vote);
-}
-
-#[when("the owner undoes the last change")]
-fn owner_undoes(w: &mut Office) {
-    let undone = w.hq.undo_office();
-    w.note(undone);
-}
-
-#[when("the owner vetoes the proposal")]
-fn owner_vetoes(w: &mut Office) {
-    let id = w.newest_proposal().id;
-    let vetoed = w.hq.veto_office(id);
-    w.note(vetoed);
-}
-
-#[when("the owner resets the office")]
-fn owner_resets(w: &mut Office) {
-    let reset = w.hq.reset_office();
-    w.note(reset);
 }
 
 #[given(regex = r"^(\d+) hours pass$")]
@@ -2464,15 +2400,6 @@ fn office_is_default(w: &mut Office) {
         endora_team::domain::office::default_layout().len()
     );
     assert!(items.iter().all(|i| i.placed_by == "endora"));
-}
-
-#[then("the proposal is not a task on the board or a card on the owner's desk")]
-fn proposal_is_no_work(w: &mut Office) {
-    assert!(w.hq.store().tasks().expect("the store answers").is_empty());
-    assert!(w.hq.store().desk().expect("the store answers").is_empty());
-    let snap = w.hq.snapshot().expect("the snapshot is built");
-    assert_eq!(snap["tasks"].as_array().expect("tasks").len(), 0);
-    assert_eq!(snap["desk"].as_array().expect("desk").len(), 0);
 }
 
 #[given("downtime is on")]

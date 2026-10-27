@@ -81,7 +81,6 @@ pub use gaps::GapReported;
 pub use history::TranscriptKept;
 pub use map::MapMigrated;
 pub use notebook::note_number;
-pub use office::Standing;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
 pub use proposals::PageProposing;
@@ -3426,10 +3425,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
 
-        // Explicit assistance is a durable intent; a bounded set may enter the normal queue.
-        // 3b. The office (ADR 0119): proposals whose time came carry or are dropped, and one
-        //     member with nothing to do is given a downtime turn.
-        self.office_tick()?;
+        // 3b. One member with nothing to do is given a downtime turn (ADR 0119).
         // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
         // gets its page.
         self.migrate_map_held()?;
