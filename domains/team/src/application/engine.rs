@@ -2831,7 +2831,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
             )?;
             report.stuck += 1;
-            self.found_stuck(task, found.why)?;
         }
 
         // 5b. Open work handed to a member that nothing will bring it back to: no turn queued,
@@ -3441,10 +3440,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("deploy", "deployed" | "not_deploying") => {
                 self.decide_deploy(found, decision == "deployed")?;
             }
-            // A guard's notice (ADR 0124): the owner's verdict on its finding.
-            ("guard", "real" | "false_positive" | "not_enough" | "resolved" | "dismiss") => {
-                self.desk_verdict(item, decision)?;
-            }
             // The runaway tripwire's card (ADR 0133): resume the team, which answers the card
             // itself, or leave it stopped and have the card seen.
             ("tripwire", "resume") => return self.resume_held_lock(),
@@ -3500,14 +3495,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .iter()
                 .any(|d| d.kind == "stuck" && d.status == "waiting" && d.task == Some(task.id));
             if on_the_desk {
-                // Still stuck, and in the digest already: its finding is seen again, and not
-                // raised again (ADR 0132).
-                if let Some(found) = self
-                    .diagnosis(task.id)?
-                    .filter(|d| d.stopped == Stopped::Parked)
-                {
-                    self.found_stuck(task, found.why)?;
-                }
                 continue;
             }
             let last = runs
@@ -3582,7 +3569,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 )?;
             }
             stuck += 1;
-            self.found_stuck(task, found.why)?;
         }
         Ok((nudged, stuck))
     }
@@ -4341,7 +4327,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // The Holodeck's scenarios and trials (ADR 0135).
             "holodeck": self.holodeck_shown()?,
             // The guards (ADR 0124): their thresholds, precision, ceremony and findings.
-            "guards": self.guards_shown()?,
             // The owner's Mac as the team sees it (ADR 0130).
             "mac": self.mac_shown(&runs, &all_members),
         }))

@@ -600,23 +600,11 @@ if (failures.length) {
              { id: 40, kind: "deploy", task: 9, text: "hq/task-9-docs is on your fork.", branch_url: "https://github.com/owner/ansible-nas/compare/develop...hq/task-9-docs" },
              { id: 41, kind: "deploy", task: 9, text: "hq/task-9-evil is on your fork.", branch_url: "javascript:alert(1)" },
              ],
-      // While you were away (ADR 0132): stuck work, a guard's finding (ADR 0124: the owner's
-      // verdict on it) and a notice. None needs a decision, so none is on the desk; each keeps the
-      // choices it has always had. Newest first, as HQ serves them.
-      digest: [{ id: 28, kind: "guard", task: 7, project: 1, at: 30, text: "Talk about work (finding 3): <b>Upkeep</b>: 14 coordination turns, 1 product change in 24 h",
-                 finding: { id: 3, guard: "ceremony", episodes: 2, seen_at: 31 } },
-               { id: 16, kind: "notice", task: 7, at: 20, text: "Linus restarted sonarr: it was unhealthy. It is now running." },
-               { id: 12, kind: "stuck", task: 7, at: 10, text: "Stuck: x", finding: { id: 4, guard: "stuck", episodes: 1, seen_at: 10 } }],
-      // The guards (ADR 0124): each one's precision, each project's talk against its work, and
-      // the findings, in words a member's work produced, so every word escaped.
-      // Caps on talk and runaway (ADR 0133): the budget of talk is a guard tried in shadow (it has
-      // a mode; the others only record and have none), work outside any project is listed by its
-      // tree with what its turns spent, and the caps are told beside the thresholds.
-      guards: { thresholds: { redundant_wakes: 3, free_turns_a_day: 60, runaway_turns: 40, runaway_window_ms: 600000 },
-        precision: [{ guard: "same_ask", plainly: "The same ask twice", rule: "r", fired: 3, open: 1, real: 1, resolved: 1, false_positive: 1, not_enough: 0, fixed: 1, fix_judged: 2, precision: 66 },
-                    { guard: "stuck", plainly: "Stuck work", rule: "r", fired: 0, open: 0, real: 0, resolved: 0, false_positive: 0, not_enough: 0, fixed: 0, fix_judged: 0, precision: null }],
-        findings: [{ id: 3, guard: "same_ask", plainly: "The same ask twice", task: 7, project: 1, rule: "60% alike", evidence: "<img src=g onerror=alert(40)> Upkeep", opened_at: 1, seen_at: 5000, episodes: 3, cleared_at: null, verdict: "real", fix_worked: null, judged_by: "Ada" },
-                   { id: 4, guard: "stuck", plainly: "Stuck work", task: 7, project: null, rule: "parked", evidence: "#7 x", opened_at: 2, seen_at: 2, episodes: 1, cleared_at: 3, verdict: null, fix_worked: null, judged_by: "" }] },
+      // While you were away (ADR 0132): stuck work and a notice. None needs a decision, so
+      // none is on the desk; each keeps the choices it has always had. Newest first, as HQ
+      // serves them.
+      digest: [{ id: 16, kind: "notice", task: 7, at: 20, text: "Linus restarted <b>Upkeep</b>: it was unhealthy. It is now running." },
+               { id: 12, kind: "stuck", task: 7, at: 10, text: "Stuck: x" }],
       projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
@@ -693,7 +681,7 @@ if (failures.length) {
     hqTell({ id: 61, at: 0, kind: "help.answered", data: { member: 2, expert: 1, task: 7, conversation: 4, request: 3, run: 11 } }, false);
     hqTell({ id: 62, at: 0, kind: "help.concluded", data: { member: 2, expert: 1, task: null, conversation: 4, request: 3, run: 12 } }, false);
     // Caps on talk and runaway (ADR 0133): a wake held for a task's budget of talk, the owner
-    // switching that guard, a lead narrowing what done means, and who stopped the team.
+    // a lead narrowing what done means, and who stopped the team.
     hqTell({ id: 57, at: 0, kind: "wake.held", data: { member: 2, task: 7, reason: "mentioned" } }, false);
     hqTell({ id: 60, at: 0, kind: "task.criteria", data: { task: 7, by: 1, before: ["a"], after: ["The plan names three backups"], why: "too wide" } }, false);
     hqTell({ id: 61, at: 0, kind: "stopped", data: { by: "tripwire", why: "stopped by the runaway tripwire", turns: 40, window_ms: 600000, members: [{ member: 1, name: "Ada", turns: 22 }, { member: 2, name: "Bo", turns: 18 }] } }, false);
@@ -715,15 +703,7 @@ if (failures.length) {
     if (!shut.includes("$0.46 of $0.50")) fail("hq: a shut project row does not say its money");
     if (!shut.includes('data-act="hq:more:goal1:toggle"') || shut.includes('data-act="hq:more:edit1:toggle"')) fail("hq: a goal is not a row to open");
   }
-  {
-    // Guards and findings are one line each until tapped, too (the owner, 2026-10-25).
-    const shut = runInContext("viewHQ()", context);
-    if (!shut.includes('data-act="hq:more:finding3:toggle"') || shut.includes('data-act="hq:rejudge:3:open"')) fail("hq: a finding is not a row to open");
-    if (!/data-act="hq:more:guard[\w-]+:toggle"/.test(shut)) fail("hq: a guard is not a row to open");
-  }
   runInContext(`HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true, goal1: true, goal2: true, goal3: true };
-    for (const p of (HQ.snap.guards || {}).precision || []) HQ.more["guard" + String(p.guard).replace(/[^\\w-]/g, "")] = true;
-    for (const f of (HQ.snap.guards || {}).findings || []) HQ.more["finding" + f.id] = true;
     for (let i = 0; i < 8; i++) { HQ.more["measure" + i] = true; HQ.more["outcome" + i] = true; }
     for (const m of HQ.snap.members || []) HQ.roster[m.id] = true;`, context);
   const office = runInContext("viewHQ()", context);
@@ -823,51 +803,25 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
-  // The guards (ADR 0124): a finding on the desk takes the owner's verdict; the Guards card
-  // shows each guard's precision and each project's talk, and its words stay text.
-  for (const act of ["hq:decide:28:real", "hq:decide:28:false_positive", "hq:decide:28:not_enough", "hq:decide:28:resolved",
-    "hq:rejudge:3:open", "hq:fixed:3:yes", "hq:fixed:3:no", "hq:verdict:4:real"]) {
-    if (!office.includes(`data-act="${act}"`)) fail(`hq: the guards do not offer ${act}`);
-  }
-  // Only the choices still open: a judged finding offers to change its verdict, not all four.
-  if (office.includes('data-act="hq:verdict:3:false_positive"')) fail("hq: a judged finding still offers every verdict");
-  if (office.includes('data-act="hq:fixed:4:yes"')) fail("hq: a finding nobody judged asks whether its fix worked");
   // The same ask from another task is put with a card (ADR 0124), and the card says so.
   if (!office.includes('question · <button class="hq-link" data-act="hq:pick:task:7">EL-7</button> · also on <button class="hq-link" data-act="hq:pick:task:9">EL-9</button>: one answer reaches each')) fail("hq: a card does not say which other tasks share its ask, as links that open them");
-  for (const said of ["<h2>Guards</h2>", "<b>The same ask twice</b> <small>3 found · 1 open</small>", "<span>3 found · 1 open · 66% real of 3 judged · fixes worked 1 of 2</span>",
-    "<b>Stuck work</b> <small>0 found · 0 open</small>", "<span>0 found · 0 open · not judged yet</span>",
-    "Judged real by Ada.", "&lt;img src=g onerror=alert(40)&gt; Upkeep"]) {
-    if (!office.includes(said)) fail(`hq: the guards card does not say ${said}`);
-  }
-  if (office.includes("<img src=g") || office.includes("<u>Upkeep</u>")) fail("hq: a guard's finding became markup");
-  // The caps are told beside the thresholds, but only when HQ serves them.
-  {
-    if (!office.includes("Caps, always on: 60 turns a day for a member on the house&#39;s own models · the team is stopped when 40 turns start in 10 minutes.")) fail("hq: the guards card does not tell the caps");
-    const older = runInContext(`(() => { const g = HQ.snap.guards, kept = JSON.stringify(g.thresholds);
-      delete g.thresholds.free_turns_a_day; const html = hqGuards(HQ.snap); g.thresholds = JSON.parse(kept); return html; })()`, context);
-    if (older.includes("Caps, always on") || older.includes("NaN")) fail("hq: an HQ that does not serve the caps has them shown");
-  }
-  // A finding seen again says when, and a finding opened again says how often (ADR 0132); one
-  // seen once, and found once, says neither.
-  if (!/<p>Finding 3 [^\n]*· seen again \d\d:\d\d · found 3 times<\/p>/.test(office)) fail("hq: a finding seen again does not say when and how often");
-  if (/<p>Finding 4 [^\n]*(seen again|found \d+ times)/.test(office)) fail("hq: a finding seen once claims to have been seen again");
-  // "While you were away" (ADR 0132): stuck work, a finding and a notice are one card at the top
+  // "While you were away" (ADR 0132): stuck work and a notice are one card at the top
   // of the Desk tab, newest first, with a count and the choices each always had; the desk's own
   // count is what needs the owner's word, and an empty digest shows no card.
   {
     const deskTab = office.split('id="hq-panel-now"')[1].split('role="tabpanel"')[0];
     const yours = deskTab.split("<h2>Your desk")[1].split("<h2>Looking at")[0];
     const digest = deskTab.split("<h2>While you were away")[1];
-    for (const said of ['<h2>While you were away <span class="hq-count">3</span></h2>', "Nothing here needs you before the team can go on",
-      "flagged 2 times", "hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry", "hq:decide:12:drop"]) {
+    for (const said of ['<h2>While you were away <span class="hq-count">2</span></h2>', "Nothing here needs you before the team can go on",
+      "hq:decide:16:seen", "hq:decide:12:retry", "hq:decide:12:drop"]) {
       if (!deskTab.includes(said)) fail(`hq: the digest does not say ${said}`);
     }
     // What needs the owner comes first; what can wait follows (the owner, 2026-10-25).
     if (deskTab.indexOf("<h2>Your desk") > deskTab.indexOf("While you were away")) fail("hq: the desk is not above the digest");
-    const order = ["hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
-    if (order.some((at) => at < 0) || order[0] > order[1] || order[1] > order[2]) fail(`hq: the digest is not newest first: ${order}`);
+    const order = ["hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
+    if (order.some((at) => at < 0) || order[0] > order[1]) fail(`hq: the digest is not newest first: ${order}`);
     if (!yours.startsWith(` <span class="hq-count">17</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
-    for (const act of ["hq:decide:28:real", "hq:decide:16:seen", "hq:decide:12:retry"]) {
+    for (const act of ["hq:decide:16:seen", "hq:decide:12:retry"]) {
       if (yours.includes(act)) fail(`hq: ${act} is on the desk as well as in the digest`);
     }
     if (digest.includes("<b>Upkeep</b>") || !digest.includes("&lt;b&gt;Upkeep&lt;/b&gt;")) fail("hq: a digest item's words became markup");
@@ -1671,7 +1625,7 @@ if (failures.length) {
     const panelOf = (html, id) => html.split(`id="hq-panel-${id}"`)[1].split('role="tabpanel"')[0];
     const where = { now: ["Your desk", "hq:decide:11:approve", "<h2>Activity</h2>", 'id="hq-log-end"'],
       team: ["<h2>Team</h2>", "<h2>Office", "<h2>World</h2>", "<h2>House log</h2>"],
-      work: ["<h2>Find a task</h2>", "<h2>Guards</h2>", "How the team is doing"],
+      work: ["<h2>Find a task</h2>", "How the team is doing"],
       manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Routines</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Strategy and notes for the team", "<h2>Hire</h2>", "hq:hire:new:add"] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
@@ -1682,11 +1636,11 @@ if (failures.length) {
     for (const [id, folded] of [["manage", "<details"], ["work", "<h2>Projects</h2>"], ["team", "How the team is doing"], ["team", "What the team may do"], ["team", "hq:hire:new:add"]]) {
       if (panelOf(tabs, id).includes(folded)) fail(`hq: "${folded}" is on the ${id} tab`);
     }
-    // Badges: the desk's items on Now, and the guards' open findings on Work.
+    // Badges: the desk's items on Now.
     const badge = (html, id) => (html.match(new RegExp(`id="hq-tab-${id}"[^>]*>[^<]*<span class="hq-badge"[^>]*>(\\d+)</span>`)) || [])[1];
     const deskCount = runInContext("HQ.snap.desk.length", context);
     if (Number(badge(tabs, "now")) !== deskCount) fail(`hq: the Now badge is ${badge(tabs, "now")}, not ${deskCount}`);
-    if (badge(tabs, "work") !== "1") fail(`hq: the Work badge is ${badge(tabs, "work")}, not the one open finding`);
+    if (badge(tabs, "work") !== undefined) fail("hq: the Work tab has a badge with nothing to count");
     if (badge(tabs, "team") !== undefined) fail("hq: a tab with nothing to count has a badge");
     // The waiting chip goes to Now; the pool chip reads the snapshot; no Mac block, no Mac chip.
     if (!tabs.includes(`data-act="hq:tab:now:go">${deskCount} waiting on you</button>`)) fail("hq: no \"waiting on you\" chip to Now");
@@ -1757,8 +1711,6 @@ if (failures.length) {
       const card = desk.split(`<div class="hq-need ${kind}">`)[1].split('<div class="hq-row">')[0];
       if (!card.includes('class="hq-help"')) fail(`hq: a ${kind} desk item shows no help line`);
     }
-    const guardHelp = runInContext("HQ_DESK_HELP.guard", context);
-    for (const said of ["Real = the guard was right", "False positive", "Resolved = the cause is fixed"]) if (!guardHelp.includes(said)) fail(`hq: the guard help does not say ${said}`);
     if (!runInContext("HQ_DESK_HELP.canon", context).includes("Canon = settled truth only you can change")) fail("hq: the canon help is missing");
     if (!runInContext("HQ_DESK_HELP.out_for_day", context).includes("Give it today lets this member keep working today")) fail("hq: the out-for-the-day help is missing");
   }

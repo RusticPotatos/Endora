@@ -18,7 +18,6 @@ const HQ = {
   lastWord: {},        // task id → the member who last wrote in its thread
   roster: {},          // member id → its controls are open on the Team card
   deskNote: {},
-  rejudge: {},         // finding id → the owner asked to change its verdict
   more: {},            // list key → the owner asked to see all of it        // desk item id → why the owner's last decision on it was refused
   logShown: 60,        // how many lines of the activity log are on screen
   tab: null,           // the screen's tab: desk, team, work, knowledge or office (read from storage)
@@ -1285,7 +1284,7 @@ function hqFonts() {
 // loses what is typed on a tab that is not showing.
 // Activity first: the screen the owner glances at most, live (2026-10-25).
 // Manage holds every owner setting, shown rather than folded (2026-10-25).
-// Health holds the guards and the scorecard: how the team is doing, apart from the work itself.
+// Health holds the scorecard: how the team is doing, apart from the work itself.
 // Four places, each for what the owner goes there to do (the owner, 2026-10-25: eight tabs were
 // too many): what needs them and what is going on; the team; the work; and what they set up.
 const HQ_TABS = [["now", "Now"], ["team", "Team"], ["work", "Work"], ["manage", "Manage"]];
@@ -1335,7 +1334,6 @@ const HQ_DESK_HELP = {
   recall: "A lead asks to bring a resting member back. Bring back does; Decline keeps them resting.",
   canon: "Canon = settled truth only you can change. Make it canon once you are sure it is true; Not canon leaves it as a note.",
   out_for_day: "This member has used twice its share and is stopped. Give it today lets this member keep working today up to the amount (type one, or leave it empty for as offered); Wait stops them until tomorrow's budget.",
-  guard: "A guard noticed a possible problem. Real = the guard was right; False positive = it was wrong; Can't tell; Resolved = the cause is fixed. Your verdicts tune the guards.",
   tripwire: "The team started far more turns in ten minutes than real work does, so HQ stopped it. Resume lets it work again; Seen leaves it stopped for you to look first. The activity log shows what they were doing.",
   push: "Push it sends the accepted branch to your fork; Decline does not. Without a push key on the node, download the bundle and push it yourself.",
   deploy: "Deployed once you have merged the branch and run the playbook: the lab's routine member then checks the lab once, reading health, logs and metrics only. Won't deploy closes this with no check.",
@@ -1379,8 +1377,6 @@ const HQ_DESK_CHOICES = {
   // A member at twice its share with the pool's day not spent (ADR 0113): an allowance for
   // the rest of today, at the amount written on the card, or wait for tomorrow.
   out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
-  // A guard's finding (ADR 0124): the owner's verdict is how HQ measures each guard.
-  guard: [["real", "Real", "ok"], ["false_positive", "False positive", "no"], ["not_enough", "Can't tell", ""], ["resolved", "Resolved", "ok"]],
   // The runaway tripwire stopped the team (ADR 0133): resume it, or look first.
   tripwire: [["resume", "Resume the team", "ok"], ["seen", "Seen", ""]],
   // The check after a deploy (ADR 0115, amended): the owner's word that a pushed branch is
@@ -1436,8 +1432,7 @@ function hqChips(s) {
 
 // The tab strip, and the badge on the tabs that count something.
 function hqTabs(s) {
-  const guards = (s.guards && s.guards.findings || []).filter((f) => !f.cleared_at).length;
-  const badge = { now: (s.desk || []).length, work: guards };
+  const badge = { now: (s.desk || []).length };
   const here = hqTab();
   return `<div class="hq-tabs" role="tablist" aria-label="HQ sections">${HQ_TABS.map(([id, label]) =>
     `<button role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}" aria-selected="${id === here ? "true" : "false"}" tabindex="${id === here ? 0 : -1}" data-act="hq:tab:${id}:go">${label}${badge[id] ? ` <span class="hq-badge" aria-label="${badge[id]} waiting">${badge[id]}</span>` : ""}</button>`).join("")}</div>`;
@@ -1469,15 +1464,12 @@ document.body.addEventListener("input", (ev) => {
 });
 
 // One card of the desk or of the digest: what it says and is about, what its choices do, and the
-// choices. A finding the guards keep seeing says how often it was found and when it was last
-// seen (ADR 0132). Every word goes through esc: they are a member's or a guard's.
+// choices. Every word goes through esc: they are a member's.
 function hqNeed(s, d) {
   const choices = hqDeskChoices(d);
   const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
-  const f = d.finding;
-  const seen = f ? `${f.episodes > 1 ? ` · flagged ${Number(f.episodes)} times` : ""}${f.seen_at > d.at ? ` · last seen ${hqClock(f.seen_at)}` : ""}` : "";
   return `<div class="hq-need ${esc(d.kind)}">${hqClamp(`need${d.id}`, shown)}
-      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}${seen}</p>
+      <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}</p>
       ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval, d.serves) : ""}
@@ -1597,7 +1589,6 @@ function viewHQ() {
           <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
           <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
         ${hqHolodeck(s)}
-        ${hqGuards(s)}
         ${hqScorecard(s)}`)}
       ${hqPanel("manage", `
         ${hqContracts(s.contracts)}
@@ -1995,53 +1986,6 @@ function hqScorecard(s) {
     ${since ? `<p class="hq-note">${since}: older turns and events are no longer kept.</p>` : ""}</section>`;
 }
 
-// The guards (ADR 0124): each guard's findings and how often they were real, each project's
-// talk against its product change, and the newest findings, each with the owner's verdict to
-// give. HQ computed every number; this only renders it, and every word goes through esc.
-function hqGuards(s) {
-  const g = s.guards;
-  if (!g || !g.precision) return "";
-  const verdicts = { real: "real", false_positive: "a false positive", not_enough: "can't tell", resolved: "resolved" };
-  const lines = g.precision.map((p) => {
-    const judged = p.real + p.resolved + p.false_positive;
-    const share = p.precision == null ? "not judged yet" : `${p.precision}% real of ${judged} judged`;
-    const fixes = p.fix_judged ? ` · fixes worked ${p.fixed} of ${p.fix_judged}` : "";
-    // One line each (the owner, 2026-10-25); tapped, its counts in full.
-    const line = `${Number(p.fired)} found · ${Number(p.open)} open`;
-    return hqOpenRow(`guard${String(p.guard).replace(/[^\w-]/g, "")}`, esc(p.plainly), line,
-      `<span>${Number(p.fired)} found · ${Number(p.open)} open · ${esc(share)}${p.not_enough ? ` · ${Number(p.not_enough)} can't tell` : ""}${esc(fixes)}</span>`);
-  }).join("");
-  const finding = (f) => {
-    const said = f.verdict ? `Judged ${esc(verdicts[f.verdict] || f.verdict)}${f.judged_by ? ` by ${esc(f.judged_by)}` : ""}${f.fix_worked == null ? "" : f.fix_worked ? ", and its fix worked" : ", and its fix did not work"}.` : "Not judged yet.";
-    // Only the choices still open (the owner, 2026-10-25: 115 buttons on one card): a verdict
-    // for a finding not judged, or one the owner asked to change; a fix's outcome for a real
-    // finding whose fix is not judged yet.
-    const choosing = !f.verdict || HQ.rejudge[f.id];
-    const judge = choosing
-      ? Object.keys(verdicts).map((v) => `<button class="hq-btn${f.verdict === v ? " ok" : ""}" data-act="hq:verdict:${Number(f.id)}:${v}">${esc(verdicts[v])}</button>`).join("")
-      : `<button class="hq-btn" data-act="hq:rejudge:${Number(f.id)}:open">Change verdict</button>`;
-    const fixed = f.verdict === "real" && f.fix_worked == null ? `<button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:yes">Fix worked</button><button class="hq-btn" data-act="hq:fixed:${Number(f.id)}:no">Fix didn't work</button>` : "";
-    // One finding is kept for a task and a guard (ADR 0132): seen again, it says when; opened
-    // again, how often.
-    const again = f.seen_at > f.opened_at ? ` · seen again ${hqClock(f.seen_at)}` : "";
-    const times = f.episodes > 1 ? ` · found ${Number(f.episodes)} times` : "";
-    const line = `${f.task ? `${hqKey(f.task)} · ` : ""}${f.cleared_at ? "cleared" : "open"} · ${f.verdict ? esc(verdicts[f.verdict] || f.verdict) : "not judged"}`;
-    return hqOpenRow(`finding${Number(f.id)}`, esc(f.plainly), line,
-      `<p>Finding ${Number(f.id)}${f.task ? ` · ${hqKeyLink(f.task)}` : ""}${again}${times}</p>${hqClamp(`finding${Number(f.id)}`, f.evidence)}
-      <p class="hq-note">The rule: ${esc(f.rule)}. ${said}</p><div class="hq-row">${judge}${fixed}</div>`);
-  };
-  // What waits on the owner first: open findings not judged yet, then the rest.
-  const waiting = (f) => (!f.cleared_at && !f.verdict ? 0 : 1);
-  const sorted = [...(g.findings || [])].sort((a, b) => waiting(a) - waiting(b));
-  const listed = hqMore("findings", sorted.map(finding), 3);
-  const findings = listed.shown;
-  const t = g.thresholds || {};
-  return `<section class="hq-card"><h2>Guards</h2>
-    <ul class="hq-team">${lines}</ul>
-    <h3>Findings</h3><ul class="hq-team hq-findings">${findings || `<li class="hq-empty">No findings.</li>`}</ul>${listed.more}
-    ${hqClamp("thresholds", `Thresholds: ${Number(t.redundant_wakes)} turns of nothing.${t.free_turns_a_day == null ? "" : ` Caps, always on: ${Number(t.free_turns_a_day)} turns a day for a member on the house's own models · the team is stopped when ${Number(t.runaway_turns)} turns start in ${Math.round(Number(t.runaway_window_ms) / 60000)} minutes.`}`, "hq-note")}</section>`;
-}
-
 // The house log (ADR 0111): the CEO's own document of the house, which it and the lead read
 // every turn. The owner reads it here and may rewrite it.
 function hqHouse(s) {
@@ -2308,18 +2252,6 @@ async function hqDispatch(verb, noun, id, arg) {
     HQ.roster[id] = !HQ.roster[id]; render();
     return true;
   }
-  // The owner's verdict on a guard's finding, and whether its fix worked (ADR 0124).
-  if (noun === "verdict" || noun === "fixed") {
-    const f = (((HQ.snap && HQ.snap.guards) || {}).findings || []).find((x) => x.id === Number(id));
-    if (!f) return true;
-    const verdict = noun === "verdict" ? arg : f.verdict;
-    if (!verdict) { flash("Say whether it was real first.", "warn"); return true; }
-    const body = noun === "fixed" ? { verdict, fix_worked: arg === "yes" } : { verdict };
-    try { await api("POST", `/v1/hq/guards/findings/${Number(id)}/verdict`, body); flash("Judged.", "ok"); delete HQ.rejudge[id]; }
-    catch (e) { flash("Couldn't judge it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
-  if (noun === "rejudge") { HQ.rejudge[id] = true; render(); return true; }
   if (noun === "more") { HQ.more[id] = !HQ.more[id]; render(); return true; }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
   if (noun === "logmore") { HQ.logOpen[id] = !HQ.logOpen[id]; render(); return true; }

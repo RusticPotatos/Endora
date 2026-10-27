@@ -5,7 +5,7 @@
 //! task (a document, a submitted branch, a check of it) are plain data.
 
 use super::brain::Brain;
-use super::work::{Member, MemberId, Millis, Refusal, Role, RunId, TaskId};
+use super::work::{MemberId, Millis, Role, RunId, TaskId};
 
 /// The owner's goal the wing works towards.
 pub const WING_GOAL: &str = "Improve the lab";
@@ -47,39 +47,6 @@ pub const FORK_RULES: &str = "The fork's own AGENTS.md, when it exists, is the r
 pub const FORK_RULES_LEAD: &str = "The fork's own AGENTS.md, when it exists, is the repo's \
     rules; propose one if missing. Until it exists it is the first branch to propose: the draft \
     is docs/drafts/ansible-nas-AGENTS.md in Endora's library (read_doc).\n";
-
-/// Whether the wing has a seat for one more member in `role` thinking with `brain`, given who
-/// sits in it now: one lead (on Sonnet or the house's model), at most [`MOST_DEVELOPERS`]
-/// developers (on Haiku or the house's model), and no other role.
-///
-/// # Errors
-/// [`Refusal::NoSeat`] with the count, or [`Refusal::WingBrain`].
-pub fn may_seat(role: Role, brain: Brain, wing: &[&Member]) -> Result<(), Refusal> {
-    let count = wing.iter().filter(|m| m.role == role).count();
-    let (most, allowed, said) = match role {
-        Role::Lead => (
-            MOST_LEADS,
-            matches!(brain, Brain::Sonnet | Brain::Local | Brain::Mac),
-            "Claude Sonnet or the house's model",
-        ),
-        Role::Developer => (
-            MOST_DEVELOPERS,
-            matches!(brain, Brain::Haiku | Brain::Local | Brain::Mac),
-            "Claude Haiku or the house's model",
-        ),
-        _ => (0, true, ""),
-    };
-    if count >= most {
-        return Err(Refusal::NoSeat { role, count, most });
-    }
-    if !allowed {
-        return Err(Refusal::WingBrain {
-            role,
-            allowed: said,
-        });
-    }
-    Ok(())
-}
 
 /// A hire a lead asks the owner for, as it is written on the desk and read back from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,19 +103,6 @@ impl HireRequest {
 
 /// The names a hire is given when its request names none, the first not taken.
 pub const SPARE_NAMES: [&str; 6] = ["Sam", "Lee", "Max", "Ash", "Rio", "Val"];
-
-/// A name for a new member when the request gave none: the first spare not taken, else
-/// `Member <n>`.
-#[must_use]
-pub fn spare_name(members: &[Member]) -> String {
-    SPARE_NAMES
-        .iter()
-        .find(|n| !members.iter().any(|m| m.name.eq_ignore_ascii_case(n)))
-        .map_or_else(
-            || format!("Member {}", members.len() + 1),
-            |n| (*n).to_owned(),
-        )
-}
 
 /// A document on a task (ADR 0115): a branch's diff, a check's report. Read by the tester,
 /// the lead and the owner; never changed.
@@ -232,119 +186,3 @@ pub struct Check {
 
 /// How long a check may run before it is given up as lost.
 pub const CHECK_LOST_AFTER_MS: Millis = 30 * 60 * 1000;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn member(id: i64, name: &str, role: Role, brain: Brain, to: Option<i64>) -> Member {
-        Member {
-            id: MemberId(id),
-            name: name.to_owned(),
-            role,
-            share_percent: role.share(),
-            slots: 2,
-            look: 0,
-            paused: false,
-            brain,
-            work_brain: if brain.house() { brain } else { Brain::Mac },
-            reports_to: to.map(MemberId),
-            furloughed_at: None,
-            recalled_at: None,
-        }
-    }
-
-    fn team() -> Vec<Member> {
-        vec![
-            member(1, "Mara", Role::Ceo, Brain::Opus, None),
-            member(2, "Ada", Role::Lead, Brain::Sonnet, Some(1)),
-            member(3, "Dee", Role::Reviewer, Brain::Local, Some(2)),
-            member(4, "Kit", Role::Lead, Brain::Sonnet, Some(1)),
-            member(5, "Rae", Role::Developer, Brain::Haiku, Some(4)),
-            member(6, "Zed", Role::Developer, Brain::Haiku, Some(4)),
-        ]
-    }
-
-    #[test]
-    fn the_wing_seats_one_sonnet_lead_and_five_haiku_developers() {
-        let team = team();
-        let wing: Vec<&Member> = team.iter().filter(|m| m.id.0 >= 4).collect();
-        assert_eq!(may_seat(Role::Developer, Brain::Haiku, &wing), Ok(()));
-        assert_eq!(may_seat(Role::Developer, Brain::Local, &wing), Ok(()));
-        assert_eq!(
-            may_seat(Role::Lead, Brain::Sonnet, &wing),
-            Err(Refusal::NoSeat {
-                role: Role::Lead,
-                count: 1,
-                most: 1
-            })
-        );
-        assert!(matches!(
-            may_seat(Role::Developer, Brain::Sonnet, &wing),
-            Err(Refusal::WingBrain { .. })
-        ));
-        assert!(matches!(
-            may_seat(Role::Researcher, Brain::Haiku, &wing),
-            Err(Refusal::NoSeat { most: 0, .. })
-        ));
-        let mut full = team.clone();
-        for i in 7..10 {
-            full.push(member(
-                i,
-                &format!("Dev{i}"),
-                Role::Developer,
-                Brain::Haiku,
-                Some(4),
-            ));
-        }
-        let wing: Vec<&Member> = full.iter().filter(|m| m.id.0 >= 4).collect();
-        assert_eq!(wing.iter().filter(|m| m.role == Role::Developer).count(), 5);
-        let refused = may_seat(Role::Developer, Brain::Haiku, &wing).unwrap_err();
-        assert_eq!(
-            refused,
-            Refusal::NoSeat {
-                role: Role::Developer,
-                count: 5,
-                most: 5
-            }
-        );
-        assert!(refused.to_string().contains("5 of its 5"), "{refused}");
-        assert!(
-            Refusal::NoSeat {
-                role: Role::Researcher,
-                count: 0,
-                most: 0
-            }
-            .to_string()
-            .contains("no seat for a researcher")
-        );
-    }
-
-    #[test]
-    fn a_hire_request_is_written_for_the_owner_and_read_back_whole() {
-        let asked = HireRequest {
-            name: "Sam".to_owned(),
-            role: Role::Developer,
-            brain: Brain::Haiku,
-            reports_to: MemberId(4),
-            why: "two branches wait with nobody free".to_owned(),
-        };
-        let text = asked.write("Kit", "task 12, r41");
-        assert_eq!(
-            text,
-            "Hire Sam as developer on claude-haiku-5-5, reporting to member 4.\nKit asks: two branches wait with nobody free\nEvidence: task 12, r41"
-        );
-        assert_eq!(HireRequest::read(&text), Some(asked));
-        assert_eq!(HireRequest::read("Push hq/x to your fork"), None);
-        assert_eq!(
-            HireRequest::read("Hire Sam as wizard on claude-haiku-5-5, reporting to member 4."),
-            None
-        );
-        assert_eq!(spare_name(&team()), "Sam");
-        let mut taken = team();
-        for n in SPARE_NAMES {
-            taken.push(member(10, n, Role::Developer, Brain::Local, None));
-        }
-        assert_eq!(spare_name(&taken), "Member 13");
-    }
-}

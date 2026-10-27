@@ -5,7 +5,6 @@
 use std::sync::atomic::Ordering;
 
 use cucumber::{given, then, when};
-use endora_team::application::guard_ports::GuardStore as _;
 use endora_team::application::{Author, Engine, NewTask, TeamStore};
 use endora_team::domain::guards::Stopped;
 use endora_team::domain::money::{DAY_MS, DOLLAR, LEAST_A_TURN};
@@ -426,14 +425,6 @@ fn nobody_was_nudged(w: &mut Office, title: String) {
         })
         .count();
     assert_eq!(climbed, 0, "the ladder was climbed for {title}");
-    let findings =
-        w.hq.store()
-            .findings()
-            .expect("the store answers")
-            .into_iter()
-            .filter(|f| f.task == Some(task.0))
-            .count();
-    assert_eq!(findings, 0, "{title} was found stuck");
 }
 
 #[then("the owner's desk holds no stuck work")]

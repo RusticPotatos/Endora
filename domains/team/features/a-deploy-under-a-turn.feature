@@ -20,7 +20,6 @@ Feature: A deploy under a turn is the platform's interruption, not the member's 
     And a tick passes
     Then Zed's turn on "Cap sonarr's memory" waits to be tried again
     And that was an interruption, and Zed has all his retries
-    And no finding is open
     And Zed was not nudged about "Cap sonarr's memory"
     And Ada was not asked to look at "Cap sonarr's memory"
     And the owner's desk is empty
@@ -38,4 +37,3 @@ Feature: A deploy under a turn is the platform's interruption, not the member's 
     And a tick passes
     Then Zed's turn on "Cap sonarr's memory" waits to be tried again
     And that was the second interruption, and Zed has one retry fewer
-    And no finding is open

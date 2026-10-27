@@ -362,18 +362,6 @@ fn a_scripted_team_is_never_stopped_by_the_wire_and_is_not_held_to_a_day_of_turn
     assert_eq!(started, THRESHOLDS.runaway_turns);
 }
 
-/// The numbers are first guesses the owner's verdicts tune, so the Guards card says them: the
-/// caps beside the budget of talk.
-#[test]
-fn the_guards_card_says_the_caps_beside_the_budget_of_talk() {
-    let clock = Hands(AtomicI64::new(NOON));
-    let (hq, _linus, _task) = team(&clock, false);
-    let said = hq.snapshot().unwrap()["guards"]["thresholds"].clone();
-    assert_eq!(said["free_turns_a_day"], 60, "{said}");
-    assert_eq!(said["runaway_turns"], 40, "{said}");
-    assert_eq!(said["runaway_window_ms"], 10 * MINUTE, "{said}");
-}
-
 /// A scenario is bounded by its own world (its move limit, its re-wakes), not by its player's
 /// day of free turns: live, the model league's black side waited "for tomorrow" mid-game after
 /// the night's Holodeck match, and its member could do no real work on the house either

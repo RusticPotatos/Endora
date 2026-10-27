@@ -6,7 +6,6 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::engine::{Author, Engine, EngineError, Fired, STRANDED_AFTER_MS, Settings};
-use super::guard_ports::GuardStore as _;
 use super::ports::{Clock, NewRoutine, NewTask, Run, TeamStore};
 use crate::domain::guards::Stopped;
 use crate::domain::money::{DOLLAR, MOST_A_TURN};
@@ -760,10 +759,6 @@ fn work_whose_turn_waits_for_budget_is_held_never_stuck_and_nothing_climbs() {
         .filter(|d| d.kind == "stuck" || d.kind == "rounds")
         .collect();
     assert!(stuck.is_empty(), "{stuck:?}");
-    assert!(
-        hq.store().findings().unwrap().is_empty(),
-        "no finding of stuck work"
-    );
 }
 
 #[test]

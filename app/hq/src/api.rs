@@ -25,7 +25,6 @@ use endora_team::domain::{
 use crate::Hq;
 
 mod drain;
-mod guards;
 mod world;
 
 /// The system clock.
@@ -158,8 +157,6 @@ pub fn app(state: State) -> Router {
         // The team's world (ADR 0122): the owner reads and downloads it, and alone makes
         // something canon or demotes it.
         .merge(world::routes())
-        // The guards (ADR 0124): the owner's verdict on a finding.
-        .merge(guards::routes())
         // The drain before a restart (ADR 0134): HQ's own token, for a deploy and the NAS's
         // shutdown; the node does not proxy it.
         .merge(drain::routes())

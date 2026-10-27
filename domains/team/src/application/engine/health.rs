@@ -2,13 +2,13 @@
 //! the outcomes line; findings on the owner's desk and their verdicts; and the same ask from two
 //! tasks put on one desk card. The guards that policed coordination are gone with the company.
 
-use serde_json::{Value, json};
+use serde_json::json;
 
-use super::{Author, Done, Engine, EngineError};
+use super::{Author, Done, Engine};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::application::scorecard::Window;
 use crate::application::scorecard::outcomes::talk_work;
-use crate::domain::guards::{self, Guard, THRESHOLDS, TurnSeen, Verdict};
+use crate::domain::guards::{self, THRESHOLDS, TurnSeen};
 use crate::domain::{EventKind, MemberId, Millis, TaskId, WakeReason};
 
 /// Where HQ keeps when it last looked for process-health findings.
@@ -29,8 +29,6 @@ pub(super) struct Seen {
 
 /// The wakes that ask for a review round: coordination by their nature.
 const CHECKING: [WakeReason; 2] = [WakeReason::ReviewRequested, WakeReason::AcceptanceAsked];
-/// How many findings the screen shows.
-const FINDINGS_SHOWN: usize = 30;
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the tick's look ----------------------------------------------------------------------
@@ -38,7 +36,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The process-health part of the tick, at most every [`THRESHOLDS`]`.look_every_ms`:
     /// the team's talk against its work over the day and the week, and findings that cleared.
     pub(super) fn health_tick(&self) -> Done<()> {
-        self.clear_what_moved()?;
         let now = self.clock.now();
         let looked: Millis = self
             .store
@@ -51,24 +48,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store.set_setting(LOOKED_AT, &now.to_string())?;
         let turns = self.turns_seen(now, None)?;
         self.look_at_talk(now, &turns)
-    }
-
-    /// The same ask clears once the owner answered its card.
-    fn clear_what_moved(&self) -> Done<()> {
-        let desk = self.store.desk()?;
-        for finding in self.store.findings()? {
-            if finding.cleared_at.is_some() || finding.guard != Guard::SameAsk {
-                continue;
-            }
-            let item: Option<i64> = finding.key.split(':').nth(1).and_then(|d| d.parse().ok());
-            if desk
-                .iter()
-                .any(|d| Some(d.id.0) == item && d.status != "waiting")
-            {
-                self.clear(&finding)?;
-            }
-        }
-        Ok(())
     }
 
     /// What each ended turn of the last week did, for the ceremony detector and the outcomes
@@ -223,19 +202,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                  and the owner's one answer comes here too."
             ),
         )?;
-        let project = self.task(task)?.project.map(|p| p.0);
-        // One finding for each task put with a card; it rests on nothing that grows.
-        self.find(
-            Guard::SameAsk,
-            &format!("same_ask:{}:{}", open.id.0, task.0),
-            Some(task),
-            project,
-            &format!(
-                "#{}'s {kind} is the same ask as #{main}'s, on the desk as item {}",
-                task.0, open.id.0
-            ),
-            0,
-        )?;
         Ok(open.id)
     }
 
@@ -278,68 +244,4 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     // ---- verdicts -----------------------------------------------------------------------------
-
-    /// The owner's verdict on a guard's notice from the desk: the finding is judged, and the
-    /// notice put away.
-    pub(super) fn desk_verdict(&self, item: crate::domain::DeskId, decision: &str) -> Done<()> {
-        if decision == "dismiss" {
-            return Ok(());
-        }
-        let verdict = Verdict::from_name(decision).ok_or(EngineError::Unknown("verdict"))?;
-        let Some(finding) = self
-            .store
-            .findings()?
-            .into_iter()
-            .find(|f| f.desk == Some(item.0))
-        else {
-            return Err(EngineError::Unknown("finding"));
-        };
-        self.judge_held_lock(finding.id, verdict, None, "owner")
-    }
-
-    /// The guards as the screen shows them (ADR 0124): every threshold, each guard's
-    /// precision, and the newest findings.
-    pub(super) fn guards_shown(&self) -> Done<Value> {
-        let findings = self.store.findings()?;
-        let t = THRESHOLDS;
-        let precision: Vec<Value> = guards::precision(&findings)
-            .into_iter()
-            .map(|p| {
-                json!({
-                    "guard": p.guard.name(), "plainly": p.guard.plainly(),
-                    "rule": p.guard.rule(), "fired": p.fired, "open": p.open,
-                    "real": p.real, "resolved": p.resolved,
-                    "false_positive": p.false_positive, "not_enough": p.not_enough,
-                    "fixed": p.fixed, "fix_judged": p.fix_judged,
-                    "precision": p.percent() })
-            })
-            .collect();
-        let shown: Vec<Value> = findings
-            .iter()
-            .rev()
-            .take(FINDINGS_SHOWN)
-            .map(|f| {
-                json!({ "id": f.id, "guard": f.guard.name(), "plainly": f.guard.plainly(),
-                        "task": f.task, "project": f.project, "rule": f.rule,
-                        "evidence": f.evidence, "opened_at": f.opened_at,
-                        "seen_at": f.seen_at, "episodes": f.episodes,
-                        "cleared_at": f.cleared_at, "verdict": f.verdict.map(Verdict::name),
-                        "fix_worked": f.fix_worked, "judged_by": f.judged_by })
-            })
-            .collect();
-        Ok(json!({
-            "thresholds": {
-                "redundant_wakes": t.redundant_wakes,
-                "open_subtasks_most": t.open_subtasks_most, "depth_most": t.depth_most,
-                "sufficient_turns": t.sufficient_turns,
-                "retracted_percent": t.retracted_percent,
-                "retracted_shared_least": t.retracted_shared_least,
-                "free_turns_a_day": t.free_turns_a_day,
-                "runaway_turns": t.runaway_turns,
-                "runaway_window_ms": t.runaway_window_ms,
-            },
-            "precision": precision,
-            "findings": shown,
-        }))
-    }
 }

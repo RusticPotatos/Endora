@@ -62,7 +62,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Each keeps the choices it has always had, and acting on one takes it out. One that is a
     /// finding says which, and how often it has been found.
     pub(super) fn digest_shown(&self) -> Done<Value> {
-        let findings = self.store.findings()?;
         let mut waiting: Vec<DeskItem> = self
             .store
             .desk()?
@@ -72,12 +71,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         waiting.sort_by_key(|d| std::cmp::Reverse((d.at, d.id.0)));
         let mut items = Vec::new();
         for d in &waiting {
-            let mut item = self.desk_item_shown(d)?;
-            if let Some(f) = findings.iter().find(|f| f.desk == Some(d.id.0)) {
-                item["finding"] = json!({ "id": f.id, "guard": f.guard.name(),
-                    "episodes": f.episodes, "seen_at": f.seen_at });
-            }
-            items.push(item);
+            items.push(self.desk_item_shown(d)?);
         }
         Ok(Value::Array(items))
     }

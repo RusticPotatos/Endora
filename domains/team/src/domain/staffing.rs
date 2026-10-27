@@ -4,21 +4,11 @@
 //! hired. Both directions are the owner's to approve. The rules here are pure: the engine
 //! gathers the record and asks them.
 
-use super::work::{Member, MemberId, Millis, Role};
-
-/// How long a member has to have had nothing to do before it is offered for furlough.
-pub const IDLE_AFTER_MS: Millis = 7 * 24 * 60 * 60 * 1000;
+use super::work::{Member, MemberId, Role};
 
 /// How many open tasks of a project a request for staff must cite for each active developer
 /// the project already has.
 pub const BACKLOG_PER_DEVELOPER: usize = 2;
-
-/// How many open tasks of a project a request for staff must cite, given how many active
-/// developers the project has: [`BACKLOG_PER_DEVELOPER`] each, and at least one.
-#[must_use]
-pub fn backlog_needed(developers: usize) -> usize {
-    (developers * BACKLOG_PER_DEVELOPER).max(1)
-}
 
 /// A recall a lead asks the owner for, as it is written on the desk and read back from it.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -316,7 +316,7 @@ const RETIRED_CONVERSATIONS: &str = "
     DROP TABLE IF EXISTS notes;
     DROP TABLE IF EXISTS games;
     DROP TABLE IF EXISTS stories;
-    DELETE FROM findings WHERE guard NOT IN ('stuck', 'same_ask');
+    DROP TABLE IF EXISTS findings;
     DELETE FROM settings WHERE key LIKE 'ladder:%' OR key LIKE 'huddle:%'
       OR key LIKE 'guard_mode:%' OR key LIKE 'coordination_since:%'
       OR key LIKE 'coordination_asked:%' OR key = 'guards_ceremony';
@@ -392,10 +392,8 @@ impl SqliteTeamStore {
         let conn = Self::before_the_world(conn)?;
         // The team's world (ADR 0122): new tables only, made if missing.
         conn.execute_batch(world::SCHEMA).map_err(backend)?;
-        // The guards (ADR 0124): new tables only, made if missing. The quieter desk (ADR 0132)
-        // adds three columns to the findings, each added only if the table lacks it.
+        // The guards (ADR 0124): new tables only, made if missing.
         conn.execute_batch(guards::SCHEMA).map_err(backend)?;
-        guards::gain_columns(&conn)?;
         // The team's map (ADR 0126): new tables only, made if missing.
         conn.execute_batch(map::SCHEMA).map_err(backend)?;
         // The team's history (ADR 0129): new tables only, made if missing. The full-text index
@@ -2825,63 +2823,6 @@ CREATE TABLE IF NOT EXISTS check_backs (
         assert_eq!(back, kept);
         assert_eq!(back.moves, ["e4", "e5"]);
         assert_eq!((back.started_at, back.last_move_at), (10, 12));
-    }
-
-    /// A store whose findings were made by ADR 0124 (ADR 0132's migration): the three columns are
-    /// added if missing and nothing else changes; a finding is read as seen when it opened, on its
-    /// first episode, resting on nothing yet; and a second start is a no-op.
-    #[test]
-    fn a_store_from_before_the_quieter_desk_gains_the_finding_columns_once_and_loses_no_finding() {
-        use crate::application::guard_ports::GuardStore as _;
-        // Foreign keys are off while the old store is laid out (it has no `projects` table yet to
-        // point at); opening it turns them on.
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
-        conn.execute_batch(SCHEMA_BEFORE_PROJECTS).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE findings (
-                id INTEGER PRIMARY KEY, guard TEXT NOT NULL, key TEXT NOT NULL,
-                task INTEGER REFERENCES tasks(id), project INTEGER REFERENCES projects(id),
-                rule TEXT NOT NULL, evidence TEXT NOT NULL, opened_at INTEGER NOT NULL,
-                cleared_at INTEGER, verdict TEXT, fix_worked INTEGER,
-                judged_by TEXT NOT NULL DEFAULT '', judged_at INTEGER,
-                desk INTEGER REFERENCES desk(id)
-             ) STRICT;
-             CREATE UNIQUE INDEX findings_open_by_key ON findings(key) WHERE cleared_at IS NULL;
-             INSERT INTO findings (id, guard, key, rule, evidence, opened_at, verdict, judged_by)
-                VALUES (1, 'stuck', 'stuck:7', 'parked', '#7 Look', 500, 'real', 'owner'),
-                       (2, 'same_ask', 'same_ask:3:2', 'alike', '#2 the same ask', 900, NULL, ''),
-                       (3, 'ceremony', 'ceremony:project:2', 'talk', '14 turns', 950, NULL, '');",
-        )
-        .unwrap();
-        let store = SqliteTeamStore::over(conn).unwrap();
-        let found = store.findings().unwrap();
-        // A retired guard's finding is dropped (ADR 0142); the release's snapshot is its archive.
-        assert_eq!(found.len(), 2);
-        assert_eq!(
-            (
-                found[0].opened_at,
-                found[0].seen_at,
-                found[0].episodes,
-                found[0].mark
-            ),
-            (500, 500, 1, 0),
-            "seen when it opened, on its first episode, resting on nothing yet"
-        );
-        assert_eq!(found[0].verdict, Some(crate::domain::guards::Verdict::Real));
-        assert_eq!(found[1].evidence, "#2 the same ask");
-        // A second start finds the columns and changes nothing.
-        guards::gain_columns(&store.conn().unwrap()).unwrap();
-        assert_eq!(store.findings().unwrap(), found);
-        // The new columns are used: a finding is refreshed and opened again in place.
-        store
-            .refresh_finding(2, "16 turns", 1_000, Some(16))
-            .unwrap();
-        let seen = store.latest_finding("same_ask:3:2").unwrap().unwrap();
-        assert_eq!(
-            (seen.seen_at, seen.mark, seen.evidence.as_str()),
-            (1_000, 16, "16 turns")
-        );
     }
 
     #[test]

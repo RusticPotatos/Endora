@@ -879,9 +879,6 @@ fn two_asks(first: &str, second: &str) -> Vec<super::ports::DeskItem> {
                     "#{task}'s asker is woken"
                 );
             }
-            let found = hq.store().findings().unwrap();
-            assert_eq!(found.len(), 1);
-            assert_eq!(found[0].guard, crate::domain::guards::Guard::SameAsk);
         }
         desk
     }
@@ -954,10 +951,6 @@ fn an_ask_already_answered_does_not_take_the_same_ask_again_in() {
     assert_eq!(again.len(), 1, "its own card: {again:?}");
     assert_ne!(again[0].id, first[0].id);
     assert_eq!(again[0].task, Some(b));
-    assert!(
-        hq.store().findings().unwrap().is_empty(),
-        "it was not put with the answered one"
-    );
 }
 
 #[test]

@@ -4,7 +4,6 @@ use serde_json::json;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::engine::{Author, Engine, EngineError, Settings};
-use super::guard_ports::GuardStore;
 use super::ports::{Clock, NewTask, TeamStore};
 use crate::domain::money::MOST_A_TURN;
 use crate::domain::runs::{LONGEST_TURN_MS, RETRY_AFTER_MS};
@@ -482,7 +481,6 @@ fn a_turn_the_platform_interrupted_is_tried_again_as_the_same_member_and_raises_
         Some(crate::domain::guards::Stopped::Working)
     );
     assert_eq!(hq.wakes().unwrap().len(), wakes, "nobody was woken");
-    assert!(hq.store().findings().unwrap().is_empty(), "no finding");
     assert!(
         hq.store().desk().unwrap().is_empty(),
         "nothing for the owner"
