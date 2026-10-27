@@ -291,3 +291,32 @@ it). Nothing else in the plan waits on the owner.
     longer queues old matches.
   - Still in a game turn: the work-turn system prompt, the house, lab and team pages, and the
     full tool list. A briefing of its own for games is the next fix.
+- **Step 9, verified and recorded (27 Oct, 08:05Z; live 2c21cecb):**
+  - **One cycle on each loop:**
+    - ansible-nas: #855 climbed from Bo to Rae on three failures, was reviewed one rank up by
+      Ada, and is done. Develop was already clean under `roles/`, so no branch was needed.
+    - The lab: the 07:29Z health check (#864) went to Bo with no one asked. Bo read the lab
+      and Sonarr's log, restarted Sonarr (capped and announced), and asked the owner about
+      the indexers' 429s (desk 4814). The item waits on that answer.
+    - Holodeck and league: league games 7 to 10 were played to the end. After the reset the
+      Holodeck re-ran its scenarios one at a time (7 of 11 by 08:00Z), and the league waits
+      for it.
+  - **Measured from HQ's record**, 7 days before the cut (20–27 Oct 01:17Z) against the first
+    5 hours after it:
+
+    | | Before (7 days) | After (5 h) |
+    |---|---|---|
+    | Turns | 1,202 | 195 (158 of them the league) |
+    | Spend | $5.54 | $1.25 |
+    | Changes landed | 4, $1.38 each | 0 |
+    | Talk turns | 74 | 1 |
+    | Owner clicks | 21 in the 16 h the feed kept, plus 3,766 stuck cards cleared by HQ | 4 desk items |
+
+    - The one talk turn was Ada's review of #855, which hit the bug fixed in e2b1cd37.
+    - Two of the four desk items were the #855 review questions caused by that bug and its
+      gate bug (4b869e9b). One is Bo's indexer question.
+  - **Not met yet:** spend per landed change cannot be compared, since nothing has landed
+    since the cut. Talk turns were 1, not 0. The team context is 61,330 lines, 2% over 60,000.
+  - **Seen:** Bo, on the house's model, asked the owner about the indexers before reading
+    Radarr's log itself. The loops' rule is to ask the owner only for the five kinds.
+  - Merged to develop after a privacy scan of the whole diff and the nothing-personal check.
