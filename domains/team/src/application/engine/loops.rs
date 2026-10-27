@@ -253,11 +253,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The map's lines still kept at `now`, the most confirmed first, then the latest.
     fn map_lines(&self, now: crate::domain::Millis) -> Done<Vec<serde_json::Value>> {
-        let mut lines: Vec<serde_json::Value> = self
-            .store
-            .setting(MAP_KEY)?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let mut lines: Vec<serde_json::Value> = self.setting_json(MAP_KEY)?.unwrap_or_default();
         lines.retain(|l| now - l["last"].as_i64().unwrap_or(0) < MAP_FADES_MS);
         lines.sort_by_key(|l| {
             (

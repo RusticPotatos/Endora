@@ -169,11 +169,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The trials' names, in the order they started.
     fn trial_names(&self) -> Done<Vec<String>> {
-        Ok(self
-            .store
-            .setting(INDEX)?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default())
+        Ok(self.setting_json(INDEX)?.unwrap_or_default())
     }
 
     /// The Holodeck as the owner's screen lists it: the latest scenarios, newest first, and
@@ -208,9 +204,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Unknown`] for a trial there is not; a store failure.
     pub fn trial_report(&self, name: &str) -> Done<Value> {
         let kept: Value = self
-            .store
-            .setting(&key(name))?
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .setting_json(&key(name))?
             .ok_or(EngineError::Unknown("trial"))?;
         let all_runs = self.store.runs()?;
         let mut summed = Vec::new();

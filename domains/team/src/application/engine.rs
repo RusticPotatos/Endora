@@ -4024,6 +4024,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(due)
     }
 
+    /// A setting kept as JSON, read as `T`; `None` when it is not set or does not read.
+    ///
+    /// # Errors
+    /// A store failure.
+    fn setting_json<T: serde::de::DeserializeOwned>(&self, key: &str) -> Done<Option<T>> {
+        Ok(self
+            .store
+            .setting(key)?
+            .and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
     // ---- what the office shows ------------------------------------------------------------
 
     /// One task whole, as the owner opens it: its whole thread, evidence and documents.

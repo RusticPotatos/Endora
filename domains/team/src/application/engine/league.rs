@@ -111,11 +111,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The league's games as kept: each game's task and its two brains.
     fn league_kept(&self) -> Done<Vec<(TaskId, Brain, Brain)>> {
-        let kept: Vec<(i64, String, String)> = self
-            .store
-            .setting(GAMES)?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let kept: Vec<(i64, String, String)> = self.setting_json(GAMES)?.unwrap_or_default();
         Ok(kept
             .into_iter()
             .filter_map(|(task, w, b)| {
@@ -169,11 +165,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 return Err(refused("no league has been started"));
             }
             let kept = self.league_kept()?;
-            let mut before: Vec<Value> = self
-                .store
-                .setting(BEFORE_RESET)?
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
+            let mut before: Vec<Value> = self.setting_json(BEFORE_RESET)?.unwrap_or_default();
             before.push(json!({
                 "at": self.clock.now(),
                 "games": kept.iter().map(|(t, w, b)| json!([t.0, w.name(), b.name()]))
@@ -204,11 +196,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// How many games the last reset set aside.
     fn league_set_aside(&self) -> Done<usize> {
-        let before: Vec<Value> = self
-            .store
-            .setting(BEFORE_RESET)?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let before: Vec<Value> = self.setting_json(BEFORE_RESET)?.unwrap_or_default();
         Ok(before
             .last()
             .and_then(|r| r["games"].as_array())
@@ -218,11 +206,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The league games any reset set aside, by their world's task, so the owner's list can
     /// show them as from before it.
     pub(super) fn league_games_set_aside(&self) -> Done<Vec<TaskId>> {
-        let before: Vec<Value> = self
-            .store
-            .setting(BEFORE_RESET)?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let before: Vec<Value> = self.setting_json(BEFORE_RESET)?.unwrap_or_default();
         Ok(before
             .iter()
             .filter_map(|r| r["games"].as_array())

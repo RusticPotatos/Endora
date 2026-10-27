@@ -1033,6 +1033,7 @@ dependencies = [
  "endora-kernel",
  "futures",
  "rusqlite",
+ "serde",
  "serde_json",
 ]
 
