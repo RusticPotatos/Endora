@@ -78,13 +78,13 @@ Five fields per task per arm. Nothing more.
 | 1 | (to judge) | 80k tok | 2.4 min | 0 |  | (to judge) | $0.01 | 76 min | 0 |  |
 | 2 | (to judge) | 70k tok | 2.4 min | 0 |  | (to judge) | $0.01 | 134 min | 0 |  |
 | 3 | (to judge) | 107k tok | 16 min | 0 |  | No (blocked: no registry lookup) | $0.29 | not ready (blocked 15:0x) | 2 |  |
-| 4 | (to judge) | 97k tok | 22 min | 0 |  |  |  |  |  |  |
-| 5 | (to judge) | 79k tok | 3.3 min | 0 |  |  |  |  |  |  |
-| 6 | (to judge) | 85k tok | 4.1 min | 0 |  |  |  |  |  |  |
+| 4 | (to judge) | 97k tok | 22 min | 0 |  | Pending: CI run needs the owner's push | $0.03 | ~10 h (blocked 18:3x) | 2 |  |
+| 5 | (to judge) | 79k tok | 3.3 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
+| 6 | (to judge) | 85k tok | 4.1 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
 | 7 | (to judge) | 82k tok | 6.1 min | 0 |  | No (changed the lab: two restarts) | $0.24 | ~9 h (ended 17:0x) | 4 |  |
 | 8 | | | | | | | | | | |
-| 9 | (to judge) | 59k tok | 0.7 min | 0 |  |  |  |  |  |  |
-| 10 | (to judge) | 89k tok | 3.3 min | 0 |  |  |  |  |  |  |
+| 9 | (to judge) | 59k tok | 0.7 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
+| 10 | (to judge) | 89k tok | 3.3 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
 
 ### Run log
 
@@ -121,6 +121,14 @@ Five fields per task per arm. Nothing more.
 - Arm B interventions so far: task 3, two (desks 4820, 4826); task 7, four (desks 4821, 4822,
   4825, 4832).
 
+- 28 Oct ~18:45: HQ's ansible-nas plan stalled for good. Task 3 ended its climb with Mara, whose
+  turns are refused by the relay ("Opus is the CEO's alone", a rule from before ADR 0142 made
+  Mara a plain member), and it stays "doing" with her. A loop holds one item at a time, so tasks 5,
+  6, 9 and 10 never start. The owner chose not to change code during the freeze: they are recorded
+  as not done by arm B. Task 8 is on another loop and runs as planned.
+- After the experiment (owner, 28 Oct): retire the Holodeck's non-chess worlds (Lighthouse, Silent
+  Station, trials, re-runs), keeping the scenario engine for chess, the league and the live board.
+
 ## Defects found during the runs
 
 | When | Defect | Tasks affected | Fixed? (blocker only) |
@@ -128,6 +136,9 @@ Five fields per task per arm. Nothing more.
 | 28 Oct 09:11 | Pausing the Holodeck holds its players' wakes, but the idle check still counts them: league game 2 (task 880) was forfeited by black (Claude Haiku) because of the pause, not its play. The paused league also keeps opening games (3, dropped as abandoned; 4, queued). | None of the ten; the league table (Local credited a win) | No: not a blocker. The forfeit is noted for the owner to void or keep after the experiment |
 | 28 Oct ~12:14 | Harness, arm A: the agents' worktrees share one git stash list; agents a-06 and a-10 stashed at the same moment and got each other's changes. Both recovered their own work (a-10 says so with evidence; a-06 to be checked) | Tasks 6 and 10, arm A | No platform change; check a-06's branch carries only its own work before judging |
 | 28 Oct 16:0x | The coordinator released a console-only fix the owner asked for (fold-outs closing on every update, 272f6d52). Released when HQ was idle, but a turn started during the build and the Pi step's drain cut it after 300 s (retried) | Arm B, the turn then running (task 4 or 7) | The fix is console-only and does not change HQ's behaviour; the cut turn is HQ's lost time caused by the coordinator |
+| 28 Oct (since ADR 0142) | Rank 1 cannot run: the relay keeps Opus for the CEO role, and Mara is now a plain member, so every climb ends in a refused turn | Arm B, tasks 3 and 7 (their last rank), and through task 3 the stall of 5, 6, 9, 10 | No (owner: freeze) |
+| 28 Oct | A task that fails at the top rank stays "doing" with that member instead of leaving the loop, and posts the same notice every ~30 min (4833, 4835, 4837, 4838) | Arm B, tasks 5, 6, 9, 10 | No (owner: freeze) |
+| 28 Oct | Creating a project still requires a lead with a "lead" or "CEO" role, which no member has since ADR 0142 | None of the ten (blocked a workaround) | No |
 
 ## Question 2: what HQ does that a session cannot
 
