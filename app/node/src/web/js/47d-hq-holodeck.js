@@ -87,10 +87,15 @@ function hqScenarioView(d) {
     // Black's side above the board and white's below, as the board is drawn, each with its brain in a league game.
     const side = (colour) => { const brain = hqLeagueBrain(d.task, colour); return `${esc(sides[colour] || "")}${brain ? ` · ${esc(brain)}` : ""}`; };
     const who = (colour) => `${colour === "white" ? "White" : "Black"} (${esc(sides[colour] || "")})`;
-    const board = d.rows ? hqChessBoard({ rows: d.rows, white: sides.white || "", black: sides.black || "", fen: d.fen || "" }) : "";
+    const seen = d.positions || [], last = seen.length - 1;
+    const ply = hqHoloPly(last);
+    const rows = seen.length ? seen[ply] : d.rows;
+    const lit = ply > 0 ? hqChessMoved(seen[ply - 1], seen[ply]) : [];
+    const board = rows ? hqChessBoard({ rows, white: sides.white || "", black: sides.black || "", fen: d.fen || "", lit }) : "";
     const state = d.result && d.result !== "in_progress" ? `${hqChessEnd(d.result, who("white"), who("black"))}${d.reason ? `, ${esc(d.reason)}` : ""}` : `${who(d.to_move === "black" ? "black" : "white")} to move`;
+    const moves = seen.length > 1 ? hqChessSteps(d, ply, last) : `<p class="hq-note">${d.moves ? esc(d.moves) : "No moves yet."}</p>`;
     body = `<p class="hq-side black">♚ Black: ${side("black")}</p>${board}<p class="hq-side white">♔ White: ${side("white")}</p>
-      <p>${state}</p><p class="hq-note">${d.moves ? esc(d.moves) : "No moves yet."}</p>`;
+      <p>${state}</p>${moves}`;
   } else if (d.kind === "silent_station") {
     const s = d.state || {};
     body = `<p>Life support ${Number(s.life_support)} ticks · ship energy ${Number(s.ship_energy)} · station power ${Number(s.station_power)}% ·
@@ -108,6 +113,48 @@ function hqScenarioView(d) {
     ${steps ? `<p class="hq-who">Step by step</p><ol class="hq-log hq-steps">${steps}</ol>` : `<p class="hq-empty">Nothing done yet.</p>`}`;
 }
 
+// The move the owner has stepped to, or the latest while they watch it live.
+function hqHoloPly(last) {
+  const ply = HQ.holo && HQ.holo.ply;
+  return ply === undefined || ply === null ? last : Math.max(0, Math.min(last, Number(ply)));
+}
+
+// The squares a move changed, from the rows before it and after: two, or four for castling.
+function hqChessMoved(before, after) {
+  const lit = [];
+  (after || []).forEach((row, r) => [...String(row)].forEach((ch, f) => {
+    if (String((before || [])[r] || "")[f] !== ch) lit.push(r * 8 + f);
+  }));
+  return lit;
+}
+
+// A game to watch: step through it, or tap a move in the list; live until the owner steps back.
+function hqChessSteps(d, ply, last) {
+  const list = d.move_list || [];
+  const following = !d.end && (HQ.holo.ply === undefined || HQ.holo.ply === null);
+  const step = (to, label, name) => `<button class="hq-btn" data-act="hq:holo:ply:${to}" aria-label="${name}">${label}</button>`;
+  const at = ply === 0 ? "Start" : `Move ${ply} of ${last}: ${ply % 2 ? "white" : "black"} played ${esc(list[ply - 1] || "")}`;
+  const pairs = [];
+  for (let i = 0; i < list.length; i += 2) {
+    const move = (j) => list[j] === undefined ? "" : `<button class="hq-move${j + 1 === ply ? " on" : ""}" data-act="hq:holo:ply:${j + 1}">${esc(list[j])}</button>`;
+    pairs.push(`<li>${i / 2 + 1}. ${move(i)} ${move(i + 1)}</li>`);
+  }
+  return `<div class="hq-row">${step(0, "⏮", "Start")}${step(Math.max(0, ply - 1), "◀", "Back a move")}${step(ply + 1 >= last ? "live" : ply + 1, "▶", "On a move")}${step("live", "⏭", "Latest")}</div>
+    <p class="hq-note">${at}${following ? " · Live" : ""}</p><ol class="hq-moves">${pairs.join("")}</ol>`;
+}
+
+// While a game or mission being played is open, fetch it again so the board moves on its own;
+// where the owner stepped to is kept.
+async function hqHoloRefresh() {
+  const open = HQ.holo;
+  if (!open || open.what !== "scenario" || !open.data || open.data.end) return false;
+  const data = await api("GET", `/v1/hq/scenarios/${Number(open.data.task)}`);
+  if (HQ.holo !== open) return false;
+  const moved = JSON.stringify(data) !== JSON.stringify(open.data);
+  open.data = data;
+  return moved;
+}
+
 // A trial's conditions side by side, summed from the record.
 function hqTrialView(d) {
   const rows = (d.conditions || []).map((c) => `<tr><td>${esc(c.label)}</td><td class="n">${Number(c.runs)}</td><td class="n">${Number(c.done)}</td>
@@ -123,6 +170,12 @@ function hqTrialView(d) {
 // The taps: open a scenario, compare a trial, close what is open.
 async function hqHoloAct(what, arg) {
   if (what === "close") { HQ.holo = null; render(); return true; }
+  // A step through the game: past the last move, or "live", follows it again.
+  if (what === "ply") {
+    const last = ((HQ.holo && HQ.holo.data && HQ.holo.data.positions) || []).length - 1;
+    if (HQ.holo) HQ.holo.ply = arg === "live" || Number(arg) >= last ? null : Number(arg);
+    render(); return true;
+  }
   // Every scenario again, one at a time: the earlier round is kept, labelled with today.
   if (what === "rerun" || what === "restart") {
     const restart = what === "restart";

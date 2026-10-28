@@ -162,6 +162,10 @@ function hqStartPolling() {
       await hqLoadMac();
       if (JSON.stringify(HQ.mac) !== before && NAV.v === "hq" && !hqTyping()) render();
     }
+    // A game being watched moves on its own, every six seconds.
+    if (HQ.macTick % 2 === 0) {
+      try { if (await hqHoloRefresh() && NAV.v === "hq" && !hqTyping()) render(); } catch (_) { /* the next poll tries again */ }
+    }
     try {
       const got = await api("GET", `/v1/hq/events?after=${HQ.last}`);
       const events = got.events || [];
@@ -1711,11 +1715,13 @@ function hqLeaderboard(game, chess) {
   return `<table class="hq-board"><thead><tr><th>Player</th>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-// A chess board of 64 squares from the position's eight rows; capitals are white's pieces.
+// A chess board of 64 squares from the position's eight rows; capitals are white's pieces. The
+// squares in `lit` (row * 8 + file) are the last move's.
 function hqChessBoard(c) {
+  const lit = new Set(c.lit || []);
   const squares = (c.rows || []).map((row, r) => [...String(row)].map((ch, f) => {
     const piece = ch === "." ? "" : HQ_PIECES[ch.toLowerCase()] || "", white = ch !== "." && ch === ch.toUpperCase();
-    return `<span class="${(r + f) % 2 ? "dark" : ""}${white ? " white" : ""}">${piece}</span>`;
+    return `<span class="${(r + f) % 2 ? "dark" : ""}${white ? " white" : ""}${lit.has(r * 8 + f) ? " lit" : ""}">${piece}</span>`;
   }).join("")).join("");
   return `<div class="hq-chess" role="img" aria-label="${esc(`Chess board, ${c.white} against ${c.black}: ${c.fen}`)}">${squares}</div>`;
 }

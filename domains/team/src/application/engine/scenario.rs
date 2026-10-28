@@ -1050,6 +1050,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 shown["result"] = json!(game.outcome().map(|(r, _)| r));
                 shown["reason"] = json!(game.outcome().map(|(_, why)| why));
                 shown["moves"] = json!(game.move_text());
+                shown["move_list"] = json!(game.moves());
+                shown["positions"] = json!(game.positions());
                 shown["to_move"] = json!(now.to_move());
                 if let Some((fen, rows)) = game.board() {
                     shown["fen"] = json!(fen);

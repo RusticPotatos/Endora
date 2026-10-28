@@ -845,6 +845,10 @@ fn a_chess_match_is_played_a_move_a_turn_with_its_illegal_moves_kept() {
         )
     );
     assert_eq!(shown["sides"]["white"], json!("Linus"));
+    // Each move and the board after it, for the owner to step through.
+    assert_eq!(shown["move_list"], json!(["f3", "e5", "g4", "Qh4#"]));
+    assert_eq!(shown["positions"].as_array().unwrap().len(), 5);
+    assert_eq!(shown["positions"][4], shown["rows"]);
     let by_role: Vec<(String, u64, u64)> = shown["by_role"]
         .as_array()
         .unwrap()

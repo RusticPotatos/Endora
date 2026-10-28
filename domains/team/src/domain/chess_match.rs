@@ -191,6 +191,22 @@ impl Match {
         self.game.view().map(|v| (v.fen, v.rows))
     }
 
+    /// The board's rows at the start and after each move, for the owner to step through.
+    #[must_use]
+    pub fn positions(&self) -> Vec<Vec<String>> {
+        let mut at = Self::new();
+        let mut seen: Vec<Vec<String>> = at.board().map(|(_, rows)| rows).into_iter().collect();
+        for san in self.moves() {
+            let side = at.to_move();
+            let Ok((next, _)) = at.step(side, san) else {
+                break;
+            };
+            at = next;
+            seen.extend(at.board().map(|(_, rows)| rows));
+        }
+        seen
+    }
+
     /// The moves as written down: `1. e4 e5 2. Nf3`.
     #[must_use]
     pub fn move_text(&self) -> String {
@@ -289,5 +305,16 @@ mod tests {
         assert_eq!(a.move_text(), "1. e4 e5 2. Nf3 Nc6");
         assert!(a.board().unwrap().0.starts_with("r1bqkbnr/pppp1ppp/2n5"));
         assert!(brief(Side::Black).contains("You play black"));
+    }
+
+    #[test]
+    fn every_position_is_kept_to_step_through() {
+        let a = played(&["e4", "e5", "Nf3"]);
+        let seen = a.positions();
+        assert_eq!(seen.len(), 4, "the start and one a move");
+        assert_eq!(seen[0], Match::new().board().unwrap().1);
+        assert_eq!(seen[3], a.board().unwrap().1);
+        assert_eq!(seen[1][4], "....P...", "after 1. e4");
+        assert_eq!(seen[1][6], "PPPP.PPP");
     }
 }

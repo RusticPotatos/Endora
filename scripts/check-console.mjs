@@ -2989,6 +2989,33 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (chess.includes("black_won")) fail("holodeck: a match's heading shows the stored result name: " + chess);
   // The steps fill the card's width: the activity log's time column is not for them (narrow phones).
   if (!chess.includes('class="hq-log hq-steps"')) fail("holodeck: the steps are laid out in the activity log's narrow columns: " + chess);
+  // A game to watch (owner, 2026-10-27): every move listed and tappable, the board stepped
+  // through, the last move lit, and live until the owner steps back.
+  const start = ["rnbqkbnr", "pppppppp", "........", "........", "........", "........", "PPPPPPPP", "RNBQKBNR"];
+  const afterF3 = ["rnbqkbnr", "pppppppp", "........", "........", "........", ".....P..", "PPPPP.PP", "RNBQKBNR"];
+  const game = { task: 708, kind: "chess", end: null, result: null, moves: "1. f3", move_list: ["f3"], positions: [start, afterF3],
+    rows: afterF3, fen: "x", to_move: "black", sides: { white: "Bo", black: "Dee" }, by_role: [], log: [] };
+  const live = shown({ what: "scenario", data: game });
+  if (!live.includes('data-act="hq:holo:ply:0"') || !live.includes('data-act="hq:holo:ply:1"') || !/1\.[\s\S]*f3/.test(live)) fail("holodeck: a game's moves are not listed to tap: " + live);
+  if ((live.match(/class="[^"]*\blit\b/g) || []).length !== 2) fail("holodeck: the last move's two squares are not lit: " + live);
+  if (!live.includes("Live")) fail("holodeck: a game being watched does not say it is live: " + live);
+  const stepped = shown({ what: "scenario", ply: 0, data: game });
+  const startBoard = html(`hqChessBoard({ rows: ${JSON.stringify(start)}, white: "Bo", black: "Dee", fen: "x" })`);
+  if (!stepped.includes(startBoard) || !stepped.includes("Start") || !stepped.includes('data-act="hq:holo:ply:live"')) fail("holodeck: stepping back does not show the start with a way back to live: " + stepped);
+  if ((stepped.match(/class="[^"]*\blit\b/g) || []).length) fail("holodeck: the start lights a move: " + stepped);
+  runInContext(`HQ.holo = ${JSON.stringify({ what: "scenario", data: game })};`, context);
+  await runInContext(`hqDispatch("hq", "holo", "ply", "0")`, context);
+  if (JSON.parse(runInContext("JSON.stringify(HQ.holo.ply)", context)) !== 0) fail("holodeck: tapping a move does not step to it");
+  await runInContext(`hqDispatch("hq", "holo", "ply", "live")`, context);
+  if (JSON.parse(runInContext("JSON.stringify(HQ.holo.ply ?? null)", context)) !== null) fail("holodeck: back to live does not follow the game again");
+  // A game being played is fetched again while it is open; a finished one is not.
+  runInContext(`__asked = []; __keepApi = api; api = async (method, path) => { __asked.push(method + " " + path); return Object.assign({}, HQ.holo.data, { moves: "1. f3 e5" }); };`, context);
+  await runInContext(`hqHoloRefresh()`, context);
+  runInContext(`HQ.holo = ${JSON.stringify({ what: "scenario", data: Object.assign({}, game, { end: "draw" }) })};`, context);
+  await runInContext(`hqHoloRefresh()`, context);
+  const refreshed = JSON.parse(runInContext("JSON.stringify(__asked)", context));
+  runInContext(`api = __keepApi;`, context);
+  if (refreshed.join("|") !== "GET /v1/hq/scenarios/708") fail("holodeck: an open game is not kept live, or a finished one is fetched again: " + refreshed.join("|"));
   const station = shown({ what: "scenario", data: { task: 709, kind: "silent_station", end: "success", score: 75, anomaly: "magnetic field",
     state: { life_support: 5, ship_energy: 35, station_power: 20, hazard: 1, crew_safe: true, power_routed: false, probe_out: true, contact: true },
     brief: "plan_first", plan: "Science scans; I call. <b>now</b>", log: [] } });
