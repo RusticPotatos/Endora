@@ -161,13 +161,7 @@ impl World {
                 Lighthouse::replay(seed, &acts).map(Self::Lighthouse)
             }
             Kind::Station => Station::replay_logged(seed, plan_first, actions).map(Self::Station),
-            Kind::Chess => {
-                let moves: Vec<String> = actions
-                    .iter()
-                    .filter_map(|a| a.strip_prefix("move ").map(str::to_owned))
-                    .collect();
-                Match::replay(&moves).map(Self::Chess)
-            }
+            Kind::Chess => Match::replay_logged(actions).map(Self::Chess),
         }
     }
 
@@ -202,13 +196,22 @@ impl World {
                     .map(|(next, said)| (Self::Station(next), said))
             }
             Self::Chess(now) => {
-                let san = written
-                    .strip_prefix("move ")
-                    .filter(|s| !s.trim().is_empty())
-                    .ok_or("`action` is look, or move with san: the move in standard notation")?;
                 let side = role
                     .and_then(Side::from_name)
                     .ok_or("this task plays no side in the match")?;
+                // Tipping the king: a side resigns, and the other wins.
+                if written == format!("resign {}", side.name()) {
+                    return now
+                        .concede(side, &format!("{} resigned", side.name()))
+                        .map(|(next, said)| (Self::Chess(next), said));
+                }
+                let san = written
+                    .strip_prefix("move ")
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or(
+                        "`action` is look, move with san (the move in standard notation), or \
+                         resign",
+                    )?;
                 now.step(side, san)
                     .map(|(next, said)| (Self::Chess(next), said))
             }
@@ -858,6 +861,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         if wakes >= REWAKES {
+            if self.forfeited(place, now, runs)? {
+                return Ok(());
+            }
             self.scenario_ended(
                 place,
                 "abandoned",
@@ -1224,6 +1230,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             Some(san) if action.trim() == "move" => format!("move {}", san.trim()),
             Some(text) if action.trim() == "plan" => format!("plan {}", text.trim()),
+            // A side's resigning is kept with its side, so the log replays to who resigned.
+            _ if action.trim() == "resign" && place.kind == Kind::Chess => {
+                format!("resign {}", place.role.unwrap_or_default())
+            }
             _ => action.trim().to_owned(),
         };
         let kept: String = written.chars().take(ACTION_MOST).collect();
@@ -1256,6 +1266,53 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         Ok(said)
+    }
+
+    /// A match whose side to move has stopped moving: that side forfeits, kept in the log as
+    /// its own action on its last turn, and the other side wins (owner, 2026-10-28: else
+    /// stopping is a way out of a lost game). False for any other world, or a side that never
+    /// had a turn to forfeit in.
+    fn forfeited(
+        &self,
+        place: &Place,
+        now: &World,
+        runs: &[crate::application::ports::Run],
+    ) -> Done<bool> {
+        let (World::Chess(game), Some(side)) = (now, now.to_move()) else {
+            return Ok(false);
+        };
+        let tasks: Vec<TaskId> = std::iter::once(place.world)
+            .chain(place.parts.iter().copied())
+            .collect();
+        let mut theirs = None;
+        for task in tasks {
+            if self.place_of(task)?.and_then(|p| p.role) == Some(side) {
+                theirs = Some(task);
+            }
+        }
+        let last = runs
+            .iter()
+            .filter(|r| theirs.is_some() && r.task == theirs)
+            .max_by_key(|r| r.id.0);
+        let (Some(last), Some(loser)) = (last, Side::from_name(side)) else {
+            return Ok(false);
+        };
+        let (next, said) = game
+            .concede(loser, &format!("{side} stopped moving, and forfeits"))
+            .map_err(refused)?;
+        let next = World::Chess(next);
+        self.act_kept(
+            place,
+            last.id,
+            last.member,
+            &format!("forfeit {side}"),
+            true,
+            &said,
+            &next,
+        )?;
+        let (name, done) = next.end().unwrap_or(("abandoned", false));
+        self.scenario_ended(place, name, done, &said)?;
+        Ok(true)
     }
 
     /// The rest of a crew, or a match's other side, is woken on its own part, to act on what

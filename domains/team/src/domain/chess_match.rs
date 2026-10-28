@@ -156,6 +156,50 @@ impl Match {
         })
     }
 
+    /// `side` gives the match up, `why` being how (it resigned, or stopped moving): the other
+    /// side wins. Either side may, at any time it is not over.
+    ///
+    /// # Errors
+    /// The match is already over.
+    pub fn concede(&self, side: Side, why: &str) -> Result<(Self, String), String> {
+        if let Some((result, how)) = self.outcome() {
+            return Err(format!("the match is over: {result}, {how}"));
+        }
+        let mut next = self.clone();
+        next.game.status = match side {
+            Side::White => Status::BlackWon,
+            Side::Black => Status::WhiteWon,
+        };
+        why.clone_into(&mut next.game.reason);
+        let said = format!(
+            "{why}. The match is over: {}, {why}.",
+            next.game.status.name()
+        );
+        Ok((next, said))
+    }
+
+    /// The match a world's log replays to: its moves (`move <san>`), and a side's resigning
+    /// (`resign <side>`) or forfeit for not moving (`forfeit <side>`).
+    ///
+    /// # Errors
+    /// The first action that is refused, which a kept log never holds.
+    pub fn replay_logged(actions: &[String]) -> Result<Self, String> {
+        actions.iter().try_fold(Self::new(), |at, action| {
+            if let Some(san) = action.strip_prefix("move ") {
+                let side = at.to_move();
+                return Ok(at.step(side, san)?.0);
+            }
+            let (how, who) = action.split_once(' ').unwrap_or((action, ""));
+            let side = Side::from_name(who).ok_or_else(|| format!("`{action}` is no action"))?;
+            let why = match how {
+                "resign" => format!("{} resigned", side.name()),
+                "forfeit" => format!("{} stopped moving, and forfeits", side.name()),
+                _ => return Err(format!("`{action}` is no action")),
+            };
+            Ok(at.concede(side, &why)?.0)
+        })
+    }
+
     /// The board as a side sees it: the position, drawn, the last moves and whose move.
     #[must_use]
     pub fn look(&self) -> String {
@@ -220,9 +264,9 @@ pub fn brief(side: Side) -> String {
     format!(
         "A chess match. You play {} against a teammate, by the standard rules, a move a turn, \
          with the scenario tool: look shows the board and whose move it is; move plays one in \
-         standard notation (san). An illegal move is refused, and is kept. After your move \
-         your turn ends, and you are woken when it is your move again. The match ends by the \
-         rules; the world closes it.",
+         standard notation (san); resign gives the match up. An illegal move is refused, and \
+         is kept. After your move your turn ends, and you are woken when it is your move again; \
+         a side that stops moving forfeits. The match ends by the rules; the world closes it.",
         side.name()
     )
 }
@@ -305,6 +349,26 @@ mod tests {
         assert_eq!(a.move_text(), "1. e4 e5 2. Nf3 Nc6");
         assert!(a.board().unwrap().0.starts_with("r1bqkbnr/pppp1ppp/2n5"));
         assert!(brief(Side::Black).contains("You play black"));
+    }
+
+    // Tipping the king (owner, 2026-10-28): a side may resign at any time, and one that stops
+    // moving forfeits; either way the other side wins, and the log replays to it.
+    #[test]
+    fn a_side_that_resigns_or_forfeits_loses_and_the_log_replays_it() {
+        let a = played(&["e4", "e5"]);
+        let (over, said) = a.concede(Side::Black, "black resigned").unwrap();
+        assert_eq!(over.outcome(), Some(("white_won", "black resigned")));
+        assert_eq!(over.score(), 100);
+        assert!(said.contains("over: white_won"), "{said}");
+        assert!(over.step(Side::White, "Nf3").unwrap_err().contains("over"));
+        assert!(over.concede(Side::White, "white resigned").is_err());
+        let logged = ["move e4", "move e5", "resign black"].map(str::to_owned);
+        assert_eq!(Match::replay_logged(&logged).unwrap(), over);
+        let forfeit = ["move e4", "forfeit black"].map(str::to_owned);
+        assert_eq!(
+            Match::replay_logged(&forfeit).unwrap().outcome(),
+            Some(("white_won", "black stopped moving, and forfeits"))
+        );
     }
 
     #[test]

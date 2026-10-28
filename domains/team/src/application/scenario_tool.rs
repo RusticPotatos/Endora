@@ -12,9 +12,9 @@ pub(super) fn tool(kind: &str) -> Value {
     if kind == crate::domain::chess_match::CHESS {
         return json!({
             "name": "scenario",
-            "description": "Play your chess match, a move a turn, by the standard rules. look: the board, the moves so far and whose move it is. move: play one, in standard notation (san). An illegal move is refused, and is kept. After your move your turn ends; you are woken when it is your move again. The world ends the match by the rules, and closes it.",
+            "description": "Play your chess match, a move a turn, by the standard rules. look: the board, the moves so far and whose move it is. move: play one, in standard notation (san). An illegal move is refused, and is kept. resign: give the match up, and the other side wins. After your move your turn ends; you are woken when it is your move again. A side that stops moving forfeits. The world ends the match by the rules, and closes it.",
             "inputSchema": { "type": "object", "properties": {
-                "action": { "type": "string", "enum": ["look", "move"] },
+                "action": { "type": "string", "enum": ["look", "move", "resign"] },
                 "san": { "type": "string", "description": "for move: the move in standard algebraic notation" },
             }, "required": ["action"] },
         });

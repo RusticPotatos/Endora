@@ -138,6 +138,12 @@ and that has sat idle ten minutes has them woken again** (a match's side to move
 every player still at it), **three times at most with nothing done; then the world abandons
 it**, dropping its tasks and saying why. Any action resets the count.
 
+*Amended 2026-10-28:* a match is not abandoned. Live, Local claimed a checkmate that was not
+there and stopped moving, so the game went unrated: stopping was a way out of a game. **The
+side to move forfeits** (`forfeit <side>` in the log, on its last turn) and the other side
+wins. **A side may also resign** (the scenario tool's `resign`, kept as `resign <side>`). Both
+replay from the log like moves, so a league game ended either way is rated.
+
 ## Amendment (2026-10-20): a trial may vary the briefing
 
 The first Silent Station trial varied who captains, and three of four missions ended the same
@@ -176,7 +182,7 @@ from a seed, ADR 0121) spends none.
   twice; a rematch swaps the colours.
 - **The table is Elo**, from 1200 with K 32, summed from the finished games in the order played
   (`domain/league.rs`): arithmetic over the record. A game abandoned with no result is not
-  rated. The Holodeck card lists the brains ranked, one line each, how many pairs have yet to
+  rated; since 2026-10-28 a match is forfeited instead (above), so it is. The Holodeck card lists the brains ranked, one line each, how many pairs have yet to
   meet, and the games, each opening its board and log.
 
 ## Consequences

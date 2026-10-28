@@ -1148,22 +1148,68 @@ fn an_idle_player_is_woken_again_three_times_and_then_the_world_abandons_it() {
         counts.iter().max().unwrap() > &first,
         "woken again: {counts:?}"
     );
+    // A match is not dropped: the side that stopped moving forfeits, and the other wins
+    // (owner, 2026-10-28: else stopping is a way out of a lost game).
     for task in [game, part.id] {
         assert_eq!(
             hq.store().task(task).unwrap().unwrap().status,
-            TaskStatus::Dropped,
-            "abandoned: {counts:?}"
+            TaskStatus::Done,
+            "forfeited: {counts:?}"
         );
     }
     let shown = hq.scenario_shown(game).unwrap();
-    assert_eq!(shown["status"], "dropped");
+    assert_eq!(
+        (&shown["result"], &shown["reason"]),
+        (
+            &json!("white_won"),
+            &json!("black stopped moving, and forfeits")
+        )
+    );
     assert!(
         hq.store()
             .thread(game)
             .unwrap()
             .iter()
-            .any(|p| p.text.contains("abandoned")),
+            .any(|p| p.text.contains("forfeits")),
         "the world says why"
+    );
+}
+
+// A side may tip its king over: resign, and the other side wins.
+#[test]
+fn a_side_may_resign_and_the_other_wins() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([white, black, _], project) = crew(&hq);
+    let game = hq.start_chess(project, [white, black], 1).unwrap();
+    let [w, b] = <[RunContext; 2]>::try_from(turns(&hq, &[white, black]))
+        .ok()
+        .unwrap();
+    let (run, member) = hq.turn_of(&w.token).unwrap().unwrap();
+    let tool = tools_in(&hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "scenario")
+        .cloned()
+        .unwrap();
+    assert!(
+        tool["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("resign"))
+    );
+    play(&hq, &w, "e4").unwrap();
+    let said = act(&hq, &b, "resign").unwrap();
+    assert!(said.contains("over: white_won"), "{said}");
+    let shown = hq.scenario_shown(game).unwrap();
+    assert_eq!(
+        (&shown["result"], &shown["reason"], &shown["status"]),
+        (
+            &json!("white_won"),
+            &json!("black resigned"),
+            &json!("done")
+        )
     );
 }
 
