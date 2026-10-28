@@ -3019,6 +3019,16 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   const refreshed = JSON.parse(runInContext("JSON.stringify(__asked)", context));
   runInContext(`api = __keepApi;`, context);
   if (refreshed.join("|") !== "GET /v1/hq/scenarios/708") fail("holodeck: an open game is not kept live, or a finished one is fetched again: " + refreshed.join("|"));
+  // A fold-out the owner opened stays open when a live update redraws the screen (owner,
+  // 2026-10-28: each tick closed it again). Known by its summary's words; others stay shut.
+  runInContext(`__keepQs = document.querySelectorAll;
+    __fold = (words, open) => ({ open, dataset: {}, querySelector: (s) => s === "summary" ? { textContent: " " + words + " " } : null });
+    __was = __fold("Notes for the team", true); __same = __fold("Notes for the team", false); __other = __fold("Strategy", false);
+    document.querySelectorAll = (s) => s === "details[open]" ? [__was] : s === "details" ? [__same, __other] : [];
+    __timers = [setTimeout, setInterval, requestAnimationFrame]; setTimeout = setInterval = requestAnimationFrame = () => 0;
+    LAST_VIEW = NAV.v; __keepHolo[3]();
+    [setTimeout, setInterval, requestAnimationFrame] = __timers; document.querySelectorAll = __keepQs;`, context);
+  if (!runInContext("__same.open", context) || runInContext("__other.open", context)) fail("render: a fold-out the owner opened closes on a live update, or another one opens");
   const station = shown({ what: "scenario", data: { task: 709, kind: "silent_station", end: "success", score: 75, anomaly: "magnetic field",
     state: { life_support: 5, ship_energy: 35, station_power: 20, hazard: 1, crew_safe: true, power_routed: false, probe_out: true, contact: true },
     brief: "plan_first", plan: "Science scans; I call. <b>now</b>", log: [] } });
