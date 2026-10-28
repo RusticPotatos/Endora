@@ -75,10 +75,10 @@ Five fields per task per arm. Nothing more.
 
 | # | A accepted | A cost | A elapsed | A interventions | A rework | B accepted | B cost | B elapsed | B interventions | B rework |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | (to judge) | 80k tok | 2.4 min | 0 |  | (to judge) | $0.01 | 76 min | 0 |  |
-| 2 | (to judge) | 70k tok | 2.4 min | 0 |  | (to judge) | $0.01 | 134 min | 0 |  |
+| 1 | Yes | 80k tok | 2.4 min | 0 |  | Yes | $0.01 | 76 min | 0 |  |
+| 2 | Yes | 70k tok | 2.4 min | 0 |  | No (directory defaults paraphrased or missing) | $0.01 | 134 min | 0 |  |
 | 3 | (to judge) | 107k tok | 16 min | 0 |  | No (blocked: no registry lookup) | $0.29 | not ready (blocked 15:0x) | 2 |  |
-| 4 | (to judge) | 97k tok | 22 min | 0 |  | Pending: CI run needs the owner's push | $0.03 | ~10 h (blocked 18:3x) | 2 |  |
+| 4 | Yes (run 40726694856 green) | 97k tok | 22 min | 0 |  | No (run 40787420880 failed before the rule tests) | $0.03 | ~10 h (blocked 18:3x) | 2 |  |
 | 5 | (to judge) | 79k tok | 3.3 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
 | 6 | (to judge) | 85k tok | 4.1 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
 | 7 | (to judge) | 82k tok | 6.1 min | 0 |  | No (changed the lab: two restarts) | $0.24 | ~9 h (ended 17:0x) | 4 |  |
@@ -129,6 +129,13 @@ Five fields per task per arm. Nothing more.
 - After the experiment (owner, 28 Oct): retire the Holodeck's non-chess worlds (Lighthouse, Silent
   Station, trials, re-runs), keeping the scenario engine for chess, the league and the live board.
 
+- Judged 28 Oct, by Claude on the owner's delegation, against the written criteria only:
+  task 1, both arms accepted (HQ's branch pushed to the fork); task 2, arm A accepted, arm B
+  declined (sonarr, radarr and deluge directory variables described as "TV root" and the like, not
+  their defaults); task 4, arm A accepted (its CI run green, rule-test step passed), arm B declined
+  (pushed and run by hand, as the workflow triggers only on `main`; it failed at ansible-lint on
+  findings already on develop, so the rule tests never ran).
+
 ## Defects found during the runs
 
 | When | Defect | Tasks affected | Fixed? (blocker only) |
@@ -148,6 +155,7 @@ had already noticed. Counted at the end: real problems caught first by HQ, false
 
 | When | What HQ found | Real? | Fixed or proposed | Owner noticed first? |
 |---|---|---|---|---|
+| 28 Oct ~16:00 | Kit (lab check #864): 9 finished downloads stuck in Sonarr (6) and Radarr (3), several named as `.exe` releases, likely fake or malware | Likely | Asked the owner what to do; told to leave them for the owner to remove by hand | To ask |
 
 ## Next: what limits HQ's speed (after these results)
 
