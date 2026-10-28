@@ -77,14 +77,14 @@ Five fields per task per arm. Nothing more.
 |---|---|---|---|---|---|---|---|---|---|---|
 | 1 | Yes | 80k tok | 2.4 min | 0 |  | Yes | $0.01 | 76 min | 0 |  |
 | 2 | Yes | 70k tok | 2.4 min | 0 |  | No (directory defaults paraphrased or missing) | $0.01 | 134 min | 0 |  |
-| 3 | (to judge) | 107k tok | 16 min | 0 |  | No (blocked: no registry lookup) | $0.29 | not ready (blocked 15:0x) | 2 |  |
+| 3 | Yes (also fixed 14 other lint findings) | 107k tok | 16 min | 0 |  | No (blocked: no registry lookup) | $0.29 | not ready (blocked 15:0x) | 2 |  |
 | 4 | Yes (run 40726694856 green) | 97k tok | 22 min | 0 |  | No (run 40787420880 failed before the rule tests) | $0.03 | ~10 h (blocked 18:3x) | 2 |  |
-| 5 | (to judge) | 79k tok | 3.3 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
-| 6 | (to judge) | 85k tok | 4.1 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
-| 7 | (to judge) | 82k tok | 6.1 min | 0 |  | No (changed the lab: two restarts) | $0.24 | ~9 h (ended 17:0x) | 4 |  |
+| 5 | Yes | 79k tok | 3.3 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
+| 6 | Yes | 85k tok | 4.1 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
+| 7 | Yes (rule slip: one group_vars diff line shown, not used) | 82k tok | 6.1 min | 0 |  | No (changed the lab: two restarts) | $0.24 | ~9 h (ended 17:0x) | 4 |  |
 | 8 | | | | | | | | | | |
-| 9 | (to judge) | 59k tok | 0.7 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
-| 10 | (to judge) | 89k tok | 3.3 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
+| 9 | Yes (nothing to take) | 59k tok | 0.7 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
+| 10 | Yes | 89k tok | 3.3 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
 
 ### Run log
 
@@ -135,6 +135,14 @@ Five fields per task per arm. Nothing more.
   their defaults); task 4, arm A accepted (its CI run green, rule-test step passed), arm B declined
   (pushed and run by hand, as the workflow triggers only on `main`; it failed at ansible-lint on
   findings already on develop, so the rule tests never ran).
+
+- Arm A's other six judged the same way, each claim re-checked: task 3, all seven tags exist on
+  their registries and `ansible-lint nas.yml` passes on the branch; tasks 5 and 6, no literal
+  default, a clear failure when unset, the vault variable documented, and lint identical to develop
+  (14 failures, 6 yamllint lines); task 7, the logs bear out every claim (154 and 50 rate-limit
+  lines, 130 connection failures in Prowlarr, no 429 from any indexer, Prowlarr inside gluetun's
+  network); task 9, upstream `main` is `36e2338`, already in the fork; task 10, 12 tests pass,
+  29 warnings and no new failure.
 
 ## Defects found during the runs
 
