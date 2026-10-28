@@ -75,21 +75,48 @@ Five fields per task per arm. Nothing more.
 
 | # | A accepted | A cost | A elapsed | A interventions | A rework | B accepted | B cost | B elapsed | B interventions | B rework |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | | | | | | | | | | |
-| 2 | | | | | | | | | | |
-| 3 | | | | | | | | | | |
-| 4 | | | | | | | | | | |
-| 5 | | | | | | | | | | |
-| 6 | | | | | | | | | | |
-| 7 | | | | | | | | | | |
+| 1 | (to judge) | 80k tok | 2.4 min | 0 |  | (to judge) | $0.01 | 76 min | 0 |  |
+| 2 | (to judge) | 70k tok | 2.4 min | 0 |  | (to judge) | $0.01 | 134 min | 0 |  |
+| 3 | (to judge) | 107k tok | 16 min | 0 |  |  |  |  |  |  |
+| 4 | (to judge) | 97k tok | 22 min | 0 |  |  |  |  |  |  |
+| 5 | (to judge) | 79k tok | 3.3 min | 0 |  |  |  |  |  |  |
+| 6 | (to judge) | 85k tok | 4.1 min | 0 |  |  |  |  |  |  |
+| 7 | (to judge) | 82k tok | 6.1 min | 0 |  |  |  |  |  |  |
 | 8 | | | | | | | | | | |
-| 9 | | | | | | | | | | |
-| 10 | | | | | | | | | | |
+| 9 | (to judge) | 59k tok | 0.7 min | 0 |  |  |  |  |  |  |
+| 10 | (to judge) | 89k tok | 3.3 min | 0 |  |  |  |  |  |  |
+
+### Run log
+
+- 28 Oct 08:18: arm B items on HQ's plans as tasks 882–890 (task 8 waits for its window); the
+  Holodeck (projects 3 and 5) paused.
+- 28 Oct 08:18: arm A could not start. Sessions cannot be opened over Remote Control, and the
+  headless CLI is not signed in; waiting on the owner. Its worktrees are ready at `ee878f7`.
+- Task 1, arm B: ready 09:34 (branch `hq/task-882-…`, 3 files, checks passed). Nine turns: Bo
+  (local) 4, Rae (the Mac) 3, Ada (Haiku) 2.
+- Task 2, arm B: ready 10:32 (3 files, checks passed), nine turns.
+- Task 3, arm B, 10:5x: Bo asked the owner for the image tags (desk 4820) after cloning an invented URL
+  (`github.com/owner/ansible-nas`) instead of using its checkout tool. Answering counts as an
+  intervention.
+- 28 Oct 12:11: arm A started as nine subagents of the coordinating Claude Code session (the
+  owner was away from the Mac, so neither new sessions nor the headless CLI could start). Each is a
+  fresh Claude Code agent with its own context, given only the task file, in its own worktree.
+  A deviation from "a fresh session"; re-run with sessions if a result is borderline.
+
+- 28 Oct 12:12–12:34: all nine arm A tasks ready, none needing the owner. Arm A's cost is in
+  tokens (subagents report tokens, not dollars). Notes for judging: task 3 also fixed 14 lint
+  findings in other roles so `ansible-lint` passes (11 files); task 4 pinned CI's tools, fixed the
+  same findings and excluded `inventories/` from yamllint (14 files, pushed as the task allowed);
+  task 7's agent printed one line of a `group_vars` diff while reading history (a rule slip).
+- Arm B interventions so far: task 3 (the owner answered desk 4820), task 7 (desk 4821, Bo asked
+  which task it was on).
 
 ## Defects found during the runs
 
 | When | Defect | Tasks affected | Fixed? (blocker only) |
 |---|---|---|---|
+| 28 Oct 09:11 | Pausing the Holodeck holds its players' wakes, but the idle check still counts them: league game 2 (task 880) was forfeited by black (Claude Haiku) because of the pause, not its play. The paused league also keeps opening games (3, dropped as abandoned; 4, queued). | None of the ten; the league table (Local credited a win) | No: not a blocker. The forfeit is noted for the owner to void or keep after the experiment |
+| 28 Oct ~12:14 | Harness, arm A: the agents' worktrees share one git stash list; agents a-06 and a-10 stashed at the same moment and got each other's changes. Both recovered their own work (a-10 says so with evidence; a-06 to be checked) | Tasks 6 and 10, arm A | No platform change; check a-06's branch carries only its own work before judging |
 
 ## Question 2: what HQ does that a session cannot
 
