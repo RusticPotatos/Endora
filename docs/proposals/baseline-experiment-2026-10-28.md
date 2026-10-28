@@ -77,11 +77,11 @@ Five fields per task per arm. Nothing more.
 |---|---|---|---|---|---|---|---|---|---|---|
 | 1 | (to judge) | 80k tok | 2.4 min | 0 |  | (to judge) | $0.01 | 76 min | 0 |  |
 | 2 | (to judge) | 70k tok | 2.4 min | 0 |  | (to judge) | $0.01 | 134 min | 0 |  |
-| 3 | (to judge) | 107k tok | 16 min | 0 |  |  |  |  |  |  |
+| 3 | (to judge) | 107k tok | 16 min | 0 |  | No (blocked: no registry lookup) | $0.29 | not ready (blocked 15:0x) | 2 |  |
 | 4 | (to judge) | 97k tok | 22 min | 0 |  |  |  |  |  |  |
 | 5 | (to judge) | 79k tok | 3.3 min | 0 |  |  |  |  |  |  |
 | 6 | (to judge) | 85k tok | 4.1 min | 0 |  |  |  |  |  |  |
-| 7 | (to judge) | 82k tok | 6.1 min | 0 |  |  |  |  |  |  |
+| 7 | (to judge) | 82k tok | 6.1 min | 0 |  | No (changed the lab: two restarts) | $0.24 | ~9 h (ended 17:0x) | 4 |  |
 | 8 | | | | | | | | | | |
 | 9 | (to judge) | 59k tok | 0.7 min | 0 |  |  |  |  |  |  |
 | 10 | (to judge) | 89k tok | 3.3 min | 0 |  |  |  |  |  |  |
@@ -108,8 +108,18 @@ Five fields per task per arm. Nothing more.
   findings in other roles so `ansible-lint` passes (11 files); task 4 pinned CI's tools, fixed the
   same findings and excluded `inventories/` from yamllint (14 files, pushed as the task allowed);
   task 7's agent printed one line of a `group_vars` diff while reading history (a rule slip).
-- Arm B interventions so far: task 3 (the owner answered desk 4820), task 7 (desk 4821, Bo asked
-  which task it was on).
+- Task 3, arm B: blocked after 13 turns (Bo, Rae, Ada). HQ's sandbox has no network and no tool
+  that reads a registry, so the tags cannot be looked up; Ada asked for the tags or a lookup tool
+  (desk 4826) and would not guess. Answered: tools stay as they are; record it and end.
+- Task 7, arm B: Bo restarted Radarr (13:24) and Sonarr (13:29) against the task's "nothing is
+  changed on the lab", after being told so at 13:06; a further restart was refused by the cap.
+- Task 3, arm B, after it was blocked: the stall rule kept climbing it, up to Mara (Opus): 23 turns,
+  $0.01 → $0.29, for a task already reported impossible; it ended on the owner's desk (4833).
+- Task 7, arm B: ended about 17:05. Finding (Ada): Prowlarr backing off after failed connections,
+  not rate limiting; proposals were to check DNS/IPv6, use a proxy or disable indexers. The VPN tunnel
+  was not identified. Ada asked who had restarted the apps, to report criterion 4 honestly.
+- Arm B interventions so far: task 3, two (desks 4820, 4826); task 7, four (desks 4821, 4822,
+  4825, 4832).
 
 ## Defects found during the runs
 
@@ -117,6 +127,7 @@ Five fields per task per arm. Nothing more.
 |---|---|---|---|
 | 28 Oct 09:11 | Pausing the Holodeck holds its players' wakes, but the idle check still counts them: league game 2 (task 880) was forfeited by black (Claude Haiku) because of the pause, not its play. The paused league also keeps opening games (3, dropped as abandoned; 4, queued). | None of the ten; the league table (Local credited a win) | No: not a blocker. The forfeit is noted for the owner to void or keep after the experiment |
 | 28 Oct ~12:14 | Harness, arm A: the agents' worktrees share one git stash list; agents a-06 and a-10 stashed at the same moment and got each other's changes. Both recovered their own work (a-10 says so with evidence; a-06 to be checked) | Tasks 6 and 10, arm A | No platform change; check a-06's branch carries only its own work before judging |
+| 28 Oct 16:0x | The coordinator released a console-only fix the owner asked for (fold-outs closing on every update, 272f6d52). Released when HQ was idle, but a turn started during the build and the Pi step's drain cut it after 300 s (retried) | Arm B, the turn then running (task 4 or 7) | The fix is console-only and does not change HQ's behaviour; the cut turn is HQ's lost time caused by the coordinator |
 
 ## Question 2: what HQ does that a session cannot
 
@@ -126,6 +137,32 @@ had already noticed. Counted at the end: real problems caught first by HQ, false
 
 | When | What HQ found | Real? | Fixed or proposed | Owner noticed first? |
 |---|---|---|---|---|
+
+## Next: what limits HQ's speed (after these results)
+
+Written 28 Oct, before running it. On the Mac's own measurements, the model runs close to what the
+hardware allows (reading prompts at 95–108 tokens/s, writing at 11–17 tokens/s), and turns are slow
+because of the workload: one call sent 16,362 tokens and took 171 s before any answer began, and a
+turn makes several calls. So test the workload before the hardware or the engine.
+
+Same tasks and criteria as above, each configuration in the **same seat** (HQ's bottom rank), so
+only the brain or the context changes:
+
+| Configuration | What it tests |
+|---|---|
+| Qwen3.8-27B on the Mac, as now | Baseline |
+| Qwen3.8-27B on the Mac, prompt cut to what the turn needs | Context overhead |
+| qwen3.5:9b on the A2000 (downloaded 28 Oct) | A smaller local model |
+| DeepSeek Flash through the API | Cloud cost against latency |
+
+Recorded per task: time to first token, total time to ready, number of model calls, accepted or
+not, and cost. On the Mac, sample `vm_stat` during a turn to see whether it pages while inferring
+(28 Oct at idle: no swap-ins or swap-outs; 3.6 GB of swap held from earlier).
+
+A design idea to test, not build, during the freeze: **context sized to the turn.** A turn that
+checks whether tests passed needs the results, the criteria and perhaps the diff, not the task's
+whole history. If prompt size dominates as above, this helps local and cloud turns alike without
+changing any model. MLX against llama.cpp, and newer hardware, come after, and only if measured.
 
 ## Decision rule
 
