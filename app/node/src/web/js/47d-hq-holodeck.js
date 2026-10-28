@@ -94,7 +94,7 @@ function hqScenarioView(d) {
     const board = rows ? hqChessBoard({ rows, white: sides.white || "", black: sides.black || "", fen: d.fen || "", lit }) : "";
     const state = d.result && d.result !== "in_progress" ? `${hqChessEnd(d.result, who("white"), who("black"))}${d.reason ? `, ${esc(d.reason)}` : ""}` : `${who(d.to_move === "black" ? "black" : "white")} to move`;
     const moves = seen.length > 1 ? hqChessSteps(d, ply, last) : `<p class="hq-note">${d.moves ? esc(d.moves) : "No moves yet."}</p>`;
-    body = `<p class="hq-side black">♚ Black: ${side("black")}</p>${board}<p class="hq-side white">♔ White: ${side("white")}</p>
+    body = `<p class="hq-side black">♚\uFE0E Black: ${side("black")}</p>${board}<p class="hq-side white">♔\uFE0E White: ${side("white")}</p>
       <p>${state}</p>${moves}`;
   } else if (d.kind === "silent_station") {
     const s = d.state || {};

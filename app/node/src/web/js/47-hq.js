@@ -1701,7 +1701,8 @@ function hqOffice(s) {
 // Ping-pong and pool the engine plays for nothing, and chess the members play in their
 // downtime. Every name and every result is the team's own words, so all of it is escaped.
 
-const HQ_PIECES = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+// Each with U+FE0E, the text form: ♟ is also an emoji, which a phone draws black on either side.
+const HQ_PIECES = { k: "♚\uFE0E", q: "♛\uFE0E", r: "♜\uFE0E", b: "♝\uFE0E", n: "♞\uFE0E", p: "♟\uFE0E" };
 
 function hqStreak(n) { return n > 0 ? `W${n}` : n < 0 ? `L${-n}` : "–"; }
 

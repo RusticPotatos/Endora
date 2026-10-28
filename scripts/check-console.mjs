@@ -2997,6 +2997,9 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
     rows: afterF3, fen: "x", to_move: "black", sides: { white: "Bo", black: "Dee" }, by_role: [], log: [] };
   const live = shown({ what: "scenario", data: game });
   if (!live.includes('data-act="hq:holo:ply:0"') || !live.includes('data-act="hq:holo:ply:1"') || !/1\.[\s\S]*f3/.test(live)) fail("holodeck: a game's moves are not listed to tap: " + live);
+  // ♟ is also an emoji, which a phone draws black whatever the colour (owner, 2026-10-27): each
+  // piece asks for the text form.
+  if (/[♚♛♜♝♞♟](?!︎)/.test(live)) fail("holodeck: a chess piece can be drawn as an emoji, black on white's side: " + live);
   if ((live.match(/class="[^"]*\blit\b/g) || []).length !== 2) fail("holodeck: the last move's two squares are not lit: " + live);
   if (!live.includes("Live")) fail("holodeck: a game being watched does not say it is live: " + live);
   const stepped = shown({ what: "scenario", ply: 0, data: game });
