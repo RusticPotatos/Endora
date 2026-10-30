@@ -172,6 +172,8 @@ fn submission(can_push: bool) -> Submission {
         stat: " roles/deluge/tasks/main.yml | 9 ++---\n 2 files changed".to_owned(),
         diff: "diff --git a/roles/deluge/tasks/main.yml\n-old\n+new\n".to_owned(),
         can_push,
+        changed: Vec::new(),
+        texts: Vec::new(),
     }
 }
 

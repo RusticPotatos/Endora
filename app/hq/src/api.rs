@@ -4021,6 +4021,8 @@ mod tests {
                     stat: String::new(),
                     diff: String::new(),
                     can_push: true,
+                    changed: Vec::new(),
+                    texts: Vec::new(),
                 },
             )
             .unwrap();

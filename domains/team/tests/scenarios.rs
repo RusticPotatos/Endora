@@ -926,6 +926,8 @@ fn submits_branch(w: &mut Office, name: String, branch: String) {
             stat: " roles/deluge/tasks/main.yml | 5 ++--".to_owned(),
             diff: "-old\n+new".to_owned(),
             can_push: true,
+            changed: Vec::new(),
+            texts: Vec::new(),
         },
     )
     .expect("the node's record is taken");
