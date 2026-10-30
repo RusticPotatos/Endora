@@ -185,6 +185,31 @@ from a seed, ADR 0121) spends none.
   rated; since 2026-10-28 a match is forfeited instead (above), so it is. The Holodeck card lists the brains ranked, one line each, how many pairs have yet to
   meet, and the games, each opening its board and log.
 
+## Amendment (2026-10-30): the other worlds retired, chess kept
+
+The owner decided on 2026-10-28, and confirmed on 2026-10-30, to retire the lighthouse, Silent
+Station, the trials and the owner's re-run of the Holodeck (the queue that started every
+scenario again). The owner prefers chess; the other worlds cost turns and code and were not
+being used. What stays: the chess world with its resigning and forfeits, the model league (start,
+tick, reset, ratings, and its pause), and the live board on the Holodeck card, stepped through
+move by move. The office chess board
+(0121) is a separate thing and is untouched.
+
+- **Nothing starts them any more.** Their domain modules (`domain/scenario.rs`,
+  `domain/station.rs`, `domain/trials.rs`), the engine's trials, the re-run queue and its tick,
+  their actions in the `scenario` tool, `POST /v1/trials`, `GET /v1/trials/{name}`,
+  `POST /v1/scenarios/rerun` (and the node's `/v1/hq/...` passes) and their console screens are
+  gone. `POST /v1/scenarios` starts a chess match alone and refuses any other kind, saying why.
+- **History is kept, not deleted.** No migration touches the store. A retired world's rows
+  (its task and parts, its log of actions, its `scenario:<task>` mark, a round's label, a
+  queued re-run, a trial's record) stay where they were. Reading the Holodeck passes over them:
+  a mark that is not chess is read as no world, so they are left out of the list, their page
+  is not found, the tick neither closes, wakes nor restarts them, and an old one left open
+  holds the league back no more than any other task does. Such a task is still left alone by
+  the stuck-work guards, as a world's task was.
+- **One game at a time** now means only that no match is being played (and the league's project
+  is not paused); the card's note that the league waits on queued scenarios goes with the queue.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.
