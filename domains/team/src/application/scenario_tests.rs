@@ -863,15 +863,13 @@ fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
     );
     // The owner's list shows the games set aside as from before the reset, not as the new league's.
     let listed = hq.snapshot().unwrap()["holodeck"]["scenarios"].clone();
-    for game in [first] {
-        let row = listed
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|s| s["task"] == game.0)
-            .unwrap_or_else(|| panic!("{listed}"));
-        assert_eq!(row["round"], "before the league reset", "{row}");
-    }
+    let row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["task"] == first.0)
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!(row["round"], "before the league reset", "{row}");
     // And a new round starts: once the players' turns are over, the pair sits down again.
     for c in [&w, &b] {
         hq.runner().finish(c.run, true);
