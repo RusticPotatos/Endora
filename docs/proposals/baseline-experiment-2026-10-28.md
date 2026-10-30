@@ -311,6 +311,41 @@ alone, with round 0's exact words, on the fork's `develop` at `ee878f7` (Claude 
 `exp/a-NN`, were pushed on 30 Oct but are not merged until the rounds are over, so every round
 starts from the same code). Judged as round 0 was, each claim re-checked; the same five fields.
 
+### Running a round with the script
+
+`scripts/experiment.py` (Python standard library only) does what round 1 did by hand. It is fed
+on stdin to the Python inside the HQ container, so nothing is copied in; its arguments follow
+the `-`. It reads the store read-only (`HQ_DB`, default `/data/hq.db`) and, for `start` alone,
+calls HQ's API (`HQ_URL`, default `http://127.0.0.1:8790`) with the token in `$HQ_TOKEN_FILE`,
+which it never prints.
+
+```sh
+run() { docker --context nas exec -i endora-hq python3 - "$@" < scripts/experiment.py; }
+run start --round 2 --from-tasks 882-890,903        # a dry run: what it would archive and make
+run start --round 2 --from-tasks 882-890,903 --yes  # prints the new ids as JSON
+run status --tasks 923-932                          # per task, as JSON
+run fields --tasks 923-932 --header                 # the round's table, to paste below
+run check --task 929                                # the final post's quotes against its receipts
+```
+
+- **`start`** (the only writing subcommand, and only with `--yes`) sets the previous round aside:
+  every open task bearing one of round 0's titles (or the tasks given with `--previous`), with
+  any open task under it, is moved into a new project "Round N-1 (archived)", led by an existing
+  member, which is then dropped, history kept. It then makes each round-0 task again with its
+  exact title, description and criteria, in its goal and the project it was made in (from its
+  `task.created` event), checks each copy against the store, and refuses before writing anything
+  if a project is no longer active. A criterion's wait (`after`) cannot be set through the API:
+  it is reported, not copied.
+- **The fields:** elapsed is from the task's creation to its first "in review" (or "done"), in
+  whole minutes, else "not ready"; cost is the `spent` of every turn on the task and the tasks
+  under it; interventions are the question cards on them that the owner answered (marked seen,
+  with the owner's words in the thread), not those dismissed. Accepted and rework stay blank for
+  the judge.
+- **`check`** is mechanical and modest: in the task's last member post, every receipt cited
+  exists and is the task's, and every quoted line (`>` lines, fenced lines, long `inline`
+  spans) is in a cited receipt's stored result. It exits 1 on a problem. Judging stays the
+  owner's (or the judge's).
+
 ### Round 1 (30 Oct): the design defects, and a stronger bottom seat
 
 Live from `c72c3abc` (see ADR 0142's amendment of 30 Oct): rank 1 runs, a top-rank failure lets
