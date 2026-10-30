@@ -161,10 +161,6 @@ impl Bench {
             if let Err(e) = store.add_bench_spent(hold.day, micros) {
                 eprintln!("bench: could not keep {micros} micros spent: {e}");
             }
-            // It is paid from the same Anthropic balance the owner watches (2026-10-30).
-            if let Err(e) = store.add_provider_spent("anthropic", micros) {
-                eprintln!("bench: could not count {micros} micros paid to Anthropic: {e}");
-            }
         }
         let mut held = self
             .held
@@ -369,9 +365,14 @@ pub(super) async fn messages(
     };
     call["max_tokens"] = json!(cap);
     let (bench2, model2) = (bench.clone(), model.clone());
+    let paid = state.clone();
     let settle: Settle = Box::new(move |used| {
         let micros = used.map(|used| cost(price_of(&model, used.prompt()).unwrap_or(price), used));
         bench.settle(&store, hold, micros);
+        // It is paid from the same Anthropic balance the owner watches (2026-10-30).
+        if let Some(m) = micros {
+            super::credits::after_bench_charge(&paid, m);
+        }
         let Some(used) = used else { return };
         endora_application::UsageLog::record(
             store.as_ref(),

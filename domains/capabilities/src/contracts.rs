@@ -731,7 +731,10 @@ mod tests {
         let kept = newest_within(&stack, 40, 6 * 1024);
         assert!(!kept.trim().is_empty(), "never empty for a log that is not");
         assert!(kept.len() <= 6 * 1024, "{}", kept.len());
-        assert!(kept.starts_with("[cut] ") && kept.ends_with(&"z".repeat(100)), "{kept:.40}");
+        assert!(
+            kept.starts_with("[cut] ") && kept.ends_with(&"z".repeat(100)),
+            "{kept:.40}"
+        );
     }
 
     /// The contracts a house turn may start with say their rules briefly: each rule is kept.

@@ -108,8 +108,7 @@ impl Kept {
 
 /// Starts Claude's estimate afresh at `now`: `set` in all, `purchased` of it bought, counted
 /// from what Endora has paid by now. `rearm` clears the low warning's "told" mark.
-fn anchor(state: &AppState, set: i64, purchased: i64, now: i64, rearm: bool) {
-    let spent = state.store.provider_spent("anthropic").unwrap_or(0);
+fn anchor(state: &AppState, set: i64, purchased: i64, now: i64, rearm: bool, spent: i64) {
     keep(state, "claude_set", &set.to_string());
     keep(state, "claude_set_at", &now.to_string());
     keep(state, "claude_spent_at_set", &spent.to_string());
@@ -139,7 +138,7 @@ fn renew_if_due(state: &AppState, now: i64) {
         return;
     };
     let (set, purchased) = credits::renew(grant, before);
-    anchor(state, set, purchased, now, true);
+    anchor(state, set, purchased, now, true, spent);
 }
 
 /// The next renewal day by the owner's clock, `YYYY-MM-DD`.
@@ -233,7 +232,30 @@ pub(super) fn after_charge(state: &AppState, run: i64, model: &str, micros: i64)
     after_charge_at(state, run, model, micros, state.clock.now().unix_millis());
 }
 
+/// Held while Claude's figures are read, renewed and charged, so two calls ending together
+/// both land in the right cycle (review of 30 Oct).
+static LEDGER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn ledger() -> std::sync::MutexGuard<'static, ()> {
+    LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What the bench paid Anthropic (blocking): counted after any renewal due, so it lands in the
+/// cycle it was spent in. The bench has no HQ turn to tell the owner through.
+pub(super) fn after_bench_charge(state: &AppState, micros: i64) {
+    let _held = ledger();
+    renew_if_due(state, state.clock.now().unix_millis());
+    if micros > 0 {
+        if let Err(e) = state.store.add_provider_spent("anthropic", micros) {
+            eprintln!("credits: could not count {micros} micros the bench paid Anthropic: {e}");
+        }
+    }
+}
+
 fn after_charge_at(state: &AppState, run: i64, model: &str, micros: i64, now: i64) {
+    let _held = ledger();
     let provider = if model.starts_with("claude-") {
         "anthropic"
     } else if model.starts_with("deepseek") {
@@ -361,11 +383,25 @@ fn apply(state: &AppState, req: &Change, now: i64) -> Result<(), &'static str> {
     if req.claude_renews_on.is_some_and(|d| !(1..=31).contains(&d)) {
         return Err("a plan renews on a day from 1 to 31");
     }
+    let _held = ledger();
     renew_if_due(state, now);
     let kept = Kept::load(state);
     let grant_after = grant.or(kept.claude_grant).filter(|g| *g > 0);
     if grant_after.is_some() && req.claude_renews_on.or(kept.claude_renews_on).is_none() {
         return Err("a grant needs the day of the month the plan renews");
+    }
+    // A first grant over an estimate made before grants existed: how much of it is bought credit
+    // is not known, so the owner says it (review of 30 Oct: guessing turned a $400 bought balance
+    // into this month's grant). Refused before anything is kept.
+    if grant.is_some_and(|g| g > 0)
+        && kept.claude_grant.is_none()
+        && kept.claude_set.is_some()
+        && purchased.is_none()
+        && balance.is_none()
+    {
+        return Err(
+            "say how much of the balance is bought credit (\"bought credit left\"), or enter the Console's balance with it",
+        );
     }
     if let Some(g) = grant {
         keep(state, "claude_grant", &g.to_string());
@@ -385,13 +421,19 @@ fn apply(state: &AppState, req: &Change, now: i64) -> Result<(), &'static str> {
     match now_pots {
         Some(pots) if figures || replanned => {
             let bought = purchased.unwrap_or(pots.purchased);
-            let set = balance.unwrap_or(pots.grant + bought);
-            anchor(state, set, bought, now, figures);
+            // Before any grant the estimate is one total, which the bought figure splits; with a
+            // grant, a new bought figure changes only the bought part.
+            let set = balance.unwrap_or(if kept.claude_grant.is_none() {
+                pots.left()
+            } else {
+                pots.grant + bought
+            });
+            anchor(state, set, bought, now, figures, spent);
         }
         None if figures || grant_after.is_some() => {
             let bought = purchased.unwrap_or(0);
             let set = balance.unwrap_or(grant_after.unwrap_or(0) + bought);
-            anchor(state, set, bought, now, true);
+            anchor(state, set, bought, now, true, spent);
         }
         _ => {}
     }
@@ -468,6 +510,44 @@ mod tests {
         // A local model's call is no provider's.
         after_charge(&state, 7, "qwen3.5:9b", 9_000_000);
         assert_eq!(shown(&state, 0)["claude"]["left"], 4_000_000);
+    }
+
+    #[test]
+    fn a_first_grant_over_an_older_estimate_asks_what_of_it_is_bought() {
+        // Review of 30 Oct: an estimate entered before grants existed has no split; a grant set
+        // over it without the bought figure would have turned bought credit into this month's
+        // grant, and a false low warning would follow at renewal.
+        let (hq_url, _) = hq_as(0, "developer");
+        let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
+        let now = 1_793_000_000_000;
+        apply(
+            &state,
+            &Change {
+                claude_balance: Some(400.0),
+                ..Change::default()
+            },
+            now,
+        )
+        .unwrap();
+        let guessed = Change {
+            claude_grant: Some(100.0),
+            claude_renews_on: Some(15),
+            ..Change::default()
+        };
+        assert!(
+            apply(&state, &guessed, now).is_err(),
+            "asks for the bought figure"
+        );
+        let said = Change {
+            claude_grant: Some(100.0),
+            claude_renews_on: Some(15),
+            claude_purchased: Some(300.0),
+            ..Change::default()
+        };
+        apply(&state, &said, now).unwrap();
+        let shown = shown(&state, now);
+        assert_eq!(shown["claude"]["left"], 400_000_000, "{shown}");
+        assert_eq!(shown["claude"]["purchased_left"], 300_000_000, "{shown}");
     }
 
     #[test]
