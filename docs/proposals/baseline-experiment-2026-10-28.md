@@ -223,6 +223,12 @@ before it is added as a brain**, on the team's own workload rather than a synthe
   the largest context it is given (logs cut to fit), and its call timeout.
 - **Re-run** when the machine, its model or the team's prompt sizes change, so a seat that has
   become too slow is noticed rather than discovered in a failed round.
+- **First use: a faster model for the Mac.** Its seat is limited by speed, not ability (a 27B
+  dense model at IQ3_S, reading about 100 tokens a second). Candidates to benchmark: a
+  mixture-of-experts model of about 30B with about 3B active (near the 27B's quality, computed
+  like a 3B); a dense 14B at Q6 to Q8 (a 9B would duplicate the NAS's qwen3.5:9b); the same
+  27B under MLX. Not measured yet; the benchmark picks. A settings change on the Mac's model
+  server and the node's Mac model name, no HQ code.
 
 ## Decision rule
 
