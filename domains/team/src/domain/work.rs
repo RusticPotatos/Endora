@@ -618,7 +618,7 @@ impl fmt::Display for Refusal {
                     .collect();
                 write!(
                     f,
-                    "a {} thinks with {} only, not {asked:?}; Opus is the CEO's alone",
+                    "a {} thinks with {} only, not {asked:?}",
                     role.name(),
                     may.join(", ")
                 )

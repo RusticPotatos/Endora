@@ -1792,7 +1792,7 @@ function hqHireForm(s) {
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
   const works = [["mac", "Mac"], ["local", "Local"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  const judges = [["", "Claude Haiku (Sonnet for the CEO)"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus (the CEO's alone)"]]
+  const judges = [["", "Claude Haiku (Sonnet for the CEO)"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
   const to = `<option value="">by role</option>` + (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(hqRole(m.role))})</option>`).join("");
   return `<section class="hq-card"><h2>Hire</h2><div class="hq-row">

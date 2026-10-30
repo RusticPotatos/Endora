@@ -2,7 +2,8 @@
 //! house's own model, or Claude through the node's relay, set by the owner per member. Which
 //! Claude a role may think with is the plan's models by role (section 9), the same rule the
 //! relay enforces on every call: Opus or Sonnet for the CEO; Sonnet or Haiku for the lead, the
-//! developer and the reviewer; Haiku only for the researcher. Opus is the CEO's alone.
+//! developer and the reviewer; Haiku only for the researcher. Opus was the CEO's alone until one
+//! team (ADR 0142): now any member but a researcher may be given it.
 //!
 //! Every member has two (ADR 0131): a **work brain**, one of the house's models (the Mac or
 //! the NAS's), which does its reading, building and drafting for nothing, and a **judgment
@@ -148,7 +149,9 @@ impl Brain {
     pub const fn allowed_for(self, role: Role) -> bool {
         match self {
             Self::Local | Self::Mac | Self::DeepSeek => true,
-            Self::Opus => matches!(role, Role::Ceo),
+            // Since one team (ADR 0142) Opus is no longer the CEO's alone: whoever the owner
+            // gives it, as Sonnet (the owner, 2026-10-30, to seat it in the league).
+            Self::Opus => !matches!(role, Role::Researcher),
             Self::Sonnet => !matches!(role, Role::Researcher),
             Self::Haiku => !matches!(role, Role::Ceo),
         }
@@ -259,18 +262,20 @@ mod tests {
     }
 
     #[test]
-    fn the_roles_brains_are_the_plans_models_by_role_and_opus_is_refused() {
+    fn the_roles_brains_are_the_plans_models_by_role_and_opus_is_anyones_since_one_team() {
         for role in [Role::Lead, Role::Developer, Role::Reviewer] {
             assert_eq!(
                 Brain::choices(role),
                 [
                     Brain::Local,
                     Brain::Mac,
+                    Brain::Opus,
                     Brain::Sonnet,
                     Brain::Haiku,
                     Brain::DeepSeek
                 ]
             );
+            assert_eq!(Brain::for_role(role, "claude-opus-5-5"), Ok(Brain::Opus));
             assert_eq!(
                 Brain::for_role(role, "claude-sonnet-5-5"),
                 Ok(Brain::Sonnet)
@@ -302,9 +307,6 @@ mod tests {
         );
         for (role, asked) in [
             (Role::Researcher, "claude-sonnet-5-5"),
-            (Role::Lead, "claude-opus-5-5"),
-            (Role::Developer, "claude-opus-5-5"),
-            (Role::Reviewer, "claude-opus-5-5"),
             (Role::Researcher, "claude-opus-5-5"),
             (Role::Ceo, "claude-haiku-5-5"),
             (Role::Ceo, "deepseek-chat"),
@@ -318,10 +320,13 @@ mod tests {
                 "{role:?} {asked}"
             );
         }
-        let said = Brain::for_role(Role::Lead, "claude-opus-5-5")
+        let said = Brain::for_role(Role::Researcher, "claude-opus-5-5")
             .unwrap_err()
             .to_string();
-        assert!(said.contains("Opus is the CEO's alone"), "{said}");
+        assert!(
+            said.contains("thinks with") && said.contains("claude-haiku-5-5"),
+            "{said}"
+        );
     }
 
     #[test]
@@ -405,7 +410,7 @@ mod tests {
             (Role::Lead, "local"),
             (Role::Lead, "mac"),
             (Role::Lead, "none"),
-            (Role::Lead, "claude-opus-5-5"),
+            (Role::Researcher, "claude-opus-5-5"),
             (Role::Researcher, "claude-sonnet-5-5"),
             (Role::Ceo, "claude-haiku-5-5"),
         ] {

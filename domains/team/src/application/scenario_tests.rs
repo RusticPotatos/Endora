@@ -746,9 +746,8 @@ fn the_model_league_pins_each_side_to_its_brain_and_rates_the_results() {
     assert_eq!(league["games"].as_array().unwrap().len(), 1, "{league}");
 }
 
-// The relay lets a role think only with its own Claudes (ADR 0111): Opus is the CEO's alone,
-// and the CEO never sits at the board, so the league refuses it; a Sonnet side never seats a
-// researcher, whose Claude is Haiku alone.
+// The relay lets a role think only with its own Claudes (ADR 0111; since one team, ADR 0142,
+// Opus is any player's): a Sonnet side never seats a researcher, whose Claude is Haiku alone.
 #[test]
 fn a_league_side_is_played_only_by_a_member_who_may_think_with_its_brain() {
     for start in 0..8 {
@@ -757,9 +756,10 @@ fn a_league_side_is_played_only_by_a_member_who_may_think_with_its_brain() {
         let (_, project) = holodeck(&hq);
         let researcher = hq.hire("Cy", Role::Researcher, 15, 2, 0).unwrap();
         hq.set_project_cap(project, Some(5_000_000)).unwrap();
+        // Since one team (ADR 0142) Opus is no CEO's: a member may play it.
         assert!(
             hq.start_league(project, &["claude-opus-5-5", "local"])
-                .is_err()
+                .is_ok()
         );
         hq.start_league(project, &["claude-sonnet-5-5", "local"])
             .unwrap();

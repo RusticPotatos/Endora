@@ -2821,17 +2821,18 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "the node's alone"
         );
-        let opus = app
+        // Since one team (ADR 0142) a lead may think with Opus; a model Endora lacks is refused.
+        let unknown = app
             .clone()
-            .oneshot(set(Some(TOKEN), lead.0, "claude-opus-5-5"))
+            .oneshot(set(Some(TOKEN), lead.0, "gpt-5"))
             .await
             .unwrap();
-        assert_eq!(opus.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
         assert!(
-            json_of(opus).await["error"]
+            json_of(unknown).await["error"]
                 .as_str()
                 .unwrap()
-                .contains("Opus")
+                .contains("thinks with")
         );
         let nobody = app
             .clone()
@@ -2966,8 +2967,8 @@ mod tests {
         )
         .await;
         assert_eq!(mac["work_brain"], "mac");
-        // Judgment is Claude's, Opus is the CEO's alone, and a member cannot be left with none.
-        for refused in ["claude-opus-5-5", "local", "none"] {
+        // Judgment is a cloud model's, and a member cannot be left with none.
+        for refused in ["gpt-5", "local", "none"] {
             let res = app
                 .clone()
                 .oneshot(set(

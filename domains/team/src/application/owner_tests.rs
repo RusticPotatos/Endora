@@ -188,7 +188,8 @@ fn the_owner_sets_what_a_member_thinks_with_within_its_roles_brains() {
         crate::domain::Brain::Sonnet
     );
     assert_eq!(brain(lead), crate::domain::Brain::Sonnet);
-    for refused in ["claude-opus-5-5", "gpt-5", ""] {
+    // Since one team (ADR 0142) Opus may be a developer's; an unknown model may not.
+    for refused in ["gpt-5", ""] {
         assert!(
             matches!(
                 hq.set_brain(dev, refused),
@@ -217,6 +218,7 @@ fn the_owner_sets_what_a_member_thinks_with_within_its_roles_brains() {
         ada["brains"],
         json!([{ "name": "local", "label": "Local" },
                { "name": "mac", "label": "Mac" },
+               { "name": "claude-opus-5-5", "label": "Claude Opus" },
                { "name": "claude-sonnet-5-5", "label": "Claude Sonnet" },
                { "name": "claude-haiku-5-5", "label": "Claude Haiku" },
                { "name": "deepseek-flash", "label": "DeepSeek Flash" }])

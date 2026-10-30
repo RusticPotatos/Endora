@@ -175,7 +175,7 @@ fn a_new_member_judges_with_haiku_and_works_with_the_mac_until_the_owner_says_ot
         (Brain::Haiku, Brain::Mac)
     );
     // Every member has a Claude to judge with, so there is no taking it away.
-    for refused in ["none", "claude-opus-5-5", "local", "mac", "gpt-5", ""] {
+    for refused in ["none", "local", "mac", "gpt-5", ""] {
         assert!(
             matches!(
                 hq.set_judgment_brain(t.lead, refused),
@@ -236,7 +236,7 @@ fn an_owner_hire_names_either_brain_or_both_and_the_other_has_its_default() {
     for (work, judgment) in [
         (Some("claude-haiku-5-5"), None),
         (None, Some("local")),
-        (None, Some("claude-opus-5-5")),
+        (None, Some("gpt-5")),
     ] {
         assert!(matches!(
             hq.hire_by_owner_with("John Roe", Role::Developer, None, work, judgment, None),
@@ -279,8 +279,13 @@ fn the_snapshot_lists_both_brains_and_what_each_may_be() {
     assert_eq!(names(&ada["work_brains"]), ["mac", "local"]);
     assert_eq!(
         names(&ada["judgment_brains"]),
-        ["claude-sonnet-5-5", "claude-haiku-5-5", "deepseek-flash"],
-        "never Opus"
+        [
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "deepseek-flash"
+        ],
+        "Opus too, since one team (ADR 0142)"
     );
     let sam = find(t.researcher);
     assert_eq!(
