@@ -223,6 +223,8 @@ before it is added as a brain**, on the team's own workload rather than a synthe
   the largest context it is given (logs cut to fit), and its call timeout.
 - **Re-run** when the machine, its model or the team's prompt sizes change, so a seat that has
   become too slow is noticed rather than discovered in a failed round.
+- **Decided by the owner, 30 Oct: the Mac runs a dense 14B model** (in place of the 27B), the
+  benchmark only confirming its context cap and timeout. Switched when the laptop is free.
 - **First use: a faster model for the Mac.** Its seat is limited by speed, not ability (a 27B
   dense model at IQ3_S, reading about 100 tokens a second). Candidates to benchmark: a
   mixture-of-experts model of about 30B with about 3B active (near the 27B's quality, computed
