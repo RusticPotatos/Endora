@@ -232,6 +232,48 @@ before it is added as a brain**, on the team's own workload rather than a synthe
   27B under MLX. Not measured yet; the benchmark picks. A settings change on the Mac's model
   server and the node's Mac model name, no HQ code.
 
+#### Running the benchmark: the Mac's 27B against a 14B
+
+`scripts/bench-model.py` (Python standard library only) measures any OpenAI-compatible
+server on HQ's workload. For each prompt case (small about 2k tokens, typical about 8k, large
+about 16k) it streams three runs, each starting with a fresh line so no prompt cache serves it,
+and reports the medians of: time to the first token, reading rate (llama.cpp's own `timings`
+when the server sends them, else prompt tokens over the time to the first token), writing
+rate, the whole call, and **a turn**: the time to the first token plus the case's `max_tokens`
+at the writing rate, so two models that answer at different lengths are compared on the same
+work. It then puts ten tool-call cases with known answers (temperature 0) and scores the tool
+name and each required argument exactly; a task number must be an integer, as HQ requires.
+The key, if the server needs one, is read from `--key-file` and is never printed or saved.
+
+With the laptop free, the model server needing a context of at least 18k tokens for the
+large case, and nothing else running on the Mac:
+
+```sh
+# 1. The current model, as the Mac serves it now.
+python3 scripts/bench-model.py --url http://192.168.1.10:8080/v1 --model <27b-name> \
+    --prompts scripts/bench-cases.json --out bench-27b.json [--key-file <path>]
+# 2. Load the 14B in the same server, with the same context and settings, and repeat.
+python3 scripts/bench-model.py --url http://192.168.1.10:8080/v1 --model <14b-name> \
+    --prompts scripts/bench-cases.json --out bench-14b.json [--key-file <path>]
+# 3. The decision, by the owner's rule.
+python3 scripts/bench-model.py --compare bench-27b.json bench-14b.json
+```
+
+The compare prints both models' medians per case and `DECISION: SWITCH to B.` only when the
+14B's large turn takes **half the 27B's time or less** and it misses **at most one more** of
+the ten tool cases; otherwise `KEEP A`, with the reason. It warns when the two runs used
+different case files. Keep the result files out of the repository (they name the server).
+
+**Using real HQ prompts.** The sample cases are fictional lab text sized by estimate; each run
+prints the server's real prompt token count, so check the sizes and adjust `target_tokens`.
+To measure HQ's own turns instead, save a captured request from a turn of each size (the
+`messages` list, and `tools` if you want them counted) as JSON beside a copy of the cases
+file, and give that prompt case `"messages_file": "<file>.json"` in place of `messages` and
+`fill`. The tool cases can be replaced the same way: each is an `instruction`, and an
+`expect` of `{"tool": ..., "args": {...}}` (`"*"` for any non-empty value), or `null` where no
+tool should be called. A captured prompt holds the lab's real logs: keep it, and the copy of
+the cases file that points at it, outside the repository.
+
 ## Decision rule
 
 Written now, before the results:
