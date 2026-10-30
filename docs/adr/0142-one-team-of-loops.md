@@ -170,3 +170,30 @@ Measured on the engine's real briefings and HQ's and the node's real tools (the 
 a chess move's first call 12,497 to 7,798 bytes and its three calls 38,857 to 24,760 (about
 9,700 to 6,200 tokens); a task turn's first call 12,991 to 11,866. A log on a house model is
 at most 6 KB instead of 16 KB unless the turn asks.
+
+## Amended 2026-10-30: HQ judges what can be judged mechanically
+
+In the baseline experiment a person re-checked every claim HQ's work made: whether quoted log
+lines were really in the logs, whether a branch changed only allowed files, whether a README
+named every default with its value. The review one rank up is a model's turn and is fallible.
+What a rule can decide, HQ now decides itself, when an item reaches review
+(`domains/team/src/domain/mechanical.rs`, wired in `application/engine/mechanical.rs`):
+
+- **Quoted evidence.** Each line the worker's newest post quotes (in backticks or a fenced
+  block) and attributes to a receipt (`r12`) is looked for in that receipt's kept result,
+  ignoring whitespace. A receipt keeps only the start of a result (300 characters), so a quote
+  missing from a cut excerpt is reported as "cannot tell", never as false.
+- **Branch scope.** The files the work's newest branch changes, which the node now hands HQ on
+  `repo_submit`, are checked against the paths nobody touches (`group_vars/`, `host_vars/`,
+  inventories, anything named for a vault) and, when the task names paths, against those.
+- **Defaults coverage.** When a criterion asks for a README of the defaults, each role README
+  in the branch must name every top-level key of the role's `defaults/main.yml` with its value
+  (trailing comments and surrounding quotes ignored). The node hands HQ those two files as they
+  are at the branch's head; a file over 32 KB is not handed over, and its README is reported
+  unchecked.
+
+The report is posted on the item by Endora and the reviewer's briefing points to it, or repeats
+it when the thread's news no longer shows it, as facts to weigh. The reviewer still decides,
+except in one case: a branch that touches a forbidden path is sent back by HQ at once, with the
+reason, counts as one of the item's failures, and wakes no reviewer. The node already refuses
+such a branch at submission; the check at review keeps the rule from resting on one place.
