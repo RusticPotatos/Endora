@@ -205,6 +205,25 @@ checks whether tests passed needs the results, the criteria and perhaps the diff
 whole history. If prompt size dominates as above, this helps local and cloud turns alike without
 changing any model. MLX against llama.cpp, and newer hardware, come after, and only if measured.
 
+### Queued: benchmark a machine before it takes a seat (owner, 30 Oct)
+
+Round 1 showed the Mac's rank losing hours: its turns read several 16 KB container logs, the
+Mac reads prompts at about 100 tokens a second, and its model calls timed out before answering,
+so items sat through three failed turns there before climbing. Nothing measured that before
+the Mac was given a rank. The owner's idea, for after the rounds: **a machine is benchmarked
+before it is added as a brain**, on the team's own workload rather than a synthetic one.
+
+- **Inputs from the record:** the prompt sizes of recent turns (median and 90th percentile, by
+  kind of task), and a fixed set of tool calls whose right answers are known.
+- **Measured:** prompt reading and writing speed, time to the first token at those sizes, the
+  whole time of a turn of the 90th-percentile size, and tool-call correctness.
+- **Admitted only if** a 90th-percentile turn finishes inside the worker's time for a call, with
+  room to spare, and the tool calls pass; otherwise it is refused, with the numbers.
+- **What it sets when admitted:** its rank by measured quality and speed rather than by name,
+  the largest context it is given (logs cut to fit), and its call timeout.
+- **Re-run** when the machine, its model or the team's prompt sizes change, so a seat that has
+  become too slow is noticed rather than discovered in a failed round.
+
 ## Decision rule
 
 Written now, before the results:
